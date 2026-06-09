@@ -91,10 +91,20 @@ pub(crate) fn build_tool_selection_table(
     // Sort agents by cost: FREE < CHEAP < EXPENSIVE, exclude utility agents
     let mut sorted: Vec<&AvailableAgentMeta> =
         agents.iter().filter(|a| a.mode != "primary").collect();
-    sorted.sort_by_key(|a| match a.cost.as_str() {
-        "FREE" => 0,
-        "CHEAP" => 1,
-        _ => 2,
+    sorted.sort_by(|left, right| {
+        let left_cost = match left.cost.as_str() {
+            "FREE" => 0,
+            "CHEAP" => 1,
+            _ => 2,
+        };
+        let right_cost = match right.cost.as_str() {
+            "FREE" => 0,
+            "CHEAP" => 1,
+            _ => 2,
+        };
+        left_cost
+            .cmp(&right_cost)
+            .then_with(|| left.name.cmp(&right.name))
     });
 
     for agent in &sorted {
@@ -179,7 +189,9 @@ pub(crate) fn build_category_skills_guide(
         lines.push(String::new());
         lines.push("Each category is configured with a model optimized for that domain. Read the description to understand when to use it.".to_string());
         lines.push(String::new());
-        for cat in categories {
+        let mut sorted_categories = categories.iter().collect::<Vec<_>>();
+        sorted_categories.sort_by(|left, right| left.name.cmp(&right.name));
+        for cat in sorted_categories {
             lines.push(format!("- `{}` — {}", cat.name, cat.description));
         }
     }
@@ -230,10 +242,11 @@ pub(crate) fn build_category_skills_guide(
 }
 
 pub(crate) fn build_delegation_table(agents: &[AvailableAgentMeta]) -> String {
-    let delegatable: Vec<&AvailableAgentMeta> = agents
+    let mut delegatable: Vec<&AvailableAgentMeta> = agents
         .iter()
         .filter(|a| a.mode == "subagent" || a.mode == "all")
         .collect();
+    delegatable.sort_by(|left, right| left.name.cmp(&right.name));
 
     if delegatable.is_empty() {
         return String::new();
@@ -344,7 +357,9 @@ pub(crate) fn build_capabilities_summary(
     if !agents.is_empty() {
         sections.push(String::new());
         sections.push("**Agents:**".to_string());
-        for agent in agents {
+        let mut sorted_agents = agents.iter().collect::<Vec<_>>();
+        sorted_agents.sort_by(|left, right| left.name.cmp(&right.name));
+        for agent in sorted_agents {
             let short_desc = agent
                 .description
                 .split('.')
@@ -357,7 +372,9 @@ pub(crate) fn build_capabilities_summary(
     if !categories.is_empty() {
         sections.push(String::new());
         sections.push("**Task Categories:**".to_string());
-        for cat in categories {
+        let mut sorted_categories = categories.iter().collect::<Vec<_>>();
+        sorted_categories.sort_by(|left, right| left.name.cmp(&right.name));
+        for cat in sorted_categories {
             sections.push(format!("- `{}` — {}", cat.name, cat.description));
         }
     }
@@ -477,5 +494,71 @@ mod tests {
         assert!(summary.contains("skill-00"));
         assert!(summary.contains("(+8 more; use skill_list/skill_view)"));
         assert!(!summary.contains("skill-19"));
+    }
+
+    #[test]
+    fn capabilities_summary_sorts_agents_and_categories_stably() {
+        let summary = build_capabilities_summary(
+            &[
+                AvailableAgentMeta {
+                    name: "zeta".to_string(),
+                    description: "Zeta agent".to_string(),
+                    mode: "subagent".to_string(),
+                    cost: "CHEAP".to_string(),
+                },
+                AvailableAgentMeta {
+                    name: "alpha".to_string(),
+                    description: "Alpha agent".to_string(),
+                    mode: "subagent".to_string(),
+                    cost: "CHEAP".to_string(),
+                },
+            ],
+            &[
+                AvailableCategoryMeta {
+                    name: "ops".to_string(),
+                    description: "Operations".to_string(),
+                },
+                AvailableCategoryMeta {
+                    name: "analysis".to_string(),
+                    description: "Analysis".to_string(),
+                },
+            ],
+            &[],
+        );
+
+        let alpha_pos = summary.find("- `alpha`").expect("alpha should be present");
+        let zeta_pos = summary.find("- `zeta`").expect("zeta should be present");
+        let analysis_pos = summary
+            .find("- `analysis`")
+            .expect("analysis should be present");
+        let ops_pos = summary.find("- `ops`").expect("ops should be present");
+
+        assert!(alpha_pos < zeta_pos);
+        assert!(analysis_pos < ops_pos);
+    }
+
+    #[test]
+    fn tool_selection_table_sorts_same_cost_agents_by_name() {
+        let table = build_tool_selection_table(
+            &[
+                AvailableAgentMeta {
+                    name: "zeta".to_string(),
+                    description: "Zeta helper.".to_string(),
+                    mode: "subagent".to_string(),
+                    cost: "CHEAP".to_string(),
+                },
+                AvailableAgentMeta {
+                    name: "alpha".to_string(),
+                    description: "Alpha helper.".to_string(),
+                    mode: "subagent".to_string(),
+                    cost: "CHEAP".to_string(),
+                },
+            ],
+            &[],
+        );
+
+        let alpha_pos = table.find("`alpha` agent").expect("alpha should be present");
+        let zeta_pos = table.find("`zeta` agent").expect("zeta should be present");
+        assert!(alpha_pos < zeta_pos);
     }
 }
