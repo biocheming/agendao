@@ -22,12 +22,6 @@ pub enum ReturnFlowItem {
     LastTurnUsage { input: u64, output: u64, reasoning: u64 },
 }
 
-/// The resolved secondary strip — at most one item, determined by priority.
-#[derive(Clone, Debug, Default)]
-pub struct ReturnFlowStrip {
-    pub primary: Option<ReturnFlowItem>,
-}
-
 /// Serialize a [`ReturnFlowItem`] into the compact human-readable line
 /// rendered in the prompt area.
 pub fn format_return_flow_item(item: &ReturnFlowItem) -> String {
