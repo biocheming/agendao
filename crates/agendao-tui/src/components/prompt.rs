@@ -97,6 +97,7 @@ pub struct Prompt {
     mode: PromptMode,
     interrupt_press_count: u8,
     last_interrupt_time: Option<Instant>,
+    attachment_status_hint: Option<String>,
 }
 
 impl Prompt {
@@ -170,6 +171,7 @@ impl Prompt {
                 "/command".to_string(),
                 "/start-work".to_string(),
                 "/connect".to_string(),
+                "/image".to_string(),
                 "/editor".to_string(),
                 "/exit".to_string(),
                 "/quit".to_string(),
@@ -191,6 +193,7 @@ impl Prompt {
             mode: PromptMode::Normal,
             interrupt_press_count: 0,
             last_interrupt_time: None,
+            attachment_status_hint: None,
         };
         prompt.recompute_suggestions();
         prompt
@@ -648,6 +651,10 @@ impl Prompt {
         self.suggestion_index = None;
         self.mode = PromptMode::Normal;
         self.reset_interrupt_confirmation();
+    }
+
+    pub fn set_attachment_status_hint(&mut self, hint: Option<String>) {
+        self.attachment_status_hint = hint.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     }
 
     pub fn set_focused(&mut self, focused: bool) {
@@ -1129,6 +1136,15 @@ impl Prompt {
     }
 
     fn render_status_line(&self, theme: &Theme) -> Line<'static> {
+        if let Some(hint) = self.attachment_status_hint.as_ref() {
+            return Line::from(vec![
+                Span::styled(hint.clone(), Style::default().fg(theme.text)),
+                Span::styled(" · ", Style::default().fg(theme.text_muted)),
+                Span::styled("Enter send", Style::default().fg(theme.text_muted)),
+                Span::styled(" · ", Style::default().fg(theme.text_muted)),
+                Span::styled("Ctrl+L clear", Style::default().fg(theme.text_muted)),
+            ]);
+        }
         if let Some(token) = self.current_slash_token() {
             if self
                 .current_session_status()
@@ -2014,6 +2030,17 @@ mod tests {
 
             assert!(rendered.contains("matches:"), "{rendered}");
             assert!(rendered.contains("/session"), "{rendered}");
+        });
+    }
+
+    #[test]
+    fn attachment_hint_overrides_idle_hint_line() {
+        with_isolated_prompt(|mut prompt| {
+            prompt.set_attachment_status_hint(Some("1 image attached".to_string()));
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(prompt.render_status_line(&theme));
+            assert!(rendered.contains("1 image attached"), "{rendered}");
+            assert!(rendered.contains("Enter send"), "{rendered}");
         });
     }
 

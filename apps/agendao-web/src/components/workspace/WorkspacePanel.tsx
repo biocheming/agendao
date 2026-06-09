@@ -87,8 +87,6 @@ export function WorkspacePanel({
   const fileTree = useAgendaoStore((s) => s.fileTree);
   const selectedWorkspacePath = useAgendaoStore((s) => s.selectedWorkspacePath);
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const workspaceRootName =
-    workspaceRootLabel.split("/").filter(Boolean).pop() || workspaceRootLabel || "Workspace";
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-panel">
@@ -103,10 +101,9 @@ export function WorkspacePanel({
             )}
             type="button"
             onClick={() => setActiveTab("files")}
-            title={workspaceRootLabel}
+            title={workspaceRootLabel ? `Files · ${workspaceRootLabel}` : "Files"}
           >
             <FolderTreeIcon className="size-3.25" />
-            <span className="truncate">{activeTab === "files" ? workspaceRootName : "Files"}</span>
           </button>
           <button
             className={cn(
@@ -117,9 +114,9 @@ export function WorkspacePanel({
             )}
             type="button"
             onClick={() => setActiveTab("insights")}
+            title="Insights"
           >
             <LightbulbIcon className="size-3.25" />
-            <span>Insights</span>
           </button>
           <button
             className={cn(
@@ -130,9 +127,9 @@ export function WorkspacePanel({
             )}
             type="button"
             onClick={() => setActiveTab("preview")}
+            title="Preview"
           >
             <EyeIcon className="size-3.25" />
-            <span>Preview</span>
           </button>
           <button
             className={cn(
@@ -143,9 +140,9 @@ export function WorkspacePanel({
             )}
             type="button"
             onClick={() => setActiveTab("proposals")}
+            title="Proposals"
           >
             <SparklesIcon className="size-3.25" />
-            <span>Proposals</span>
           </button>
           <button
             className={cn(
@@ -157,9 +154,9 @@ export function WorkspacePanel({
             type="button"
             data-testid="workspace-tab-worktrees"
             onClick={() => setActiveTab("worktrees")}
+            title="Worktrees"
           >
             <GitBranchIcon className="size-3.25" />
-            <span>Worktrees</span>
           </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">

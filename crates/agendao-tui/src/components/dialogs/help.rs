@@ -78,10 +78,11 @@ impl HelpDialog {
             )),
             Line::from("  Enter   Submit prompt"),
             Line::from("  Ctrl+U  Clear prompt"),
-            Line::from("  Ctrl+V  Paste clipboard"),
+            Line::from("  Ctrl+V  Paste text or clipboard image"),
             Line::from("  Ctrl+Shift+C  Copy prompt"),
             Line::from("  Ctrl+Shift+X  Cut prompt"),
             Line::from("  Alt+Up/Alt+Down  Prompt history"),
+            Line::from("  /image <path>  Attach a local image"),
             Line::from(""),
             Line::from(Span::styled(
                 "Dialogs",

@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use agendao_command::{CommandRegistry, UiActionId};
 use agendao_command_render::output_blocks::{BlockTone, StatusBlock};
 use agendao_command_runtime::interactive::{parse_interactive_command, InteractiveCommand};
@@ -182,6 +183,7 @@ pub struct App {
     sse_session_filter: SessionFilter,
     /// Unix socket path for event subscription (socket mode).
     unix_socket_path: Option<String>,
+    pending_prompt_parts: Vec<crate::api::PromptPart>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -303,6 +305,167 @@ pub struct AppLaunchConfig {
 }
 
 impl App {
+    fn image_mime_from_path(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str> {
+        if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return Some("image/png");
+        }
+        if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return Some("image/jpeg");
+        }
+        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            return Some("image/gif");
+        }
+        if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            return Some("image/webp");
+        }
+        if bytes.starts_with(b"BM") {
+            return Some("image/bmp");
+        }
+        if let Ok(prefix) = std::str::from_utf8(&bytes[..bytes.len().min(512)]) {
+            let trimmed = prefix.trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == '\u{feff}');
+            if trimmed.starts_with("<svg")
+                || trimmed.starts_with("<?xml")
+                    && (trimmed.contains("<svg") || trimmed.contains("<svg:svg"))
+            {
+                return Some("image/svg+xml");
+            }
+        }
+
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        match ext.as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "svg" => Some("image/svg+xml"),
+            "bmp" => Some("image/bmp"),
+            _ => None,
+        }
+    }
+
+    fn attach_image_path(&mut self, raw_path: &str) {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            self.toast
+                .show(ToastVariant::Warning, "Usage: /image <path>", 2400);
+            return;
+        }
+
+        let base_dir = {
+            let directory = self.context.directory.read().clone();
+            if directory.trim().is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                PathBuf::from(directory)
+            }
+        };
+        let candidate = PathBuf::from(trimmed);
+        let resolved = if candidate.is_absolute() {
+            candidate
+        } else {
+            base_dir.join(candidate)
+        };
+
+        if !resolved.is_file() {
+            self.toast.show(
+                ToastVariant::Error,
+                &format!("Image not found: {}", resolved.display()),
+                3200,
+            );
+            return;
+        }
+
+        let bytes = match std::fs::read(&resolved) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.toast.show(
+                    ToastVariant::Error,
+                    &format!("Failed to read image: {}", error),
+                    3200,
+                );
+                return;
+            }
+        };
+
+        let Some(mime) = Self::image_mime_from_path(&resolved, &bytes) else {
+            self.toast.show(
+                ToastVariant::Warning,
+                "Unsupported image type. Use png, jpg, jpeg, gif, webp, svg, or bmp.",
+                3400,
+            );
+            return;
+        };
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let filename = resolved
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image")
+            .to_string();
+        self.pending_prompt_parts.push(crate::api::PromptPart::File {
+            url: format!("data:{};base64,{}", mime, encoded),
+            filename: Some(filename.clone()),
+            mime: Some(mime.to_string()),
+        });
+        self.sync_prompt_attachment_hint();
+        self.toast.show(
+            ToastVariant::Info,
+            &format!("Attached image: {}", filename),
+            2200,
+        );
+    }
+
+    fn sync_prompt_attachment_hint(&mut self) {
+        let attachment_count = self.pending_prompt_parts.len();
+        if attachment_count == 0 {
+            self.prompt.set_attachment_status_hint(None);
+            return;
+        }
+        let image_count = self
+            .pending_prompt_parts
+            .iter()
+            .filter(|part| {
+                matches!(
+                    part,
+                    crate::api::PromptPart::File {
+                        mime: Some(mime),
+                        ..
+                    } if mime.starts_with("image/")
+                )
+            })
+            .count();
+        let label = if image_count == attachment_count {
+            if image_count == 1 {
+                "1 image attached".to_string()
+            } else {
+                format!("{} images attached", image_count)
+            }
+        } else if attachment_count == 1 {
+            "1 attachment queued".to_string()
+        } else {
+            format!("{} attachments queued", attachment_count)
+        };
+        self.prompt.set_attachment_status_hint(Some(label));
+    }
+
+    fn clear_pending_prompt_parts(&mut self) {
+        self.pending_prompt_parts.clear();
+        self.sync_prompt_attachment_hint();
+    }
+
+    fn queue_clipboard_image_attachment(&mut self, content: crate::render::ClipboardContent) {
+        let filename = format!("clipboard-image-{}.png", chrono::Utc::now().timestamp_millis());
+        let data_url = format!("data:{};base64,{}", content.mime, content.data);
+        self.pending_prompt_parts.push(crate::api::PromptPart::File {
+            url: data_url,
+            filename: Some(filename),
+            mime: Some(content.mime),
+        });
+        self.sync_prompt_attachment_hint();
+        self.toast
+            .show(ToastVariant::Info, "Clipboard image attached to the next prompt.", 2200);
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         Self::new_with_config(AppLaunchConfig::default())
     }
@@ -447,6 +610,7 @@ impl App {
             server_password: config.server_password,
             sse_session_filter,
             unix_socket_path: config.unix_socket_path,
+            pending_prompt_parts: Vec::new(),
         };
 
         let _ = app.sync_config_from_server();
@@ -466,6 +630,7 @@ impl App {
         }
         app.sync_prompt_spinner_style();
         app.sync_prompt_spinner_state();
+        app.sync_prompt_attachment_hint();
 
         Ok(app)
     }
@@ -1168,6 +1333,7 @@ impl App {
                 }
                 if self.matches_keybind("input_clear", key) {
                     self.prompt.clear();
+                    self.clear_pending_prompt_parts();
                     return Ok(());
                 }
                 if self.matches_keybind("input_newline", key) {
@@ -2675,5 +2841,19 @@ mod tests {
             app.context.ui_bridge_snapshot().dropped_events
         );
         assert!(!app.sync_ui_bridge_health());
+    }
+
+    #[test]
+    fn image_mime_detection_prefers_content_signature_over_extension() {
+        let path = PathBuf::from("not-really.txt");
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+        assert_eq!(App::image_mime_from_path(&path, &png), Some("image/png"));
+    }
+
+    #[test]
+    fn image_mime_detection_recognizes_svg_without_extension() {
+        let path = PathBuf::from("diagram");
+        let svg = br#"<?xml version="1.0" encoding="UTF-8"?><svg viewBox="0 0 10 10"></svg>"#;
+        assert_eq!(App::image_mime_from_path(&path, svg), Some("image/svg+xml"));
     }
 }
