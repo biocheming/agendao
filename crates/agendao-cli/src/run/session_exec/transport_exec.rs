@@ -20,6 +20,7 @@ pub(in crate::run) async fn run_cli_prompt_transport(
                 variant: variant.map(|s| s.to_string()),
                 source_origin: Some(agendao_types::MessageSourceOrigin::Operator),
                 source_surface: Some(agendao_types::MessageSourceSurface::Cli),
+                command: command.map(|s| s.to_string()),
                 ..Default::default()
             },
         )

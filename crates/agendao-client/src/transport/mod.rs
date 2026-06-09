@@ -148,6 +148,12 @@ pub struct PromptOptions {
     pub source_surface: Option<agendao_types::MessageSourceSurface>,
     pub ingress_source: Option<String>,
     pub idempotency_key: Option<String>,
+    /// Structured command hint for diagnostics/routing (P2.3).
+    /// Direct transport: preserved end-to-end to orchestrator.
+    /// HTTP/Unix transport: present in options but `send_prompt` does
+    /// not yet forward it to the wire; the full `message` text is always
+    /// sent, only the structured hint is deferred.
+    pub command: Option<String>,
 }
 
 /// Simplified prompt response (Phase 1)
