@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use agendao_multimodal::PersistedMultimodalExplain;
-use agendao_session::prompt::{explain_session_cache_semantics, explain_session_context};
+use agendao_session::prompt::{
+    continuity_packet_inspection, explain_session_cache_semantics, explain_session_context,
+};
 use agendao_session::{
     aggregate_model_tool_repair_telemetry, build_session_repair_query_snapshot,
     build_session_tool_repair_telemetry, build_session_tool_result_governance_summary,
@@ -621,7 +623,8 @@ fn latest_compaction_continuity_inspection(
         }
         message_continuity_packet(&message.metadata)
     }) {
-        return Some(SessionCompactionContinuityInspection::from_packet(&packet));
+        return continuity_packet_inspection(&packet.metadata_value())
+            .or_else(|| Some(SessionCompactionContinuityInspection::from_packet(&packet)));
     }
 
     let (summary, message_id) = latest_context_compaction_summary_message(session, raw_summary)?;

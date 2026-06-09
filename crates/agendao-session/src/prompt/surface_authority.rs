@@ -248,7 +248,7 @@ impl PromptSurfaceInputs {
             &self.provider_options,
             PromptSurfaceProviderOptionGroup::ToolPolicy,
         );
-        let system_text = self.system_prompt.clone().unwrap_or_default();
+        let system_text = self.assemble_system_text();
         let stable_system_surface_hash =
             text_fingerprint(&stable_system_surface_projection(&system_text));
 
@@ -268,6 +268,37 @@ impl PromptSurfaceInputs {
             ingress_policy_hash,
             output_projection_policy_hash,
         }
+    }
+
+    fn assemble_system_text(&self) -> String {
+        let mut sections = Vec::new();
+
+        if let Some(system_prompt) = self
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sections.push(system_prompt.to_string());
+        }
+
+        if let Some(env_context) = self
+            .env_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sections.push(format!("## Environment Context\n{env_context}"));
+        }
+
+        if let Some(preset_extension) = self.preset_extension.as_ref() {
+            let preset_text = render_preset_extension_for_surface(preset_extension);
+            if !preset_text.is_empty() {
+                sections.push(preset_text);
+            }
+        }
+
+        sections.join("\n\n")
     }
 
     pub(crate) fn effective_tool_source_digests(
@@ -343,6 +374,46 @@ fn stable_system_surface_projection(system_prompt: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> String {
+    let mut sections = Vec::new();
+
+    let role_summary = extension.role_summary.trim();
+    if !role_summary.is_empty() {
+        sections.push(format!("## Preset Role Summary\n{role_summary}"));
+    }
+
+    sections.extend(
+        extension
+            .extra_sections
+            .iter()
+            .map(|(_, body)| body.trim())
+            .filter(|body| !body.is_empty())
+            .map(str::to_string),
+    );
+
+    if let Some(capability_projection) = extension
+        .capability_projection
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "## Capability Projection\n{capability_projection}"
+        ));
+    }
+
+    if let Some(tone_augment) = extension
+        .tone_augment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Tone Augment\n{tone_augment}"));
+    }
+
+    sections.join("\n\n")
 }
 
 fn provider_option_hash(
@@ -442,6 +513,39 @@ mod tests {
 
         assert!(sections.reasoning_mode_hash.is_some());
         assert!(sections.tool_policy_hash.is_some());
+    }
+
+    #[test]
+    fn assemble_sections_merges_system_env_and_preset_extension() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("base header".to_string()),
+            Some("<env>\n  Working directory: /repo\n</env>".to_string()),
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_section("Identity", "<identity>Atlas</identity>")
+                    .with_capability("Agents: explore, review.")
+                    .with_tone_augment("Be concise. No flattery."),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections.system_text.contains("base header"));
+        assert!(sections.system_text.contains("## Environment Context"));
+        assert!(sections.system_text.contains("Working directory: /repo"));
+        assert!(sections.system_text.contains("## Preset Role Summary"));
+        assert!(sections.system_text.contains("coordination orchestrator"));
+        assert!(sections.system_text.contains("<identity>Atlas</identity>"));
+        assert!(sections.system_text.contains("## Capability Projection"));
+        assert!(sections.system_text.contains("Agents: explore, review."));
+        assert!(sections.system_text.contains("## Tone Augment"));
+        assert!(sections.system_text.contains("Be concise. No flattery."));
     }
 
     #[test]

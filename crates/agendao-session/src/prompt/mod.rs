@@ -60,6 +60,44 @@ pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str
         .map(|projection| projection.summary)
 }
 
+pub fn continuity_packet_allowed_message_ids(value: &serde_json::Value) -> Option<Vec<String>> {
+    let packet = SessionContinuityPacket::from_value(value)?;
+    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None);
+    Some(ctx.continuity?.hydrate_message_ids)
+}
+
+pub fn continuity_packet_inspection(
+    value: &serde_json::Value,
+) -> Option<SessionCompactionContinuityInspection> {
+    let packet = SessionContinuityPacket::from_value(value)?;
+    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None);
+    let continuity = ctx.continuity?;
+    Some(SessionCompactionContinuityInspection {
+        source: agendao_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
+        summary_message_id: packet
+            .latest_compaction_summary
+            .as_ref()
+            .map(|summary| summary.message_id.clone()),
+        summary_text: continuity
+            .compaction_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+        eligible_message_count: Some(continuity.eligible_message_count),
+        exact_recent_tail_count: Some(continuity.exact_recent_tail_count),
+        omitted_older_turns: Some(continuity.omitted_older_turns),
+        has_working_ledger: !packet.working_ledger.is_empty(),
+        has_memory_anchors: !packet.memory_anchors.is_empty(),
+        recall_policy: continuity
+            .recall_policy
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+    })
+}
+
 pub use compaction_helpers::{should_compact, trigger_compaction};
 pub(crate) use hooks::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
@@ -71,7 +109,7 @@ pub use ingress::{
     INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY, INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH,
     INGRESS_POLICY_SCHEDULER_METADATA_ONLY, INGRESS_POLICY_UNSPECIFIED,
 };
-use reflow_context::PromptReflowMemoryView;
+use reflow_context::PromptReflowContext;
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;
 pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
@@ -110,8 +148,9 @@ use agendao_types::{
     ContextPressureGovernanceStatus, ContextPressureGovernanceSummary, LightweightTrimSummary,
     MemoryRetrievalPacket, PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind,
     SessionCacheBoundarySummary, SessionCacheEvidenceExplain, SessionCacheSemanticsBasis,
-    SessionCacheSemanticsSummary, SessionCacheSeverity, SessionContextExplain, SessionContextKind,
-    SubsessionHandoffPacket, SubsessionResultEnvelope,
+    SessionCacheSemanticsSummary, SessionCacheSeverity,
+    SessionCompactionContinuityInspection, SessionContextExplain, SessionContextKind,
+    SessionContinuityPacket, SubsessionHandoffPacket, SubsessionResultEnvelope,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
@@ -389,6 +428,8 @@ pub type SteeringBoundaryHook = Arc<
 pub struct PromptRequestContext {
     pub provider: Arc<dyn Provider>,
     pub system_prompt: Option<String>,
+    pub env_context: Option<String>,
+    pub preset_extension: Option<agendao_types::PresetPromptExtension>,
     pub memory_prefetch: Option<MemoryRetrievalPacket>,
     pub tools: Vec<ToolDefinition>,
     pub tool_source_digests: Vec<agendao_provider::cache::ToolSurfaceSourceDigest>,
@@ -2065,16 +2106,13 @@ impl SessionPrompt {
     }
 
     fn render_memory_prefetch_reminder(packet: &MemoryRetrievalPacket) -> Option<String> {
-        // Phase 5: delegate rendering to the reflow authority view so that
-        // memory prefetch, continuity, and diagnostics all share the same
-        // explanation surface.  The output is byte-equivalent to the legacy
-        // inline rendering; Commit 2 regression tests lock this invariant.
-        //
-        // Future (Phase 7): callers will build a PromptReflowContext once
-        // and consume both the reminder and diagnostics from it, rather
-        // than calling this adapter.
-        let view = PromptReflowMemoryView::from_packet(packet);
-        view.render_reminder()
+        // Reflow authority path: build the shared explanation context, then
+        // render the memory reminder from its memory projection. Packet
+        // semantics remain unchanged; only the reader surface is unified.
+        PromptReflowContext::build("", Some(packet), None, false, false, None)
+            .memory
+            .as_ref()
+            .and_then(|view| view.render_reminder())
     }
 
     fn text_from_prompt_parts(parts: &[PartInput]) -> String {
@@ -2791,6 +2829,8 @@ impl SessionPrompt {
             PromptRequestContext {
                 provider,
                 system_prompt,
+                env_context: None,
+                preset_extension: None,
                 memory_prefetch: None,
                 tools,
                 tool_source_digests: Vec::new(),

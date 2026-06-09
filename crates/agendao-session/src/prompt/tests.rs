@@ -1140,6 +1140,8 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
             PromptRequestContext {
                 provider,
                 system_prompt: None,
+                env_context: None,
+                preset_extension: None,
                 memory_prefetch: None,
                 tools: Vec::new(),
                 tool_source_digests: Vec::new(),
@@ -1250,6 +1252,8 @@ async fn prompt_length_finish_reason_appends_hidden_continuation_turn() {
             PromptRequestContext {
                 provider,
                 system_prompt: None,
+                env_context: None,
+                preset_extension: None,
                 memory_prefetch: None,
                 tools: Vec::new(),
                 tool_source_digests: Vec::new(),
@@ -1384,6 +1388,8 @@ async fn prompt_ignores_duplicate_ingress_idempotency_key() {
                 PromptRequestContext {
                     provider: provider.clone(),
                     system_prompt: None,
+                    env_context: None,
+                    preset_extension: None,
                     memory_prefetch: None,
                     tools: Vec::new(),
                     tool_source_digests: Vec::new(),
@@ -1708,6 +1714,8 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
             PromptRequestContext {
                 provider,
                 system_prompt: None,
+                env_context: None,
+                preset_extension: None,
                 memory_prefetch: None,
                 tools: Vec::new(),
                 tool_source_digests: Vec::new(),
@@ -3510,7 +3518,7 @@ fn review_nudge_failure_does_not_burn_cooldown_but_success_does() {
 // view.
 
 mod reflow_equivalence_tests {
-    use super::super::reflow_context::{PromptReflowContinuityView, PromptReflowMemoryView};
+    use super::super::reflow_context::{PromptReflowContext, PromptReflowMemoryView};
     use agendao_types::{
         MemoryCardView, MemoryKind, MemoryRecallView, MemoryRecordId, MemoryRetrievalPacket,
         MemoryScope, MemoryStatus, MemoryValidationStatus, SessionContinuityPacket,
@@ -3615,7 +3623,7 @@ mod reflow_equivalence_tests {
     }
 
     #[test]
-    fn continuity_view_from_packet_preserves_allowed_ids_semantics() {
+    fn continuity_context_build_preserves_allowed_ids_semantics() {
         let packet = SessionContinuityPacket {
             version: 1,
             eligible_message_count: 3,
@@ -3643,7 +3651,9 @@ mod reflow_equivalence_tests {
             recall_policy: None,
         };
 
-        let view = PromptReflowContinuityView::from_packet(&packet);
+        let view = PromptReflowContext::build("ses-ct", None, Some(&packet), false, false, None)
+            .continuity
+            .expect("continuity view should exist");
 
         // The view's hydrate_message_ids must match the packet's allowed_message_ids.
         assert_eq!(view.hydrate_message_ids, packet.allowed_message_ids());

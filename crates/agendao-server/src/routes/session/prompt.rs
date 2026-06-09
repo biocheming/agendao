@@ -53,8 +53,9 @@ use agendao_orchestrator::output_projection::{
     SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
 };
 use agendao_orchestrator::{
-    scheduler_orchestrator_from_plan, scheduler_plan_from_profile, AvailableAgentMeta,
-    AvailableCategoryMeta, CommandDefinition as WorkflowCommandDefinition, DebugConfig,
+    scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
+    scheduler_preset_extension_from_plan, AvailableAgentMeta, AvailableCategoryMeta,
+    CommandDefinition as WorkflowCommandDefinition, DebugConfig,
     ExecutionContext as OrchestratorExecutionContext, IterationPolicyDefinition, MetricDefinition,
     ModelResolver, ObjectiveDefinition, Orchestrator, OrchestratorContext, ScopeDefinition,
     ToolExecutor as OrchestratorToolExecutor, ToolRunner,
@@ -62,6 +63,7 @@ use agendao_orchestrator::{
 use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 use agendao_session::prompt::assistant_text_live_identity;
+use agendao_session::{EnvironmentContext, SystemPrompt};
 use agendao_types::{ControlInputKind, ControlInputPhase, LivePartPhase};
 
 use super::super::tui::request_question_answers;
@@ -100,6 +102,18 @@ struct ResolvedPromptPayload {
     autoresearch_profile_override_record: Option<AutoresearchProfileOverrideRecord>,
     command: Option<Command>,
     pending_raw_arguments: Option<String>,
+}
+
+fn build_prompt_env_context(
+    provider_id: &str,
+    model_id: &str,
+    working_directory: &str,
+) -> String {
+    SystemPrompt::environment(&EnvironmentContext::from_current(
+        model_id.to_string(),
+        provider_id.to_string(),
+        working_directory.to_string(),
+    ))
 }
 
 const LIVE_WEB_INGRESS_BATCH_METADATA_KEY: &str = "live_web_ingress_batch";
@@ -2233,6 +2247,8 @@ async fn session_prompt_inner(
             }
         }
 
+        let prompt_env_context =
+            build_prompt_env_context(&task_provider, &task_model, session.record().directory.as_str());
         let (memory_frozen_snapshot_block, memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
         let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
@@ -2831,9 +2847,32 @@ async fn session_prompt_inner(
             ))
         };
 
+        let prompt_preset_extension = if let (Some(profile_name), Some(profile_config)) = (
+            task_scheduler_profile_name.clone(),
+            task_scheduler_profile_config.clone(),
+        ) {
+            match scheduler_plan_from_profile(Some(profile_name), &profile_config) {
+                Ok(mut plan) => match enrich_scheduler_plan_skills(&task_state, &mut plan).await {
+                    Ok(()) => scheduler_preset_extension_from_plan(&plan),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to enrich scheduler plan for prompt surface");
+                        None
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "failed to resolve scheduler plan for prompt surface");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let prompt_request = agendao_session::prompt::PromptRequestContext {
             provider,
             system_prompt: task_system_prompt.clone(),
+            env_context: Some(prompt_env_context),
+            preset_extension: prompt_preset_extension,
             memory_prefetch: memory_prefetch_packet.clone(),
             tools: tool_defs,
             tool_source_digests: resolved_tool_surface.source_digests,

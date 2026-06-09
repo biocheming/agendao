@@ -30,7 +30,7 @@ use agendao_types::SessionContinuityPacket;
 use crate::tool_result_governance::{
     default_tool_result_artifacts_root, govern_tool_result_batch, tool_result_budget,
 };
-use crate::{MessageRole, Session, SessionMessage};
+use crate::{EnvironmentContext, MessageRole, Session, SessionMessage, SystemPrompt};
 
 use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
 use super::{
@@ -1178,6 +1178,8 @@ struct PromptLoopContext {
     provider_id: String,
     agent_name: Option<String>,
     system_prompt: Option<String>,
+    env_context: Option<String>,
+    preset_extension: Option<agendao_types::PresetPromptExtension>,
     memory_prefetch: Option<agendao_types::MemoryRetrievalPacket>,
     tools: Vec<ToolDefinition>,
     tool_source_digests: Vec<agendao_provider::cache::ToolSurfaceSourceDigest>,
@@ -1302,6 +1304,8 @@ impl SessionPrompt {
         let PromptRequestContext {
             provider,
             system_prompt,
+            env_context,
+            preset_extension,
             memory_prefetch,
             tools,
             tool_source_digests,
@@ -1400,6 +1404,8 @@ impl SessionPrompt {
                         provider_id,
                         agent_name: input.agent.clone(),
                         system_prompt,
+                        env_context,
+                        preset_extension,
                         memory_prefetch,
                         tools,
                         tool_source_digests,
@@ -1579,10 +1585,16 @@ impl SessionPrompt {
                 session,
                 PromptLoopContext {
                     provider,
-                    model_id,
-                    provider_id,
+                    model_id: model_id.clone(),
+                    provider_id: provider_id.clone(),
                     agent_name: resume_agent,
                     system_prompt,
+                    env_context: Some(SystemPrompt::environment(&EnvironmentContext::from_current(
+                        model_id.clone(),
+                        provider_id.clone(),
+                        session.record().directory.clone(),
+                    ))),
+                    preset_extension: None,
                     memory_prefetch: None,
                     tools,
                     tool_source_digests: Vec::new(),
@@ -2812,8 +2824,8 @@ impl SessionPrompt {
                 &PromptSurfaceInputs::from_session_prompt_parts(
                     session_id.clone(),
                     prompt_ctx.system_prompt.clone(),
-                    None,
-                    None,
+                    prompt_ctx.env_context.clone(),
+                    prompt_ctx.preset_extension.clone(),
                     prompt_ctx.memory_prefetch.clone(),
                     prompt_ctx.tools.clone(),
                     prompt_ctx.tool_source_digests.clone(),
@@ -3003,8 +3015,8 @@ impl SessionPrompt {
             let prompt_surface_inputs = PromptSurfaceInputs::from_session_prompt_parts(
                 session_id.clone(),
                 prompt_ctx.system_prompt.clone(),
-                None,
-                None,
+                prompt_ctx.env_context.clone(),
+                prompt_ctx.preset_extension.clone(),
                 prompt_ctx.memory_prefetch.clone(),
                 resolved_tools.clone(),
                 tool_source_digests,
