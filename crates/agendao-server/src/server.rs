@@ -1163,6 +1163,17 @@ fn start_mdns_publisher_if_needed(
     None
 }
 
+/// Shut down all native plugins.  Called on server exit alongside
+/// the subprocess loader's `shutdown_all()`.
+async fn shutdown_native_plugins() {
+    let loader = agendao_plugin::global_native_loader();
+    let mut native = loader.lock().await;
+    if native.count() > 0 {
+        tracing::info!(count = native.count(), "shutting down native plugins");
+        native.shutdown().await;
+    }
+}
+
 pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result<()> {
     crate::web::configure_web_dist_root(options.web_dist.clone());
     crate::web::configure_embedded_web_assets(options.embedded_web_assets);
@@ -1189,7 +1200,7 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
         options.port
     };
     set_cors_whitelist(options.cors);
-    if start_http {
+    let result = if start_http {
         let _mdns_publisher = start_mdns_publisher_if_needed(
             options.mdns,
             &bind_host,
@@ -1210,7 +1221,10 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
             workspace_root.display()
         );
         run_unix_socket_only(workspace_root, options.unix_socket_path.unwrap()).await
-    }
+    };
+    // P3.2: controlled shutdown of native plugins after server stops.
+    shutdown_native_plugins().await;
+    result
 }
 
 pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Result<()> {
