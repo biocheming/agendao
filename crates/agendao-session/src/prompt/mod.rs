@@ -5,12 +5,14 @@ pub mod ingress;
 mod ingress_metadata;
 mod loop_lifecycle;
 mod message_building;
+pub(crate) mod reflow_context;
 mod runtime_step;
 pub mod sanitizer_contract;
 pub mod shell;
 mod skill_reflection;
 pub mod subtask;
 mod subtask_runtime;
+pub mod surface_authority;
 mod surface_contract;
 #[cfg(test)]
 mod tests;
@@ -50,6 +52,7 @@ pub use ingress::{
 pub(crate) use shell::resolve_shell_invocation;
 pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
 pub use subtask::{tool_definitions_from_schemas, SubtaskExecutor, ToolSchema};
+use reflow_context::PromptReflowMemoryView;
 use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,
@@ -370,6 +373,23 @@ pub struct PromptRequestContext {
     pub hooks: PromptHooks,
 }
 
+/// Session prompt surface authority.
+///
+/// # Prompt surface construction pipeline (AgenDao 土律)
+///
+/// ```text
+/// SystemPrompt                  ← product header + env (static layer)
+///   → SessionPrompt             ← surface assembly authority
+///     ← PresetPromptExtension   ← preset contribution (NOT full surface)
+///     ← PromptSurfaceInputs     ← aggregated inputs
+///     → PromptSurfaceSections   ← canonical output sections
+///       → ProviderOptions       ← cache hints, reasoning policy
+///       → API request           ← final model call
+/// ```
+///
+/// Presets contribute a `PresetPromptExtension`, not a full prompt.
+/// Providers declare capabilities per profile.
+/// `SessionPrompt` is the single assembler.
 pub struct SessionPrompt {
     state: Arc<Mutex<HashMap<String, PromptState>>>,
     session_state: Arc<RwLock<SessionStateManager>>,
@@ -2022,34 +2042,16 @@ impl SessionPrompt {
     }
 
     fn render_memory_prefetch_reminder(packet: &MemoryRetrievalPacket) -> Option<String> {
-        if packet.items.is_empty() {
-            return None;
-        }
-
-        let mut lines = vec!["Turn Memory Recall:".to_string()];
-        if let Some(query) = packet
-            .query
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push(format!("- query: {}", query.trim()));
-        }
-        for item in &packet.items {
-            lines.push(format!(
-                "- {} [{:?} / {:?}]",
-                item.card.title, item.card.kind, item.card.validation_status
-            ));
-            lines.push(format!("  why: {}", item.why_recalled));
-            lines.push(format!("  summary: {}", item.card.summary));
-            if let Some(evidence) = item.evidence_summary.as_deref() {
-                lines.push(format!("  evidence: {}", evidence));
-            }
-            if let Some(last_validated_at) = item.card.last_validated_at {
-                lines.push(format!("  last_validated_at: {}", last_validated_at));
-            }
-        }
-
-        Some(lines.join("\n"))
+        // Phase 5: delegate rendering to the reflow authority view so that
+        // memory prefetch, continuity, and diagnostics all share the same
+        // explanation surface.  The output is byte-equivalent to the legacy
+        // inline rendering; Commit 2 regression tests lock this invariant.
+        //
+        // Future (Phase 7): callers will build a PromptReflowContext once
+        // and consume both the reminder and diagnostics from it, rather
+        // than calling this adapter.
+        let view = PromptReflowMemoryView::from_packet(packet);
+        view.render_reminder()
     }
 
     fn text_from_prompt_parts(parts: &[PartInput]) -> String {

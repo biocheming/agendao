@@ -425,3 +425,155 @@ pub fn provider_options_map(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ModelInfo, ModelLimit, ModelProvider};
+    use std::collections::HashMap;
+
+    fn test_model(provider_id: &str, npm: &str, api_id: &str) -> ModelInfo {
+        ModelInfo {
+            id: provider_id.to_string(),
+            name: format!("test-{}", provider_id),
+            family: None,
+            release_date: None,
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            interleaved: None,
+            cost: None,
+            limit: ModelLimit {
+                context: 128000,
+                input: None,
+                output: 4096,
+            },
+            modalities: None,
+            experimental: None,
+            status: None,
+            options: HashMap::new(),
+            headers: None,
+            provider: Some(ModelProvider {
+                npm: Some(npm.to_string()),
+                api: Some(api_id.to_string()),
+            }),
+            variants: None,
+        }
+    }
+
+    // ── P1.1: prompt cache key injection regression ────────────────────
+
+    #[test]
+    fn openai_injects_prompt_cache_key_in_camel_case() {
+        let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("openai", &model, "ses-1", &provider_opts);
+
+        // OpenAI-compatible gets promptCacheKey (camelCase).
+        assert!(
+            result.contains_key("promptCacheKey"),
+            "OpenAI provider must inject promptCacheKey"
+        );
+        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        assert!(key.starts_with("agendao:"), "promptCacheKey must start with agendao:");
+        assert!(key.contains(":chat:default:no-repo"), "defaults: chat/default/no-repo");
+    }
+
+    #[test]
+    fn openrouter_injects_prompt_cache_key_in_snake_case() {
+        let model = test_model("openrouter", "@openrouter/ai-sdk-provider", "openai/gpt-4o");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("openrouter", &model, "ses-2", &provider_opts);
+
+        // OpenRouter gets prompt_cache_key (snake_case).
+        assert!(
+            result.contains_key("prompt_cache_key"),
+            "OpenRouter must inject prompt_cache_key"
+        );
+        let key = result["prompt_cache_key"].as_str().expect("prompt_cache_key must be a string");
+        assert!(key.starts_with("agendao:"));
+    }
+
+    #[test]
+    fn kimi_injects_prompt_cache_key_in_snake_case() {
+        let model = test_model("kimi", "@ai-sdk/openai-compatible", "kimi-k2");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("kimi", &model, "ses-3", &provider_opts);
+
+        assert!(
+            result.contains_key("prompt_cache_key"),
+            "kimi must inject prompt_cache_key"
+        );
+    }
+
+    #[test]
+    fn moonshot_injects_prompt_cache_key_in_snake_case() {
+        let model = test_model("moonshot", "@ai-sdk/openai-compatible", "moonshot-v1");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("moonshot", &model, "ses-4", &provider_opts);
+
+        assert!(
+            result.contains_key("prompt_cache_key"),
+            "moonshot must inject prompt_cache_key"
+        );
+    }
+
+    #[test]
+    fn deepseek_does_not_inject_prompt_cache_key() {
+        let model = test_model("deepseek", "@ai-sdk/openai-compatible", "deepseek-chat");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("deepseek", &model, "ses-5", &provider_opts);
+
+        assert!(
+            !result.contains_key("promptCacheKey") && !result.contains_key("prompt_cache_key"),
+            "deepseek must NOT inject any prompt cache key"
+        );
+    }
+
+    #[test]
+    fn cache_stage_defaults_to_chat_when_absent_from_provider_options() {
+        let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
+        // No cacheStage in provider_options.
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
+        let result = options("openai", &model, "ses-6", &provider_opts);
+
+        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        assert!(
+            key.contains(":chat:"),
+            "cacheStage must default to 'chat' when not provided"
+        );
+    }
+
+    #[test]
+    fn cache_stage_reads_from_provider_options() {
+        let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::from([(
+            "cacheStage".to_string(),
+            serde_json::json!("exec"),
+        )]);
+        let result = options("openai", &model, "ses-7", &provider_opts);
+
+        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        assert!(
+            key.contains(":exec:"),
+            "cacheStage must be read from provider_options"
+        );
+    }
+
+    #[test]
+    fn cache_preset_hash_and_repo_hash_flow_into_cache_key() {
+        let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
+        let provider_opts: HashMap<String, serde_json::Value> = HashMap::from([
+            ("cachePresetHash".to_string(), serde_json::json!("sisyphus_v3")),
+            ("cacheRepoHash".to_string(), serde_json::json!("repo_abc")),
+        ]);
+        let result = options("openai", &model, "ses-8", &provider_opts);
+
+        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        assert!(
+            key.contains(":sisyphus_v3:repo_abc"),
+            "cachePresetHash and cacheRepoHash must appear in cache key, got: {}",
+            key
+        );
+    }
+}

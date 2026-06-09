@@ -945,3 +945,23 @@ mod tests {
         assert_eq!(profile5.stages.len(), 11);
     }
 }
+
+// ── Preset prompt extension (Commit 6) ─────────────────────────────────
+//
+// PresetPromptExtension is defined in agendao-types (no circular dep).
+// Re-exported here so presets can use `crate::scheduler::PresetPromptExtension`.
+pub use agendao_types::PresetPromptExtension;
+
+/// Render a preset prompt extension into the exact scheduler charter text.
+///
+/// The extension already carries fully rendered section bodies in the
+/// correct order; this helper only joins the non-empty bodies.
+pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> String {
+    extension
+        .extra_sections
+        .iter()
+        .map(|(_, body)| body.trim())
+        .filter(|body| !body.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}

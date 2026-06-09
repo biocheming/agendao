@@ -966,6 +966,200 @@ mod cache_fingerprint_tests {
         assert!(SessionPrompt::tool_policy_hash(None).is_none());
     }
 
+    // ── P1.1: snapshot field regression — lock down cache-key and hash fields ──
+
+    #[test]
+    fn snapshot_preserves_closeai_prompt_cache_key_across_generations() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+
+        let stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable.clone(), 100);
+
+        // Same stable fields → same closeai_prompt_cache_key, same generation.
+        let second =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", Some(&first), stable, 200);
+
+        assert_eq!(
+            first.closeai_prompt_cache_key, second.closeai_prompt_cache_key,
+            "closeai_prompt_cache_key must be stable when stable fields are unchanged"
+        );
+        assert_eq!(second.generation, first.generation);
+        assert!(second.evidence.is_none());
+    }
+
+    #[test]
+    fn snapshot_preserves_stable_system_surface_hash_across_generations() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+
+        // Use the same system prompt text for both the fingerprint hash (raw)
+        // and the stable projection. We assert that the stable hash is
+        // populated; we do NOT assert raw != stable because they can be equal
+        // when there are no volatile sections in the system prompt.
+        let system_prompt = "system prompt text";
+
+        let stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some(system_prompt),
+            "tool-source-a".to_string(),
+        );
+
+        let snapshot =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable, 100);
+
+        assert!(
+            !snapshot.stable_system_surface_hash.is_empty(),
+            "stable_system_surface_hash must be populated"
+        );
+        assert!(
+            !snapshot.system_hash.is_empty(),
+            "system_hash must be populated"
+        );
+
+        // The real invariant: same system prompt → same stable hash.
+        let stable2 = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some(system_prompt),
+            "tool-source-a".to_string(),
+        );
+        let snapshot2 = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            Some(&snapshot),
+            stable2,
+            200,
+        );
+
+        assert_eq!(snapshot2.generation, snapshot.generation);
+        assert!(
+            snapshot2.evidence.is_none(),
+            "same system prompt must produce stable hash across snapshot generations"
+        );
+    }
+
+    #[test]
+    fn snapshot_preserves_tool_surface_hashes_across_identical_tool_sets() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint_a = test_cache_fingerprint("sys", "tool-hash-v1", "msg", "params");
+
+        let stable_a = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint_a,
+            Some("system"),
+            "tool-source-hash-v1".to_string(),
+        );
+
+        let snap_a =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+
+        // Same tool source hash → same snapshot tool fields → same generation.
+        let fingerprint_b = test_cache_fingerprint("sys", "tool-hash-v1", "msg-changed", "params");
+        let stable_b = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint_b,
+            Some("system"),
+            "tool-source-hash-v1".to_string(),
+        );
+
+        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            Some(&snap_a),
+            stable_b,
+            200,
+        );
+
+        assert_eq!(
+            snap_a.tool_surface_hash, snap_b.tool_surface_hash,
+            "tool_surface_hash must stay when tools unchanged"
+        );
+        assert_eq!(
+            snap_a.tool_source_surface_hash, snap_b.tool_source_surface_hash,
+            "tool_source_surface_hash must stay when tool source unchanged"
+        );
+        assert_eq!(snap_b.generation, snap_a.generation);
+    }
+
+    #[test]
+    fn snapshot_invalidates_on_tool_source_surface_hash_change() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint = test_cache_fingerprint("sys", "tools-a", "msg", "params");
+
+        let stable_a = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-v1".to_string(),
+        );
+
+        let snap_a =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+
+        let stable_b = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &session.messages,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-v2".to_string(),
+        );
+
+        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            Some(&snap_a),
+            stable_b,
+            200,
+        );
+
+        assert_ne!(
+            snap_a.tool_source_surface_hash, snap_b.tool_source_surface_hash,
+            "tool_source_surface_hash must change when tool source changes"
+        );
+        assert_eq!(
+            snap_b.generation,
+            snap_a.generation.saturating_add(1),
+            "generation must bump when tool source hash changes"
+        );
+    }
+
     fn test_cache_fingerprint(
         system_hash: &str,
         tools_hash: &str,
@@ -1945,6 +2139,16 @@ impl SessionPrompt {
             })
     }
 
+    /// Compute the stable fields used for cache fingerprinting.
+    ///
+    /// # Migration path (Phase 7)
+    ///
+    /// This function currently reads from individual parameters.  In Phase 7
+    /// it will consume a `PromptSurfaceInputs` aggregating all surface inputs
+    /// into a single contract.  The hash rules (`stable_system_surface_hash`,
+    /// `tool_surface_hash`, etc.) are the single authority for cache fingerprint
+    /// semantics and MUST NOT change.  Commit 1 regression tests lock these
+    /// invariants.
     fn prompt_surface_stable_fields(
         session: &Session,
         prompt_messages: &[SessionMessage],

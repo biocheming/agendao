@@ -38,11 +38,13 @@ Classify the request before acting:
 - Verification is mandatory before declaring completion."#
 }
 
-pub fn build_sisyphus_dynamic_prompt(
+pub fn sisyphus_prompt_extension(
     available_agents: &[AvailableAgentMeta],
     available_categories: &[AvailableCategoryMeta],
     skill_list: &[SchedulerSkillRef],
-) -> String {
+) -> crate::scheduler::preset::PresetPromptExtension {
+    use agendao_types::PresetPromptExtension;
+
     let tool_selection = build_tool_selection_table(available_agents, skill_list);
     let explore_section = build_explore_section(available_agents);
     let librarian_section = build_librarian_section(available_agents);
@@ -51,19 +53,12 @@ pub fn build_sisyphus_dynamic_prompt(
     let oracle_section = build_oracle_section(available_agents);
     let task_management = build_task_management_section();
 
-    let mut sections: Vec<String> = Vec::new();
-
-    // --- Role ---
-    sections.push(ROLE_SECTION.to_string());
-
-    // --- Behavior Instructions ---
+    // Build behavior instructions (same content as legacy path).
     let mut behavior = String::from("<Behavior_Instructions>\n");
     behavior.push_str(PHASE_0_INTENT_GATE);
     behavior.push_str("\n\n---\n\n");
     behavior.push_str(PHASE_1_CODEBASE_ASSESSMENT);
     behavior.push_str("\n\n---\n\n");
-
-    // Phase 2A — dynamic tool selection + explore
     behavior.push_str("## Phase 2A - Exploration & Research\n\n");
     if !tool_selection.is_empty() {
         behavior.push_str(&tool_selection);
@@ -78,10 +73,7 @@ pub fn build_sisyphus_dynamic_prompt(
         behavior.push('\n');
     }
     behavior.push_str(PHASE_2A_PARALLEL_RULES);
-
     behavior.push_str("\n\n---\n\n");
-
-    // Phase 2B — implementation + delegation
     behavior.push_str(PHASE_2B_IMPLEMENTATION_HEADER);
     if !category_skills_guide.is_empty() {
         behavior.push_str(&category_skills_guide);
@@ -93,32 +85,41 @@ pub fn build_sisyphus_dynamic_prompt(
     }
     behavior.push_str(PHASE_2B_DELEGATION_STRUCTURE);
     behavior.push_str(PHASE_2B_VERIFICATION);
-
     behavior.push_str("\n\n---\n\n");
     behavior.push_str(PHASE_2C_FAILURE_RECOVERY);
     behavior.push_str("\n\n---\n\n");
     behavior.push_str(PHASE_3_COMPLETION);
     behavior.push_str("\n</Behavior_Instructions>");
-    sections.push(behavior);
 
-    // --- Oracle (conditional) ---
+    let caps = [
+        tool_selection,
+        explore_section,
+        librarian_section,
+        category_skills_guide,
+        delegation_table,
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    let mut ext =
+        PresetPromptExtension::new("sisyphus", "delegation-first execution orchestrator")
+            .with_section("Role", ROLE_SECTION)
+            .with_section("Behavior Instructions", behavior);
     if !oracle_section.is_empty() {
-        sections.push(oracle_section);
+        ext = ext.with_section("Oracle", oracle_section);
     }
-
-    // --- Task Management ---
-    sections.push(task_management);
-
-    // --- Tone & Style ---
-    sections.push(TONE_AND_STYLE.to_string());
-
-    // --- Constraints ---
-    sections.push(format!(
-        "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
-        HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
-    ));
-
-    sections.join("\n\n")
+    ext.with_section("Task Management", task_management)
+        .with_section("Tone & Style", TONE_AND_STYLE)
+        .with_section(
+            "Constraints",
+            format!(
+                "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
+                HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
+            ),
+        )
+        .with_capability(caps)
 }
 
 const ROLE_SECTION: &str = r#"<Role>
@@ -349,9 +350,19 @@ const PHASE_3_COMPLETION: &str = r#"## Phase 3 - Completion
 mod tests {
     use super::*;
 
+    fn render_prompt(
+        agents: &[AvailableAgentMeta],
+        categories: &[AvailableCategoryMeta],
+        skills: &[SchedulerSkillRef],
+    ) -> String {
+        crate::scheduler::preset::render_preset_prompt_extension(&sisyphus_prompt_extension(
+            agents, categories, skills,
+        ))
+    }
+
     #[test]
     fn empty_inputs_produce_valid_prompt() {
-        let prompt = build_sisyphus_dynamic_prompt(&[], &[], &[]);
+        let prompt = render_prompt(&[], &[], &[]);
         assert!(prompt.contains("<Role>"));
         assert!(prompt.contains("Phase 0 - Intent Gate"));
         assert!(prompt.contains("Phase 2B - Implementation"));
@@ -383,7 +394,7 @@ mod tests {
                 cost: "EXPENSIVE".into(),
             },
         ];
-        let prompt = build_sisyphus_dynamic_prompt(&agents, &[], &[]);
+        let prompt = render_prompt(&agents, &[], &[]);
         assert!(prompt.contains("`explore` agent — **CHEAP**"));
         assert!(prompt.contains("`oracle` agent — **EXPENSIVE**"));
         assert!(prompt.contains("Explore Agent = Contextual Grep"));
@@ -405,7 +416,7 @@ mod tests {
                 description: "Server logic, APIs, databases".into(),
             },
         ];
-        let prompt = build_sisyphus_dynamic_prompt(&[], &categories, &[]);
+        let prompt = render_prompt(&[], &categories, &[]);
         assert!(prompt.contains("`frontend` — UI components"));
         assert!(prompt.contains("`backend` — Server logic"));
         assert!(prompt.contains("Category + Skills Delegation System"));
@@ -418,14 +429,14 @@ mod tests {
             SchedulerSkillRef::from("commit"),
             SchedulerSkillRef::from("review-pr"),
         ];
-        let prompt = build_sisyphus_dynamic_prompt(&[], &[], &skills);
+        let prompt = render_prompt(&[], &[], &skills);
         assert!(prompt.contains("<available_skills compact=\"true\">"));
         assert!(prompt.contains("general: commit, review-pr"));
     }
 
     #[test]
     fn sisyphus_prompt_carries_omo_completion_and_task_tracking_rules() {
-        let prompt = build_sisyphus_dynamic_prompt(&[], &[], &[]);
+        let prompt = render_prompt(&[], &[], &[]);
         assert!(
             prompt.contains("Task Management (CRITICAL)")
                 || prompt.contains("Todo Management (CRITICAL)")
@@ -438,5 +449,77 @@ mod tests {
             prompt.contains("Default Bias: DELEGATE. WORK YOURSELF ONLY WHEN IT IS SUPER SIMPLE.")
         );
         assert!(prompt.contains("If Oracle is still running, end your response and wait for the completion notification first"));
+    }
+
+    // ── Commit 6: extension regression ───────────────────────────────
+
+    #[test]
+    fn sisyphus_extension_has_correct_identity_and_role() {
+        let ext = sisyphus_prompt_extension(&[], &[], &[]);
+        assert_eq!(ext.preset_name, "sisyphus");
+        assert!(ext.role_summary.contains("delegation-first"));
+    }
+
+    #[test]
+    fn sisyphus_extension_has_key_sections() {
+        let ext = sisyphus_prompt_extension(&[], &[], &[]);
+        let titles: Vec<&str> = ext.extra_sections.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(titles.contains(&"Role"), "must have Role section");
+        assert!(titles.contains(&"Behavior Instructions"), "must have Behavior Instructions");
+        assert!(titles.contains(&"Tone & Style"), "must have Tone & Style");
+        assert!(titles.contains(&"Constraints"), "must have Constraints");
+        assert!(ext.extra_sections.len() >= 5);
+    }
+
+    #[test]
+    fn sisyphus_extension_capability_populated_when_agents_present() {
+        let agent = AvailableAgentMeta {
+            name: "explore".to_string(),
+            description: "codebase explorer".to_string(),
+            mode: String::new(),
+            cost: String::new(),
+        };
+        let ext = sisyphus_prompt_extension(&[agent], &[], &[]);
+        assert!(
+            ext.capability_projection.is_some(),
+            "capability must be populated when agents available"
+        );
+    }
+
+    #[test]
+    fn sisyphus_extension_render_matches_legacy_prompt_text() {
+        let agents = vec![
+            AvailableAgentMeta {
+                name: "explore".into(),
+                description: "Exploration subagent for searching code.".into(),
+                mode: "subagent".into(),
+                cost: "CHEAP".into(),
+            },
+            AvailableAgentMeta {
+                name: "oracle".into(),
+                description: "High-IQ reasoning specialist.".into(),
+                mode: "subagent".into(),
+                cost: "EXPENSIVE".into(),
+            },
+        ];
+        let categories = vec![AvailableCategoryMeta {
+            name: "frontend".into(),
+            description: "UI components, styling, browser APIs".into(),
+        }];
+        let skills = vec![SchedulerSkillRef::from("review-pr")];
+        let rendered = crate::scheduler::preset::render_preset_prompt_extension(
+            &sisyphus_prompt_extension(&agents, &categories, &skills),
+        );
+        let expected = [
+            "<Role>",
+            "<Behavior_Instructions>",
+            "</Behavior_Instructions>",
+            "<Tone_and_Style>",
+            "<Constraints>",
+            "Oracle_Usage",
+        ];
+        for needle in expected {
+            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+        }
     }
 }

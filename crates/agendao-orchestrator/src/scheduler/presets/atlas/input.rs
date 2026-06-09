@@ -8,7 +8,7 @@ use crate::scheduler::{
     SchedulerSynthesisStageInput,
 };
 
-use super::build_atlas_dynamic_prompt;
+use super::atlas_prompt_extension;
 
 fn push_optional_section(sections: &mut Vec<String>, title: &str, value: Option<&str>) {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
@@ -85,11 +85,12 @@ Keep this compact, task-ledger-first, and grounded in the current plan rather th
 - Reach synthesis only when every required task is complete with evidence or a concrete blocker is confirmed."
             .to_string(),
     );
-    sections.push(build_atlas_dynamic_prompt(
+    let ext = atlas_prompt_extension(
         input.available_agents,
         input.available_categories,
         input.skill_list,
-    ));
+    );
+    sections.push(crate::scheduler::preset::render_preset_prompt_extension(&ext));
     sections.push(SHARED_EXECUTION_EVIDENCE_CONTRACT.to_string());
     sections.join("\n\n")
 }
