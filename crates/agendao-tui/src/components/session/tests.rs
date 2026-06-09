@@ -17,7 +17,7 @@ use reratui::{
 
 use crate::{
     components::Prompt,
-    context::{AppContext, Message, MessagePart, MessageRole, TokenUsage},
+    context::{AppContext, Message, MessagePart, MessageRole, SessionStatus, TokenUsage},
     ui::BufferSurface,
 };
 use std::collections::HashSet;
@@ -75,6 +75,16 @@ fn long_block(label: &str, repeat: usize) -> String {
     )
     .collect::<Vec<_>>()
     .join(" ")
+}
+
+fn buffer_text(buffer: &Buffer) -> String {
+    let width = buffer.area.width as usize;
+    buffer
+        .content
+        .chunks(width)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn multiline_reasoning_block(label: &str, lines: usize) -> String {
@@ -268,6 +278,37 @@ fn session_view_renders_to_buffer_surface() {
         .count();
     assert!(rendered > 0);
     assert!(cursor.is_some());
+}
+
+#[test]
+fn session_view_keeps_non_empty_prompt_input_visible_while_running() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Visible Prompt".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_status(&session_id, SessionStatus::Running);
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let mut prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    prompt.set_input("session hidden text".to_string());
+
+    let area = Rect::new(0, 0, 78, 24);
+    let mut buffer = Buffer::empty(area);
+    {
+        let mut surface = BufferSurface::new(&mut buffer);
+        view.render(&context, &mut surface, area, &prompt);
+    }
+
+    let rendered = buffer_text(&buffer);
+    assert!(
+        rendered.contains("session hidden text"),
+        "session prompt input should remain visible while running:\n{rendered}"
+    );
 }
 
 #[test]

@@ -293,7 +293,11 @@ impl Prompt {
         let max_content_lines = inner_area
             .height
             .saturating_sub(if show_activity_row { 3 } else { 2 })
-            .saturating_sub(if self.return_flow_text.is_some() { 1 } else { 0 })
+            .saturating_sub(if self.return_flow_text.is_some() {
+                1
+            } else {
+                0
+            })
             .saturating_sub(PROMPT_BLOCK_PAD_TOP)
             .saturating_sub(PROMPT_BLOCK_PAD_BOTTOM)
             .max(PROMPT_MIN_INPUT_LINES);
@@ -680,7 +684,9 @@ impl Prompt {
     }
 
     pub fn set_attachment_status_hint(&mut self, hint: Option<String>) {
-        self.attachment_status_hint = hint.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        self.attachment_status_hint = hint
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
     }
 
     pub fn set_return_flow_text(&mut self, text: Option<String>) {
@@ -742,7 +748,15 @@ impl Prompt {
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM)
             .saturating_add(if self.shows_activity_row() { 3 } else { 2 })
-            .saturating_add(if self.return_flow_text.is_some() { 1 } else { 0 })
+            .saturating_add(if self.return_flow_text.is_some() {
+                1
+            } else {
+                0
+            })
+            // `render()` draws an outer bordered card, so callers that size the
+            // prompt from `desired_height()` need the full surface height, not
+            // just the inner content rows.
+            .saturating_add(2)
     }
 
     fn shows_activity_row(&self) -> bool {
@@ -2159,7 +2173,7 @@ mod tests {
     #[test]
     fn desired_height_preserves_two_line_input_when_idle_and_empty() {
         with_isolated_prompt(|prompt| {
-            assert_eq!(prompt.desired_height(80), 5);
+            assert_eq!(prompt.desired_height(80), 7);
         });
     }
 
@@ -2195,7 +2209,7 @@ mod tests {
                 });
             }
 
-            assert_eq!(prompt.desired_height(80), 5);
+            assert_eq!(prompt.desired_height(80), 7);
         });
     }
 
@@ -2289,7 +2303,10 @@ mod tests {
         prompt.recompute_suggestions();
         let theme = Theme::default();
         let hint = line_text(prompt.render_secondary_hint_line(&theme));
-        assert!(hint.contains("2 images"), "attachment hint should be present");
+        assert!(
+            hint.contains("2 images"),
+            "attachment hint should be present"
+        );
         assert!(hint.contains("/mcp"), "slash hint should be present");
     }
 }
