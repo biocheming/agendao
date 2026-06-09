@@ -223,6 +223,7 @@ impl App {
                                     );
                                     return Ok(());
                                 };
+                                self.handle_prompt_route_change();
                                 self.context.navigate(Route::Session {
                                     session_id: session.id.clone(),
                                 });
@@ -288,8 +289,7 @@ impl App {
             UiActionId::SubmitPrompt => self.submit_prompt()?,
             UiActionId::VoiceInput => self.capture_voice_prompt()?,
             UiActionId::ClearPrompt => {
-                self.prompt.clear();
-                self.clear_pending_prompt_parts();
+                self.discard_prompt_draft();
             }
             UiActionId::PasteClipboard => self.paste_clipboard_to_prompt(),
             UiActionId::CopyPrompt => self.copy_prompt_to_clipboard(),

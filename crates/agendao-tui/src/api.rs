@@ -1904,6 +1904,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     #[test]
     fn local_runtime_get_messages_reads_shared_authority() {
         let paths = test_local_paths();
@@ -1979,6 +1980,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local-server")]
     #[test]
     fn local_runtime_accepts_structured_prompt_parts() {
         let paths = test_local_paths();
@@ -2044,6 +2046,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local-server")]
     #[test]
     fn local_runtime_lists_modes_and_agents_without_http() {
         let paths = test_local_paths();

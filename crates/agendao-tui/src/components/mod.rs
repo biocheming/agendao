@@ -6,6 +6,7 @@ mod markdown;
 mod message_palette;
 mod permission;
 mod prompt;
+pub(crate) mod prompt_return_flow;
 mod question;
 mod revert_card;
 pub mod semantic_highlight;
@@ -22,6 +23,7 @@ mod toast;
 mod todo_item;
 mod tool_call;
 mod tool_views;
+pub(crate) mod usage_resolver;
 
 pub use dialogs::{
     provider_from_connect_draft, Agent, AgentSelectDialog, AlertDialog, CommandPalette,

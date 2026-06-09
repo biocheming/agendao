@@ -12,6 +12,7 @@ use super::markdown::MarkdownRenderer;
 use crate::{context::Message, theme::Theme};
 
 pub const ASSISTANT_MARKER: &str = "▶ ";
+const STAGE_MARKER: &str = "▸ ";
 const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
 const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
 
@@ -129,7 +130,7 @@ pub(super) fn render_reasoning_part_with_width(
 
     let header_style = Style::default()
         .fg(theme.text_muted)
-        .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+        .add_modifier(Modifier::ITALIC);
     let body_prefix_style = Style::default().fg(theme.border_subtle);
     let body_style = Style::default()
         .fg(theme.text_muted)
@@ -277,7 +278,7 @@ fn render_stage_header(
         Span::styled(format!("{} ", decoration.icon), Style::default().fg(accent)),
         Span::styled(
             format!("{} · {}", prettify_token(profile), decoration.label),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            Style::default().fg(accent),
         ),
     ];
 
@@ -288,7 +289,13 @@ fn render_stage_header(
         ));
     }
 
-    let separator = "─".repeat(40);
+    // Shorter, lighter separator — stage header is a process marker,
+    // not a main title; the separator should not dominate the feed.
+    let separator = format!(
+        "{}{}",
+        "─".repeat(8),
+        std::iter::repeat("┄").take(3).collect::<String>()
+    );
 
     vec![
         Line::from(title_spans),
@@ -327,11 +334,11 @@ fn render_scheduler_stage_part(
             Span::styled("◦ ", Style::default().fg(theme.info)),
             Span::styled(
                 card.title.clone(),
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.info),
             ),
         ]));
         append_decision_card_body(&mut lines, card, theme, max_width);
-        return apply_assistant_marker(lines, marker_color);
+        return apply_stage_marker(lines, marker_color);
     }
 
     let cleaned = strip_think_tags(body);
@@ -339,7 +346,7 @@ fn render_scheduler_stage_part(
     let body_lines = renderer.to_lines(&cleaned, max_width);
     lines.extend(body_lines);
 
-    apply_assistant_marker(lines, marker_color)
+    apply_stage_marker(lines, marker_color)
 }
 
 struct DecisionField {
@@ -362,6 +369,7 @@ struct DecisionCard {
 
 struct DecisionRenderSpec {
     show_header_divider: bool,
+    #[allow(dead_code)]
     field_label_emphasis: String,
     section_spacing: String,
 }
@@ -396,13 +404,13 @@ fn render_decision_stage_part(
         Span::styled("◦ ", Style::default().fg(theme.info)),
         Span::styled(
             decision.title.clone(),
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.info),
         ),
     ]));
 
     append_decision_card_body(&mut lines, decision, theme, max_width);
 
-    Some(apply_assistant_marker(lines, marker_color))
+    Some(apply_stage_marker(lines, marker_color))
 }
 
 // ---------------------------------------------------------------------------
@@ -413,16 +421,10 @@ fn route_field_line(
     label: &str,
     value: &str,
     theme: &Theme,
-    spec: &DecisionRenderSpec,
+    _spec: &DecisionRenderSpec,
     value_style: Style,
 ) -> Line<'static> {
-    let label_style = if spec.field_label_emphasis == "bold" {
-        Style::default()
-            .fg(theme.primary)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.primary)
-    };
+    let label_style = Style::default().fg(theme.primary);
     Line::from(vec![
         Span::styled("• ", Style::default().fg(theme.border_active)),
         Span::styled(format!("{label}: "), label_style),
@@ -453,9 +455,7 @@ fn append_decision_card_body(
             Span::styled("✦ ", Style::default().fg(theme.secondary)),
             Span::styled(
                 section.title,
-                Style::default()
-                    .fg(theme.secondary)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.secondary),
             ),
         ]));
         let renderer = MarkdownRenderer::new(theme.clone());
@@ -469,16 +469,10 @@ fn append_decision_card_body(
 
 fn decision_field_style(tone: Option<&str>, value: &str, theme: &Theme) -> Style {
     match tone {
-        Some("success") => Style::default()
-            .fg(theme.success)
-            .add_modifier(Modifier::BOLD),
-        Some("warning") => Style::default()
-            .fg(theme.warning)
-            .add_modifier(Modifier::BOLD),
-        Some("error") => Style::default()
-            .fg(theme.error)
-            .add_modifier(Modifier::BOLD),
-        Some("info") => Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+        Some("success") => Style::default().fg(theme.success),
+        Some("warning") => Style::default().fg(theme.warning),
+        Some("error") => Style::default().fg(theme.error),
+        Some("info") => Style::default().fg(theme.info),
         Some("muted") => Style::default().fg(theme.text_muted),
         Some("status") => match value.to_ascii_lowercase().as_str() {
             "done" => Style::default()
@@ -741,12 +735,22 @@ fn parse_step_limit(loop_budget: &str) -> Option<u64> {
 }
 
 fn apply_assistant_marker(lines: Vec<Line<'static>>, marker_color: Color) -> Vec<Line<'static>> {
+    apply_marker(lines, ASSISTANT_MARKER, marker_color)
+}
+
+/// Apply a lighter `▸ ` marker for stage/process content so it does not
+/// compete visually with the assistant final `▶ ` marker.
+fn apply_stage_marker(lines: Vec<Line<'static>>, marker_color: Color) -> Vec<Line<'static>> {
+    apply_marker(lines, STAGE_MARKER, marker_color)
+}
+
+fn apply_marker(lines: Vec<Line<'static>>, marker: &'static str, marker_color: Color) -> Vec<Line<'static>> {
     lines
         .into_iter()
         .enumerate()
         .map(|(idx, line)| {
-            let marker = if idx == 0 { ASSISTANT_MARKER } else { "  " };
-            let mut spans = vec![Span::styled(marker, Style::default().fg(marker_color))];
+            let prefix = if idx == 0 { marker } else { "  " };
+            let mut spans = vec![Span::styled(prefix, Style::default().fg(marker_color))];
             spans.extend(line.spans);
             Line::from(spans)
         })
@@ -1330,6 +1334,26 @@ mod tests {
         loop_budget: Option<&'a str>,
     }
 
+    fn make_assistant(content: &str) -> Message {
+        Message {
+            id: "msg".to_string(),
+            role: MessageRole::Assistant,
+            content: content.to_string(),
+            created_at: Utc::now(),
+            agent: None,
+            model: None,
+            mode: None,
+            finish: None,
+            error: None,
+            completed_at: None,
+            cost: 0.0,
+            tokens: TokenUsage::default(),
+            metadata: None,
+            multimodal: None,
+            parts: Vec::new(),
+        }
+    }
+
     fn message_with_stage(stage: &str) -> Message {
         message_with_stage_meta(stage, None, None, None)
     }
@@ -1501,15 +1525,17 @@ mod tests {
             .find(|line| line_text(line).contains("Outcome: Orchestrate"))
             .expect("outcome line should exist");
         assert_eq!(outcome_line.spans[2].style.fg, Some(theme.primary));
-        assert!(outcome_line.spans[2]
+        assert!(!outcome_line.spans[2]
             .style
             .add_modifier
-            .contains(Modifier::BOLD));
+            .contains(Modifier::BOLD),
+            "C1: decision field labels should not use BOLD");
         assert_eq!(outcome_line.spans[3].style.fg, Some(theme.success));
-        assert!(outcome_line.spans[3]
+        assert!(!outcome_line.spans[3]
             .style
             .add_modifier
-            .contains(Modifier::BOLD));
+            .contains(Modifier::BOLD),
+            "C1: decision field values should not use BOLD");
         assert!(rendered
             .lines
             .iter()
@@ -1533,7 +1559,8 @@ mod tests {
             .find(|line| line_text(line).contains("Response"))
             .expect("response heading should exist");
         assert_eq!(heading.spans[2].style.fg, Some(theme.secondary));
-        assert!(heading.spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!heading.spans[2].style.add_modifier.contains(Modifier::BOLD),
+            "C1: decision card section headings should not use BOLD");
         assert!(rendered
             .lines
             .iter()
@@ -1884,5 +1911,61 @@ mod tests {
             all_text.contains("Ctrl+J to view"),
             "should show keybind hint"
         );
+    }
+
+    // ── C1: output priority ordering ──────────────────────────────
+
+    #[test]
+    fn plain_assistant_final_keeps_bold_marker() {
+        let message = make_assistant("This is the main answer.");
+        let rendered = render_message_text_part(&message, "This is the main answer.", &Theme::default(), Color::Cyan);
+        let first_line = line_text(&rendered.lines[0]);
+        assert!(first_line.contains("▶"), "assistant final must have ▶ marker");
+        assert!(!first_line.contains("▸"), "assistant final must not use stage marker");
+    }
+
+    /// Assert a [`Style`] does **not** contain [`Modifier::BOLD`].
+    fn assert_not_bold(style: Style, context: &str) {
+        assert!(
+            !style.add_modifier.contains(Modifier::BOLD),
+            "{context}: expected no BOLD modifier, got {:?}",
+            style.add_modifier
+        );
+    }
+
+    #[test]
+    fn reasoning_header_is_italic_only_without_bold() {
+        let theme = Theme::default();
+        let rendered = render_reasoning_part_with_width(
+            "Here is my reasoning process.",
+            &theme,
+            false,
+            2,
+            None,
+        );
+        assert!(!rendered.lines.is_empty(), "reasoning should have lines");
+        // First span of header line carries the intended style.
+        let header_span = &rendered.lines[0].spans[0];
+        assert!(header_span.content.contains("reasoning"), "header text should contain 'reasoning'");
+        assert_not_bold(header_span.style, "reasoning header");
+    }
+
+    #[test]
+    fn stage_header_has_no_bold_in_title_spans() {
+        let theme = Theme::default();
+        let header_lines = render_stage_header("plan", "synthesis", Some(1), Some(3), &theme);
+        assert_eq!(header_lines.len(), 2, "stage header should have title + separator");
+        // The second span of the title line is the label ("plan · Synthesis") —
+        // it should carry the accent colour but no BOLD.
+        let label_span = &header_lines[0].spans[1];
+        assert!(label_span.content.contains("Synthesis"), "should contain stage label");
+        assert_not_bold(label_span.style, "stage title label");
+        // Separator is shorter than the old 40-char version.
+        let separator_line = line_text(&header_lines[1]);
+        assert!(
+            separator_line.chars().filter(|c| *c == '─' || *c == '┄').count() < 20,
+            "stage separator should be shorter than before (< 20 chars)"
+        );
+        assert!(!line_text(&header_lines[0]).contains("▶"), "stage header must not use assistant marker");
     }
 }

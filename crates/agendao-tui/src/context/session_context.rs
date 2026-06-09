@@ -114,6 +114,65 @@ pub enum MessagePart {
     },
 }
 
+/// Trait abstracting over message types so [`fold_messages`] can work
+/// without depending on a concrete message struct.
+///
+/// This lives here, next to [`Message`], rather than in the resolver
+/// module so the resolver remains coupled only to `SessionUsageBooks`,
+/// `SessionUsage`, and `MessageFoldUsage`.
+pub trait UsageMessage {
+    fn is_assistant(&self) -> bool;
+    fn cost(&self) -> f64;
+    fn token_sum(&self) -> u64;
+    fn cache_read_tokens(&self) -> u64;
+    fn cache_miss_tokens(&self) -> u64;
+    fn cache_write_tokens(&self) -> u64;
+}
+
+/// Build a [`super::MessageFoldUsage`] from a slice of messages by
+/// folding assistant-role messages only.
+pub fn fold_messages(
+    messages: &[impl UsageMessage],
+) -> crate::components::usage_resolver::MessageFoldUsage {
+    let mut fold = crate::components::usage_resolver::MessageFoldUsage::default();
+    for m in messages {
+        if m.is_assistant() {
+            fold.total_cost += m.cost();
+            fold.total_tokens += m.token_sum();
+            fold.cache_read_tokens += m.cache_read_tokens();
+            fold.cache_miss_tokens += m.cache_miss_tokens();
+            fold.cache_write_tokens += m.cache_write_tokens();
+        }
+    }
+    fold
+}
+
+impl UsageMessage for Message {
+    fn is_assistant(&self) -> bool {
+        matches!(self.role, MessageRole::Assistant)
+    }
+
+    fn cost(&self) -> f64 {
+        self.cost
+    }
+
+    fn token_sum(&self) -> u64 {
+        self.tokens.input + self.tokens.output + self.tokens.reasoning
+    }
+
+    fn cache_read_tokens(&self) -> u64 {
+        self.tokens.cache_read
+    }
+
+    fn cache_miss_tokens(&self) -> u64 {
+        self.tokens.cache_miss
+    }
+
+    fn cache_write_tokens(&self) -> u64 {
+        self.tokens.cache_write
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SessionContext {
     pub sessions: HashMap<String, Session>,
