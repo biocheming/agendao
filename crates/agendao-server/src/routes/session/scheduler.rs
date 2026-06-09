@@ -1213,8 +1213,7 @@ fn scheduler_context_allowed_message_ids(exec_ctx: &OrchestratorExecutionContext
     exec_ctx
         .metadata
         .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
-        .and_then(SessionContinuityPacket::from_value)
-        .map(|packet| packet.allowed_message_ids())
+        .and_then(agendao_session::prompt::continuity_packet_allowed_message_ids)
         .unwrap_or_default()
 }
 

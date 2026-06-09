@@ -477,4 +477,15 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn atlas_extension_render_includes_typed_contract_fields() {
+        let rendered = crate::scheduler::preset::render_preset_prompt_extension(
+            &atlas_prompt_extension(&[], &[], &[]),
+        );
+
+        assert!(rendered.contains("## Preset Role Summary"));
+        assert!(rendered.contains("coordination / delegation / verification orchestrator"));
+        assert!(rendered.contains("## Capability Projection"));
+    }
 }

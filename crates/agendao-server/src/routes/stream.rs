@@ -17,7 +17,7 @@ use crate::{ApiError, ServerState};
 use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_provider::ToolDefinition;
 use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
-use agendao_session::{MessageRole as SessionMessageRole, Session};
+use agendao_session::{EnvironmentContext, MessageRole as SessionMessageRole, Session, SystemPrompt};
 
 use super::permission::request_permission;
 use super::provider_diagnostics::attach_provider_diagnostic_from_error;
@@ -407,6 +407,7 @@ pub(crate) async fn stream_message(
         let output_block_hook: Option<agendao_session::prompt::OutputBlockHook> =
             { Some(sse_output_block_hook(stream_tx.clone())) };
 
+        let stream_workdir = session.record().directory.clone();
         if let Err(error) = prompt_runner
             .prompt_with_update_hook(
                 input,
@@ -414,6 +415,14 @@ pub(crate) async fn stream_message(
                 agendao_session::prompt::PromptRequestContext {
                     provider: stream_provider,
                     system_prompt: stream_system_prompt.clone(),
+                    env_context: Some(SystemPrompt::environment(
+                        &EnvironmentContext::from_current(
+                            stream_model_id.clone(),
+                            stream_provider_id.clone(),
+                            stream_workdir,
+                        ),
+                    )),
+                    preset_extension: None,
                     memory_prefetch: None,
                     tools: tool_defs,
                     tool_source_digests,

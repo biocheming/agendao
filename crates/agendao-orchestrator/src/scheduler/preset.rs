@@ -291,6 +291,58 @@ pub fn scheduler_orchestrator_from_plan(
     SchedulerProfileOrchestrator::new(plan, tool_runner)
 }
 
+/// Build the typed preset prompt extension for a resolved scheduler plan.
+///
+/// This is the single authority for projecting scheduler preset identity,
+/// capability summary, and extra sections into a `PresetPromptExtension`
+/// without flattening the surface into an already-rendered charter string.
+pub fn scheduler_preset_extension_from_plan(
+    plan: &SchedulerProfilePlan,
+) -> Option<PresetPromptExtension> {
+    let preset = plan
+        .orchestrator
+        .as_deref()
+        .and_then(|value| value.parse::<SchedulerPresetKind>().ok())?;
+
+    let execution_skills =
+        plan.effective_skill_list(Some(crate::scheduler::SchedulerStageKind::ExecutionOrchestration));
+
+    Some(match preset {
+        SchedulerPresetKind::Sisyphus => {
+            crate::scheduler::presets::sisyphus_prompt_extension(
+                &plan.available_agents,
+                &plan.available_categories,
+                execution_skills,
+            )
+        }
+        SchedulerPresetKind::Atlas => crate::scheduler::presets::atlas_prompt_extension(
+            &plan.available_agents,
+            &plan.available_categories,
+            execution_skills,
+        ),
+        SchedulerPresetKind::Hephaestus => {
+            crate::scheduler::presets::hephaestus_prompt_extension(
+                &plan.available_agents,
+                &plan.available_categories,
+                execution_skills,
+            )
+        }
+        SchedulerPresetKind::Prometheus => PresetPromptExtension::new(
+            "prometheus",
+            "planning-first orchestration and handoff workflow",
+        )
+        .with_tone_augment(
+            "Preserve planner discipline: interview before planning, review before handoff, and never pretend execution completed unless downstream stages actually ran.",
+        ),
+        SchedulerPresetKind::Verifier => {
+            PresetPromptExtension::new("verifier", "verification-focused review workflow")
+                .with_tone_augment(
+                    "Bias toward evidence review, contradiction surfacing, and explicit uncertainty when proof is incomplete.",
+                )
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -944,6 +996,46 @@ mod tests {
         // 11 stages: request-analysis + 5×(execution-orchestration, synthesis)
         assert_eq!(profile5.stages.len(), 11);
     }
+
+    #[test]
+    fn render_preset_prompt_extension_consumes_all_typed_fields() {
+        let rendered = super::render_preset_prompt_extension(
+            &super::PresetPromptExtension::new("atlas", "coordination orchestrator")
+                .with_section("Identity", "<identity>Atlas</identity>")
+                .with_capability("Agents: explore, review.")
+                .with_tone_augment("Be concise. No flattery."),
+        );
+
+        assert!(rendered.contains("## Preset Role Summary"));
+        assert!(rendered.contains("coordination orchestrator"));
+        assert!(rendered.contains("<identity>Atlas</identity>"));
+        assert!(rendered.contains("## Capability Projection"));
+        assert!(rendered.contains("Agents: explore, review."));
+        assert!(rendered.contains("## Tone Augment"));
+        assert!(rendered.contains("Be concise. No flattery."));
+    }
+
+    #[test]
+    fn scheduler_preset_extension_from_plan_builds_sisyphus_extension() {
+        let mut profile = SchedulerProfileConfig {
+            orchestrator: Some("sisyphus".to_string()),
+            ..Default::default()
+        };
+        profile.available_agents = vec![crate::scheduler::AvailableAgentMeta {
+            name: "explorer".to_string(),
+            description: "Exploration agent".to_string(),
+            mode: "subagent".to_string(),
+            cost: "CHEAP".to_string(),
+        }];
+        let plan = scheduler_plan_from_profile(Some("sisyphus".to_string()), &profile).unwrap();
+
+        let ext = scheduler_preset_extension_from_plan(&plan).expect("extension should exist");
+
+        assert_eq!(ext.preset_name, "sisyphus");
+        assert_eq!(ext.role_summary, "delegation-first execution orchestrator");
+        assert!(!ext.extra_sections.is_empty());
+        assert!(ext.extra_sections.iter().any(|(_, body)| !body.trim().is_empty()));
+    }
 }
 
 // ── Preset prompt extension (Commit 6) ─────────────────────────────────
@@ -955,13 +1047,44 @@ pub use agendao_types::PresetPromptExtension;
 /// Render a preset prompt extension into the exact scheduler charter text.
 ///
 /// The extension already carries fully rendered section bodies in the
-/// correct order; this helper only joins the non-empty bodies.
+/// correct order. This helper is the single renderer for the typed
+/// contract, so every populated field must become model-visible text.
 pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> String {
-    extension
-        .extra_sections
-        .iter()
-        .map(|(_, body)| body.trim())
-        .filter(|body| !body.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut sections = Vec::new();
+
+    let role_summary = extension.role_summary.trim();
+    if !role_summary.is_empty() {
+        sections.push(format!("## Preset Role Summary\n{role_summary}"));
+    }
+
+    sections.extend(
+        extension
+            .extra_sections
+            .iter()
+            .map(|(_, body)| body.trim())
+            .filter(|body| !body.is_empty())
+            .map(str::to_string),
+    );
+
+    if let Some(capability_projection) = extension
+        .capability_projection
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!(
+            "## Capability Projection\n{capability_projection}"
+        ));
+    }
+
+    if let Some(tone_augment) = extension
+        .tone_augment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Tone Augment\n{tone_augment}"));
+    }
+
+    sections.join("\n\n")
 }

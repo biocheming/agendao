@@ -638,12 +638,10 @@ impl SessionPrompt {
     /// # Migration path (Phase 5 → 7)
     ///
     /// The packet construction and filtering rules remain the single
-    /// authority for continuity semantics.  In Phase 6, the packet will
-    /// be projected into a `PromptReflowContinuityView` via
-    /// `PromptReflowContinuityView::from_packet()` so that session
-    /// prompt, scheduler hydrate, and diagnostics all consume the same
-    /// explanation surface.  The packet construction itself does NOT
-    /// change — only the consumers' interpretation path.
+    /// authority for continuity semantics. Session / scheduler /
+    /// diagnostics readers consume it through `PromptReflowContext::build()`;
+    /// the packet construction itself does NOT change — only the shared
+    /// interpretation path.
     fn build_compaction_continuity_packet(
         session: &Session,
         messages: &[SessionMessage],
