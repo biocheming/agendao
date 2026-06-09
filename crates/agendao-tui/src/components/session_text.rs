@@ -332,10 +332,7 @@ fn render_scheduler_stage_part(
     if let Some(card) = generic_stage_card_from_text(body) {
         lines.push(Line::from(vec![
             Span::styled("◦ ", Style::default().fg(theme.info)),
-            Span::styled(
-                card.title.clone(),
-                Style::default().fg(theme.info),
-            ),
+            Span::styled(card.title.clone(), Style::default().fg(theme.info)),
         ]));
         append_decision_card_body(&mut lines, card, theme, max_width);
         return apply_stage_marker(lines, marker_color);
@@ -402,10 +399,7 @@ fn render_decision_stage_part(
 
     lines.push(Line::from(vec![
         Span::styled("◦ ", Style::default().fg(theme.info)),
-        Span::styled(
-            decision.title.clone(),
-            Style::default().fg(theme.info),
-        ),
+        Span::styled(decision.title.clone(), Style::default().fg(theme.info)),
     ]));
 
     append_decision_card_body(&mut lines, decision, theme, max_width);
@@ -453,10 +447,7 @@ fn append_decision_card_body(
         }
         lines.push(Line::from(vec![
             Span::styled("✦ ", Style::default().fg(theme.secondary)),
-            Span::styled(
-                section.title,
-                Style::default().fg(theme.secondary),
-            ),
+            Span::styled(section.title, Style::default().fg(theme.secondary)),
         ]));
         let renderer = MarkdownRenderer::new(theme.clone());
         for line in renderer.to_lines(&section.body, max_width) {
@@ -744,7 +735,11 @@ fn apply_stage_marker(lines: Vec<Line<'static>>, marker_color: Color) -> Vec<Lin
     apply_marker(lines, STAGE_MARKER, marker_color)
 }
 
-fn apply_marker(lines: Vec<Line<'static>>, marker: &'static str, marker_color: Color) -> Vec<Line<'static>> {
+fn apply_marker(
+    lines: Vec<Line<'static>>,
+    marker: &'static str,
+    marker_color: Color,
+) -> Vec<Line<'static>> {
     lines
         .into_iter()
         .enumerate()
@@ -1525,17 +1520,21 @@ mod tests {
             .find(|line| line_text(line).contains("Outcome: Orchestrate"))
             .expect("outcome line should exist");
         assert_eq!(outcome_line.spans[2].style.fg, Some(theme.primary));
-        assert!(!outcome_line.spans[2]
-            .style
-            .add_modifier
-            .contains(Modifier::BOLD),
-            "C1: decision field labels should not use BOLD");
+        assert!(
+            !outcome_line.spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "C1: decision field labels should not use BOLD"
+        );
         assert_eq!(outcome_line.spans[3].style.fg, Some(theme.success));
-        assert!(!outcome_line.spans[3]
-            .style
-            .add_modifier
-            .contains(Modifier::BOLD),
-            "C1: decision field values should not use BOLD");
+        assert!(
+            !outcome_line.spans[3]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "C1: decision field values should not use BOLD"
+        );
         assert!(rendered
             .lines
             .iter()
@@ -1559,8 +1558,10 @@ mod tests {
             .find(|line| line_text(line).contains("Response"))
             .expect("response heading should exist");
         assert_eq!(heading.spans[2].style.fg, Some(theme.secondary));
-        assert!(!heading.spans[2].style.add_modifier.contains(Modifier::BOLD),
-            "C1: decision card section headings should not use BOLD");
+        assert!(
+            !heading.spans[2].style.add_modifier.contains(Modifier::BOLD),
+            "C1: decision card section headings should not use BOLD"
+        );
         assert!(rendered
             .lines
             .iter()
@@ -1918,10 +1919,21 @@ mod tests {
     #[test]
     fn plain_assistant_final_keeps_bold_marker() {
         let message = make_assistant("This is the main answer.");
-        let rendered = render_message_text_part(&message, "This is the main answer.", &Theme::default(), Color::Cyan);
+        let rendered = render_message_text_part(
+            &message,
+            "This is the main answer.",
+            &Theme::default(),
+            Color::Cyan,
+        );
         let first_line = line_text(&rendered.lines[0]);
-        assert!(first_line.contains("▶"), "assistant final must have ▶ marker");
-        assert!(!first_line.contains("▸"), "assistant final must not use stage marker");
+        assert!(
+            first_line.contains("▶"),
+            "assistant final must have ▶ marker"
+        );
+        assert!(
+            !first_line.contains("▸"),
+            "assistant final must not use stage marker"
+        );
     }
 
     /// Assert a [`Style`] does **not** contain [`Modifier::BOLD`].
@@ -1946,7 +1958,10 @@ mod tests {
         assert!(!rendered.lines.is_empty(), "reasoning should have lines");
         // First span of header line carries the intended style.
         let header_span = &rendered.lines[0].spans[0];
-        assert!(header_span.content.contains("reasoning"), "header text should contain 'reasoning'");
+        assert!(
+            header_span.content.contains("reasoning"),
+            "header text should contain 'reasoning'"
+        );
         assert_not_bold(header_span.style, "reasoning header");
     }
 
@@ -1954,18 +1969,32 @@ mod tests {
     fn stage_header_has_no_bold_in_title_spans() {
         let theme = Theme::default();
         let header_lines = render_stage_header("plan", "synthesis", Some(1), Some(3), &theme);
-        assert_eq!(header_lines.len(), 2, "stage header should have title + separator");
+        assert_eq!(
+            header_lines.len(),
+            2,
+            "stage header should have title + separator"
+        );
         // The second span of the title line is the label ("plan · Synthesis") —
         // it should carry the accent colour but no BOLD.
         let label_span = &header_lines[0].spans[1];
-        assert!(label_span.content.contains("Synthesis"), "should contain stage label");
+        assert!(
+            label_span.content.contains("Synthesis"),
+            "should contain stage label"
+        );
         assert_not_bold(label_span.style, "stage title label");
         // Separator is shorter than the old 40-char version.
         let separator_line = line_text(&header_lines[1]);
         assert!(
-            separator_line.chars().filter(|c| *c == '─' || *c == '┄').count() < 20,
+            separator_line
+                .chars()
+                .filter(|c| *c == '─' || *c == '┄')
+                .count()
+                < 20,
             "stage separator should be shorter than before (< 20 chars)"
         );
-        assert!(!line_text(&header_lines[0]).contains("▶"), "stage header must not use assistant marker");
+        assert!(
+            !line_text(&header_lines[0]).contains("▶"),
+            "stage header must not use assistant marker"
+        );
     }
 }

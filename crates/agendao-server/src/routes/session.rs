@@ -289,9 +289,12 @@ mod tests {
             ..AppConfig::default()
         };
 
-        let defaults = resolve_scheduler_request_defaults_validated(&config, Some("autoresearch-run"))
-            .expect("bundled autoresearch defaults should win before file-backed scheduler resolution")
-            .expect("bundled autoresearch defaults should resolve");
+        let defaults = resolve_scheduler_request_defaults_validated(
+            &config,
+            Some("autoresearch-run"),
+        )
+        .expect("bundled autoresearch defaults should win before file-backed scheduler resolution")
+        .expect("bundled autoresearch defaults should resolve");
 
         assert_eq!(defaults.profile_name.as_deref(), Some("autoresearch-run"));
     }

@@ -102,11 +102,12 @@ impl App {
             .and_then(|value| value.to_str())
             .unwrap_or("image")
             .to_string();
-        self.prompt_draft.push_attachment(crate::api::PromptPart::File {
-            url: format!("data:{};base64,{}", mime, encoded),
-            filename: Some(filename.clone()),
-            mime: Some(mime.to_string()),
-        });
+        self.prompt_draft
+            .push_attachment(crate::api::PromptPart::File {
+                url: format!("data:{};base64,{}", mime, encoded),
+                filename: Some(filename.clone()),
+                mime: Some(mime.to_string()),
+            });
         self.sync_prompt_draft_hint();
         self.toast.show(
             ToastVariant::Info,
@@ -184,13 +185,17 @@ impl App {
         &mut self,
         content: crate::render::ClipboardContent,
     ) {
-        let filename = format!("clipboard-image-{}.png", chrono::Utc::now().timestamp_millis());
+        let filename = format!(
+            "clipboard-image-{}.png",
+            chrono::Utc::now().timestamp_millis()
+        );
         let data_url = format!("data:{};base64,{}", content.mime, content.data);
-        self.prompt_draft.push_attachment(crate::api::PromptPart::File {
-            url: data_url,
-            filename: Some(filename),
-            mime: Some(content.mime),
-        });
+        self.prompt_draft
+            .push_attachment(crate::api::PromptPart::File {
+                url: data_url,
+                filename: Some(filename),
+                mime: Some(content.mime),
+            });
         self.sync_prompt_draft_hint();
         self.toast.show(
             ToastVariant::Info,

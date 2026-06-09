@@ -103,10 +103,9 @@ pub fn sisyphus_prompt_extension(
     .collect::<Vec<_>>()
     .join("\n");
 
-    let mut ext =
-        PresetPromptExtension::new("sisyphus", "delegation-first execution orchestrator")
-            .with_section("Role", ROLE_SECTION)
-            .with_section("Behavior Instructions", behavior);
+    let mut ext = PresetPromptExtension::new("sisyphus", "delegation-first execution orchestrator")
+        .with_section("Role", ROLE_SECTION)
+        .with_section("Behavior Instructions", behavior);
     if !oracle_section.is_empty() {
         ext = ext.with_section("Oracle", oracle_section);
     }
@@ -465,7 +464,10 @@ mod tests {
         let ext = sisyphus_prompt_extension(&[], &[], &[]);
         let titles: Vec<&str> = ext.extra_sections.iter().map(|(t, _)| t.as_str()).collect();
         assert!(titles.contains(&"Role"), "must have Role section");
-        assert!(titles.contains(&"Behavior Instructions"), "must have Behavior Instructions");
+        assert!(
+            titles.contains(&"Behavior Instructions"),
+            "must have Behavior Instructions"
+        );
         assert!(titles.contains(&"Tone & Style"), "must have Tone & Style");
         assert!(titles.contains(&"Constraints"), "must have Constraints");
         assert!(ext.extra_sections.len() >= 5);
@@ -519,7 +521,10 @@ mod tests {
             "Oracle_Usage",
         ];
         for needle in expected {
-            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+            assert!(
+                rendered.contains(needle),
+                "rendered prompt missing {needle}"
+            );
         }
     }
 }

@@ -8,12 +8,18 @@ use chrono::Utc;
 
 #[test]
 fn session_update_requires_sync_for_prompt_final_sources() {
-    assert!(super::sync::session_update_requires_sync(Some("prompt.final")));
-    assert!(super::sync::session_update_requires_sync(Some("prompt.completed")));
+    assert!(super::sync::session_update_requires_sync(Some(
+        "prompt.final"
+    )));
+    assert!(super::sync::session_update_requires_sync(Some(
+        "prompt.completed"
+    )));
     assert!(super::sync::session_update_requires_sync(Some(
         "prompt.scheduler.completed"
     )));
-    assert!(!super::sync::session_update_requires_sync(Some("prompt.stream")));
+    assert!(!super::sync::session_update_requires_sync(Some(
+        "prompt.stream"
+    )));
     assert!(super::sync::session_update_requires_sync(Some(
         "prompt.scheduler.stage.step"
     )));
@@ -758,9 +764,11 @@ fn ui_bridge_drop_growth_surfaces_warning_toast() {
     app.context.ui_bridge.drain(1);
     let queue_capacity = app.context.ui_bridge_snapshot().capacity;
     for index in 0..(queue_capacity + 2) {
-        app.context.ui_bridge.emit(Event::Custom(Box::new(
-            crate::event::CustomEvent::Message(format!("overflow-{index}")),
-        )));
+        app.context
+            .ui_bridge
+            .emit(Event::Custom(Box::new(crate::event::CustomEvent::Message(
+                format!("overflow-{index}"),
+            ))));
     }
 
     assert!(app.sync_ui_bridge_health());

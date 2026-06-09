@@ -19,7 +19,11 @@ pub enum ReturnFlowItem {
     /// items for visual consistency, not semantic identity.
     CurrentDraftAttachment { count: usize, image_count: usize },
     /// Token usage from the last assistant turn.
-    LastTurnUsage { input: u64, output: u64, reasoning: u64 },
+    LastTurnUsage {
+        input: u64,
+        output: u64,
+        reasoning: u64,
+    },
 }
 
 /// Serialize a [`ReturnFlowItem`] into the compact human-readable line
@@ -33,12 +37,8 @@ pub fn format_return_flow_item(item: &ReturnFlowItem) -> String {
                 "Compacting conversation…".to_string()
             }
         }
-        ReturnFlowItem::CompactionJustFinished => {
-            "Compaction complete".to_string()
-        }
-        ReturnFlowItem::ReplaySource { label } => {
-            label.clone()
-        }
+        ReturnFlowItem::CompactionJustFinished => "Compaction complete".to_string(),
+        ReturnFlowItem::ReplaySource { label } => label.clone(),
         ReturnFlowItem::CurrentDraftAttachment { count, image_count } => {
             if *count == 1 {
                 "1 attachment queued for this prompt".to_string()
@@ -52,7 +52,11 @@ pub fn format_return_flow_item(item: &ReturnFlowItem) -> String {
                 format!("{} attachments queued for this prompt", count)
             }
         }
-        ReturnFlowItem::LastTurnUsage { input, output, reasoning } => {
+        ReturnFlowItem::LastTurnUsage {
+            input,
+            output,
+            reasoning,
+        } => {
             let mut parts = vec![
                 format!("↑{}", format_tokens(*input)),
                 format!("↓{}", format_tokens(*output)),
@@ -153,36 +157,24 @@ mod tests {
     #[test]
     fn compaction_progress_takes_priority_over_everything() {
         let usage = tokens(1000, 500, 200);
-        let item = resolve_return_flow_strip(
-            true, false, Some(29),
-            None,
-            3, 2,
-            Some(&usage),
-        );
-        assert!(matches!(item, Some(ReturnFlowItem::CompactionInProgress { percent: Some(29) })));
+        let item = resolve_return_flow_strip(true, false, Some(29), None, 3, 2, Some(&usage));
+        assert!(matches!(
+            item,
+            Some(ReturnFlowItem::CompactionInProgress { percent: Some(29) })
+        ));
     }
 
     #[test]
     fn compation_just_finished_takes_priority_over_attachment_and_usage() {
         let usage = tokens(1000, 500, 200);
-        let item = resolve_return_flow_strip(
-            false, true, None,
-            None,
-            3, 2,
-            Some(&usage),
-        );
+        let item = resolve_return_flow_strip(false, true, None, None, 3, 2, Some(&usage));
         assert!(matches!(item, Some(ReturnFlowItem::CompactionJustFinished)));
     }
 
     #[test]
     fn current_draft_attachment_without_higher_priority() {
         let usage = tokens(1000, 500, 200);
-        let item = resolve_return_flow_strip(
-            false, false, None,
-            None,
-            2, 1,
-            Some(&usage),
-        );
+        let item = resolve_return_flow_strip(false, false, None, None, 2, 1, Some(&usage));
         let pending = item.unwrap();
         match pending {
             ReturnFlowItem::CurrentDraftAttachment { count, image_count } => {
@@ -196,15 +188,14 @@ mod tests {
     #[test]
     fn last_turn_usage_when_nothing_else() {
         let usage = tokens(12000, 3400, 900);
-        let item = resolve_return_flow_strip(
-            false, false, None,
-            None,
-            0, 0,
-            Some(&usage),
-        );
+        let item = resolve_return_flow_strip(false, false, None, None, 0, 0, Some(&usage));
         let turn = item.unwrap();
         match turn {
-            ReturnFlowItem::LastTurnUsage { input, output, reasoning } => {
+            ReturnFlowItem::LastTurnUsage {
+                input,
+                output,
+                reasoning,
+            } => {
                 assert_eq!(input, 12000);
                 assert_eq!(output, 3400);
                 assert_eq!(reasoning, 900);
@@ -215,24 +206,14 @@ mod tests {
 
     #[test]
     fn no_item_when_nothing_to_show() {
-        let item = resolve_return_flow_strip(
-            false, false, None,
-            None,
-            0, 0,
-            None,
-        );
+        let item = resolve_return_flow_strip(false, false, None, None, 0, 0, None);
         assert!(item.is_none());
     }
 
     #[test]
     fn attachment_count_zero_falls_to_last_turn_usage() {
         let usage = tokens(500, 200, 0);
-        let item = resolve_return_flow_strip(
-            false, false, None,
-            None,
-            0, 0,
-            Some(&usage),
-        );
+        let item = resolve_return_flow_strip(false, false, None, None, 0, 0, Some(&usage));
         assert!(matches!(item, Some(ReturnFlowItem::LastTurnUsage { .. })));
     }
 }

@@ -76,6 +76,7 @@ impl UnixSocketTransport {
             model: options.model,
             variant: options.variant,
             continue_last: options.continue_last,
+            command: options.command,
         };
 
         self.send_request("prompt", params).await
@@ -227,4 +228,33 @@ struct PromptRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
     continue_last: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromptRequest;
+
+    #[test]
+    fn prompt_request_serializes_command_scheduler_and_variant() {
+        let request = PromptRequest {
+            session_id: "ses_1".to_string(),
+            text: "/run cargo test".to_string(),
+            agent_id: Some("build".to_string()),
+            scheduler_profile: Some("default".to_string()),
+            model: Some("openai/gpt-5".to_string()),
+            variant: Some("fast".to_string()),
+            continue_last: false,
+            command: Some("run".to_string()),
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize unix prompt request");
+        assert_eq!(value.get("command").and_then(|v| v.as_str()), Some("run"));
+        assert_eq!(
+            value.get("scheduler_profile").and_then(|v| v.as_str()),
+            Some("default")
+        );
+        assert_eq!(value.get("variant").and_then(|v| v.as_str()), Some("fast"));
+    }
 }

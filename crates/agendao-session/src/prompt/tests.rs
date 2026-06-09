@@ -3513,8 +3513,8 @@ mod reflow_equivalence_tests {
     use super::super::reflow_context::{PromptReflowContinuityView, PromptReflowMemoryView};
     use agendao_types::{
         MemoryCardView, MemoryKind, MemoryRecallView, MemoryRecordId, MemoryRetrievalPacket,
-        MemoryScope, MemoryStatus, MemoryValidationStatus,
-        SessionContinuityPacket, SessionContinuityTurn,
+        MemoryScope, MemoryStatus, MemoryValidationStatus, SessionContinuityPacket,
+        SessionContinuityTurn,
     };
 
     fn sample_packet() -> MemoryRetrievalPacket {
@@ -3548,9 +3548,7 @@ mod reflow_equivalence_tests {
     /// Frozen baseline: the ORIGINAL inline rendering logic from
     /// `render_memory_prefetch_reminder()` before Phase 5 delegation.
     /// This is the ground truth that the new view path must match.
-    fn baseline_render_memory_prefetch_reminder(
-        packet: &MemoryRetrievalPacket,
-    ) -> Option<String> {
+    fn baseline_render_memory_prefetch_reminder(packet: &MemoryRetrievalPacket) -> Option<String> {
         if packet.items.is_empty() {
             return None;
         }
@@ -3586,8 +3584,7 @@ mod reflow_equivalence_tests {
         let packet = sample_packet();
 
         // Frozen baseline: original inline logic.
-        let baseline =
-            baseline_render_memory_prefetch_reminder(&packet).expect("should render");
+        let baseline = baseline_render_memory_prefetch_reminder(&packet).expect("should render");
 
         // New path: PromptReflowMemoryView::from_packet → render_reminder.
         let view = PromptReflowMemoryView::from_packet(&packet);
@@ -3612,7 +3609,9 @@ mod reflow_equivalence_tests {
         };
 
         assert!(baseline_render_memory_prefetch_reminder(&empty).is_none());
-        assert!(PromptReflowMemoryView::from_packet(&empty).render_reminder().is_none());
+        assert!(PromptReflowMemoryView::from_packet(&empty)
+            .render_reminder()
+            .is_none());
     }
 
     #[test]
@@ -3738,8 +3737,7 @@ mod memory_prefetch_tests {
             .expect("should succeed");
 
         // Then clear.
-        SessionPrompt::apply_runtime_memory_prefetch(&mut session, None)
-            .expect("should succeed");
+        SessionPrompt::apply_runtime_memory_prefetch(&mut session, None).expect("should succeed");
 
         let user_msg = session
             .messages_mut()
@@ -3759,7 +3757,10 @@ mod memory_prefetch_tests {
         // No messages — no user to anchor to.
 
         let result = SessionPrompt::apply_runtime_memory_prefetch(&mut session, Some(&packet));
-        assert!(result.is_ok(), "should succeed (no-op) even without user messages");
+        assert!(
+            result.is_ok(),
+            "should succeed (no-op) even without user messages"
+        );
     }
 
     #[test]

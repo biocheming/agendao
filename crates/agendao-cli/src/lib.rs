@@ -270,7 +270,9 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let cli = parse_cli_from(args);
-    dispatch_cli_command(cli, &runtime_context).await
+    let result = dispatch_cli_command(cli, &runtime_context).await;
+    crate::providers::shutdown_native_plugins().await;
+    result
 }
 
 pub fn spawn_process_reaper() {

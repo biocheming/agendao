@@ -519,9 +519,7 @@ impl ReconcileReason {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent, ToolCallPhase,
-    };
+    use super::{DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent, ToolCallPhase};
     use agendao_command_render::output_blocks::{OutputBlock, StatusBlock};
     use agendao_stage_protocol::{telemetry_event_names, StageEvent};
     use agendao_types::{

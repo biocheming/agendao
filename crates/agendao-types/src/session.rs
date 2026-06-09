@@ -2246,10 +2246,7 @@ mod continuity_packet_tests {
     #[test]
     fn continuity_packet_recall_policy_is_present_and_non_empty() {
         let packet = sample_packet();
-        let policy = packet
-            .recall_policy
-            .as_deref()
-            .unwrap_or("");
+        let policy = packet.recall_policy.as_deref().unwrap_or("");
 
         // Policy field must be present and carry the builder-authored
         // guidance text. The actual hydrate-tool names are verified via

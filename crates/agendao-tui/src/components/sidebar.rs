@@ -740,7 +740,10 @@ impl Sidebar {
                         lines.push(Line::from(vec![
                             Span::styled("Workflow ", Style::default().fg(theme.text_muted)),
                             Span::styled(
-                                format!("{} cumulative", format_compact_number(resolved_usage.total_tokens)),
+                                format!(
+                                    "{} cumulative",
+                                    format_compact_number(resolved_usage.total_tokens)
+                                ),
                                 Style::default().fg(theme.text),
                             ),
                         ]));

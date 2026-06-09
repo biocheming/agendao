@@ -71,11 +71,11 @@ pub use ingress::{
     INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY, INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH,
     INGRESS_POLICY_SCHEDULER_METADATA_ONLY, INGRESS_POLICY_UNSPECIFIED,
 };
+use reflow_context::PromptReflowMemoryView;
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;
 pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
 pub use subtask::{tool_definitions_from_schemas, SubtaskExecutor, ToolSchema};
-use reflow_context::PromptReflowMemoryView;
 use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,

@@ -39,6 +39,7 @@ impl HttpTransport {
                 options.idempotency_key,
                 options.source_origin,
                 options.source_surface,
+                options.command,
             )
             .await?;
 

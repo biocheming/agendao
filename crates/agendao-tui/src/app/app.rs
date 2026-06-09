@@ -40,11 +40,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use agendao_command::{CommandRegistry, UiActionId};
 use agendao_command_render::output_blocks::{BlockTone, StatusBlock};
 use agendao_command_runtime::interactive::{parse_interactive_command, InteractiveCommand};
 use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
+use base64::Engine;
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Block};
@@ -59,6 +59,7 @@ use crate::client::{
     RecoveryProtocolStatus as ApiRecoveryProtocolStatus, SessionExecutionNode, SessionInfo,
     SessionRecoveryProtocol, SessionRevertInfo,
 };
+use crate::components::prompt_return_flow::{format_return_flow_item, resolve_return_flow_strip};
 use crate::core::{
     collect_attached_sessions, is_primary_key_event, normalize_key_event, AppContext, CustomEvent,
     Event, LeaderKeyState, McpConnectionStatus, McpServerStatus, Message, MessageRole, RevertInfo,
@@ -82,9 +83,6 @@ use crate::render::{
     OTHER_OPTION_LABEL,
 };
 use crate::state::MessagePart as ContextMessagePart;
-use crate::components::prompt_return_flow::{
-    format_return_flow_item, resolve_return_flow_strip,
-};
 
 use self::mappers::{
     agent_color_from_name, apply_incremental_session_sync, infer_task_kind_from_message,

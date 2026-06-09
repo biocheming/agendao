@@ -4153,12 +4153,7 @@ mod tests {
     fn build_compaction_continuity_packet_populates_limits_and_count_fields() {
         let session = crate::Session::new("project", "/tmp");
         // No messages → all counts are zero, packet is None.
-        let packet = SessionPrompt::build_compaction_continuity_packet(
-            &session,
-            &[],
-            "",
-            "msg-1",
-        );
+        let packet = SessionPrompt::build_compaction_continuity_packet(&session, &[], "", "msg-1");
         assert!(
             packet.is_none(),
             "empty session with no summary must return None"
@@ -4229,7 +4224,8 @@ mod tests {
         // Last user = user1 → full chain = [user1, assistant1, user2].
         // assistant1 ∉ filtered → validation fails → None.
         use agendao_types::{
-            SessionContinuityPacket, SessionContinuityTurn, CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY,
+            SessionContinuityPacket, SessionContinuityTurn,
+            CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY,
         };
 
         let mut session = crate::Session::new("project", "/tmp");

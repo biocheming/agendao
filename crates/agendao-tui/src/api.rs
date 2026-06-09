@@ -227,6 +227,7 @@ impl RuntimeApiClient {
             idempotency_key,
             source_origin,
             source_surface,
+            None,
         ))
     }
 
@@ -1938,6 +1939,7 @@ mod tests {
                 Some("tui_local_1".to_string()),
                 Some(agendao_types::MessageSourceOrigin::Operator),
                 Some(agendao_types::MessageSourceSurface::Tui),
+                None,
             )
             .expect("send local prompt");
 
@@ -2016,6 +2018,7 @@ mod tests {
                 Some("multipart_local_1".to_string()),
                 Some(agendao_types::MessageSourceOrigin::Operator),
                 Some(agendao_types::MessageSourceSurface::Tui),
+                None,
             )
             .expect("multipart prompt should succeed in local mode");
 
