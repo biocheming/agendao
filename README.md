@@ -1,256 +1,260 @@
+<p align="right">
+  <strong>English</strong> | <a href="./README_CN.md">中文</a>
+</p>
+
 <p>
   <img src="icons/logo.svg" alt="AgenDao" width="280" />
 </p>
 
 # AgenDao
 
-> **让输入、执行、承载、输出、回流成为一条气脉，而不是五块拼起来的功能。**
+> **Turn input, execution, orchestration, output, and feedback into one living flow instead of five stitched-together features.**
 
-大多数 AI 编码工具解决的是“怎么做”的问题：怎么生成代码、怎么调用工具、怎么多步推理。AgenDao 解决的是另一个问题：**当一段软件工作持续数小时、跨越多个 session、涉及多个前端、经过多次 fork、回滚、压缩与重放之后，系统凭什么还能保持同一条工作气脉？**
+Most AI coding tools focus on the question of "how to do it": how to generate code, call tools, or chain reasoning steps. AgenDao focuses on a different question: **when a software task runs for hours, spans multiple sessions, crosses multiple frontends, and goes through forks, rewinds, compaction, and replay, what keeps the whole system on the same working thread?**
 
-答案不只在模型能力上，更在治理上。
+The answer is not only model capability. It is governance.
 
-当前版本：`v2026.6.6`
-
----
-
-## 一句话理解 AgenDao
-
-AgenDao 和其他 AI Agent 工具属于同一类：本地编码智能体运行时。但它的设计重心不在“让模型更聪明”，而在**让系统更通、也更可信**。
-
-AgenDao 的核心判断是：**系统失真，不是因为模型不够强，而是因为输入、执行、状态、输出、回流分裂成了多份权威。**
-
-所以 AgenDao 的重点不是再加一层“更聪明的 agent”，而是让同一条链路从 prompt input 到下一轮 prompt 之间始终服从同一套治理法则。
+Current version: `v2026.6.6`
 
 ---
 
-## AgenDao 的道纪
+## AgenDao In One Sentence
 
-AgenDao 的设计不是从功能列表倒推出来的，而是从一条总纲推出来的：
+AgenDao belongs to the same broad category as other AI agent tools: a local coding-agent runtime. But its design center is not "make the model smarter". It is **make the system flow better, and make it easier to trust**.
 
-> **每个语义域有且仅有一个权威；权威必须在阴阳之间闭环，在五行之间流转。**
+Its core diagnosis is simple: **system drift does not mainly come from weak models; it comes from input, execution, state, output, and feedback splitting into multiple competing authorities.**
 
-这里的“阴阳”不是装饰性比喻，而是运行时约束：
-
-- **阳**：输入、触发、执行、展开、显示
-- **阴**：收束、归一、稳定、记账、回收、验证
-
-孤阳则躁：只有输入和执行，没有承载与回流，系统会碎。
-
-孤阴则滞：只有权威和规则，没有真实触发和交付，系统会死。
-
-AgenDao 的“道纪”因此不只是“别重复造轮子”，而是要求每一条产品链路都满足三件事：
-
-1. 有唯一权威
-2. 有阴阳对位
-3. 有五行流转
+So AgenDao is not about adding yet another "smarter agent" layer. It is about making the entire chain, from prompt input to the next prompt, obey the same governance model.
 
 ---
 
-## 五行视角下的 AgenDao
+## The Dao Canon Of AgenDao
 
-### 木：输入之木
+AgenDao is not designed by working backward from a feature list. It is designed from one governing statement:
 
-`prompt`、附件、slash 命令、history、引用、模式切换，都属于 `木`。
+> **Every semantic domain must have exactly one authority; that authority must close the yin-yang loop and participate in the five-phase flow.**
 
-木的规则是：**贵在生发，忌多头生长。**
+Here, yin and yang are not decorative metaphors. They are runtime constraints:
 
-所以 AgenDao 不接受：
+- **Yang**: input, triggering, execution, expansion, display
+- **Yin**: convergence, normalization, stabilization, accounting, recycling, verification
 
-- 文本、附件、提示语、待发 payload 分裂成多份输入真相
-- 输入组件只显示文本，真正待发内容藏在外部状态
-- 不同前端各自维护不同的 prompt surface 语义
+Pure yang becomes agitation: input and execution exist, but there is no carrying layer and no return path.
 
-### 火：执行之火
+Pure yin becomes stagnation: rules and authority exist, but nothing is truly triggered or delivered.
 
-LLM loop、权限裁决、工具调度、乐观提交、取消、中断、重试，都属于 `火`。
+That is why AgenDao asks every product path to satisfy three conditions:
 
-火的规则是：**贵在点燃，忌多炉并起。**
-
-所以 AgenDao 要求：
-
-- 所有 `model -> tool -> model` 迭代由唯一执行内核驱动
-- 权限判定只在一个裁决点发生
-- 工具调度、名称修复、回退、归一化只写一次
-
-### 土：承载之土
-
-配置、会话状态、上下文管理、serialized prompt surface、跨端副作用中转，都属于 `土`。
-
-土的规则是：**贵在归一，忌地脉分裂。**
-
-这是 AgenDao 的中枢。木火金水皆可强，土若不稳，整条链路必碎。
-
-所以 AgenDao 要求：
-
-- 配置只有一份活真相
-- 状态域有唯一 owner
-- 一切副作用经由编排层中转
-- 模型请求的 serialized prompt surface 由唯一权威构造
-
-### 金：输出之金
-
-assistant response、tool output、scheduler stage、reasoning 呈现、message projection、事件语法，都属于 `金`。
-
-金的规则是：**贵在成形，忌多法争刃。**
-
-所以 AgenDao 不把“能跑出来很多东西”当作成功；它要求输出有主次、有结构、有唯一成形语法。
-
-### 水：回流之水
-
-telemetry、cache、memory、compaction、replay、resend、workflow usage、session usage，都属于 `水`。
-
-水的规则是：**贵在归藏，忌有显无藏。**
-
-所以 AgenDao 不接受：
-
-- 有展示，没有回灌
-- 有 telemetry 写路径，没有热路径消费
-- cache / usage 在不同前端各说各话
+1. One authority
+2. A yin-yang pairing
+3. A five-phase flow
 
 ---
 
-## 相生，不是拼装
+## AgenDao Through The Five Phases
 
-AgenDao 的目标不是把更多功能塞到一个 agent 里，而是恢复这条相生链：
+### Wood: input
 
-1. **木生火**：输入能被唯一执行内核直接点燃
-2. **火生土**：执行状态能回收到唯一编排承载
-3. **土生金**：会话、上下文、prompt surface 生成唯一输出成形语法
-4. **金生水**：输出沉淀为 telemetry、cache、memory、usage、replay
-5. **水生木**：上一轮沉淀反哺下一轮输入，而不是只躺在侧栏和日志里
+`prompt`, attachments, slash commands, history, citations, and mode switching all belong to **wood**.
 
-如果一套系统“能输入、能运行、能显示”，却不能自然回到下一轮输入，它就还没有真正闭环。
+The law of wood is: **growth is precious; uncontrolled branching is not**.
 
----
+AgenDao therefore rejects:
 
-## 相克，不是敌对
+- text, attachments, hints, and outbound payloads splitting into multiple input truths
+- input components that only hold visible text while the real outbound content lives elsewhere
+- each frontend inventing its own prompt-surface semantics
 
-五行在 AgenDao 里也是治理边界：
+### Fire: execution
 
-- **金克木**：规则、建议、提示不能压住输入本体
-- **木克土**：输入变体不能无限增殖，冲垮唯一权威
-- **土克水**：治理可以约束回流，但不能把回流压成只展示不消费
-- **水克火**：telemetry / cache / memory 可以反制无节制执行，但不能替代真实执行语义
-- **火克金**：运行事件可以丰富输出，但不能冲散最终交付的成形权
+The LLM loop, permission adjudication, tool scheduling, optimistic submit, cancel, interrupt, and retry all belong to **fire**.
 
-因此，AgenDao 的很多设计选择都不是“更复杂”，而是为了避免相克失衡后出现那种：
+The law of fire is: **ignition is precious; many furnaces are not**.
 
-> 功能更多了，系统反而更乱了。
+AgenDao therefore requires:
 
----
+- every `model -> tool -> model` cycle to be driven by one execution kernel
+- permission decisions to happen at one adjudication point
+- tool scheduling, fallback, normalization, and name repair to be implemented once
 
-## 这套说法如何落地
+### Earth: orchestration and carrying
 
-这不是一套只用于写宣言的比喻。它会直接影响代码怎么拆、状态归谁、前端怎么读、回流怎么接。
+Configuration, session state, context management, the serialized prompt surface, and cross-frontend side-effect routing all belong to **earth**.
 
-- 新能力先问 `土`：它的唯一 owner 在哪个 crate、哪个状态域、哪个 authority
-- 新交互再问 `木`：输入是不是仍然回到同一份 prompt authority，而不是偷偷长出第二份草稿
-- 新执行链路必问 `火`：是谁点燃、谁能取消、谁负责权限裁决、谁对运行状态记账
-- 新展示统一问 `金`：这是不是沿用现有事件语法和 message projection，还是又发明了一套“看起来差不多”的输出结构
-- 新 telemetry / cache / memory 必问 `水`：除了写出来，谁会在下一轮真正消费它
+The law of earth is: **unification is precious; fractured ground is not**.
 
-对 AgenDao 来说，真正的坏味道不是“代码不够优雅”，而是：
+This is AgenDao's center. Wood, fire, metal, and water may all be strong, but if earth is unstable, the whole path breaks.
 
-- 一个语义域出现两份真相
-- 一个运行结果只有展示没有回流
-- 一个前端为了方便，开始偷偷复制中层权威
+AgenDao therefore requires:
 
----
+- one live source of truth for configuration
+- one owner for every state domain
+- all side effects to route through orchestration
+- the serialized prompt surface to be constructed by one authority
 
-## 三条长期能力
+### Metal: output
 
-### 记忆系统：裁决什么值得留下，而不是尽量多存
+Assistant responses, tool output, scheduler stages, reasoning presentation, message projection, and event grammar all belong to **metal**.
 
-- 新材料先作为 candidate 进入，经过 validation、conflict 检查、consolidation 才成为正式记录
-- 检索时先给 retrieval preview，解释为什么要注入
-- 正式 memory record 和临时会话材料分开，草稿不直接污染长期上下文
+The law of metal is: **form is precious; competing blades are not**.
 
-### Skill 系统：既要增长，也要能收束
+So AgenDao does not treat "a lot of things came out" as success. Output must have structure, priority, and one authoritative grammar.
 
-- usage ledger 知道哪些 skill 真正在被使用
-- negative entropy 识别长期闲置、需要复查或退出的 skill
-- semantic conflict 和 composition relationship 避免同一类能力重复长出
-- runtime gate 和 proposal review 分开：inspection 可见不等于运行时可用
+### Water: feedback and return flow
 
-### 上下文缓存：保护稳定提示面
+Telemetry, cache, memory, compaction, replay, resend, workflow usage, and session usage all belong to **water**.
 
-AgenDao 的缓存优化不是"多塞几个 cache 字段"，而是把 prompt surface 变得长期稳定、可解释、可诊断。它会记录 prompt surface fingerprint、cache evidence、context closure contract，也会把 request/live/workflow 三本账拆开。详见 [docs/context-caching.md](docs/context-caching.md)。
+The law of water is: **return and storage are precious; visible-but-unusable residue is not**.
+
+AgenDao therefore rejects:
+
+- display without reinjection
+- telemetry write paths with no hot-path consumers
+- cache and usage semantics that diverge across frontends
 
 ---
 
-## 运行时边界
+## Generation, Not Accumulation
 
-AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 不是三套产品，而是三张读同一条地脉的面：共享同一套 session、scheduler、tool、provider、skill、memory、telemetry authority。
+AgenDao is not trying to stuff more features into one agent. It is trying to restore a living chain:
 
-- provider 不靠 npm 名或历史别名猜测；`ProviderProfile`、descriptor、validation 和 runtime profile 共享同一条 authority 语义
-- session 不把 live context、child workflow 花费和累计消耗混成一笔账；CLI、TUI、Web 都能读到 request/live/workflow 三本账和 context closure contract
-- fork 和 subsession 有明确边界：child 只接收显式 packet，parent 只吸收 result/summary
-- config、provider、scheduler、skill tree 的"当前到底生效了什么"有统一的只读解释面
-- Web / TUI / Server 的消息同步以 authoritative `session.updated` 对齐；流式 `output_block` 和最终持久化 message 不长期分叉
-- 三前端统一事件契约
+1. **Wood generates fire**: input can be ignited directly by the execution kernel
+2. **Fire generates earth**: execution state returns into one orchestration layer
+3. **Earth generates metal**: session state, context, and prompt surface become one output grammar
+4. **Metal generates water**: output settles into telemetry, cache, memory, usage, and replay
+5. **Water generates wood**: what was settled feeds the next input instead of dying in logs and sidebars
 
-内置 scheduler presets：`sisyphus` · `prometheus` · `atlas` · `hephaestus` · `verifier`
+If a system can accept input, run, and display output but cannot naturally feed the next turn, it is not actually closed-loop.
 
 ---
 
-## 使用方式
+## Constraint, Not Hostility
+
+The five phases also define governance boundaries:
+
+- **Metal constrains wood**: rules, tips, and format hints must not overpower the input itself
+- **Wood constrains earth**: input variants must not multiply until they break a single authority
+- **Earth constrains water**: governance may shape feedback, but must not reduce it to decoration
+- **Water constrains fire**: telemetry, cache, and memory may restrain wasteful execution, but may not replace true execution semantics
+- **Fire constrains metal**: runtime events may enrich output, but may not dissolve its final form
+
+This is why many AgenDao choices are not "more complexity for its own sake". They exist to prevent the familiar failure mode:
+
+> More features arrive, and the system becomes less coherent.
+
+---
+
+## How This Becomes Engineering
+
+This language is not just philosophy. It changes how code is split, who owns state, how frontends read data, and how return-flow is consumed.
+
+- For every new capability, ask **earth** first: which crate, which state domain, which authority owns it?
+- For every new interaction, ask **wood** next: does input still flow through the same prompt authority, or did a second draft model quietly appear?
+- For every new runtime path, ask **fire**: who ignites it, who cancels it, who adjudicates permissions, who accounts for its running state?
+- For every new display surface, ask **metal**: does it reuse the existing event grammar and message projection, or invent a second output structure that only looks similar?
+- For every new telemetry, cache, or memory path, ask **water**: who will actually consume it on the next turn?
+
+In AgenDao, the real bad smell is not "the code feels inelegant". It is this:
+
+- one semantic domain has two truths
+- one result is display-only and never feeds back
+- one frontend starts copying middle-layer authority for convenience
+
+---
+
+## Three Long-Horizon Capabilities
+
+### Memory: keep what deserves to remain
+
+- new material first enters as a candidate, then passes validation, conflict checking, and consolidation before becoming a real record
+- retrieval shows a preview first so the system can explain why it is being injected
+- durable memory records stay separate from temporary session material, so drafts do not pollute long-term context
+
+### Skills: grow, but also converge
+
+- the usage ledger tells which skills are actually used
+- negative entropy surfaces long-idle skills that should be reviewed or retired
+- semantic conflict and composition relationships prevent the same capability from growing twice under different names
+- runtime gating and proposal review are distinct: visible for inspection does not mean executable at runtime
+
+### Context caching: protect a stable prompt surface
+
+AgenDao's cache strategy is not "add a few cache fields". It is to make the prompt surface stable, explainable, and diagnosable over time. It records prompt-surface fingerprints, cache evidence, and the context-closure contract, and it splits request, live, and workflow usage into separate ledgers. See [docs/context-caching.md](docs/context-caching.md).
+
+---
+
+## Runtime Boundaries
+
+AgenDao is a complete local coding-agent runtime. CLI, TUI, and Web are not three separate products. They are three reading surfaces over the same underlying terrain: one session authority, one scheduler authority, one tool authority, one provider authority, one skill authority, one memory authority, one telemetry authority.
+
+- providers do not rely on npm package names or historical aliases; `ProviderProfile`, descriptors, validation, and runtime profiles share one authority model
+- sessions do not merge live context, child-workflow cost, and accumulated usage into one blurry number; CLI, TUI, and Web all read request, live, and workflow ledgers plus the context-closure contract
+- fork and subsession boundaries are explicit: children receive only explicit packets; parents absorb only results and summaries
+- config, providers, schedulers, and the skill tree have one shared read-only explanation surface for "what is actually in effect right now"
+- Web, TUI, and Server align message synchronization on authoritative `session.updated`; streaming `output_block` and the persisted final message do not diverge as separate truths
+- all three frontends share one event contract
+
+Built-in scheduler presets: `sisyphus` · `prometheus` · `atlas` · `hephaestus` · `verifier`
+
+---
+
+## Entry Points
 
 ### `agendao`
 
-最完整、也最适合长期使用的 tui 界面。
+The full TUI, and the best entry point for sustained work.
 
 ### `agendao run`
 
-脚本、CI、批量任务的单次执行入口。
+Single-shot execution for scripts, CI, and batch tasks.
 
 ### `agendao serve` / `agendao web`
 
-server / web 入口，适合需要长期可观测面的场景。
+Server and Web entry points for scenarios that need a long-lived observability surface.
 
 ### `agendao attach`
 
-接上 server 正在维护的会话。
+Attach to a session already maintained by the server.
 
 ### `agendao acp`
 
-Agent Client Protocol server 入口。
+Agent Client Protocol server entry point.
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 环境要求
+### Requirements
 
 - Rust stable
 - Cargo
 - Git
 
-### 构建
+### Build
 
 ```bash
 cargo build -p agendao
 ```
 
-需要 Web 前端：
+If you also need the Web frontend:
 
 ```bash
 npm --prefix apps/agendao-web install
 cargo build -p agendao
 ```
 
-### 启动
+### Run
 
 ```bash
-cargo run -p agendao --                      # 默认 TUI
+cargo run -p agendao --                      # default TUI
 cargo run -p agendao -- tui --socket         # Unix socket
 cargo run -p agendao -- tui --attach-url http://127.0.0.1:3000  # HTTP attach
-cargo run -p agendao -- run "审查当前仓库里最危险的改动"
+cargo run -p agendao -- run "review the riskiest changes in this repo"
 cargo run -p agendao -- serve --hostname 127.0.0.1 --port 3000
 cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 ```
 
-### 本地安装
+### Local install
 
 ```bash
 ./scripts/install-local.sh release ~/.local
@@ -258,22 +262,22 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 
 ---
 
-## 内部世界
+## Internal Topology
 
-- `crates/agendao` — 产品分发壳，唯一正式分发入口
-- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 三张前端读面，共享同一运行时 authority
-- `crates/agendao-server` — HTTP、SSE、runtime control，承担跨端观测与调度读面
-- `crates/agendao-session` — session 领域模型、提示面组织、上下文连续性，是土与水最重的一层
-- `crates/agendao-orchestrator` — scheduler / orchestration authority，是火与土的中枢
-- `crates/agendao-provider` — provider profile、transport、descriptor、cache，负责 prompt surface 与 usage 语义的边界
-- `crates/agendao-skill` — skill authority、hub、distribution、guard
-- `crates/agendao-memory` — 记忆的验证、检索、冲突与晋升，负责把输出沉淀成可回流之水
+- `crates/agendao` - the product distribution shell and the only formal distribution entry
+- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` - three frontend surfaces over the same runtime authority
+- `crates/agendao-server` - HTTP, SSE, and runtime control; the cross-frontend observability and scheduling surface
+- `crates/agendao-session` - the session domain model, prompt-surface organization, and context continuity; the heaviest earth-and-water layer
+- `crates/agendao-orchestrator` - scheduler and orchestration authority; the fire-and-earth core
+- `crates/agendao-provider` - provider profiles, transport, descriptors, and cache; the boundary around prompt-surface and usage semantics
+- `crates/agendao-skill` - skill authority, hub, distribution, and guard
+- `crates/agendao-memory` - memory validation, retrieval, conflict handling, and promotion; the layer that turns output into reusable return-flow
 
-更多细目：[docs/README.md](docs/README.md)
+More detail: [docs/README.md](docs/README.md)
 
 ---
 
-## 开发者
+## Developer Commands
 
 ```bash
 cargo fmt --all
@@ -281,7 +285,7 @@ cargo check
 cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui
 ```
 
-版本发布：
+Release versioning:
 
 ```bash
 ./scripts/release-date.sh 2026-05-17
@@ -290,15 +294,15 @@ cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui
 
 ---
 
-## 接下来
+## Next
 
-- 用户使用指南：[USER_GUIDE.md](USER_GUIDE.md)
-- 文档索引：[docs/README.md](docs/README.md)
-- 上下文缓存：[docs/context-caching.md](docs/context-caching.md)
-- 发布说明：[CHANGELOG.md](CHANGELOG.md)
+- User guide: [USER_GUIDE.md](USER_GUIDE.md)
+- Documentation index: [docs/README.md](docs/README.md)
+- Context caching: [docs/context-caching.md](docs/context-caching.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
-## 致谢
+## Acknowledgements
 
-AgenDao 的架构设计受到开源 AI agent 社区的广泛启发，特别感谢 [OpenCode](https://github.com/anomalyco/opencode)、[Hermes Agent](https://github.com/stitionai/hermes-agent)、[Codex](https://github.com/openai/codex)、[Holon](https://github.com/holon-run/holon) 以及 [LLM-as-a-Verifier](https://github.com/llm-as-a-verifier) 等项目的先行探索。
+AgenDao's architecture has been shaped by the broader open-source AI agent community. Special thanks to [OpenCode](https://github.com/anomalyco/opencode), [Hermes Agent](https://github.com/stitionai/hermes-agent), [Codex](https://github.com/openai/codex), [Holon](https://github.com/holon-run/holon), and [LLM-as-a-Verifier](https://github.com/llm-as-a-verifier) for their earlier exploration.
