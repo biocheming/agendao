@@ -1,5 +1,3 @@
-use chrono::Local;
-
 const PROMPT_AGENDAO_HEADER: &str = include_str!("prompt_templates/agendao_header.txt");
 const PROMPT_COMPATIBILITY_OVERLAY: &str =
     include_str!("prompt_templates/compatibility_overlay.txt");
@@ -56,14 +54,13 @@ impl SystemPrompt {
     ///   Working directory: /home/user/project
     ///   Is directory a git repo: yes
     ///   Platform: linux
-    ///   Today's date: Wed Feb 19 2026
-    ///   Current local time: 2026-02-19 14:03:07 +08:00
-    ///   Local timezone: CST
     /// </env>
     /// ```
+    ///
+    /// Deliberately excludes volatile clock fields so the model-visible
+    /// prompt prefix stays cache-friendly across turns.
     pub fn environment(env: &EnvironmentContext) -> String {
-        let now = Local::now();
-        let mut lines = Vec::with_capacity(11);
+        let mut lines = Vec::with_capacity(8);
 
         lines.push(format!(
             "You are powered by the model named {}. The exact model ID is {}/{}",
@@ -79,12 +76,6 @@ impl SystemPrompt {
             if env.is_git_repo { "yes" } else { "no" }
         ));
         lines.push(format!("  Platform: {}", env.platform));
-        lines.push(format!("  Today's date: {}", now.format("%a %b %d %Y")));
-        lines.push(format!(
-            "  Current local time: {}",
-            now.format("%Y-%m-%d %H:%M:%S %:z")
-        ));
-        lines.push(format!("  Local timezone: {}", now.format("%Z")));
         lines.push("</env>".to_string());
 
         lines.join("\n")
@@ -188,10 +179,11 @@ mod tests {
         assert!(env.contains("/tmp/test"));
         assert!(env.contains("Is directory a git repo: yes"));
         assert!(env.contains("Platform: linux"));
-        assert!(env.contains("Current local time: "));
-        assert!(env.contains("Local timezone: "));
         assert!(env.contains("<env>"));
         assert!(env.contains("</env>"));
+        assert!(!env.contains("Today's date:"));
+        assert!(!env.contains("Current local time:"));
+        assert!(!env.contains("Local timezone:"));
     }
 
     #[test]
