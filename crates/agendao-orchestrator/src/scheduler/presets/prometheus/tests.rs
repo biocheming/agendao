@@ -79,6 +79,38 @@ fn prometheus_plan_input_carries_omo_planning_contract() {
 }
 
 #[test]
+fn prometheus_plan_input_keeps_capabilities_after_planner_charter() {
+    let input = compose_prometheus_plan_input(SchedulerPlanStageInput {
+        original_request: "Fix the TUI scroll behavior.",
+        session_context: None,
+        request_brief: "Need a planning artifact before execution.",
+        route_decision_json: None,
+        route_output: None,
+        planning_artifact_path: None,
+        draft_artifact_path: None,
+        draft_context: None,
+        interview_output: None,
+        advisory_review: None,
+        approval_feedback: None,
+        current_plan: "plan snapshot",
+        skill_tree_context: None,
+        available_agents: &[crate::scheduler::AvailableAgentMeta {
+            name: "atlas".to_string(),
+            description: "Atlas orchestrator".to_string(),
+            mode: "subagent".to_string(),
+            cost: "CHEAP".to_string(),
+        }],
+        available_categories: &[],
+        skill_list: &[],
+    });
+
+    assert!(
+        input.find("## Planner Charter").unwrap()
+            < input.find("## Available Execution Resources").unwrap()
+    );
+}
+
+#[test]
 fn prometheus_metis_input_matches_omo_review_shape() {
     let input = compose_prometheus_advisory_review_input(crate::SchedulerAdvisoryReviewInput {
         goal: "Polish the TUI workflow",

@@ -393,6 +393,17 @@ fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> Str
             .map(str::to_string),
     );
 
+    if let Some(tone_augment) = extension
+        .tone_augment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Tone Augment\n{tone_augment}"));
+    }
+
+    // Keep large runtime capability catalogs late so the prompt prefix
+    // stays anchored by higher-stability preset governance text.
     if let Some(capability_projection) = extension
         .capability_projection
         .as_deref()
@@ -402,15 +413,6 @@ fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> Str
         sections.push(format!(
             "## Capability Projection\n{capability_projection}"
         ));
-    }
-
-    if let Some(tone_augment) = extension
-        .tone_augment
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(format!("## Tone Augment\n{tone_augment}"));
     }
 
     sections.join("\n\n")
@@ -546,6 +548,10 @@ mod tests {
         assert!(sections.system_text.contains("Agents: explore, review."));
         assert!(sections.system_text.contains("## Tone Augment"));
         assert!(sections.system_text.contains("Be concise. No flattery."));
+        assert!(
+            sections.system_text.find("## Tone Augment").unwrap()
+                < sections.system_text.find("## Capability Projection").unwrap()
+        );
     }
 
     #[test]

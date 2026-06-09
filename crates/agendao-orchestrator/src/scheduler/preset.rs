@@ -1013,6 +1013,10 @@ mod tests {
         assert!(rendered.contains("Agents: explore, review."));
         assert!(rendered.contains("## Tone Augment"));
         assert!(rendered.contains("Be concise. No flattery."));
+        assert!(
+            rendered.find("## Tone Augment").unwrap()
+                < rendered.find("## Capability Projection").unwrap()
+        );
     }
 
     #[test]
@@ -1066,6 +1070,17 @@ pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> Stri
             .map(str::to_string),
     );
 
+    if let Some(tone_augment) = extension
+        .tone_augment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Tone Augment\n{tone_augment}"));
+    }
+
+    // Keep large runtime capability catalogs late so the prompt prefix
+    // stays anchored by higher-stability preset governance text.
     if let Some(capability_projection) = extension
         .capability_projection
         .as_deref()
@@ -1075,15 +1090,6 @@ pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> Stri
         sections.push(format!(
             "## Capability Projection\n{capability_projection}"
         ));
-    }
-
-    if let Some(tone_augment) = extension
-        .tone_augment
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(format!("## Tone Augment\n{tone_augment}"));
     }
 
     sections.join("\n\n")

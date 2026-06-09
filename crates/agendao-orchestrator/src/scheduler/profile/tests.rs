@@ -268,6 +268,33 @@ fn finalize_output_does_not_double_count_recorded_stage_usage() {
 }
 
 #[test]
+fn generic_plan_input_keeps_capabilities_after_planner_charter() {
+    let mut plan = SchedulerProfilePlan::new(vec![SchedulerStageKind::Plan]).with_orchestrator("sisyphus");
+    plan.available_agents = vec![crate::scheduler::AvailableAgentMeta {
+        name: "atlas".to_string(),
+        description: "Atlas orchestrator".to_string(),
+        mode: "subagent".to_string(),
+        cost: "CHEAP".to_string(),
+    }];
+    let orchestrator =
+        SchedulerProfileOrchestrator::new(plan, ToolRunner::new(Arc::new(NoopToolExecutor)));
+    let state = SchedulerProfileState {
+        route: SchedulerRouteState {
+            request_brief: "brief".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let input = orchestrator.compose_plan_input("Fix the TUI scroll behavior.", &state, &orchestrator.plan);
+
+    assert!(
+        input.find("## Planner Charter").unwrap()
+            < input.find("## System Capabilities").unwrap()
+    );
+}
+
+#[test]
 fn finalize_output_merges_workflow_mode_artifacts_with_stage_precedence() {
     let orchestrator = SchedulerProfileOrchestrator::new(
         runtime_execution_plan("atlas"),

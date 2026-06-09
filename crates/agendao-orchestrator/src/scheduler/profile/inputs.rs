@@ -307,17 +307,19 @@ plan"
             &plan.available_categories,
             plan.effective_skill_list(Some(SchedulerStageKind::Plan)),
         );
+        sections.push(
+            "## Planner Charter
+Produce a concrete execution plan only. No file edits, no claims that work is already done. State assumptions, phases, verification, and risks."
+                .to_string(),
+        );
+        // Keep runtime capability catalogs after the planner charter so the
+        // prompt prefix stays anchored by stable plan policy text.
         if !capabilities.is_empty() {
             sections.push(format!(
                 "## System Capabilities
 {capabilities}"
             ));
         }
-        sections.push(
-            "## Planner Charter
-Produce a concrete execution plan only. No file edits, no claims that work is already done. State assumptions, phases, verification, and risks."
-                .to_string(),
-        );
         sections.join(
             "
 
