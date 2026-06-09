@@ -225,6 +225,9 @@ pub struct PromptExecutionOptions {
     pub ingress_source: Option<String>,
     /// Best-effort idempotency marker for session/message metadata parity.
     pub idempotency_key: Option<String>,
+    /// Structured command hint for diagnostics/routing (P2.3).
+    /// Carries the `/command` from CLI across the transport boundary.
+    pub command: Option<String>,
 }
 
 impl Default for PromptExecutionOptions {
@@ -239,6 +242,7 @@ impl Default for PromptExecutionOptions {
             source_surface: None,
             ingress_source: None,
             idempotency_key: None,
+            command: None,
         }
     }
 }

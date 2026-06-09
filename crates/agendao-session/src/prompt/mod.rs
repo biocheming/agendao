@@ -20,6 +20,29 @@ mod tool_calls;
 mod tool_execution;
 pub mod tools_and_output;
 
+// ── Metadata Key Observability Registry (AgenDao §10, P2.2) ──────────
+//
+// Each key MUST have a writer, reader, and displayer.  "只写不读" is a
+// governance violation.  This table is the single audit reference.
+//
+// Key                                    | Writer(s)                     | Reader(s)                        | Displayer(s)                 | Fallback
+// ---------------------------------------|-------------------------------|----------------------------------|------------------------------|----------
+// prompt_surface_state_snapshot           | loop_lifecycle                | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no snapshot in sidecar
+// prompt_surface_evidence                | loop_lifecycle                | session_artifact, cache_semantics| TUI status panels, API       | missing → "surface changed"
+// context_compaction_record              | message_building (compaction) | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no compaction visible
+// context_compaction_continuity_packet   | message_building (compaction) | message_building (filter),       | TUI/Web diagnostics,         | missing → fallback to legacy filter
+//                                        |                               | session_artifact, scheduler      | scheduler hydrate            |
+// context_compaction_lifecycle_summary   | loop_lifecycle (compaction)   | session_artifact, telemetry,     | TUI status/input pipeline,   | missing → no lifecycle display
+//                                        |                               | TUI (input_pipeline, status)     | API                          |
+// context_pressure_governance_summary    | loop_lifecycle (pressure)     | session_artifact, telemetry,     | TUI status panels, API       | missing → no pressure display
+//                                        |                               | server session_runtime           |                              |
+// context_lightweight_trim_summary       | message_building (trim)       | session_artifact                | TUI/Web diagnostics          | missing → no trim visible
+// pending_sanitizer_stage               | server (resume/continue)      | loop_lifecycle (consume-on-read) | internal only               | missing → defaults to PreRequest
+//
+// "Consume-on-read" keys (like pending_sanitizer_stage) are removed from
+// metadata after first read — they are transient lifecycle signals, not
+// persistent state.
+//
 pub const PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_state_snapshot";
 pub const PROMPT_SURFACE_EVIDENCE_METADATA_KEY: &str = "prompt_surface_evidence";
 pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";

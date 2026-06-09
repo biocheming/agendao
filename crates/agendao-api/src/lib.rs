@@ -839,6 +839,25 @@ pub struct MessageTokensInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Prompt request from a client (CLI, TUI, Web, API).
+///
+/// # Command/input authority (AgenDao 木律, P2.3)
+///
+/// `message` and `command` coexist in this struct:
+/// - `message`: pre-formatted text (may contain `/command args` from CLI)
+/// - `command`: structured command hint for diagnostics/routing
+///
+/// **Precedence**: `message` takes precedence for model-visible text.
+/// The session ingress layer is the canonical authority.
+///
+/// **Transport coverage**:
+/// - Direct (in-process): both fields reach the orchestrator.
+/// - HTTP / Unix: `message` always arrives; `command` depends on whether
+///   the transport client sets `PromptRequest.command` (currently only
+///   `send_command_prompt` does; `send_prompt` hardcodes `None`).
+///
+/// **Future**: make the session ingress layer own command→message
+/// concatenation, and ensure `command` flows across all transport paths.
 pub struct PromptRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -856,6 +875,8 @@ pub struct PromptRequest {
     pub scheduler_profile: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    /// Structured command hint (e.g. "run", "tui").  For diagnostics and
+    /// routing; not directly part of the model-visible text.
     pub command: Option<String>,
     pub arguments: Option<String>,
 }

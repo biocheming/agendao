@@ -131,6 +131,7 @@ mod tests {
             source_surface: None,
             ingress_source: None,
             idempotency_key: None,
+            command: None,
         };
 
         // 验证方法可以调用（类型签名正确）

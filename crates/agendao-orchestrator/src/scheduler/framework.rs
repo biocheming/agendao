@@ -7,6 +7,24 @@ use std::fmt;
 use super::{SchedulerStageKind, StageToolPolicy};
 use crate::OrchestratorError;
 
+/// Scheduler-side projection of a skill definition.
+///
+/// # Authority
+///
+/// `SchedulerSkillRef` is **not** an independent authority for skill
+/// metadata.  It is a narrow view projected from the skill authority
+/// (`agendao_skill::SkillMeta` / `SkillMetaView`) for scheduler
+/// consumption.  The canonical fields (`name`, `description`, `category`)
+/// mirror `SkillMetaView`; any divergence between the two types is a
+/// semantic drift bug.
+///
+/// # Construction
+///
+/// When constructing from real skill data, prefer projecting from
+/// `SkillMetaView` or `SkillMeta` in the bridging layer (server/routes).
+/// The `From<&str>` and `From<String>` impls are convenience adapters
+/// for config-level skill-name-only references and must NOT carry
+/// authoritative descriptions or categories.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SchedulerSkillRef {
     pub name: String,
@@ -587,4 +605,51 @@ pub enum AggregationStrategy {
     Synthesize,
     /// Concatenate child outputs verbatim.
     Concatenate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P2.1: SchedulerSkillRef locks the current projection field shape.
+    ///
+    /// This is NOT a cross-crate type-equivalence check against
+    /// `agendao_skill::SkillMetaView` (the orchestrator does not depend
+    /// on the skill crate).  It documents the expected projection shape
+    /// and uses type-level assertions so that any future field-type
+    /// change to `SchedulerSkillRef` itself fails this test, forcing
+    /// a reviewer to consider whether `SkillMetaView` also needs updating.
+    ///
+    /// Expected projection shape (mirrors SkillMetaView):
+    ///   name: String, description: String, category: Option<String>
+    #[test]
+    fn scheduler_skill_ref_locks_current_projection_field_shape() {
+        let ref_ = SchedulerSkillRef {
+            name: "test-skill".to_string(),
+            description: "skill description from authority".to_string(),
+            category: Some("debug".to_string()),
+        };
+
+        // Type-level assertions: if any of these change type, this test
+        // fails at compile time, forcing a review of the projection.
+        let _name: String = ref_.name;
+        let _desc: String = ref_.description;
+        let _cat: Option<String> = ref_.category;
+
+        // Default must produce empty/None, not panic.
+        let default_ref = SchedulerSkillRef::default();
+        assert!(default_ref.name.is_empty());
+        assert!(default_ref.description.is_empty());
+        assert!(default_ref.category.is_none());
+    }
+
+    /// From<&str> / From<String> are config adapters that produce name-only refs.
+    /// They must NOT carry authoritative descriptions — those come from SkillMeta.
+    #[test]
+    fn scheduler_skill_ref_from_str_is_name_only() {
+        let ref_ = SchedulerSkillRef::from("my-skill");
+        assert_eq!(ref_.name, "my-skill");
+        assert!(ref_.description.is_empty(), "From<&str> must not set description");
+        assert!(ref_.category.is_none(), "From<&str> must not set category");
+    }
 }

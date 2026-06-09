@@ -286,6 +286,7 @@ async fn handle_prompt<S: SessionStore + Send + 'static>(
         source_surface: Some(agendao_types::MessageSourceSurface::UnixSocket),
         ingress_source: None,
         idempotency_key: None,
+        command: None,
     };
 
     let result = core

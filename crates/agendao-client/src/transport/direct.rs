@@ -57,6 +57,7 @@ impl<S: SessionStore> DirectTransport<S> {
                 .or(Some(agendao_types::MessageSourceSurface::Direct)),
             ingress_source: options.ingress_source,
             idempotency_key: options.idempotency_key,
+            command: options.command,
         };
 
         let result = self
