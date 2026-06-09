@@ -128,11 +128,6 @@ plan"
         input.available_categories,
         input.skill_list,
     );
-    if !capabilities.is_empty() {
-        sections.push(format!(
-            "## Available Execution Resources\n{capabilities}\n\nWhen generating the work plan, reference these agents and categories in the Agent Dispatch Summary and per-task Recommended Agent Profile sections."
-        ));
-    }
     sections.push(
         "## Plan Generation Focus
 - Incorporate Metis findings silently before writing the plan
@@ -153,6 +148,13 @@ When the plan is ready, the downstream review/handoff must be able to present: `
 Generate the Prometheus work plan only. Do not implement, do not edit non-markdown files, and do not claim execution is complete. Produce a concrete plan for `.sisyphus/plans/{name}.md` with assumptions, guardrails, verification strategy, parallelization, and risks."
             .to_string(),
     );
+    // Keep runtime capability catalogs after stable planner-governance text
+    // so provider-side prompt caching sees a more reusable prefix.
+    if !capabilities.is_empty() {
+        sections.push(format!(
+            "## Available Execution Resources\n{capabilities}\n\nWhen generating the work plan, reference these agents and categories in the Agent Dispatch Summary and per-task Recommended Agent Profile sections."
+        ));
+    }
     sections.join(
         "
 
