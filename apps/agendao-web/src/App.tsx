@@ -57,9 +57,11 @@ import {
   isLiveStageStatus,
 } from "./lib/contextPressure";
 import {
+  attachmentKind,
   attachmentContainsWorkspacePath,
   attachmentLabel,
   attachmentWorkspacePath,
+  clipboardImageFiles,
   droppedFiles,
 } from "./lib/composerContext";
 import type { RuntimeSurfaceOutputBlock } from "./lib/history";
@@ -120,6 +122,25 @@ const THEME_FAVICON_SRC: Record<ThemeId, string> = {
 };
 
 type RuntimeSurfaceTab = "queue" | "session" | "inspect";
+type ComposerNotice = { id: number; text: string; count: number };
+
+function composerAttachmentNotice(parts: PromptPart[]) {
+  if (parts.length === 1) {
+    const part = parts[0];
+    const kind = attachmentKind(part);
+    const label = attachmentLabel(part);
+    if (kind === "image") return `Image ready: ${label}`;
+    if (kind === "directory") return `Folder ready: ${label}`;
+    if (kind === "text") return `File ready: ${label}`;
+    return `Attachment ready: ${label}`;
+  }
+
+  const imageCount = parts.filter((part) => attachmentKind(part) === "image").length;
+  if (imageCount === parts.length) {
+    return `${parts.length} images ready`;
+  }
+  return `${parts.length} attachments ready`;
+}
 
 function RuntimeSurfaceList({
   title,
@@ -291,6 +312,7 @@ export default function App() {
     currentRuntimeSurface,
     hasCurrentRuntimeSurface,
   } = useRuntimeSurface();
+  const [composerNotice, setComposerNotice] = useState<ComposerNotice | null>(null);
   const [runtimeSurfaceExpanded, setRuntimeSurfaceExpanded] = useState(false);
   const [runtimeSurfaceTab, setRuntimeSurfaceTab] = useState<RuntimeSurfaceTab>("queue");
   // P2-3: viewport budget for rendered messages. When exceeded, only the most
@@ -299,6 +321,15 @@ export default function App() {
   // connectResolveRequestRef moved to useProviderConnectForm
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
+  const composerNoticeIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!composerNotice) return;
+    const timeoutId = window.setTimeout(() => {
+      setComposerNotice((current) => (current?.id === composerNotice.id ? null : current));
+    }, 2400);
+    return () => window.clearTimeout(timeoutId);
+  }, [composerNotice]);
 
   const recentModels = useMemo(
     () => workspaceContext?.recent_models ?? [],
@@ -786,6 +817,7 @@ export default function App() {
     setMessages((current) => [...current, optimisticMessage]);
     setComposer("");
     setAttachments([]);
+    setComposerNotice(null);
     setStreaming(true);
     setStatusLine("running");
     setLatestRuntimeError(null);
@@ -858,6 +890,7 @@ export default function App() {
       workspaceBasePath,
       uploadJson: apiJson,
     }).catch((error) => {
+      setComposerNotice(null);
       setBanner(`${failurePrefix}: ${formatError(error)}`);
       return [];
     });
@@ -873,11 +906,12 @@ export default function App() {
     if (uploadedPaths.length && !workspaceDirty) {
       reloadWorkspacePreservingSelection();
     }
-    setBanner(
-      nextParts.length === 1
-        ? `Attached ${attachmentLabel(nextParts[0])}`
-        : `Attached ${nextParts.length} items`,
-    );
+    composerNoticeIdRef.current += 1;
+    setComposerNotice({
+      id: composerNoticeIdRef.current,
+      text: composerAttachmentNotice(nextParts),
+      count: nextParts.length,
+    });
   };
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -886,9 +920,13 @@ export default function App() {
   };
 
   const handleComposerPaste = async (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files ?? []).filter((file) =>
-      file.type.startsWith("image/"),
-    );
+    const itemFiles = clipboardImageFiles(event.clipboardData.items ?? []);
+    const files =
+      itemFiles.length > 0
+        ? itemFiles
+        : Array.from(event.clipboardData.files ?? []).filter((file) =>
+            file.type.startsWith("image/"),
+          );
     if (!files.length) return;
     event.preventDefault();
     await attachComposerFiles(files, "Image paste failed");
@@ -1406,8 +1444,10 @@ export default function App() {
                 setComposerDragActive(false);
               }}
               onDrop={(event) => void handleComposerDrop(event)}
+              onAttachFiles={(files, failurePrefix) => void attachComposerFiles(files, failurePrefix)}
               onFileChange={(event) => void handleFileChange(event)}
               onPaste={(event) => void handleComposerPaste(event)}
+              composerNotice={composerNotice}
             />
           </div>
 

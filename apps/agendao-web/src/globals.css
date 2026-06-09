@@ -258,6 +258,23 @@ html[data-theme="cobalt"] {
     color: oklch(from var(--foreground) l c h / 55%);
   }
 
+  .roc-composer-notice-chip {
+    transform-origin: left center;
+    will-change: opacity, transform, filter;
+  }
+
+  .roc-composer-notice-chip[data-state="enter"] {
+    animation: roc-composer-notice-in 220ms cubic-bezier(0.2, 0.72, 0.24, 1);
+  }
+
+  .roc-composer-notice-chip[data-state="exit"] {
+    animation: roc-composer-notice-out 130ms ease-in forwards;
+  }
+
+  .roc-composer-notice-count[data-pulse="true"] {
+    animation: roc-composer-notice-count-pulse 320ms cubic-bezier(0.2, 0.72, 0.24, 1);
+  }
+
   /* ─── Messages ───────────────────────────────────────────────────── */
 
   .roc-message-card {
@@ -269,7 +286,8 @@ html[data-theme="cobalt"] {
   }
 
   .roc-message-card[data-tone="user"] {
-    background: oklch(from var(--foreground) l c h / 2.5%);
+    border-color: oklch(from var(--foreground) l c h / 16%);
+    background: oklch(from var(--foreground) l c h / 4%);
     border-radius: 16px;
     max-width: 80%;
   }
@@ -350,6 +368,10 @@ html[data-theme="cobalt"] {
 
   .roc-message-footer {
     @apply mt-2 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5;
+  }
+
+  .roc-message-footer[data-align="user"] {
+    justify-content: flex-end;
   }
 
   .roc-message-summary {
@@ -1278,6 +1300,52 @@ html[data-theme="cobalt"] {
   100% {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes roc-composer-notice-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+    filter: saturate(0.92);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.003);
+    filter: saturate(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes roc-composer-notice-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.992);
+    filter: saturate(0.95);
+  }
+}
+
+@keyframes roc-composer-notice-count-pulse {
+  0% {
+    transform: scale(0.94);
+    background: oklch(from var(--primary) l c h / 18%);
+  }
+  55% {
+    transform: scale(1.08);
+    background: oklch(from var(--primary) l c h / 28%);
+  }
+  100% {
+    transform: scale(1);
+    background: oklch(from var(--primary) l c h / 16%);
   }
 }
 
