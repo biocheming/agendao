@@ -134,7 +134,12 @@ mod tests {
     use super::*;
     use agendao_types::WorkflowUsageSummary;
 
-    fn workflow_summary(cost: f64, input: u64, output: u64, reasoning: u64) -> WorkflowUsageSummary {
+    fn workflow_summary(
+        cost: f64,
+        input: u64,
+        output: u64,
+        reasoning: u64,
+    ) -> WorkflowUsageSummary {
         WorkflowUsageSummary {
             total_cost: cost,
             input_tokens: input,
@@ -157,7 +162,13 @@ mod tests {
 
     #[test]
     fn resolve_falls_back_to_message_fold_when_no_telemetry() {
-        let fold = MessageFoldUsage { total_cost: 3.5, total_tokens: 320, cache_read_tokens: 15, cache_miss_tokens: 8, cache_write_tokens: 3 };
+        let fold = MessageFoldUsage {
+            total_cost: 3.5,
+            total_tokens: 320,
+            cache_read_tokens: 15,
+            cache_miss_tokens: 8,
+            cache_write_tokens: 3,
+        };
         let resolved = resolve_usage(None, None, Some(&fold));
         assert_eq!(resolved.authority, UsageAuthority::MessageFold);
         assert_eq!(resolved.total_cost, 3.5);
@@ -166,7 +177,10 @@ mod tests {
     #[test]
     fn resolve_prefers_usage_over_message_fold() {
         let usage = usage_with(42.0, 100, 200);
-        let fold = MessageFoldUsage { total_cost: 99.0, ..Default::default() };
+        let fold = MessageFoldUsage {
+            total_cost: 99.0,
+            ..Default::default()
+        };
         let resolved = resolve_usage(None, Some(&usage), Some(&fold));
         assert_eq!(resolved.authority, UsageAuthority::Usage);
         assert_eq!(resolved.total_cost, 42.0);
@@ -179,7 +193,10 @@ mod tests {
             ..Default::default()
         };
         let usage = usage_with(99.0, 1, 1);
-        let fold = MessageFoldUsage { total_cost: 999.0, ..Default::default() };
+        let fold = MessageFoldUsage {
+            total_cost: 999.0,
+            ..Default::default()
+        };
         let resolved = resolve_usage(Some(&books), Some(&usage), Some(&fold));
         assert_eq!(resolved.authority, UsageAuthority::Books);
         assert_eq!(resolved.total_cost, 7.0);
@@ -195,10 +212,16 @@ mod tests {
             ..Default::default()
         };
         let usage = usage_with(42.0, 100, 200);
-        let fold = MessageFoldUsage { total_cost: 99.0, ..Default::default() };
+        let fold = MessageFoldUsage {
+            total_cost: 99.0,
+            ..Default::default()
+        };
         let resolved = resolve_usage(Some(&books), Some(&usage), Some(&fold));
-        assert_eq!(resolved.authority, UsageAuthority::Usage,
-            "empty books should fall through to usage, not display zeros");
+        assert_eq!(
+            resolved.authority,
+            UsageAuthority::Usage,
+            "empty books should fall through to usage, not display zeros"
+        );
         assert_eq!(resolved.total_cost, 42.0);
         assert_eq!(resolved.total_tokens, 300);
     }
@@ -207,8 +230,11 @@ mod tests {
     fn resolve_returns_consistent_authority_for_all_fields() {
         let usage = SessionUsage {
             total_cost: 1.0,
-            input_tokens: 10, output_tokens: 20,
-            cache_read_tokens: 30, cache_miss_tokens: 40, cache_write_tokens: 50,
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_miss_tokens: 40,
+            cache_write_tokens: 50,
             ..Default::default()
         };
         let resolved = resolve_usage(None, Some(&usage), None);

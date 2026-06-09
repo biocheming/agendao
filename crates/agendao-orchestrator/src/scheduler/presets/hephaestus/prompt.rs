@@ -350,7 +350,10 @@ mod tests {
             "Execution Loop (EXPLORE -> PLAN -> DECIDE -> EXECUTE -> VERIFY)",
         ];
         for needle in expected {
-            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+            assert!(
+                rendered.contains(needle),
+                "rendered prompt missing {needle}"
+            );
         }
     }
 }

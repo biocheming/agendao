@@ -2,9 +2,8 @@
 use crate::output_blocks::SchedulerStageBlock;
 use crate::output_blocks::{
     classify_tool_result_display, format_tool_header, BlockTone, MessageBlock, MessagePhase,
-    MessageRole, OutputBlock, QueueItemBlock, ReasoningBlock, SessionEventBlock,
-    SessionEventField, StatusBlock, ToolBlock, ToolPhase, ToolStructuredDetail, ToolWebField,
-    ToolWebPreview,
+    MessageRole, OutputBlock, QueueItemBlock, ReasoningBlock, SessionEventBlock, SessionEventField,
+    StatusBlock, ToolBlock, ToolPhase, ToolStructuredDetail, ToolWebField, ToolWebPreview,
 };
 use agendao_agent::{AgentRenderEvent, AgentRenderOutcome, AgentToolOutput};
 use agendao_types::tool_call_observable_arguments;

@@ -129,11 +129,13 @@ pub fn atlas_prompt_extension(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let mut ext =
-        PresetPromptExtension::new("atlas", "coordination / delegation / verification orchestrator")
-            .with_section("Identity", ATLAS_IDENTITY_SECTION)
-            .with_section("Delegation", delegation)
-            .with_section("Workflow", workflow);
+    let mut ext = PresetPromptExtension::new(
+        "atlas",
+        "coordination / delegation / verification orchestrator",
+    )
+    .with_section("Identity", ATLAS_IDENTITY_SECTION)
+    .with_section("Delegation", delegation)
+    .with_section("Workflow", workflow);
     if !oracle_section.is_empty() {
         ext = ext.with_section("Oracle", oracle_section);
     }
@@ -432,9 +434,15 @@ mod tests {
         let ext = atlas_prompt_extension(&[], &[], &[]);
         let titles: Vec<&str> = ext.extra_sections.iter().map(|(t, _)| t.as_str()).collect();
         assert!(titles.contains(&"Identity"), "must have Identity section");
-        assert!(titles.contains(&"Delegation"), "must have Delegation section");
+        assert!(
+            titles.contains(&"Delegation"),
+            "must have Delegation section"
+        );
         assert!(titles.contains(&"Workflow"), "must have Workflow section");
-        assert!(titles.contains(&"Constraints"), "must have Constraints section");
+        assert!(
+            titles.contains(&"Constraints"),
+            "must have Constraints section"
+        );
         assert!(ext.extra_sections.len() >= 5);
     }
 
@@ -463,7 +471,10 @@ mod tests {
             "</Constraints>",
         ];
         for needle in expected {
-            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+            assert!(
+                rendered.contains(needle),
+                "rendered prompt missing {needle}"
+            );
         }
     }
 }

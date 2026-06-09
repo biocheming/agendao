@@ -106,10 +106,7 @@ fn apply_openai_family_defaults(
     }
 }
 
-fn apply_openrouter_family_defaults(
-    npm: &str,
-    result: &mut HashMap<String, serde_json::Value>,
-) {
+fn apply_openrouter_family_defaults(npm: &str, result: &mut HashMap<String, serde_json::Value>) {
     if npm == "@openrouter/ai-sdk-provider" {
         result.insert("usage".to_string(), serde_json::json!({"include": true}));
     }
@@ -172,7 +169,10 @@ fn apply_openrouter_gemini3_reasoning(
     result: &mut HashMap<String, serde_json::Value>,
 ) {
     if npm == "@openrouter/ai-sdk-provider" && api_id.contains("gemini-3") {
-        result.insert("reasoning".to_string(), serde_json::json!({"effort": "high"}));
+        result.insert(
+            "reasoning".to_string(),
+            serde_json::json!({"effort": "high"}),
+        );
     }
 }
 
@@ -241,7 +241,10 @@ fn apply_alibaba_thinking_flag(
 
 fn apply_gateway_caching(npm: &str, result: &mut HashMap<String, serde_json::Value>) {
     if npm == "@ai-sdk/gateway" {
-        result.insert("gateway".to_string(), serde_json::json!({"caching": "auto"}));
+        result.insert(
+            "gateway".to_string(),
+            serde_json::json!({"caching": "auto"}),
+        );
     }
 }
 
@@ -554,9 +557,17 @@ mod tests {
             result.contains_key("promptCacheKey"),
             "OpenAI provider must inject promptCacheKey"
         );
-        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
-        assert!(key.starts_with("agendao:"), "promptCacheKey must start with agendao:");
-        assert!(key.contains(":chat:default:no-repo"), "defaults: chat/default/no-repo");
+        let key = result["promptCacheKey"]
+            .as_str()
+            .expect("promptCacheKey must be a string");
+        assert!(
+            key.starts_with("agendao:"),
+            "promptCacheKey must start with agendao:"
+        );
+        assert!(
+            key.contains(":chat:default:no-repo"),
+            "defaults: chat/default/no-repo"
+        );
     }
 
     #[test]
@@ -569,7 +580,9 @@ mod tests {
             result.contains_key("prompt_cache_key"),
             "OpenRouter must inject prompt_cache_key"
         );
-        let key = result["prompt_cache_key"].as_str().expect("prompt_cache_key must be a string");
+        let key = result["prompt_cache_key"]
+            .as_str()
+            .expect("prompt_cache_key must be a string");
         assert!(key.starts_with("agendao:"));
     }
 
@@ -615,7 +628,9 @@ mod tests {
         let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
         let result = options("openai", &model, "ses-6", &provider_opts);
 
-        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        let key = result["promptCacheKey"]
+            .as_str()
+            .expect("promptCacheKey must be a string");
         assert!(
             key.contains(":chat:"),
             "cacheStage must default to 'chat' when not provided"
@@ -625,13 +640,13 @@ mod tests {
     #[test]
     fn cache_stage_reads_from_provider_options() {
         let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
-        let provider_opts: HashMap<String, serde_json::Value> = HashMap::from([(
-            "cacheStage".to_string(),
-            serde_json::json!("exec"),
-        )]);
+        let provider_opts: HashMap<String, serde_json::Value> =
+            HashMap::from([("cacheStage".to_string(), serde_json::json!("exec"))]);
         let result = options("openai", &model, "ses-7", &provider_opts);
 
-        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        let key = result["promptCacheKey"]
+            .as_str()
+            .expect("promptCacheKey must be a string");
         assert!(
             key.contains(":exec:"),
             "cacheStage must be read from provider_options"
@@ -642,12 +657,17 @@ mod tests {
     fn cache_preset_hash_and_repo_hash_flow_into_cache_key() {
         let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
         let provider_opts: HashMap<String, serde_json::Value> = HashMap::from([
-            ("cachePresetHash".to_string(), serde_json::json!("sisyphus_v3")),
+            (
+                "cachePresetHash".to_string(),
+                serde_json::json!("sisyphus_v3"),
+            ),
             ("cacheRepoHash".to_string(), serde_json::json!("repo_abc")),
         ]);
         let result = options("openai", &model, "ses-8", &provider_opts);
 
-        let key = result["promptCacheKey"].as_str().expect("promptCacheKey must be a string");
+        let key = result["promptCacheKey"]
+            .as_str()
+            .expect("promptCacheKey must be a string");
         assert!(
             key.contains(":sisyphus_v3:repo_abc"),
             "cachePresetHash and cacheRepoHash must appear in cache key, got: {}",
@@ -665,11 +685,18 @@ mod tests {
 
     #[test]
     fn openrouter_gemini3_injects_reasoning_effort_high() {
-        let model = test_model("openrouter", "@openrouter/ai-sdk-provider", "google/gemini-3-flash");
+        let model = test_model(
+            "openrouter",
+            "@openrouter/ai-sdk-provider",
+            "google/gemini-3-flash",
+        );
         let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
         let result = options("openrouter", &model, "ses", &provider_opts);
 
-        assert!(result.contains_key("usage"), "OpenRouter must inject usage.include");
+        assert!(
+            result.contains_key("usage"),
+            "OpenRouter must inject usage.include"
+        );
         let reasoning = result
             .get("reasoning")
             .expect("gemini-3 via OpenRouter must inject reasoning");
@@ -687,7 +714,10 @@ mod tests {
         let result = options("openrouter", &model, "ses", &provider_opts);
 
         assert!(result.contains_key("usage"));
-        assert!(!result.contains_key("reasoning"), "non-gemini must not inject reasoning");
+        assert!(
+            !result.contains_key("reasoning"),
+            "non-gemini must not inject reasoning"
+        );
     }
 
     #[test]
@@ -713,7 +743,10 @@ mod tests {
         let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
         let result = options("openai", &model, "ses", &provider_opts);
 
-        assert!(!result.contains_key("include"), "non-opencode must not inject include");
+        assert!(
+            !result.contains_key("include"),
+            "non-opencode must not inject include"
+        );
         assert_eq!(
             result.get("reasoningEffort").and_then(|v| v.as_str()),
             Some("medium"),
@@ -723,11 +756,8 @@ mod tests {
 
     #[test]
     fn alibaba_cn_reasoning_model_injects_enable_thinking() {
-        let model = test_model_with_reasoning(
-            "alibaba-cn",
-            "@ai-sdk/openai-compatible",
-            "qwen3-coder",
-        );
+        let model =
+            test_model_with_reasoning("alibaba-cn", "@ai-sdk/openai-compatible", "qwen3-coder");
         let provider_opts: HashMap<String, serde_json::Value> = HashMap::new();
         let result = options("alibaba-cn", &model, "ses", &provider_opts);
 

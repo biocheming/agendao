@@ -352,6 +352,7 @@ impl BlockingApiClient {
         idempotency_key: Option<String>,
         source_origin: Option<agendao_types::MessageSourceOrigin>,
         source_surface: Option<agendao_types::MessageSourceSurface>,
+        command: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let request = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
@@ -362,7 +363,7 @@ impl BlockingApiClient {
             scheduler_profile,
             model,
             variant,
-            command: None,
+            command,
             arguments: None,
             source_origin,
             source_surface,

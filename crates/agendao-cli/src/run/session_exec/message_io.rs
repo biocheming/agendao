@@ -15,16 +15,13 @@
 /// **Structured command preservation (P2.3):**
 /// - **Direct transport**: `PromptOptions.command` flows through to
 ///   `PromptExecutionOptions.command`, preserved end-to-end.
-/// - **HTTP / Unix transport**: `PromptOptions.command` is present in
-///   the `PromptOptions` struct but `send_prompt` does not yet forward
-///   it to the wire `PromptRequest.command`.  The full `message` text
-///   is always sent; only the structured hint is deferred to a future
-///   transport protocol update.
+/// - **HTTP / Unix transport**: `PromptOptions.command` is forwarded to
+///   `PromptRequest.command` / JSON-RPC params, so session ingress sees
+///   both the full text and the structured hint.
 ///
 /// **Future**: move the command/input concatenation to the session
 /// ingress layer so that `message` is always the authoritative text and
-/// `command` is a structured hint for diagnostics/routing across all
-/// transport paths.
+/// `command` is a structured hint for diagnostics/routing.
 pub(super) fn build_prompt_message(input: &str, command: Option<&str>) -> String {
     if let Some(cmd) = command {
         if input.trim().is_empty() {

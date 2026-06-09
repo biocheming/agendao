@@ -278,15 +278,15 @@ async fn handle_prompt<S: SessionStore + Send + 'static>(
     // SessionManager as ServerState.sessions. No text mirror needed.
     let options = agendao_orchestrator::PromptExecutionOptions {
         agent_id: req.agent_id,
-        scheduler_profile: None,
+        scheduler_profile: req.scheduler_profile,
         model: req.model,
-        variant: None,
+        variant: req.variant,
         continue_last: req.continue_last,
         source_origin: Some(agendao_types::MessageSourceOrigin::Operator),
         source_surface: Some(agendao_types::MessageSourceSurface::UnixSocket),
         ingress_source: None,
         idempotency_key: None,
-        command: None,
+        command: req.command,
     };
 
     let result = core
@@ -566,9 +566,40 @@ struct PromptRequest {
     #[serde(default)]
     agent_id: Option<String>,
     #[serde(default)]
+    scheduler_profile: Option<String>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    variant: Option<String>,
+    #[serde(default)]
     continue_last: bool,
+    #[serde(default)]
+    command: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromptRequest;
+
+    #[test]
+    fn prompt_request_deserializes_command_scheduler_and_variant() {
+        let request: PromptRequest = serde_json::from_value(serde_json::json!({
+            "session_id": "ses_1",
+            "text": "/run cargo test",
+            "agent_id": "build",
+            "scheduler_profile": "default",
+            "model": "openai/gpt-5",
+            "variant": "fast",
+            "continue_last": true,
+            "command": "run"
+        }))
+        .expect("deserialize unix prompt request");
+
+        assert_eq!(request.command.as_deref(), Some("run"));
+        assert_eq!(request.scheduler_profile.as_deref(), Some("default"));
+        assert_eq!(request.variant.as_deref(), Some("fast"));
+        assert!(request.continue_last);
+    }
 }
 
 #[derive(Debug, Serialize)]

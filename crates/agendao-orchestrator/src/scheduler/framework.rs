@@ -649,7 +649,10 @@ mod tests {
     fn scheduler_skill_ref_from_str_is_name_only() {
         let ref_ = SchedulerSkillRef::from("my-skill");
         assert_eq!(ref_.name, "my-skill");
-        assert!(ref_.description.is_empty(), "From<&str> must not set description");
+        assert!(
+            ref_.description.is_empty(),
+            "From<&str> must not set description"
+        );
         assert!(ref_.category.is_none(), "From<&str> must not set category");
     }
 }

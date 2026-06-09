@@ -204,22 +204,22 @@ impl AsyncApiClient {
         idempotency_key: Option<String>,
         source_origin: Option<agendao_types::MessageSourceOrigin>,
         source_surface: Option<agendao_types::MessageSourceSurface>,
+        command: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
-        let req = PromptRequest {
-            message: (!content.trim().is_empty()).then_some(content),
+        let req = build_prompt_request(
+            content,
             parts,
-            idempotency_key,
-            ingress_source,
             agent,
             scheduler_profile,
             model,
             variant,
-            command: None,
-            arguments: None,
+            ingress_source,
+            idempotency_key,
             source_origin,
             source_surface,
-        };
+            command,
+        );
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "send prompt").await
     }
@@ -1296,5 +1296,61 @@ impl AsyncApiClient {
     ) -> anyhow::Result<T> {
         let bytes = Self::expect_success(resp, action).await?;
         Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
+fn build_prompt_request(
+    content: String,
+    parts: Option<Vec<PromptPart>>,
+    agent: Option<String>,
+    scheduler_profile: Option<String>,
+    model: Option<String>,
+    variant: Option<String>,
+    ingress_source: Option<String>,
+    idempotency_key: Option<String>,
+    source_origin: Option<agendao_types::MessageSourceOrigin>,
+    source_surface: Option<agendao_types::MessageSourceSurface>,
+    command: Option<String>,
+) -> PromptRequest {
+    PromptRequest {
+        message: (!content.trim().is_empty()).then_some(content),
+        parts,
+        idempotency_key,
+        ingress_source,
+        agent,
+        scheduler_profile,
+        model,
+        variant,
+        command,
+        arguments: None,
+        source_origin,
+        source_surface,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_prompt_request;
+
+    #[test]
+    fn send_prompt_request_preserves_structured_command_hint() {
+        let request = build_prompt_request(
+            "/run cargo test".to_string(),
+            None,
+            Some("build".to_string()),
+            Some("default".to_string()),
+            Some("openai/gpt-5".to_string()),
+            Some("fast".to_string()),
+            Some("cli".to_string()),
+            Some("idem-1".to_string()),
+            Some(agendao_types::MessageSourceOrigin::Operator),
+            Some(agendao_types::MessageSourceSurface::Cli),
+            Some("run".to_string()),
+        );
+
+        assert_eq!(request.command.as_deref(), Some("run"));
+        assert_eq!(request.message.as_deref(), Some("/run cargo test"));
+        assert_eq!(request.scheduler_profile.as_deref(), Some("default"));
+        assert_eq!(request.variant.as_deref(), Some("fast"));
     }
 }

@@ -9,9 +9,6 @@ pub use agendao_multimodal::{
     PreflightCapabilityView, PreflightInputPart,
 };
 pub use agendao_types::{
-    PermissionRulesetInfo, SessionInfo, SessionListContract, SessionListHints, SessionListItem,
-    SessionListResponse, SessionRevertInfo, SessionShareInfo, SessionSummaryInfo,
-    SessionTimeInfo, SessionUsage,
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
     ConfigPolicyValidationSnapshot, ContextCompactionLifecycleSummary, ContextCompactionSummary,
@@ -21,29 +18,30 @@ pub use agendao_types::{
     MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
     MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
     MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
-    ModelRepairQuerySummary, ModelToolRepairTelemetrySummary, PromptPart,
+    ModelRepairQuerySummary, ModelToolRepairTelemetrySummary, PermissionRulesetInfo, PromptPart,
     PromptSurfaceEvidenceSummary, ProposalStatus, ProviderConnectionDescriptorCandidate,
-    ProviderProfileDescriptorView,
-    RepairAggregateRow, RepairKind, RepairOutcomeKind, RepairQuery, RepairQueryResponse,
-    RepairSample, SessionCacheSemanticsSummary, SessionCompactionContinuityInspection,
-    SessionContextClosureContract, SessionContextExplain, SessionContextKind,
-    SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
+    ProviderProfileDescriptorView, RepairAggregateRow, RepairKind, RepairOutcomeKind, RepairQuery,
+    RepairQueryResponse, RepairSample, SessionCacheSemanticsSummary,
+    SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
+    SessionContextKind, SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
-    SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
-    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionToolRepairTelemetrySummary,
-    SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent,
-    SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
-    SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
-    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
-    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
-    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
-    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicy,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode, SessionInfo,
+    SessionInsightsResponse, SessionListContract, SessionListHints, SessionListItem,
+    SessionListResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
+    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionRevertInfo, SessionShareInfo,
+    SessionSummaryInfo, SessionTimeInfo, SessionToolRepairTelemetrySummary, SessionUsage,
+    SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord,
+    SkillEvolutionProposal, SkillEvolutionProposalKind, SkillGovernanceDiagnosticSeverity,
+    SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
+    SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubNegativeEntropyResponse, SkillHubPolicy, SkillHubPolicyResponse,
+    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
     SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
     SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
@@ -852,12 +850,11 @@ pub struct MessageTokensInfo {
 ///
 /// **Transport coverage**:
 /// - Direct (in-process): both fields reach the orchestrator.
-/// - HTTP / Unix: `message` always arrives; `command` depends on whether
-///   the transport client sets `PromptRequest.command` (currently only
-///   `send_command_prompt` does; `send_prompt` hardcodes `None`).
+/// - HTTP / Unix: `message` and `command` both arrive when the client
+///   transport provides them.
 ///
 /// **Future**: make the session ingress layer own command→message
-/// concatenation, and ensure `command` flows across all transport paths.
+/// concatenation so adapters no longer need to pre-format `/command args`.
 pub struct PromptRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

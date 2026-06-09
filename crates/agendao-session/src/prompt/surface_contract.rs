@@ -376,10 +376,8 @@ stable line two
         assert!(is_volatile_system_section("Latest Compaction Summary"));
 
         // Raw fingerprint differs because of volatile content.
-        let hash_raw =
-            agendao_provider::cache::text_fingerprint(prompt_with_volatile);
-        let hash_stable =
-            agendao_provider::cache::text_fingerprint(expected_stable);
+        let hash_raw = agendao_provider::cache::text_fingerprint(prompt_with_volatile);
+        let hash_stable = agendao_provider::cache::text_fingerprint(expected_stable);
         assert_ne!(hash_raw, hash_stable);
 
         // After stripping volatile sections, the text must match.
@@ -466,8 +464,10 @@ stable content
         let stripped_jan = strip_volatile_sections(prompt_jan);
         let stripped_jun = strip_volatile_sections(prompt_jun);
 
-        let hash_jan = agendao_provider::cache::text_fingerprint(&normalize_all_lines(&stripped_jan));
-        let hash_jun = agendao_provider::cache::text_fingerprint(&normalize_all_lines(&stripped_jun));
+        let hash_jan =
+            agendao_provider::cache::text_fingerprint(&normalize_all_lines(&stripped_jan));
+        let hash_jun =
+            agendao_provider::cache::text_fingerprint(&normalize_all_lines(&stripped_jun));
 
         assert_eq!(
             hash_jan, hash_jun,

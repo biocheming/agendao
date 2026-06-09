@@ -217,7 +217,9 @@ impl App {
                                             }
                                             _ => "Run cancellation requested".to_string(),
                                         })
-                                        .unwrap_or_else(|| "Run cancellation requested".to_string());
+                                        .unwrap_or_else(|| {
+                                            "Run cancellation requested".to_string()
+                                        });
                                     self.toast.show(ToastVariant::Info, &message, 3000);
                                 }
                             }

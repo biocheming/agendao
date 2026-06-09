@@ -46,9 +46,7 @@
 // Skeleton types are intentionally unused until Phase 5 cut-over.
 #![allow(dead_code)]
 
-use agendao_types::{
-    MemoryRetrievalPacket, SessionContinuityPacket,
-};
+use agendao_types::{MemoryRetrievalPacket, SessionContinuityPacket};
 
 // ── Top-level reflow context ────────────────────────────────────────────
 
@@ -227,7 +225,11 @@ impl PromptReflowContext {
                     record_id: item.card.id.0.clone(),
                 })
                 .collect(),
-            hydrate_record_ids: packet.items.iter().map(|item| item.card.id.0.clone()).collect(),
+            hydrate_record_ids: packet
+                .items
+                .iter()
+                .map(|item| item.card.id.0.clone())
+                .collect(),
         });
 
         let continuity = continuity_packet.map(|packet| PromptReflowContinuityView {
@@ -385,7 +387,10 @@ impl PromptReflowContinuityView {
         ));
 
         if self.has_continuation_dependency {
-            lines.push("  continuation_dependency: present (tool-call turn requires exact chain)".to_string());
+            lines.push(
+                "  continuation_dependency: present (tool-call turn requires exact chain)"
+                    .to_string(),
+            );
         }
 
         if let Some(ref summary) = self.compaction_summary {
@@ -416,7 +421,11 @@ impl PromptReflowContext {
             lines.push(format!(
                 "memory: {} items recalled{}",
                 mem.item_count,
-                if mem.is_snapshot { " (frozen snapshot)" } else { "" },
+                if mem.is_snapshot {
+                    " (frozen snapshot)"
+                } else {
+                    ""
+                },
             ));
         } else {
             lines.push("memory: none".to_string());
@@ -560,14 +569,7 @@ mod tests {
         // has_last_prefetch = true independently of memory_prefetch:
         // the diagnostics sidecar can have a persisted packet even
         // when the current turn has a live prefetch too.
-        let ctx = PromptReflowContext::build(
-            "ses-1",
-            Some(&packet),
-            None,
-            false,
-            true,
-            None,
-        );
+        let ctx = PromptReflowContext::build("ses-1", Some(&packet), None, false, true, None);
 
         let mem = ctx.memory.expect("memory view should exist");
         assert!(!mem.is_snapshot);
@@ -577,8 +579,14 @@ mod tests {
         // Per-item detail preserved for lossless reminder migration.
         assert_eq!(mem.items[0].title, "Use ArcSwap for config");
         assert_eq!(mem.items[0].summary, "Config reads should be lock-free");
-        assert_eq!(mem.items[0].why_recalled, "matches current refactoring task");
-        assert_eq!(mem.items[0].evidence_summary.as_deref(), Some("session-42 evidence"));
+        assert_eq!(
+            mem.items[0].why_recalled,
+            "matches current refactoring task"
+        );
+        assert_eq!(
+            mem.items[0].evidence_summary.as_deref(),
+            Some("session-42 evidence")
+        );
         assert!(mem.items[0].last_validated_at.is_some());
         assert_eq!(mem.hydrate_record_ids, vec!["rec-1", "rec-2"]);
 
@@ -591,14 +599,7 @@ mod tests {
     #[test]
     fn reflow_context_builds_from_continuity_packet_only() {
         let packet = sample_continuity_packet();
-        let ctx = PromptReflowContext::build(
-            "ses-2",
-            None,
-            Some(&packet),
-            false,
-            false,
-            None,
-        );
+        let ctx = PromptReflowContext::build("ses-2", None, Some(&packet), false, false, None);
 
         assert!(ctx.memory.is_none());
 
@@ -644,14 +645,7 @@ mod tests {
 
     #[test]
     fn reflow_context_handles_empty_state() {
-        let ctx = PromptReflowContext::build(
-            "ses-4",
-            None,
-            None,
-            false,
-            false,
-            None,
-        );
+        let ctx = PromptReflowContext::build("ses-4", None, None, false, false, None);
 
         assert!(ctx.memory.is_none());
         assert!(ctx.continuity.is_none());

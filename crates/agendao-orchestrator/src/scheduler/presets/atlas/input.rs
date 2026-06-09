@@ -90,7 +90,9 @@ Keep this compact, task-ledger-first, and grounded in the current plan rather th
         input.available_categories,
         input.skill_list,
     );
-    sections.push(crate::scheduler::preset::render_preset_prompt_extension(&ext));
+    sections.push(crate::scheduler::preset::render_preset_prompt_extension(
+        &ext,
+    ));
     sections.push(SHARED_EXECUTION_EVIDENCE_CONTRACT.to_string());
     sections.join("\n\n")
 }

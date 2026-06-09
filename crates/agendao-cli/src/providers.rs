@@ -20,6 +20,18 @@ pub(super) async fn setup_providers(
     setup_providers_for_dir(config, &cwd).await
 }
 
+pub(super) async fn shutdown_native_plugins() {
+    let loader = agendao_plugin::global_native_loader();
+    let mut native = loader.lock().await;
+    if native.count() > 0 {
+        tracing::info!(
+            count = native.count(),
+            "shutting down native plugins in CLI"
+        );
+        native.shutdown().await;
+    }
+}
+
 async fn setup_providers_for_dir(
     config: &agendao_config::Config,
     cwd: &Path,

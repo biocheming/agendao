@@ -1417,7 +1417,9 @@ impl App {
                             match client.fork_session(&sid, msg_id.as_deref()) {
                                 Ok(new_session) => {
                                     self.cache_session_from_api(&new_session);
-                                    self.navigate_session_with_prompt_cleanup(new_session.id.clone());
+                                    self.navigate_session_with_prompt_cleanup(
+                                        new_session.id.clone(),
+                                    );
                                     self.ensure_session_view(&new_session.id);
                                     let _ = self.sync_session_from_server(&new_session.id);
                                     self.alert_dialog.set_message(&format!(
