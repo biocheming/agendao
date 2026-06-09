@@ -4,11 +4,11 @@
 
 # AgenDao
 
-> **"完成"不是一个感觉，而是一组可以逐条核对的条件。**
+> **让输入、执行、承载、输出、回流成为一条气脉，而不是五块拼起来的功能。**
 
-大多数 AI 编码工具解决的是"怎么做"的问题——怎么生成代码、怎么调用工具、怎么多步推理。AgenDao 解决的是另一个问题：**当一段软件工作持续数小时、跨越多个 session、涉及多个前端、经过多次 fork 和回滚之后，系统凭什么还能说"这件事做完了"？**
+大多数 AI 编码工具解决的是“怎么做”的问题：怎么生成代码、怎么调用工具、怎么多步推理。AgenDao 解决的是另一个问题：**当一段软件工作持续数小时、跨越多个 session、涉及多个前端、经过多次 fork、回滚、压缩与重放之后，系统凭什么还能保持同一条工作气脉？**
 
-答案不在模型能力上，在治理上。
+答案不只在模型能力上，更在治理上。
 
 当前版本：`v2026.6.6`
 
@@ -16,52 +16,145 @@
 
 ## 一句话理解 AgenDao
 
-AgenDao 和其他 AI Agent工具属于同一类：本地编码智能体运行时。但它的设计重心不在"让模型更聪明"，而在**让系统更可信**。
+AgenDao 和其他 AI Agent 工具属于同一类：本地编码智能体运行时。但它的设计重心不在“让模型更聪明”，而在**让系统更通、也更可信**。
 
-具体来说，AgenDao 不信任"代码编译通过 + 测试通过 = 完成"。它在整个运行时里强制了 11 条宪法约束，并要求每次改进声明"完成"之前通过 8 步检查清单——包括全链路 trace、多 crate 同名类型一致性扫描、可观测读写双路径验证、E2E 测试走真实入口而非手拼中间对象。编译通过被当作"完成"的替代品，是 AgenDao 设计中最明确要杜绝的行为偏差。
+AgenDao 的核心判断是：**系统失真，不是因为模型不够强，而是因为输入、执行、状态、输出、回流分裂成了多份权威。**
 
----
-
-## 11 条宪法（不是原则，是约束）
-
-AgenDao 的设计不是从功能列表倒推出来的，而是从一条宗旨推出来的：
-
-> **每个语义域有且仅有一个权威；适配层引用权威，不复制权威。**
-
-这条宗旨展开为 11 条可执行的宪法：
-
-| 宪法 | 约束 | 违规信号 |
-|------|------|---------|
-| 唯一执行内核 | 所有 LLM 循环由唯一内核驱动，适配层不得自建循环 | 适配层中出现独立的 `while model→tool→model` |
-| 唯一配置真相 | 配置只有一份活真相，读取返回引用而非副本 | `clone()` 后独立缓存的配置副本 |
-| 唯一权限裁决 | 权限判定只在一个地方发生，外部只提交请求 | 多个模块各自实现 `allow/ask/deny` 匹配 |
-| 唯一工具调度 | 工具通过统一调度抽象，不绕过抽象直调注册表 | `registry.get()` 出现在非调度层 |
-| 唯一状态所有权 | 每个状态域有且仅有一个 owner | 外部模块直接写入其他模块的内部字段 |
-| 唯一插件契约 | 插件通过单一协议通信，副作用不绕过前五条 | 插件自建循环、独立判定权限 |
-| 生命周期对称性 | 注册即承诺注销，创建即承诺销毁 | 不对称的 init/cleanup 配对 |
-| 可观测性权利 | 每个活跃执行体在权威注册表中可观测 | 运行中的执行体不在任何注册表中 |
-| 副作用路径唯一 | 副作用必须经由编排层，适配层只做只读查询 | 适配层直接调用领域服务写操作 |
-| 唯一提示面权威 | serialized prompt surface 由唯一权威构造 | 多个层各自拼接 system/tools/messages |
-| 完成即验证 | patch 完成前必须通过 8 步检查清单 | `cargo check` 通过就声明完成 |
-
-这 11 条不是贴在 README 里的装饰。它们是 `AGENTS.md` 中实际生效的指令，每次编码 session 都会被加载。
+所以 AgenDao 的重点不是再加一层“更聪明的 agent”，而是让同一条链路从 prompt input 到下一轮 prompt 之间始终服从同一套治理法则。
 
 ---
 
-## 完成即验证：把"做完"从主观判断变成可审计流程
+## AgenDao 的道纪
 
-第十一条（完成即验证）是 AgenDao 最独特的设计。它要求每个 patch 声明"完成"之前必须：
+AgenDao 的设计不是从功能列表倒推出来的，而是从一条总纲推出来的：
 
-1. **数据流图** — 画出 event → who writes what → who reads it → observation surface
-2. **Producer→Consumer 全链路 Trace** — `grep -rn` 确认每个新增字段至少一个非测试点写入非默认值
-3. **Authority Consumer Verification** — 确认至少一个 consumer 从 authority 读取该值，而非使用本地硬编码常量副本
-4. **All-Sites Scan** — 扫描同名类型在所有 crate 中的定义，全部更新
-5. **E2E 测试走真实入口** — 测试必须调用生产代码的真实入口函数
-6. **验收标准逐条核对** — 逐条打 ✅❌
-7. **可观测双路径** — 验证写路径和读路径同时存在且接通
-8. **Serde/Constructor 兼容** — 新增字段必须是 `Option` 或带 `#[serde(default)]`
+> **每个语义域有且仅有一个权威；权威必须在阴阳之间闭环，在五行之间流转。**
 
-这套流程源于一次系统性复盘：30+ 个缺口不是计划缺陷或宪法冲突，而是检查清单从未被真正执行。
+这里的“阴阳”不是装饰性比喻，而是运行时约束：
+
+- **阳**：输入、触发、执行、展开、显示
+- **阴**：收束、归一、稳定、记账、回收、验证
+
+孤阳则躁：只有输入和执行，没有承载与回流，系统会碎。
+
+孤阴则滞：只有权威和规则，没有真实触发和交付，系统会死。
+
+AgenDao 的“道纪”因此不只是“别重复造轮子”，而是要求每一条产品链路都满足三件事：
+
+1. 有唯一权威
+2. 有阴阳对位
+3. 有五行流转
+
+---
+
+## 五行视角下的 AgenDao
+
+### 木：输入之木
+
+`prompt`、附件、slash 命令、history、引用、模式切换，都属于 `木`。
+
+木的规则是：**贵在生发，忌多头生长。**
+
+所以 AgenDao 不接受：
+
+- 文本、附件、提示语、待发 payload 分裂成多份输入真相
+- 输入组件只显示文本，真正待发内容藏在外部状态
+- 不同前端各自维护不同的 prompt surface 语义
+
+### 火：执行之火
+
+LLM loop、权限裁决、工具调度、乐观提交、取消、中断、重试，都属于 `火`。
+
+火的规则是：**贵在点燃，忌多炉并起。**
+
+所以 AgenDao 要求：
+
+- 所有 `model -> tool -> model` 迭代由唯一执行内核驱动
+- 权限判定只在一个裁决点发生
+- 工具调度、名称修复、回退、归一化只写一次
+
+### 土：承载之土
+
+配置、会话状态、上下文管理、serialized prompt surface、跨端副作用中转，都属于 `土`。
+
+土的规则是：**贵在归一，忌地脉分裂。**
+
+这是 AgenDao 的中枢。木火金水皆可强，土若不稳，整条链路必碎。
+
+所以 AgenDao 要求：
+
+- 配置只有一份活真相
+- 状态域有唯一 owner
+- 一切副作用经由编排层中转
+- 模型请求的 serialized prompt surface 由唯一权威构造
+
+### 金：输出之金
+
+assistant response、tool output、scheduler stage、reasoning 呈现、message projection、事件语法，都属于 `金`。
+
+金的规则是：**贵在成形，忌多法争刃。**
+
+所以 AgenDao 不把“能跑出来很多东西”当作成功；它要求输出有主次、有结构、有唯一成形语法。
+
+### 水：回流之水
+
+telemetry、cache、memory、compaction、replay、resend、workflow usage、session usage，都属于 `水`。
+
+水的规则是：**贵在归藏，忌有显无藏。**
+
+所以 AgenDao 不接受：
+
+- 有展示，没有回灌
+- 有 telemetry 写路径，没有热路径消费
+- cache / usage 在不同前端各说各话
+
+---
+
+## 相生，不是拼装
+
+AgenDao 的目标不是把更多功能塞到一个 agent 里，而是恢复这条相生链：
+
+1. **木生火**：输入能被唯一执行内核直接点燃
+2. **火生土**：执行状态能回收到唯一编排承载
+3. **土生金**：会话、上下文、prompt surface 生成唯一输出成形语法
+4. **金生水**：输出沉淀为 telemetry、cache、memory、usage、replay
+5. **水生木**：上一轮沉淀反哺下一轮输入，而不是只躺在侧栏和日志里
+
+如果一套系统“能输入、能运行、能显示”，却不能自然回到下一轮输入，它就还没有真正闭环。
+
+---
+
+## 相克，不是敌对
+
+五行在 AgenDao 里也是治理边界：
+
+- **金克木**：规则、建议、提示不能压住输入本体
+- **木克土**：输入变体不能无限增殖，冲垮唯一权威
+- **土克水**：治理可以约束回流，但不能把回流压成只展示不消费
+- **水克火**：telemetry / cache / memory 可以反制无节制执行，但不能替代真实执行语义
+- **火克金**：运行事件可以丰富输出，但不能冲散最终交付的成形权
+
+因此，AgenDao 的很多设计选择都不是“更复杂”，而是为了避免相克失衡后出现那种：
+
+> 功能更多了，系统反而更乱了。
+
+---
+
+## 这套说法如何落地
+
+这不是一套只用于写宣言的比喻。它会直接影响代码怎么拆、状态归谁、前端怎么读、回流怎么接。
+
+- 新能力先问 `土`：它的唯一 owner 在哪个 crate、哪个状态域、哪个 authority
+- 新交互再问 `木`：输入是不是仍然回到同一份 prompt authority，而不是偷偷长出第二份草稿
+- 新执行链路必问 `火`：是谁点燃、谁能取消、谁负责权限裁决、谁对运行状态记账
+- 新展示统一问 `金`：这是不是沿用现有事件语法和 message projection，还是又发明了一套“看起来差不多”的输出结构
+- 新 telemetry / cache / memory 必问 `水`：除了写出来，谁会在下一轮真正消费它
+
+对 AgenDao 来说，真正的坏味道不是“代码不够优雅”，而是：
+
+- 一个语义域出现两份真相
+- 一个运行结果只有展示没有回流
+- 一个前端为了方便，开始偷偷复制中层权威
 
 ---
 
@@ -86,19 +179,9 @@ AgenDao 的缓存优化不是"多塞几个 cache 字段"，而是把 prompt surf
 
 ---
 
-## 治理 KPI（不是装饰）
-
-```
-语义重复点数：目标 0
-新增事件改动触点数：目标 1
-跨端行为一致性：目标 100%
-```
-
----
-
 ## 运行时边界
 
-AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 共享同一套 session、scheduler、tool、provider、skill、memory、telemetry authority。
+AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 不是三套产品，而是三张读同一条地脉的面：共享同一套 session、scheduler、tool、provider、skill、memory、telemetry authority。
 
 - provider 不靠 npm 名或历史别名猜测；`ProviderProfile`、descriptor、validation 和 runtime profile 共享同一条 authority 语义
 - session 不把 live context、child workflow 花费和累计消耗混成一笔账；CLI、TUI、Web 都能读到 request/live/workflow 三本账和 context closure contract
@@ -178,13 +261,13 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 ## 内部世界
 
 - `crates/agendao` — 产品分发壳，唯一正式分发入口
-- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 三个前端，共享同一运行时与 authority
-- `crates/agendao-server` — HTTP、SSE、runtime control
-- `crates/agendao-session` — session 领域模型、提示面组织、上下文连续性
-- `crates/agendao-orchestrator` — scheduler / orchestration authority
-- `crates/agendao-provider` — provider profile、transport、descriptor、cache
+- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 三张前端读面，共享同一运行时 authority
+- `crates/agendao-server` — HTTP、SSE、runtime control，承担跨端观测与调度读面
+- `crates/agendao-session` — session 领域模型、提示面组织、上下文连续性，是土与水最重的一层
+- `crates/agendao-orchestrator` — scheduler / orchestration authority，是火与土的中枢
+- `crates/agendao-provider` — provider profile、transport、descriptor、cache，负责 prompt surface 与 usage 语义的边界
 - `crates/agendao-skill` — skill authority、hub、distribution、guard
-- `crates/agendao-memory` — 记忆的验证、检索、冲突与晋升
+- `crates/agendao-memory` — 记忆的验证、检索、冲突与晋升，负责把输出沉淀成可回流之水
 
 更多细目：[docs/README.md](docs/README.md)
 
