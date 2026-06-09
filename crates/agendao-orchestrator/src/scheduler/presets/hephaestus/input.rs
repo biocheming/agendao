@@ -7,7 +7,7 @@ use crate::scheduler::{
     SchedulerExecutionOrchestrationStageInput, SchedulerRetryStageInput,
 };
 
-use super::build_hephaestus_dynamic_prompt;
+use super::hephaestus_prompt_extension;
 
 fn push_optional_section(sections: &mut Vec<String>, title: &str, value: Option<&str>) {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
@@ -64,11 +64,12 @@ execution-orchestration"
 - Do not finish until the request is substantively complete, verified, and proven, or a real blocker is identified."
             .to_string(),
     );
-    sections.push(build_hephaestus_dynamic_prompt(
+    let ext = hephaestus_prompt_extension(
         input.available_agents,
         input.available_categories,
         input.skill_list,
-    ));
+    );
+    sections.push(crate::scheduler::preset::render_preset_prompt_extension(&ext));
     sections.push(SHARED_EXECUTION_EVIDENCE_CONTRACT.to_string());
     sections.join("\n\n")
 }

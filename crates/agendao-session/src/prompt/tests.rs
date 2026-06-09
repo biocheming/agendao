@@ -3499,3 +3499,319 @@ fn review_nudge_failure_does_not_burn_cooldown_but_success_does() {
         Ok(())
     );
 }
+
+// ── P1.1 Commit 5: old-path / new-view equivalence guards ────────────
+//
+// IMPORTANT: these tests compare the new view rendering against a
+// FROZEN BASELINE (inline reimplementation of the original logic),
+// NOT against the now-delegated SessionPrompt method.  This ensures
+// the equivalence test itself doesn't become self-proving after
+// SessionPrompt::render_memory_prefetch_reminder() delegates to the
+// view.
+
+mod reflow_equivalence_tests {
+    use super::super::reflow_context::{PromptReflowContinuityView, PromptReflowMemoryView};
+    use agendao_types::{
+        MemoryCardView, MemoryKind, MemoryRecallView, MemoryRecordId, MemoryRetrievalPacket,
+        MemoryScope, MemoryStatus, MemoryValidationStatus,
+        SessionContinuityPacket, SessionContinuityTurn,
+    };
+
+    fn sample_packet() -> MemoryRetrievalPacket {
+        MemoryRetrievalPacket {
+            generated_at: 1700000000000,
+            snapshot: false,
+            query: Some("test recall".to_string()),
+            scopes: vec![MemoryScope::GlobalWorkspace],
+            items: vec![MemoryRecallView {
+                card: MemoryCardView {
+                    id: MemoryRecordId("rec-1".to_string()),
+                    kind: MemoryKind::Lesson,
+                    scope: MemoryScope::GlobalWorkspace,
+                    status: MemoryStatus::Validated,
+                    title: "Best Practice".to_string(),
+                    summary: "Always use ArcSwap for config.".to_string(),
+                    derived_skill_name: None,
+                    linked_skill_name: None,
+                    confidence: Some(0.9),
+                    validation_status: MemoryValidationStatus::Passed,
+                    last_validated_at: Some(1700000000000),
+                },
+                why_recalled: "matches current task".to_string(),
+                evidence_summary: Some("session-42".to_string()),
+            }],
+            note: None,
+            budget_limit: None,
+        }
+    }
+
+    /// Frozen baseline: the ORIGINAL inline rendering logic from
+    /// `render_memory_prefetch_reminder()` before Phase 5 delegation.
+    /// This is the ground truth that the new view path must match.
+    fn baseline_render_memory_prefetch_reminder(
+        packet: &MemoryRetrievalPacket,
+    ) -> Option<String> {
+        if packet.items.is_empty() {
+            return None;
+        }
+
+        let mut lines = vec!["Turn Memory Recall:".to_string()];
+        if let Some(query) = packet
+            .query
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("- query: {}", query.trim()));
+        }
+        for item in &packet.items {
+            lines.push(format!(
+                "- {} [{:?} / {:?}]",
+                item.card.title, item.card.kind, item.card.validation_status
+            ));
+            lines.push(format!("  why: {}", item.why_recalled));
+            lines.push(format!("  summary: {}", item.card.summary));
+            if let Some(evidence) = item.evidence_summary.as_deref() {
+                lines.push(format!("  evidence: {}", evidence));
+            }
+            if let Some(last_validated_at) = item.card.last_validated_at {
+                lines.push(format!("  last_validated_at: {}", last_validated_at));
+            }
+        }
+
+        Some(lines.join("\n"))
+    }
+
+    #[test]
+    fn memory_prefetch_reminder_identical_between_baseline_and_new_view() {
+        let packet = sample_packet();
+
+        // Frozen baseline: original inline logic.
+        let baseline =
+            baseline_render_memory_prefetch_reminder(&packet).expect("should render");
+
+        // New path: PromptReflowMemoryView::from_packet → render_reminder.
+        let view = PromptReflowMemoryView::from_packet(&packet);
+        let new_reminder = view.render_reminder().expect("should render");
+
+        assert_eq!(
+            baseline, new_reminder,
+            "reminder text must be byte-equivalent between frozen baseline and new view path"
+        );
+    }
+
+    #[test]
+    fn memory_prefetch_empty_packet_returns_none_on_both_paths() {
+        let empty = MemoryRetrievalPacket {
+            generated_at: 0,
+            snapshot: false,
+            query: None,
+            scopes: vec![],
+            items: vec![],
+            note: None,
+            budget_limit: None,
+        };
+
+        assert!(baseline_render_memory_prefetch_reminder(&empty).is_none());
+        assert!(PromptReflowMemoryView::from_packet(&empty).render_reminder().is_none());
+    }
+
+    #[test]
+    fn continuity_view_from_packet_preserves_allowed_ids_semantics() {
+        let packet = SessionContinuityPacket {
+            version: 1,
+            eligible_message_count: 3,
+            exact_recent_tail_count: 2,
+            omitted_older_turns: 1,
+            exact_recent_tail: vec![
+                SessionContinuityTurn {
+                    message_id: "msg-a".to_string(),
+                    role: "user".to_string(),
+                    text: "question".to_string(),
+                    projected: false,
+                },
+                SessionContinuityTurn {
+                    message_id: "msg-b".to_string(),
+                    role: "assistant".to_string(),
+                    text: "answer".to_string(),
+                    projected: false,
+                },
+            ],
+            memory_anchors: vec![],
+            working_ledger: vec![],
+            continuation_dependencies: vec![],
+            latest_compaction_summary: None,
+            limits: None,
+            recall_policy: None,
+        };
+
+        let view = PromptReflowContinuityView::from_packet(&packet);
+
+        // The view's hydrate_message_ids must match the packet's allowed_message_ids.
+        assert_eq!(view.hydrate_message_ids, packet.allowed_message_ids());
+        // View fields must match packet fields.
+        assert_eq!(view.eligible_message_count, 3);
+        assert_eq!(view.exact_recent_tail_count, 2);
+        assert_eq!(view.omitted_older_turns, 1);
+        assert!(!view.has_continuation_dependency);
+        assert!(view.compaction_summary.is_none());
+    }
+}
+
+// ── P1.1 Commit 2: memory-reflow invariant guards ──────────────────────
+
+mod memory_prefetch_tests {
+    use super::super::SessionPrompt;
+    use crate::{MessageRole, Session};
+    use agendao_types::{
+        MemoryCardView, MemoryKind, MemoryRecallView, MemoryRecordId, MemoryRetrievalPacket,
+        MemoryScope, MemoryStatus, MemoryValidationStatus,
+    };
+
+    fn sample_retrieval_packet(n_items: usize) -> MemoryRetrievalPacket {
+        let items = (0..n_items)
+            .map(|i| MemoryRecallView {
+                card: MemoryCardView {
+                    id: MemoryRecordId(format!("mem_{}", i)),
+                    kind: MemoryKind::Lesson,
+                    scope: MemoryScope::GlobalWorkspace,
+                    status: MemoryStatus::Validated,
+                    title: format!("Title {}", i),
+                    summary: format!("Summary {}", i),
+                    derived_skill_name: None,
+                    linked_skill_name: None,
+                    confidence: Some(0.9),
+                    validation_status: MemoryValidationStatus::Passed,
+                    last_validated_at: Some(1700000000000),
+                },
+                why_recalled: format!("relevant to task {}", i),
+                evidence_summary: Some(format!("evidence {}", i)),
+            })
+            .collect();
+        MemoryRetrievalPacket {
+            generated_at: 1700000000000,
+            snapshot: false,
+            query: Some("test query".to_string()),
+            scopes: vec![MemoryScope::GlobalWorkspace],
+            items,
+            note: None,
+            budget_limit: None,
+        }
+    }
+
+    fn push_user_text(session: &mut Session, text: &str) {
+        session.push_message(crate::SessionMessage::user(session.id.clone(), text));
+    }
+
+    #[test]
+    fn apply_memory_prefetch_writes_packet_to_latest_user_metadata() {
+        let packet = sample_retrieval_packet(1);
+        let mut session = Session::new("project", "/tmp");
+        push_user_text(&mut session, "hello");
+
+        SessionPrompt::apply_runtime_memory_prefetch(&mut session, Some(&packet))
+            .expect("should succeed");
+
+        let user_msg = session
+            .messages_mut()
+            .iter()
+            .rfind(|message| matches!(message.role, MessageRole::User))
+            .expect("must have a user message");
+
+        let stored = user_msg
+            .metadata
+            .get("memory_prefetch_packet")
+            .expect("must store memory_prefetch_packet");
+        let stored_packet: MemoryRetrievalPacket =
+            serde_json::from_value(stored.clone()).expect("must deserialize");
+        assert_eq!(stored_packet.items.len(), 1);
+        assert_eq!(stored_packet.items[0].card.title, "Title 0");
+    }
+
+    #[test]
+    fn apply_memory_prefetch_cleans_up_old_metadata_when_packet_is_none() {
+        let packet = sample_retrieval_packet(1);
+        let mut session = Session::new("project", "/tmp");
+        push_user_text(&mut session, "hello");
+
+        // First write.
+        SessionPrompt::apply_runtime_memory_prefetch(&mut session, Some(&packet))
+            .expect("should succeed");
+
+        // Then clear.
+        SessionPrompt::apply_runtime_memory_prefetch(&mut session, None)
+            .expect("should succeed");
+
+        let user_msg = session
+            .messages_mut()
+            .iter()
+            .rfind(|message| matches!(message.role, MessageRole::User))
+            .expect("must have a user message");
+        assert!(
+            !user_msg.metadata.contains_key("memory_prefetch_packet"),
+            "metadata must be cleaned up when packet is None"
+        );
+    }
+
+    #[test]
+    fn apply_memory_prefetch_is_noop_when_no_user_message_exists() {
+        let packet = sample_retrieval_packet(1);
+        let mut session = Session::new("project", "/tmp");
+        // No messages — no user to anchor to.
+
+        let result = SessionPrompt::apply_runtime_memory_prefetch(&mut session, Some(&packet));
+        assert!(result.is_ok(), "should succeed (no-op) even without user messages");
+    }
+
+    #[test]
+    fn render_memory_prefetch_reminder_includes_item_titles_and_why() {
+        let packet = sample_retrieval_packet(2);
+        let reminder =
+            SessionPrompt::render_memory_prefetch_reminder(&packet).expect("reminder should exist");
+
+        // Must contain the header.
+        assert!(reminder.contains("Turn Memory Recall:"));
+        // Must contain query.
+        assert!(reminder.contains("test query"));
+        // Must contain both item titles.
+        assert!(reminder.contains("Title 0"));
+        assert!(reminder.contains("Title 1"));
+        // Must contain why_recalled.
+        assert!(reminder.contains("relevant to task 0"));
+        // Must contain evidence.
+        assert!(reminder.contains("evidence 0"));
+    }
+
+    #[test]
+    fn render_memory_prefetch_reminder_is_none_for_empty_packet() {
+        let packet = sample_retrieval_packet(0);
+        let reminder = SessionPrompt::render_memory_prefetch_reminder(&packet);
+        assert!(reminder.is_none(), "empty packet must produce no reminder");
+    }
+
+    #[test]
+    fn apply_memory_prefetch_injects_system_reminder_into_user_message() {
+        let packet = sample_retrieval_packet(1);
+        let mut session = Session::new("project", "/tmp");
+        push_user_text(&mut session, "initial text");
+
+        SessionPrompt::apply_runtime_memory_prefetch(&mut session, Some(&packet))
+            .expect("should succeed");
+
+        let user_msg = session
+            .messages_mut()
+            .iter()
+            .rfind(|message| matches!(message.role, MessageRole::User))
+            .expect("must have a user message");
+
+        let full_text = user_msg.get_text();
+        // The reminder should be wrapped in <system-reminder>.
+        assert!(
+            full_text.contains("<system-reminder>"),
+            "reminder must use system_reminder wrapper"
+        );
+        assert!(
+            full_text.contains("Turn Memory Recall:"),
+            "reminder text must be injected into user message"
+        );
+    }
+}

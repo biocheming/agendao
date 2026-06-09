@@ -91,18 +91,17 @@ pub fn atlas_synthesis_prompt(profile_suffix: &str) -> String {
     )
 }
 
-pub fn build_atlas_dynamic_prompt(
+pub fn atlas_prompt_extension(
     available_agents: &[AvailableAgentMeta],
     available_categories: &[AvailableCategoryMeta],
     skill_list: &[SchedulerSkillRef],
-) -> String {
+) -> crate::scheduler::preset::PresetPromptExtension {
+    use crate::scheduler::preset::PresetPromptExtension;
+
     let category_skills_guide = build_category_skills_guide(available_categories, skill_list);
     let delegation_table = build_delegation_table(available_agents);
     let oracle_section = build_oracle_section(available_agents);
     let task_management = build_task_management_section();
-
-    let mut sections = Vec::new();
-    sections.push(ATLAS_IDENTITY_SECTION.to_string());
 
     let mut delegation = String::from(ATLAS_DELEGATION_HEADER);
     if !category_skills_guide.is_empty() {
@@ -116,7 +115,6 @@ pub fn build_atlas_dynamic_prompt(
     delegation.push_str("\n\n");
     delegation.push_str(ATLAS_DELEGATION_BODY);
     delegation.push_str("\n</delegation_system>");
-    sections.push(delegation);
 
     let mut workflow = String::from(ATLAS_WORKFLOW_SECTION);
     if !oracle_section.is_empty() {
@@ -124,18 +122,30 @@ pub fn build_atlas_dynamic_prompt(
         workflow.push_str(ATLAS_ORACLE_BRIDGE);
     }
     workflow.push_str("\n</workflow>");
-    sections.push(workflow);
 
+    let caps = [delegation_table, category_skills_guide]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut ext =
+        PresetPromptExtension::new("atlas", "coordination / delegation / verification orchestrator")
+            .with_section("Identity", ATLAS_IDENTITY_SECTION)
+            .with_section("Delegation", delegation)
+            .with_section("Workflow", workflow);
     if !oracle_section.is_empty() {
-        sections.push(oracle_section);
+        ext = ext.with_section("Oracle", oracle_section);
     }
-    sections.push(task_management);
-    sections.push(format!(
-        "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
-        HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
-    ));
-
-    sections.join("\n\n")
+    ext.with_section("Task Management", task_management)
+        .with_section(
+            "Constraints",
+            format!(
+                "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
+                HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
+            ),
+        )
+        .with_capability(caps)
 }
 
 const ATLAS_IDENTITY_SECTION: &str = r#"<identity>
@@ -333,6 +343,16 @@ const ATLAS_ORACLE_BRIDGE: &str = r#"## Escalation
 mod tests {
     use super::*;
 
+    fn render_prompt(
+        agents: &[AvailableAgentMeta],
+        categories: &[AvailableCategoryMeta],
+        skills: &[SchedulerSkillRef],
+    ) -> String {
+        crate::scheduler::preset::render_preset_prompt_extension(&atlas_prompt_extension(
+            agents, categories, skills,
+        ))
+    }
+
     #[test]
     fn atlas_prompt_includes_omo_style_delegation_contract() {
         let agents = vec![
@@ -353,7 +373,7 @@ mod tests {
             name: "rust".into(),
             description: "Rust implementation and debugging tasks".into(),
         }];
-        let prompt = build_atlas_dynamic_prompt(&agents, &categories, &["review-pr".into()]);
+        let prompt = render_prompt(&agents, &categories, &["review-pr".into()]);
         assert!(prompt.contains("You are Atlas - the Master Orchestrator"));
         assert!(prompt.contains("6-Section Prompt Structure"));
         assert!(prompt.contains("If the delegation brief is under 30 lines"));
@@ -396,5 +416,54 @@ mod tests {
         assert!(prompt.contains("**Task Status**"));
         assert!(prompt.contains("**Gate Decision**"));
         assert!(prompt.contains("task boundary"));
+    }
+
+    // ── Commit 6: extension regression ───────────────────────────────
+
+    #[test]
+    fn atlas_extension_has_correct_identity_and_role() {
+        let ext = atlas_prompt_extension(&[], &[], &[]);
+        assert_eq!(ext.preset_name, "atlas");
+        assert!(ext.role_summary.contains("coordination"));
+    }
+
+    #[test]
+    fn atlas_extension_has_key_sections() {
+        let ext = atlas_prompt_extension(&[], &[], &[]);
+        let titles: Vec<&str> = ext.extra_sections.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(titles.contains(&"Identity"), "must have Identity section");
+        assert!(titles.contains(&"Delegation"), "must have Delegation section");
+        assert!(titles.contains(&"Workflow"), "must have Workflow section");
+        assert!(titles.contains(&"Constraints"), "must have Constraints section");
+        assert!(ext.extra_sections.len() >= 5);
+    }
+
+    #[test]
+    fn atlas_extension_render_matches_legacy_prompt_text() {
+        let agents = vec![AvailableAgentMeta {
+            name: "oracle".into(),
+            description: "High-IQ reasoning specialist.".into(),
+            mode: "subagent".into(),
+            cost: "EXPENSIVE".into(),
+        }];
+        let categories = vec![AvailableCategoryMeta {
+            name: "rust".into(),
+            description: "Rust implementation and debugging tasks".into(),
+        }];
+        let skills = vec![SchedulerSkillRef::from("review-pr")];
+        let rendered = crate::scheduler::preset::render_preset_prompt_extension(
+            &atlas_prompt_extension(&agents, &categories, &skills),
+        );
+        let expected = [
+            "You are Atlas - the Master Orchestrator",
+            "### Specialized Agent Routing",
+            "<workflow>",
+            "</workflow>",
+            "<Constraints>",
+            "</Constraints>",
+        ];
+        for needle in expected {
+            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+        }
     }
 }

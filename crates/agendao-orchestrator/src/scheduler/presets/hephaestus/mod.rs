@@ -165,13 +165,13 @@ fn hephaestus_execution_orchestration_charter(
 ) -> String {
     format!(
         "{}{}",
-        build_hephaestus_dynamic_prompt(
+        crate::scheduler::preset::render_preset_prompt_extension(&hephaestus_prompt_extension(
             &plan.available_agents,
             &plan.available_categories,
             plan.effective_skill_list(Some(
                 crate::scheduler::SchedulerStageKind::ExecutionOrchestration,
             )),
-        ),
+        )),
         profile_suffix,
     )
 }

@@ -18,6 +18,10 @@ pub const READ_ONLY_STAGE_TOOLS: &[&str] = &[
     "grep",
     "ls",
     "ast_grep_search",
+    // Phase 6 reflow naming: these hydrate tools are the scheduler-side
+    // consumers of the continuity packet's allowed_message_ids /
+    // allowed_memory_record_ids.  The authoritative explanation of which
+    // ids are authorized lives in PromptReflowContinuityView (session crate).
     "scheduler_context_hydrate",
     "scheduler_memory_hydrate",
 ];

@@ -81,20 +81,19 @@ Return `blocked` only for an actual external blocker.
 Return JSON only, never prose outside JSON."#
 }
 
-pub fn build_hephaestus_dynamic_prompt(
+pub fn hephaestus_prompt_extension(
     available_agents: &[AvailableAgentMeta],
     available_categories: &[AvailableCategoryMeta],
     skill_list: &[SchedulerSkillRef],
-) -> String {
+) -> crate::scheduler::preset::PresetPromptExtension {
+    use crate::scheduler::preset::PresetPromptExtension;
+
     let tool_selection = build_tool_selection_table(available_agents, skill_list);
     let explore_section = build_explore_section(available_agents);
     let category_skills_guide = build_category_skills_guide(available_categories, skill_list);
     let delegation_table = build_delegation_table(available_agents);
     let oracle_section = build_oracle_section(available_agents);
     let task_management = build_task_management_section();
-
-    let mut sections = Vec::new();
-    sections.push(HEPHAESTUS_IDENTITY_SECTION.to_string());
 
     let mut playbook = String::from("<execution_playbook>\n");
     playbook.push_str(HEPHAESTUS_INTENT_GATE);
@@ -127,18 +126,29 @@ pub fn build_hephaestus_dynamic_prompt(
     playbook.push_str("\n\n---\n\n");
     playbook.push_str(HEPHAESTUS_FAILURE_RECOVERY);
     playbook.push_str("\n</execution_playbook>");
-    sections.push(playbook);
 
+    let caps = [delegation_table, category_skills_guide]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut ext =
+        PresetPromptExtension::new("hephaestus", "autonomous deep execution orchestrator")
+            .with_section("Identity", HEPHAESTUS_IDENTITY_SECTION)
+            .with_section("Execution Playbook", playbook);
     if !oracle_section.is_empty() {
-        sections.push(oracle_section);
+        ext = ext.with_section("Oracle", oracle_section);
     }
-    sections.push(task_management);
-    sections.push(format!(
-        "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
-        HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
-    ));
-
-    sections.join("\n\n")
+    ext.with_section("Task Management", task_management)
+        .with_section(
+            "Constraints",
+            format!(
+                "<Constraints>\n{}\n\n{}\n\n{}\n</Constraints>",
+                HARD_BLOCKS, ANTI_PATTERNS, SOFT_GUIDELINES
+            ),
+        )
+        .with_capability(caps)
 }
 
 const HEPHAESTUS_IDENTITY_SECTION: &str = r#"<identity>
@@ -256,6 +266,16 @@ const HEPHAESTUS_FAILURE_RECOVERY: &str = r#"## Failure Recovery — 3-Level Esc
 mod tests {
     use super::*;
 
+    fn render_prompt(
+        agents: &[AvailableAgentMeta],
+        categories: &[AvailableCategoryMeta],
+        skills: &[SchedulerSkillRef],
+    ) -> String {
+        crate::scheduler::preset::render_preset_prompt_extension(&hephaestus_prompt_extension(
+            agents, categories, skills,
+        ))
+    }
+
     #[test]
     fn hephaestus_prompt_includes_omo_style_completion_guarantee() {
         let agents = vec![AvailableAgentMeta {
@@ -264,7 +284,7 @@ mod tests {
             mode: "subagent".into(),
             cost: "CHEAP".into(),
         }];
-        let prompt = build_hephaestus_dynamic_prompt(&agents, &[], &["debug".into()]);
+        let prompt = render_prompt(&agents, &[], &["debug".into()]);
         assert!(prompt.contains("Execution Loop (EXPLORE -> PLAN -> DECIDE -> EXECUTE -> VERIFY)"));
         assert!(prompt.contains("Completion Guarantee (NON-NEGOTIABLE)"));
         assert!(prompt.contains("3-Level Escalation Protocol"));
@@ -285,5 +305,52 @@ mod tests {
         assert!(contract.contains("**Completion Status**"));
         assert!(contract.contains("**What Changed**"));
         assert!(contract.contains("vague polish"));
+    }
+
+    // ── Commit 6: extension regression ───────────────────────────────
+
+    #[test]
+    fn hephaestus_extension_has_correct_identity_and_role() {
+        let ext = hephaestus_prompt_extension(&[], &[], &[]);
+        assert_eq!(ext.preset_name, "hephaestus");
+        assert!(ext.role_summary.contains("autonomous"));
+    }
+
+    #[test]
+    fn hephaestus_extension_has_key_sections() {
+        let ext = hephaestus_prompt_extension(&[], &[], &[]);
+        let titles: Vec<&str> = ext.extra_sections.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(titles.contains(&"Identity"), "must have Identity section");
+        assert!(
+            titles.contains(&"Execution Playbook"),
+            "must have Execution Playbook"
+        );
+        assert!(titles.contains(&"Constraints"), "must have Constraints");
+        assert!(ext.extra_sections.len() >= 4);
+    }
+
+    #[test]
+    fn hephaestus_extension_render_matches_legacy_prompt_text() {
+        let agents = vec![AvailableAgentMeta {
+            name: "explore".into(),
+            description: "Exploration subagent for searching code.".into(),
+            mode: "subagent".into(),
+            cost: "CHEAP".into(),
+        }];
+        let skills = vec![SchedulerSkillRef::from("debug")];
+        let rendered = crate::scheduler::preset::render_preset_prompt_extension(
+            &hephaestus_prompt_extension(&agents, &[], &skills),
+        );
+        let expected = [
+            "You are Hephaestus - the autonomous deep worker",
+            "<execution_playbook>",
+            "</execution_playbook>",
+            "<Constraints>",
+            "</Constraints>",
+            "Execution Loop (EXPLORE -> PLAN -> DECIDE -> EXECUTE -> VERIFY)",
+        ];
+        for needle in expected {
+            assert!(rendered.contains(needle), "rendered prompt missing {needle}");
+        }
     }
 }

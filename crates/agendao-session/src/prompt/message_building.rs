@@ -633,6 +633,17 @@ impl SessionPrompt {
         tail
     }
 
+    /// Build a compaction continuity packet from session state.
+    ///
+    /// # Migration path (Phase 5 → 7)
+    ///
+    /// The packet construction and filtering rules remain the single
+    /// authority for continuity semantics.  In Phase 6, the packet will
+    /// be projected into a `PromptReflowContinuityView` via
+    /// `PromptReflowContinuityView::from_packet()` so that session
+    /// prompt, scheduler hydrate, and diagnostics all consume the same
+    /// explanation surface.  The packet construction itself does NOT
+    /// change — only the consumers' interpretation path.
     fn build_compaction_continuity_packet(
         session: &Session,
         messages: &[SessionMessage],
@@ -4134,5 +4145,157 @@ mod tests {
             }
             _ => panic!("expected completed state"),
         }
+    }
+
+    // ── P1.1 Commit 2: continuity packet invariant guards ───────────────
+
+    #[test]
+    fn build_compaction_continuity_packet_populates_limits_and_count_fields() {
+        let session = crate::Session::new("project", "/tmp");
+        // No messages → all counts are zero, packet is None.
+        let packet = SessionPrompt::build_compaction_continuity_packet(
+            &session,
+            &[],
+            "",
+            "msg-1",
+        );
+        assert!(
+            packet.is_none(),
+            "empty session with no summary must return None"
+        );
+
+        // With a non-empty summary, packet should exist even with empty messages.
+        let packet = SessionPrompt::build_compaction_continuity_packet(
+            &session,
+            &[],
+            "compaction happened",
+            "msg-2",
+        );
+        let pkt = packet.expect("non-empty summary must produce a packet");
+        assert!(pkt.exact_recent_tail.is_empty());
+        assert_eq!(pkt.eligible_message_count, 0);
+        assert!(pkt.latest_compaction_summary.is_some());
+    }
+
+    #[test]
+    fn filter_compacted_messages_rejects_packet_with_empty_allowed_ids() {
+        // When the continuity packet has no exact_recent_tail, no
+        // continuation_dependencies, and no latest_compaction_summary,
+        // allowed_message_ids() is empty → filter_compacted returns None.
+        use agendao_types::{
+            SessionContinuityPacket, CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY,
+        };
+
+        let mut session = crate::Session::new("project", "/tmp");
+        session.add_user_message("first question");
+        session.add_user_message("second question");
+
+        // Packet with zero allowed ids (empty tail, empty deps, no summary).
+        let mut compact_msg =
+            crate::SessionMessage::user(session.id.clone(), "compaction boundary");
+        compact_msg.metadata.insert(
+            CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!(SessionContinuityPacket {
+                version: 1,
+                eligible_message_count: 2,
+                exact_recent_tail_count: 0,
+                omitted_older_turns: 0,
+                exact_recent_tail: vec![],
+                memory_anchors: vec![],
+                working_ledger: vec![],
+                continuation_dependencies: vec![],
+                latest_compaction_summary: None,
+                limits: None,
+                recall_policy: None,
+            }),
+        );
+
+        let result = SessionPrompt::filter_compacted_messages_from_continuity_packet(
+            &session.messages_mut(),
+            1,
+            &compact_msg,
+        );
+        assert!(
+            result.is_none(),
+            "empty allowed_ids must cause filter to reject (return None)"
+        );
+    }
+
+    #[test]
+    fn filter_compacted_messages_requires_all_messages_in_current_turn_chain() {
+        // Messages: [user1, assistant1, user2]. compaction_index = 3 (past end).
+        // allowed_ids = [user1] (excludes assistant1 and user2).
+        // Tail = messages[3..] = []. filtered = [user1] (only via allowed_ids).
+        // Last user = user1 → full chain = [user1, assistant1, user2].
+        // assistant1 ∉ filtered → validation fails → None.
+        use agendao_types::{
+            SessionContinuityPacket, SessionContinuityTurn, CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY,
+        };
+
+        let mut session = crate::Session::new("project", "/tmp");
+        let user1 = session.add_user_message("first question");
+        let user1_id = user1.id.clone();
+        session.add_assistant_message().add_text("first answer");
+        session.add_user_message("second question");
+
+        let mut compact_msg =
+            crate::SessionMessage::user(session.id.clone(), "compaction boundary");
+        compact_msg.metadata.insert(
+            CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!(SessionContinuityPacket {
+                version: 1,
+                eligible_message_count: 3,
+                exact_recent_tail_count: 1,
+                omitted_older_turns: 2,
+                exact_recent_tail: vec![SessionContinuityTurn {
+                    message_id: user1_id.clone(),
+                    role: "user".to_string(),
+                    text: "first question".to_string(),
+                    projected: false,
+                }],
+                memory_anchors: vec![],
+                working_ledger: vec![],
+                continuation_dependencies: vec![],
+                latest_compaction_summary: None,
+                limits: None,
+                recall_policy: None,
+            }),
+        );
+
+        // compaction_index past end → tail empty → only user1 in filtered.
+        let result = SessionPrompt::filter_compacted_messages_from_continuity_packet(
+            &session.messages_mut(),
+            3,
+            &compact_msg,
+        );
+        assert!(
+            result.is_none(),
+            "packet missing intermediate current-turn message must cause filter to reject"
+        );
+    }
+
+    #[test]
+    fn build_compaction_continuity_packet_includes_continuation_deps_for_tool_call_turns() {
+        let mut session = crate::Session::new("project", "/tmp");
+        session.add_user_message("run a command");
+        let assistant = session.add_assistant_message();
+        assistant.add_tool_call("tc-bash", "bash", serde_json::json!({"cmd": "ls"}));
+        session.add_tool_result("tc-bash", "file list", false);
+
+        // A session with a user → assistant(tool_call) → tool_result chain
+        // should produce a continuation dependency.
+        let messages: Vec<_> = session.messages_mut().clone();
+        let packet = SessionPrompt::build_compaction_continuity_packet(
+            &session,
+            &messages,
+            "summary text",
+            "msg-compact",
+        )
+        .expect("should produce a packet");
+
+        assert!(
+            !packet.continuation_dependencies.is_empty(),
+            "tool call turn must produce a continuation dependency"
+        );
     }
 }

@@ -1710,6 +1710,82 @@ mod tests {
         );
     }
 
+    // ── Prompt cache key default value regression ──────────────────────
+    // P1.1: lock down session / stage / preset / repo → cache key mapping.
+
+    #[test]
+    fn prompt_cache_key_defaults_preset_and_repo_when_absent() {
+        // preset_hash = None → "default", repo_hash = None → "no-repo"
+        let key = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "ses",
+            stage: "chat",
+            preset_hash: None,
+            repo_hash: None,
+        });
+        assert!(key.contains(":chat:default:no-repo"));
+
+        // preset_hash = Some("") is empty-after-trim → "default"
+        let key_empty = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "ses",
+            stage: "chat",
+            preset_hash: Some(""),
+            repo_hash: Some(""),
+        });
+        assert!(key_empty.contains(":chat:default:no-repo"));
+    }
+
+    #[test]
+    fn prompt_cache_key_stage_defaults_to_chat_when_empty() {
+        // Empty or whitespace-only stage → "chat"
+        let key = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "ses",
+            stage: "",
+            preset_hash: None,
+            repo_hash: None,
+        });
+        assert!(key.contains(":chat:default:no-repo"));
+
+        let key_ws = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "ses",
+            stage: "   ",
+            preset_hash: None,
+            repo_hash: None,
+        });
+        assert!(key_ws.contains(":chat:default:no-repo"));
+    }
+
+    #[test]
+    fn stable_key_segment_rejects_non_alphanumeric_dash_underscore() {
+        // Valid inputs pass through.
+        assert_eq!(stable_key_segment("abc-123_xyz"), Some("abc-123_xyz"));
+        // Whitespace-only returns None.
+        assert_eq!(stable_key_segment("   "), None);
+        // Empty returns None.
+        assert_eq!(stable_key_segment(""), None);
+        // Special characters (spaces, dots, slashes) make the whole input invalid.
+        assert_eq!(stable_key_segment("abc def"), None);
+        assert_eq!(stable_key_segment("abc.def"), None);
+        assert_eq!(stable_key_segment("abc/def"), None);
+        // Leading/trailing whitespace is trimmed first.
+        assert_eq!(stable_key_segment("  abc  "), Some("abc"));
+    }
+
+    #[test]
+    fn prompt_cache_key_hashes_session_id_so_raw_id_not_leaked() {
+        let key = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "a-very-specific-session-name-with-details",
+            stage: "exec",
+            preset_hash: Some("abc123"),
+            repo_hash: Some("xyz789"),
+        });
+        // The session id must not appear as-is.
+        assert!(!key.contains("a-very-specific-session-name-with-details"));
+        // But the stage, preset, repo segments are verbatim (they are already validated).
+        assert!(key.contains(":exec:abc123:xyz789"));
+        // Prefix must always be there.
+        assert!(key.starts_with("agendao:"));
+    }
+
     fn test_cache_request_fingerprint(
         tools_hash: &str,
         message_prefix_hash: &str,

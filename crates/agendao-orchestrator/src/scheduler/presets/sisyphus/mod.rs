@@ -158,13 +158,14 @@ fn sisyphus_execution_stage_dispatch() -> SchedulerExecutionStageDispatch {
 }
 
 fn sisyphus_dynamic_charter(plan: &SchedulerProfilePlan) -> String {
-    build_sisyphus_dynamic_prompt(
+    let ext = sisyphus_prompt_extension(
         &plan.available_agents,
         &plan.available_categories,
         plan.effective_skill_list(Some(
             crate::scheduler::SchedulerStageKind::ExecutionOrchestration,
         )),
-    )
+    );
+    crate::scheduler::preset::render_preset_prompt_extension(&ext)
 }
 
 fn sisyphus_execution_orchestration_charter(

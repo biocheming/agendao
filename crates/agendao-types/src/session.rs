@@ -2049,3 +2049,215 @@ pub struct SessionTelemetrySnapshot {
     pub last_run_status: String,
     pub updated_at: i64,
 }
+
+// ── Preset prompt extension (shared type, Commit 6) ───────────────────
+
+/// A preset's contribution to the prompt surface.
+///
+/// Owned by both `agendao-session` (prompt surface assembly) and
+/// `agendao-orchestrator` (preset definitions).  Residing in
+/// `agendao-types` avoids a circular dependency between the two crates.
+///
+/// # Authority
+///
+/// Presets own their role definition, instruction text, and capability
+/// projection.  They do NOT own the system header, tool surface, or
+/// memory reflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetPromptExtension {
+    /// Preset identity (e.g. "sisyphus").
+    pub preset_name: String,
+
+    /// One-line role summary.
+    pub role_summary: String,
+
+    /// Preset-authored sections `(title, body)` appended after the
+    /// product header and before the tool surface.
+    pub extra_sections: Vec<(String, String)>,
+
+    /// Capability projection (agent/tool/skill table text).
+    pub capability_projection: Option<String>,
+
+    /// Tone and constraints augment.
+    pub tone_augment: Option<String>,
+}
+
+impl PresetPromptExtension {
+    pub fn new(preset_name: impl Into<String>, role_summary: impl Into<String>) -> Self {
+        Self {
+            preset_name: preset_name.into(),
+            role_summary: role_summary.into(),
+            extra_sections: Vec::new(),
+            capability_projection: None,
+            tone_augment: None,
+        }
+    }
+
+    pub fn with_section(mut self, title: impl Into<String>, body: impl Into<String>) -> Self {
+        self.extra_sections.push((title.into(), body.into()));
+        self
+    }
+
+    pub fn with_capability(mut self, text: impl Into<String>) -> Self {
+        self.capability_projection = Some(text.into());
+        self
+    }
+
+    pub fn with_tone_augment(mut self, text: impl Into<String>) -> Self {
+        self.tone_augment = Some(text.into());
+        self
+    }
+}
+
+#[cfg(test)]
+mod continuity_packet_tests {
+    use super::*;
+
+    fn sample_packet() -> SessionContinuityPacket {
+        SessionContinuityPacket {
+            version: 1,
+            eligible_message_count: 5,
+            exact_recent_tail_count: 3,
+            omitted_older_turns: 2,
+            exact_recent_tail: vec![
+                SessionContinuityTurn {
+                    message_id: "msg-a".to_string(),
+                    role: "user".to_string(),
+                    text: "question".to_string(),
+                    projected: false,
+                },
+                SessionContinuityTurn {
+                    message_id: "msg-b".to_string(),
+                    role: "assistant".to_string(),
+                    text: "answer".to_string(),
+                    projected: false,
+                },
+                SessionContinuityTurn {
+                    message_id: "msg-projected".to_string(),
+                    role: "assistant".to_string(),
+                    text: "hidden".to_string(),
+                    projected: true,
+                },
+            ],
+            memory_anchors: vec![
+                SessionContinuityMemoryAnchor {
+                    record_id: "mem-1".to_string(),
+                    title: "Anchor One".to_string(),
+                    kind: "Lesson".to_string(),
+                    status: "Validated".to_string(),
+                    why_recalled: "relevant".to_string(),
+                },
+                SessionContinuityMemoryAnchor {
+                    record_id: "mem-2".to_string(),
+                    title: "Anchor Two".to_string(),
+                    kind: "Pattern".to_string(),
+                    status: "Consolidated".to_string(),
+                    why_recalled: "also relevant".to_string(),
+                },
+            ],
+            working_ledger: vec![],
+            continuation_dependencies: vec![SessionContinuityDependency {
+                kind: SessionContinuityDependencyKind::AssistantToolCallContinuation,
+                anchor_message_id: Some("msg-a".to_string()),
+                message_ids: vec!["msg-a".to_string(), "msg-b".to_string()],
+            }],
+            latest_compaction_summary: Some(SessionContinuityCompactionSummary {
+                message_id: "msg-compact".to_string(),
+                summary: "compacted 2 messages".to_string(),
+            }),
+            limits: Some(SessionContinuityLimits {
+                recent_tail_messages: 6,
+                context_text_chars: 6000,
+                turn_text_chars: 1200,
+            }),
+            recall_policy: Some("test recall policy".to_string()),
+        }
+    }
+
+    #[test]
+    fn from_value_rejects_unknown_version() {
+        let packet = sample_packet();
+        let value = serde_json::to_value(&packet).expect("packet should serialize");
+
+        // Same version is accepted.
+        assert!(SessionContinuityPacket::from_value(&value).is_some());
+
+        // Bump version → rejected.
+        let mut bad = value.clone();
+        bad["version"] = serde_json::json!(99);
+        assert!(SessionContinuityPacket::from_value(&bad).is_none());
+    }
+
+    #[test]
+    fn allowed_message_ids_excludes_projected_turns_and_deduplicates() {
+        let packet = sample_packet();
+        let ids = packet.allowed_message_ids();
+
+        // Non-projected turns must be included.
+        assert!(ids.contains(&"msg-a".to_string()));
+        assert!(ids.contains(&"msg-b".to_string()));
+        // Projected turns must be excluded.
+        assert!(!ids.contains(&"msg-projected".to_string()));
+        // Continuation dependency ids must be included.
+        assert!(ids.contains(&"msg-a".to_string()));
+        assert!(ids.contains(&"msg-b".to_string()));
+        // Compaction summary id must be included.
+        assert!(ids.contains(&"msg-compact".to_string()));
+        // No duplicates.
+        let mut deduped = ids.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(ids, deduped);
+    }
+
+    #[test]
+    fn allowed_memory_record_ids_returns_anchor_ids_sorted_deduped() {
+        let mut packet = sample_packet();
+        // Add a duplicate anchor id.
+        packet.memory_anchors.push(SessionContinuityMemoryAnchor {
+            record_id: "mem-1".to_string(),
+            title: "Duplicate".to_string(),
+            kind: "Lesson".to_string(),
+            status: "Validated".to_string(),
+            why_recalled: "dup".to_string(),
+        });
+
+        let ids = packet.allowed_memory_record_ids();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], "mem-1");
+        assert_eq!(ids[1], "mem-2");
+    }
+
+    #[test]
+    fn stable_refs_excludes_volatile_fields_like_memory_anchor_titles() {
+        let packet = sample_packet();
+        let refs = packet.stable_refs_value();
+
+        // Must include structural fields.
+        assert!(refs["version"].as_u64().is_some());
+        // Must NOT leak human-readable titles (volatile).
+        let refs_str = serde_json::to_string(&refs).expect("stable_refs should serialize");
+        assert!(
+            !refs_str.contains("Anchor One"),
+            "stable_refs must exclude human-readable anchor titles"
+        );
+    }
+
+    #[test]
+    fn continuity_packet_recall_policy_is_present_and_non_empty() {
+        let packet = sample_packet();
+        let policy = packet
+            .recall_policy
+            .as_deref()
+            .unwrap_or("");
+
+        // Policy field must be present and carry the builder-authored
+        // guidance text. The actual hydrate-tool names are verified via
+        // the SessionPrompt builder (message_building.rs) — this test
+        // guards the serialization side of the contract.
+        assert!(
+            !policy.is_empty(),
+            "recall_policy must be present in every continuity packet"
+        );
+    }
+}
