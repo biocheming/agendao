@@ -15,10 +15,14 @@ pub(super) struct PromptDispatchRequest<'a> {
 
 impl App {
     pub(super) fn paste_clipboard_to_prompt(&mut self) {
-        match Clipboard::read_text() {
-            Ok(text) => {
-                if !text.is_empty() {
-                    self.prompt.insert_text(&text);
+        match Clipboard::read() {
+            Ok(content) => {
+                if content.mime.starts_with("image/") {
+                    self.queue_clipboard_image_attachment(content);
+                    return;
+                }
+                if !content.data.is_empty() {
+                    self.prompt.insert_text(&content.data);
                 }
             }
             Err(err) => {
@@ -97,7 +101,8 @@ impl App {
     pub(super) fn submit_prompt(&mut self) -> anyhow::Result<()> {
         let shell_mode = self.prompt.is_shell_mode();
         let input = self.prompt.take_input();
-        if input.trim().is_empty() {
+        let has_pending_parts = !self.pending_prompt_parts.is_empty();
+        if input.trim().is_empty() && !has_pending_parts {
             return Ok(());
         }
 
@@ -117,7 +122,10 @@ impl App {
             }
         }
 
-        self.submit_prompt_payload(input.clone(), input, None)
+        let parts = (!self.pending_prompt_parts.is_empty())
+            .then(|| std::mem::take(&mut self.pending_prompt_parts));
+        self.sync_prompt_attachment_hint();
+        self.submit_prompt_payload(input.clone(), input, parts)
     }
 
     pub(super) fn submit_prompt_payload(

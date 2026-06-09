@@ -232,6 +232,7 @@ pub enum InteractiveCommand {
     Copy,
     ListAgents,
     SelectAgent(String),
+    AttachImage(String),
     ToggleSidebar,
     ToggleActive,
     ScrollUp,
@@ -447,6 +448,13 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
                 Some(InteractiveCommand::ListAgents)
             } else {
                 Some(InteractiveCommand::SelectAgent(arg))
+            }
+        }
+        "image" => {
+            if arg.is_empty() {
+                Some(InteractiveCommand::Unknown("image".to_string()))
+            } else {
+                Some(InteractiveCommand::AttachImage(arg))
             }
         }
         "sidebar" => Some(InteractiveCommand::ToggleSidebar),
@@ -701,6 +709,12 @@ mod tests {
         assert_eq!(
             parse_interactive_command("/preset prometheus"),
             Some(InteractiveCommand::SelectPreset("prometheus".to_string()))
+        );
+        assert_eq!(
+            parse_interactive_command("/image ./fixtures/cat.png"),
+            Some(InteractiveCommand::AttachImage(
+                "./fixtures/cat.png".to_string()
+            ))
         );
     }
 

@@ -287,7 +287,10 @@ impl App {
             }
             UiActionId::SubmitPrompt => self.submit_prompt()?,
             UiActionId::VoiceInput => self.capture_voice_prompt()?,
-            UiActionId::ClearPrompt => self.prompt.clear(),
+            UiActionId::ClearPrompt => {
+                self.prompt.clear();
+                self.clear_pending_prompt_parts();
+            }
             UiActionId::PasteClipboard => self.paste_clipboard_to_prompt(),
             UiActionId::CopyPrompt => self.copy_prompt_to_clipboard(),
             UiActionId::CutPrompt => self.cut_prompt_to_clipboard(),
@@ -608,6 +611,9 @@ impl App {
             }
             InteractiveCommand::KillTask(id) => {
                 self.handle_kill_task(&id);
+            }
+            InteractiveCommand::AttachImage(path) => {
+                self.attach_image_path(&path);
             }
             InteractiveCommand::ClearScreen => {
                 // TUI doesn't need clear-screen — no-op
