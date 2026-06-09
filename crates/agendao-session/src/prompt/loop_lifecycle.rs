@@ -36,11 +36,7 @@ use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStep
 use super::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, is_terminal_finish,
     merge_tool_definitions, session_message_hook_payload, skill_reflection,
-    surface_contract::{
-        collect_prompt_surface_provider_options, is_volatile_system_section,
-        normalize_stable_system_line, sanctioned_model_context_projection_for_message,
-        PromptSurfaceProviderOptionGroup,
-    },
+    surface_authority::PromptSurfaceInputs, surface_authority::PromptSurfaceSections,
     tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
     SessionStepShared, MAX_STEPS, PENDING_SANITIZER_STAGE_METADATA_KEY,
     PROMPT_SURFACE_EVIDENCE_METADATA_KEY, PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY,
@@ -955,17 +951,6 @@ mod cache_fingerprint_tests {
         );
     }
 
-    #[test]
-    fn tool_policy_hash_tracks_provider_tool_choice_fields() {
-        let options = HashMap::from([(
-            "tool_choice".to_string(),
-            serde_json::json!({"type": "function", "function": {"name": "read"}}),
-        )]);
-
-        assert!(SessionPrompt::tool_policy_hash(Some(&options)).is_some());
-        assert!(SessionPrompt::tool_policy_hash(None).is_none());
-    }
-
     // ── P1.1: snapshot field regression — lock down cache-key and hash fields ──
 
     #[test]
@@ -985,12 +970,20 @@ mod cache_fingerprint_tests {
             "tool-source-a".to_string(),
         );
 
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable.clone(), 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            stable.clone(),
+            100,
+        );
 
         // Same stable fields → same closeai_prompt_cache_key, same generation.
-        let second =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", Some(&first), stable, 200);
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            Some(&first),
+            stable,
+            200,
+        );
 
         assert_eq!(
             first.closeai_prompt_cache_key, second.closeai_prompt_cache_key,
@@ -1077,8 +1070,7 @@ mod cache_fingerprint_tests {
             "tool-source-hash-v1".to_string(),
         );
 
-        let snap_a =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
 
         // Same tool source hash → same snapshot tool fields → same generation.
         let fingerprint_b = test_cache_fingerprint("sys", "tool-hash-v1", "msg-changed", "params");
@@ -1093,12 +1085,8 @@ mod cache_fingerprint_tests {
             "tool-source-hash-v1".to_string(),
         );
 
-        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
-            "ses",
-            Some(&snap_a),
-            stable_b,
-            200,
-        );
+        let snap_b =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses", Some(&snap_a), stable_b, 200);
 
         assert_eq!(
             snap_a.tool_surface_hash, snap_b.tool_surface_hash,
@@ -1128,8 +1116,7 @@ mod cache_fingerprint_tests {
             "tool-source-v1".to_string(),
         );
 
-        let snap_a =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
 
         let stable_b = SessionPrompt::prompt_surface_stable_fields(
             &session,
@@ -1142,12 +1129,8 @@ mod cache_fingerprint_tests {
             "tool-source-v2".to_string(),
         );
 
-        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
-            "ses",
-            Some(&snap_a),
-            stable_b,
-            200,
-        );
+        let snap_b =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses", Some(&snap_a), stable_b, 200);
 
         assert_ne!(
             snap_a.tool_source_surface_hash, snap_b.tool_source_surface_hash,
@@ -1195,6 +1178,7 @@ struct PromptLoopContext {
     provider_id: String,
     agent_name: Option<String>,
     system_prompt: Option<String>,
+    memory_prefetch: Option<agendao_types::MemoryRetrievalPacket>,
     tools: Vec<ToolDefinition>,
     tool_source_digests: Vec<agendao_provider::cache::ToolSurfaceSourceDigest>,
     compiled_request: CompiledExecutionRequest,
@@ -1224,6 +1208,7 @@ struct RuntimeStepInput {
 struct PreparedChatMessages {
     prompt_messages: Vec<SessionMessage>,
     chat_messages: Vec<agendao_provider::Message>,
+    surface_sections: PromptSurfaceSections,
 }
 
 impl SessionPrompt {
@@ -1415,6 +1400,7 @@ impl SessionPrompt {
                         provider_id,
                         agent_name: input.agent.clone(),
                         system_prompt,
+                        memory_prefetch,
                         tools,
                         tool_source_digests,
                         compiled_request,
@@ -1597,6 +1583,7 @@ impl SessionPrompt {
                     provider_id,
                     agent_name: resume_agent,
                     system_prompt,
+                    memory_prefetch: None,
                     tools,
                     tool_source_digests: Vec::new(),
                     compiled_request: compiled_request.clone(),
@@ -2073,7 +2060,7 @@ impl SessionPrompt {
     async fn prepare_chat_messages(
         session_id: &str,
         agent_name: Option<&str>,
-        system_prompt: Option<&str>,
+        surface_inputs: &PromptSurfaceInputs,
         mut filtered_messages: Vec<SessionMessage>,
         provider_type: ProviderType,
     ) -> anyhow::Result<PreparedChatMessages> {
@@ -2102,11 +2089,19 @@ impl SessionPrompt {
             prompt_messages = super::insert_reminders(&prompt_messages, agent, was_plan);
         }
 
-        let mut chat_messages = Self::build_chat_messages(&prompt_messages, system_prompt)?;
+        let output_projection_policy_hash =
+            PromptSurfaceInputs::output_projection_policy_hash(&prompt_messages);
+        let surface_sections =
+            surface_inputs.assemble_sections(output_projection_policy_hash, None, None);
+        let mut chat_messages = Self::build_chat_messages(
+            &prompt_messages,
+            Some(surface_sections.system_text.as_str()),
+        )?;
         apply_caching(&mut chat_messages, provider_type);
         Ok(PreparedChatMessages {
             prompt_messages,
             chat_messages,
+            surface_sections,
         })
     }
 
@@ -2143,34 +2138,23 @@ impl SessionPrompt {
     ///
     /// # Migration path (Phase 7)
     ///
-    /// This function currently reads from individual parameters.  In Phase 7
-    /// it will consume a `PromptSurfaceInputs` aggregating all surface inputs
-    /// into a single contract.  The hash rules (`stable_system_surface_hash`,
-    /// `tool_surface_hash`, etc.) are the single authority for cache fingerprint
-    /// semantics and MUST NOT change.  Commit 1 regression tests lock these
-    /// invariants.
-    fn prompt_surface_stable_fields(
+    /// The hash rules (`stable_system_surface_hash`, `tool_surface_hash`, etc.)
+    /// are the single authority for cache fingerprint semantics and MUST NOT
+    /// change. Commit 1 regression tests lock these invariants.
+    ///
+    /// The hot path now consumes `PromptSurfaceInputs`, so prompt-surface
+    /// fingerprinting reads from the same aggregated authority contract that
+    /// `SessionPrompt` documents for surface assembly.
+    fn prompt_surface_stable_fields_from_inputs(
         session: &Session,
-        prompt_messages: &[SessionMessage],
+        _prompt_messages: &[SessionMessage],
         provider_id: &str,
         model_id: &str,
-        compiled_request: &CompiledExecutionRequest,
         fingerprint: &CacheRequestFingerprint,
-        system_prompt: Option<&str>,
+        _surface_inputs: &PromptSurfaceInputs,
+        surface_sections: &PromptSurfaceSections,
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
-        let provider_options = compiled_request.provider_options.as_ref();
-        let reasoning_mode_hash = provider_options
-            .map(|options| {
-                collect_prompt_surface_provider_options(
-                    options,
-                    PromptSurfaceProviderOptionGroup::ReasoningMode,
-                )
-            })
-            .filter(|relevant| !relevant.is_empty())
-            .map(serde_json::Value::Object)
-            .map(|value| agendao_provider::cache::json_fingerprint(&value));
-        let tool_policy_hash = Self::tool_policy_hash(provider_options);
         let api_shape =
             (fingerprint.family == CacheProtocolFamily::CloseAiCompatible).then(
                 || match fingerprint
@@ -2206,19 +2190,65 @@ impl SessionPrompt {
             model_id: model_id.to_string(),
             api_shape,
             system_hash: fingerprint.surface.system_hash.clone(),
-            stable_system_surface_hash: Self::stable_system_surface_hash(system_prompt),
+            stable_system_surface_hash: surface_sections.stable_system_surface_hash.clone(),
             tool_surface_hash: fingerprint.surface.tools_hash.clone(),
             tool_source_surface_hash,
-            provider_params_hash: fingerprint.surface.api_params_hash.clone(),
-            tool_policy_hash,
-            reasoning_mode_hash,
-            output_projection_policy_hash: Self::output_projection_policy_hash(prompt_messages),
+            provider_params_hash: surface_sections.provider_params_hash.clone(),
+            tool_policy_hash: surface_sections.tool_policy_hash.clone(),
+            reasoning_mode_hash: surface_sections.reasoning_mode_hash.clone(),
+            output_projection_policy_hash: surface_sections.output_projection_policy_hash.clone(),
             scc_stable_refs_hash: Self::scc_stable_refs_hash(session),
-            closeai_prompt_cache_key,
+            closeai_prompt_cache_key: closeai_prompt_cache_key
+                .or_else(|| surface_sections.closeai_prompt_cache_key.clone()),
             ethnopic_policy_hash,
             ethnopic_breakpoint_plan_hash,
-            ingress_policy_hash,
+            ingress_policy_hash: surface_sections
+                .ingress_policy_hash
+                .clone()
+                .or(ingress_policy_hash),
         }
+    }
+
+    #[cfg(test)]
+    fn prompt_surface_stable_fields(
+        session: &Session,
+        prompt_messages: &[SessionMessage],
+        provider_id: &str,
+        model_id: &str,
+        compiled_request: &CompiledExecutionRequest,
+        fingerprint: &CacheRequestFingerprint,
+        system_prompt: Option<&str>,
+        tool_source_surface_hash: String,
+    ) -> PromptSurfaceStableFields {
+        let surface_inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            session.id.clone(),
+            system_prompt.map(str::to_string),
+            None,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            compiled_request.clone(),
+            compiled_request
+                .provider_options
+                .clone()
+                .unwrap_or_default(),
+        );
+        let surface_sections = surface_inputs.assemble_sections(
+            PromptSurfaceInputs::output_projection_policy_hash(prompt_messages),
+            None,
+            None,
+        );
+        Self::prompt_surface_stable_fields_from_inputs(
+            session,
+            prompt_messages,
+            provider_id,
+            model_id,
+            fingerprint,
+            &surface_inputs,
+            &surface_sections,
+            tool_source_surface_hash,
+        )
     }
 
     fn ingress_policy_hash(session: &Session) -> Option<String> {
@@ -2239,12 +2269,16 @@ impl SessionPrompt {
         ))
     }
 
+    #[cfg(test)]
     fn stable_system_surface_hash(system_prompt: Option<&str>) -> String {
         let projection = Self::stable_system_surface_projection(system_prompt.unwrap_or_default());
         agendao_provider::cache::text_fingerprint(&projection)
     }
 
+    #[cfg(test)]
     fn stable_system_surface_projection(system_prompt: &str) -> String {
+        use super::surface_contract::{is_volatile_system_section, normalize_stable_system_line};
+
         let mut lines = Vec::new();
         let mut skipping_section = false;
 
@@ -2276,70 +2310,6 @@ impl SessionPrompt {
         Some(agendao_provider::cache::json_fingerprint(
             &packet.stable_refs_value(),
         ))
-    }
-
-    fn tool_source_surface_hash(
-        base_source_digests: &[agendao_provider::cache::ToolSurfaceSourceDigest],
-        base_tools: &[ToolDefinition],
-        extra_tools: &[ToolDefinition],
-    ) -> String {
-        let base_names = base_tools
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<HashSet<_>>();
-        let effective_extra = extra_tools
-            .iter()
-            .filter(|tool| !base_names.contains(&tool.name))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut groups = if base_source_digests.is_empty() {
-            vec![agendao_provider::cache::ToolSurfaceSourceDigest {
-                source: agendao_provider::cache::ToolSurfaceSourceKind::Base,
-                tool_count: base_tools.len(),
-                tools_hash: agendao_provider::cache::tool_surface_fingerprint(base_tools),
-            }]
-        } else {
-            base_source_digests.to_vec()
-        };
-        groups.push(agendao_provider::cache::ToolSurfaceSourceDigest {
-            source: agendao_provider::cache::ToolSurfaceSourceKind::Mcp,
-            tool_count: effective_extra.len(),
-            tools_hash: agendao_provider::cache::tool_surface_fingerprint(&effective_extra),
-        });
-
-        agendao_provider::cache::tool_source_surface_fingerprint(&groups)
-    }
-
-    fn tool_policy_hash(
-        provider_options: Option<&HashMap<String, serde_json::Value>>,
-    ) -> Option<String> {
-        let relevant = collect_prompt_surface_provider_options(
-            provider_options?,
-            PromptSurfaceProviderOptionGroup::ToolPolicy,
-        );
-        (!relevant.is_empty()).then(|| {
-            agendao_provider::cache::json_fingerprint(&serde_json::Value::Object(relevant))
-        })
-    }
-
-    fn output_projection_policy_hash(prompt_messages: &[SessionMessage]) -> String {
-        let projected = prompt_messages
-            .iter()
-            .filter_map(sanctioned_model_context_projection_for_message)
-            .map(|projection| {
-                serde_json::json!({
-                    "path": projection.path.as_str(),
-                    "policy": projection.policy,
-                    "legacy_without_policy": projection.legacy_without_policy,
-                })
-            })
-            .collect::<Vec<_>>();
-
-        agendao_provider::cache::json_fingerprint(&serde_json::json!({
-            "owner": "sanctioned_model_context_projection",
-            "entries": projected,
-        }))
     }
 
     fn build_prompt_surface_state_snapshot(
@@ -2835,10 +2805,25 @@ impl SessionPrompt {
             let PreparedChatMessages {
                 prompt_messages,
                 mut chat_messages,
+                surface_sections,
             } = Self::prepare_chat_messages(
                 &session_id,
                 prompt_ctx.agent_name.as_deref(),
-                prompt_ctx.system_prompt.as_deref(),
+                &PromptSurfaceInputs::from_session_prompt_parts(
+                    session_id.clone(),
+                    prompt_ctx.system_prompt.clone(),
+                    None,
+                    None,
+                    prompt_ctx.memory_prefetch.clone(),
+                    prompt_ctx.tools.clone(),
+                    prompt_ctx.tool_source_digests.clone(),
+                    prompt_ctx.compiled_request.clone(),
+                    prompt_ctx
+                        .compiled_request
+                        .provider_options
+                        .clone()
+                        .unwrap_or_default(),
+                ),
                 filtered_messages,
                 provider_type,
             )
@@ -2988,11 +2973,13 @@ impl SessionPrompt {
             );
             let base_tools = prompt_ctx.tools.clone();
             let extra_tools = Self::mcp_tools_from_session(session);
-            let tool_source_surface_hash = Self::tool_source_surface_hash(
+            let tool_source_digests = PromptSurfaceInputs::effective_tool_source_digests(
                 prompt_ctx.tool_source_digests.as_slice(),
                 &base_tools,
                 &extra_tools,
             );
+            let tool_source_surface_hash =
+                agendao_provider::cache::tool_source_surface_fingerprint(&tool_source_digests);
             let resolved_tools = merge_tool_definitions(base_tools, extra_tools);
             let provider_profile = prompt_ctx.provider.provider_profile_fingerprint();
             let cache_fingerprint = Self::cache_request_fingerprint(
@@ -3013,14 +3000,29 @@ impl SessionPrompt {
             );
             let previous_prompt_surface_state_snapshot =
                 Self::latest_prompt_surface_state_snapshot(session);
-            let prompt_surface_stable_fields = Self::prompt_surface_stable_fields(
+            let prompt_surface_inputs = PromptSurfaceInputs::from_session_prompt_parts(
+                session_id.clone(),
+                prompt_ctx.system_prompt.clone(),
+                None,
+                None,
+                prompt_ctx.memory_prefetch.clone(),
+                resolved_tools.clone(),
+                tool_source_digests,
+                prompt_ctx.compiled_request.clone(),
+                prompt_ctx
+                    .compiled_request
+                    .provider_options
+                    .clone()
+                    .unwrap_or_default(),
+            );
+            let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
                 session,
                 &prompt_messages,
                 &prompt_ctx.provider_id,
                 &prompt_ctx.model_id,
-                &prompt_ctx.compiled_request,
                 &cache_fingerprint,
-                prompt_ctx.system_prompt.as_deref(),
+                &prompt_surface_inputs,
+                &surface_sections,
                 tool_source_surface_hash,
             );
             let prompt_surface_state_snapshot = Self::build_prompt_surface_state_snapshot(
