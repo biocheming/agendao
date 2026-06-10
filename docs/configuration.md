@@ -90,6 +90,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
   "docs": { ... },
   "watcher": { ... },
   "plugin": { ... },
+  "toolImports": [],
   "agent": { ... },
   "mode": { ... },
   "composition": { ... },
@@ -136,6 +137,74 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | `autoupdate` | boolean 或 string | null | 自动更新。`true` 启用，`false` 禁用，`"notify"` 仅通知 |
 | `schedulerPath` | string | null | 调度器配置文件路径（相对于项目根） |
 | `taskCategoryPath` | string | null | 任务分类配置路径 |
+| `toolImports` | string[] | `[]` | 外部 tool catalog 文件导入列表。支持相对于声明该配置文件的相对路径，也支持绝对路径 |
+
+### 外部 Tool Catalog 导入
+
+当外部工具很多时，不建议把所有工具定义直接堆进主 `agendao.json[c]`。推荐做法是：
+
+```jsonc
+{
+  "toolImports": [
+    "./tools/cadd/tools.jsonc",
+    "~/.config/agendao/tools/lab/tools.jsonc"
+  ]
+}
+```
+
+被导入的 `tools.jsonc` 文件用于承载外部工具清单。当前配置层支持：
+
+- 主配置声明导入文件路径
+- 相对路径按“声明该字段的配置文件所在目录”解析
+- 多个导入文件按配置加载顺序合并
+- 外部 tool catalog 文件中记录 `source` 与 `catalog` 元数据
+- 外部 tool 显式分为两类：
+  - `catalog-only`：只有发现/分类能力，没有执行声明
+  - `executable`：必须提供 `execution` 块
+
+当前版本这一步只完成了**配置层设计与解析能力**。运行时 registry 接线可以在后续阶段再做。
+
+#### tools.jsonc 示例
+
+```jsonc
+{
+  "tools": {
+    "dock_pose": {
+      "source": {
+        "path": "./cadd/molecular_docking/dock_pose.py"
+      },
+      "catalog": {
+        "domain": "cadd",
+        "family": "molecular_docking",
+        "subfamily": "protein_ligand"
+      },
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./runners/dock_pose.py",
+        "arguments_schema_ref": "./schemas/dock_pose.schema.json"
+      }
+    }
+  }
+}
+```
+
+#### 执行声明规则
+
+- 没有 `execution`：按 `catalog-only` 处理
+- 有 `execution`：按 `executable` 处理
+- 第一版 `execution.kind` 只接受 `script_runner`
+- `execution.entry` 是必填项
+- `execution.entry` / `execution.arguments_schema_ref` 都按 `tools.jsonc` 所在目录解析相对路径
+
+#### 目录推断规则
+
+如果 `catalog.domain` / `catalog.family` 没有显式填写，配置层会尝试从 `tools/<domain>/<family>/...` 目录结构做保守推断。例如：
+
+- `tools/cadd/molecular_docking/dock_pose.py`
+  - 推断 `domain = cadd`
+  - 推断 `family = molecular_docking`
+
+显式 `catalog` 字段优先于目录推断。
 
 ---
 
