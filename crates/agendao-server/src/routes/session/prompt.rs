@@ -2868,16 +2868,20 @@ async fn session_prompt_inner(
             None
         };
 
-        let prompt_request = agendao_session::prompt::PromptRequestContext {
+        let prompt_surface_inputs = agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
+            session_id.clone(),
+            task_compiled_request.clone(),
+        )
+        .with_system_prompt(task_system_prompt.clone())
+        .with_env_context(Some(prompt_env_context))
+        .with_preset_extension(prompt_preset_extension)
+        .with_memory_prefetch(memory_prefetch_packet.clone())
+        .with_tools(tool_defs, resolved_tool_surface.source_digests);
+        let prompt_request = agendao_session::prompt::PromptRequestContext::new(
             provider,
-            system_prompt: task_system_prompt.clone(),
-            env_context: Some(prompt_env_context),
-            preset_extension: prompt_preset_extension,
-            memory_prefetch: memory_prefetch_packet.clone(),
-            tools: tool_defs,
-            tool_source_digests: resolved_tool_surface.source_digests,
-            compiled_request: task_compiled_request.clone(),
-            hooks: agendao_session::prompt::PromptHooks {
+            prompt_surface_inputs,
+            task_compiled_request.clone(),
+            agendao_session::prompt::PromptHooks {
                 update_hook: Some(update_hook),
                 event_broadcast,
                 compaction_lifecycle_hook,
@@ -2938,7 +2942,7 @@ async fn session_prompt_inner(
                     }
                 })),
             },
-        };
+        );
 
         let prompt_result = if let Some(token) = task_reserved_run {
             prompt_runner
