@@ -921,6 +921,14 @@ pub async fn create_default_registry_with_config(
     .await;
     register_builtin_tool(
         &registry,
+        crate::skill_search::SkillSearchTool,
+        "skill_knowledge",
+        Some("catalog_search"),
+        &["skill", "catalog", "search"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
         crate::skill_view::SkillViewTool,
         "skill_knowledge",
         Some("catalog_view"),
@@ -1234,6 +1242,10 @@ mod tests {
             .iter()
             .find(|schema| schema.name == "skills_list")
             .expect("skills_list schema should exist");
+        let skill_search = schemas
+            .iter()
+            .find(|schema| schema.name == "skill_search")
+            .expect("skill_search schema should exist");
 
         assert_eq!(read.source_kind, crate::ToolSchemaSourceKind::BuiltIn);
         assert_eq!(
@@ -1250,6 +1262,13 @@ mod tests {
         );
         assert_eq!(
             skills_list
+                .catalog
+                .as_ref()
+                .and_then(|catalog| catalog.family.as_deref()),
+            Some("skill_knowledge")
+        );
+        assert_eq!(
+            skill_search
                 .catalog
                 .as_ref()
                 .and_then(|catalog| catalog.family.as_deref()),

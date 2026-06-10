@@ -46,9 +46,14 @@ impl agendao_orchestrator::ToolExecutor for SessionToolExecutor {
     ) -> Result<agendao_orchestrator::ToolOutput, agendao_orchestrator::ToolExecError> {
         if let Some(allowed_tools) = self.allowed_tools.as_ref() {
             if !allowed_tools.contains(tool_name) {
-                return Err(agendao_orchestrator::ToolExecError::PermissionDenied(
-                    format_disallowed_tool_message(tool_name, allowed_tools),
-                ));
+                let search_facade_compat = allowed_tools
+                    .contains(agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID)
+                    && self.tool_registry.get(tool_name).await.is_some();
+                if !search_facade_compat {
+                    return Err(agendao_orchestrator::ToolExecError::PermissionDenied(
+                        format_disallowed_tool_message(tool_name, allowed_tools),
+                    ));
+                }
             }
         }
         let ctx = (self.tool_ctx_builder)();
@@ -154,11 +159,48 @@ pub(super) struct SessionStepToolDispatcher {
 #[cfg(test)]
 mod tests {
     use super::format_disallowed_tool_message;
+    use super::SessionToolExecutor;
+    use agendao_orchestrator::ExecutionContext;
+    use agendao_tool::{Tool, ToolContext, ToolError, ToolResult, ToolRegistry};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct DirectCompatEchoTool;
+
+    #[async_trait]
+    impl Tool for DirectCompatEchoTool {
+        fn id(&self) -> &str {
+            "webfetch"
+        }
+
+        fn description(&self) -> &str {
+            "test webfetch"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" }
+                },
+                "required": ["url"]
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::simple("webfetch", args.to_string()))
+        }
+    }
 
     #[test]
     fn disallowed_tool_message_points_search_facade_sessions_back_to_catalog_flow() {
         let allowed = std::collections::HashSet::from([
             "skills_categories".to_string(),
+            "skill_search".to_string(),
             "skills_list".to_string(),
             "skill_view".to_string(),
             agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
@@ -178,6 +220,43 @@ mod tests {
         let allowed = std::collections::HashSet::from(["read".to_string(), "write".to_string()]);
         let message = format_disallowed_tool_message("bash", &allowed);
         assert_eq!(message, "Tool `bash` is not allowed in this session");
+    }
+
+    #[tokio::test]
+    async fn search_facade_direct_execution_compat_runs_known_tool() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(DirectCompatEchoTool).await;
+        let executor = SessionToolExecutor {
+            tool_registry: registry,
+            tool_ctx_builder: Arc::new(|| {
+                ToolContext::new("ses_test".into(), "msg_test".into(), ".".into())
+            }),
+            allowed_tools: Some(Arc::new(std::collections::HashSet::from([
+                "skills_categories".to_string(),
+                "skill_search".to_string(),
+                "skills_list".to_string(),
+                "skill_view".to_string(),
+                agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+                agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+                agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+            ]))),
+        };
+
+        let result = agendao_orchestrator::ToolExecutor::execute(
+            &executor,
+            "webfetch",
+            serde_json::json!({"url": "https://example.com"}),
+            &ExecutionContext {
+                session_id: "ses_test".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "test".to_string(),
+                metadata: std::collections::HashMap::new(),
+            },
+        )
+        .await
+        .expect("known execution tool should run through search-facade direct compat");
+
+        assert!(result.output.contains("https://example.com"));
     }
 }
 
