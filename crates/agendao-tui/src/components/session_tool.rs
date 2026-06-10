@@ -22,7 +22,7 @@ use crate::theme::Theme;
 /// Threshold: tool results longer than this are "block" tools with expandable output
 const BLOCK_RESULT_THRESHOLD: usize = 3;
 const TOOL_ARGUMENTS_PREVIEW_LINES: usize = 10;
-const TOOL_ARGUMENTS_PREVIEW_CHARS: usize = 100;
+const TOOL_ARGUMENTS_PREVIEW_CHARS: usize = 50;
 
 pub struct ToolCallRenderInput<'a> {
     pub message_id: &'a str,
@@ -314,6 +314,41 @@ fn dedupe_repeated_title_prefix<'a>(
     }
 }
 
+fn header_preview_for_block_tool(
+    normalized: &str,
+    arguments: &str,
+    result: Option<&TerminalToolResultInfo>,
+) -> Option<String> {
+    if let Some(wrapper_preview) = wrapper_tool_preview(normalized, arguments) {
+        return Some(wrapper_preview);
+    }
+
+    if arguments_need_toggle(arguments) {
+        return None;
+    }
+
+    tool_argument_preview(normalized, arguments).or_else(|| {
+        result
+            .and_then(result_title)
+            .map(|title| format_preview_line(title, 60))
+    })
+}
+
+fn wrapper_tool_preview(normalized: &str, arguments: &str) -> Option<String> {
+    if !matches!(normalized, "tool_catalog_call" | "tool_catalog_search" | "tool_catalog_describe")
+    {
+        return None;
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    let tool_name = value.get("tool").and_then(|value| value.as_str())?.trim();
+    if tool_name.is_empty() {
+        return None;
+    }
+
+    Some(format!("[tool={}]", tool_name))
+}
+
 fn should_show_inline_argument_preview(
     normalized: &str,
     state: TerminalToolState,
@@ -395,15 +430,9 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             Span::styled(name.to_string(), name_style.bg(bg)),
         ];
 
-        let argument_preview = tool_argument_preview(&normalized, arguments);
-        if let Some(ref preview) = argument_preview {
+        if let Some(preview) = header_preview_for_block_tool(&normalized, arguments, result) {
             main_spans.push(Span::styled(
                 format!("  {}", preview),
-                Style::default().fg(theme.text_muted).bg(bg),
-            ));
-        } else if let Some(title) = result.and_then(result_title) {
-            main_spans.push(Span::styled(
-                format!("  {}", format_preview_line(title, 60)),
                 Style::default().fg(theme.text_muted).bg(bg),
             ));
         }
@@ -622,7 +651,7 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             state,
             TerminalToolState::Pending | TerminalToolState::Running
         ) {
-            render_pending_block_items(&normalized, arguments, theme, bg, &mut lines);
+            render_pending_block_items(&normalized, theme, bg, &mut lines);
         }
 
         return ToolCallRenderOutput {
@@ -824,29 +853,16 @@ fn render_shared_block_items(
 
 fn render_pending_block_items(
     normalized: &str,
-    arguments: &str,
     theme: &Theme,
     bg: ratatui::style::Color,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let (status, detail) = match normalized {
-        "bash" | "shell" => (
-            "Executing command…",
-            tool_argument_preview(normalized, arguments),
-        ),
-        "apply_patch" | "applypatch" => ("Preparing patch…", None),
-        "batch" => (
-            "Running batch tool calls…",
-            tool_argument_preview(normalized, arguments),
-        ),
-        "question" => (
-            "Waiting for answers…",
-            tool_argument_preview(normalized, arguments),
-        ),
-        "todowrite" | "todo_write" => (
-            "Updating todo list…",
-            tool_argument_preview(normalized, arguments),
-        ),
+    let status = match normalized {
+        "bash" | "shell" => "Executing command…",
+        "apply_patch" | "applypatch" => "Preparing patch…",
+        "batch" => "Running batch tool calls…",
+        "question" => "Waiting for answers…",
+        "todowrite" | "todo_write" => "Updating todo list…",
         _ => return,
     };
 
@@ -858,15 +874,6 @@ fn render_pending_block_items(
         theme,
         bg,
     ));
-
-    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
-        lines.push(block_content_line(
-            format_preview_line(&detail, 96),
-            Style::default().fg(theme.text_muted),
-            theme,
-            bg,
-        ));
-    }
 }
 
 fn inline_pending_status(normalized: &str, arguments: &str) -> Option<String> {
@@ -1983,5 +1990,94 @@ mod tests {
             .filter(|line| line.contains("Execute shell command"))
             .count();
         assert!(repeated <= 2, "{joined_lines:?}");
+    }
+
+    #[test]
+    fn long_wrapped_tool_payload_does_not_repeat_running_or_result_titles() {
+        let theme = crate::theme::Theme::dark();
+        let nested = serde_json::json!({
+            "tool": "bash",
+            "arguments": {
+                "command": "# comment\npython3 -c \"print('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\""
+            }
+        })
+        .to_string();
+
+        let running = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 1,
+                name: "tool_catalog_call",
+                arguments: &nested,
+                arguments_expanded: false,
+                state: TerminalToolState::Running,
+                result: None,
+                show_tool_details: true,
+            },
+            &theme,
+        );
+        let running_text = running
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            running_text
+                .iter()
+                .filter(|line| line.contains("Executing command"))
+                .count(),
+            0,
+            "{running_text:?}"
+        );
+        assert_eq!(
+            running_text
+                .iter()
+                .filter(|line| line.contains("python3 -c"))
+                .count(),
+            1,
+            "{running_text:?}"
+        );
+
+        let completed = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 1,
+                name: "tool_catalog_call",
+                arguments: &nested,
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "Execute shell command\nFound: x\nMore: y\nTail: z".to_string(),
+                    is_error: false,
+                    title: Some("Execute shell command".to_string()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+        let completed_text = completed
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completed_text
+                .iter()
+                .filter(|line| line.contains("Execute shell command"))
+                .count(),
+            1,
+            "{completed_text:?}"
+        );
     }
 }

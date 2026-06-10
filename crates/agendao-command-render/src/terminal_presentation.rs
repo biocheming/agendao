@@ -1024,11 +1024,17 @@ pub fn compose_assistant_segments(
     show_thinking: bool,
 ) -> Vec<TerminalAssistantSegment> {
     let mut segments = Vec::new();
+    let mut push_segment = |segment: TerminalAssistantSegment| {
+        if !segments.is_empty() {
+            segments.push(TerminalAssistantSegment::Spacer);
+        }
+        segments.push(segment);
+    };
 
     for (part_index, part) in message.parts.iter().enumerate() {
         match part {
             TerminalMessagePart::Text { text } => {
-                segments.push(TerminalAssistantSegment::Text {
+                push_segment(TerminalAssistantSegment::Text {
                     part_index,
                     text: text.clone(),
                 });
@@ -1037,7 +1043,7 @@ pub fn compose_assistant_segments(
                 if !show_thinking {
                     continue;
                 }
-                segments.push(TerminalAssistantSegment::Reasoning {
+                push_segment(TerminalAssistantSegment::Reasoning {
                     part_index,
                     text: text.clone(),
                 });
@@ -1058,7 +1064,7 @@ pub fn compose_assistant_segments(
                 } else {
                     TerminalToolState::Pending
                 };
-                segments.push(TerminalAssistantSegment::ToolCall {
+                push_segment(TerminalAssistantSegment::ToolCall {
                     part_index,
                     id: id.clone(),
                     name: name.clone(),
@@ -1069,14 +1075,14 @@ pub fn compose_assistant_segments(
             }
             TerminalMessagePart::ToolResult { .. } => {}
             TerminalMessagePart::File { path, mime } => {
-                segments.push(TerminalAssistantSegment::File {
+                push_segment(TerminalAssistantSegment::File {
                     part_index,
                     path: path.clone(),
                     mime: mime.clone(),
                 });
             }
             TerminalMessagePart::Image { url } => {
-                segments.push(TerminalAssistantSegment::Image {
+                push_segment(TerminalAssistantSegment::Image {
                     part_index,
                     url: url.clone(),
                 });
@@ -1431,7 +1437,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(segments, vec!["text", "reasoning", "tool"]);
+        assert_eq!(segments, vec!["text", "spacer", "reasoning", "spacer", "tool"]);
     }
 
     #[test]
