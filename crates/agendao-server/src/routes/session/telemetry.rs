@@ -1382,6 +1382,10 @@ mod tests {
                 severity: agendao_types::SessionCacheSeverity::LowChange,
                 reason: "surface changed: ingressPolicyHash".to_string(),
                 changed_fields: vec!["ingressPolicyHash".to_string()],
+                stable_prefix_change: None,
+                dynamic_overlay_reasons: Vec::new(),
+                drift_details: Vec::new(),
+                volatility_findings: Vec::new(),
             }),
             label: Some("boundary recorded · prefix changed".to_string()),
         };
@@ -2036,6 +2040,10 @@ mod tests {
                     severity: agendao_types::SessionCacheSeverity::HighChange,
                     reason: "surface changed: toolSurfaceHash".to_string(),
                     changed_fields: vec!["toolSurfaceHash".to_string()],
+                    stable_prefix_change: Some(false),
+                    dynamic_overlay_reasons: Vec::new(),
+                    drift_details: Vec::new(),
+                    volatility_findings: Vec::new(),
                 }),
                 label: Some(
                     "boundary recorded · prefix changed"
@@ -2107,6 +2115,15 @@ mod tests {
                 severity: agendao_types::SessionCacheSeverity::HighChange,
                 reason: "surface changed: toolSurfaceHash".to_string(),
                 changed_fields: vec!["toolSurfaceHash".to_string()],
+                stable_prefix_change: Some(false),
+                dynamic_overlay_reasons: vec!["dynamic env field · Current local time: <dynamic>".to_string()],
+                drift_details: vec![agendao_types::PromptSurfaceDriftDetail {
+                    category: agendao_types::PromptSurfaceDriftCategory::ToolSurface,
+                    field: "toolSurfaceHash".to_string(),
+                    detail: "tool surface changed".to_string(),
+                    severity: agendao_types::SessionCacheSeverity::HighChange,
+                }],
+                volatility_findings: Vec::new(),
             }),
             ingress_stabilization: Some(serde_json::json!({
                 "source": "web",
@@ -2188,6 +2205,18 @@ mod tests {
         assert_eq!(
             value["prompt_surface_evidence"]["changed_fields"][0],
             "toolSurfaceHash"
+        );
+        assert_eq!(
+            value["prompt_surface_evidence"]["stable_prefix_change"],
+            false
+        );
+        assert_eq!(
+            value["prompt_surface_evidence"]["drift_details"][0]["field"],
+            "toolSurfaceHash"
+        );
+        assert_eq!(
+            value["prompt_surface_evidence"]["dynamic_overlay_reasons"][0],
+            "dynamic env field · Current local time: <dynamic>"
         );
         assert_eq!(
             value["ingress_stabilization"]["policy"],

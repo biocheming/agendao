@@ -1775,6 +1775,10 @@ mod cache_semantics_tests {
             severity: SessionCacheSeverity::LowChange,
             reason: "surface changed: ingressPolicyHash".to_string(),
             changed_fields: vec!["ingressPolicyHash".to_string()],
+            stable_prefix_change: None,
+            dynamic_overlay_reasons: Vec::new(),
+            drift_details: Vec::new(),
+            volatility_findings: Vec::new(),
         };
 
         let summary = explain_session_cache_semantics(&explain, None, None, Some(&evidence));
@@ -1789,6 +1793,62 @@ mod cache_semantics_tests {
                 .as_ref()
                 .map(|value| value.changed_fields.clone()),
             Some(vec!["ingressPolicyHash".to_string()])
+        );
+    }
+
+    #[test]
+    fn cache_semantics_preserves_surface_label_with_structured_details() {
+        let explain = SessionContextExplain {
+            resolved_model: None,
+            fork: None,
+            raw_history_messages: 4,
+            raw_model_visible_messages: 4,
+            api_view_messages: 4,
+            api_view_estimated_input_tokens: Some(8_000),
+            api_view_body_chars: Some(32_000),
+            live_context_tokens: Some(8_000),
+            last_request_context_tokens: Some(8_000),
+            owner_session_cumulative_tokens: 9_000,
+            workflow_cumulative_tokens: 9_000,
+        };
+        let evidence = PromptSurfaceEvidenceSummary {
+            severity: SessionCacheSeverity::LowChange,
+            reason: "surface changed: ingressPolicyHash".to_string(),
+            changed_fields: vec!["ingressPolicyHash".to_string()],
+            stable_prefix_change: None,
+            dynamic_overlay_reasons: Vec::new(),
+            drift_details: vec![agendao_types::PromptSurfaceDriftDetail {
+                category: agendao_types::PromptSurfaceDriftCategory::IngressPolicy,
+                field: "ingressPolicyHash".to_string(),
+                detail: "ingress policy changed".to_string(),
+                severity: SessionCacheSeverity::LowChange,
+            }],
+            volatility_findings: vec![agendao_types::PromptSurfaceVolatilityFinding {
+                kind: agendao_types::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface,
+                field: "provider_options".to_string(),
+                detail: "reasoning keys: 1 · tool policy keys: 0".to_string(),
+            }],
+        };
+
+        let summary = explain_session_cache_semantics(&explain, None, None, Some(&evidence));
+
+        assert_eq!(
+            summary.label.as_deref(),
+            Some("surface changed · ingressPolicyHash")
+        );
+        assert_eq!(
+            summary
+                .prompt_surface_evidence
+                .as_ref()
+                .map(|value| value.drift_details.len()),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .prompt_surface_evidence
+                .as_ref()
+                .map(|value| value.volatility_findings.len()),
+            Some(1)
         );
     }
 

@@ -54,10 +54,16 @@ use agendao_execution_types::CompiledExecutionRequest;
 use agendao_provider::cache::ToolSurfaceSourceDigest;
 use agendao_provider::cache::{json_fingerprint, text_fingerprint};
 use agendao_provider::ToolDefinition;
-use agendao_types::MemoryRetrievalPacket;
+use agendao_types::{
+    MemoryRetrievalPacket, PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory,
+    PromptSurfaceDriftDetail, PromptSurfaceEvidenceSummary,
+    PromptSurfaceVolatilityFinding as PublicPromptSurfaceVolatilityFinding,
+    PromptSurfaceVolatilityKind as PublicPromptSurfaceVolatilityKind, SessionCacheSeverity,
+};
 
 use super::surface_contract::{
-    collect_prompt_surface_provider_options, is_volatile_system_section,
+    collect_prompt_surface_provider_options, is_dynamic_catalog_header,
+    is_stable_governance_header, is_volatile_system_section, looks_like_clock_line,
     normalize_stable_system_line, sanctioned_model_context_projection_for_message,
     PromptSurfaceProviderOptionGroup,
 };
@@ -139,6 +145,16 @@ pub(crate) struct PromptSurfaceSections {
     /// This is the model-visible system message.
     pub(crate) system_text: String,
 
+    /// High-stability system prefix rendered ahead of volatile overlays.
+    /// This is the provider-visible prefix we try hardest to keep stable.
+    pub(crate) stable_system_prefix_text: String,
+
+    /// Dynamic overlay rendered after the stable prefix.
+    /// Environment clocks, capability catalogs, and other volatile sections
+    /// should accumulate here so they perturb less of the provider-side
+    /// cached prefix.
+    pub(crate) dynamic_system_overlay_text: String,
+
     /// Stable system surface hash — the volatile-stripped projection
     /// used for cache fingerprint stability.
     pub(crate) stable_system_surface_hash: String,
@@ -172,6 +188,53 @@ pub(crate) struct PromptSurfaceSections {
     pub(crate) output_projection_policy_hash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptSurfaceVolatilityKind {
+    VolatileEnvField,
+    DynamicCatalogBeforeStableGovernance,
+    OversizedCapabilityProjection,
+    ProviderOptionsAffectSurface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptSurfaceVolatilityFinding {
+    pub(crate) kind: PromptSurfaceVolatilityKind,
+    pub(crate) field: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct PromptSurfaceVolatilityReport {
+    pub(crate) findings: Vec<PromptSurfaceVolatilityFinding>,
+}
+
+impl PromptSurfaceVolatilityReport {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptSurfaceDriftCategory {
+    StableSystemSurface,
+    ToolSurface,
+    ToolSourceSurface,
+    ProviderPolicy,
+    ReasoningMode,
+    ToolPolicy,
+    OutputProjection,
+    IngressPolicy,
+    CloseAiPromptCacheKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptSurfaceDriftExplanation {
+    pub(crate) category: PromptSurfaceDriftCategory,
+    pub(crate) field: String,
+    pub(crate) detail: String,
+    pub(crate) severity: SessionCacheSeverity,
+}
+
 // ── Preset contribution (re-export from agendao-types) ─────────────────
 //
 // The canonical PresetPromptExtension lives in agendao-types to avoid
@@ -179,6 +242,35 @@ pub(crate) struct PromptSurfaceSections {
 // This re-export keeps the surface_authority module as the single
 // namespace for prompt surface types within the session crate.
 pub use agendao_types::PresetPromptExtension;
+
+#[derive(Debug, Clone, Default)]
+struct PromptSurfaceSystemLayers {
+    stable_prefix_sections: Vec<String>,
+    dynamic_overlay_sections: Vec<String>,
+}
+
+impl PromptSurfaceSystemLayers {
+    fn stable_system_prefix_text(&self) -> String {
+        self.stable_prefix_sections.join("\n\n")
+    }
+
+    fn dynamic_system_overlay_text(&self) -> String {
+        self.dynamic_overlay_sections.join("\n\n")
+    }
+
+    fn system_text(&self) -> String {
+        let mut sections = Vec::new();
+        let stable = self.stable_system_prefix_text();
+        if !stable.is_empty() {
+            sections.push(stable);
+        }
+        let dynamic = self.dynamic_system_overlay_text();
+        if !dynamic.is_empty() {
+            sections.push(dynamic);
+        }
+        sections.join("\n\n")
+    }
+}
 
 // ── Construction helpers (skeleton, no callers yet) ─────────────────────
 
@@ -248,12 +340,17 @@ impl PromptSurfaceInputs {
             &self.provider_options,
             PromptSurfaceProviderOptionGroup::ToolPolicy,
         );
-        let system_text = self.assemble_system_text();
+        let system_layers = self.assemble_system_layers();
+        let system_text = system_layers.system_text();
+        let stable_system_prefix_text = system_layers.stable_system_prefix_text();
+        let dynamic_system_overlay_text = system_layers.dynamic_system_overlay_text();
         let stable_system_surface_hash =
-            text_fingerprint(&stable_system_surface_projection(&system_text));
+            text_fingerprint(&stable_system_surface_projection(&stable_system_prefix_text));
 
         PromptSurfaceSections {
             system_text,
+            stable_system_prefix_text,
+            dynamic_system_overlay_text,
             stable_system_surface_hash,
             tool_surface_hash,
             tool_source_surface_hash,
@@ -270,8 +367,71 @@ impl PromptSurfaceInputs {
         }
     }
 
-    fn assemble_system_text(&self) -> String {
-        let mut sections = Vec::new();
+    pub(crate) fn detect_volatility(&self) -> PromptSurfaceVolatilityReport {
+        let mut findings = Vec::new();
+
+        if let Some(env_context) = self.env_context.as_deref() {
+            for line in env_context.lines() {
+                if looks_like_clock_line(line) {
+                    findings.push(PromptSurfaceVolatilityFinding {
+                        kind: PromptSurfaceVolatilityKind::VolatileEnvField,
+                        field: "env_context".to_string(),
+                        detail: line.trim().to_string(),
+                    });
+                }
+            }
+        }
+
+        if let Some(extension) = self.preset_extension.as_ref() {
+            if let Some(capability_projection) = extension.capability_projection.as_deref() {
+                let trimmed = capability_projection.trim();
+                if trimmed.len() > 2_000 {
+                    findings.push(PromptSurfaceVolatilityFinding {
+                        kind: PromptSurfaceVolatilityKind::OversizedCapabilityProjection,
+                        field: "capability_projection".to_string(),
+                        detail: format!("{} chars", trimmed.len()),
+                    });
+                }
+            }
+
+            let layers = render_preset_extension_layers(extension);
+            if !layers.dynamic_overlay_sections.is_empty()
+                && layers.stable_prefix_sections.is_empty()
+            {
+                findings.push(PromptSurfaceVolatilityFinding {
+                    kind: PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance,
+                    field: "preset_extension".to_string(),
+                    detail: "dynamic catalog has no stable governance prefix ahead of it"
+                        .to_string(),
+                });
+            }
+        }
+
+        let reasoning = collect_prompt_surface_provider_options(
+            &self.provider_options,
+            PromptSurfaceProviderOptionGroup::ReasoningMode,
+        );
+        let tool_policy = collect_prompt_surface_provider_options(
+            &self.provider_options,
+            PromptSurfaceProviderOptionGroup::ToolPolicy,
+        );
+        if !reasoning.is_empty() || !tool_policy.is_empty() {
+            findings.push(PromptSurfaceVolatilityFinding {
+                kind: PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface,
+                field: "provider_options".to_string(),
+                detail: format!(
+                    "reasoning keys: {} · tool policy keys: {}",
+                    reasoning.len(),
+                    tool_policy.len()
+                ),
+            });
+        }
+
+        PromptSurfaceVolatilityReport { findings }
+    }
+
+    fn assemble_system_layers(&self) -> PromptSurfaceSystemLayers {
+        let mut layers = PromptSurfaceSystemLayers::default();
 
         if let Some(system_prompt) = self
             .system_prompt
@@ -279,7 +439,7 @@ impl PromptSurfaceInputs {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            sections.push(system_prompt.to_string());
+            layers.stable_prefix_sections.push(system_prompt.to_string());
         }
 
         if let Some(env_context) = self
@@ -288,17 +448,22 @@ impl PromptSurfaceInputs {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            sections.push(format!("## Environment Context\n{env_context}"));
+            layers
+                .dynamic_overlay_sections
+                .push(format!("## Environment Context\n{env_context}"));
         }
 
         if let Some(preset_extension) = self.preset_extension.as_ref() {
-            let preset_text = render_preset_extension_for_surface(preset_extension);
-            if !preset_text.is_empty() {
-                sections.push(preset_text);
-            }
+            let preset_layers = render_preset_extension_layers(preset_extension);
+            layers
+                .stable_prefix_sections
+                .extend(preset_layers.stable_prefix_sections);
+            layers
+                .dynamic_overlay_sections
+                .extend(preset_layers.dynamic_overlay_sections);
         }
 
-        sections.join("\n\n")
+        layers
     }
 
     pub(crate) fn effective_tool_source_digests(
@@ -353,6 +518,209 @@ impl PromptSurfaceInputs {
     }
 }
 
+impl PromptSurfaceSections {
+    pub(crate) fn describe_drift(
+        &self,
+        previous: &Self,
+    ) -> Vec<PromptSurfaceDriftExplanation> {
+        let mut changes = Vec::new();
+
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::StableSystemSurface,
+            "stableSystemSurfaceHash",
+            previous.stable_system_surface_hash != self.stable_system_surface_hash,
+            SessionCacheSeverity::HighChange,
+            "stable system surface changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::ToolSurface,
+            "toolSurfaceHash",
+            previous.tool_surface_hash != self.tool_surface_hash,
+            SessionCacheSeverity::HighChange,
+            "tool surface changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::ToolSourceSurface,
+            "toolSourceSurfaceHash",
+            previous.tool_source_surface_hash != self.tool_source_surface_hash,
+            SessionCacheSeverity::HighChange,
+            "tool source surface changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::ProviderPolicy,
+            "providerParamsHash",
+            previous.provider_params_hash != self.provider_params_hash,
+            SessionCacheSeverity::HighChange,
+            "provider params changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::ReasoningMode,
+            "reasoningModeHash",
+            previous.reasoning_mode_hash != self.reasoning_mode_hash,
+            SessionCacheSeverity::MediumChange,
+            "reasoning mode projection changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::ToolPolicy,
+            "toolPolicyHash",
+            previous.tool_policy_hash != self.tool_policy_hash,
+            SessionCacheSeverity::MediumChange,
+            "tool policy projection changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::OutputProjection,
+            "outputProjectionPolicyHash",
+            previous.output_projection_policy_hash != self.output_projection_policy_hash,
+            SessionCacheSeverity::MediumChange,
+            "output projection policy changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::IngressPolicy,
+            "ingressPolicyHash",
+            previous.ingress_policy_hash != self.ingress_policy_hash,
+            SessionCacheSeverity::LowChange,
+            "ingress policy changed",
+        );
+        push_drift(
+            &mut changes,
+            PromptSurfaceDriftCategory::CloseAiPromptCacheKey,
+            "closeaiPromptCacheKey",
+            previous.closeai_prompt_cache_key != self.closeai_prompt_cache_key,
+            SessionCacheSeverity::MediumChange,
+            "closeai prompt cache key changed",
+        );
+
+        changes
+    }
+
+    pub(crate) fn to_prompt_surface_evidence_summary(
+        &self,
+        previous: &Self,
+        volatility_report: Option<&PromptSurfaceVolatilityReport>,
+    ) -> Option<PromptSurfaceEvidenceSummary> {
+        let drift = self.describe_drift(previous);
+        let volatility_findings = volatility_report
+            .map(|report| {
+                report
+                    .findings
+                    .iter()
+                    .cloned()
+                    .map(PublicPromptSurfaceVolatilityFinding::from)
+                    .collect::<Vec<PublicPromptSurfaceVolatilityFinding>>()
+            })
+            .unwrap_or_default();
+        if drift.is_empty() && volatility_findings.is_empty() {
+            return None;
+        }
+
+        let changed_fields = drift.iter().map(|item| item.field.clone()).collect::<Vec<_>>();
+        let drift_details = drift.into_iter().map(Into::into).collect::<Vec<_>>();
+        let stable_prefix_change = changed_fields
+            .iter()
+            .any(|field| field == "stableSystemSurfaceHash")
+            .then_some(true);
+        let dynamic_overlay_reasons = volatility_findings
+            .iter()
+            .map(|finding| match finding.kind {
+                PublicPromptSurfaceVolatilityKind::VolatileEnvField => {
+                    format!("dynamic env field · {}", finding.detail)
+                }
+                PublicPromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
+                    finding.detail.clone()
+                }
+                PublicPromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
+                    format!("oversized capability projection · {}", finding.detail)
+                }
+                PublicPromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
+                    format!("provider options affect surface · {}", finding.detail)
+                }
+            })
+            .collect::<Vec<_>>();
+        let severity = drift_details
+            .iter()
+            .map(|item: &PromptSurfaceDriftDetail| item.severity)
+            .max()
+            .unwrap_or(SessionCacheSeverity::LowChange);
+        let reason = if changed_fields.is_empty() {
+            "surface volatility detected".to_string()
+        } else {
+            format!("surface changed: {}", changed_fields.join(", "))
+        };
+
+        Some(PromptSurfaceEvidenceSummary {
+            severity,
+            reason,
+            changed_fields,
+            stable_prefix_change,
+            dynamic_overlay_reasons,
+            drift_details,
+            volatility_findings,
+        })
+    }
+}
+
+impl From<PromptSurfaceDriftCategory> for PublicPromptSurfaceDriftCategory {
+    fn from(value: PromptSurfaceDriftCategory) -> Self {
+        match value {
+            PromptSurfaceDriftCategory::StableSystemSurface => Self::StableSystemSurface,
+            PromptSurfaceDriftCategory::ToolSurface => Self::ToolSurface,
+            PromptSurfaceDriftCategory::ToolSourceSurface => Self::ToolSourceSurface,
+            PromptSurfaceDriftCategory::ProviderPolicy => Self::ProviderPolicy,
+            PromptSurfaceDriftCategory::ReasoningMode => Self::ReasoningMode,
+            PromptSurfaceDriftCategory::ToolPolicy => Self::ToolPolicy,
+            PromptSurfaceDriftCategory::OutputProjection => Self::OutputProjection,
+            PromptSurfaceDriftCategory::IngressPolicy => Self::IngressPolicy,
+            PromptSurfaceDriftCategory::CloseAiPromptCacheKey => Self::CloseAiPromptCacheKey,
+        }
+    }
+}
+
+impl From<PromptSurfaceDriftExplanation> for PromptSurfaceDriftDetail {
+    fn from(value: PromptSurfaceDriftExplanation) -> Self {
+        Self {
+            category: value.category.into(),
+            field: value.field,
+            detail: value.detail,
+            severity: value.severity,
+        }
+    }
+}
+
+impl From<PromptSurfaceVolatilityKind> for PublicPromptSurfaceVolatilityKind {
+    fn from(value: PromptSurfaceVolatilityKind) -> Self {
+        match value {
+            PromptSurfaceVolatilityKind::VolatileEnvField => Self::VolatileEnvField,
+            PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
+                Self::DynamicCatalogBeforeStableGovernance
+            }
+            PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
+                Self::OversizedCapabilityProjection
+            }
+            PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
+                Self::ProviderOptionsAffectSurface
+            }
+        }
+    }
+}
+
+impl From<PromptSurfaceVolatilityFinding> for PublicPromptSurfaceVolatilityFinding {
+    fn from(value: PromptSurfaceVolatilityFinding) -> Self {
+        Self {
+            kind: value.kind.into(),
+            field: value.field,
+            detail: value.detail,
+        }
+    }
+}
+
 fn stable_system_surface_projection(system_prompt: &str) -> String {
     let mut lines = Vec::new();
     let mut skipping_section = false;
@@ -376,22 +744,29 @@ fn stable_system_surface_projection(system_prompt: &str) -> String {
     lines.join("\n")
 }
 
-fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> String {
-    let mut sections = Vec::new();
+fn render_preset_extension_layers(extension: &PresetPromptExtension) -> PromptSurfaceSystemLayers {
+    let mut layers = PromptSurfaceSystemLayers::default();
 
     let role_summary = extension.role_summary.trim();
     if !role_summary.is_empty() {
-        sections.push(format!("## Preset Role Summary\n{role_summary}"));
+        layers
+            .stable_prefix_sections
+            .push(format!("## Preset Role Summary\n{role_summary}"));
     }
 
-    sections.extend(
-        extension
-            .extra_sections
-            .iter()
-            .map(|(_, body)| body.trim())
-            .filter(|body| !body.is_empty())
-            .map(str::to_string),
-    );
+    for (title, body) in &extension.extra_sections {
+        let body = body.trim();
+        if body.is_empty() {
+            continue;
+        }
+        if is_dynamic_catalog_header(title) {
+            layers.dynamic_overlay_sections.push(body.to_string());
+        } else if is_stable_governance_header(title) {
+            layers.stable_prefix_sections.push(body.to_string());
+        } else {
+            layers.stable_prefix_sections.push(body.to_string());
+        }
+    }
 
     if let Some(tone_augment) = extension
         .tone_augment
@@ -399,7 +774,9 @@ fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> Str
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        sections.push(format!("## Tone Augment\n{tone_augment}"));
+        layers
+            .stable_prefix_sections
+            .push(format!("## Tone Augment\n{tone_augment}"));
     }
 
     // Keep large runtime capability catalogs late so the prompt prefix
@@ -410,12 +787,12 @@ fn render_preset_extension_for_surface(extension: &PresetPromptExtension) -> Str
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        sections.push(format!(
+        layers.dynamic_overlay_sections.push(format!(
             "## Capability Projection\n{capability_projection}"
         ));
     }
 
-    sections.join("\n\n")
+    layers
 }
 
 fn provider_option_hash(
@@ -424,6 +801,24 @@ fn provider_option_hash(
 ) -> Option<String> {
     let relevant = collect_prompt_surface_provider_options(provider_options, group);
     (!relevant.is_empty()).then(|| json_fingerprint(&serde_json::Value::Object(relevant)))
+}
+
+fn push_drift(
+    changes: &mut Vec<PromptSurfaceDriftExplanation>,
+    category: PromptSurfaceDriftCategory,
+    field: &str,
+    changed: bool,
+    severity: SessionCacheSeverity,
+    detail: &str,
+) {
+    if changed {
+        changes.push(PromptSurfaceDriftExplanation {
+            category,
+            field: field.to_string(),
+            detail: detail.to_string(),
+            severity,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -539,12 +934,22 @@ mod tests {
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
         assert!(sections.system_text.contains("base header"));
+        assert!(sections.stable_system_prefix_text.contains("base header"));
         assert!(sections.system_text.contains("## Environment Context"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("## Environment Context"));
         assert!(sections.system_text.contains("Working directory: /repo"));
         assert!(sections.system_text.contains("## Preset Role Summary"));
+        assert!(sections
+            .stable_system_prefix_text
+            .contains("## Preset Role Summary"));
         assert!(sections.system_text.contains("coordination orchestrator"));
         assert!(sections.system_text.contains("<identity>Atlas</identity>"));
         assert!(sections.system_text.contains("## Capability Projection"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("## Capability Projection"));
         assert!(sections.system_text.contains("Agents: explore, review."));
         assert!(sections.system_text.contains("## Tone Augment"));
         assert!(sections.system_text.contains("Be concise. No flattery."));
@@ -552,6 +957,12 @@ mod tests {
             sections.system_text.find("## Tone Augment").unwrap()
                 < sections.system_text.find("## Capability Projection").unwrap()
         );
+        assert!(!sections
+            .stable_system_prefix_text
+            .contains("## Capability Projection"));
+        assert!(!sections
+            .dynamic_system_overlay_text
+            .contains("## Tone Augment"));
     }
 
     #[test]
@@ -574,10 +985,225 @@ mod tests {
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
         assert!(sections.system_text.contains("## Environment Context"));
+        assert!(sections.dynamic_system_overlay_text.contains("## Environment Context"));
         assert!(sections.system_text.contains("Working directory: /repo"));
         assert!(!sections.system_text.contains("Today's date:"));
         assert!(!sections.system_text.contains("Current local time:"));
         assert!(!sections.system_text.contains("Local timezone:"));
+    }
+
+    #[test]
+    fn stable_hash_depends_on_stable_prefix_not_dynamic_overlay_order() {
+        let first = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-a",
+            Some("base header".to_string()),
+            Some(
+                "<env>\n  Working directory: /repo\n  Current local time: 10:10:10 UTC\n</env>"
+                    .to_string(),
+            ),
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_section("Execution Charter", "Always verify delegated work.")
+                    .with_capability("Agents: explore, review."),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        )
+        .assemble_sections("projection".to_string(), None, None);
+
+        let second = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-a",
+            Some("base header".to_string()),
+            Some(
+                "<env>\n  Working directory: /repo\n  Current local time: 22:22:22 UTC\n</env>"
+                    .to_string(),
+            ),
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_capability("Agents: explore, review, build.")
+                    .with_section("Execution Charter", "Always verify delegated work."),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        )
+        .assemble_sections("projection".to_string(), None, None);
+
+        assert_eq!(
+            first.stable_system_surface_hash, second.stable_system_surface_hash,
+            "dynamic overlay drift must not perturb stable prefix hash"
+        );
+        assert_eq!(
+            first.stable_system_prefix_text, second.stable_system_prefix_text,
+            "stable prefix should remain identical across dynamic overlay changes"
+        );
+        assert_ne!(
+            first.dynamic_system_overlay_text, second.dynamic_system_overlay_text,
+            "dynamic overlay should still reflect live env/catalog drift"
+        );
+    }
+
+    #[test]
+    fn volatility_report_flags_dynamic_clock_lines() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-clock",
+            Some("base header".to_string()),
+            Some(
+                "<env>\n  Working directory: /repo\n  Today's date: Tue Jun 10 2026\n  Current local time: 10:10:10 UTC\n</env>"
+                    .to_string(),
+            ),
+            None,
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        );
+
+        let report = inputs.detect_volatility();
+        assert!(report.findings.iter().any(|finding| matches!(
+            finding.kind,
+            PromptSurfaceVolatilityKind::VolatileEnvField
+        )));
+    }
+
+    #[test]
+    fn volatility_report_flags_oversized_capability_projection() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-caps",
+            Some("base header".to_string()),
+            None,
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_capability("A".repeat(2_100)),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        );
+
+        let report = inputs.detect_volatility();
+        assert!(report.findings.iter().any(|finding| matches!(
+            finding.kind,
+            PromptSurfaceVolatilityKind::OversizedCapabilityProjection
+        )));
+    }
+
+    #[test]
+    fn drift_explain_keeps_dynamic_overlay_out_of_stable_hash() {
+        let first = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("base header".to_string()),
+            Some("<env>\n  Working directory: /repo-a\n</env>".to_string()),
+            Some(PresetPromptExtension::new("atlas", "coordination orchestrator")),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        )
+        .assemble_sections("projection".to_string(), None, None);
+
+        let second = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("base header".to_string()),
+            Some("<env>\n  Working directory: /repo-b\n</env>".to_string()),
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_capability("Agents: explore, review."),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        )
+        .assemble_sections("projection".to_string(), None, None);
+
+        let drift = second.describe_drift(&first);
+        assert!(!drift
+            .iter()
+            .any(|item| item.field == "stableSystemSurfaceHash"));
+        assert_eq!(
+            first.stable_system_surface_hash, second.stable_system_surface_hash,
+            "env/capability changes should live in the dynamic overlay, not the stable hash"
+        );
+        assert_ne!(
+            first.dynamic_system_overlay_text, second.dynamic_system_overlay_text,
+            "dynamic overlay should still expose the changed env/catalog surface"
+        );
+
+        let volatility = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("base header".to_string()),
+            Some(
+                "<env>\n  Working directory: /repo-b\n  Current local time: 10:10:10 UTC\n</env>"
+                    .to_string(),
+            ),
+            Some(
+                PresetPromptExtension::new("atlas", "coordination orchestrator")
+                    .with_capability("Agents: explore, review."),
+            ),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        )
+        .detect_volatility();
+
+        let evidence = second
+            .to_prompt_surface_evidence_summary(&first, Some(&volatility))
+            .expect("surface evidence");
+        assert!(evidence
+            .volatility_findings
+            .iter()
+            .any(|detail| matches!(
+                detail.kind,
+                agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
+            )));
+    }
+
+    #[test]
+    fn evidence_summary_can_surface_volatility_without_hash_drift() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("base header".to_string()),
+            Some(
+                "<env>\n  Working directory: /repo\n  Current local time: 10:10:10 UTC\n</env>"
+                    .to_string(),
+            ),
+            None,
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        );
+        let first = inputs.assemble_sections("projection".to_string(), None, None);
+        let second = inputs.assemble_sections("projection".to_string(), None, None);
+        let report = inputs.detect_volatility();
+
+        let evidence = second
+            .to_prompt_surface_evidence_summary(&first, Some(&report))
+            .expect("volatility evidence");
+
+        assert!(evidence.changed_fields.is_empty());
+        assert_eq!(evidence.reason, "surface volatility detected");
+        assert!(evidence
+            .volatility_findings
+            .iter()
+            .any(|finding| matches!(
+                finding.kind,
+                agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
+            )));
     }
 
     #[test]

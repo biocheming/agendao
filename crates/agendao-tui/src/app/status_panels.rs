@@ -1750,6 +1750,18 @@ fn tui_prompt_surface_evidence_label(fields: &[String]) -> String {
     }
 }
 
+fn tui_prompt_surface_stability_label(
+    evidence: &agendao_types::PromptSurfaceEvidenceSummary,
+) -> Option<String> {
+    match evidence.stable_prefix_change {
+        Some(true) => Some("stable prefix changed".to_string()),
+        Some(false) if !evidence.dynamic_overlay_reasons.is_empty() => {
+            Some("stable prefix held · dynamic overlay drifted".to_string())
+        }
+        _ => None,
+    }
+}
+
 fn tui_truncate_text(value: &str, limit: usize) -> String {
     let char_count = value.chars().count();
     if char_count <= limit {
@@ -2352,6 +2364,15 @@ fn tui_usage_status_lines(
                     lines.push(StatusLine::muted(format!(
                         "Prompt surface: {}",
                         evidence.changed_fields.join(", ")
+                    )));
+                }
+                if let Some(label) = tui_prompt_surface_stability_label(evidence) {
+                    lines.push(StatusLine::muted(format!("Surface split: {}", label)));
+                }
+                if !evidence.dynamic_overlay_reasons.is_empty() {
+                    lines.push(StatusLine::muted(format!(
+                        "Dynamic overlay: {}",
+                        evidence.dynamic_overlay_reasons.join(" · ")
                     )));
                 }
             }
@@ -3787,6 +3808,10 @@ mod tests {
                         severity: agendao_types::SessionCacheSeverity::LowChange,
                         reason: "surface changed: ingressPolicyHash".to_string(),
                         changed_fields: vec!["ingressPolicyHash".to_string()],
+                        stable_prefix_change: None,
+                        dynamic_overlay_reasons: Vec::new(),
+                        drift_details: Vec::new(),
+                        volatility_findings: Vec::new(),
                     },
                 ),
                 label: Some(
@@ -3856,6 +3881,10 @@ mod tests {
                     severity: agendao_types::SessionCacheSeverity::LowChange,
                     reason: "surface changed: ingressPolicyHash".to_string(),
                     changed_fields: vec!["ingressPolicyHash".to_string()],
+                    stable_prefix_change: None,
+                    dynamic_overlay_reasons: Vec::new(),
+                    drift_details: Vec::new(),
+                    volatility_findings: Vec::new(),
                 },
             ),
             ingress_stabilization: None,

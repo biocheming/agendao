@@ -15,6 +15,30 @@ pub(super) const VOLATILE_SYSTEM_SECTION_TITLES: &[&str] = &[
     "Latest Compaction Summary",
 ];
 
+pub(super) const DYNAMIC_CATALOG_SECTION_TITLES: &[&str] = &[
+    "Capability Projection",
+    "Available Capabilities",
+    "System Capabilities",
+    "Available Execution Resources",
+    "Available Skills",
+    "Available Categories",
+    "Tool & Agent Selection",
+    "Delegation Table",
+];
+
+pub(super) const STABLE_GOVERNANCE_SECTION_TITLES: &[&str] = &[
+    "Preset Role Summary",
+    "Tone Augment",
+    "Task Management",
+    "Constraints",
+    "Routing Goal",
+    "Planner Charter",
+    "Interview Charter",
+    "Review Charter",
+    "Handoff Charter",
+    "Execution Charter",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HiddenRuntimeHint {
     ProposalNotice,
@@ -179,6 +203,26 @@ pub(super) fn normalize_stable_system_line<'a>(line: &'a str) -> Cow<'a, str> {
     Cow::Borrowed(line)
 }
 
+pub(super) fn looks_like_clock_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("Today's date:")
+        || trimmed.starts_with("Today’s date:")
+        || trimmed.starts_with("Current local time:")
+        || trimmed.starts_with("Local timezone:")
+}
+
+pub(super) fn is_dynamic_catalog_header(title: &str) -> bool {
+    DYNAMIC_CATALOG_SECTION_TITLES
+        .iter()
+        .any(|candidate| title.eq_ignore_ascii_case(candidate))
+}
+
+pub(super) fn is_stable_governance_header(title: &str) -> bool {
+    STABLE_GOVERNANCE_SECTION_TITLES
+        .iter()
+        .any(|candidate| title.eq_ignore_ascii_case(candidate))
+}
+
 pub(super) fn collect_prompt_surface_provider_options(
     provider_options: &HashMap<String, Value>,
     group: PromptSurfaceProviderOptionGroup,
@@ -296,6 +340,30 @@ mod tests {
             "  Local timezone: <dynamic>"
         );
         assert_eq!(normalize_stable_system_line("static line"), "static line");
+    }
+
+    #[test]
+    fn clock_line_detector_matches_known_dynamic_fields() {
+        assert!(looks_like_clock_line("  Today's date: Fri May 01 2026"));
+        assert!(looks_like_clock_line("  Current local time: 2026-05-17 11:22:33 +08:00"));
+        assert!(looks_like_clock_line("  Local timezone: CST"));
+        assert!(!looks_like_clock_line("  Working directory: /repo"));
+    }
+
+    #[test]
+    fn stable_governance_headers_are_not_marked_dynamic() {
+        assert!(is_stable_governance_header("Planner Charter"));
+        assert!(is_stable_governance_header("constraints"));
+        assert!(!is_dynamic_catalog_header("Planner Charter"));
+        assert!(!is_dynamic_catalog_header("Preset Role Summary"));
+    }
+
+    #[test]
+    fn dynamic_catalog_headers_are_detected() {
+        assert!(is_dynamic_catalog_header("Capability Projection"));
+        assert!(is_dynamic_catalog_header("available execution resources"));
+        assert!(is_dynamic_catalog_header("Delegation Table"));
+        assert!(!is_stable_governance_header("Delegation Table"));
     }
 
     #[test]
