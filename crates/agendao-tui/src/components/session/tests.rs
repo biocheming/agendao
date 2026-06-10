@@ -695,6 +695,66 @@ fn assistant_segments_render_with_block_spacing_between_reasoning_tool_and_text(
 }
 
 #[test]
+fn reasoning_block_has_no_extra_outer_blank_lines() {
+    let (_context, _session_id, mut snapshot) = perf_snapshot_with_messages();
+    snapshot.messages = vec![make_message(
+        "assistant-1",
+        MessageRole::Assistant,
+        "final answer".to_string(),
+        vec![
+            MessagePart::Reasoning {
+                text: "step one\nstep two\nstep three".to_string(),
+            },
+            MessagePart::Text {
+                text: "final answer".to_string(),
+            },
+        ],
+    )];
+
+    let output = render_perf_session_messages(
+        Rect::new(0, 0, 78, 30),
+        &snapshot,
+        &SessionMessageViewportState::default(),
+        &SessionReasoningState::default(),
+        &SessionMessageOutputCache::default(),
+        &SessionRenderModelCache::default(),
+    );
+
+    let rendered_lines = output
+        .message_cache
+        .entries
+        .get("assistant-1")
+        .expect("assistant cache entry")
+        .output
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    let reasoning_start = rendered_lines
+        .iter()
+        .position(|line| line.contains("reasoning"))
+        .expect("reasoning header");
+    assert!(
+        !rendered_lines[reasoning_start].trim().is_empty(),
+        "{rendered_lines:?}"
+    );
+    assert!(
+        !rendered_lines
+            .get(reasoning_start + 1)
+            .expect("reasoning body")
+            .trim()
+            .is_empty(),
+        "{rendered_lines:?}"
+    );
+}
+
+#[test]
 fn session_render_preserves_transcript_order_across_assistant_and_tool_messages() {
     let context = Arc::new(AppContext::new());
     let session_id = {
