@@ -641,9 +641,16 @@ impl SessionView {
                 .split(area)
         } else {
             let max_messages_height = available_after_header.saturating_sub(prompt_height);
-            let desired_messages_height = (state.viewport.rendered_line_count as u16)
-                .max(1)
-                .min(max_messages_height);
+            let desired_messages_height = if state.viewport.rendered_line_count == 0 {
+                // First-frame bootstrap: before the message viewport has measured
+                // its rendered height, reserve the available body area for the
+                // transcript instead of collapsing it to a single row.
+                max_messages_height.max(1)
+            } else {
+                (state.viewport.rendered_line_count as u16)
+                    .max(1)
+                    .min(max_messages_height)
+            };
 
             Layout::default()
                 .direction(Direction::Vertical)

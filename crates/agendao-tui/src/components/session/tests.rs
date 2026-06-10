@@ -244,6 +244,40 @@ fn render_perf_session_messages(
     result
 }
 
+fn render_session_view_once(
+    view: &SessionView,
+    context: &Arc<AppContext>,
+    area: Rect,
+    prompt: &Prompt,
+) -> Buffer {
+    clear_fiber_tree();
+    clear_render_context();
+    set_fiber_tree(FiberTree::new());
+    init_render_context();
+    with_render_context_mut(|ctx| ctx.prepare_for_render());
+    reset_component_position_counter();
+    clear_global_handlers();
+
+    let mut buffer = Buffer::empty(area);
+    {
+        let mut surface = BufferSurface::new(&mut buffer);
+        view.render(context, &mut surface, area, prompt);
+    }
+
+    with_render_context_mut(|ctx| {
+        ctx.mark_unseen_for_unmount();
+        ctx.process_unmounts();
+        ctx.begin_batch();
+        let _ = ctx.end_batch();
+        ctx.flush_effects();
+    });
+    clear_current_event();
+    clear_fiber_tree();
+    clear_render_context();
+
+    buffer
+}
+
 #[test]
 fn scrollbar_row_maps_to_expected_offsets() {
     let area = Some(Rect {
@@ -308,6 +342,71 @@ fn session_view_keeps_non_empty_prompt_input_visible_while_running() {
     assert!(
         rendered.contains("session hidden text"),
         "session prompt input should remain visible while running:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_view_first_render_keeps_transcript_visible_with_existing_assistant_output() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Transcript Visible".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "show me the result".to_string(),
+                    vec![MessagePart::Text {
+                        text: "show me the result".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    "final answer".to_string(),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: "thinking step one\nthinking step two".to_string(),
+                        },
+                        MessagePart::Text {
+                            text: "final answer".to_string(),
+                        },
+                    ],
+                ),
+            ],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 24);
+    let buffer = render_session_view_once(&view, &context, area, &prompt);
+
+    let rendered = buffer_text(&buffer);
+    assert!(
+        rendered.contains("final answer"),
+        "assistant transcript should be visible on first session render:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("reasoning"),
+        "reasoning transcript should be visible on first session render:\n{rendered}"
+    );
+
+    let messages_area = view
+        .state
+        .lock()
+        .viewport
+        .last_messages_area
+        .expect("messages area");
+    assert!(
+        messages_area.height > 1,
+        "messages viewport should not collapse to a single line on first render: {messages_area:?}"
     );
 }
 
