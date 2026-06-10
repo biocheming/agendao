@@ -193,6 +193,21 @@ impl Hook {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PluginHookRef {
+    pub event: HookEvent,
+    pub name: String,
+}
+
+impl PluginHookRef {
+    pub fn new(event: HookEvent, name: impl Into<String>) -> Self {
+        Self {
+            event,
+            name: name.into(),
+        }
+    }
+}
+
 /// Events that produce deterministic output for the same input and can be cached.
 const CACHEABLE_EVENTS: &[HookEvent] = &[HookEvent::ConfigLoaded, HookEvent::ShellEnv];
 
@@ -408,6 +423,14 @@ impl Default for PluginSystem {
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+    /// Enumerate the exact hook identities this plugin will register.
+    ///
+    /// Native plugin shutdown uses these refs to remove hooks symmetrically
+    /// before unloading the dylib. Implementations should return the same
+    /// `(event, name)` pairs they later pass to `PluginSystem::register(...)`.
+    fn hook_refs(&self) -> Vec<PluginHookRef> {
+        Vec::new()
+    }
     fn register_hooks<'a>(
         &'a self,
         system: &'a PluginSystem,

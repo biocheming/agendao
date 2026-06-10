@@ -1,6 +1,6 @@
 // Message building/conversion/compaction methods for SessionPrompt
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use agendao_provider::{get_model_context_limit, Content, ContentPart, Message, Provider, Role};
@@ -28,8 +28,9 @@ use super::{
 };
 use agendao_types::{
     tool_call_replay_input, tool_call_replay_text, ContextCompactionBackoffSummary,
-    FewShotSurfaceItem,
-    LightweightTrimSummary, SessionContinuityCompactionSummary, SessionContinuityDependency,
+    FewShotSurfaceItem, LightweightTrimSummary, RequestBoundaryHygieneActionKind,
+    RequestBoundaryHygieneActionSummary, RequestBoundaryHygieneSummary,
+    SessionContinuityCompactionSummary, SessionContinuityDependency,
     SessionContinuityDependencyKind, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
     SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
 };
@@ -60,6 +61,16 @@ const LIGHTWEIGHT_TOOL_RESULT_TRIM_MIN_TOKENS: usize = 4_000;
 const LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS: usize = 12_000;
 const LIGHTWEIGHT_TOOL_CALL_TRIM_TARGET_TOKENS: usize = 4_000;
 const LIGHTWEIGHT_TOOL_ROUND_TRIM_MAX_RESULTS: usize = 4;
+const REQUEST_BOUNDARY_TOOL_RESULT_MAX_CHARS: usize = 24_000;
+const REQUEST_BOUNDARY_TOOL_RESULT_PREVIEW_CHARS: usize = 1_200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuityPacketFallbackReason {
+    MissingPacket,
+    InvalidPacket,
+    EmptyAllowedMessageIds,
+    IncompleteCurrentTurnChain,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompactionAssessment {
@@ -235,6 +246,196 @@ impl SessionPrompt {
         }
 
         Ok(messages)
+    }
+
+    pub(super) fn apply_request_boundary_hygiene_with_summary(
+        messages: &[Message],
+    ) -> (Vec<Message>, RequestBoundaryHygieneSummary) {
+        type PartKey = (usize, usize);
+        type PendingCall = (PartKey, String);
+
+        let mut pending_calls: HashMap<String, VecDeque<PendingCall>> = HashMap::new();
+        let mut matched_tool_calls: HashSet<PartKey> = HashSet::new();
+        let mut matched_tool_results: HashSet<PartKey> = HashSet::new();
+        let mut tool_name_by_result_part: HashMap<PartKey, String> = HashMap::new();
+        let mut summary = RequestBoundaryHygieneSummary::default();
+
+        for (message_idx, message) in messages.iter().enumerate() {
+            let Content::Parts(parts) = &message.content else {
+                continue;
+            };
+            match message.role {
+                Role::Assistant => {
+                    for (part_idx, part) in parts.iter().enumerate() {
+                        let Some(tool_use) = part.tool_use.as_ref() else {
+                            continue;
+                        };
+                        pending_calls
+                            .entry(tool_use.id.clone())
+                            .or_default()
+                            .push_back(((message_idx, part_idx), tool_use.name.clone()));
+                    }
+                }
+                Role::Tool => {
+                    for (part_idx, part) in parts.iter().enumerate() {
+                        let Some(tool_result) = part.tool_result.as_ref() else {
+                            continue;
+                        };
+                        let Some(queue) = pending_calls.get_mut(&tool_result.tool_use_id) else {
+                            continue;
+                        };
+                        let Some((call_key, tool_name)) = queue.pop_front() else {
+                            continue;
+                        };
+                        let result_key = (message_idx, part_idx);
+                        matched_tool_calls.insert(call_key);
+                        matched_tool_results.insert(result_key);
+                        tool_name_by_result_part.insert(result_key, tool_name);
+                    }
+                }
+                Role::System | Role::User => {}
+            }
+        }
+
+        let sanitized = messages
+            .iter()
+            .enumerate()
+            .map(|(message_idx, message)| {
+                let Content::Parts(parts) = &message.content else {
+                    return Some(message.clone());
+                };
+
+                let filtered_parts = parts
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .filter_map(|(part_idx, mut part)| {
+                        let key = (message_idx, part_idx);
+                        match message.role {
+                            Role::Assistant => {
+                                if part.tool_use.is_some() && !matched_tool_calls.contains(&key) {
+                                    return None;
+                                }
+                                Some(part)
+                            }
+                            Role::Tool => {
+                                let Some(tool_result) = part.tool_result.as_mut() else {
+                                    return Some(part);
+                                };
+                                if !matched_tool_results.contains(&key) {
+                                    summary.dropped_orphan_tool_results += 1;
+                                    summary.actions.push(RequestBoundaryHygieneActionSummary {
+                                        kind: RequestBoundaryHygieneActionKind::DroppedOrphanToolResult,
+                                        tool_call_id: tool_result.tool_use_id.clone(),
+                                        tool_name: None,
+                                        original_chars: Some(tool_result.content.chars().count()),
+                                    });
+                                    return None;
+                                }
+                                let tool_name = tool_name_by_result_part
+                                    .get(&key)
+                                    .map(String::as_str)
+                                    .unwrap_or("unknown");
+                                if tool_result.content.chars().count()
+                                    > REQUEST_BOUNDARY_TOOL_RESULT_MAX_CHARS
+                                {
+                                    let original_chars = tool_result.content.chars().count();
+                                    tool_result.content =
+                                        Self::compress_tool_result_for_request_boundary(
+                                        tool_name,
+                                        &tool_result.tool_use_id,
+                                        &tool_result.content,
+                                    );
+                                    summary.compressed_tool_results += 1;
+                                    summary.actions.push(RequestBoundaryHygieneActionSummary {
+                                        kind: RequestBoundaryHygieneActionKind::CompressedToolResult,
+                                        tool_call_id: tool_result.tool_use_id.clone(),
+                                        tool_name: Some(tool_name.to_string()),
+                                        original_chars: Some(original_chars),
+                                    });
+                                }
+                                Some(part)
+                            }
+                            Role::System | Role::User => Some(part),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                Self::rebuild_hygiene_message(message, filtered_parts)
+            })
+            .flatten()
+            .collect();
+
+        for (message_idx, message) in messages.iter().enumerate() {
+            if !matches!(message.role, Role::Assistant) {
+                continue;
+            }
+            let Content::Parts(parts) = &message.content else {
+                continue;
+            };
+            for (part_idx, part) in parts.iter().enumerate() {
+                if !part.tool_use.is_some() {
+                    continue;
+                }
+                let key = (message_idx, part_idx);
+                if matched_tool_calls.contains(&key) {
+                    continue;
+                }
+                if let Some(tool_use) = part.tool_use.as_ref() {
+                    summary.dropped_dangling_tool_calls += 1;
+                    summary.actions.push(RequestBoundaryHygieneActionSummary {
+                        kind: RequestBoundaryHygieneActionKind::DroppedDanglingToolCall,
+                        tool_call_id: tool_use.id.clone(),
+                        tool_name: Some(tool_use.name.clone()),
+                        original_chars: None,
+                    });
+                }
+            }
+        }
+
+        (sanitized, summary)
+    }
+
+    fn compress_tool_result_for_request_boundary(
+        tool_name: &str,
+        tool_call_id: &str,
+        content: &str,
+    ) -> String {
+        let preview = content
+            .chars()
+            .take(REQUEST_BOUNDARY_TOOL_RESULT_PREVIEW_CHARS)
+            .collect::<String>();
+        format!(
+            "[tool result compressed for model boundary: tool={tool_name}, call_id={tool_call_id}, original_chars={}]\n{}",
+            content.chars().count(),
+            preview
+        )
+    }
+
+    fn rebuild_hygiene_message(message: &Message, parts: Vec<ContentPart>) -> Option<Message> {
+        if parts.is_empty() {
+            return None;
+        }
+
+        let content = match message.role {
+            Role::Assistant if parts.iter().all(|part| part.content_type == "text") => {
+                Content::Text(
+                    parts
+                        .iter()
+                        .filter_map(|part| part.text.as_deref())
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
+            }
+            _ => Content::Parts(parts),
+        };
+
+        Some(Message {
+            role: message.role.clone(),
+            content,
+            cache_control: message.cache_control.clone(),
+            provider_options: message.provider_options.clone(),
+        })
     }
 
     /// Convert session-level MessageParts to provider-facing ContentParts.
@@ -537,29 +738,56 @@ impl SessionPrompt {
             return tail;
         };
 
-        if let Some(filtered) = Self::filter_compacted_messages_from_continuity_packet(
+        match Self::filter_compacted_messages_from_continuity_packet_with_reason(
             messages,
             compaction_index,
             compaction_message,
         ) {
-            return filtered;
+            Ok(filtered) => return filtered,
+            Err(ContinuityPacketFallbackReason::MissingPacket) => {}
+            Err(reason) => {
+                tracing::debug!(
+                    session_id = %compaction_message.session_id,
+                    message_id = %compaction_message.id,
+                    ?reason,
+                    "continuity packet rejected; falling back to legacy compaction replay filter"
+                );
+            }
         }
 
         Self::filter_compacted_messages_legacy(messages, compaction_index)
     }
 
+    #[cfg(test)]
     fn filter_compacted_messages_from_continuity_packet(
         messages: &[SessionMessage],
         compaction_index: usize,
         compaction_message: &SessionMessage,
     ) -> Option<Vec<SessionMessage>> {
-        let packet = compaction_message
+        Self::filter_compacted_messages_from_continuity_packet_with_reason(
+            messages,
+            compaction_index,
+            compaction_message,
+        )
+        .ok()
+    }
+
+    fn filter_compacted_messages_from_continuity_packet_with_reason(
+        messages: &[SessionMessage],
+        compaction_index: usize,
+        compaction_message: &SessionMessage,
+    ) -> Result<Vec<SessionMessage>, ContinuityPacketFallbackReason> {
+        let Some(packet_value) = compaction_message
             .metadata
             .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
-            .and_then(SessionContinuityPacket::from_value)?;
+        else {
+            return Err(ContinuityPacketFallbackReason::MissingPacket);
+        };
+        let packet = SessionContinuityPacket::from_value(packet_value)
+            .ok_or(ContinuityPacketFallbackReason::InvalidPacket)?;
         let allowed_ids = packet.allowed_message_ids();
         if allowed_ids.is_empty() {
-            return None;
+            return Err(ContinuityPacketFallbackReason::EmptyAllowedMessageIds);
         }
         let allowed_set = allowed_ids.into_iter().collect::<HashSet<_>>();
         let filtered = messages
@@ -571,8 +799,11 @@ impl SessionPrompt {
             .map(|(_, message)| message)
             .cloned()
             .collect::<Vec<_>>();
-        Self::filter_compacted_messages_packet_result_valid(messages, &packet, &filtered)
-            .then_some(filtered)
+        if Self::filter_compacted_messages_packet_result_valid(messages, &packet, &filtered) {
+            Ok(filtered)
+        } else {
+            Err(ContinuityPacketFallbackReason::IncompleteCurrentTurnChain)
+        }
     }
 
     fn filter_compacted_messages_packet_result_valid(
@@ -3484,12 +3715,9 @@ mod tests {
             FewShotSurfaceItem::new(MessageRole::Assistant, "Example assistant"),
         ];
 
-        let messages = SessionPrompt::build_chat_messages(
-            &[live_user],
-            Some("system header"),
-            &few_shots,
-        )
-        .expect("build");
+        let messages =
+            SessionPrompt::build_chat_messages(&[live_user], Some("system header"), &few_shots)
+                .expect("build");
 
         assert_eq!(messages.len(), 4);
         assert!(matches!(messages[0].role, Role::System));
@@ -3596,6 +3824,85 @@ mod tests {
         assert!(matches!(messages[0].role, Role::Assistant));
         // Tool result as Role::Tool.
         assert!(matches!(messages[1].role, Role::Tool));
+    }
+
+    #[test]
+    fn request_boundary_hygiene_drops_orphan_tool_result_from_provider_history() {
+        let mut tool = SessionMessage::tool("ses_test");
+        tool.add_tool_result("call-missing", "should not replay", false);
+
+        let messages = SessionPrompt::build_chat_messages(&[tool], None, &[]).expect("build");
+        let (messages, summary) =
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+
+        assert!(
+            messages.is_empty(),
+            "orphan tool_result should be removed before provider replay"
+        );
+        assert_eq!(summary.dropped_orphan_tool_results, 1);
+        assert_eq!(summary.dropped_dangling_tool_calls, 0);
+        assert_eq!(summary.compressed_tool_results, 0);
+    }
+
+    #[test]
+    fn request_boundary_hygiene_drops_tool_call_without_result_but_keeps_text_context() {
+        let mut assistant = SessionMessage::assistant("ses_test");
+        assistant.add_text("still useful context");
+        assistant.add_tool_call(
+            "call-pending",
+            "read",
+            serde_json::json!({"file_path":"a.txt"}),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).expect("build");
+        let (messages, summary) =
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Assistant));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "still useful context"
+        ));
+        assert_eq!(summary.dropped_orphan_tool_results, 0);
+        assert_eq!(summary.dropped_dangling_tool_calls, 1);
+        assert_eq!(summary.compressed_tool_results, 0);
+    }
+
+    #[test]
+    fn request_boundary_hygiene_compresses_long_tool_result_only_in_request_copy() {
+        let mut assistant = SessionMessage::assistant("ses_test");
+        assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        let mut tool = SessionMessage::tool("ses_test");
+        let original = "Z".repeat(REQUEST_BOUNDARY_TOOL_RESULT_MAX_CHARS + 500);
+        tool.add_tool_result("call-1", &original, false);
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant, tool.clone()], None, &[])
+            .expect("build");
+        let (messages, summary) =
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+
+        assert_eq!(messages.len(), 2);
+        match &messages[1].content {
+            Content::Parts(parts) => {
+                let tool_result = parts[0].tool_result.as_ref().expect("tool result");
+                assert!(tool_result
+                    .content
+                    .contains("[tool result compressed for model boundary:"));
+                assert!(tool_result.content.len() < original.len());
+            }
+            other => panic!("expected tool parts, got {other:?}"),
+        }
+        match &tool.parts[0].part_type {
+            PartType::ToolResult { content, .. } => {
+                assert_eq!(content.len(), original.len());
+                assert_eq!(content, &original);
+            }
+            other => panic!("expected tool result part, got {other:?}"),
+        }
+        assert_eq!(summary.dropped_orphan_tool_results, 0);
+        assert_eq!(summary.dropped_dangling_tool_calls, 0);
+        assert_eq!(summary.compressed_tool_results, 1);
     }
 
     // P1 replay authority: raw tool call input must be preserved in replay.

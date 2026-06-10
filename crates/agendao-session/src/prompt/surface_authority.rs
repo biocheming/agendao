@@ -305,8 +305,9 @@ impl PromptSurfaceInputs {
     /// Construct inputs from the pieces that `SessionPrompt` already
     /// holds internally.
     ///
-    /// Compatibility shim during the Phase 7 builder migration.
-    /// New production call sites should prefer `builder(...).set_*()`.
+    /// Test-only compatibility constructor retained for authority equivalence
+    /// checks. Production code must use `builder(...).set_*()`.
+    #[cfg(test)]
     pub(crate) fn from_session_prompt_parts(
         session_id: impl Into<String>,
         system_prompt: Option<String>,
