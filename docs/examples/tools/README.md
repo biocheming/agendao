@@ -1,25 +1,33 @@
 # Tool Config Examples
 
-文档基线：v2026.6.6（更新日期：2026-06-10）
+文档基线：v2026.6.10（更新日期：2026-06-10）
 
-这个目录只演示一件事：如何用 `toolImports` + 外部 `tools.jsonc` 管理外部 tool catalog。
+这个目录只演示一件事：如何用 `toolImports` + 外部 `tools.jsonc` 管理外部 tool catalog，并让示例路径、目录推断、`catalog-only` / `executable` 语义与当前 loader 行为保持一致。
 
 不要把外部 tool 配置继续堆回主配置。`agendao.jsonc` 里只保留导入入口，真正的 tool 清单放到独立 `tools.jsonc` 文件。
 
-## Files
+## What Is Actually Covered
 
 - `agendao.jsonc.example`
-  - 最小主配置：只演示从 repo 根配置导入一个外部 tool catalog
+  - repo 根最小入口：主配置只保留一个 `toolImports`
 - `single-file/`
-  - 一个 `tools.jsonc` 里同时写 `source` / `catalog` / `execution`
+  - 一个 `tools.jsonc` 同时承载 `source` / `catalog` / `execution`
 - `split-imports/`
   - 主配置导入多个 catalog 文件，按导入顺序合并
 - `directory-infer/`
-  - `catalog` 留空，由 `tools/<domain>/<family>/<subfamily>/...` 目录结构回填
+  - `catalog` 留空，由 `tools/<domain>/<family>/<subfamily>/...` 目录结构回填缺失层级
 - `partial-backfill/`
   - 只显式写一部分 `catalog`，其余层级从目录结构补齐
 - `catalog-only/`
   - 只有发现/分类能力，没有执行声明；可被搜索和描述，不可直接执行
+
+这些示例都对着当前仓库里的真实文件树：
+
+- `single-file/tools.jsonc` 的 `source.path` / `execution.entry` / `arguments_schema_ref` 都能在同目录下找到目标文件
+- `split-imports/` 真实演示了两个独立 catalog 文件的合并
+- `directory-infer/tools/catalog.jsonc` 刻意把 `catalog` 留空，依赖 `tools/cadd/molecular_docking/protein_ligand/...` 回填
+- `partial-backfill/tools/catalog.jsonc` 只锁 `family = scoring`，把 `domain` / `subfamily` 交给目录推断
+- `catalog-only/tools/catalog.jsonc` 没有 `execution` 块，当前只能进入 `tool_catalog_search` / `tool_catalog_describe`
 
 ## Minimal entry
 
@@ -33,7 +41,7 @@
 }
 ```
 
-完整文件见：`./agendao.jsonc.example`
+完整文件见：`./agendao.jsonc.example`。这个入口是 repo 根路径语义，不适合原样复制到别的目录。
 
 ## Which pattern to use
 
@@ -92,3 +100,9 @@
 - 全目录推断：`directory-infer/tools/catalog.jsonc`
 - 部分回填：`partial-backfill/tools/catalog.jsonc`
 - 只暴露 catalog：`catalog-only/tools/catalog.jsonc`
+
+## What these examples do not claim
+
+- 它们不保证外部 tool 的业务参数一定合理，只保证配置层字段、相对路径和 catalog 语义是当前合法形态
+- 它们不替代 `tool_catalog_search -> tool_catalog_describe -> tool_catalog_call` 的发现/执行流程说明；运行时入口仍以 `configuration.md` 和产品文档为准
+- `catalog-only` 示例不是“半配置错误”，而是刻意演示“大 catalog 先暴露发现面、后开放执行面”的治理方式

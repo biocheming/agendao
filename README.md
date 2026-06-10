@@ -14,7 +14,7 @@ Most AI coding tools focus on the question of "how to do it": how to generate co
 
 The answer is not only model capability. It is governance.
 
-Current version: `v2026.6.6`
+Current version: `v2026.6.10`
 
 ---
 

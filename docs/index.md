@@ -2,7 +2,7 @@
 
 AgenDao 是一个用 Rust 编写的本地编码智能体运行时。它把终端原生交互、多 Agent 协调、技能系统、多 Provider、持久化 session、memory 和 telemetry 组织成一个统一的开发工作流引擎。
 
-> **版本:** 2026.6.6 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.6.10 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
