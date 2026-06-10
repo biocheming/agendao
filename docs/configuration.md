@@ -152,7 +152,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 }
 ```
 
-被导入的 `tools.jsonc` 文件用于承载外部工具清单。当前配置层支持：
+被导入的 `tools.jsonc` 文件用于承载外部工具清单。当前版本支持：
 
 - 主配置声明导入文件路径
 - 相对路径按“声明该字段的配置文件所在目录”解析
@@ -161,8 +161,9 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 - 外部 tool 显式分为两类：
   - `catalog-only`：只有发现/分类能力，没有执行声明
   - `executable`：必须提供 `execution` 块
-
-当前版本这一步只完成了**配置层设计与解析能力**。运行时 registry 接线可以在后续阶段再做。
+- `mcp_search` / `mcp_describe` 会把导入的外部 tools 暴露给用户
+- `mcp_call` 当前只对声明了 `execution` 的外部 tool 提供第一版执行接线
+- `catalog-only` tool 会继续保留为“可发现、可描述、不可执行”
 
 #### tools.jsonc 示例
 
@@ -195,6 +196,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 - 第一版 `execution.kind` 只接受 `script_runner`
 - `execution.entry` 是必填项
 - `execution.entry` / `execution.arguments_schema_ref` 都按 `tools.jsonc` 所在目录解析相对路径
+- `script_runner` 目前通过 `mcp_call` 的第一版外部执行适配器运行
 
 #### 目录推断规则
 
