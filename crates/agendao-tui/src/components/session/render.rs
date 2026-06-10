@@ -840,15 +840,6 @@ fn build_assistant_message_items_from_props(
     props: &AssistantMessageRenderProps,
 ) -> Vec<AssistantMessageItem> {
     let mut raw_items = Vec::new();
-    let hidden_reasoning_count = if props.show_thinking {
-        0
-    } else {
-        props.msg
-            .parts
-            .iter()
-            .filter(|part| matches!(part, MessagePart::Reasoning { .. }))
-            .count()
-    };
 
     if props.msg.parts.is_empty() {
         raw_items.push(AssistantMessageItem::Text(AssistantTextItem {
@@ -863,15 +854,6 @@ fn build_assistant_message_items_from_props(
             props.show_thinking,
             &props.expanded_tool_arguments,
         ));
-    }
-
-    if hidden_reasoning_count > 0 {
-        raw_items.insert(
-            0,
-            AssistantMessageItem::ThinkingHidden(AssistantThinkingHiddenItem {
-                hidden_count: hidden_reasoning_count,
-            }),
-        );
     }
 
     if let Some(footer_item) = props.footer_item.clone() {
@@ -925,27 +907,6 @@ fn render_assistant_block_outputs(
                 })
                 .with_key(format!(
                     "assistant-message-block-thinking:{}:{}",
-                    props.msg.id, input.block_key
-                ))
-            }
-            AssistantMessageItem::ThinkingHidden(item) => {
-                Element::component(AssistantThinkingBlockComponent {
-                    msg: props.msg.clone(),
-                    context: props.context.clone(),
-                    expanded_reasoning: props.expanded_reasoning.clone(),
-                    memo_key: input.memo_key,
-                    item: AssistantThinkingItem {
-                        part_index: usize::MAX,
-                        text: format!(
-                            "reasoning hidden by display preference\n{} reasoning block{} hidden.\nPress Ctrl+G to show.",
-                            item.hidden_count,
-                            if item.hidden_count == 1 { "" } else { "s" }
-                        ),
-                    },
-                    output: output.clone(),
-                })
-                .with_key(format!(
-                    "assistant-message-block-thinking-hidden:{}:{}",
                     props.msg.id, input.block_key
                 ))
             }
@@ -1033,7 +994,6 @@ fn assistant_block_kind(item: &AssistantMessageItem) -> &'static str {
         AssistantMessageItem::Spacer => "spacer",
         AssistantMessageItem::Text(_) => "text",
         AssistantMessageItem::Thinking(_) => "thinking",
-        AssistantMessageItem::ThinkingHidden(_) => "thinking-hidden",
         AssistantMessageItem::Tool(_) => "tool",
         AssistantMessageItem::File(_) => "file",
         AssistantMessageItem::Image(_) => "image",
@@ -1075,10 +1035,6 @@ fn hash_assistant_message_item(item: &AssistantMessageItem, hasher: &mut Default
             "thinking".hash(hasher);
             item.part_index.hash(hasher);
             item.text.hash(hasher);
-        }
-        AssistantMessageItem::ThinkingHidden(item) => {
-            "thinking-hidden".hash(hasher);
-            item.hidden_count.hash(hasher);
         }
         AssistantMessageItem::Tool(item) => {
             "tool".hash(hasher);
@@ -1167,13 +1123,13 @@ fn render_assistant_thinking_output(
     context: &MessageRenderContext,
     expanded_reasoning: &HashSet<String>,
 ) -> AssistantSegmentRenderOutput {
-    if item.part_index == usize::MAX {
-        return render_assistant_hidden_reasoning_output(item, context);
-    }
-
     let reasoning_id = format!("{}:{}", msg.id, item.part_index);
     let is_live_reasoning = msg.completed_at.is_none();
-    let collapsed = !is_live_reasoning && !expanded_reasoning.contains(&reasoning_id);
+    let collapsed = if item.hidden_by_preference {
+        !expanded_reasoning.contains(&reasoning_id)
+    } else {
+        !is_live_reasoning && !expanded_reasoning.contains(&reasoning_id)
+    };
     let rendered = super::session_text::render_reasoning_part_with_width(
         &item.text,
         &context.theme,
@@ -1213,33 +1169,6 @@ fn render_assistant_thinking_output(
         toggle_line_offsets,
         tool_arguments_toggle_line_offsets: Vec::new(),
         visible_reasoning_ids,
-        visible_tool_arguments_ids: HashSet::new(),
-    }
-}
-
-fn render_assistant_hidden_reasoning_output(
-    item: &AssistantThinkingItem,
-    context: &MessageRenderContext,
-) -> AssistantSegmentRenderOutput {
-    let lines = paint_block_lines(
-        super::session_text::render_reasoning_part_with_width(
-            &item.text,
-            &context.theme,
-            true,
-            1,
-            Some(context.content_width as u16),
-        )
-        .lines,
-        context.thinking_bg,
-        context.thinking_border,
-        context.content_width,
-    );
-
-    AssistantSegmentRenderOutput {
-        lines,
-        toggle_line_offsets: Vec::new(),
-        tool_arguments_toggle_line_offsets: Vec::new(),
-        visible_reasoning_ids: HashSet::new(),
         visible_tool_arguments_ids: HashSet::new(),
     }
 }
@@ -1351,10 +1280,17 @@ fn build_assistant_segment_items(
         terminal_message,
         tool_results,
         running_tool_call,
-        show_thinking,
+        true,
     )
     .into_iter()
-    .map(|segment| build_assistant_message_item(message_id, expanded_tool_arguments, segment))
+    .map(|segment| {
+        build_assistant_message_item(
+            message_id,
+            expanded_tool_arguments,
+            segment,
+            show_thinking,
+        )
+    })
     .collect()
 }
 
@@ -1406,6 +1342,7 @@ fn build_assistant_message_item(
     message_id: &str,
     expanded_tool_arguments: &HashSet<String>,
     segment: TerminalAssistantSegment,
+    show_thinking: bool,
 ) -> AssistantMessageItem {
     match segment {
         TerminalAssistantSegment::Spacer => AssistantMessageItem::Spacer,
@@ -1413,7 +1350,11 @@ fn build_assistant_message_item(
             AssistantMessageItem::Text(AssistantTextItem { text })
         }
         TerminalAssistantSegment::Reasoning { part_index, text } => {
-            AssistantMessageItem::Thinking(AssistantThinkingItem { part_index, text })
+            AssistantMessageItem::Thinking(AssistantThinkingItem {
+                part_index,
+                text,
+                hidden_by_preference: !show_thinking,
+            })
         }
         TerminalAssistantSegment::ToolCall {
             name,

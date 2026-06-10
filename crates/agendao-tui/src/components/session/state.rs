@@ -686,7 +686,6 @@ enum AssistantMessageItem {
     Spacer,
     Text(AssistantTextItem),
     Thinking(AssistantThinkingItem),
-    ThinkingHidden(AssistantThinkingHiddenItem),
     Tool(AssistantToolBlockItem),
     File(AssistantFileItem),
     Image(AssistantImageItem),
@@ -970,11 +969,7 @@ struct AssistantTextItem {
 struct AssistantThinkingItem {
     part_index: usize,
     text: String,
-}
-
-#[derive(Clone)]
-struct AssistantThinkingHiddenItem {
-    hidden_count: usize,
+    hidden_by_preference: bool,
 }
 
 #[derive(Clone)]

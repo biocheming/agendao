@@ -143,13 +143,22 @@ pub(super) fn render_reasoning_part_with_width(
     };
 
     if collapsible && collapsed {
+        lines.push(Line::from(vec![
+            Span::styled("▶ reasoning", header_style),
+            Span::styled(" · ", header_style),
+            Span::styled(
+                "[ Expand ]",
+                Style::default()
+                    .fg(theme.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {} lines", total_content_lines), header_style),
+        ]));
+    } else {
         lines.push(Line::from(Span::styled(
-            format!("▶ reasoning · {} lines", total_content_lines),
+            format!("▼ reasoning · {} lines", total_content_lines),
             header_style,
         )));
-        lines.push(Line::from(""));
-    } else {
-        lines.push(Line::from(Span::styled("▼ reasoning", header_style)));
         lines.push(Line::from(""));
     }
 
@@ -166,10 +175,10 @@ pub(super) fn render_reasoning_part_with_width(
         lines.push(Line::from(spans));
     }
 
-    if collapsible {
+    if collapsible && !collapsed {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            if collapsed { "┆ expand" } else { "┆ collapse" },
+            "┆ collapse",
             body_style,
         )));
     }
@@ -1979,11 +1988,11 @@ mod tests {
             None,
         );
         let joined = rendered.lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("▶ reasoning · 4 lines"));
+        assert!(joined.contains("▶ reasoning · [ Expand ] 4 lines"));
         assert!(joined.contains("step one"), "{joined}");
         assert!(joined.contains("step two"), "{joined}");
         assert!(!joined.contains("step three"), "{joined}");
-        assert!(joined.contains("expand"), "{joined}");
+        assert!(joined.contains("[ Expand ]"), "{joined}");
     }
 
     #[test]
