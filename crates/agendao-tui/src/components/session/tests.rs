@@ -515,7 +515,12 @@ fn session_view_surfaces_hidden_reasoning_hint_when_display_thinking_is_disabled
                     "done".to_string(),
                     vec![
                         MessagePart::Reasoning {
-                            text: "hidden reasoning body".to_string(),
+                            text: [
+                                "hidden reasoning step one",
+                                "hidden reasoning step two",
+                                "hidden reasoning step three",
+                            ]
+                            .join("\n"),
                         },
                         MessagePart::Text {
                             text: "done".to_string(),
@@ -536,17 +541,86 @@ fn session_view_surfaces_hidden_reasoning_hint_when_display_thinking_is_disabled
     let rendered = buffer_text(&buffer);
 
     assert!(
-        rendered.contains("reasoning hidden by display preference"),
-        "hidden reasoning should surface an explicit hint instead of disappearing silently:\n{rendered}"
-    );
-    assert!(
         rendered.contains("▶ reasoning"),
-        "hidden reasoning hint should keep reasoning triangle header semantics:\n{rendered}"
+        "hidden reasoning should keep reasoning triangle header semantics:\n{rendered}"
     );
     assert!(
-        !rendered.contains("☪ reasoning hidden by display preference"),
-        "hidden reasoning hint must not be rendered like assistant final text:\n{rendered}"
+        rendered.contains("[ Expand ]"),
+        "hidden reasoning should surface an inline expand affordance:\n{rendered}"
     );
+    assert!(
+        !rendered.contains("reasoning hidden by display preference"),
+        "hidden reasoning should no longer render the old placeholder prose:\n{rendered}"
+    );
+}
+
+#[test]
+fn hidden_reasoning_header_click_expands_reasoning_block() {
+    let context = Arc::new(AppContext::new());
+    context.apply_config(&agendao_config::Config {
+        ui_preferences: Some(agendao_config::UiPreferencesConfig {
+            show_thinking: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Hidden Reasoning Expand".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![make_message(
+                "assistant-1",
+                MessageRole::Assistant,
+                "done".to_string(),
+                vec![
+                    MessagePart::Reasoning {
+                        text: [
+                            "hidden reasoning step one",
+                            "hidden reasoning step two",
+                            "hidden reasoning step three",
+                        ]
+                        .join("\n"),
+                    },
+                    MessagePart::Text {
+                        text: "done".to_string(),
+                    },
+                ],
+            )],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 24);
+
+    let initial = render_session_view_once(&view, &context, area, &prompt);
+    let initial_text = buffer_text(&initial);
+    assert!(initial_text.contains("▶ reasoning"), "{initial_text}");
+    assert!(initial_text.contains("[ Expand ]"), "{initial_text}");
+    assert!(!initial_text.contains("hidden reasoning step three"), "{initial_text}");
+
+    let messages_area = view
+        .state
+        .lock()
+        .viewport
+        .last_messages_area
+        .expect("messages area");
+    assert!(view.handle_click(messages_area.x + 2, messages_area.y));
+
+    let expanded = render_session_view_once(&view, &context, area, &prompt);
+    let expanded_text = buffer_text(&expanded);
+    assert!(
+        expanded_text.contains("hidden reasoning step one")
+            || expanded_text.contains("hidden reasoning step two"),
+        "{expanded_text}"
+    );
+    assert!(expanded_text.contains("hidden reasoning step three"), "{expanded_text}");
+    assert!(expanded_text.contains("┆ collapse"), "{expanded_text}");
 }
 
 #[test]
