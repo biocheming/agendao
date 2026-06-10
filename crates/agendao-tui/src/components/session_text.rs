@@ -159,7 +159,6 @@ pub(super) fn render_reasoning_part_with_width(
             format!("▼ reasoning · {} lines", total_content_lines),
             header_style,
         )));
-        lines.push(Line::from(""));
     }
 
     for line in content_lines.into_iter().take(visible_count) {
@@ -176,7 +175,6 @@ pub(super) fn render_reasoning_part_with_width(
     }
 
     if collapsible && !collapsed {
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "┆ collapse",
             body_style,

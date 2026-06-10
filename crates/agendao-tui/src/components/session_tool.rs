@@ -22,6 +22,7 @@ use crate::theme::Theme;
 /// Threshold: tool results longer than this are "block" tools with expandable output
 const BLOCK_RESULT_THRESHOLD: usize = 3;
 const TOOL_ARGUMENTS_PREVIEW_LINES: usize = 10;
+const TOOL_ARGUMENTS_PREVIEW_CHARS: usize = 100;
 
 pub struct ToolCallRenderInput<'a> {
     pub message_id: &'a str,
@@ -81,9 +82,18 @@ fn render_tool_arguments_block(
     arguments_expanded: bool,
     theme: &Theme,
     bg: ratatui::style::Color,
-) -> Option<(Vec<Line<'static>>, Vec<ToolArgumentsToggleLineOffset>, HashSet<String>)> {
+) -> Option<(
+    Vec<Line<'static>>,
+    Vec<ToolArgumentsToggleLineOffset>,
+    HashSet<String>,
+    bool,
+)> {
     let argument_lines = display_argument_lines(arguments);
-    if argument_lines.len() <= TOOL_ARGUMENTS_PREVIEW_LINES {
+    let full_text = argument_lines.join("\n");
+    let char_count = full_text.chars().count();
+    let line_based = argument_lines.len() > TOOL_ARGUMENTS_PREVIEW_LINES;
+    let char_based = char_count > TOOL_ARGUMENTS_PREVIEW_CHARS;
+    if !line_based && !char_based {
         return None;
     }
 
@@ -92,16 +102,34 @@ fn render_tool_arguments_block(
     let mut toggle_line_offsets = Vec::new();
     let mut visible_arguments_ids = HashSet::new();
     let collapsed = !arguments_expanded;
-    let visible_count = if collapsed {
-        TOOL_ARGUMENTS_PREVIEW_LINES
+    let preview_text = if collapsed && char_based {
+        let preview = full_text.chars().take(TOOL_ARGUMENTS_PREVIEW_CHARS).collect::<String>();
+        format!("{preview}...")
     } else {
-        argument_lines.len()
+        full_text.clone()
     };
-    let hidden_count = argument_lines.len().saturating_sub(visible_count);
-    let header_label = if collapsed {
-        format!("▶ arguments · {} lines", argument_lines.len())
+    let visible_lines: Vec<String> = preview_text.lines().map(str::to_string).collect();
+    let hidden_suffix = if collapsed {
+        if char_based {
+            format!(
+                " · {} chars · [click tool row or ctrl+y to expand]",
+                char_count
+            )
+        } else {
+            format!(
+                " · {} lines · [click tool row or ctrl+y to expand]",
+                argument_lines.len()
+            )
+        }
+    } else if char_based {
+        format!(" · {} chars", char_count)
     } else {
-        format!("▼ arguments · {} lines", argument_lines.len())
+        format!(" · {} lines", argument_lines.len())
+    };
+    let header_label = if collapsed {
+        format!("▶ arguments{hidden_suffix}")
+    } else {
+        format!("▼ arguments{hidden_suffix}")
     };
 
     visible_arguments_ids.insert(arguments_id.clone());
@@ -118,31 +146,16 @@ fn render_tool_arguments_block(
         arguments_id: arguments_id.clone(),
     });
 
-    for line in argument_lines.iter().take(visible_count) {
+    for line in visible_lines {
         lines.push(block_content_line(
-            line.clone(),
+            line,
             Style::default().fg(theme.text_muted),
             theme,
             bg,
         ));
     }
 
-    if hidden_count > 0 {
-        lines.push(block_content_line(
-            format!("… {} more lines · click to expand", hidden_count),
-            Style::default()
-                .fg(theme.text_muted)
-                .add_modifier(Modifier::ITALIC),
-            theme,
-            bg,
-        ));
-        toggle_line_offsets.push(ToolArgumentsToggleLineOffset {
-            line_offset: lines.len().saturating_sub(1),
-            arguments_id,
-        });
-    }
-
-    Some((lines, toggle_line_offsets, visible_arguments_ids))
+    Some((lines, toggle_line_offsets, visible_arguments_ids, collapsed))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -385,7 +398,7 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
         let mut toggle_line_offsets = Vec::new();
         let mut visible_arguments_ids = HashSet::new();
 
-        if let Some((argument_lines, argument_hits, visible_ids)) = render_tool_arguments_block(
+        if let Some((argument_lines, argument_hits, visible_ids, _collapsed)) = render_tool_arguments_block(
             message_id,
             part_index,
             arguments,
@@ -394,7 +407,16 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             bg,
         ) {
             lines.extend(argument_lines);
-            toggle_line_offsets.extend(argument_hits);
+            toggle_line_offsets.push(ToolArgumentsToggleLineOffset {
+                line_offset: 0,
+                arguments_id: tool_arguments_id(message_id, part_index),
+            });
+            toggle_line_offsets.extend(argument_hits.into_iter().map(|hit| {
+                ToolArgumentsToggleLineOffset {
+                    line_offset: hit.line_offset + 1,
+                    arguments_id: hit.arguments_id,
+                }
+            }));
             visible_arguments_ids.extend(visible_ids);
         }
 
@@ -1740,11 +1762,8 @@ mod tests {
     #[test]
     fn long_tool_arguments_collapse_by_default() {
         let theme = crate::theme::Theme::dark();
-        let command = (1..=12)
-            .map(|n| format!("echo line-{n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let arguments = format!(r#"{{"command":"{}"}}"#, command.replace('\n', "\\n"));
+        let command = "python3 -c \"print('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\"";
+        let arguments = format!(r#"{{"command":"{}"}}"#, command);
 
         let output = super::render_tool_call(
             ToolCallRenderInput {
@@ -1771,22 +1790,20 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
             .collect();
         assert!(full_text.contains("▶ arguments"));
-        assert!(full_text.contains("click to expand"));
+        assert!(full_text.contains("ctrl+y to expand"));
         assert!(!full_text.contains("▼ arguments"));
         assert!(output
             .visible_arguments_ids
             .contains("message-1:tool-args:2"));
-        assert_eq!(output.toggle_line_offsets.len(), 2);
+        assert!(output.toggle_line_offsets.iter().any(|hit| hit.line_offset == 0));
+        assert!(full_text.contains("python3 -c"));
     }
 
     #[test]
     fn long_tool_arguments_expand_when_toggled() {
         let theme = crate::theme::Theme::dark();
-        let command = (1..=12)
-            .map(|n| format!("echo line-{n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let arguments = format!(r#"{{"command":"{}"}}"#, command.replace('\n', "\\n"));
+        let command = "python3 -c \"print('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\"";
+        let arguments = format!(r#"{{"command":"{}"}}"#, command);
 
         let output = super::render_tool_call(
             ToolCallRenderInput {
@@ -1813,7 +1830,8 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
             .collect();
         assert!(full_text.contains("▼ arguments"));
-        assert!(full_text.contains("echo line-12"));
-        assert!(!full_text.contains("click to expand"));
+        assert!(full_text.contains("python3 -c"));
+        assert!(full_text.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(!full_text.contains("ctrl+y to expand"));
     }
 }
