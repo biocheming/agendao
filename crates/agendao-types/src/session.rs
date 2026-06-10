@@ -1600,6 +1600,45 @@ pub struct ToolResultGovernanceSummary {
     pub total_displayed_chars: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestBoundaryHygieneActionKind {
+    DroppedOrphanToolResult,
+    DroppedDanglingToolCall,
+    CompressedToolResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestBoundaryHygieneActionSummary {
+    pub kind: RequestBoundaryHygieneActionKind,
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestBoundaryHygieneSummary {
+    #[serde(default)]
+    pub dropped_orphan_tool_results: u64,
+    #[serde(default)]
+    pub dropped_dangling_tool_calls: u64,
+    #[serde(default)]
+    pub compressed_tool_results: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<RequestBoundaryHygieneActionSummary>,
+}
+
+impl RequestBoundaryHygieneSummary {
+    pub fn is_empty(&self) -> bool {
+        self.dropped_orphan_tool_results == 0
+            && self.dropped_dangling_tool_calls == 0
+            && self.compressed_tool_results == 0
+            && self.actions.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionToolRepairTelemetrySummary {
     pub total_tool_calls: u64,

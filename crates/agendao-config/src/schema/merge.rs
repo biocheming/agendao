@@ -1186,10 +1186,12 @@ impl Config {
         instructions: Vec<String>,
         disabled_providers: Vec<String>,
         enabled_providers: Vec<String>,
+        tool_imports: Vec<String>,
     ) {
         append_unique_keep_order(&mut self.instructions, instructions);
         merge_vec_replace_if_non_empty(&mut self.disabled_providers, disabled_providers);
         merge_vec_replace_if_non_empty(&mut self.enabled_providers, enabled_providers);
+        append_unique_keep_order(&mut self.tool_imports, tool_imports);
     }
 
     pub fn merge(&mut self, other: Config) {
@@ -1209,6 +1211,7 @@ impl Config {
             watcher,
             plugin,
             plugin_paths,
+            tool_imports,
             snapshot,
             share,
             autoshare,
@@ -1293,7 +1296,12 @@ impl Config {
             plugin_paths,
             plugin,
         );
-        self.merge_sequence_fields(instructions, disabled_providers, enabled_providers);
+        self.merge_sequence_fields(
+            instructions,
+            disabled_providers,
+            enabled_providers,
+            tool_imports,
+        );
 
         // runtime_budget: replace on present — the budget authority has no
         // per-key partial merge; a user-provided budget stanza replaces the

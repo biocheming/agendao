@@ -78,9 +78,25 @@ fn render_session_messages_child(
     let max_scroll = next_viewport
         .rendered_line_count
         .saturating_sub(next_viewport.messages_viewport_height);
-    if viewport.rendered_line_count == 0 {
-        next_viewport.scroll_offset =
-            initial_session_scroll_offset(snapshot, &model.message_first_lines, max_scroll);
+    let preferred_reasoning_message_id = preferred_reasoning_anchor_message_id(snapshot);
+    let previous_reasoning_anchor = preferred_reasoning_message_id
+        .as_deref()
+        .and_then(|message_id| viewport.message_first_lines.get(message_id))
+        .copied();
+    let next_reasoning_anchor = preferred_reasoning_message_id
+        .as_deref()
+        .and_then(|message_id| model.message_first_lines.get(message_id))
+        .copied()
+        .map(|offset| offset.min(max_scroll));
+    let keep_reasoning_anchor = viewport.rendered_line_count == 0
+        || previous_reasoning_anchor
+            .is_some_and(|anchor| viewport.scroll_offset == anchor);
+    if keep_reasoning_anchor {
+        if let Some(anchor) = next_reasoning_anchor {
+            next_viewport.scroll_offset = anchor;
+        } else if was_near_bottom || next_viewport.scroll_offset > max_scroll {
+            next_viewport.scroll_offset = max_scroll;
+        }
     } else if was_near_bottom || next_viewport.scroll_offset > max_scroll {
         next_viewport.scroll_offset = max_scroll;
     }
@@ -103,32 +119,25 @@ fn render_session_messages_child(
     }
 }
 
-fn initial_session_scroll_offset(
+fn preferred_reasoning_anchor_message_id(
     snapshot: &SessionMessagesSnapshot,
-    message_first_lines: &HashMap<String, usize>,
-    max_scroll: usize,
-) -> usize {
-    if snapshot.show_thinking {
-        if let Some(message_id) = snapshot
-            .messages
-            .iter()
-            .rev()
-            .find(|message| {
-                matches!(message.role, MessageRole::Assistant)
-                    && message
-                        .parts
-                        .iter()
-                        .any(|part| matches!(part, MessagePart::Reasoning { .. }))
-            })
-            .map(|message| message.id.as_str())
-        {
-            if let Some(first_line) = message_first_lines.get(message_id) {
-                return (*first_line).min(max_scroll);
-            }
-        }
+) -> Option<String> {
+    if !snapshot.show_thinking {
+        return None;
     }
 
-    max_scroll
+    snapshot
+        .messages
+        .iter()
+        .rev()
+        .find(|message| {
+            matches!(message.role, MessageRole::Assistant)
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Reasoning { .. }))
+        })
+        .map(|message| message.id.clone())
 }
 
 fn resolve_session_render_model(
@@ -437,14 +446,6 @@ fn build_session_message_render_inputs(
         .rposition(|m| matches!(m.role, MessageRole::Assistant));
 
     for (idx, msg) in resources.messages.iter().enumerate() {
-        if resources
-            .terminal_messages
-            .get(idx)
-            .is_some_and(is_tool_result_carrier)
-        {
-            continue;
-        }
-
         let gap_before = should_insert_message_gap(last_visible_role.as_ref(), &msg.role);
         let props = build_message_render_props(
             msg,
@@ -455,15 +456,7 @@ fn build_session_message_render_inputs(
             &mut rendered_first_system_prompt,
         );
         last_visible_role = Some(message_role_for_render_props(&props));
-        let has_more_visible_messages = resources.messages[idx + 1..]
-            .iter()
-            .enumerate()
-            .any(|(offset, _)| {
-                !resources
-                    .terminal_messages
-                    .get(idx + 1 + offset)
-                    .is_some_and(is_tool_result_carrier)
-            });
+        let has_more_visible_messages = idx + 1 < resources.messages.len();
         inputs.push(SessionMessageRenderInput {
             message_id: msg.id.clone(),
             gap_before,
@@ -698,7 +691,7 @@ fn build_assistant_message_render_props(
     resources: &SessionRenderResources<'_>,
     expanded_reasoning: &HashSet<String>,
 ) -> AssistantMessageRenderProps {
-    let tool_results = collect_assistant_tool_results(resources.terminal_messages, idx);
+    let tool_results = collect_inline_tool_results(msg);
     let running_tool_call =
         resolve_running_tool_call(msg, idx, last_assistant_idx, &tool_results).map(str::to_string);
     let footer_item = build_assistant_footer_item(msg, idx, last_assistant_idx, resources)
@@ -726,6 +719,31 @@ fn build_plain_message_render_props(
         msg: msg.clone(),
         context: build_message_render_context(resources),
     }
+}
+
+fn collect_inline_tool_results(msg: &Message) -> HashMap<String, TerminalToolResultInfo> {
+    let mut tool_results = HashMap::new();
+    for part in &msg.parts {
+        if let MessagePart::ToolResult {
+            id,
+            result,
+            is_error,
+            title,
+            metadata,
+        } = part
+        {
+            tool_results.insert(
+                id.clone(),
+                TerminalToolResultInfo {
+                    output: result.clone(),
+                    is_error: *is_error,
+                    title: title.clone(),
+                    metadata: metadata.clone(),
+                },
+            );
+        }
+    }
+    tool_results
 }
 
 fn build_user_message_memo_key(props: &UserMessageRenderProps) -> u64 {
@@ -797,14 +815,23 @@ fn build_user_message_output(props: &UserMessageRenderProps) -> MessageRenderOut
 fn build_assistant_message_items_from_props(
     props: &AssistantMessageRenderProps,
 ) -> Vec<AssistantMessageItem> {
-    let mut items = Vec::new();
+    let mut raw_items = Vec::new();
+    let hidden_reasoning_count = if props.show_thinking {
+        0
+    } else {
+        props.msg
+            .parts
+            .iter()
+            .filter(|part| matches!(part, MessagePart::Reasoning { .. }))
+            .count()
+    };
 
     if props.msg.parts.is_empty() {
-        items.push(AssistantMessageItem::Text(AssistantTextItem {
+        raw_items.push(AssistantMessageItem::Text(AssistantTextItem {
             text: props.msg.content.clone(),
         }));
     } else if let Some(terminal_message) = props.terminal_message.as_ref() {
-        items.extend(build_assistant_segment_items(
+        raw_items.extend(build_assistant_segment_items(
             terminal_message,
             &props.tool_results,
             props.running_tool_call.as_deref(),
@@ -812,11 +839,20 @@ fn build_assistant_message_items_from_props(
         ));
     }
 
-    if let Some(footer_item) = props.footer_item.clone() {
-        items.push(AssistantMessageItem::Footer(footer_item));
+    if hidden_reasoning_count > 0 {
+        raw_items.insert(
+            0,
+            AssistantMessageItem::ThinkingHidden(AssistantThinkingHiddenItem {
+                hidden_count: hidden_reasoning_count,
+            }),
+        );
     }
 
-    items
+    if let Some(footer_item) = props.footer_item.clone() {
+        raw_items.push(AssistantMessageItem::Footer(footer_item));
+    }
+
+    raw_items
 }
 
 fn render_assistant_block_outputs(
@@ -863,6 +899,26 @@ fn render_assistant_block_outputs(
                 })
                 .with_key(format!(
                     "assistant-message-block-thinking:{}:{}",
+                    props.msg.id, input.block_key
+                ))
+            }
+            AssistantMessageItem::ThinkingHidden(item) => {
+                Element::component(AssistantTextBlockComponent {
+                    msg: props.msg.clone(),
+                    context: props.context.clone(),
+                    style,
+                    memo_key: input.memo_key,
+                    item: AssistantTextItem {
+                        text: format!(
+                            "{} reasoning block{} hidden by display preference. Press Ctrl+G to show.",
+                            item.hidden_count,
+                            if item.hidden_count == 1 { "" } else { "s" }
+                        ),
+                    },
+                    output: output.clone(),
+                })
+                .with_key(format!(
+                    "assistant-message-block-thinking-hidden:{}:{}",
                     props.msg.id, input.block_key
                 ))
             }
@@ -950,6 +1006,7 @@ fn assistant_block_kind(item: &AssistantMessageItem) -> &'static str {
         AssistantMessageItem::Spacer => "spacer",
         AssistantMessageItem::Text(_) => "text",
         AssistantMessageItem::Thinking(_) => "thinking",
+        AssistantMessageItem::ThinkingHidden(_) => "thinking-hidden",
         AssistantMessageItem::Tool(_) => "tool",
         AssistantMessageItem::File(_) => "file",
         AssistantMessageItem::Image(_) => "image",
@@ -991,6 +1048,10 @@ fn hash_assistant_message_item(item: &AssistantMessageItem, hasher: &mut Default
             "thinking".hash(hasher);
             item.part_index.hash(hasher);
             item.text.hash(hasher);
+        }
+        AssistantMessageItem::ThinkingHidden(item) => {
+            "thinking-hidden".hash(hasher);
+            item.hidden_count.hash(hasher);
         }
         AssistantMessageItem::Tool(item) => {
             "tool".hash(hasher);
@@ -1183,7 +1244,7 @@ fn render_assistant_footer_output(
             style.background,
             style.border,
             resources.content_width,
-            true,
+            false,
             false,
         ),
         toggle_line_offsets: Vec::new(),
@@ -1302,7 +1363,14 @@ fn build_assistant_block_output(
     content_width: usize,
 ) -> AssistantSegmentRenderOutput {
     AssistantSegmentRenderOutput {
-        lines: paint_block_lines(lines, background, border, content_width),
+        lines: paint_block_lines_with_padding(
+            lines,
+            background,
+            border,
+            content_width,
+            false,
+            false,
+        ),
         toggle_line_offsets: Vec::new(),
         visible_reasoning_ids: HashSet::new(),
     }
@@ -1326,6 +1394,10 @@ fn build_assistant_footer_item(
 }
 
 fn build_plain_message_output(props: &PlainMessageRenderProps) -> MessageRenderOutput {
+    if matches!(props.msg.role, MessageRole::Tool) {
+        return build_tool_message_output(props);
+    }
+
     let plain_lines: Vec<Line<'static>> = props
         .msg
         .content
@@ -1349,6 +1421,116 @@ fn build_plain_message_output(props: &PlainMessageRenderProps) -> MessageRenderO
         })
         .collect();
     MessageRenderOutput::new(painted)
+}
+
+fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOutput {
+    let mut rendered_parts = Vec::new();
+    let inline_results = collect_inline_tool_results(&props.msg);
+
+    for part in &props.msg.parts {
+        let mut part_lines = match part {
+            MessagePart::ToolCall {
+                id,
+                name,
+                arguments,
+            } => super::session_tool::render_tool_call(
+                name,
+                arguments,
+                if inline_results.contains_key(id) {
+                    agendao_command_render::terminal_presentation::TerminalToolState::Completed
+                } else {
+                    agendao_command_render::terminal_presentation::TerminalToolState::Pending
+                },
+                inline_results.get(id),
+                props.context.show_tool_details,
+                &props.context.theme,
+            ),
+            MessagePart::ToolResult {
+                id,
+                result,
+                is_error,
+                title,
+                metadata,
+            } => super::session_tool::render_tool_call(
+                title.as_deref().unwrap_or(id),
+                "",
+                if *is_error {
+                    agendao_command_render::terminal_presentation::TerminalToolState::Failed
+                } else {
+                    agendao_command_render::terminal_presentation::TerminalToolState::Completed
+                },
+                Some(&TerminalToolResultInfo {
+                    output: result.clone(),
+                    is_error: *is_error,
+                    title: title.clone(),
+                    metadata: metadata.clone(),
+                }),
+                props.context.show_tool_details,
+                &props.context.theme,
+            ),
+            MessagePart::Text { text } => text
+                .lines()
+                .map(|line_text| {
+                    Line::from(Span::styled(
+                        line_text.to_string(),
+                        Style::default().fg(props.context.theme.text_muted),
+                    ))
+                })
+                .collect(),
+            MessagePart::File { path, mime } => render_shared_message_block_items(
+                build_file_items(path, mime),
+                "│ ",
+                props.context.theme.border_subtle,
+                &props.context.theme,
+            ),
+            MessagePart::Image { url } => render_shared_message_block_items(
+                build_image_items(url),
+                "│ ",
+                props.context.theme.border_subtle,
+                &props.context.theme,
+            ),
+            MessagePart::Reasoning { text } => text
+                .lines()
+                .map(|line_text| {
+                    Line::from(Span::styled(
+                        line_text.to_string(),
+                        Style::default().fg(props.context.theme.text_muted),
+                    ))
+                })
+                .collect(),
+        };
+
+        if part_lines.is_empty() {
+            continue;
+        }
+        if !rendered_parts.is_empty() {
+            rendered_parts.push(Line::from(""));
+        }
+        rendered_parts.append(&mut part_lines);
+    }
+
+    if rendered_parts.is_empty() {
+        rendered_parts = props
+            .msg
+            .content
+            .lines()
+            .map(|line_text| {
+                Line::from(Span::styled(
+                    line_text.to_string(),
+                    Style::default().fg(props.context.theme.text_muted),
+                ))
+            })
+            .collect();
+    }
+
+    MessageRenderOutput::new(paint_block_lines_with_padding(
+        rendered_parts,
+        props.context.theme.background,
+        props.context.theme.border,
+        props.context.content_width,
+        false,
+        false,
+    ))
 }
 
 fn collect_message_expanded_reasoning(

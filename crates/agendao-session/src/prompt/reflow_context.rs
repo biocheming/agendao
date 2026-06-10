@@ -46,7 +46,10 @@
 // Skeleton types are intentionally unused until Phase 5 cut-over.
 #![allow(dead_code)]
 
-use agendao_types::{MemoryRetrievalPacket, SessionContinuityPacket};
+use agendao_types::{
+    MemoryRetrievalPacket, RequestBoundaryHygieneActionKind, RequestBoundaryHygieneSummary,
+    SessionContinuityPacket,
+};
 
 // ── Top-level reflow context ────────────────────────────────────────────
 
@@ -181,6 +184,10 @@ pub(crate) struct PromptReflowDiagnosticsView {
 
     /// Cache evidence summary status, if present.
     pub(crate) cache_evidence_status: Option<String>,
+
+    /// Request-boundary hygiene summary, if the current turn dropped or
+    /// compressed provider-visible history before the request was sent.
+    pub(crate) request_boundary_hygiene: Option<RequestBoundaryHygieneSummary>,
 }
 
 // ── Construction ────────────────────────────────────────────────────────
@@ -206,6 +213,7 @@ impl PromptReflowContext {
         has_frozen_snapshot: bool,
         has_last_prefetch: bool,
         cache_evidence_status: Option<String>,
+        request_boundary_hygiene: Option<RequestBoundaryHygieneSummary>,
     ) -> Self {
         let memory = memory_prefetch.map(|packet| PromptReflowMemoryView {
             is_snapshot: packet.snapshot,
@@ -251,6 +259,7 @@ impl PromptReflowContext {
             has_frozen_snapshot,
             has_last_prefetch,
             cache_evidence_status,
+            request_boundary_hygiene,
         };
 
         Self {
@@ -365,6 +374,51 @@ impl PromptReflowContinuityView {
     }
 }
 
+impl PromptReflowDiagnosticsView {
+    pub(crate) fn explain(&self) -> String {
+        let mut lines = vec![format!(
+            "diagnostics: continuity_packet={} frozen_snapshot={} last_prefetch={}",
+            self.has_continuity_packet, self.has_frozen_snapshot, self.has_last_prefetch,
+        )];
+
+        if let Some(ref hygiene) = self.request_boundary_hygiene {
+            lines.push(format!(
+                "request_boundary_hygiene: dropped_orphan_tool_results={} dropped_dangling_tool_calls={} compressed_tool_results={}",
+                hygiene.dropped_orphan_tool_results,
+                hygiene.dropped_dangling_tool_calls,
+                hygiene.compressed_tool_results,
+            ));
+            for action in hygiene.actions.iter().take(6) {
+                let kind = match action.kind {
+                    RequestBoundaryHygieneActionKind::DroppedOrphanToolResult => {
+                        "dropped_orphan_tool_result"
+                    }
+                    RequestBoundaryHygieneActionKind::DroppedDanglingToolCall => {
+                        "dropped_dangling_tool_call"
+                    }
+                    RequestBoundaryHygieneActionKind::CompressedToolResult => {
+                        "compressed_tool_result"
+                    }
+                };
+                let mut detail = format!("  - {}: call_id={}", kind, action.tool_call_id);
+                if let Some(tool_name) = action.tool_name.as_deref() {
+                    detail.push_str(&format!(" tool={tool_name}"));
+                }
+                if let Some(original_chars) = action.original_chars {
+                    detail.push_str(&format!(" original_chars={original_chars}"));
+                }
+                lines.push(detail);
+            }
+        }
+
+        if let Some(ref status) = self.cache_evidence_status {
+            lines.push(format!("cache_evidence_status: {status}"));
+        }
+
+        lines.join("\n")
+    }
+}
+
 // ── Rendering: continuity explanation ──────────────────────────────────
 
 impl PromptReflowContinuityView {
@@ -448,12 +502,7 @@ impl PromptReflowContext {
             lines.push("continuity: none".to_string());
         }
 
-        lines.push(format!(
-            "diagnostics: continuity_packet={} frozen_snapshot={} last_prefetch={}",
-            self.diagnostics.has_continuity_packet,
-            self.diagnostics.has_frozen_snapshot,
-            self.diagnostics.has_last_prefetch,
-        ));
+        lines.push(format!("{}", self.diagnostics.explain()));
 
         lines.join("\n")
     }
@@ -569,7 +618,7 @@ mod tests {
         // has_last_prefetch = true independently of memory_prefetch:
         // the diagnostics sidecar can have a persisted packet even
         // when the current turn has a live prefetch too.
-        let ctx = PromptReflowContext::build("ses-1", Some(&packet), None, false, true, None);
+        let ctx = PromptReflowContext::build("ses-1", Some(&packet), None, false, true, None, None);
 
         let mem = ctx.memory.expect("memory view should exist");
         assert!(!mem.is_snapshot);
@@ -599,7 +648,8 @@ mod tests {
     #[test]
     fn reflow_context_builds_from_continuity_packet_only() {
         let packet = sample_continuity_packet();
-        let ctx = PromptReflowContext::build("ses-2", None, Some(&packet), false, false, None);
+        let ctx =
+            PromptReflowContext::build("ses-2", None, Some(&packet), false, false, None, None);
 
         assert!(ctx.memory.is_none());
 
@@ -630,6 +680,7 @@ mod tests {
             true,
             true,
             Some("degraded".to_string()),
+            None,
         );
 
         assert!(ctx.memory.is_some());
@@ -646,7 +697,8 @@ mod tests {
     #[test]
     fn reflow_context_stays_explanatory_not_prompt_authoritative() {
         let packet = sample_retrieval_packet();
-        let ctx = PromptReflowContext::build("ses-4", Some(&packet), None, false, false, None);
+        let ctx =
+            PromptReflowContext::build("ses-4", Some(&packet), None, false, false, None, None);
 
         let debug = format!("{ctx:?}");
         assert!(
@@ -661,7 +713,7 @@ mod tests {
 
     #[test]
     fn reflow_context_handles_empty_state() {
-        let ctx = PromptReflowContext::build("ses-4", None, None, false, false, None);
+        let ctx = PromptReflowContext::build("ses-4", None, None, false, false, None, None);
 
         assert!(ctx.memory.is_none());
         assert!(ctx.continuity.is_none());
@@ -681,6 +733,7 @@ mod tests {
             false,
             false,
             None,
+            None,
         );
 
         let summary = ctx.render_summary();
@@ -692,5 +745,49 @@ mod tests {
         assert!(summary.contains("continuity_packet=true"));
         // has_last_prefetch was passed as false → sidecar state is absent.
         assert!(summary.contains("last_prefetch=false"));
+    }
+
+    #[test]
+    fn render_summary_includes_request_boundary_hygiene_diagnostics() {
+        let ctx = PromptReflowContext::build(
+            "ses-6",
+            None,
+            None,
+            false,
+            false,
+            None,
+            Some(RequestBoundaryHygieneSummary {
+                dropped_orphan_tool_results: 1,
+                dropped_dangling_tool_calls: 1,
+                compressed_tool_results: 1,
+                actions: vec![
+                    agendao_types::RequestBoundaryHygieneActionSummary {
+                        kind: RequestBoundaryHygieneActionKind::DroppedOrphanToolResult,
+                        tool_call_id: "call-orphan".to_string(),
+                        tool_name: None,
+                        original_chars: Some(42),
+                    },
+                    agendao_types::RequestBoundaryHygieneActionSummary {
+                        kind: RequestBoundaryHygieneActionKind::DroppedDanglingToolCall,
+                        tool_call_id: "call-pending".to_string(),
+                        tool_name: Some("read".to_string()),
+                        original_chars: None,
+                    },
+                    agendao_types::RequestBoundaryHygieneActionSummary {
+                        kind: RequestBoundaryHygieneActionKind::CompressedToolResult,
+                        tool_call_id: "call-long".to_string(),
+                        tool_name: Some("grep".to_string()),
+                        original_chars: Some(24_001),
+                    },
+                ],
+            }),
+        );
+
+        let summary = ctx.render_summary();
+
+        assert!(summary.contains("request_boundary_hygiene: dropped_orphan_tool_results=1"));
+        assert!(summary.contains("dropped_dangling_tool_call: call_id=call-pending tool=read"));
+        assert!(summary
+            .contains("compressed_tool_result: call_id=call-long tool=grep original_chars=24001"));
     }
 }

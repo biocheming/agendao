@@ -200,6 +200,7 @@ impl KeybindRegistry {
 
         self.register("sidebar_toggle", Keybind::ctrl(KeyCode::Char('s')));
         self.register("help_toggle", Keybind::key(KeyCode::F(1)));
+        self.register("display_thinking", Keybind::ctrl(KeyCode::Char('g')));
         self.register("tool_details", Keybind::ctrl(KeyCode::Char('o')));
 
         self.register("editor_open", Keybind::ctrl(KeyCode::Char('e')));
@@ -298,6 +299,16 @@ mod tests {
         assert_eq!(
             registry.get("help_toggle"),
             Some(&Keybind::key(KeyCode::F(1)))
+        );
+    }
+
+    #[test]
+    fn display_thinking_defaults_to_ctrl_g() {
+        let registry = KeybindRegistry::new();
+
+        assert_eq!(
+            registry.get("display_thinking"),
+            Some(&Keybind::ctrl(KeyCode::Char('g')))
         );
     }
 }

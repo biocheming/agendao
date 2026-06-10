@@ -401,6 +401,7 @@ version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-core",
+ "agendao-types",
  "anyhow",
  "async-trait",
  "chrono",

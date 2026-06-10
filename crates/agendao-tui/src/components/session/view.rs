@@ -716,8 +716,13 @@ impl SessionView {
 
         if snapshot.header.status_running {
             title_width = title_width.saturating_add(2);
+            let running_prefix = if snapshot.header.title == "New Session" {
+                "☯ "
+            } else {
+                "◐ "
+            };
             title_spans.push(Span::styled(
-                "◐ ",
+                running_prefix,
                 Style::default().fg(status_accent),
             ));
         }

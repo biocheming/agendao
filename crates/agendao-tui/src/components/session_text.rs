@@ -11,7 +11,7 @@ use serde_json::Value;
 use super::markdown::MarkdownRenderer;
 use crate::{context::Message, theme::Theme};
 
-pub const ASSISTANT_MARKER: &str = "▶ ";
+pub const ASSISTANT_MARKER: &str = "☪ ";
 const STAGE_MARKER: &str = "▸ ";
 const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
 const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
@@ -136,22 +136,22 @@ pub(super) fn render_reasoning_part_with_width(
         .fg(theme.text_muted)
         .add_modifier(Modifier::ITALIC);
 
-    if collapsible && collapsed {
-        lines.push(Line::from(Span::styled(
-            format!("▶ reasoning · {} lines", total_content_lines),
-            header_style,
-        )));
-        return ReasoningRender { lines, collapsible };
-    }
-
-    lines.push(Line::from(Span::styled("▼ reasoning", header_style)));
-    lines.push(Line::from(""));
-
     let visible_count = if collapsible && collapsed {
         preview_lines
     } else {
         total_content_lines
     };
+
+    if collapsible && collapsed {
+        lines.push(Line::from(Span::styled(
+            format!("▶ reasoning · {} lines", total_content_lines),
+            header_style,
+        )));
+        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled("▼ reasoning", header_style)));
+        lines.push(Line::from(""));
+    }
 
     for line in content_lines.into_iter().take(visible_count) {
         let mut spans = vec![Span::styled("┆ ", body_prefix_style)];
@@ -168,7 +168,10 @@ pub(super) fn render_reasoning_part_with_width(
 
     if collapsible {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("┆ collapse", body_style)));
+        lines.push(Line::from(Span::styled(
+            if collapsed { "┆ expand" } else { "┆ collapse" },
+            body_style,
+        )));
     }
 
     ReasoningRender { lines, collapsible }
@@ -730,7 +733,7 @@ fn apply_assistant_marker(lines: Vec<Line<'static>>, marker_color: Color) -> Vec
 }
 
 /// Apply a lighter `▸ ` marker for stage/process content so it does not
-/// compete visually with the assistant final `▶ ` marker.
+/// compete visually with the assistant final `☪ ` marker.
 fn apply_stage_marker(lines: Vec<Line<'static>>, marker_color: Color) -> Vec<Line<'static>> {
     apply_marker(lines, STAGE_MARKER, marker_color)
 }
@@ -1927,8 +1930,8 @@ mod tests {
         );
         let first_line = line_text(&rendered.lines[0]);
         assert!(
-            first_line.contains("▶"),
-            "assistant final must have ▶ marker"
+            first_line.contains("☪"),
+            "assistant final must have ☪ marker"
         );
         assert!(
             !first_line.contains("▸"),
@@ -1963,6 +1966,24 @@ mod tests {
             "header text should contain 'reasoning'"
         );
         assert_not_bold(header_span.style, "reasoning header");
+    }
+
+    #[test]
+    fn collapsed_reasoning_keeps_preview_body_lines() {
+        let theme = Theme::default();
+        let rendered = render_reasoning_part_with_width(
+            "step one\nstep two\nstep three\nstep four",
+            &theme,
+            true,
+            2,
+            None,
+        );
+        let joined = rendered.lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("▶ reasoning · 4 lines"));
+        assert!(joined.contains("step one"), "{joined}");
+        assert!(joined.contains("step two"), "{joined}");
+        assert!(!joined.contains("step three"), "{joined}");
+        assert!(joined.contains("expand"), "{joined}");
     }
 
     #[test]

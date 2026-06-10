@@ -37,6 +37,7 @@ pub mod tools_and_output;
 // context_pressure_governance_summary    | loop_lifecycle (pressure)     | session_artifact, telemetry,     | TUI status panels, API       | missing → no pressure display
 //                                        |                               | server session_runtime           |                              |
 // context_lightweight_trim_summary       | message_building (trim)       | session_artifact                | TUI/Web diagnostics          | missing → no trim visible
+// request_boundary_hygiene_summary       | loop_lifecycle                | session_artifact, telemetry      | TUI/Web diagnostics, API     | missing → no boundary hygiene visible
 // pending_sanitizer_stage               | server (resume/continue)      | loop_lifecycle (consume-on-read) | internal only               | missing → defaults to PreRequest
 //
 // "Consume-on-read" keys (like pending_sanitizer_stage) are removed from
@@ -53,6 +54,7 @@ pub const CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY: &str =
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
     "context_pressure_governance_summary";
 pub const CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY: &str = "context_lightweight_trim_summary";
+pub const REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY: &str = "request_boundary_hygiene_summary";
 pub const PENDING_SANITIZER_STAGE_METADATA_KEY: &str = "pending_sanitizer_stage";
 
 pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
@@ -62,7 +64,7 @@ pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str
 
 pub fn continuity_packet_allowed_message_ids(value: &serde_json::Value) -> Option<Vec<String>> {
     let packet = SessionContinuityPacket::from_value(value)?;
-    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None);
+    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None, None);
     Some(ctx.continuity?.hydrate_message_ids)
 }
 
@@ -70,7 +72,7 @@ pub fn continuity_packet_inspection(
     value: &serde_json::Value,
 ) -> Option<SessionCompactionContinuityInspection> {
     let packet = SessionContinuityPacket::from_value(value)?;
-    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None);
+    let ctx = PromptReflowContext::build("", None, Some(&packet), false, false, None, None);
     let continuity = ctx.continuity?;
     Some(SessionCompactionContinuityInspection {
         source: agendao_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
@@ -98,6 +100,51 @@ pub fn continuity_packet_inspection(
     })
 }
 
+pub fn request_boundary_hygiene_summary(
+    value: &serde_json::Value,
+) -> Option<agendao_types::RequestBoundaryHygieneSummary> {
+    serde_json::from_value(value.clone()).ok()
+}
+
+pub fn render_session_reflow_diagnostics_summary(session: &Session) -> Option<String> {
+    let memory_prefetch = session
+        .metadata
+        .get("memory_last_prefetch_packet")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<MemoryRetrievalPacket>(value).ok());
+    let continuity_packet = session.messages.iter().rev().find_map(|message| {
+        message
+            .metadata
+            .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
+            .cloned()
+            .and_then(|value| SessionContinuityPacket::from_value(&value))
+    });
+    let hygiene_summary = session
+        .metadata
+        .get(REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY)
+        .and_then(request_boundary_hygiene_summary);
+    let has_frozen_snapshot = session.metadata.contains_key("memory_frozen_snapshot");
+    let has_last_prefetch = session.metadata.contains_key("memory_last_prefetch_packet");
+    let has_any_reflow = memory_prefetch.is_some()
+        || continuity_packet.is_some()
+        || hygiene_summary.is_some()
+        || has_frozen_snapshot
+        || has_last_prefetch;
+    if !has_any_reflow {
+        return None;
+    }
+    let ctx = PromptReflowContext::build(
+        session.id.clone(),
+        memory_prefetch.as_ref(),
+        continuity_packet.as_ref(),
+        has_frozen_snapshot,
+        has_last_prefetch,
+        None,
+        hygiene_summary,
+    );
+    Some(ctx.render_summary())
+}
+
 pub use compaction_helpers::{should_compact, trigger_compaction};
 pub(crate) use hooks::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
@@ -118,11 +165,11 @@ use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,
     generate_session_title, generate_session_title_for_session, generate_session_title_llm,
-    insert_reminders, max_steps_for_agent, merge_tool_definitions, prioritize_tool_definitions,
-    resolve_tool_surface, resolve_tool_surface_with_mcp, resolve_tools, resolve_tools_with_mcp,
-    resolve_tools_with_mcp_registry, sanitize_session_title_source,
-    structured_output_system_prompt, was_plan_agent, ResolvedTool, ResolvedToolSurface,
-    StructuredOutputConfig,
+    insert_reminders, max_steps_for_agent, merge_external_tool_catalogs, merge_tool_definitions,
+    prioritize_tool_definitions, resolve_tool_surface, resolve_tool_surface_with_mcp,
+    resolve_tools, resolve_tools_with_mcp, resolve_tools_with_mcp_registry,
+    sanitize_session_title_source, structured_output_system_prompt, was_plan_agent, ResolvedTool,
+    ResolvedToolSurface, StructuredOutputConfig,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -148,9 +195,9 @@ use agendao_types::{
     ContextPressureGovernanceStatus, ContextPressureGovernanceSummary, LightweightTrimSummary,
     MemoryRetrievalPacket, PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind,
     SessionCacheBoundarySummary, SessionCacheEvidenceExplain, SessionCacheSemanticsBasis,
-    SessionCacheSemanticsSummary, SessionCacheSeverity,
-    SessionCompactionContinuityInspection, SessionContextExplain, SessionContextKind,
-    SessionContinuityPacket, SubsessionHandoffPacket, SubsessionResultEnvelope,
+    SessionCacheSemanticsSummary, SessionCacheSeverity, SessionCompactionContinuityInspection,
+    SessionContextExplain, SessionContextKind, SessionContinuityPacket, SubsessionHandoffPacket,
+    SubsessionResultEnvelope,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
@@ -2182,7 +2229,7 @@ impl SessionPrompt {
         // Reflow authority path: build the shared explanation context, then
         // render the memory reminder from its memory projection. Packet
         // semantics remain unchanged; only the reader surface is unified.
-        PromptReflowContext::build("", Some(packet), None, false, false, None)
+        PromptReflowContext::build("", Some(packet), None, false, false, None, None)
             .memory
             .as_ref()
             .and_then(|view| view.render_reminder())
@@ -2901,7 +2948,13 @@ impl SessionPrompt {
             compiled_request.clone(),
         )
         .set_base_system_prompt(system_prompt)
-        .set_tool_surface(tools, Vec::new());
+        .set_tool_surface(
+            tools,
+            Vec::new(),
+            BTreeMap::new(),
+            tools_and_output::ToolCatalogMode::FullSchema,
+            agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
+        );
         self.prompt_with_update_hook(
             input,
             session,

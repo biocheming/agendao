@@ -10,9 +10,8 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use agendao_command_render::terminal_presentation::{
-    collect_assistant_tool_results, compose_assistant_segments, is_tool_result_carrier,
-    TerminalAssistantSegment, TerminalMessage, TerminalMessagePart, TerminalMessageRole,
-    TerminalToolResultInfo,
+    compose_assistant_segments, TerminalAssistantSegment, TerminalMessage, TerminalMessagePart,
+    TerminalMessageRole, TerminalToolResultInfo,
 };
 use agendao_command_render::terminal_tool_block_display::{build_file_items, build_image_items};
 use ratatui::{

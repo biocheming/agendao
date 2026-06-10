@@ -1,4 +1,4 @@
-use crate::Config;
+use crate::{Config, ExternalToolCatalogFile};
 use anyhow::{Context, Result};
 use jsonc_parser::{parse_to_serde_value, ParseOptions};
 use std::fs;
@@ -233,4 +233,11 @@ pub(super) fn parse_jsonc(content: &str) -> Result<Config> {
         .with_context(|| "Failed to parse JSONC")?
         .context("Config content is empty")?;
     serde_json::from_value(parsed).with_context(|| "Failed to parse config JSON")
+}
+
+pub(super) fn parse_external_tool_catalog_jsonc(content: &str) -> Result<ExternalToolCatalogFile> {
+    let value = parse_to_serde_value(content, &ParseOptions::default())
+        .map_err(|error| anyhow::anyhow!("JSONC parse error: {error:?}"))?;
+    let value = value.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    serde_json::from_value(value).with_context(|| "Failed to deserialize external tool catalog")
 }

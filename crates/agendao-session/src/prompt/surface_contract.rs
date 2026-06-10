@@ -345,7 +345,9 @@ mod tests {
     #[test]
     fn clock_line_detector_matches_known_dynamic_fields() {
         assert!(looks_like_clock_line("  Today's date: Fri May 01 2026"));
-        assert!(looks_like_clock_line("  Current local time: 2026-05-17 11:22:33 +08:00"));
+        assert!(looks_like_clock_line(
+            "  Current local time: 2026-05-17 11:22:33 +08:00"
+        ));
         assert!(looks_like_clock_line("  Local timezone: CST"));
         assert!(!looks_like_clock_line("  Working directory: /repo"));
     }

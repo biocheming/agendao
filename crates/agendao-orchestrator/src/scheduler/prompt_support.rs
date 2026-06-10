@@ -497,6 +497,26 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_summary_keeps_large_skill_catalog_compact_and_discovery_oriented() {
+        let skills = (0..20)
+            .map(|index| SchedulerSkillRef {
+                name: format!("skill-{index:02}"),
+                description: "A very long skill description that should be shortened before being placed in hot scheduler prompts.".to_string(),
+                category: Some("debug".to_string()),
+            })
+            .collect::<Vec<_>>();
+
+        let summary = build_capabilities_summary(&[], &[], &skills);
+
+        assert!(summary.contains("<available_skills compact=\"true\">"));
+        assert!(summary.contains("(+8 more; use skill_list/skill_view)"));
+        assert!(summary.contains(
+            "Use `skill_view(name)` to inspect any relevant skill before relying on it."
+        ));
+        assert!(!summary.contains("skill-19"));
+    }
+
+    #[test]
     fn capabilities_summary_sorts_agents_and_categories_stably() {
         let summary = build_capabilities_summary(
             &[
@@ -557,7 +577,9 @@ mod tests {
             &[],
         );
 
-        let alpha_pos = table.find("`alpha` agent").expect("alpha should be present");
+        let alpha_pos = table
+            .find("`alpha` agent")
+            .expect("alpha should be present");
         let zeta_pos = table.find("`zeta` agent").expect("zeta should be present");
         assert!(alpha_pos < zeta_pos);
     }

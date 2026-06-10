@@ -834,7 +834,11 @@ fn shared_tool_import_is_loaded_only_once_across_multiple_config_sources() {
 
     let catalogs = loader.load_external_tool_catalogs().unwrap();
 
-    assert_eq!(catalogs.len(), 1, "same normalized import should not reload");
+    assert_eq!(
+        catalogs.len(),
+        1,
+        "same normalized import should not reload"
+    );
     assert_eq!(catalogs[0].source_path, imported_dir.join("tools.jsonc"));
     assert!(catalogs[0].tools.contains_key("dock_pose"));
 }

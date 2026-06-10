@@ -346,6 +346,31 @@ fn session_view_keeps_non_empty_prompt_input_visible_while_running() {
 }
 
 #[test]
+fn session_view_uses_taiji_marker_for_running_new_session_header() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(None);
+        session.set_current_session_id(session_id.clone());
+        session.set_status(&session_id, SessionStatus::Running);
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 24);
+    let buffer = render_session_view_once(&view, &context, area, &prompt);
+    let rendered = buffer_text(&buffer);
+
+    assert!(
+        rendered.contains("☯ New Session"),
+        "running new session header should use taiji marker:\n{rendered}"
+    );
+}
+
+#[test]
 fn session_view_first_render_keeps_transcript_visible_with_existing_assistant_output() {
     let context = Arc::new(AppContext::new());
     let session_id = {
@@ -457,6 +482,314 @@ fn session_view_first_render_keeps_latest_reasoning_visible_for_tall_assistant_m
     assert!(
         rendered.contains("reasoning"),
         "latest reasoning header should remain visible on first render even when assistant body is tall:\n{rendered}"
+    );
+}
+
+#[test]
+fn session_view_surfaces_hidden_reasoning_hint_when_display_thinking_is_disabled() {
+    let context = Arc::new(AppContext::new());
+    context.apply_config(&agendao_config::Config {
+        ui_preferences: Some(agendao_config::UiPreferencesConfig {
+            show_thinking: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Hidden Reasoning Hint".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "please think first".to_string(),
+                    vec![MessagePart::Text {
+                        text: "please think first".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    "done".to_string(),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: "hidden reasoning body".to_string(),
+                        },
+                        MessagePart::Text {
+                            text: "done".to_string(),
+                        },
+                    ],
+                ),
+            ],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 24);
+    let buffer = render_session_view_once(&view, &context, area, &prompt);
+    let rendered = buffer_text(&buffer);
+
+    assert!(
+        rendered.contains("reasoning block hidden by display preference"),
+        "hidden reasoning should surface an explicit hint instead of disappearing silently:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Ctrl+G"),
+        "hidden reasoning hint should advertise the recovery keybind:\n{rendered}"
+    );
+}
+
+#[test]
+fn assistant_segments_render_with_block_spacing_between_reasoning_tool_and_text() {
+    let (_context, _session_id, mut snapshot) = perf_snapshot_with_messages();
+    snapshot.messages = vec![make_message(
+        "assistant-1",
+        MessageRole::Assistant,
+        "final answer".to_string(),
+        vec![
+            MessagePart::Reasoning {
+                text: "thinking".to_string(),
+            },
+            MessagePart::ToolCall {
+                id: "tool-1".to_string(),
+                name: "search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            MessagePart::Text {
+                text: "final answer".to_string(),
+            },
+        ],
+    )];
+
+    let output = render_perf_session_messages(
+        Rect::new(0, 0, 78, 30),
+        &snapshot,
+        &SessionMessageViewportState::default(),
+        &SessionReasoningState::default(),
+        &SessionMessageOutputCache::default(),
+        &SessionRenderModelCache::default(),
+    );
+
+    let rendered_lines = output
+        .message_cache
+        .entries
+        .get("assistant-1")
+        .expect("assistant cache entry")
+        .output
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    let blank_lines = rendered_lines
+        .iter()
+        .filter(|line| line.trim().is_empty())
+        .count();
+    assert!(
+        blank_lines >= 2,
+        "assistant semantic blocks should have visible spacing between them: {rendered_lines:?}"
+    );
+    let mut max_consecutive_blank_lines = 0usize;
+    let mut current_blank_run = 0usize;
+    for line in &rendered_lines {
+        if line.trim().is_empty() {
+            current_blank_run += 1;
+            max_consecutive_blank_lines = max_consecutive_blank_lines.max(current_blank_run);
+        } else {
+            current_blank_run = 0;
+        }
+    }
+    assert_eq!(
+        max_consecutive_blank_lines, 1,
+        "adjacent assistant blocks should be separated by a single blank line: {rendered_lines:?}"
+    );
+}
+
+#[test]
+fn session_render_preserves_transcript_order_across_assistant_and_tool_messages() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Transcript Order".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "find papers".to_string(),
+                    vec![MessagePart::Text {
+                        text: "find papers".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    "thinking".to_string(),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: "thinking".to_string(),
+                        },
+                        MessagePart::ToolCall {
+                            id: "tool-1".to_string(),
+                            name: "websearch".to_string(),
+                            arguments: "{\"query\":\"papers\"}".to_string(),
+                        },
+                    ],
+                ),
+                make_message(
+                    "tool-1",
+                    MessageRole::Tool,
+                    "papers found".to_string(),
+                    vec![MessagePart::ToolResult {
+                        id: "tool-1".to_string(),
+                        result: "papers found".to_string(),
+                        is_error: false,
+                        title: Some("websearch".to_string()),
+                        metadata: None,
+                    }],
+                ),
+                make_message(
+                    "assistant-2",
+                    MessageRole::Assistant,
+                    "final answer".to_string(),
+                    vec![MessagePart::Text {
+                        text: "final answer".to_string(),
+                    }],
+                ),
+            ],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 30);
+    let buffer = render_session_view_once(&view, &context, area, &prompt);
+    let transcript = buffer_text(&buffer);
+
+    let reasoning_idx = transcript.find("reasoning").expect("reasoning visible");
+    let tool_idx = transcript.find("websearch").expect("tool visible");
+    let final_idx = transcript.rfind("final answer").expect("assistant text visible");
+    assert!(
+        reasoning_idx < tool_idx && tool_idx < final_idx,
+        "transcript should keep reasoning -> tool -> final text order:\n{transcript}"
+    );
+}
+
+#[test]
+fn session_view_keeps_reasoning_anchor_when_same_assistant_grows_with_more_blocks() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Reasoning Anchor".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "investigate this author".to_string(),
+                    vec![MessagePart::Text {
+                        text: "investigate this author".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    "final answer".to_string(),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: multiline_reasoning_block("anchor reasoning", 6),
+                        },
+                        MessagePart::ToolCall {
+                            id: "tool-1".to_string(),
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        MessagePart::Text {
+                            text: "final answer".to_string(),
+                        },
+                    ],
+                ),
+            ],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+    let view = SessionView::new(session_id.clone());
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 18);
+
+    let first = render_session_view_once(&view, &context, area, &prompt);
+    let first_rendered = buffer_text(&first);
+    assert!(
+        first_rendered.contains("reasoning"),
+        "initial render should show reasoning header:\n{first_rendered}"
+    );
+
+    {
+        let mut session = context.session.write();
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "investigate this author".to_string(),
+                    vec![MessagePart::Text {
+                        text: "investigate this author".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    long_block("assistant-final", 20),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: multiline_reasoning_block("anchor reasoning", 6),
+                        },
+                        MessagePart::ToolCall {
+                            id: "tool-1".to_string(),
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        MessagePart::ToolCall {
+                            id: "tool-2".to_string(),
+                            name: "skill_search".to_string(),
+                            arguments: "{\"query\":\"pubmed\"}".to_string(),
+                        },
+                        MessagePart::Text {
+                            text: long_block("assistant-final", 20),
+                        },
+                    ],
+                ),
+            ],
+        );
+    }
+
+    let second = render_session_view_once(&view, &context, area, &prompt);
+    let second_rendered = buffer_text(&second);
+    assert!(
+        second_rendered.contains("reasoning"),
+        "reasoning header should remain visible when the same assistant message grows:\n{second_rendered}"
     );
 }
 

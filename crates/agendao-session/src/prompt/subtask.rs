@@ -526,18 +526,21 @@ mod tests {
                 description: "web".to_string(),
                 parameters: serde_json::json!({}),
                 source_kind: agendao_tool::ToolSchemaSourceKind::BuiltIn,
+                catalog: None,
             },
             agendao_tool::ToolSchema {
                 name: "task".to_string(),
                 description: "task".to_string(),
                 parameters: serde_json::json!({}),
                 source_kind: agendao_tool::ToolSchemaSourceKind::BuiltIn,
+                catalog: None,
             },
             agendao_tool::ToolSchema {
                 name: "task_flow".to_string(),
                 description: "task flow".to_string(),
                 parameters: serde_json::json!({}),
                 source_kind: agendao_tool::ToolSchemaSourceKind::BuiltIn,
+                catalog: None,
             },
         ];
 

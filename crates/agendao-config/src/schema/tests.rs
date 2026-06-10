@@ -1355,3 +1355,31 @@ fn experimental_config_merge_replaces_scalar_flags_and_primary_tools() {
     assert_eq!(experimental.mcp_timeout, Some(1000));
     assert_eq!(experimental.primary_tools, vec!["bash".to_string()]);
 }
+
+#[test]
+fn tool_imports_merge_append_unique_keep_order() {
+    let mut base = Config {
+        tool_imports: vec![
+            "/base/tools/core.jsonc".to_string(),
+            "/base/tools/cadd.jsonc".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        tool_imports: vec![
+            "/base/tools/cadd.jsonc".to_string(),
+            "/override/tools/biology.jsonc".to_string(),
+        ],
+        ..Default::default()
+    });
+
+    assert_eq!(
+        base.tool_imports,
+        vec![
+            "/base/tools/core.jsonc".to_string(),
+            "/base/tools/cadd.jsonc".to_string(),
+            "/override/tools/biology.jsonc".to_string(),
+        ]
+    );
+}

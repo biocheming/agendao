@@ -20,6 +20,7 @@ use super::runtime::JsRuntime;
 use agendao_core::codec::{self, CodecError};
 use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
+use agendao_types::ToolCatalogMetadata;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -86,6 +87,8 @@ pub struct InitializeResult {
 pub struct PluginToolDef {
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<ToolCatalogMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
