@@ -242,6 +242,9 @@ fn build_governed_preview(
     } else {
         out.push_str("artifact: unavailable\n");
     }
+    out.push_str(
+        "artifact_read_hint: this artifact is a local file. Read it with `artifact_read(artifact_path)` or a local file reader such as `read(file_path)`. Do not pass it to `webfetch` or `browser_session`.\n",
+    );
     out.push_str("\nPreview:\n");
     out.push_str(preview);
     out
@@ -318,6 +321,10 @@ mod tests {
             metadata.get("tool_result_governance_reason"),
             Some(&serde_json::json!("output_too_large"))
         );
+        assert!(governed
+            .output
+            .contains("artifact_read_hint: this artifact is a local file."));
+        assert!(governed.output.contains("Do not pass it to `webfetch` or `browser_session`"));
     }
 
     #[test]

@@ -447,7 +447,7 @@ fn is_search_facade_visible_bridge_tool(name: &str) -> bool {
     agendao_tool::tool_catalog::is_model_visible_tool_catalog_facade_tool(name)
         || matches!(
             name,
-            "skills_categories" | "skill_search" | "skills_list" | "skill_view"
+            "skills_categories" | "skill_search" | "skills_list" | "skill_view" | "artifact_read"
         )
 }
 
@@ -457,9 +457,10 @@ fn search_facade_visible_bridge_rank(name: &str) -> usize {
         "skill_search" => 1,
         "skills_list" => 2,
         "skill_view" => 3,
-        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 4,
-        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 5,
-        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 6,
+        "artifact_read" => 4,
+        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 5,
+        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 6,
+        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 7,
         _ => 100,
     }
 }
@@ -1087,6 +1088,11 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
+                name: "artifact_read".to_string(),
+                description: Some("artifact read".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
                 name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
                 description: Some("search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
@@ -1118,6 +1124,7 @@ mod title_tests {
                 "skill_search",
                 "skills_list",
                 "skill_view",
+                "artifact_read",
                 agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
                 agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
                 agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID
@@ -1174,6 +1181,11 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
+                name: "artifact_read".to_string(),
+                description: Some("artifact read".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
                 name: "websearch".to_string(),
                 description: Some("web search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
@@ -1193,6 +1205,7 @@ mod title_tests {
                 "skill_search",
                 "skills_list",
                 "skill_view",
+                "artifact_read",
                 agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
                 agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
                 agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID,
@@ -1221,6 +1234,11 @@ mod title_tests {
             ToolDefinition {
                 name: "skill_view".to_string(),
                 description: Some("skill view".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "artifact_read".to_string(),
+                description: Some("artifact read".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
@@ -1260,6 +1278,7 @@ mod title_tests {
         assert!(names.contains(&"skill_search"));
         assert!(names.contains(&"skills_list"));
         assert!(names.contains(&"skill_view"));
+        assert!(names.contains(&"artifact_read"));
         assert!(!names.contains(&"websearch"));
         assert!(!names.contains(&"webfetch"));
         assert!(!names.contains(&agendao_tool::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID));

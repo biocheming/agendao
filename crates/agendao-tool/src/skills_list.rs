@@ -85,7 +85,7 @@ impl Tool for SkillsListTool {
             .with_metadata(
                 "hint",
                 serde_json::json!(
-                    "Use skill_view(name) to see full content, tags, and linked files"
+                    "Use skill_view(name) with the exact short skill name shown here. Do not copy category prefixes like `literature-research/skills/...` into skill_view.file_path. Use file_path only for linked files such as `references/api.md`."
                 ),
             );
 
@@ -105,5 +105,19 @@ mod tests {
     fn skills_list_description_points_to_skills_categories() {
         let tool = SkillsListTool;
         assert!(tool.description().contains("skills_categories"));
+    }
+
+    #[test]
+    fn skills_list_hint_warns_against_category_paths_in_skill_view() {
+        let tool = SkillsListTool;
+        let schema = tool.parameters();
+        assert_eq!(schema["type"], "object");
+        let hint = "Use skill_view(name) with the exact short skill name shown here. Do not copy category prefixes like `literature-research/skills/...` into skill_view.file_path. Use file_path only for linked files such as `references/api.md`.";
+        let result = ToolResult::simple("Available skills", "<available_skills />")
+            .with_metadata("hint", serde_json::json!(hint));
+        assert!(result.metadata["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("skill_view.file_path"));
     }
 }
