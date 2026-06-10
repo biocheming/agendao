@@ -747,6 +747,14 @@ pub async fn create_default_registry_with_config(
     .await;
     register_builtin_tool(
         &registry,
+        crate::artifact_read::ArtifactReadTool::new(),
+        "filesystem_edit",
+        Some("artifact_read"),
+        &["file", "artifact", "read"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
         crate::write::WriteTool::new(),
         "filesystem_edit",
         Some("write"),

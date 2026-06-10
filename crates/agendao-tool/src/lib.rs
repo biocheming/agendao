@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub mod artifact_read;
 #[cfg(feature = "code-intel")]
 pub mod ast_grep_common;
 #[cfg(feature = "code-intel")]

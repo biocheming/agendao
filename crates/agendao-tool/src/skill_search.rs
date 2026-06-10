@@ -135,7 +135,7 @@ impl Tool for SkillSearchTool {
             .with_metadata(
                 "hint",
                 serde_json::json!(
-                    "Use skill_view(name) to inspect one exact skill after narrowing with skill_search."
+                    "Use skill_view(name) with one exact short skill name from these results. Category labels help discovery only; do not turn them into skill_view.file_path values."
                 ),
             );
 
@@ -170,5 +170,12 @@ mod tests {
     fn skill_search_description_points_to_skill_view() {
         let tool = SkillSearchTool;
         assert!(tool.description().contains("skill_view(name)"));
+    }
+
+    #[test]
+    fn skill_search_hint_warns_against_turning_categories_into_paths() {
+        let hint = "Use skill_view(name) with one exact short skill name from these results. Category labels help discovery only; do not turn them into skill_view.file_path values.";
+        assert!(hint.contains("skill_view.file_path"));
+        assert!(hint.contains("Category labels help discovery only"));
     }
 }

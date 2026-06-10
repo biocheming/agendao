@@ -697,7 +697,7 @@ impl PromptSurfaceInputs {
                     )
                 };
                 Some(format!(
-                    "## Available Execution Resources\nLarge tool catalog detected.\n\nTool flow:\n- `tool_catalog_search` finds relevant execution resources\n- `tool_catalog_describe` inspects one candidate\n- `tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`\n- `domain` / `family` / `subfamily` are catalog projections, not callable ids\n\nSkill flow:\n- `skills_categories` inspects available skill categories\n- `skill_search` searches skills by keyword, especially inside large categories\n- `skills_list` browses the skills inside a smaller category\n- `skill_view` loads one exact skill after discovery\n\nModel-visible bridge tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
+                    "## Available Execution Resources\nLarge tool catalog detected.\n\nTool flow:\n- `tool_catalog_search` finds relevant execution resources\n- `tool_catalog_describe` inspects one candidate\n- `tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`\n- `domain` / `family` / `subfamily` are catalog projections, not callable ids\n- if a governed tool result exposes an `artifact:` path, read that local file with `artifact_read` or `read`, not with `webfetch` / `browser_session`\n\nSkill flow:\n- `skills_categories` inspects available skill categories\n- `skill_search` searches skills by keyword, especially inside large categories\n- `skills_list` browses the skills inside a smaller category\n- `skill_view` loads one exact short skill name after discovery\n- `skill_view.file_path` is only for linked files such as `references/api.md`, not for category paths\n\nModel-visible bridge tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
                     lines.join("\n")
                 ))
             }
@@ -1618,6 +1618,11 @@ mod tests {
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
+                name: "artifact_read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
                 name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
@@ -1672,7 +1677,7 @@ mod tests {
             .contains("Catalog mode: search-facade"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("Model-visible bridge tools: 7"));
+            .contains("Model-visible bridge tools: 8"));
         assert!(sections
             .dynamic_system_overlay_text
             .contains("Full catalog resources: 8"));
@@ -1701,6 +1706,11 @@ mod tests {
             },
             ToolDefinition {
                 name: "skill_view".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "artifact_read".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1762,10 +1772,16 @@ mod tests {
             .contains("`skill_search` searches skills by keyword"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`skill_view` loads one exact skill after discovery"));
+            .contains("`skill_view` loads one exact short skill name after discovery"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("Model-visible bridge tools: 7"));
+            .contains("`skill_view.file_path` is only for linked files"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("read that local file with `artifact_read` or `read`"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Model-visible bridge tools: 8"));
         assert!(sections
             .dynamic_system_overlay_text
             .contains("Full catalog resources: 8"));

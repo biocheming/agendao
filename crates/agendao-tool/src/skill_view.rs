@@ -35,11 +35,11 @@ impl Tool for SkillViewTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Exact skill name. Use skills_categories and skills_list first to inspect names, descriptions, and categories."
+                    "description": "Exact short skill name such as `semantic-scholar` or `author-network`. Do not pass category-prefixed display labels or pseudo file paths."
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Optional supporting file path relative to the skill root, e.g. references/api.md. This loads a skill-owned file for inspection only; do not pass skill file paths to tool_catalog_call.tool."
+                    "description": "Optional supporting file path relative to the skill root, e.g. references/api.md. This is only for linked files inside the skill. Do not pass category paths like `skills/semantic-scholar/skill.md`, and do not pass skill file paths to tool_catalog_call.tool."
                 }
             },
             "required": ["name"]
@@ -192,5 +192,13 @@ Use clear visual hierarchy.
             .as_str()
             .expect("file_path description")
             .contains("do not pass skill file paths to tool_catalog_call.tool"));
+        assert!(tool.parameters()["properties"]["name"]["description"]
+            .as_str()
+            .expect("name description")
+            .contains("Exact short skill name"));
+        assert!(tool.parameters()["properties"]["file_path"]["description"]
+            .as_str()
+            .expect("file_path description")
+            .contains("Do not pass category paths like `skills/semantic-scholar/skill.md`"));
     }
 }
