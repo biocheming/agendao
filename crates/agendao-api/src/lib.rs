@@ -748,6 +748,8 @@ pub struct MessagePart {
     pub tool_call: Option<ToolCall>,
     #[serde(alias = "toolResult")]
     pub tool_result: Option<ToolResult>,
+    #[serde(default, alias = "outputBlock")]
+    pub output_block: Option<serde_json::Value>,
     #[serde(default)]
     pub synthetic: Option<bool>,
     #[serde(default)]

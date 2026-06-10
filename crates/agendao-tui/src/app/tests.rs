@@ -115,6 +115,7 @@ fn incremental_session_sync_refreshes_title_and_revert_metadata() {
             file: None,
             tool_call: None,
             tool_result: None,
+            output_block: None,
             synthetic: None,
             ignored: None,
         }],

@@ -205,7 +205,21 @@ fn map_api_message_part(
         });
     }
 
+    if let Some(output_block) = &part.output_block {
+        return map_output_block_part(output_block);
+    }
+
     None
+}
+
+fn map_output_block_part(output_block: &serde_json::Value) -> Option<ContextMessagePart> {
+    let kind = output_block.get("kind")?.as_str()?;
+    let text = output_block.get("text")?.as_str()?.to_string();
+    match kind {
+        "message" => Some(ContextMessagePart::Text { text }),
+        "reasoning" => Some(ContextMessagePart::Reasoning { text }),
+        _ => None,
+    }
 }
 
 fn message_part_text(part: &ContextMessagePart) -> String {
@@ -360,6 +374,7 @@ mod tests {
                 state: None,
             }),
             tool_result: None,
+            output_block: None,
             synthetic: None,
             ignored: None,
         };
@@ -449,6 +464,7 @@ mod tests {
                 file: None,
                 tool_call: None,
                 tool_result: None,
+                output_block: None,
                 synthetic: None,
                 ignored: None,
             }],
@@ -547,6 +563,7 @@ mod tests {
                 file: None,
                 tool_call: None,
                 tool_result: None,
+                output_block: None,
                 synthetic: None,
                 ignored: None,
             }],
@@ -643,6 +660,7 @@ mod tests {
                 file: None,
                 tool_call: None,
                 tool_result: None,
+                output_block: None,
                 synthetic: None,
                 ignored: None,
             }],
@@ -664,6 +682,115 @@ mod tests {
             })
             .expect("reasoning part should still exist after sync");
         assert_eq!(after_sync, "thinking more");
+    }
+
+    #[test]
+    fn map_api_message_part_falls_back_to_assistant_output_block_message_text() {
+        let part = crate::api::MessagePart {
+            id: "p1".to_string(),
+            part_type: "output_block".to_string(),
+            text: None,
+            file: None,
+            tool_call: None,
+            tool_result: None,
+            output_block: Some(serde_json::json!({
+                "kind": "message",
+                "text": "final answer from output block"
+            })),
+            synthetic: Some(true),
+            ignored: None,
+        };
+
+        let mapped = map_api_message_part(&part, false).expect("output block should map");
+        assert!(matches!(
+            mapped,
+            ContextMessagePart::Text { text } if text == "final answer from output block"
+        ));
+    }
+
+    #[test]
+    fn map_api_message_part_falls_back_to_assistant_output_block_reasoning() {
+        let part = crate::api::MessagePart {
+            id: "p2".to_string(),
+            part_type: "output_block".to_string(),
+            text: None,
+            file: None,
+            tool_call: None,
+            tool_result: None,
+            output_block: Some(serde_json::json!({
+                "kind": "reasoning",
+                "text": "thinking from output block"
+            })),
+            synthetic: Some(true),
+            ignored: None,
+        };
+
+        let mapped = map_api_message_part(&part, false).expect("reasoning block should map");
+        assert!(matches!(
+            mapped,
+            ContextMessagePart::Reasoning { text } if text == "thinking from output block"
+        ));
+    }
+
+    #[test]
+    fn map_api_message_recovers_assistant_content_from_output_blocks() {
+        let now = Utc::now().timestamp_millis();
+        let message = map_api_message(&MessageInfo {
+            id: "assistant-1".to_string(),
+            session_id: "session-1".to_string(),
+            role: "assistant".to_string(),
+            created_at: now,
+            completed_at: Some(now + 1),
+            agent: None,
+            model: None,
+            mode: None,
+            finish: Some("stop".to_string()),
+            error: None,
+            cost: 0.0,
+            tokens: MessageTokensInfo::default(),
+            parts: vec![
+                crate::api::MessagePart {
+                    id: "p1".to_string(),
+                    part_type: "output_block".to_string(),
+                    text: None,
+                    file: None,
+                    tool_call: None,
+                    tool_result: None,
+                    output_block: Some(serde_json::json!({
+                        "kind": "reasoning",
+                        "text": "thinking from block"
+                    })),
+                    synthetic: Some(true),
+                    ignored: None,
+                },
+                crate::api::MessagePart {
+                    id: "p2".to_string(),
+                    part_type: "output_block".to_string(),
+                    text: None,
+                    file: None,
+                    tool_call: None,
+                    tool_result: None,
+                    output_block: Some(serde_json::json!({
+                        "kind": "message",
+                        "text": "final from block"
+                    })),
+                    synthetic: Some(true),
+                    ignored: None,
+                },
+            ],
+            metadata: None,
+            multimodal: None,
+        });
+
+        assert_eq!(message.content, "[reasoning] thinking from block\nfinal from block");
+        assert!(matches!(
+            &message.parts[0],
+            ContextMessagePart::Reasoning { text } if text == "thinking from block"
+        ));
+        assert!(matches!(
+            &message.parts[1],
+            ContextMessagePart::Text { text } if text == "final from block"
+        ));
     }
 }
 
