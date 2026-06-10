@@ -1,0 +1,21 @@
+{
+  "tools": {
+    "dock_pose": {
+      "source": {
+        "path": "./src/dock_pose.py"
+      },
+      "catalog": {
+        "domain": "cadd",
+        "family": "molecular_docking",
+        "subfamily": "protein_ligand",
+        "tags": ["docking", "pose-generation"],
+        "provenance": "example:single-file"
+      },
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./runners/dock_pose.py",
+        "arguments_schema_ref": "./schemas/dock_pose.schema.json"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "tools": {
+    "score_pose": {
+      "source": {
+        "path": "./cadd/scoring/protein_ligand/score_pose.py"
+      },
+      "catalog": {
+        "family": "scoring",
+        "tags": ["rescoring", "ranking"],
+        "provenance": "example:partial-backfill"
+      },
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./runners/score_pose.py"
+      }
+    }
+  }
+}

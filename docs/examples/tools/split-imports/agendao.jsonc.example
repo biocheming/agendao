@@ -1,0 +1,7 @@
+{
+  // Example-only file. Relative imports are resolved from this directory.
+  "toolImports": [
+    "./tools/cadd/tools.jsonc",
+    "./tools/simulation/tools.jsonc"
+  ]
+}

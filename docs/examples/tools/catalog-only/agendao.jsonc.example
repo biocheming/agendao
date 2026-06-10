@@ -1,0 +1,6 @@
+{
+  // Example-only file. Relative imports are resolved from this directory.
+  "toolImports": [
+    "./tools/catalog.jsonc"
+  ]
+}

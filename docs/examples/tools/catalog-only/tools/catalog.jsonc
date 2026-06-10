@@ -1,0 +1,16 @@
+{
+  "tools": {
+    "predict_binding_hotspots": {
+      "source": {
+        "path": "./cadd/protein_design/hotspots/predict_binding_hotspots.py"
+      },
+      "catalog": {
+        "domain": "cadd",
+        "family": "protein_design",
+        "subfamily": "hotspots",
+        "tags": ["catalog-only", "discovery"],
+        "provenance": "example:catalog-only"
+      }
+    }
+  }
+}

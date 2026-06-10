@@ -1,0 +1,20 @@
+{
+  "tools": {
+    "run_md_equilibration": {
+      "source": {
+        "path": "./src/run_md_equilibration.py"
+      },
+      "catalog": {
+        "domain": "cadd",
+        "family": "molecular_dynamics",
+        "subfamily": "equilibration",
+        "tags": ["md", "simulation"],
+        "provenance": "example:split-imports"
+      },
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./runners/run_md_equilibration.py"
+      }
+    }
+  }
+}

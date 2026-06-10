@@ -1,0 +1,14 @@
+{
+  "tools": {
+    "dock_pose": {
+      "source": {
+        "path": "./cadd/molecular_docking/protein_ligand/dock_pose.py"
+      },
+      "catalog": {},
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./runners/dock_pose.py"
+      }
+    }
+  }
+}

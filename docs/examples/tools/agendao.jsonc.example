@@ -1,0 +1,8 @@
+{
+  // Minimal repo-root example.
+  // If you copy this to another directory, rewrite the import path relative to
+  // that config file.
+  "toolImports": [
+    "./docs/examples/tools/single-file/tools.jsonc"
+  ]
+}

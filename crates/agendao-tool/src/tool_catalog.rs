@@ -11,16 +11,34 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::timeout;
 
 use crate::{
-    assert_external_directory, bash::authorize_bash_command, ExternalDirectoryKind,
-    ExternalDirectoryOptions, Metadata, Tool, ToolContext, ToolError, ToolResult,
-    ToolSchemaSourceKind,
+    ExternalDirectoryKind, ExternalDirectoryOptions, Metadata, Tool, ToolContext, ToolError,
+    ToolResult, ToolSchemaSourceKind, assert_external_directory, bash::authorize_bash_command,
 };
 
-pub const MCP_SEARCH_TOOL_ID: &str = "mcp_search";
-pub const MCP_DESCRIBE_TOOL_ID: &str = "mcp_describe";
-pub const MCP_CALL_TOOL_ID: &str = "mcp_call";
-pub const TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] =
-    &[MCP_SEARCH_TOOL_ID, MCP_DESCRIBE_TOOL_ID, MCP_CALL_TOOL_ID];
+pub const TOOL_CATALOG_SEARCH_TOOL_ID: &str = "tool_catalog_search";
+pub const TOOL_CATALOG_DESCRIBE_TOOL_ID: &str = "tool_catalog_describe";
+pub const TOOL_CATALOG_CALL_TOOL_ID: &str = "tool_catalog_call";
+pub const LEGACY_MCP_SEARCH_TOOL_ID: &str = "mcp_search";
+pub const LEGACY_MCP_DESCRIBE_TOOL_ID: &str = "mcp_describe";
+pub const LEGACY_MCP_CALL_TOOL_ID: &str = "mcp_call";
+pub const TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] = &[
+    TOOL_CATALOG_SEARCH_TOOL_ID,
+    TOOL_CATALOG_DESCRIBE_TOOL_ID,
+    TOOL_CATALOG_CALL_TOOL_ID,
+    LEGACY_MCP_SEARCH_TOOL_ID,
+    LEGACY_MCP_DESCRIBE_TOOL_ID,
+    LEGACY_MCP_CALL_TOOL_ID,
+];
+pub const MODEL_VISIBLE_TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] = &[
+    TOOL_CATALOG_SEARCH_TOOL_ID,
+    TOOL_CATALOG_DESCRIBE_TOOL_ID,
+    TOOL_CATALOG_CALL_TOOL_ID,
+];
+pub const LEGACY_TOOL_CATALOG_FACADE_ALIAS_IDS: &[&str] = &[
+    LEGACY_MCP_SEARCH_TOOL_ID,
+    LEGACY_MCP_DESCRIBE_TOOL_ID,
+    LEGACY_MCP_CALL_TOOL_ID,
+];
 
 #[derive(Debug, Clone)]
 struct CatalogEntry {
@@ -47,14 +65,28 @@ pub fn is_tool_catalog_facade_tool(name: &str) -> bool {
     TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
 }
 
-pub struct McpSearchTool;
+pub fn is_model_visible_tool_catalog_facade_tool(name: &str) -> bool {
+    MODEL_VISIBLE_TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
+}
 
-pub struct McpDescribeTool;
+pub fn is_legacy_tool_catalog_facade_alias_tool(name: &str) -> bool {
+    LEGACY_TOOL_CATALOG_FACADE_ALIAS_IDS.contains(&name)
+}
 
-pub struct McpCallTool;
+pub struct ToolCatalogSearchTool {
+    tool_id: &'static str,
+}
+
+pub struct ToolCatalogDescribeTool {
+    tool_id: &'static str,
+}
+
+pub struct ToolCatalogCallTool {
+    tool_id: &'static str,
+}
 
 #[derive(Debug, Deserialize)]
-struct McpSearchInput {
+struct ToolCatalogSearchInput {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
@@ -72,12 +104,12 @@ struct McpSearchInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct McpDescribeInput {
+struct ToolCatalogDescribeInput {
     tool: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct McpCallInput {
+struct ToolCatalogCallInput {
     tool: String,
     #[serde(default)]
     arguments: serde_json::Value,
@@ -93,186 +125,291 @@ fn default_offset() -> usize {
 
 const MAX_LIMIT: usize = 50;
 
-#[async_trait]
-impl Tool for McpSearchTool {
-    fn id(&self) -> &str {
-        MCP_SEARCH_TOOL_ID
+impl ToolCatalogSearchTool {
+    pub const fn primary() -> Self {
+        Self {
+            tool_id: TOOL_CATALOG_SEARCH_TOOL_ID,
+        }
     }
 
-    fn description(&self) -> &str {
+    pub const fn legacy_mcp_alias() -> Self {
+        Self {
+            tool_id: LEGACY_MCP_SEARCH_TOOL_ID,
+        }
+    }
+}
+
+impl ToolCatalogDescribeTool {
+    pub const fn primary() -> Self {
+        Self {
+            tool_id: TOOL_CATALOG_DESCRIBE_TOOL_ID,
+        }
+    }
+
+    pub const fn legacy_mcp_alias() -> Self {
+        Self {
+            tool_id: LEGACY_MCP_DESCRIBE_TOOL_ID,
+        }
+    }
+}
+
+impl ToolCatalogCallTool {
+    pub const fn primary() -> Self {
+        Self {
+            tool_id: TOOL_CATALOG_CALL_TOOL_ID,
+        }
+    }
+
+    pub const fn legacy_mcp_alias() -> Self {
+        Self {
+            tool_id: LEGACY_MCP_CALL_TOOL_ID,
+        }
+    }
+}
+
+fn tool_catalog_search_description(tool_id: &str) -> &'static str {
+    if tool_id == LEGACY_MCP_SEARCH_TOOL_ID {
+        "Compatibility alias for tool_catalog_search. Search the execution resource catalog by name, description, domain, family, or tag."
+    } else {
         "Search the execution resource catalog by name, description, domain, family, or tag. Use this first when the tool catalog is large."
     }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string" },
-                "domain": { "type": "string" },
-                "family": { "type": "string" },
-                "subfamily": { "type": "string" },
-                "tag": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 8 },
-                "offset": { "type": "integer", "minimum": 0, "default": 0 }
-            }
-        })
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let input: McpSearchInput = serde_json::from_value(args)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
-        let mut entries = collect_catalog_entries(&ctx).await?;
-        let limit = input.limit.clamp(1, MAX_LIMIT);
-        let offset = input.offset;
-        let query = input
-            .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let domain = input
-            .domain
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let family = input
-            .family
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let subfamily = input
-            .subfamily
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let tag = input
-            .tag
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-
-        entries.retain(|entry| {
-            matches_structured_filter(entry, domain, family, subfamily, tag)
-                && matches_free_text_query(entry, query)
-        });
-        sort_catalog_entries(&mut entries, query, domain, family, subfamily, tag);
-
-        let total_matches = entries.len();
-        let results = entries
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let lines = results
-            .iter()
-            .map(|entry| {
-                let catalog = entry.catalog.as_ref();
-                let domain = catalog
-                    .and_then(|value| value.domain.as_deref())
-                    .unwrap_or("unknown");
-                let family = catalog
-                    .and_then(|value| value.family.as_deref())
-                    .unwrap_or("uncategorized");
-                let subfamily = catalog
-                    .and_then(|value| value.subfamily.as_deref())
-                    .unwrap_or("-");
-                let executable = if entry.executable {
-                    "yes"
-                } else {
-                    "catalog-only"
-                };
-                format!(
-                    "- `{}` [{}/{}/{}] executable={} — {}",
-                    entry.name, domain, family, subfamily, executable, entry.description
-                )
-            })
-            .collect::<Vec<_>>();
-        let output = if lines.is_empty() {
-            "No matching execution resources found.".to_string()
-        } else {
-            lines.join("\n")
-        };
-
-        Ok(ToolResult::simple("Catalog search results", output)
-            .with_metadata(
-                "results",
-                serde_json::json!(results
-                    .iter()
-                    .map(|entry| entry_json(entry))
-                    .collect::<Vec<_>>()),
-            )
-            .with_metadata("count", serde_json::json!(results.len()))
-            .with_metadata("offset", serde_json::json!(offset))
-            .with_metadata("limit", serde_json::json!(limit))
-            .with_metadata("total_matches", serde_json::json!(total_matches)))
-    }
 }
 
-#[async_trait]
-impl Tool for McpDescribeTool {
-    fn id(&self) -> &str {
-        MCP_DESCRIBE_TOOL_ID
-    }
-
-    fn description(&self) -> &str {
+fn tool_catalog_describe_description(tool_id: &str) -> &'static str {
+    if tool_id == LEGACY_MCP_DESCRIBE_TOOL_ID {
+        "Compatibility alias for tool_catalog_describe. Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
+    } else {
         "Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
     }
+}
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "tool": { "type": "string", "description": "Exact tool name from mcp_search results" }
-            },
-            "required": ["tool"]
+fn tool_catalog_call_description(tool_id: &str) -> &'static str {
+    if tool_id == LEGACY_MCP_CALL_TOOL_ID {
+        "Compatibility alias for tool_catalog_call. Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
+    } else {
+        "Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
+    }
+}
+
+fn tool_catalog_search_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" },
+            "domain": { "type": "string" },
+            "family": { "type": "string" },
+            "subfamily": { "type": "string" },
+            "tag": { "type": "string" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 8 },
+            "offset": { "type": "integer", "minimum": 0, "default": 0 }
+        }
+    })
+}
+
+fn tool_catalog_describe_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tool": {
+                "type": "string",
+                "description": "Exact tool name from tool_catalog_search results"
+            }
+        },
+        "required": ["tool"]
+    })
+}
+
+fn tool_catalog_call_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tool": { "type": "string" },
+            "arguments": { "type": "object", "additionalProperties": true }
+        },
+        "required": ["tool", "arguments"]
+    })
+}
+
+async fn execute_tool_catalog_search(
+    args: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let input: ToolCatalogSearchInput = serde_json::from_value(args)
+        .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+    let mut entries = collect_catalog_entries(&ctx).await?;
+    let limit = input.limit.clamp(1, MAX_LIMIT);
+    let offset = input.offset;
+    let query = input
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let domain = input
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let family = input
+        .family
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let subfamily = input
+        .subfamily
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let tag = input
+        .tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    entries.retain(|entry| {
+        matches_structured_filter(entry, domain, family, subfamily, tag)
+            && matches_free_text_query(entry, query)
+    });
+    sort_catalog_entries(&mut entries, query, domain, family, subfamily, tag);
+
+    let total_matches = entries.len();
+    let results = entries
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let lines = results
+        .iter()
+        .map(|entry| {
+            let catalog = entry.catalog.as_ref();
+            let domain = catalog
+                .and_then(|value| value.domain.as_deref())
+                .unwrap_or("unknown");
+            let family = catalog
+                .and_then(|value| value.family.as_deref())
+                .unwrap_or("uncategorized");
+            let subfamily = catalog
+                .and_then(|value| value.subfamily.as_deref())
+                .unwrap_or("-");
+            let executable = if entry.executable {
+                "yes"
+            } else {
+                "catalog-only"
+            };
+            format!(
+                "- `{}` [{}/{}/{}] executable={} — {}",
+                entry.name, domain, family, subfamily, executable, entry.description
+            )
         })
+        .collect::<Vec<_>>();
+    let output = if lines.is_empty() {
+        "No matching execution resources found.".to_string()
+    } else {
+        lines.join("\n")
+    };
+
+    Ok(ToolResult::simple("Catalog search results", output)
+        .with_metadata(
+            "results",
+            serde_json::json!(
+                results
+                    .iter()
+                    .map(|entry| entry_json(entry))
+                    .collect::<Vec<_>>()
+            ),
+        )
+        .with_metadata("count", serde_json::json!(results.len()))
+        .with_metadata("offset", serde_json::json!(offset))
+        .with_metadata("limit", serde_json::json!(limit))
+        .with_metadata("total_matches", serde_json::json!(total_matches)))
+}
+
+async fn execute_tool_catalog_describe(
+    args: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let input: ToolCatalogDescribeInput = serde_json::from_value(args)
+        .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+    let entries = collect_catalog_entries(&ctx).await?;
+    let Some(entry) = entries.into_iter().find(|entry| entry.name == input.tool) else {
+        return Err(ToolError::InvalidArguments(format!(
+            "execution resource `{}` not found; use {} first",
+            input.tool, TOOL_CATALOG_SEARCH_TOOL_ID
+        )));
+    };
+
+    let resource = entry_json(&entry);
+    let output =
+        serde_json::to_string_pretty(&resource).unwrap_or_else(|_| format!("{:?}", entry.name));
+    Ok(ToolResult::simple("Execution resource detail", output).with_metadata("resource", resource))
+}
+
+async fn execute_tool_catalog_call(
+    args: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let input: ToolCatalogCallInput = serde_json::from_value(args)
+        .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+    if is_tool_catalog_facade_tool(&input.tool) {
+        return Err(ToolError::InvalidArguments(
+            "tool_catalog_call cannot target catalog facade tools".to_string(),
+        ));
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let input: McpDescribeInput = serde_json::from_value(args)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
-        let entries = collect_catalog_entries(&ctx).await?;
-        let Some(entry) = entries.into_iter().find(|entry| entry.name == input.tool) else {
-            return Err(ToolError::InvalidArguments(format!(
-                "execution resource `{}` not found; use {} first",
-                input.tool, MCP_SEARCH_TOOL_ID
-            )));
-        };
+    if let Some(registry) = ctx.registry.clone() {
+        if registry.get(&input.tool).await.is_some() {
+            return registry.execute(&input.tool, input.arguments, ctx).await;
+        }
+    }
 
-        let resource = entry_json(&entry);
-        let output =
-            serde_json::to_string_pretty(&resource).unwrap_or_else(|_| format!("{:?}", entry.name));
-        Ok(ToolResult::simple("Execution resource detail", output)
-            .with_metadata("resource", resource))
+    let external_catalogs = load_external_catalogs(&ctx)?;
+    if let Some(config) = find_external_catalog_config(&external_catalogs, &input.tool) {
+        if config.is_executable() {
+            return execute_external_catalog_tool(&input.tool, config, input.arguments, &ctx).await;
+        }
+        let entry = find_external_catalog_entry(&external_catalogs, &input.tool)
+            .expect("entry should exist when config exists");
+        return Err(ToolError::ExecutionError(format!(
+            "execution resource `{}` is catalog-only right now; no execution adapter is registered yet{}",
+            input.tool,
+            entry
+                .source_path
+                .as_deref()
+                .map(|path| format!(" (source: {path})"))
+                .unwrap_or_default()
+        )));
+    }
+
+    let suggestions = if let Some(registry) = ctx.registry.as_ref() {
+        registry.suggest_tools(&input.tool).await
+    } else {
+        Vec::new()
+    };
+    if suggestions.is_empty() {
+        Err(ToolError::InvalidArguments(format!(
+            "execution resource `{}` not found",
+            input.tool
+        )))
+    } else {
+        Err(ToolError::InvalidArguments(format!(
+            "execution resource `{}` not found. Suggestions: {}",
+            input.tool,
+            suggestions.join(", ")
+        )))
     }
 }
 
 #[async_trait]
-impl Tool for McpCallTool {
+impl Tool for ToolCatalogSearchTool {
     fn id(&self) -> &str {
-        MCP_CALL_TOOL_ID
+        self.tool_id
     }
 
     fn description(&self) -> &str {
-        "Call an execution resource returned by mcp_search after inspecting it with mcp_describe."
+        tool_catalog_search_description(self.tool_id)
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "tool": { "type": "string" },
-                "arguments": { "type": "object", "additionalProperties": true }
-            },
-            "required": ["tool", "arguments"]
-        })
+        tool_catalog_search_parameters()
     }
 
     async fn execute(
@@ -280,55 +417,53 @@ impl Tool for McpCallTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let input: McpCallInput = serde_json::from_value(args)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
-        if is_tool_catalog_facade_tool(&input.tool) {
-            return Err(ToolError::InvalidArguments(
-                "mcp_call cannot target catalog facade tools".to_string(),
-            ));
-        }
+        execute_tool_catalog_search(args, ctx).await
+    }
+}
 
-        if let Some(registry) = ctx.registry.clone() {
-            if registry.get(&input.tool).await.is_some() {
-                return registry.execute(&input.tool, input.arguments, ctx).await;
-            }
-        }
+#[async_trait]
+impl Tool for ToolCatalogDescribeTool {
+    fn id(&self) -> &str {
+        self.tool_id
+    }
 
-        let external_catalogs = load_external_catalogs(&ctx)?;
-        if let Some(config) = find_external_catalog_config(&external_catalogs, &input.tool) {
-            if config.is_executable() {
-                return execute_external_catalog_tool(&input.tool, config, input.arguments, &ctx)
-                    .await;
-            }
-            let entry = find_external_catalog_entry(&external_catalogs, &input.tool)
-                .expect("entry should exist when config exists");
-            return Err(ToolError::ExecutionError(format!(
-                "execution resource `{}` is catalog-only right now; no execution adapter is registered yet{}",
-                input.tool,
-                entry.source_path
-                    .as_deref()
-                    .map(|path| format!(" (source: {path})"))
-                    .unwrap_or_default()
-            )));
-        }
+    fn description(&self) -> &str {
+        tool_catalog_describe_description(self.tool_id)
+    }
 
-        let suggestions = if let Some(registry) = ctx.registry.as_ref() {
-            registry.suggest_tools(&input.tool).await
-        } else {
-            Vec::new()
-        };
-        if suggestions.is_empty() {
-            Err(ToolError::InvalidArguments(format!(
-                "execution resource `{}` not found",
-                input.tool
-            )))
-        } else {
-            Err(ToolError::InvalidArguments(format!(
-                "execution resource `{}` not found. Suggestions: {}",
-                input.tool,
-                suggestions.join(", ")
-            )))
-        }
+    fn parameters(&self) -> serde_json::Value {
+        tool_catalog_describe_parameters()
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        execute_tool_catalog_describe(args, ctx).await
+    }
+}
+
+#[async_trait]
+impl Tool for ToolCatalogCallTool {
+    fn id(&self) -> &str {
+        self.tool_id
+    }
+
+    fn description(&self) -> &str {
+        tool_catalog_call_description(self.tool_id)
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        tool_catalog_call_parameters()
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        execute_tool_catalog_call(args, ctx).await
     }
 }
 
@@ -992,7 +1127,7 @@ mod tests {
         ])
         .await;
 
-        let result = McpSearchTool
+        let result = ToolCatalogSearchTool::primary()
             .execute(serde_json::json!({"query": "dock", "limit": 10}), ctx)
             .await
             .expect("search should succeed");
@@ -1032,7 +1167,7 @@ mod tests {
         ])
         .await;
 
-        let result = McpSearchTool
+        let result = ToolCatalogSearchTool::primary()
             .execute(
                 serde_json::json!({"family": "docking", "limit": 1, "offset": 1}),
                 ctx,
@@ -1072,7 +1207,7 @@ mod tests {
         }])
         .await;
 
-        let result = McpDescribeTool
+        let result = ToolCatalogDescribeTool::primary()
             .execute(serde_json::json!({"tool": "dock_pose"}), ctx)
             .await
             .expect("describe should succeed");
@@ -1098,7 +1233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_call_executes_registry_tool_when_present() {
+    async fn tool_catalog_call_executes_registry_tool_when_present() {
         let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
             id: "dock_pose",
             description: "Protein-ligand docking",
@@ -1111,7 +1246,7 @@ mod tests {
         }])
         .await;
 
-        let result = McpCallTool
+        let result = ToolCatalogCallTool::primary()
             .execute(
                 serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
                 ctx,
@@ -1123,7 +1258,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_call_rejects_catalog_only_external_tool() {
+    async fn legacy_mcp_call_alias_executes_registry_tool_when_present() {
+        let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
+            id: "dock_pose",
+            description: "Protein-ligand docking",
+            catalog: Some(catalog_metadata(
+                "cadd",
+                "molecular_docking",
+                "protein_ligand",
+                &["pose"],
+            )),
+        }])
+        .await;
+
+        let result = ToolCatalogCallTool::legacy_mcp_alias()
+            .execute(
+                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
+                ctx,
+            )
+            .await
+            .expect("legacy alias should execute registry tool");
+
+        assert_eq!(result.output, "dock_pose");
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_call_rejects_catalog_only_external_tool() {
         let temp = TestDir::new("agendao_tool_catalog_catalog_only");
         let config_dir = temp.path.join(".agendao");
         let tools_dir = config_dir.join("tools");
@@ -1155,7 +1315,7 @@ mod tests {
         )
         .with_config_store(store);
 
-        let error = McpCallTool
+        let error = ToolCatalogCallTool::primary()
             .execute(
                 serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
                 ctx,
@@ -1172,7 +1332,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_call_executes_first_supported_external_adapter() {
+    async fn tool_catalog_call_executes_first_supported_external_adapter() {
         let temp = TestDir::new("agendao_tool_catalog_external_exec");
         let config_dir = temp.path.join(".agendao");
         let tools_dir = config_dir.join("tools/cadd");
@@ -1219,7 +1379,7 @@ print(payload["query"])
         .with_config_store(store)
         .with_ask(|_request| async move { Ok(()) });
 
-        let result = McpCallTool
+        let result = ToolCatalogCallTool::primary()
             .execute(
                 serde_json::json!({"tool": "dock_pose", "arguments": {"query": "pose-ok"}}),
                 ctx,
@@ -1271,17 +1431,23 @@ print(payload["query"])
         )
         .with_config_store(store);
 
-        let dock = McpDescribeTool
+        let dock = ToolCatalogDescribeTool::primary()
             .execute(serde_json::json!({"tool": "dock_pose"}), ctx.clone())
             .await
             .expect("describe dock_pose");
-        let score = McpDescribeTool
+        let score = ToolCatalogDescribeTool::primary()
             .execute(serde_json::json!({"tool": "score_pose"}), ctx)
             .await
             .expect("describe score_pose");
 
-        assert_eq!(dock.metadata["resource"]["executable"], serde_json::json!(false));
-        assert_eq!(score.metadata["resource"]["executable"], serde_json::json!(true));
+        assert_eq!(
+            dock.metadata["resource"]["executable"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            score.metadata["resource"]["executable"],
+            serde_json::json!(true)
+        );
     }
 
     #[tokio::test]
@@ -1318,7 +1484,7 @@ print(payload["query"])
         )
         .with_config_store(store);
 
-        let result = McpSearchTool
+        let result = ToolCatalogSearchTool::primary()
             .execute(
                 serde_json::json!({"family": "molecular_docking", "limit": 10}),
                 ctx,
