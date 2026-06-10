@@ -1002,6 +1002,7 @@ mod tests {
         let rendered = super::render_preset_prompt_extension(
             &super::PresetPromptExtension::new("atlas", "coordination orchestrator")
                 .with_section("Identity", "<identity>Atlas</identity>")
+                .with_section("Constraints", "<Constraints>\nNever guess.\n</Constraints>")
                 .with_capability("Agents: explore, review.")
                 .with_tone_augment("Be concise. No flattery."),
         );
@@ -1013,8 +1014,13 @@ mod tests {
         assert!(rendered.contains("Agents: explore, review."));
         assert!(rendered.contains("## Tone Augment"));
         assert!(rendered.contains("Be concise. No flattery."));
+        assert!(rendered.contains("<Constraints>"));
         assert!(
             rendered.find("## Tone Augment").unwrap()
+                < rendered.find("## Capability Projection").unwrap()
+        );
+        assert!(
+            rendered.find("<Constraints>").unwrap()
                 < rendered.find("## Capability Projection").unwrap()
         );
     }
