@@ -418,15 +418,15 @@ pub(crate) async fn stream_message(
                         stream_session_id.clone(),
                         compiled_request.clone(),
                     )
-                    .with_system_prompt(stream_system_prompt.clone())
-                    .with_env_context(Some(SystemPrompt::environment(
+                    .set_base_system_prompt(stream_system_prompt.clone())
+                    .set_environment_identity(Some(SystemPrompt::environment(
                         &EnvironmentContext::from_current(
                             stream_model_id.clone(),
                             stream_provider_id.clone(),
                             stream_workdir,
                         ),
                     )))
-                    .with_tools(tool_defs, tool_source_digests),
+                    .set_tool_surface(tool_defs, tool_source_digests),
                     compiled_request.clone(),
                     agendao_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),
