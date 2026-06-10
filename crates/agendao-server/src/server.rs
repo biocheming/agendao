@@ -235,6 +235,7 @@ pub struct ServerState {
     pub(crate) catalog_authority: Arc<ModelCatalogAuthority>,
     pub(crate) resolved_context: tokio::sync::RwLock<ResolvedWorkspaceContext>,
     pub(crate) config_store: Arc<agendao_config::ConfigStore>,
+    pub(crate) external_tool_catalogs: Arc<Vec<agendao_config::ResolvedExternalToolCatalog>>,
     pub(crate) user_state: Arc<UserStateAuthority>,
     pub(crate) resolved_context_authority: Arc<ResolvedWorkspaceContextAuthority>,
     pub(crate) tool_registry: Arc<agendao_tool::ToolRegistry>,
@@ -330,6 +331,7 @@ impl ServerState {
             catalog_authority: agendao_provider::default_model_catalog_authority(),
             resolved_context: tokio::sync::RwLock::new(ResolvedWorkspaceContext::empty()),
             config_store,
+            external_tool_catalogs: Arc::new(Vec::new()),
             user_state,
             resolved_context_authority,
             tool_registry: Arc::new(agendao_tool::ToolRegistry::new()),
@@ -477,9 +479,17 @@ impl ServerState {
         state.category_registry = Arc::new(category_registry);
         let tool_runtime_config =
             agendao_tool::ToolRuntimeConfig::from_config(&config_store.config());
+        let external_tool_catalogs = agendao_config::load_external_tool_catalogs_for_project(
+            &workspace_root,
+        )
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to load external tool catalogs from toolImports");
+            Vec::new()
+        });
         state.tool_registry = Arc::new(
             agendao_tool::create_default_registry_with_config(Some(&config_store.config())).await,
         );
+        state.external_tool_catalogs = Arc::new(external_tool_catalogs);
         let db = Database::new().await?;
         let pool = db.pool().clone();
         let memory_repo = Arc::new(MemoryRepository::new(pool.clone()));
@@ -1170,7 +1180,8 @@ async fn shutdown_native_plugins() {
     let mut native = loader.lock().await;
     if native.count() > 0 {
         tracing::info!(count = native.count(), "shutting down native plugins");
-        native.shutdown().await;
+        let hook_system = agendao_plugin::global();
+        native.shutdown(hook_system.as_ref()).await;
     }
 }
 

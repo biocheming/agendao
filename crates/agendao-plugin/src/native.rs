@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::{Plugin, PluginSystem};
+use crate::{Plugin, PluginHookRef, PluginSystem};
 
 /// Symbol name that every native plugin must export.
 const ENTRY_SYMBOL: &[u8] = b"agendao_plugin_create";
@@ -46,6 +46,7 @@ pub struct NativePluginHandle {
     _library: libloading::Library,
     plugin: Arc<dyn Plugin>,
     path: PathBuf,
+    hook_refs: Vec<PluginHookRef>,
 }
 
 impl std::fmt::Debug for NativePluginHandle {
@@ -54,6 +55,7 @@ impl std::fmt::Debug for NativePluginHandle {
             .field("plugin_name", &self.plugin.name())
             .field("plugin_version", &self.plugin.version())
             .field("path", &self.path)
+            .field("hook_refs", &self.hook_refs)
             .finish()
     }
 }
@@ -81,6 +83,7 @@ impl NativePluginHandle {
 
         let plugin: Box<dyn Plugin> = create();
         let plugin: Arc<dyn Plugin> = Arc::from(plugin);
+        let hook_refs = plugin.hook_refs();
 
         tracing::info!(
             plugin_name = plugin.name(),
@@ -93,6 +96,7 @@ impl NativePluginHandle {
             _library: library,
             plugin,
             path: path.to_path_buf(),
+            hook_refs,
         })
     }
 
@@ -113,16 +117,8 @@ impl NativePluginHandle {
 /// |------------|---------------|---------------------------------------|
 /// | Load       | `load()`      | dylib loaded → `register_hooks()`     |
 /// | Live       | `list()`      | query loaded plugins                  |
-/// | Shutdown   | `shutdown()`  | handles dropped (dylibs unloaded)     |
+/// | Shutdown   | `shutdown()`  | hook remove → handles dropped         |
 /// | Drop       | (implicit)    | remaining handles dropped (fallback)  |
-///
-/// # Known gap (P3.2)
-///
-/// `shutdown()` drops dylib handles but does NOT call
-/// `PluginSystem::remove()` for each hook, because the `Plugin` trait's
-/// `register_hooks()` does not return hook IDs.  Until the trait is
-/// extended with a `hooks() → Vec<HookId>` method, callers must ensure
-/// hook dispatching has stopped before calling `shutdown()`.
 pub struct NativePluginLoader {
     handles: Vec<NativePluginHandle>,
 }
@@ -173,21 +169,24 @@ impl NativePluginLoader {
         errors
     }
 
-    /// Shut down all native plugins: drop handles (unload dylibs).
+    /// Shut down all native plugins: remove registered hooks, then unload dylibs.
     ///
     /// After `shutdown()`, the loader is empty.
-    ///
-    /// # Known gap (P3.2)
-    ///
-    /// Unlike the subprocess loader (which calls `hook_system.remove()` for
-    /// each hook before shutdown), the native loader cannot enumerate hook
-    /// names because the `Plugin` trait's `register_hooks()` does not return
-    /// hook IDs.  Until the trait is extended with a `hooks() → Vec<HookId>`
-    /// method, `shutdown()` only drops dylib handles.  Callers MUST stop
-    /// hook dispatching before calling this.
-    pub async fn shutdown(&mut self) {
-        // P3.2 future: iterate plugin.hooks() → system.remove()
-        self.handles.clear(); // drops NativePluginHandle → dylib unloaded
+    pub async fn shutdown(&mut self, system: &PluginSystem) {
+        for handle in self.handles.drain(..) {
+            for hook_ref in &handle.hook_refs {
+                let removed = system.remove(&hook_ref.event, &hook_ref.name).await;
+                if !removed {
+                    tracing::debug!(
+                        plugin = handle.plugin.name(),
+                        hook_name = %hook_ref.name,
+                        event = ?hook_ref.event,
+                        "native plugin hook already absent during shutdown"
+                    );
+                }
+            }
+            drop(handle); // drops NativePluginHandle → dylib unloaded
+        }
     }
 
     /// List all loaded native plugins as (name, version, path).
@@ -221,6 +220,12 @@ impl Default for NativePluginLoader {
 /// impl Plugin for MyPlugin {
 ///     fn name(&self) -> &str { "my-plugin" }
 ///     fn version(&self) -> &str { "0.1.0" }
+///     fn hook_refs(&self) -> Vec<agendao_plugin::PluginHookRef> {
+///         vec![agendao_plugin::PluginHookRef::new(
+///             agendao_plugin::HookEvent::SessionStart,
+///             "native:my-plugin:session-start",
+///         )]
+///     }
 ///     fn register_hooks(&self, system: &agendao_plugin::PluginSystem)
 ///         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
 ///     {
@@ -268,9 +273,10 @@ mod tests {
     #[tokio::test]
     async fn shutdown_clears_loader() {
         let mut loader = NativePluginLoader::new();
+        let system = PluginSystem::new();
         assert_eq!(loader.count(), 0);
         // shutdown on empty loader is a no-op.
-        loader.shutdown().await;
+        loader.shutdown(&system).await;
         assert_eq!(loader.count(), 0);
         assert!(loader.list().is_empty());
     }

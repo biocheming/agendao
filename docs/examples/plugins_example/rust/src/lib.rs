@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use agendao_plugin::{Hook, HookContext, HookEvent, HookOutput, Plugin, PluginSystem};
+use agendao_plugin::{
+    Hook, HookContext, HookEvent, HookOutput, Plugin, PluginHookRef, PluginSystem,
+};
 
 #[derive(Default)]
 pub struct NativeDylibDemoPlugin;
@@ -13,6 +15,13 @@ impl Plugin for NativeDylibDemoPlugin {
 
     fn version(&self) -> &str {
         "0.1.0"
+    }
+
+    fn hook_refs(&self) -> Vec<PluginHookRef> {
+        vec![PluginHookRef::new(
+            HookEvent::SessionStart,
+            "native:native-dylib-demo:session-start",
+        )]
     }
 
     fn register_hooks<'a>(

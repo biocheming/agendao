@@ -28,7 +28,8 @@ pub(super) async fn shutdown_native_plugins() {
             count = native.count(),
             "shutting down native plugins in CLI"
         );
-        native.shutdown().await;
+        let hook_system = agendao_plugin::global();
+        native.shutdown(hook_system.as_ref()).await;
     }
 }
 
