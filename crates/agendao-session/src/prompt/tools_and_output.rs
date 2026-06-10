@@ -255,6 +255,7 @@ pub fn merge_external_tool_catalogs(
             discovered.push(ToolDefinition {
                 name: tool_name.clone(),
                 description: Some(render_external_tool_discovery_description(
+                    config.is_executable(),
                     config.source.as_ref().and_then(|source| source.path.as_deref()),
                     config
                         .source
@@ -265,7 +266,7 @@ pub fn merge_external_tool_catalogs(
                 parameters: serde_json::json!({
                     "type": "object",
                     "additionalProperties": true,
-                    "description": "Catalog-only external tool placeholder. Resolve concrete execution adapter before calling."
+                    "description": render_external_tool_placeholder_parameter_description(config.is_executable())
                 }),
             });
         }
@@ -289,6 +290,7 @@ pub fn merge_external_tool_catalogs(
 }
 
 fn render_external_tool_discovery_description(
+    executable: bool,
     source_path: Option<&str>,
     manifest_path: Option<&str>,
     catalog: &ToolCatalogMetadata,
@@ -309,13 +311,23 @@ fn render_external_tool_discovery_description(
     if let Some(manifest) = manifest_path {
         parts.push(format!("manifest={manifest}"));
     }
-    if parts.is_empty() {
-        "External catalog tool discovered from toolImports".to_string()
+    let prefix = if executable {
+        "External executable tool discovered from toolImports"
     } else {
-        format!(
-            "External catalog tool discovered from toolImports ({})",
-            parts.join(", ")
-        )
+        "External catalog-only tool discovered from toolImports"
+    };
+    if parts.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix} ({})", parts.join(", "))
+    }
+}
+
+fn render_external_tool_placeholder_parameter_description(executable: bool) -> &'static str {
+    if executable {
+        "Executable external tool imported through toolImports. Arguments are forwarded to the configured external execution adapter."
+    } else {
+        "Catalog-only external tool placeholder. Discoverable and describable, but not directly executable until an execution adapter is configured."
     }
 }
 
@@ -826,6 +838,7 @@ mod title_tests {
                         tags: vec!["pose".to_string()],
                         provenance: Some("tool_import".to_string()),
                     }),
+                    execution: None,
                 },
             )]),
         }];
@@ -840,6 +853,20 @@ mod title_tests {
         assert!(names.contains(&"read"));
         assert!(names.contains(&"dock_pose"));
         assert!(merged.all_tools.iter().any(|tool| tool.name == "dock_pose"));
+        let dock_pose = merged
+            .all_tools
+            .iter()
+            .find(|tool| tool.name == "dock_pose")
+            .expect("external tool should be present");
+        assert!(dock_pose
+            .description
+            .as_deref()
+            .expect("description")
+            .contains("catalog-only"));
+        assert_eq!(
+            dock_pose.parameters["description"],
+            serde_json::json!("Catalog-only external tool placeholder. Discoverable and describable, but not directly executable until an execution adapter is configured.")
+        );
         assert_eq!(
             merged
                 .catalog_by_tool
@@ -899,6 +926,7 @@ mod title_tests {
                         tags: vec![],
                         provenance: Some("tool_import".to_string()),
                     }),
+                    execution: None,
                 },
             )]),
         }];
@@ -912,6 +940,60 @@ mod title_tests {
             Some("agendao_builtin")
         );
         assert_eq!(merged.tools.len(), 1);
+    }
+
+    #[test]
+    fn merge_external_tool_catalogs_marks_executable_dynamic_entries() {
+        let base = ResolvedToolSurface {
+            tools: vec![],
+            all_tools: vec![],
+            source_digests: Vec::new(),
+            catalog_by_tool: BTreeMap::new(),
+            catalog_hash: tool_catalog_fingerprint(&BTreeMap::new()),
+            catalog_mode: ToolCatalogMode::FullSchema,
+        };
+        let external = vec![ResolvedExternalToolCatalog {
+            source_path: std::path::PathBuf::from("/tmp/tools.jsonc"),
+            tools: HashMap::from([(
+                "score_pose".to_string(),
+                agendao_config::ExternalToolConfig {
+                    source: Some(agendao_config::ExternalToolSource {
+                        path: Some("/workspace/tools/cadd/scoring/score_pose.py".to_string()),
+                        manifest: None,
+                    }),
+                    catalog: Some(ToolCatalogMetadata {
+                        domain: Some("cadd".to_string()),
+                        family: Some("scoring".to_string()),
+                        subfamily: None,
+                        tags: vec![],
+                        provenance: Some("tool_import".to_string()),
+                    }),
+                    execution: Some(agendao_config::ExternalToolExecution {
+                        kind: agendao_config::ExternalToolExecutionKind::ScriptRunner,
+                        entry: Some("/workspace/tools/cadd/scoring/score_pose.py".to_string()),
+                        runtime: None,
+                        arguments_schema_ref: None,
+                    }),
+                },
+            )]),
+        }];
+
+        let merged = merge_external_tool_catalogs(base, &external);
+        let score_pose = merged
+            .all_tools
+            .iter()
+            .find(|tool| tool.name == "score_pose")
+            .expect("executable external tool should be present");
+
+        assert!(score_pose
+            .description
+            .as_deref()
+            .expect("description")
+            .contains("executable"));
+        assert_eq!(
+            score_pose.parameters["description"],
+            serde_json::json!("Executable external tool imported through toolImports. Arguments are forwarded to the configured external execution adapter.")
+        );
     }
 
     #[test]
