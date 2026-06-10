@@ -2900,8 +2900,8 @@ impl SessionPrompt {
             input.session_id.clone(),
             compiled_request.clone(),
         )
-        .with_system_prompt(system_prompt)
-        .with_tools(tools, Vec::new());
+        .set_base_system_prompt(system_prompt)
+        .set_tool_surface(tools, Vec::new());
         self.prompt_with_update_hook(
             input,
             session,

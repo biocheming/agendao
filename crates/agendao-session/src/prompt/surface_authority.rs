@@ -278,9 +278,8 @@ impl PromptSurfaceInputs {
     /// Construct inputs from the pieces that `SessionPrompt` already
     /// holds internally.
     ///
-    /// This is the eventual replacement for scattered builder calls.
-    /// In Phase 5, session-side consumers (loop_lifecycle,
-    /// message_building) will switch to reading from this view.
+    /// Compatibility shim during the Phase 7 builder migration.
+    /// New production call sites should prefer `builder(...).set_*()`.
     pub(crate) fn from_session_prompt_parts(
         session_id: impl Into<String>,
         system_prompt: Option<String>,
@@ -292,17 +291,13 @@ impl PromptSurfaceInputs {
         compiled_request: CompiledExecutionRequest,
         provider_options: HashMap<String, serde_json::Value>,
     ) -> Self {
-        Self {
-            session_id: session_id.into(),
-            system_prompt,
-            env_context,
-            preset_extension,
-            memory_prefetch,
-            tools,
-            tool_source_digests,
-            compiled_request,
-            provider_options,
-        }
+        Self::builder(session_id, compiled_request)
+            .set_base_system_prompt(system_prompt)
+            .set_environment_identity(env_context)
+            .set_preset_extension(preset_extension)
+            .set_memory_prefetch(memory_prefetch)
+            .set_tool_surface(tools, tool_source_digests)
+            .set_provider_options(provider_options)
     }
 
     pub fn builder(
@@ -323,17 +318,17 @@ impl PromptSurfaceInputs {
         }
     }
 
-    pub fn with_system_prompt(mut self, system_prompt: Option<String>) -> Self {
+    pub fn set_base_system_prompt(mut self, system_prompt: Option<String>) -> Self {
         self.system_prompt = system_prompt;
         self
     }
 
-    pub fn with_env_context(mut self, env_context: Option<String>) -> Self {
+    pub fn set_environment_identity(mut self, env_context: Option<String>) -> Self {
         self.env_context = env_context;
         self
     }
 
-    pub fn with_preset_extension(
+    pub fn set_preset_extension(
         mut self,
         preset_extension: Option<PresetPromptExtension>,
     ) -> Self {
@@ -341,7 +336,7 @@ impl PromptSurfaceInputs {
         self
     }
 
-    pub fn with_memory_prefetch(
+    pub fn set_memory_prefetch(
         mut self,
         memory_prefetch: Option<MemoryRetrievalPacket>,
     ) -> Self {
@@ -349,7 +344,7 @@ impl PromptSurfaceInputs {
         self
     }
 
-    pub fn with_tools(
+    pub fn set_tool_surface(
         mut self,
         tools: Vec<ToolDefinition>,
         tool_source_digests: Vec<ToolSurfaceSourceDigest>,
@@ -359,7 +354,7 @@ impl PromptSurfaceInputs {
         self
     }
 
-    pub fn with_provider_options(
+    pub fn set_provider_options(
         mut self,
         provider_options: HashMap<String, serde_json::Value>,
     ) -> Self {
@@ -916,6 +911,50 @@ mod tests {
         );
         assert!(inputs.memory_prefetch.is_none());
         assert!(inputs.tools.is_empty());
+    }
+
+    #[test]
+    fn builder_setters_match_compat_constructor_shape() {
+        let via_compat = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("system header".to_string()),
+            Some("env: linux".to_string()),
+            Some(PresetPromptExtension::new(
+                "sisyphus",
+                "delegation-first orchestrator",
+            )),
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::from([("thinking".to_string(), serde_json::json!(true))]),
+        );
+
+        let via_builder = PromptSurfaceInputs::builder("ses-1", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("system header".to_string()))
+            .set_environment_identity(Some("env: linux".to_string()))
+            .set_preset_extension(Some(PresetPromptExtension::new(
+                "sisyphus",
+                "delegation-first orchestrator",
+            )))
+            .set_memory_prefetch(None)
+            .set_tool_surface(vec![], vec![])
+            .set_provider_options(HashMap::from([(
+                "thinking".to_string(),
+                serde_json::json!(true),
+            )]));
+
+        assert_eq!(via_builder.session_id, via_compat.session_id);
+        assert_eq!(via_builder.system_prompt, via_compat.system_prompt);
+        assert_eq!(via_builder.env_context, via_compat.env_context);
+        assert_eq!(via_builder.preset_extension, via_compat.preset_extension);
+        assert_eq!(via_builder.memory_prefetch, via_compat.memory_prefetch);
+        assert_eq!(via_builder.tools.len(), via_compat.tools.len());
+        assert_eq!(
+            via_builder.tool_source_digests,
+            via_compat.tool_source_digests
+        );
+        assert_eq!(via_builder.provider_options, via_compat.provider_options);
     }
 
     #[test]

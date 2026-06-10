@@ -1409,18 +1409,18 @@ impl SessionPrompt {
             surface_inputs.session_id.clone(),
             compiled_request.clone(),
         )
-        .with_system_prompt(skill_reflection::augment_system_prompt_with_skill_reflection(
+        .set_base_system_prompt(skill_reflection::augment_system_prompt_with_skill_reflection(
             session,
             surface_inputs.system_prompt.clone(),
         ))
-        .with_env_context(surface_inputs.env_context.clone())
-        .with_preset_extension(surface_inputs.preset_extension.clone())
-        .with_memory_prefetch(surface_inputs.memory_prefetch.clone())
-        .with_tools(
+        .set_environment_identity(surface_inputs.env_context.clone())
+        .set_preset_extension(surface_inputs.preset_extension.clone())
+        .set_memory_prefetch(surface_inputs.memory_prefetch.clone())
+        .set_tool_surface(
             surface_inputs.tools.clone(),
             surface_inputs.tool_source_digests.clone(),
         )
-        .with_provider_options(surface_inputs.provider_options.clone());
+        .set_provider_options(surface_inputs.provider_options.clone());
 
         let used_reserved_token = reserved_token.is_some();
         if !used_reserved_token && Self::is_duplicate_ingress_turn(session, &input) {
@@ -1647,13 +1647,13 @@ impl SessionPrompt {
             .map(|m| m.provider_id.clone())
             .unwrap_or_else(|| "ethnopic".to_string());
         let surface_inputs = PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
-            .with_system_prompt(system_prompt)
-            .with_env_context(Some(SystemPrompt::environment(&EnvironmentContext::from_current(
+            .set_base_system_prompt(system_prompt)
+            .set_environment_identity(Some(SystemPrompt::environment(&EnvironmentContext::from_current(
                 model_id.clone(),
                 provider_id.clone(),
                 session.record().directory.clone(),
             ))))
-            .with_tools(tools, Vec::new());
+            .set_tool_surface(tools, Vec::new());
         let token = self.resume(session_id).await;
 
         let token = match token {
@@ -2336,7 +2336,7 @@ impl SessionPrompt {
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
         let surface_inputs = PromptSurfaceInputs::builder(session.id.clone(), compiled_request.clone())
-            .with_system_prompt(system_prompt.map(str::to_string));
+            .set_base_system_prompt(system_prompt.map(str::to_string));
         let surface_sections = surface_inputs.assemble_sections(
             PromptSurfaceInputs::output_projection_policy_hash(prompt_messages),
             None,
@@ -3048,12 +3048,12 @@ impl SessionPrompt {
                 Self::latest_prompt_surface_state_snapshot(session);
             let prompt_surface_inputs =
                 PromptSurfaceInputs::builder(session_id.clone(), prompt_ctx.compiled_request.clone())
-                    .with_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
-                    .with_env_context(prompt_ctx.surface_inputs.env_context.clone())
-                    .with_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
-                    .with_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
-                    .with_tools(resolved_tools.clone(), tool_source_digests)
-                    .with_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
+                    .set_base_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
+                    .set_environment_identity(prompt_ctx.surface_inputs.env_context.clone())
+                    .set_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
+                    .set_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
+                    .set_tool_surface(resolved_tools.clone(), tool_source_digests)
+                    .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
                 session,
                 &prompt_messages,

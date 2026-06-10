@@ -2872,11 +2872,11 @@ async fn session_prompt_inner(
             session_id.clone(),
             task_compiled_request.clone(),
         )
-        .with_system_prompt(task_system_prompt.clone())
-        .with_env_context(Some(prompt_env_context))
-        .with_preset_extension(prompt_preset_extension)
-        .with_memory_prefetch(memory_prefetch_packet.clone())
-        .with_tools(tool_defs, resolved_tool_surface.source_digests);
+        .set_base_system_prompt(task_system_prompt.clone())
+        .set_environment_identity(Some(prompt_env_context))
+        .set_preset_extension(prompt_preset_extension)
+        .set_memory_prefetch(memory_prefetch_packet.clone())
+        .set_tool_surface(tool_defs, resolved_tool_surface.source_digests);
         let prompt_request = agendao_session::prompt::PromptRequestContext::new(
             provider,
             prompt_surface_inputs,
