@@ -76,6 +76,7 @@ impl ConfigLoader {
 
     pub fn load_external_tool_catalogs(&self) -> Result<Vec<ResolvedExternalToolCatalog>> {
         let mut catalogs = Vec::new();
+        let mut seen_imports = HashSet::new();
 
         for config_path in &self.config_paths {
             let Some(base_dir) = config_path.parent() else {
@@ -83,7 +84,10 @@ impl ConfigLoader {
             };
 
             for import in &self.config.tool_imports {
-                let resolved = resolve_configured_path(base_dir, import);
+                let resolved = normalize_path_lexically(resolve_configured_path(base_dir, import));
+                if !seen_imports.insert(resolved.clone()) {
+                    continue;
+                }
                 if !resolved.exists() || resolved.is_dir() {
                     continue;
                 }
