@@ -1,13 +1,20 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::Stdio;
+use std::time::Duration;
 
-use agendao_config::ResolvedExternalToolCatalog;
+use agendao_config::{ExternalToolConfig, ExternalToolExecutionKind, ResolvedExternalToolCatalog};
 use agendao_types::ToolCatalogMetadata;
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::time::timeout;
 
-use crate::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult, ToolSchemaSourceKind};
+use crate::{
+    assert_external_directory, bash::authorize_bash_command, ExternalDirectoryKind,
+    ExternalDirectoryOptions, Metadata, Tool, ToolContext, ToolError, ToolResult,
+    ToolSchemaSourceKind,
+};
 
 pub const MCP_SEARCH_TOOL_ID: &str = "mcp_search";
 pub const MCP_DESCRIBE_TOOL_ID: &str = "mcp_describe";
@@ -281,16 +288,20 @@ impl Tool for McpCallTool {
             ));
         }
 
-        let registry = ctx.registry.clone().ok_or_else(|| {
-            ToolError::ExecutionError("tool registry access not available".to_string())
-        })?;
-
-        if registry.get(&input.tool).await.is_some() {
-            return registry.execute(&input.tool, input.arguments, ctx).await;
+        if let Some(registry) = ctx.registry.clone() {
+            if registry.get(&input.tool).await.is_some() {
+                return registry.execute(&input.tool, input.arguments, ctx).await;
+            }
         }
 
         let external_catalogs = load_external_catalogs(&ctx)?;
-        if let Some(entry) = find_external_catalog_entry(&external_catalogs, &input.tool) {
+        if let Some(config) = find_external_catalog_config(&external_catalogs, &input.tool) {
+            if config.is_executable() {
+                return execute_external_catalog_tool(&input.tool, config, input.arguments, &ctx)
+                    .await;
+            }
+            let entry = find_external_catalog_entry(&external_catalogs, &input.tool)
+                .expect("entry should exist when config exists");
             return Err(ToolError::ExecutionError(format!(
                 "execution resource `{}` is catalog-only right now; no execution adapter is registered yet{}",
                 input.tool,
@@ -301,12 +312,23 @@ impl Tool for McpCallTool {
             )));
         }
 
-        let suggestions = registry.suggest_tools(&input.tool).await;
-        Err(ToolError::InvalidArguments(format!(
-            "execution resource `{}` not found. Suggestions: {}",
-            input.tool,
-            suggestions.join(", ")
-        )))
+        let suggestions = if let Some(registry) = ctx.registry.as_ref() {
+            registry.suggest_tools(&input.tool).await
+        } else {
+            Vec::new()
+        };
+        if suggestions.is_empty() {
+            Err(ToolError::InvalidArguments(format!(
+                "execution resource `{}` not found",
+                input.tool
+            )))
+        } else {
+            Err(ToolError::InvalidArguments(format!(
+                "execution resource `{}` not found. Suggestions: {}",
+                input.tool,
+                suggestions.join(", ")
+            )))
+        }
     }
 }
 
@@ -402,7 +424,7 @@ fn find_external_catalog_entry(
             }),
             source_kind: ToolSchemaSourceKind::Dynamic,
             catalog: config.catalog.clone(),
-            executable: false,
+            executable: config.is_executable(),
             source_path: config
                 .source
                 .as_ref()
@@ -413,6 +435,201 @@ fn find_external_catalog_entry(
                 .and_then(|source| source.manifest.clone()),
         })
     })
+}
+
+fn find_external_catalog_config<'a>(
+    catalogs: &'a [ResolvedExternalToolCatalog],
+    tool_name: &str,
+) -> Option<&'a ExternalToolConfig> {
+    catalogs
+        .iter()
+        .find_map(|catalog| catalog.tools.get(tool_name))
+}
+
+async fn execute_external_catalog_tool(
+    tool_name: &str,
+    config: &ExternalToolConfig,
+    arguments: serde_json::Value,
+    ctx: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let execution = config.execution.as_ref().ok_or_else(|| {
+        ToolError::ExecutionError(format!(
+            "execution resource `{}` is catalog-only right now; no execution adapter is registered yet",
+            tool_name
+        ))
+    })?;
+
+    match execution.kind {
+        ExternalToolExecutionKind::ScriptRunner => {
+            execute_script_runner_external_tool(tool_name, config, execution, arguments, ctx).await
+        }
+    }
+}
+
+async fn execute_script_runner_external_tool(
+    tool_name: &str,
+    config: &ExternalToolConfig,
+    execution: &agendao_config::ExternalToolExecution,
+    arguments: serde_json::Value,
+    ctx: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let entry = execution
+        .entry
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ToolError::ExecutionError(format!(
+                "execution resource `{}` is missing execution.entry",
+                tool_name
+            ))
+        })?;
+
+    assert_external_directory(
+        ctx,
+        Some(entry),
+        ExternalDirectoryOptions {
+            bypass: false,
+            kind: ExternalDirectoryKind::File,
+        },
+    )
+    .await?;
+
+    let runtime = execution.runtime.as_deref().unwrap_or("python3");
+    let workdir = ctx.directory.clone();
+    let compact_args = serde_json::to_string(&arguments)
+        .map_err(|error| ToolError::ExecutionError(error.to_string()))?;
+    let command = format!(
+        "{} '{}' '{}'",
+        runtime,
+        escape_single_quoted_shell(entry),
+        escape_single_quoted_shell(&compact_args)
+    );
+    authorize_bash_command(
+        &command,
+        &format!("Execute external catalog tool `{}`", tool_name),
+        ctx,
+    )
+    .await?;
+
+    let mut cmd = tokio::process::Command::new(runtime);
+    cmd.arg(entry);
+    cmd.arg(compact_args);
+    cmd.current_dir(&workdir);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|error| {
+        ToolError::ExecutionError(format!("Failed to spawn process: {}", error))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::ExecutionError("failed to capture stdout".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ToolError::ExecutionError("failed to capture stderr".to_string()))?;
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+    let abort_token = ctx.abort.clone();
+    let mut output = String::new();
+    let mut stderr_output = String::new();
+    let timeout_ms = 30_000;
+
+    let result = timeout(Duration::from_millis(timeout_ms), async {
+        loop {
+            tokio::select! {
+                _ = abort_token.cancelled() => {
+                    if let Err(error) = child.kill().await {
+                        tracing::debug!(%error, "failed to kill external catalog tool after cancellation");
+                    }
+                    return Err(ToolError::Cancelled);
+                }
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            output.push_str(&line);
+                            output.push('\n');
+                        }
+                        Ok(None) => break,
+                        Err(error) => return Err(ToolError::ExecutionError(format!("failed to read external tool stdout: {}", error))),
+                    }
+                }
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            stderr_output.push_str(&line);
+                            stderr_output.push('\n');
+                        }
+                        Ok(None) => break,
+                        Err(error) => return Err(ToolError::ExecutionError(format!("failed to read external tool stderr: {}", error))),
+                    }
+                }
+            }
+        }
+        Ok::<(), ToolError>(())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            if let Err(error) = child.kill().await {
+                tracing::debug!(%error, "failed to kill external catalog tool after timeout");
+            }
+            return Err(ToolError::Timeout(format!(
+                "external catalog tool `{}` timed out after {}ms",
+                tool_name, timeout_ms
+            )));
+        }
+    }
+
+    let status = child.wait().await.map_err(|error| {
+        ToolError::ExecutionError(format!("Failed to wait for process: {}", error))
+    })?;
+
+    if !status.success() {
+        let mut message = format!(
+            "external catalog tool `{}` exited with code {}",
+            tool_name,
+            status.code().unwrap_or(-1)
+        );
+        if !stderr_output.trim().is_empty() {
+            message.push_str(": ");
+            message.push_str(stderr_output.trim());
+        }
+        return Err(ToolError::ExecutionError(message));
+    }
+
+    let trimmed_output = output.trim().to_string();
+    let title = format!("External execution resource `{}`", tool_name);
+    let mut metadata = Metadata::new();
+    metadata.insert("source".to_string(), serde_json::json!("external_catalog"));
+    metadata.insert("tool".to_string(), serde_json::json!(tool_name));
+    metadata.insert("runtime".to_string(), serde_json::json!(runtime));
+    metadata.insert("entry".to_string(), serde_json::json!(entry));
+    metadata.insert(
+        "catalog".to_string(),
+        serde_json::to_value(&config.catalog).unwrap_or(serde_json::Value::Null),
+    );
+    if !stderr_output.trim().is_empty() {
+        metadata.insert(
+            "stderr".to_string(),
+            serde_json::json!(stderr_output.trim()),
+        );
+    }
+
+    Ok(ToolResult {
+        title,
+        output: trimmed_output,
+        metadata,
+        truncated: false,
+    })
+}
+
+fn escape_single_quoted_shell(input: &str) -> String {
+    input.replace('\'', "'\"'\"'")
 }
 
 fn matches_structured_filter(
@@ -617,7 +834,10 @@ fn entry_json(entry: &CatalogEntry) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolRegistry;
     use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn matches_catalog_filter_checks_query_and_family() {
@@ -724,6 +944,33 @@ mod tests {
             ".".to_string(),
         )
         .with_registry(registry)
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let unique = format!(
+                "{}_{}_{}",
+                prefix,
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock error")
+                    .as_nanos()
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&path).expect("failed to create test temp dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     #[tokio::test]
@@ -860,5 +1107,142 @@ mod tests {
         );
         assert_eq!(resource.get("name"), Some(&serde_json::json!("dock_pose")));
         assert_eq!(resource.get("executable"), Some(&serde_json::json!(true)));
+    }
+
+    #[tokio::test]
+    async fn mcp_call_executes_registry_tool_when_present() {
+        let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
+            id: "dock_pose",
+            description: "Protein-ligand docking",
+            catalog: Some(catalog_metadata(
+                "cadd",
+                "molecular_docking",
+                "protein_ligand",
+                &["pose"],
+            )),
+        }])
+        .await;
+
+        let result = McpCallTool
+            .execute(
+                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
+                ctx,
+            )
+            .await
+            .expect("registry tool should execute");
+
+        assert_eq!(result.output, "dock_pose");
+    }
+
+    #[tokio::test]
+    async fn mcp_call_rejects_catalog_only_external_tool() {
+        let temp = TestDir::new("agendao_tool_catalog_catalog_only");
+        let config_dir = temp.path.join(".agendao");
+        let tools_dir = config_dir.join("tools");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir");
+        std::fs::write(
+            config_dir.join("agendao.jsonc"),
+            r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+        )
+        .expect("config");
+        std::fs::write(
+            tools_dir.join("catalog.jsonc"),
+            r#"{
+  "tools": {
+    "dock_pose": {
+      "catalog": { "domain": "cadd", "family": "molecular_docking" }
+    }
+  }
+}"#,
+        )
+        .expect("catalog");
+
+        let store = Arc::new(
+            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
+        );
+        let ctx = ToolContext::new(
+            "ses_tool_catalog".to_string(),
+            "msg_tool_catalog".to_string(),
+            temp.path.to_string_lossy().to_string(),
+        )
+        .with_config_store(store);
+
+        let error = McpCallTool
+            .execute(
+                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
+                ctx,
+            )
+            .await
+            .expect_err("catalog-only tool should reject execution");
+
+        match error {
+            ToolError::ExecutionError(message) => {
+                assert!(message.contains("catalog-only right now"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_call_executes_first_supported_external_adapter() {
+        let temp = TestDir::new("agendao_tool_catalog_external_exec");
+        let config_dir = temp.path.join(".agendao");
+        let tools_dir = config_dir.join("tools/cadd");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir");
+        std::fs::write(
+            config_dir.join("agendao.jsonc"),
+            r#"{ "toolImports": ["tools/cadd/tools.jsonc"] }"#,
+        )
+        .expect("config");
+        std::fs::write(
+            tools_dir.join("echo_tool.py"),
+            r#"import json
+import sys
+
+payload = json.loads(sys.argv[1])
+print(payload["query"])
+"#,
+        )
+        .expect("script");
+        std::fs::write(
+            tools_dir.join("tools.jsonc"),
+            r#"{
+  "tools": {
+    "dock_pose": {
+      "catalog": { "domain": "cadd", "family": "molecular_docking" },
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./echo_tool.py"
+      }
+    }
+  }
+}"#,
+        )
+        .expect("catalog");
+
+        let store = Arc::new(
+            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
+        );
+        let ctx = ToolContext::new(
+            "ses_tool_catalog".to_string(),
+            "msg_tool_catalog".to_string(),
+            temp.path.to_string_lossy().to_string(),
+        )
+        .with_config_store(store)
+        .with_ask(|_request| async move { Ok(()) });
+
+        let result = McpCallTool
+            .execute(
+                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "pose-ok"}}),
+                ctx,
+            )
+            .await
+            .expect("external executable should run");
+
+        assert_eq!(result.output, "pose-ok");
+        assert_eq!(
+            result.metadata.get("source"),
+            Some(&serde_json::json!("external_catalog"))
+        );
     }
 }
