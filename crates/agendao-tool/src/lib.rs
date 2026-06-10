@@ -43,6 +43,7 @@ pub mod task;
 pub mod task_flow;
 pub mod todo;
 pub mod tool_access;
+pub mod tool_catalog;
 pub mod truncation;
 pub mod write;
 
