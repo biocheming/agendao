@@ -78,7 +78,10 @@ fn render_session_messages_child(
     let max_scroll = next_viewport
         .rendered_line_count
         .saturating_sub(next_viewport.messages_viewport_height);
-    if was_near_bottom || next_viewport.scroll_offset > max_scroll {
+    if viewport.rendered_line_count == 0 {
+        next_viewport.scroll_offset =
+            initial_session_scroll_offset(snapshot, &model.message_first_lines, max_scroll);
+    } else if was_near_bottom || next_viewport.scroll_offset > max_scroll {
         next_viewport.scroll_offset = max_scroll;
     }
 
@@ -98,6 +101,34 @@ fn render_session_messages_child(
         message_cache: next_message_cache,
         render_model_cache: next_render_model_cache,
     }
+}
+
+fn initial_session_scroll_offset(
+    snapshot: &SessionMessagesSnapshot,
+    message_first_lines: &HashMap<String, usize>,
+    max_scroll: usize,
+) -> usize {
+    if snapshot.show_thinking {
+        if let Some(message_id) = snapshot
+            .messages
+            .iter()
+            .rev()
+            .find(|message| {
+                matches!(message.role, MessageRole::Assistant)
+                    && message
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, MessagePart::Reasoning { .. }))
+            })
+            .map(|message| message.id.as_str())
+        {
+            if let Some(first_line) = message_first_lines.get(message_id) {
+                return (*first_line).min(max_scroll);
+            }
+        }
+    }
+
+    max_scroll
 }
 
 fn resolve_session_render_model(
