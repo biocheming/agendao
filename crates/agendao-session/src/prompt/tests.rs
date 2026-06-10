@@ -3515,11 +3515,18 @@ fn review_nudge_failure_does_not_burn_cooldown_but_success_does() {
 
 mod reflow_equivalence_tests {
     use super::super::reflow_context::{PromptReflowContext, PromptReflowMemoryView};
+    use super::super::{
+        render_session_reflow_diagnostics_summary, REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY,
+    };
     use agendao_types::{
         MemoryCardView, MemoryKind, MemoryRecallView, MemoryRecordId, MemoryRetrievalPacket,
-        MemoryScope, MemoryStatus, MemoryValidationStatus, SessionContinuityPacket,
-        SessionContinuityTurn,
+        MemoryScope, MemoryStatus, MemoryValidationStatus, RequestBoundaryHygieneActionKind,
+        RequestBoundaryHygieneActionSummary, RequestBoundaryHygieneSummary,
+        Session as SessionRecord, SessionContinuityPacket, SessionContinuityTurn, SessionStatus,
+        SessionTime, SessionUsage,
     };
+    use chrono::Utc;
+    use std::collections::HashMap;
 
     fn sample_packet() -> MemoryRetrievalPacket {
         MemoryRetrievalPacket {
@@ -3647,9 +3654,10 @@ mod reflow_equivalence_tests {
             recall_policy: None,
         };
 
-        let view = PromptReflowContext::build("ses-ct", None, Some(&packet), false, false, None)
-            .continuity
-            .expect("continuity view should exist");
+        let view =
+            PromptReflowContext::build("ses-ct", None, Some(&packet), false, false, None, None)
+                .continuity
+                .expect("continuity view should exist");
 
         // The view's hydrate_message_ids must match the packet's allowed_message_ids.
         assert_eq!(view.hydrate_message_ids, packet.allowed_message_ids());
@@ -3659,6 +3667,68 @@ mod reflow_equivalence_tests {
         assert_eq!(view.omitted_older_turns, 1);
         assert!(!view.has_continuation_dependency);
         assert!(view.compaction_summary.is_none());
+    }
+
+    #[test]
+    fn session_reflow_diagnostics_summary_surfaces_hygiene_metadata() {
+        let now = Utc::now();
+        let mut session = crate::Session::from(SessionRecord {
+            id: "session-reflow".to_string(),
+            slug: "session-reflow".to_string(),
+            project_id: "project".to_string(),
+            directory: "/tmp".to_string(),
+            parent_id: None,
+            title: "Reflow".to_string(),
+            version: "1".to_string(),
+            time: SessionTime {
+                created: now.timestamp_millis(),
+                updated: now.timestamp_millis(),
+                compacting: None,
+                archived: None,
+            },
+            messages: Vec::new(),
+            summary: None,
+            share: None,
+            revert: None,
+            permission: None,
+            usage: Some(SessionUsage::default()),
+            status: SessionStatus::Active,
+            metadata: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+        });
+        let hygiene = RequestBoundaryHygieneSummary {
+            dropped_orphan_tool_results: 1,
+            dropped_dangling_tool_calls: 0,
+            compressed_tool_results: 1,
+            actions: vec![
+                RequestBoundaryHygieneActionSummary {
+                    kind: RequestBoundaryHygieneActionKind::DroppedOrphanToolResult,
+                    tool_call_id: "call-orphan".to_string(),
+                    tool_name: None,
+                    original_chars: Some(17),
+                },
+                RequestBoundaryHygieneActionSummary {
+                    kind: RequestBoundaryHygieneActionKind::CompressedToolResult,
+                    tool_call_id: "call-long".to_string(),
+                    tool_name: Some("grep".to_string()),
+                    original_chars: Some(24_001),
+                },
+            ],
+        };
+        session.insert_metadata(
+            REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY,
+            serde_json::to_value(&hygiene).expect("hygiene metadata should serialize"),
+        );
+
+        let summary = render_session_reflow_diagnostics_summary(&session)
+            .expect("reflow diagnostics summary should render");
+
+        assert!(summary.contains("request_boundary_hygiene: dropped_orphan_tool_results=1"));
+        assert!(summary.contains("compressed_tool_results=1"));
+        assert!(summary.contains("dropped_orphan_tool_result: call_id=call-orphan"));
+        assert!(summary
+            .contains("compressed_tool_result: call_id=call-long tool=grep original_chars=24001"));
     }
 }
 

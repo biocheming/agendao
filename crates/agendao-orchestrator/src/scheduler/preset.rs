@@ -304,8 +304,9 @@ pub fn scheduler_preset_extension_from_plan(
         .as_deref()
         .and_then(|value| value.parse::<SchedulerPresetKind>().ok())?;
 
-    let execution_skills =
-        plan.effective_skill_list(Some(crate::scheduler::SchedulerStageKind::ExecutionOrchestration));
+    let execution_skills = plan.effective_skill_list(Some(
+        crate::scheduler::SchedulerStageKind::ExecutionOrchestration,
+    ));
 
     Some(match preset {
         SchedulerPresetKind::Sisyphus => {
@@ -1044,7 +1045,10 @@ mod tests {
         assert_eq!(ext.preset_name, "sisyphus");
         assert_eq!(ext.role_summary, "delegation-first execution orchestrator");
         assert!(!ext.extra_sections.is_empty());
-        assert!(ext.extra_sections.iter().any(|(_, body)| !body.trim().is_empty()));
+        assert!(ext
+            .extra_sections
+            .iter()
+            .any(|(_, body)| !body.trim().is_empty()));
     }
 }
 
@@ -1093,9 +1097,7 @@ pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> Stri
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        sections.push(format!(
-            "## Capability Projection\n{capability_projection}"
-        ));
+        sections.push(format!("## Capability Projection\n{capability_projection}"));
     }
 
     sections.join("\n\n")

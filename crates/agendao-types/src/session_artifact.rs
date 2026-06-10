@@ -27,6 +27,7 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "model_variant",
     "pending_command_invocation",
     "prompt_surface_state_snapshot",
+    "request_boundary_hygiene_summary",
     "scheduler_applied",
     "scheduler_profile",
     "scheduler_root_agent",
@@ -72,6 +73,7 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "prompt_surface_evidence",
     "provider_diagnostic",
     "provider_error_summary",
+    "request_boundary_hygiene_summary",
     "resolved_agent",
     "resolved_execution_mode_kind",
     "resolved_system_prompt",
@@ -282,6 +284,8 @@ pub struct SessionDiagnosticsSidecar {
     pub memory_frozen_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_last_prefetch_packet: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_boundary_hygiene_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<SessionArtifactMessageDiagnosticsSidecar>,
 }
@@ -321,6 +325,10 @@ impl SessionDiagnosticsSidecar {
                 "batch_count": summary.batch_count,
             })
         })
+    }
+
+    pub fn request_boundary_hygiene_summary_value(&self) -> Option<serde_json::Value> {
+        self.request_boundary_hygiene_summary.clone()
     }
 
     pub fn latest_cache_evidence_inspection_value(&self) -> Option<serde_json::Value> {
@@ -470,6 +478,13 @@ impl SessionDiagnosticsSidecar {
         let memory_frozen_snapshot = session.metadata.get("memory_frozen_snapshot").cloned();
         let memory_last_prefetch_packet =
             session.metadata.get("memory_last_prefetch_packet").cloned();
+        let request_boundary_hygiene_summary = session
+            .metadata
+            .get("request_boundary_hygiene_summary")
+            .cloned()
+            .or_else(|| {
+                latest_message_metadata_value(messages, "request_boundary_hygiene_summary")
+            });
         let tool_names = tool_call_name_index(messages);
         let messages = messages
             .iter()
@@ -486,6 +501,7 @@ impl SessionDiagnosticsSidecar {
             ingress_stabilization,
             memory_frozen_snapshot,
             memory_last_prefetch_packet,
+            request_boundary_hygiene_summary,
             messages,
         };
 
@@ -501,6 +517,7 @@ impl SessionDiagnosticsSidecar {
             && self.ingress_stabilization.is_none()
             && self.memory_frozen_snapshot.is_none()
             && self.memory_last_prefetch_packet.is_none()
+            && self.request_boundary_hygiene_summary.is_none()
             && self.messages.is_empty()
     }
 }

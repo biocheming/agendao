@@ -4,6 +4,7 @@ use std::sync::Arc;
 use agendao_multimodal::PersistedMultimodalExplain;
 use agendao_session::prompt::{
     continuity_packet_inspection, explain_session_cache_semantics, explain_session_context,
+    render_session_reflow_diagnostics_summary, request_boundary_hygiene_summary,
 };
 use agendao_session::{
     aggregate_model_tool_repair_telemetry, build_session_repair_query_snapshot,
@@ -114,6 +115,10 @@ pub struct SessionTelemetrySnapshot {
     pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_boundary_hygiene_summary: Option<agendao_types::RequestBoundaryHygieneSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflow_diagnostics_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -522,6 +527,11 @@ pub(super) async fn build_session_telemetry_snapshot(
     let ingress_stabilization = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::ingress_stabilization_value);
+    let request_boundary_hygiene_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::request_boundary_hygiene_summary_value)
+        .and_then(|value| request_boundary_hygiene_summary(&value));
+    let reflow_diagnostics_summary = render_session_reflow_diagnostics_summary(session);
     let execution_preflight_summary = diagnostics
         .as_ref()
         .and_then(latest_execution_preflight_summary_from_sidecar);
@@ -571,6 +581,8 @@ pub(super) async fn build_session_telemetry_snapshot(
         context_closure_contract,
         prompt_surface_evidence,
         ingress_stabilization,
+        request_boundary_hygiene_summary,
+        reflow_diagnostics_summary,
         execution_preflight_summary,
         provider_diagnostic_summary,
         runtime_protocol,
@@ -2130,6 +2142,8 @@ mod tests {
                 "policy": agendao_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
                 "batch_count": 1,
             })),
+            request_boundary_hygiene_summary: None,
+            reflow_diagnostics_summary: None,
             execution_preflight_summary: Some(SessionExecutionPreflightSummary {
                 tool_call_id: "call-1".to_string(),
                 tool_name: Some("media_inspect".to_string()),

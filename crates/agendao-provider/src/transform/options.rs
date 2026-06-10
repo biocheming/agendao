@@ -675,6 +675,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_cache_key_ignores_overlay_and_diagnostic_provider_options() {
+        let model = test_model("openai", "@ai-sdk/openai", "gpt-5");
+        let baseline_provider_opts: HashMap<String, serde_json::Value> = HashMap::from([
+            ("cacheStage".to_string(), serde_json::json!("chat")),
+            (
+                "cachePresetHash".to_string(),
+                serde_json::json!("planner_v2"),
+            ),
+            ("cacheRepoHash".to_string(), serde_json::json!("repo_abc")),
+        ]);
+        let noisy_provider_opts: HashMap<String, serde_json::Value> = HashMap::from([
+            ("cacheStage".to_string(), serde_json::json!("chat")),
+            (
+                "cachePresetHash".to_string(),
+                serde_json::json!("planner_v2"),
+            ),
+            ("cacheRepoHash".to_string(), serde_json::json!("repo_abc")),
+            (
+                "promptSurfaceVolatility".to_string(),
+                serde_json::json!(["clock", "repo_status"]),
+            ),
+            (
+                "dynamicOverlayReasons".to_string(),
+                serde_json::json!(["request_boundary_hygiene", "tool_compaction"]),
+            ),
+            (
+                "requestBoundaryHygieneSummary".to_string(),
+                serde_json::json!({
+                    "dropped_orphan_tool_results": 1,
+                    "compressed_tool_results": 1
+                }),
+            ),
+            (
+                "providerDiagnostic".to_string(),
+                serde_json::json!({
+                    "kind": "transient",
+                    "message": "not part of cache identity"
+                }),
+            ),
+        ]);
+
+        let baseline_key = options("openai", &model, "ses-cache", &baseline_provider_opts)
+            .get("promptCacheKey")
+            .and_then(|value| value.as_str())
+            .expect("baseline promptCacheKey must be present")
+            .to_string();
+        let noisy_key = options("openai", &model, "ses-cache", &noisy_provider_opts)
+            .get("promptCacheKey")
+            .and_then(|value| value.as_str())
+            .expect("noisy promptCacheKey must be present")
+            .to_string();
+
+        assert_eq!(
+            baseline_key, noisy_key,
+            "diagnostics and dynamic overlays must not perturb prompt cache identity"
+        );
+    }
+
     // ── P3.1: helper behavior coverage ───────────────────────────────
 
     fn test_model_with_reasoning(provider_id: &str, npm: &str, api_id: &str) -> ModelInfo {

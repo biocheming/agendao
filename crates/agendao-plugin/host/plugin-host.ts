@@ -50,6 +50,13 @@ type UnknownRecord = Record<string, unknown>;
 interface ToolDefinition {
   description: string;
   args: unknown; // Zod schema or similar
+  catalog?: {
+    domain?: string;
+    family?: string;
+    subfamily?: string;
+    tags?: string[];
+    provenance?: string;
+  };
   execute: (args: unknown, ctx: unknown) => Promise<unknown>;
 }
 
@@ -709,7 +716,22 @@ async function handleInitialize(
     }
 
     // Collect plugin-registered custom tool definitions
-    let toolDefs: Record<string, { description: string; parameters: Record<string, unknown> }> | undefined;
+    let toolDefs:
+      | Record<
+          string,
+          {
+            description: string;
+            parameters: Record<string, unknown>;
+            catalog?: {
+              domain?: string;
+              family?: string;
+              subfamily?: string;
+              tags?: string[];
+              provenance?: string;
+            };
+          }
+        >
+      | undefined;
     if (hooks.tool && typeof hooks.tool === "object") {
       toolDefs = {};
       for (const [toolId, def] of Object.entries(hooks.tool)) {
@@ -717,9 +739,14 @@ async function handleInitialize(
           toolDefs[toolId] = {
             description: def.description,
             parameters: zodToJsonSchema(def.args),
+            catalog: def.catalog,
           };
         } catch (err) {
-          toolDefs[toolId] = { description: def.description, parameters: { type: "object", properties: {} } };
+          toolDefs[toolId] = {
+            description: def.description,
+            parameters: { type: "object", properties: {} },
+            catalog: def.catalog,
+          };
           process.stderr.write(`[plugin-host] zodToJsonSchema fallback for tool "${toolId}": ${err}\n`);
         }
       }

@@ -1084,19 +1084,7 @@ pub fn compose_assistant_segments(
         }
     }
 
-    segments.sort_by_key(assistant_segment_semantic_key);
     segments
-}
-
-fn assistant_segment_semantic_key(segment: &TerminalAssistantSegment) -> (u8, usize) {
-    match segment {
-        TerminalAssistantSegment::Reasoning { part_index, .. } => (1, *part_index),
-        TerminalAssistantSegment::ToolCall { part_index, .. } => (2, *part_index),
-        TerminalAssistantSegment::File { part_index, .. }
-        | TerminalAssistantSegment::Image { part_index, .. } => (3, *part_index),
-        TerminalAssistantSegment::Text { part_index, .. } => (4, *part_index),
-        TerminalAssistantSegment::Spacer => (5, usize::MAX),
-    }
 }
 
 #[cfg(test)]
@@ -1207,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_segments_insert_spacers_between_text_reasoning_and_tools() {
+    fn assistant_segments_preserve_original_part_order() {
         let message = message(
             "assistant-1",
             TerminalMessageRole::Assistant,
@@ -1234,12 +1222,12 @@ mod tests {
         assert!(matches!(
             segments.as_slice(),
             [
+                TerminalAssistantSegment::Text { .. },
                 TerminalAssistantSegment::Reasoning { .. },
                 TerminalAssistantSegment::ToolCall {
                     state: TerminalToolState::Running,
                     ..
                 },
-                TerminalAssistantSegment::Text { .. },
                 TerminalAssistantSegment::Text { .. }
             ]
         ));
@@ -1412,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_assistant_segments_orders_reasoning_and_tools_before_final_text() {
+    fn compose_assistant_segments_keeps_emitted_part_sequence() {
         let msg = message(
             "assistant-1",
             TerminalMessageRole::Assistant,
@@ -1443,7 +1431,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(segments, vec!["reasoning", "tool", "text"]);
+        assert_eq!(segments, vec!["text", "reasoning", "tool"]);
     }
 
     #[test]

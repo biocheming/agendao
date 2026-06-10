@@ -146,6 +146,19 @@ The canonical scheduler example entry is:
 - `docs/examples/scheduler/pso/example.jsonc`
 - `docs/examples/scheduler/autoresearch/README.md`
 - `docs/examples/scheduler/autoresearch/book-authoring.example.jsonc`
+
+## Tool Config Entry
+
+The canonical external tool config example entry is:
+
+- `docs/examples/tools/README.md`
+- `docs/examples/tools/agendao.jsonc.example`
+- `docs/examples/tools/single-file/`
+- `docs/examples/tools/split-imports/`
+- `docs/examples/tools/directory-infer/`
+- `docs/examples/tools/partial-backfill/`
+- `docs/examples/tools/catalog-only/`
+
 The public scheduler presets are:
 
 - `sisyphus`

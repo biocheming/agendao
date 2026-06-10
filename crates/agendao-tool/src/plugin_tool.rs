@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use agendao_plugin::subprocess::client::PluginToolDef;
 use agendao_plugin::subprocess::loader::PluginLoader;
+use agendao_types::ToolCatalogMetadata;
 
 use crate::truncation;
 use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
@@ -20,6 +21,7 @@ pub struct PluginTool {
     plugin_id: String,
     description: String,
     parameters: Value,
+    catalog: Option<ToolCatalogMetadata>,
     loader: Arc<PluginLoader>,
 }
 
@@ -35,6 +37,7 @@ impl PluginTool {
             plugin_id,
             description: def.description.clone(),
             parameters: def.parameters.clone(),
+            catalog: def.catalog.clone(),
             loader,
         }
     }
@@ -56,6 +59,10 @@ impl Tool for PluginTool {
 
     fn source_kind(&self) -> ToolSchemaSourceKind {
         ToolSchemaSourceKind::Plugin
+    }
+
+    fn catalog_metadata(&self) -> Option<ToolCatalogMetadata> {
+        self.catalog.clone()
     }
 
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolResult, ToolError> {

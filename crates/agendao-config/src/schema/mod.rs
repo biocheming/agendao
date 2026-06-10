@@ -74,6 +74,14 @@ pub struct Config {
     )]
     pub plugin_paths: HashMap<String, String>,
 
+    #[serde(
+        default,
+        rename = "toolImports",
+        alias = "tool_imports",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub tool_imports: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<bool>,
 

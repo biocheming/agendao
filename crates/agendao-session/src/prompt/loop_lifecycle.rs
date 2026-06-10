@@ -25,7 +25,7 @@ use agendao_provider::cache::{
 use agendao_provider::error_code::StandardErrorCode;
 use agendao_provider::transform::{apply_caching, ProviderType};
 use agendao_provider::{Provider, ToolDefinition};
-use agendao_types::SessionContinuityPacket;
+use agendao_types::{RequestBoundaryHygieneSummary, SessionContinuityPacket};
 
 use crate::tool_result_governance::{
     default_tool_result_artifacts_root, govern_tool_result_batch, tool_result_budget,
@@ -1358,6 +1358,7 @@ struct PreparedChatMessages {
     prompt_messages: Vec<SessionMessage>,
     chat_messages: Vec<agendao_provider::Message>,
     surface_sections: PromptSurfaceSections,
+    request_boundary_hygiene_summary: RequestBoundaryHygieneSummary,
 }
 
 impl SessionPrompt {
@@ -1476,9 +1477,7 @@ impl SessionPrompt {
             surface_inputs.tool_catalog_mode,
             surface_inputs.tool_catalog_hash.clone(),
         )
-        .set_external_tool_execution_by_name(
-            surface_inputs.external_tool_execution_by_name.clone(),
-        )
+        .set_external_tool_execution_by_name(surface_inputs.external_tool_execution_by_name.clone())
         .set_provider_options(surface_inputs.provider_options.clone());
 
         let used_reserved_token = reserved_token.is_some();
@@ -2277,16 +2276,19 @@ impl SessionPrompt {
             PromptSurfaceInputs::output_projection_policy_hash(&prompt_messages);
         let surface_sections =
             surface_inputs.assemble_sections(output_projection_policy_hash, None, None);
-        let mut chat_messages = Self::build_chat_messages(
+        let chat_messages = Self::build_chat_messages(
             &prompt_messages,
             Some(surface_sections.system_text.as_str()),
             &surface_inputs.few_shots,
         )?;
+        let (mut chat_messages, request_boundary_hygiene_summary) =
+            Self::apply_request_boundary_hygiene_with_summary(&chat_messages);
         apply_caching(&mut chat_messages, provider_type);
         Ok(PreparedChatMessages {
             prompt_messages,
             chat_messages,
             surface_sections,
+            request_boundary_hygiene_summary,
         })
     }
 
@@ -2954,6 +2956,7 @@ impl SessionPrompt {
                 prompt_messages,
                 mut chat_messages,
                 surface_sections,
+                request_boundary_hygiene_summary,
             } = Self::prepare_chat_messages(
                 &session_id,
                 prompt_ctx.agent_name.as_deref(),
@@ -2962,6 +2965,15 @@ impl SessionPrompt {
                 provider_type,
             )
             .await?;
+
+            if !request_boundary_hygiene_summary.is_empty() {
+                if let Ok(value) = serde_json::to_value(&request_boundary_hygiene_summary) {
+                    session.insert_metadata(
+                        super::REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY,
+                        value,
+                    );
+                }
+            }
 
             let sanitizer_stage = take_pending_sanitizer_stage(session);
 
@@ -3150,7 +3162,10 @@ impl SessionPrompt {
                 prompt_ctx.surface_inputs.tool_catalog_hash.clone(),
             )
             .set_external_tool_execution_by_name(
-                prompt_ctx.surface_inputs.external_tool_execution_by_name.clone(),
+                prompt_ctx
+                    .surface_inputs
+                    .external_tool_execution_by_name
+                    .clone(),
             )
             .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
@@ -3233,6 +3248,14 @@ impl SessionPrompt {
                 if let Ok(value) = serde_json::to_value(evidence) {
                     assistant_metadata
                         .insert(PROMPT_SURFACE_EVIDENCE_METADATA_KEY.to_string(), value);
+                }
+            }
+            if !request_boundary_hygiene_summary.is_empty() {
+                if let Ok(value) = serde_json::to_value(&request_boundary_hygiene_summary) {
+                    assistant_metadata.insert(
+                        super::REQUEST_BOUNDARY_HYGIENE_SUMMARY_METADATA_KEY.to_string(),
+                        value,
+                    );
                 }
             }
             let cache_evidence = Self::merge_snapshot_evidence_into_summary(

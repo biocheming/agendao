@@ -1,5 +1,6 @@
 use agendao_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use agendao_permission::{PermissionClass, PermissionLifetime, PermissionMatcherKind};
+use agendao_types::ToolCatalogMetadata;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1186,6 +1187,9 @@ pub trait Tool: Send + Sync {
     fn source_kind(&self) -> ToolSchemaSourceKind {
         ToolSchemaSourceKind::BuiltIn
     }
+    fn catalog_metadata(&self) -> Option<ToolCatalogMetadata> {
+        None
+    }
 
     async fn execute(
         &self,
@@ -1242,4 +1246,6 @@ pub struct ToolSchema {
     pub description: String,
     pub parameters: serde_json::Value,
     pub source_kind: ToolSchemaSourceKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<ToolCatalogMetadata>,
 }

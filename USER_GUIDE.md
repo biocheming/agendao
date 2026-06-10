@@ -470,4 +470,5 @@ agendao debug docs validate --help
   - `pso/` 看自定义 topology
   - `autoresearch/` 看 workflow 级示例
 - Context Docs：[docs/examples/context_docs/README.md](docs/examples/context_docs/README.md)
+- Tool 配置示例：[docs/examples/tools/README.md](docs/examples/tools/README.md)
 - 插件 / skill 示例：[docs/examples/plugins_example/README.md](docs/examples/plugins_example/README.md)

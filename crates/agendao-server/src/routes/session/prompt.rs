@@ -104,11 +104,7 @@ struct ResolvedPromptPayload {
     pending_raw_arguments: Option<String>,
 }
 
-fn build_prompt_env_context(
-    provider_id: &str,
-    model_id: &str,
-    working_directory: &str,
-) -> String {
+fn build_prompt_env_context(provider_id: &str, model_id: &str, working_directory: &str) -> String {
     SystemPrompt::environment(&EnvironmentContext::from_current(
         model_id.to_string(),
         provider_id.to_string(),
@@ -2247,8 +2243,11 @@ async fn session_prompt_inner(
             }
         }
 
-        let prompt_env_context =
-            build_prompt_env_context(&task_provider, &task_model, session.record().directory.as_str());
+        let prompt_env_context = build_prompt_env_context(
+            &task_provider,
+            &task_model,
+            session.record().directory.as_str(),
+        );
         let (memory_frozen_snapshot_block, memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
         let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
@@ -2743,8 +2742,10 @@ async fn session_prompt_inner(
         ));
 
         let prompt_runner = task_state.prompt_runner.clone();
-        let resolved_tool_surface =
-            agendao_session::resolve_tool_surface(task_state.tool_registry.as_ref()).await;
+        let resolved_tool_surface = agendao_session::merge_external_tool_catalogs(
+            agendao_session::resolve_tool_surface(task_state.tool_registry.as_ref()).await,
+            task_state.external_tool_catalogs.as_ref(),
+        );
         let tool_defs = resolved_tool_surface.tools;
         let input = agendao_session::PromptInput {
             session_id: session_id.clone(),
@@ -2868,15 +2869,22 @@ async fn session_prompt_inner(
             None
         };
 
-        let prompt_surface_inputs = agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
-            session_id.clone(),
-            task_compiled_request.clone(),
-        )
-        .set_base_system_prompt(task_system_prompt.clone())
-        .set_environment_identity(Some(prompt_env_context))
-        .set_preset_extension(prompt_preset_extension)
-        .set_memory_prefetch(memory_prefetch_packet.clone())
-        .set_tool_surface(tool_defs, resolved_tool_surface.source_digests);
+        let prompt_surface_inputs =
+            agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
+                session_id.clone(),
+                task_compiled_request.clone(),
+            )
+            .set_base_system_prompt(task_system_prompt.clone())
+            .set_environment_identity(Some(prompt_env_context))
+            .set_preset_extension(prompt_preset_extension)
+            .set_memory_prefetch(memory_prefetch_packet.clone())
+            .set_tool_surface(
+                tool_defs,
+                resolved_tool_surface.source_digests,
+                resolved_tool_surface.catalog_by_tool,
+                resolved_tool_surface.catalog_mode,
+                resolved_tool_surface.catalog_hash,
+            );
         let prompt_request = agendao_session::prompt::PromptRequestContext::new(
             provider,
             prompt_surface_inputs,

@@ -269,7 +269,8 @@ fn finalize_output_does_not_double_count_recorded_stage_usage() {
 
 #[test]
 fn generic_plan_input_keeps_capabilities_after_planner_charter() {
-    let mut plan = SchedulerProfilePlan::new(vec![SchedulerStageKind::Plan]).with_orchestrator("sisyphus");
+    let mut plan =
+        SchedulerProfilePlan::new(vec![SchedulerStageKind::Plan]).with_orchestrator("sisyphus");
     plan.available_agents = vec![crate::scheduler::AvailableAgentMeta {
         name: "atlas".to_string(),
         description: "Atlas orchestrator".to_string(),
@@ -286,11 +287,11 @@ fn generic_plan_input_keeps_capabilities_after_planner_charter() {
         ..Default::default()
     };
 
-    let input = orchestrator.compose_plan_input("Fix the TUI scroll behavior.", &state, &orchestrator.plan);
+    let input =
+        orchestrator.compose_plan_input("Fix the TUI scroll behavior.", &state, &orchestrator.plan);
 
     assert!(
-        input.find("## Planner Charter").unwrap()
-            < input.find("## System Capabilities").unwrap()
+        input.find("## Planner Charter").unwrap() < input.find("## System Capabilities").unwrap()
     );
 }
 
