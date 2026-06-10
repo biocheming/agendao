@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,6 +66,10 @@ struct PromptSurfaceStateSnapshot {
     stable_system_surface_hash: String,
     tool_surface_hash: String,
     tool_source_surface_hash: String,
+    tool_catalog_hash: String,
+    tool_catalog_mode: String,
+    all_tool_count: usize,
+    model_visible_tool_count: usize,
     provider_params_hash: String,
     tool_policy_hash: Option<String>,
     reasoning_mode_hash: Option<String>,
@@ -100,6 +104,10 @@ struct PromptSurfaceStableFields {
     stable_system_surface_hash: String,
     tool_surface_hash: String,
     tool_source_surface_hash: String,
+    tool_catalog_hash: String,
+    tool_catalog_mode: String,
+    all_tool_count: usize,
+    model_visible_tool_count: usize,
     provider_params_hash: String,
     tool_policy_hash: Option<String>,
     reasoning_mode_hash: Option<String>,
@@ -461,6 +469,10 @@ mod cache_fingerprint_tests {
             stable_system_surface_hash: "stable-system-a".to_string(),
             tool_surface_hash: "tools-a".to_string(),
             tool_source_surface_hash: "tool-source-a".to_string(),
+            tool_catalog_hash: "tool-catalog-a".to_string(),
+            tool_catalog_mode: "full-schema".to_string(),
+            all_tool_count: 4,
+            model_visible_tool_count: 4,
             provider_params_hash: "params-a".to_string(),
             tool_policy_hash: None,
             reasoning_mode_hash: None,
@@ -1244,6 +1256,45 @@ mod cache_fingerprint_tests {
         );
     }
 
+    #[test]
+    fn snapshot_records_tool_catalog_diagnostics() {
+        let stable = PromptSurfaceStableFields {
+            protocol_family: CacheProtocolFamily::CloseAiCompatible,
+            provider_id: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            api_shape: Some(agendao_provider::cache::CloseAiCompatibleApiShape::ChatCompletions),
+            system_hash: "system-a".to_string(),
+            stable_system_surface_hash: "stable-a".to_string(),
+            tool_surface_hash: "tools-a".to_string(),
+            tool_source_surface_hash: "tool-source-a".to_string(),
+            tool_catalog_hash: "catalog-a".to_string(),
+            tool_catalog_mode: "search-facade".to_string(),
+            all_tool_count: 12,
+            model_visible_tool_count: 3,
+            provider_params_hash: "params-a".to_string(),
+            tool_policy_hash: None,
+            reasoning_mode_hash: None,
+            output_projection_policy_hash: "projection-a".to_string(),
+            scc_stable_refs_hash: None,
+            closeai_prompt_cache_key: Some("agendao:key".to_string()),
+            ethnopic_policy_hash: None,
+            ethnopic_breakpoint_plan_hash: None,
+            ingress_policy_hash: None,
+        };
+
+        let snapshot = SessionPrompt::build_prompt_surface_state_snapshot(
+            "session-1",
+            None,
+            stable,
+            Vec::new(),
+            123,
+        );
+
+        assert_eq!(snapshot.tool_catalog_mode, "search-facade");
+        assert_eq!(snapshot.all_tool_count, 12);
+        assert_eq!(snapshot.model_visible_tool_count, 3);
+    }
+
     fn test_cache_fingerprint(
         system_hash: &str,
         tools_hash: &str,
@@ -1409,16 +1460,21 @@ impl SessionPrompt {
             surface_inputs.session_id.clone(),
             compiled_request.clone(),
         )
-        .set_base_system_prompt(skill_reflection::augment_system_prompt_with_skill_reflection(
-            session,
-            surface_inputs.system_prompt.clone(),
-        ))
+        .set_base_system_prompt(
+            skill_reflection::augment_system_prompt_with_skill_reflection(
+                session,
+                surface_inputs.system_prompt.clone(),
+            ),
+        )
         .set_environment_identity(surface_inputs.env_context.clone())
         .set_preset_extension(surface_inputs.preset_extension.clone())
         .set_memory_prefetch(surface_inputs.memory_prefetch.clone())
         .set_tool_surface(
             surface_inputs.tools.clone(),
             surface_inputs.tool_source_digests.clone(),
+            surface_inputs.tool_catalog_by_name.clone(),
+            surface_inputs.tool_catalog_mode,
+            surface_inputs.tool_catalog_hash.clone(),
         )
         .set_provider_options(surface_inputs.provider_options.clone());
 
@@ -1646,14 +1702,23 @@ impl SessionPrompt {
             .as_ref()
             .map(|m| m.provider_id.clone())
             .unwrap_or_else(|| "ethnopic".to_string());
-        let surface_inputs = PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
-            .set_base_system_prompt(system_prompt)
-            .set_environment_identity(Some(SystemPrompt::environment(&EnvironmentContext::from_current(
-                model_id.clone(),
-                provider_id.clone(),
-                session.record().directory.clone(),
-            ))))
-            .set_tool_surface(tools, Vec::new());
+        let surface_inputs =
+            PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
+                .set_base_system_prompt(system_prompt)
+                .set_environment_identity(Some(SystemPrompt::environment(
+                    &EnvironmentContext::from_current(
+                        model_id.clone(),
+                        provider_id.clone(),
+                        session.record().directory.clone(),
+                    ),
+                )))
+                .set_tool_surface(
+                    tools,
+                    Vec::new(),
+                    BTreeMap::new(),
+                    super::tools_and_output::ToolCatalogMode::FullSchema,
+                    agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
+                );
         let token = self.resume(session_id).await;
 
         let token = match token {
@@ -2267,7 +2332,7 @@ impl SessionPrompt {
         provider_id: &str,
         model_id: &str,
         fingerprint: &CacheRequestFingerprint,
-        _surface_inputs: &PromptSurfaceInputs,
+        surface_inputs: &PromptSurfaceInputs,
         surface_sections: &PromptSurfaceSections,
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
@@ -2309,6 +2374,17 @@ impl SessionPrompt {
             stable_system_surface_hash: surface_sections.stable_system_surface_hash.clone(),
             tool_surface_hash: fingerprint.surface.tools_hash.clone(),
             tool_source_surface_hash,
+            tool_catalog_hash: surface_sections.tool_catalog_hash.clone(),
+            tool_catalog_mode: match surface_sections.tool_catalog_mode {
+                crate::prompt::tools_and_output::ToolCatalogMode::FullSchema => {
+                    "full-schema".to_string()
+                }
+                crate::prompt::tools_and_output::ToolCatalogMode::SearchFacade => {
+                    "search-facade".to_string()
+                }
+            },
+            all_tool_count: surface_inputs.tool_catalog_by_name.len(),
+            model_visible_tool_count: surface_inputs.tools.len(),
             provider_params_hash: surface_sections.provider_params_hash.clone(),
             tool_policy_hash: surface_sections.tool_policy_hash.clone(),
             reasoning_mode_hash: surface_sections.reasoning_mode_hash.clone(),
@@ -2336,8 +2412,9 @@ impl SessionPrompt {
         system_prompt: Option<&str>,
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
-        let surface_inputs = PromptSurfaceInputs::builder(session.id.clone(), compiled_request.clone())
-            .set_base_system_prompt(system_prompt.map(str::to_string));
+        let surface_inputs =
+            PromptSurfaceInputs::builder(session.id.clone(), compiled_request.clone())
+                .set_base_system_prompt(system_prompt.map(str::to_string));
         let surface_sections = surface_inputs.assemble_sections(
             PromptSurfaceInputs::output_projection_policy_hash(prompt_messages),
             None,
@@ -2447,6 +2524,10 @@ impl SessionPrompt {
             stable_system_surface_hash: stable.stable_system_surface_hash,
             tool_surface_hash: stable.tool_surface_hash,
             tool_source_surface_hash: stable.tool_source_surface_hash,
+            tool_catalog_hash: stable.tool_catalog_hash,
+            tool_catalog_mode: stable.tool_catalog_mode,
+            all_tool_count: stable.all_tool_count,
+            model_visible_tool_count: stable.model_visible_tool_count,
             provider_params_hash: stable.provider_params_hash,
             tool_policy_hash: stable.tool_policy_hash,
             reasoning_mode_hash: stable.reasoning_mode_hash,
@@ -2473,6 +2554,8 @@ impl SessionPrompt {
             stable_system_surface_hash: previous.stable_system_surface_hash.clone(),
             tool_surface_hash: previous.tool_surface_hash.clone(),
             tool_source_surface_hash: previous.tool_source_surface_hash.clone(),
+            tool_catalog_hash: previous.tool_catalog_hash.clone(),
+            tool_catalog_mode: crate::prompt::tools_and_output::ToolCatalogMode::FullSchema,
             provider_params_hash: previous.provider_params_hash.clone(),
             reasoning_mode_hash: previous.reasoning_mode_hash.clone(),
             tool_policy_hash: previous.tool_policy_hash.clone(),
@@ -2488,6 +2571,8 @@ impl SessionPrompt {
             stable_system_surface_hash: current.stable_system_surface_hash.clone(),
             tool_surface_hash: current.tool_surface_hash.clone(),
             tool_source_surface_hash: current.tool_source_surface_hash.clone(),
+            tool_catalog_hash: current.tool_catalog_hash.clone(),
+            tool_catalog_mode: crate::prompt::tools_and_output::ToolCatalogMode::FullSchema,
             provider_params_hash: current.provider_params_hash.clone(),
             reasoning_mode_hash: current.reasoning_mode_hash.clone(),
             tool_policy_hash: current.tool_policy_hash.clone(),
@@ -2506,10 +2591,8 @@ impl SessionPrompt {
                     .collect(),
             }
         });
-        let Some(summary) = current_sections.to_prompt_surface_evidence_summary(
-            &previous_sections,
-            volatility_report.as_ref(),
-        )
+        let Some(summary) = current_sections
+            .to_prompt_surface_evidence_summary(&previous_sections, volatility_report.as_ref())
         else {
             return None;
         };
@@ -3047,14 +3130,22 @@ impl SessionPrompt {
             );
             let previous_prompt_surface_state_snapshot =
                 Self::latest_prompt_surface_state_snapshot(session);
-            let prompt_surface_inputs =
-                PromptSurfaceInputs::builder(session_id.clone(), prompt_ctx.compiled_request.clone())
-                    .set_base_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
-                    .set_environment_identity(prompt_ctx.surface_inputs.env_context.clone())
-                    .set_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
-                    .set_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
-                    .set_tool_surface(resolved_tools.clone(), tool_source_digests)
-                    .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
+            let prompt_surface_inputs = PromptSurfaceInputs::builder(
+                session_id.clone(),
+                prompt_ctx.compiled_request.clone(),
+            )
+            .set_base_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
+            .set_environment_identity(prompt_ctx.surface_inputs.env_context.clone())
+            .set_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
+            .set_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
+            .set_tool_surface(
+                resolved_tools.clone(),
+                tool_source_digests,
+                prompt_ctx.surface_inputs.tool_catalog_by_name.clone(),
+                prompt_ctx.surface_inputs.tool_catalog_mode,
+                prompt_ctx.surface_inputs.tool_catalog_hash.clone(),
+            )
+            .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
                 session,
                 &prompt_messages,

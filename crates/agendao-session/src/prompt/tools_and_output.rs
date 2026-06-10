@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use agendao_config::ResolvedExternalToolCatalog;
 use agendao_orchestrator::session_title_request;
 use agendao_provider::cache::{ToolSurfaceSourceDigest, ToolSurfaceSourceKind};
 use agendao_provider::{Content, Message, Provider, Role, ToolDefinition};
+use agendao_types::ToolCatalogMetadata;
 
 use crate::{sanitize_display_text, MessageRole, PartType, Session, SessionMessage};
 
@@ -150,7 +152,17 @@ pub struct ResolvedTool {
 
 pub struct ResolvedToolSurface {
     pub tools: Vec<ToolDefinition>,
+    pub all_tools: Vec<ToolDefinition>,
     pub source_digests: Vec<ToolSurfaceSourceDigest>,
+    pub catalog_by_tool: BTreeMap<String, ToolCatalogMetadata>,
+    pub catalog_hash: String,
+    pub catalog_mode: ToolCatalogMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCatalogMode {
+    FullSchema,
+    SearchFacade,
 }
 
 pub fn prioritize_tool_definitions(tools: &mut [ToolDefinition]) {
@@ -184,6 +196,129 @@ pub fn merge_tool_definitions(
     tools
 }
 
+pub fn resolve_tool_catalog_mode(
+    tools: &[ToolDefinition],
+    catalog_by_tool: &BTreeMap<String, ToolCatalogMetadata>,
+) -> ToolCatalogMode {
+    const LARGE_TOOL_CATALOG_THRESHOLD: usize = 24;
+    const LARGE_FAMILY_THRESHOLD: usize = 6;
+
+    let stable_tools = tools
+        .iter()
+        .filter(|tool| !agendao_tool::tool_catalog::is_tool_catalog_facade_tool(&tool.name))
+        .collect::<Vec<_>>();
+
+    if stable_tools.len() >= LARGE_TOOL_CATALOG_THRESHOLD {
+        return ToolCatalogMode::SearchFacade;
+    }
+
+    let mut family_counts: HashMap<(&str, &str), usize> = HashMap::new();
+    for tool in stable_tools {
+        let Some(catalog) = catalog_by_tool.get(&tool.name) else {
+            continue;
+        };
+        let family = catalog.family.as_deref().unwrap_or("uncategorized");
+        let domain = catalog.domain.as_deref().unwrap_or("unknown");
+        *family_counts.entry((domain, family)).or_default() += 1;
+    }
+
+    family_counts
+        .values()
+        .any(|count| *count >= LARGE_FAMILY_THRESHOLD)
+        .then_some(ToolCatalogMode::SearchFacade)
+        .unwrap_or(ToolCatalogMode::FullSchema)
+}
+
+pub fn tool_catalog_fingerprint(catalog_by_tool: &BTreeMap<String, ToolCatalogMetadata>) -> String {
+    agendao_provider::cache::json_fingerprint(&serde_json::json!(catalog_by_tool))
+}
+
+pub fn merge_external_tool_catalogs(
+    mut base: ResolvedToolSurface,
+    external_catalogs: &[ResolvedExternalToolCatalog],
+) -> ResolvedToolSurface {
+    if external_catalogs.is_empty() {
+        return base;
+    }
+
+    let mut discovered = Vec::new();
+    for catalog in external_catalogs {
+        for (tool_name, config) in &catalog.tools {
+            if base.catalog_by_tool.contains_key(tool_name) {
+                continue;
+            }
+            let Some(catalog_meta) = config.catalog.clone() else {
+                continue;
+            };
+            base.catalog_by_tool
+                .insert(tool_name.clone(), catalog_meta.clone());
+            discovered.push(ToolDefinition {
+                name: tool_name.clone(),
+                description: Some(render_external_tool_discovery_description(
+                    config.source.as_ref().and_then(|source| source.path.as_deref()),
+                    config
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.manifest.as_deref()),
+                    &catalog_meta,
+                )),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Catalog-only external tool placeholder. Resolve concrete execution adapter before calling."
+                }),
+            });
+        }
+    }
+
+    if !discovered.is_empty() {
+        let mut dynamic = discovered.clone();
+        prioritize_tool_definitions(&mut dynamic);
+        base.source_digests.push(ToolSurfaceSourceDigest {
+            source: ToolSurfaceSourceKind::Dynamic,
+            tool_count: dynamic.len(),
+            tools_hash: agendao_provider::cache::tool_surface_fingerprint(&dynamic),
+        });
+        base.all_tools = merge_tool_definitions(base.all_tools, dynamic);
+        base.catalog_hash = tool_catalog_fingerprint(&base.catalog_by_tool);
+        base.catalog_mode = resolve_tool_catalog_mode(&base.all_tools, &base.catalog_by_tool);
+        base.tools = materialize_model_tool_surface(&base.all_tools, base.catalog_mode);
+    }
+
+    base
+}
+
+fn render_external_tool_discovery_description(
+    source_path: Option<&str>,
+    manifest_path: Option<&str>,
+    catalog: &ToolCatalogMetadata,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(domain) = catalog.domain.as_deref() {
+        parts.push(format!("domain={domain}"));
+    }
+    if let Some(family) = catalog.family.as_deref() {
+        parts.push(format!("family={family}"));
+    }
+    if let Some(subfamily) = catalog.subfamily.as_deref() {
+        parts.push(format!("subfamily={subfamily}"));
+    }
+    if let Some(path) = source_path {
+        parts.push(format!("source={path}"));
+    }
+    if let Some(manifest) = manifest_path {
+        parts.push(format!("manifest={manifest}"));
+    }
+    if parts.is_empty() {
+        "External catalog tool discovered from toolImports".to_string()
+    } else {
+        format!(
+            "External catalog tool discovered from toolImports ({})",
+            parts.join(", ")
+        )
+    }
+}
+
 pub async fn resolve_tools_with_mcp(
     tool_registry: &agendao_tool::ToolRegistry,
     mcp_tools: Vec<ToolDefinition>,
@@ -213,8 +348,12 @@ pub async fn resolve_tool_surface_with_mcp(
     let mut mcp = Vec::new();
     let mut plugin = Vec::new();
     let mut dynamic = Vec::new();
+    let mut catalog_by_tool = BTreeMap::new();
 
     for schema in schemas {
+        if let Some(catalog) = schema.catalog.clone() {
+            catalog_by_tool.insert(schema.name.clone(), catalog);
+        }
         let tool = ToolDefinition {
             name: schema.name,
             description: Some(schema.description),
@@ -243,10 +382,41 @@ pub async fn resolve_tool_surface_with_mcp(
         &dynamic,
     );
 
-    let tools = merge_tool_groups(vec![built_in, mcp, plugin, dynamic]);
+    let all_tools = merge_tool_groups(vec![built_in, mcp, plugin, dynamic]);
+    let catalog_hash = tool_catalog_fingerprint(&catalog_by_tool);
+    let catalog_mode = resolve_tool_catalog_mode(&all_tools, &catalog_by_tool);
+    let tools = materialize_model_tool_surface(&all_tools, catalog_mode);
     ResolvedToolSurface {
         tools,
+        all_tools,
         source_digests,
+        catalog_by_tool,
+        catalog_hash,
+        catalog_mode,
+    }
+}
+
+fn materialize_model_tool_surface(
+    tools: &[ToolDefinition],
+    mode: ToolCatalogMode,
+) -> Vec<ToolDefinition> {
+    match mode {
+        ToolCatalogMode::FullSchema => tools.to_vec(),
+        ToolCatalogMode::SearchFacade => {
+            let facade = tools
+                .iter()
+                .filter(|tool| agendao_tool::tool_catalog::is_tool_catalog_facade_tool(&tool.name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if facade.is_empty() {
+                tracing::warn!(
+                    "search-facade mode selected without facade tools; falling back to full schema surface"
+                );
+                tools.to_vec()
+            } else {
+                facade
+            }
+        }
     }
 }
 
@@ -315,6 +485,7 @@ mod title_tests {
     struct SourceKindTool {
         id: &'static str,
         source_kind: agendao_tool::ToolSchemaSourceKind,
+        catalog: Option<ToolCatalogMetadata>,
     }
 
     #[async_trait]
@@ -333,6 +504,10 @@ mod title_tests {
 
         fn source_kind(&self) -> agendao_tool::ToolSchemaSourceKind {
             self.source_kind
+        }
+
+        fn catalog_metadata(&self) -> Option<ToolCatalogMetadata> {
+            self.catalog.clone()
         }
 
         async fn execute(
@@ -540,18 +715,21 @@ mod title_tests {
             .register(SourceKindTool {
                 id: "read",
                 source_kind: agendao_tool::ToolSchemaSourceKind::BuiltIn,
+                catalog: None,
             })
             .await;
         registry
             .register(SourceKindTool {
                 id: "plugin_lookup",
                 source_kind: agendao_tool::ToolSchemaSourceKind::Plugin,
+                catalog: None,
             })
             .await;
         registry
             .register(SourceKindTool {
                 id: "dynamic_plan",
                 source_kind: agendao_tool::ToolSchemaSourceKind::Dynamic,
+                catalog: None,
             })
             .await;
 
@@ -571,6 +749,268 @@ mod title_tests {
         assert!(sources.contains(&ToolSurfaceSourceKind::Plugin));
         assert!(sources.contains(&ToolSurfaceSourceKind::Dynamic));
         assert_eq!(names, vec!["read", "plugin_lookup", "dynamic_plan"]);
+        assert!(surface.catalog_by_tool.is_empty());
+        assert_eq!(surface.all_tools.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_surface_preserves_catalog_metadata_outside_wire_tool_defs() {
+        let registry = agendao_tool::ToolRegistry::new();
+        registry
+            .register(SourceKindTool {
+                id: "dock_pose",
+                source_kind: agendao_tool::ToolSchemaSourceKind::Plugin,
+                catalog: Some(ToolCatalogMetadata {
+                    domain: Some("cadd".to_string()),
+                    family: Some("molecular_docking".to_string()),
+                    subfamily: Some("protein_ligand".to_string()),
+                    tags: vec!["gnina".to_string(), "pose".to_string()],
+                    provenance: Some("plugin:drug-design".to_string()),
+                }),
+            })
+            .await;
+
+        let surface = resolve_tool_surface(&registry).await;
+        let catalog = surface.catalog_by_tool.get("dock_pose").unwrap();
+
+        assert_eq!(catalog.domain.as_deref(), Some("cadd"));
+        assert_eq!(catalog.family.as_deref(), Some("molecular_docking"));
+        assert_eq!(catalog.subfamily.as_deref(), Some("protein_ligand"));
+        assert_eq!(catalog.tags, vec!["gnina", "pose"]);
+        assert_eq!(catalog.provenance.as_deref(), Some("plugin:drug-design"));
+        assert_eq!(surface.tools.len(), 1);
+        assert_eq!(surface.tools[0].name, "dock_pose");
+    }
+
+    #[test]
+    fn merge_external_tool_catalogs_adds_catalog_only_dynamic_entries() {
+        let base = ResolvedToolSurface {
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: Some("built-in".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            all_tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: Some("built-in".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            source_digests: vec![ToolSurfaceSourceDigest {
+                source: ToolSurfaceSourceKind::BuiltIn,
+                tool_count: 1,
+                tools_hash: agendao_provider::cache::tool_surface_fingerprint(&[ToolDefinition {
+                    name: "read".to_string(),
+                    description: Some("built-in".to_string()),
+                    parameters: serde_json::json!({"type": "object"}),
+                }]),
+            }],
+            catalog_by_tool: BTreeMap::new(),
+            catalog_hash: tool_catalog_fingerprint(&BTreeMap::new()),
+            catalog_mode: ToolCatalogMode::FullSchema,
+        };
+        let external = vec![ResolvedExternalToolCatalog {
+            source_path: std::path::PathBuf::from("/tmp/tools.jsonc"),
+            tools: HashMap::from([(
+                "dock_pose".to_string(),
+                agendao_config::ExternalToolConfig {
+                    source: Some(agendao_config::ExternalToolSource {
+                        path: Some(
+                            "/workspace/tools/cadd/molecular_docking/dock_pose.py".to_string(),
+                        ),
+                        manifest: None,
+                    }),
+                    catalog: Some(ToolCatalogMetadata {
+                        domain: Some("cadd".to_string()),
+                        family: Some("molecular_docking".to_string()),
+                        subfamily: Some("protein_ligand".to_string()),
+                        tags: vec!["pose".to_string()],
+                        provenance: Some("tool_import".to_string()),
+                    }),
+                },
+            )]),
+        }];
+
+        let merged = merge_external_tool_catalogs(base, &external);
+        let names = merged
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"dock_pose"));
+        assert!(merged.all_tools.iter().any(|tool| tool.name == "dock_pose"));
+        assert_eq!(
+            merged
+                .catalog_by_tool
+                .get("dock_pose")
+                .and_then(|catalog| catalog.domain.as_deref()),
+            Some("cadd")
+        );
+        assert!(merged
+            .source_digests
+            .iter()
+            .any(|digest| digest.source == ToolSurfaceSourceKind::Dynamic));
+        assert_ne!(
+            merged.catalog_hash,
+            tool_catalog_fingerprint(&BTreeMap::new())
+        );
+    }
+
+    #[test]
+    fn merge_external_tool_catalogs_does_not_override_existing_catalog_authority() {
+        let mut catalog_by_tool = BTreeMap::new();
+        catalog_by_tool.insert(
+            "read".to_string(),
+            ToolCatalogMetadata {
+                domain: Some("agendao_builtin".to_string()),
+                family: Some("filesystem_edit".to_string()),
+                subfamily: Some("read".to_string()),
+                tags: vec![],
+                provenance: Some("builtin".to_string()),
+            },
+        );
+        let base = ResolvedToolSurface {
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: Some("built-in".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            all_tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: Some("built-in".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            source_digests: Vec::new(),
+            catalog_hash: tool_catalog_fingerprint(&catalog_by_tool),
+            catalog_by_tool,
+            catalog_mode: ToolCatalogMode::FullSchema,
+        };
+        let external = vec![ResolvedExternalToolCatalog {
+            source_path: std::path::PathBuf::from("/tmp/tools.jsonc"),
+            tools: HashMap::from([(
+                "read".to_string(),
+                agendao_config::ExternalToolConfig {
+                    source: None,
+                    catalog: Some(ToolCatalogMetadata {
+                        domain: Some("cadd".to_string()),
+                        family: Some("wrong".to_string()),
+                        subfamily: None,
+                        tags: vec![],
+                        provenance: Some("tool_import".to_string()),
+                    }),
+                },
+            )]),
+        }];
+
+        let merged = merge_external_tool_catalogs(base, &external);
+        assert_eq!(
+            merged
+                .catalog_by_tool
+                .get("read")
+                .and_then(|catalog| catalog.domain.as_deref()),
+            Some("agendao_builtin")
+        );
+        assert_eq!(merged.tools.len(), 1);
+    }
+
+    #[test]
+    fn large_catalog_materializes_facade_only_surface() {
+        let mut tools = Vec::new();
+        let mut catalog_by_tool = BTreeMap::new();
+        for index in 0..30 {
+            let name = format!("dock_tool_{index}");
+            tools.push(ToolDefinition {
+                name: name.clone(),
+                description: Some("dock".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            });
+            catalog_by_tool.insert(
+                name,
+                ToolCatalogMetadata {
+                    domain: Some("cadd".to_string()),
+                    family: Some("docking".to_string()),
+                    subfamily: None,
+                    tags: vec![],
+                    provenance: Some("builtin".to_string()),
+                },
+            );
+        }
+        tools.extend([
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                description: Some("search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                description: Some("describe".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                description: Some("call".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ]);
+
+        let mode = resolve_tool_catalog_mode(&tools, &catalog_by_tool);
+        let visible = materialize_model_tool_surface(&tools, mode);
+        let names = visible
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(mode, ToolCatalogMode::SearchFacade);
+        assert_eq!(
+            names,
+            vec![
+                agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID,
+                agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID,
+                agendao_tool::tool_catalog::MCP_CALL_TOOL_ID
+            ]
+        );
+    }
+
+    #[test]
+    fn search_facade_mode_exposes_only_facade_tools() {
+        let tools = vec![
+            ToolDefinition {
+                name: "dock_pose".to_string(),
+                description: Some("dock".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                description: Some("search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                description: Some("describe".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                description: Some("call".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::SearchFacade);
+        let names = visible
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID,
+                agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID,
+                agendao_tool::tool_catalog::MCP_CALL_TOOL_ID,
+            ]
+        );
     }
 
     #[tokio::test]

@@ -48,7 +48,7 @@
 // Skeleton types are intentionally unused until Phase 5 cut-over.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_provider::cache::ToolSurfaceSourceDigest;
@@ -56,10 +56,11 @@ use agendao_provider::cache::{json_fingerprint, text_fingerprint};
 use agendao_provider::ToolDefinition;
 use agendao_types::{
     FewShotSurfaceItem, MemoryRetrievalPacket, PinnedConstraint,
-    PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory,
-    PromptSurfaceDriftDetail, PromptSurfaceEvidenceSummary,
+    PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory, PromptSurfaceDriftDetail,
+    PromptSurfaceEvidenceSummary,
     PromptSurfaceVolatilityFinding as PublicPromptSurfaceVolatilityFinding,
     PromptSurfaceVolatilityKind as PublicPromptSurfaceVolatilityKind, SessionCacheSeverity,
+    ToolCatalogMetadata,
 };
 
 use super::surface_contract::{
@@ -68,6 +69,7 @@ use super::surface_contract::{
     normalize_stable_system_line, sanctioned_model_context_projection_for_message,
     PromptSurfaceProviderOptionGroup,
 };
+use super::tools_and_output::ToolCatalogMode;
 use crate::SessionMessage;
 
 // ── Input model ─────────────────────────────────────────────────────────
@@ -126,6 +128,15 @@ pub struct PromptSurfaceInputs {
     /// Source-group digests for tool surface fingerprinting.
     pub(crate) tool_source_digests: Vec<ToolSurfaceSourceDigest>,
 
+    /// Structured catalog metadata keyed by tool name.
+    pub(crate) tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
+
+    /// Resolved tool catalog render mode for this turn.
+    pub(crate) tool_catalog_mode: ToolCatalogMode,
+
+    /// Stable fingerprint of the structured tool catalog metadata.
+    pub(crate) tool_catalog_hash: String,
+
     /// Compiled execution request (model, agent, scheduler profile, etc.).
     pub(crate) compiled_request: CompiledExecutionRequest,
 
@@ -171,6 +182,12 @@ pub(crate) struct PromptSurfaceSections {
 
     /// Tool source surface fingerprint.
     pub(crate) tool_source_surface_hash: String,
+
+    /// Tool catalog render mode.
+    pub(crate) tool_catalog_mode: ToolCatalogMode,
+
+    /// Structured tool catalog fingerprint.
+    pub(crate) tool_catalog_hash: String,
 
     /// Provider-level parameters hash (reasoning, tool policy, etc.).
     pub(crate) provider_params_hash: String,
@@ -297,6 +314,9 @@ impl PromptSurfaceInputs {
         few_shots: Vec<FewShotSurfaceItem>,
         tools: Vec<ToolDefinition>,
         tool_source_digests: Vec<ToolSurfaceSourceDigest>,
+        tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
+        tool_catalog_mode: ToolCatalogMode,
+        tool_catalog_hash: String,
         compiled_request: CompiledExecutionRequest,
         provider_options: HashMap<String, serde_json::Value>,
     ) -> Self {
@@ -307,7 +327,13 @@ impl PromptSurfaceInputs {
             .set_memory_prefetch(memory_prefetch)
             .set_pinned_constraints(pinned_constraints)
             .set_few_shots(few_shots)
-            .set_tool_surface(tools, tool_source_digests)
+            .set_tool_surface(
+                tools,
+                tool_source_digests,
+                tool_catalog_by_name,
+                tool_catalog_mode,
+                tool_catalog_hash,
+            )
             .set_provider_options(provider_options)
     }
 
@@ -315,7 +341,10 @@ impl PromptSurfaceInputs {
         session_id: impl Into<String>,
         compiled_request: CompiledExecutionRequest,
     ) -> Self {
-        let provider_options = compiled_request.provider_options.clone().unwrap_or_default();
+        let provider_options = compiled_request
+            .provider_options
+            .clone()
+            .unwrap_or_default();
         Self {
             session_id: session_id.into(),
             system_prompt: None,
@@ -326,6 +355,9 @@ impl PromptSurfaceInputs {
             few_shots: Vec::new(),
             tools: Vec::new(),
             tool_source_digests: Vec::new(),
+            tool_catalog_by_name: BTreeMap::new(),
+            tool_catalog_mode: ToolCatalogMode::FullSchema,
+            tool_catalog_hash: json_fingerprint(&serde_json::json!({})),
             compiled_request,
             provider_options,
         }
@@ -341,18 +373,12 @@ impl PromptSurfaceInputs {
         self
     }
 
-    pub fn set_preset_extension(
-        mut self,
-        preset_extension: Option<PresetPromptExtension>,
-    ) -> Self {
+    pub fn set_preset_extension(mut self, preset_extension: Option<PresetPromptExtension>) -> Self {
         self.preset_extension = preset_extension;
         self
     }
 
-    pub fn set_memory_prefetch(
-        mut self,
-        memory_prefetch: Option<MemoryRetrievalPacket>,
-    ) -> Self {
+    pub fn set_memory_prefetch(mut self, memory_prefetch: Option<MemoryRetrievalPacket>) -> Self {
         self.memory_prefetch = memory_prefetch;
         self
     }
@@ -371,9 +397,15 @@ impl PromptSurfaceInputs {
         mut self,
         tools: Vec<ToolDefinition>,
         tool_source_digests: Vec<ToolSurfaceSourceDigest>,
+        tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
+        tool_catalog_mode: ToolCatalogMode,
+        tool_catalog_hash: String,
     ) -> Self {
         self.tools = tools;
         self.tool_source_digests = tool_source_digests;
+        self.tool_catalog_by_name = tool_catalog_by_name;
+        self.tool_catalog_mode = tool_catalog_mode;
+        self.tool_catalog_hash = tool_catalog_hash;
         self
     }
 
@@ -424,8 +456,9 @@ impl PromptSurfaceInputs {
         let system_text = system_layers.system_text();
         let stable_system_prefix_text = system_layers.stable_system_prefix_text();
         let dynamic_system_overlay_text = system_layers.dynamic_system_overlay_text();
-        let stable_system_surface_hash =
-            text_fingerprint(&stable_system_surface_projection(&stable_system_prefix_text));
+        let stable_system_surface_hash = text_fingerprint(&stable_system_surface_projection(
+            &stable_system_prefix_text,
+        ));
 
         PromptSurfaceSections {
             system_text,
@@ -434,6 +467,8 @@ impl PromptSurfaceInputs {
             stable_system_surface_hash,
             tool_surface_hash,
             tool_source_surface_hash,
+            tool_catalog_mode: self.tool_catalog_mode,
+            tool_catalog_hash: self.tool_catalog_hash.clone(),
             provider_params_hash,
             reasoning_mode_hash,
             tool_policy_hash,
@@ -519,7 +554,9 @@ impl PromptSurfaceInputs {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            layers.stable_prefix_sections.push(system_prompt.to_string());
+            layers
+                .stable_prefix_sections
+                .push(system_prompt.to_string());
         }
 
         if let Some(env_context) = self
@@ -565,7 +602,67 @@ impl PromptSurfaceInputs {
             ));
         }
 
+        if let Some(tool_catalog_projection) = self.render_tool_catalog_projection() {
+            layers
+                .dynamic_overlay_sections
+                .push(tool_catalog_projection);
+        }
+
         layers
+    }
+
+    fn render_tool_catalog_projection(&self) -> Option<String> {
+        if self.tools.is_empty() {
+            return None;
+        }
+
+        match self.tool_catalog_mode {
+            ToolCatalogMode::FullSchema => {
+                let names = self
+                    .tools
+                    .iter()
+                    .map(|tool| format!("- `{}`", tool.name))
+                    .collect::<Vec<_>>();
+                Some(format!(
+                    "## Available Execution Resources\n{}\n\nCatalog mode: full-schema",
+                    names.join("\n")
+                ))
+            }
+            ToolCatalogMode::SearchFacade => {
+                let mut families: BTreeMap<(String, String), usize> = BTreeMap::new();
+                for (tool_name, catalog) in &self.tool_catalog_by_name {
+                    if agendao_tool::tool_catalog::is_tool_catalog_facade_tool(tool_name) {
+                        continue;
+                    }
+                    let domain = catalog.domain.as_deref().unwrap_or("unknown").to_string();
+                    let family = catalog
+                        .family
+                        .as_deref()
+                        .unwrap_or("uncategorized")
+                        .to_string();
+                    *families.entry((domain, family)).or_default() += 1;
+                }
+
+                let model_visible_tool_count = self.tools.len();
+                let all_tool_count = self
+                    .tool_catalog_by_name
+                    .keys()
+                    .filter(|tool_name| {
+                        !agendao_tool::tool_catalog::is_tool_catalog_facade_tool(tool_name)
+                    })
+                    .count();
+                let lines = families
+                    .into_iter()
+                    .map(|((domain, family), count)| {
+                        format!("- `{domain}/{family}`: {count} tools")
+                    })
+                    .collect::<Vec<_>>();
+                Some(format!(
+                    "## Available Execution Resources\nLarge tool catalog detected. Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it.\n\nModel-visible facade tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n\n{}\n\nCatalog mode: search-facade",
+                    lines.join("\n")
+                ))
+            }
+        }
     }
 
     pub(crate) fn effective_tool_source_digests(
@@ -621,10 +718,7 @@ impl PromptSurfaceInputs {
 }
 
 impl PromptSurfaceSections {
-    pub(crate) fn describe_drift(
-        &self,
-        previous: &Self,
-    ) -> Vec<PromptSurfaceDriftExplanation> {
+    pub(crate) fn describe_drift(&self, previous: &Self) -> Vec<PromptSurfaceDriftExplanation> {
         let mut changes = Vec::new();
 
         push_drift(
@@ -723,7 +817,10 @@ impl PromptSurfaceSections {
             return None;
         }
 
-        let changed_fields = drift.iter().map(|item| item.field.clone()).collect::<Vec<_>>();
+        let changed_fields = drift
+            .iter()
+            .map(|item| item.field.clone())
+            .collect::<Vec<_>>();
         let drift_details = drift.into_iter().map(Into::into).collect::<Vec<_>>();
         let stable_prefix_change = changed_fields
             .iter()
@@ -889,9 +986,9 @@ fn render_preset_extension_layers(extension: &PresetPromptExtension) -> PromptSu
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        layers.dynamic_overlay_sections.push(format!(
-            "## Capability Projection\n{capability_projection}"
-        ));
+        layers
+            .dynamic_overlay_sections
+            .push(format!("## Capability Projection\n{capability_projection}"));
     }
 
     layers
@@ -944,6 +1041,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -975,23 +1075,33 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::from([("thinking".to_string(), serde_json::json!(true))]),
         );
 
-        let via_builder = PromptSurfaceInputs::builder("ses-1", CompiledExecutionRequest::default())
-            .set_base_system_prompt(Some("system header".to_string()))
-            .set_environment_identity(Some("env: linux".to_string()))
-            .set_preset_extension(Some(PresetPromptExtension::new(
-                "sisyphus",
-                "delegation-first orchestrator",
-            )))
-            .set_memory_prefetch(None)
-            .set_tool_surface(vec![], vec![])
-            .set_provider_options(HashMap::from([(
-                "thinking".to_string(),
-                serde_json::json!(true),
-            )]));
+        let via_builder =
+            PromptSurfaceInputs::builder("ses-1", CompiledExecutionRequest::default())
+                .set_base_system_prompt(Some("system header".to_string()))
+                .set_environment_identity(Some("env: linux".to_string()))
+                .set_preset_extension(Some(PresetPromptExtension::new(
+                    "sisyphus",
+                    "delegation-first orchestrator",
+                )))
+                .set_memory_prefetch(None)
+                .set_tool_surface(
+                    vec![],
+                    vec![],
+                    BTreeMap::new(),
+                    ToolCatalogMode::FullSchema,
+                    json_fingerprint(&serde_json::json!({})),
+                )
+                .set_provider_options(HashMap::from([(
+                    "thinking".to_string(),
+                    serde_json::json!(true),
+                )]));
 
         assert_eq!(via_builder.session_id, via_compat.session_id);
         assert_eq!(via_builder.system_prompt, via_compat.system_prompt);
@@ -1008,30 +1118,25 @@ mod tests {
 
     #[test]
     fn pinned_constraints_flow_into_stable_prefix_and_hash() {
-        let first = PromptSurfaceInputs::builder(
-            "ses-pinned",
-            CompiledExecutionRequest::default(),
-        )
-        .set_base_system_prompt(Some("base header".to_string()))
-        .set_pinned_constraints(vec![
-            PinnedConstraint::new("Boundary", "Never bypass verification."),
-            PinnedConstraint::new(
-                "Continuity",
-                "Preserve acceptance constraints across compaction.",
-            ),
-        ])
-        .assemble_sections("projection".to_string(), None, None);
+        let first = PromptSurfaceInputs::builder("ses-pinned", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("base header".to_string()))
+            .set_pinned_constraints(vec![
+                PinnedConstraint::new("Boundary", "Never bypass verification."),
+                PinnedConstraint::new(
+                    "Continuity",
+                    "Preserve acceptance constraints across compaction.",
+                ),
+            ])
+            .assemble_sections("projection".to_string(), None, None);
 
-        let second = PromptSurfaceInputs::builder(
-            "ses-pinned",
-            CompiledExecutionRequest::default(),
-        )
-        .set_base_system_prompt(Some("base header".to_string()))
-        .set_pinned_constraints(vec![PinnedConstraint::new(
-            "Boundary",
-            "Never bypass verification.",
-        )])
-        .assemble_sections("projection".to_string(), None, None);
+        let second =
+            PromptSurfaceInputs::builder("ses-pinned", CompiledExecutionRequest::default())
+                .set_base_system_prompt(Some("base header".to_string()))
+                .set_pinned_constraints(vec![PinnedConstraint::new(
+                    "Boundary",
+                    "Never bypass verification.",
+                )])
+                .assemble_sections("projection".to_string(), None, None);
 
         assert!(first.system_text.contains("## Pinned Constraints"));
         assert!(first
@@ -1082,6 +1187,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest {
                 provider_options: Some(HashMap::from([
                     ("thinking".to_string(), serde_json::json!(true)),
@@ -1118,6 +1226,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1146,7 +1257,10 @@ mod tests {
         assert!(sections.system_text.contains("Be concise. No flattery."));
         assert!(
             sections.system_text.find("## Tone Augment").unwrap()
-                < sections.system_text.find("## Capability Projection").unwrap()
+                < sections
+                    .system_text
+                    .find("## Capability Projection")
+                    .unwrap()
         );
         assert!(!sections
             .stable_system_prefix_text
@@ -1171,6 +1285,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1178,7 +1295,9 @@ mod tests {
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
         assert!(sections.system_text.contains("## Environment Context"));
-        assert!(sections.dynamic_system_overlay_text.contains("## Environment Context"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("## Environment Context"));
         assert!(sections.system_text.contains("Working directory: /repo"));
         assert!(!sections.system_text.contains("Today's date:"));
         assert!(!sections.system_text.contains("Current local time:"));
@@ -1204,6 +1323,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1226,6 +1348,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1260,15 +1385,18 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
 
         let report = inputs.detect_volatility();
-        assert!(report.findings.iter().any(|finding| matches!(
-            finding.kind,
-            PromptSurfaceVolatilityKind::VolatileEnvField
-        )));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| matches!(finding.kind, PromptSurfaceVolatilityKind::VolatileEnvField)));
     }
 
     #[test]
@@ -1286,6 +1414,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1303,12 +1434,18 @@ mod tests {
             "ses-1",
             Some("base header".to_string()),
             Some("<env>\n  Working directory: /repo-a\n</env>".to_string()),
-            Some(PresetPromptExtension::new("atlas", "coordination orchestrator")),
+            Some(PresetPromptExtension::new(
+                "atlas",
+                "coordination orchestrator",
+            )),
             None,
             vec![],
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1327,6 +1464,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1361,6 +1501,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1369,13 +1512,10 @@ mod tests {
         let evidence = second
             .to_prompt_surface_evidence_summary(&first, Some(&volatility))
             .expect("surface evidence");
-        assert!(evidence
-            .volatility_findings
-            .iter()
-            .any(|detail| matches!(
-                detail.kind,
-                agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
-            )));
+        assert!(evidence.volatility_findings.iter().any(|detail| matches!(
+            detail.kind,
+            agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
+        )));
     }
 
     #[test]
@@ -1393,6 +1533,9 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            BTreeMap::new(),
+            ToolCatalogMode::FullSchema,
+            json_fingerprint(&serde_json::json!({})),
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1406,13 +1549,171 @@ mod tests {
 
         assert!(evidence.changed_fields.is_empty());
         assert_eq!(evidence.reason, "surface volatility detected");
-        assert!(evidence
-            .volatility_findings
+        assert!(evidence.volatility_findings.iter().any(|finding| matches!(
+            finding.kind,
+            agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
+        )));
+    }
+
+    #[test]
+    fn large_tool_catalog_renders_search_facade_summary() {
+        let tools = (0..8)
+            .map(|idx| ToolDefinition {
+                name: format!("dock_tool_{idx}"),
+                description: None,
+                parameters: serde_json::json!({}),
+            })
+            .collect::<Vec<_>>();
+        let catalog = tools
             .iter()
-            .any(|finding| matches!(
-                finding.kind,
-                agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
-            )));
+            .map(|tool| {
+                (
+                    tool.name.clone(),
+                    ToolCatalogMetadata {
+                        domain: Some("cadd".to_string()),
+                        family: Some("molecular_docking".to_string()),
+                        subfamily: None,
+                        tags: vec![],
+                        provenance: Some("builtin".to_string()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let inputs = PromptSurfaceInputs::builder("ses-tools", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("base header".to_string()))
+            .set_tool_surface(
+                tools,
+                vec![],
+                catalog.clone(),
+                ToolCatalogMode::SearchFacade,
+                json_fingerprint(&serde_json::json!(catalog)),
+            );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Catalog mode: search-facade"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Model-visible facade tools: 8"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Full catalog resources: 8"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("`cadd/molecular_docking`: 8 tools"));
+    }
+
+    #[test]
+    fn search_facade_summary_mentions_facade_flow() {
+        let facade_tools = vec![
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+        let catalog = (0..8)
+            .map(|idx| {
+                (
+                    format!("dock_tool_{idx}"),
+                    ToolCatalogMetadata {
+                        domain: Some("cadd".to_string()),
+                        family: Some("molecular_docking".to_string()),
+                        subfamily: None,
+                        tags: vec![],
+                        provenance: Some("builtin".to_string()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let inputs = PromptSurfaceInputs::builder("ses-tools", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("base header".to_string()))
+            .set_tool_surface(
+                facade_tools,
+                vec![],
+                catalog.clone(),
+                ToolCatalogMode::SearchFacade,
+                json_fingerprint(&serde_json::json!(catalog)),
+            );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it."));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Model-visible facade tools: 3"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Full catalog resources: 8"));
+    }
+
+    #[test]
+    fn small_tool_catalog_renders_full_schema_summary() {
+        let tools = vec![
+            ToolDefinition {
+                name: "read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "write".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+        let catalog = BTreeMap::from([
+            (
+                "read".to_string(),
+                ToolCatalogMetadata {
+                    domain: Some("agendao_builtin".to_string()),
+                    family: Some("filesystem_edit".to_string()),
+                    subfamily: Some("read".to_string()),
+                    tags: vec![],
+                    provenance: Some("builtin".to_string()),
+                },
+            ),
+            (
+                "write".to_string(),
+                ToolCatalogMetadata {
+                    domain: Some("agendao_builtin".to_string()),
+                    family: Some("filesystem_edit".to_string()),
+                    subfamily: Some("write".to_string()),
+                    tags: vec![],
+                    provenance: Some("builtin".to_string()),
+                },
+            ),
+        ]);
+        let inputs = PromptSurfaceInputs::builder("ses-tools", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("base header".to_string()))
+            .set_tool_surface(
+                tools,
+                vec![],
+                catalog.clone(),
+                ToolCatalogMode::FullSchema,
+                json_fingerprint(&serde_json::json!(catalog)),
+            );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Catalog mode: full-schema"));
+        assert!(sections.dynamic_system_overlay_text.contains("- `read`"));
+        assert!(sections.dynamic_system_overlay_text.contains("- `write`"));
     }
 
     #[test]
