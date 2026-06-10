@@ -60,10 +60,25 @@ fn display_argument_lines(arguments: &str) -> Vec<String> {
     arguments.lines().map(str::to_string).collect()
 }
 
+fn display_argument_text(arguments: &str) -> String {
+    display_argument_lines(arguments).join("\n")
+}
+
+fn arguments_need_toggle(arguments: &str) -> bool {
+    let full_text = display_argument_text(arguments);
+    full_text.chars().count() > TOOL_ARGUMENTS_PREVIEW_CHARS
+        || full_text.lines().count() > TOOL_ARGUMENTS_PREVIEW_LINES
+}
+
 fn extract_argument_value_lines(value: &serde_json::Value) -> Option<Vec<String>> {
     match value {
         serde_json::Value::String(text) => Some(text.lines().map(str::to_string).collect()),
         serde_json::Value::Object(map) => {
+            for key in ["arguments", "argument", "parameters", "params", "input"] {
+                if let Some(lines) = map.get(key).and_then(extract_argument_value_lines) {
+                    return Some(lines);
+                }
+            }
             for key in ["command", "cmd", "script", "input", "text"] {
                 if let Some(lines) = map.get(key).and_then(extract_argument_value_lines) {
                     return Some(lines);
@@ -282,6 +297,23 @@ fn result_title(info: &TerminalToolResultInfo) -> Option<&str> {
         .filter(|title| !title.is_empty())
 }
 
+fn dedupe_repeated_title_prefix<'a>(
+    title: Option<&'a str>,
+    lines: &'a [&'a str],
+) -> &'a [&'a str] {
+    let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) else {
+        return lines;
+    };
+    let Some(first) = lines.first().map(|value| value.trim()) else {
+        return lines;
+    };
+    if first.eq_ignore_ascii_case(title) {
+        &lines[1..]
+    } else {
+        lines
+    }
+}
+
 fn should_show_inline_argument_preview(
     normalized: &str,
     state: TerminalToolState,
@@ -333,7 +365,8 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
         };
     }
 
-    let block_mode = is_block_tool(name, state, result, show_tool_details);
+    let block_mode =
+        is_block_tool(name, state, result, show_tool_details) || arguments_need_toggle(arguments);
     let read_summary = if is_read_tool(&normalized) {
         result.and_then(|info| {
             if info.is_error {
@@ -510,6 +543,7 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             } else if normalized == "question" {
                 render_question_result_block(result_text, arguments, theme, bg, &mut lines);
             } else if show_tool_details {
+                let title = result_title(info);
                 if let Some(title) = result_title(info) {
                     lines.push(block_content_line(
                         format_preview_line(title, 96),
@@ -519,10 +553,11 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
                     ));
                 }
                 let output_lines = result_text.lines().collect::<Vec<_>>();
+                let output_lines = dedupe_repeated_title_prefix(title, &output_lines);
                 let (list_root, list_entries) = if is_list_tool(&normalized) {
-                    split_list_output(&output_lines)
+                    split_list_output(output_lines)
                 } else {
-                    (None, output_lines.clone())
+                    (None, output_lines.to_vec())
                 };
                 let line_count = list_entries.len();
                 let mut preview_limit = if normalized == "bash" || normalized == "shell" {
@@ -1833,5 +1868,120 @@ mod tests {
         assert!(full_text.contains("python3 -c"));
         assert!(full_text.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(!full_text.contains("ctrl+y to expand"));
+    }
+
+    #[test]
+    fn wrapped_tool_catalog_call_still_shows_nested_bash_arguments() {
+        let theme = crate::theme::Theme::dark();
+        let nested = serde_json::json!({
+            "tool": "bash",
+            "arguments": {
+                "command": "python3 -c \"print('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\""
+            }
+        })
+        .to_string();
+
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 0,
+                name: "tool_catalog_call",
+                arguments: &nested,
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "Execute shell command\nline2\nline3\nline4".to_string(),
+                    is_error: false,
+                    title: Some("Execute shell command".to_string()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let full_text: String = output
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(full_text.contains("[tool=bash]"), "{full_text}");
+        assert!(full_text.contains("▶ arguments"), "{full_text}");
+        assert!(full_text.contains("python3 -c"), "{full_text}");
+    }
+
+    #[test]
+    fn running_long_tool_arguments_render_as_collapsible_block() {
+        let theme = crate::theme::Theme::dark();
+        let nested = serde_json::json!({
+            "tool": "bash",
+            "arguments": {
+                "command": "python3 -c \"import urllib.request, urllib.parse, json, sys; print('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\""
+            }
+        })
+        .to_string();
+
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 1,
+                name: "tool_catalog_call",
+                arguments: &nested,
+                arguments_expanded: false,
+                state: TerminalToolState::Running,
+                result: None,
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let full_text: String = output
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(full_text.contains("tool_catalog_call"), "{full_text}");
+        assert!(full_text.contains("▶ arguments"), "{full_text}");
+        assert!(full_text.contains("python3 -c"), "{full_text}");
+        assert!(output.toggle_line_offsets.iter().any(|hit| hit.line_offset == 0));
+    }
+
+    #[test]
+    fn block_result_title_is_not_repeated_in_body() {
+        let theme = crate::theme::Theme::dark();
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 0,
+                name: "tool_catalog_call",
+                arguments: r#"{"tool":"bash","arguments":{"command":"echo hi"}}"#,
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "Execute shell command\nFound: x\nMore: y\nTail: z".to_string(),
+                    is_error: false,
+                    title: Some("Execute shell command".to_string()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let joined_lines = output
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let repeated = joined_lines
+            .iter()
+            .filter(|line| line.contains("Execute shell command"))
+            .count();
+        assert!(repeated <= 2, "{joined_lines:?}");
     }
 }
