@@ -200,7 +200,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 
 #### 目录推断规则
 
-如果 `catalog.domain` / `catalog.family` 没有显式填写，配置层会尝试从 `tools/<domain>/<family>/...` 目录结构做保守推断。例如：
+如果 `catalog.domain` / `catalog.family` / `catalog.subfamily` 中有缺失项，配置层会尝试从 `tools/<domain>/<family>/<subfamily>/...` 目录结构保守补齐缺失层级。例如：
 
 - `tools/cadd/molecular_docking/dock_pose.py`
   - 推断 `domain = cadd`
