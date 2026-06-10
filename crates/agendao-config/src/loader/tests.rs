@@ -750,6 +750,54 @@ fn multiple_tool_imports_merge_in_order() {
 }
 
 #[test]
+fn shared_tool_import_is_loaded_only_once_across_multiple_config_sources() {
+    let temp = TestDir::new("agendao_external_tool_catalog_dedup");
+    let root = temp.path.join("repo");
+    let project_dir = root.join("apps/lab");
+    let global_dir = temp.path.join("global");
+    let imported_dir = root.join(".agendao/tools/shared");
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::create_dir_all(&imported_dir).unwrap();
+
+    fs::write(
+        global_dir.join("agendao.jsonc"),
+        format!(
+            r#"{{ "toolImports": ["{}"] }}"#,
+            imported_dir.join("tools.jsonc").to_string_lossy()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("agendao.jsonc"),
+        r#"{ "toolImports": [".agendao/tools/shared/tools.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        imported_dir.join("tools.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "catalog": { "domain": "cadd", "family": "molecular_docking" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let _config_dir = ScopedEnvVar::set("AGENDAO_CONFIG_DIR", &global_dir);
+    let mut loader = ConfigLoader::new();
+    loader.load_global().unwrap();
+    loader.load_project(&project_dir).unwrap();
+
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+
+    assert_eq!(catalogs.len(), 1, "same normalized import should not reload");
+    assert_eq!(catalogs[0].source_path, imported_dir.join("tools.jsonc"));
+    assert!(catalogs[0].tools.contains_key("dock_pose"));
+}
+
+#[test]
 fn test_load_all_reads_plugins_from_plugin_paths() {
     let temp = TestDir::new("agendao_config_plugin_paths");
     let root = temp.path.join("repo");
