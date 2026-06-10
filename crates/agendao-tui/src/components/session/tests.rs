@@ -20,7 +20,6 @@ use crate::{
     context::{AppContext, Message, MessagePart, MessageRole, SessionStatus, TokenUsage},
     ui::BufferSurface,
 };
-use std::collections::HashSet;
 use std::sync::Arc;
 
 struct TestSessionMessagesRender {
@@ -537,12 +536,16 @@ fn session_view_surfaces_hidden_reasoning_hint_when_display_thinking_is_disabled
     let rendered = buffer_text(&buffer);
 
     assert!(
-        rendered.contains("reasoning block hidden by display preference"),
+        rendered.contains("reasoning hidden by display preference"),
         "hidden reasoning should surface an explicit hint instead of disappearing silently:\n{rendered}"
     );
     assert!(
-        rendered.contains("Ctrl+G"),
-        "hidden reasoning hint should advertise the recovery keybind:\n{rendered}"
+        rendered.contains("▶ reasoning"),
+        "hidden reasoning hint should keep reasoning triangle header semantics:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("☪ reasoning hidden by display preference"),
+        "hidden reasoning hint must not be rendered like assistant final text:\n{rendered}"
     );
 }
 
@@ -880,27 +883,31 @@ fn session_messages_start_below_padded_header_in_wide_layout() {
 fn session_render_model_memo_key_tracks_width_and_reasoning_state() {
     let context = Arc::new(AppContext::new());
     let snapshot = SessionMessagesSnapshot::capture(&context, "session-1");
+    let empty_reasoning = SessionReasoningState::default();
 
-    let base = build_session_render_model_memo_key(&snapshot, 80, &HashSet::new());
-    let same = build_session_render_model_memo_key(&snapshot, 80, &HashSet::new());
+    let base = build_session_render_model_memo_key(&snapshot, 80, &empty_reasoning);
+    let same = build_session_render_model_memo_key(&snapshot, 80, &empty_reasoning);
     assert_eq!(base, same);
 
-    let mut expanded = HashSet::new();
-    expanded.insert("message-1:0".to_string());
+    let mut expanded_reasoning = SessionReasoningState::default();
+    expanded_reasoning
+        .expanded
+        .insert("message-1:0".to_string());
     assert_ne!(
         base,
-        build_session_render_model_memo_key(&snapshot, 80, &expanded)
+        build_session_render_model_memo_key(&snapshot, 80, &expanded_reasoning)
     );
     assert_ne!(
         base,
-        build_session_render_model_memo_key(&snapshot, 79, &HashSet::new())
+        build_session_render_model_memo_key(&snapshot, 79, &empty_reasoning)
     );
 }
 
 #[test]
 fn session_render_model_memo_key_tracks_same_length_text_changes() {
     let (_context, _session_id, mut snapshot) = perf_snapshot_with_messages();
-    let base = build_session_render_model_memo_key(&snapshot, 72, &HashSet::new());
+    let empty_reasoning = SessionReasoningState::default();
+    let base = build_session_render_model_memo_key(&snapshot, 72, &empty_reasoning);
 
     let message = snapshot
         .messages
@@ -919,7 +926,7 @@ fn session_render_model_memo_key_tracks_same_length_text_changes() {
         panic!("assistant-2 should have a text part");
     }
 
-    let changed = build_session_render_model_memo_key(&snapshot, 72, &HashSet::new());
+    let changed = build_session_render_model_memo_key(&snapshot, 72, &empty_reasoning);
     assert_ne!(base, changed);
 }
 
@@ -930,10 +937,11 @@ fn session_render_model_cache_reuses_model_on_identical_inputs() {
     let area = Rect::new(0, 0, 80, 20);
     let mut buffer = Buffer::empty(area);
 
+    let reasoning = SessionReasoningState::default();
     let (model, _, cache) = resolve_session_render_model(
         area,
         &snapshot,
-        &HashSet::new(),
+        &reasoning,
         &SessionMessageOutputCache::default(),
         &SessionRenderModelCache::default(),
         &mut buffer,
@@ -941,7 +949,7 @@ fn session_render_model_cache_reuses_model_on_identical_inputs() {
     let (reused_model, _, _) = resolve_session_render_model(
         area,
         &snapshot,
-        &HashSet::new(),
+        &reasoning,
         &SessionMessageOutputCache::default(),
         &cache,
         &mut buffer,

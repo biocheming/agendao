@@ -849,18 +849,31 @@ impl SessionView {
         if line_index >= state.viewport.rendered_line_count {
             return false;
         }
-        let Some(reasoning_id) = state
+        if let Some(reasoning_id) = state
             .reasoning
             .toggle_hits
             .iter()
             .find(|hit| hit.line_index == line_index)
             .map(|hit| hit.reasoning_id.clone())
-        else {
-            return false;
-        };
+        {
+            state.queue_interaction_action(SessionInteractionAction::ToggleReasoning(reasoning_id));
+            return true;
+        }
 
-        state.queue_interaction_action(SessionInteractionAction::ToggleReasoning(reasoning_id));
-        true
+        if let Some(arguments_id) = state
+            .reasoning
+            .tool_arguments_toggle_hits
+            .iter()
+            .find(|hit| hit.line_index == line_index)
+            .map(|hit| hit.arguments_id.clone())
+        {
+            state.queue_interaction_action(SessionInteractionAction::ToggleToolArguments(
+                arguments_id,
+            ));
+            return true;
+        }
+
+        false
     }
 
     pub fn handle_scrollbar_click(&self, col: u16, row: u16) -> bool {

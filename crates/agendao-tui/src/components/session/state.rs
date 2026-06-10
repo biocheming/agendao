@@ -15,6 +15,12 @@ struct ThinkingToggleHit {
     reasoning_id: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct ToolArgumentsToggleHit {
+    line_index: usize,
+    arguments_id: String,
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 struct SessionMessageViewportState {
     scroll_offset: usize,
@@ -31,6 +37,8 @@ struct SessionMessageViewportState {
 struct SessionReasoningState {
     expanded: HashSet<String>,
     toggle_hits: Vec<ThinkingToggleHit>,
+    expanded_tool_arguments: HashSet<String>,
+    tool_arguments_toggle_hits: Vec<ToolArgumentsToggleHit>,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -58,6 +66,7 @@ enum SessionInteractionAction {
     SetScrollOffset(usize),
     SetScrollbarDrag(bool),
     ToggleReasoning(String),
+    ToggleToolArguments(String),
 }
 
 struct SessionStateBinderComponent {
@@ -658,14 +667,18 @@ struct SessionRenderModel {
     rendered_line_count: usize,
     message_first_lines: HashMap<String, usize>,
     toggle_hits: Vec<ThinkingToggleHit>,
+    tool_arguments_toggle_hits: Vec<ToolArgumentsToggleHit>,
     visible_reasoning_ids: HashSet<String>,
+    visible_tool_arguments_ids: HashSet<String>,
 }
 
 #[derive(Clone)]
 struct AssistantSegmentRenderOutput {
     lines: Vec<Line<'static>>,
     toggle_line_offsets: Vec<ThinkingToggleHitOffset>,
+    tool_arguments_toggle_line_offsets: Vec<ToolArgumentsToggleHitOffset>,
     visible_reasoning_ids: HashSet<String>,
+    visible_tool_arguments_ids: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -767,7 +780,9 @@ fn collect_visible_chunk_ranges(
 struct MessageRenderOutput {
     lines: Arc<Vec<Line<'static>>>,
     toggle_line_offsets: Vec<ThinkingToggleHitOffset>,
+    tool_arguments_toggle_line_offsets: Vec<ToolArgumentsToggleHitOffset>,
     visible_reasoning_ids: HashSet<String>,
+    visible_tool_arguments_ids: HashSet<String>,
 }
 
 struct SessionMessageRenderItem {
@@ -824,6 +839,7 @@ struct AssistantMessageRenderProps {
     running_tool_call: Option<String>,
     show_thinking: bool,
     expanded_reasoning: HashSet<String>,
+    expanded_tool_arguments: HashSet<String>,
     footer_item: Option<AssistantFooterItem>,
 }
 
@@ -939,6 +955,12 @@ struct ThinkingToggleHitOffset {
     reasoning_id: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct ToolArgumentsToggleHitOffset {
+    line_offset: usize,
+    arguments_id: String,
+}
+
 #[derive(Clone)]
 struct AssistantTextItem {
     text: String,
@@ -957,6 +979,9 @@ struct AssistantThinkingHiddenItem {
 
 #[derive(Clone)]
 struct AssistantToolBlockItem {
+    message_id: String,
+    part_index: usize,
+    arguments_expanded: bool,
     name: String,
     arguments: String,
     state: agendao_command_render::terminal_presentation::TerminalToolState,
@@ -984,7 +1009,9 @@ impl MessageRenderOutput {
         Self {
             lines: shared_lines(lines),
             toggle_line_offsets: Vec::new(),
+            tool_arguments_toggle_line_offsets: Vec::new(),
             visible_reasoning_ids: HashSet::new(),
+            visible_tool_arguments_ids: HashSet::new(),
         }
     }
 
@@ -998,6 +1025,8 @@ impl MessageRenderOutput {
         lines.extend(output.lines);
         self.visible_reasoning_ids
             .extend(output.visible_reasoning_ids);
+        self.visible_tool_arguments_ids
+            .extend(output.visible_tool_arguments_ids);
         self.toggle_line_offsets
             .extend(
                 output
@@ -1006,6 +1035,16 @@ impl MessageRenderOutput {
                     .map(|hit| ThinkingToggleHitOffset {
                         line_offset: start_line + hit.line_offset,
                         reasoning_id: hit.reasoning_id,
+                    }),
+            );
+        self.tool_arguments_toggle_line_offsets
+            .extend(
+                output
+                    .tool_arguments_toggle_line_offsets
+                    .into_iter()
+                    .map(|hit| ToolArgumentsToggleHitOffset {
+                        line_offset: start_line + hit.line_offset,
+                        arguments_id: hit.arguments_id,
                     }),
             );
     }
@@ -1032,6 +1071,14 @@ fn apply_session_interaction_action(
         SessionInteractionAction::ToggleReasoning(reasoning_id) => {
             if !reasoning.expanded.insert(reasoning_id.clone()) {
                 reasoning.expanded.remove(reasoning_id);
+            }
+        }
+        SessionInteractionAction::ToggleToolArguments(arguments_id) => {
+            if !reasoning
+                .expanded_tool_arguments
+                .insert(arguments_id.clone())
+            {
+                reasoning.expanded_tool_arguments.remove(arguments_id);
             }
         }
     }

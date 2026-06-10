@@ -51,7 +51,7 @@ fn render_session_messages_child(
     let (model, next_message_cache, next_render_model_cache) = resolve_session_render_model(
         messages_area,
         snapshot,
-        &reasoning.expanded,
+        reasoning,
         message_cache,
         render_model_cache,
         buffer,
@@ -71,9 +71,13 @@ fn render_session_messages_child(
     let mut next_reasoning = reasoning.clone();
     if model_changed {
         next_reasoning.toggle_hits = model.toggle_hits.clone();
+        next_reasoning.tool_arguments_toggle_hits = model.tool_arguments_toggle_hits.clone();
         next_reasoning
             .expanded
             .retain(|id| model.visible_reasoning_ids.contains(id));
+        next_reasoning
+            .expanded_tool_arguments
+            .retain(|id| model.visible_tool_arguments_ids.contains(id));
     }
     let max_scroll = next_viewport
         .rendered_line_count
@@ -143,7 +147,7 @@ fn preferred_reasoning_anchor_message_id(
 fn resolve_session_render_model(
     area: Rect,
     snapshot: &SessionMessagesSnapshot,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
     message_cache: &SessionMessageOutputCache,
     render_model_cache: &SessionRenderModelCache,
     buffer: &mut Buffer,
@@ -154,7 +158,7 @@ fn resolve_session_render_model(
 ) {
     let theme = snapshot.theme.clone();
     let content_width = usize::from(area.width);
-    let memo_key = build_session_render_model_memo_key(snapshot, content_width, expanded_reasoning);
+    let memo_key = build_session_render_model_memo_key(snapshot, content_width, reasoning);
 
     if render_model_cache.memo_key == Some(memo_key) {
         if let Some(model) = render_model_cache.model.as_ref() {
@@ -192,7 +196,7 @@ fn resolve_session_render_model(
         },
     };
     let (rendered_messages, next_message_cache) =
-        render_session_message_items(area, buffer, &resources, expanded_reasoning, message_cache);
+        render_session_message_items(area, buffer, &resources, reasoning, message_cache);
     let model = Arc::new(build_session_render_model(
         memo_key,
         &resources,
@@ -318,7 +322,9 @@ fn build_session_render_model(
 ) -> SessionRenderModel {
     let mut buffer = SessionRenderBuffer::default();
     let mut toggle_hits = Vec::new();
+    let mut tool_arguments_toggle_hits = Vec::new();
     let mut visible_reasoning_ids = HashSet::new();
+    let mut visible_tool_arguments_ids = HashSet::new();
 
     if let Some(revert) = resources.revert_info.as_ref() {
         let card_lines = super::revert_card::render_revert_card(revert, &resources.theme);
@@ -355,7 +361,17 @@ fn build_session_render_model(
                 reasoning_id: hit.reasoning_id,
             }
         }));
+        tool_arguments_toggle_hits.extend(
+            item.output
+                .tool_arguments_toggle_line_offsets
+                .into_iter()
+                .map(|hit| ToolArgumentsToggleHit {
+                    line_index: start_line + hit.line_offset,
+                    arguments_id: hit.arguments_id,
+                }),
+        );
         visible_reasoning_ids.extend(item.output.visible_reasoning_ids);
+        visible_tool_arguments_ids.extend(item.output.visible_tool_arguments_ids);
         if item.gap_after > 0 {
             buffer.push_spacing(
                 item.gap_after,
@@ -371,7 +387,9 @@ fn build_session_render_model(
         rendered_line_count: buffer.rendered_line_count,
         message_first_lines: buffer.message_first_lines,
         toggle_hits,
+        tool_arguments_toggle_hits,
         visible_reasoning_ids,
+        visible_tool_arguments_ids,
     }
 }
 
@@ -379,10 +397,10 @@ fn render_session_message_items(
     area: Rect,
     buffer: &mut Buffer,
     resources: &SessionRenderResources<'_>,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
     message_cache: &SessionMessageOutputCache,
 ) -> (Vec<SessionMessageRenderItem>, SessionMessageOutputCache) {
-    let inputs = build_session_message_render_inputs(resources, expanded_reasoning);
+    let inputs = build_session_message_render_inputs(resources, reasoning);
     let mut items = Vec::with_capacity(inputs.len());
     let mut next_cache_entries = HashMap::with_capacity(inputs.len());
     for input in inputs {
@@ -435,7 +453,7 @@ fn render_session_message_items(
 
 fn build_session_message_render_inputs(
     resources: &SessionRenderResources<'_>,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
 ) -> Vec<SessionMessageRenderInput> {
     let mut inputs = Vec::new();
     let mut last_visible_role: Option<MessageRole> = None;
@@ -452,7 +470,7 @@ fn build_session_message_render_inputs(
             idx,
             last_assistant_idx,
             resources,
-            expanded_reasoning,
+            reasoning,
             &mut rendered_first_system_prompt,
         );
         last_visible_role = Some(message_role_for_render_props(&props));
@@ -482,7 +500,7 @@ fn build_message_render_props(
     idx: usize,
     last_assistant_idx: Option<usize>,
     resources: &SessionRenderResources<'_>,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
     rendered_first_system_prompt: &mut bool,
 ) -> SessionMessageRenderProps {
     match msg.role {
@@ -497,7 +515,7 @@ fn build_message_render_props(
                 idx,
                 last_assistant_idx,
                 resources,
-                expanded_reasoning,
+                reasoning,
             ))
         }
         MessageRole::System | MessageRole::Tool => {
@@ -532,7 +550,7 @@ fn build_message_render_context(resources: &SessionRenderResources<'_>) -> Messa
 fn build_session_render_model_memo_key(
     snapshot: &SessionMessagesSnapshot,
     content_width: usize,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     format!("{:?}", snapshot.theme).hash(&mut hasher);
@@ -550,7 +568,8 @@ fn build_session_render_model_memo_key(
     snapshot.show_tool_details.hash(&mut hasher);
     snapshot.semantic_hl.hash(&mut hasher);
     format!("{:?}", snapshot.fallback_model).hash(&mut hasher);
-    format!("{:?}", expanded_reasoning).hash(&mut hasher);
+    format!("{:?}", reasoning.expanded).hash(&mut hasher);
+    format!("{:?}", reasoning.expanded_tool_arguments).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -689,7 +708,7 @@ fn build_assistant_message_render_props(
     idx: usize,
     last_assistant_idx: Option<usize>,
     resources: &SessionRenderResources<'_>,
-    expanded_reasoning: &HashSet<String>,
+    reasoning: &SessionReasoningState,
 ) -> AssistantMessageRenderProps {
     let tool_results = collect_inline_tool_results(msg);
     let running_tool_call =
@@ -706,7 +725,11 @@ fn build_assistant_message_render_props(
         tool_results,
         running_tool_call,
         show_thinking: resources.show_thinking,
-        expanded_reasoning: collect_message_expanded_reasoning(msg, expanded_reasoning),
+        expanded_reasoning: collect_message_expanded_reasoning(msg, &reasoning.expanded),
+        expanded_tool_arguments: collect_message_expanded_tool_arguments(
+            msg,
+            &reasoning.expanded_tool_arguments,
+        ),
         footer_item,
     }
 }
@@ -782,6 +805,7 @@ fn build_assistant_message_memo_key(props: &AssistantMessageRenderProps) -> u64 
     format!("{:?}", props.running_tool_call).hash(&mut hasher);
     props.show_thinking.hash(&mut hasher);
     format!("{:?}", props.expanded_reasoning).hash(&mut hasher);
+    format!("{:?}", props.expanded_tool_arguments).hash(&mut hasher);
     format!("{:?}", props.footer_item).hash(&mut hasher);
     hasher.finish()
 }
@@ -832,10 +856,12 @@ fn build_assistant_message_items_from_props(
         }));
     } else if let Some(terminal_message) = props.terminal_message.as_ref() {
         raw_items.extend(build_assistant_segment_items(
+            &props.msg.id,
             terminal_message,
             &props.tool_results,
             props.running_tool_call.as_deref(),
             props.show_thinking,
+            &props.expanded_tool_arguments,
         ));
     }
 
@@ -903,14 +929,15 @@ fn render_assistant_block_outputs(
                 ))
             }
             AssistantMessageItem::ThinkingHidden(item) => {
-                Element::component(AssistantTextBlockComponent {
+                Element::component(AssistantThinkingBlockComponent {
                     msg: props.msg.clone(),
                     context: props.context.clone(),
-                    style,
+                    expanded_reasoning: props.expanded_reasoning.clone(),
                     memo_key: input.memo_key,
-                    item: AssistantTextItem {
+                    item: AssistantThinkingItem {
+                        part_index: usize::MAX,
                         text: format!(
-                            "{} reasoning block{} hidden by display preference. Press Ctrl+G to show.",
+                            "reasoning hidden by display preference\n{} reasoning block{} hidden.\nPress Ctrl+G to show.",
                             item.hidden_count,
                             if item.hidden_count == 1 { "" } else { "s" }
                         ),
@@ -1055,6 +1082,9 @@ fn hash_assistant_message_item(item: &AssistantMessageItem, hasher: &mut Default
         }
         AssistantMessageItem::Tool(item) => {
             "tool".hash(hasher);
+            item.message_id.hash(hasher);
+            item.part_index.hash(hasher);
+            item.arguments_expanded.hash(hasher);
             item.name.hash(hasher);
             item.arguments.hash(hasher);
             format!("{:?}", item.state).hash(hasher);
@@ -1080,7 +1110,9 @@ fn empty_assistant_segment_output() -> AssistantSegmentRenderOutput {
     AssistantSegmentRenderOutput {
         lines: Vec::new(),
         toggle_line_offsets: Vec::new(),
+        tool_arguments_toggle_line_offsets: Vec::new(),
         visible_reasoning_ids: HashSet::new(),
+        visible_tool_arguments_ids: HashSet::new(),
     }
 }
 
@@ -1135,6 +1167,10 @@ fn render_assistant_thinking_output(
     context: &MessageRenderContext,
     expanded_reasoning: &HashSet<String>,
 ) -> AssistantSegmentRenderOutput {
+    if item.part_index == usize::MAX {
+        return render_assistant_hidden_reasoning_output(item, context);
+    }
+
     let reasoning_id = format!("{}:{}", msg.id, item.part_index);
     let is_live_reasoning = msg.completed_at.is_none();
     let collapsed = !is_live_reasoning && !expanded_reasoning.contains(&reasoning_id);
@@ -1175,7 +1211,36 @@ fn render_assistant_thinking_output(
     AssistantSegmentRenderOutput {
         lines,
         toggle_line_offsets,
+        tool_arguments_toggle_line_offsets: Vec::new(),
         visible_reasoning_ids,
+        visible_tool_arguments_ids: HashSet::new(),
+    }
+}
+
+fn render_assistant_hidden_reasoning_output(
+    item: &AssistantThinkingItem,
+    context: &MessageRenderContext,
+) -> AssistantSegmentRenderOutput {
+    let lines = paint_block_lines(
+        super::session_text::render_reasoning_part_with_width(
+            &item.text,
+            &context.theme,
+            true,
+            1,
+            Some(context.content_width as u16),
+        )
+        .lines,
+        context.thinking_bg,
+        context.thinking_border,
+        context.content_width,
+    );
+
+    AssistantSegmentRenderOutput {
+        lines,
+        toggle_line_offsets: Vec::new(),
+        tool_arguments_toggle_line_offsets: Vec::new(),
+        visible_reasoning_ids: HashSet::new(),
+        visible_tool_arguments_ids: HashSet::new(),
     }
 }
 
@@ -1186,14 +1251,34 @@ fn render_assistant_tool_output(
 ) -> AssistantSegmentRenderOutput {
     let resources = build_assistant_render_resources(context);
     let tool_lines = super::session_tool::render_tool_call(
-        &item.name,
-        &item.arguments,
-        item.state,
-        item.result.as_ref(),
-        context.show_tool_details,
+        super::session_tool::ToolCallRenderInput {
+            message_id: &item.message_id,
+            part_index: item.part_index,
+            name: &item.name,
+            arguments: &item.arguments,
+            arguments_expanded: item.arguments_expanded,
+            state: item.state,
+            result: item.result.as_ref(),
+            show_tool_details: context.show_tool_details,
+        },
         &context.theme,
     );
-    build_assistant_shared_items_output(tool_lines, style, &resources)
+    let base =
+        build_assistant_shared_items_output(tool_lines.lines, style, &resources);
+    AssistantSegmentRenderOutput {
+        lines: base.lines,
+        toggle_line_offsets: base.toggle_line_offsets,
+        tool_arguments_toggle_line_offsets: tool_lines
+            .toggle_line_offsets
+            .into_iter()
+            .map(|hit| ToolArgumentsToggleHitOffset {
+                line_offset: hit.line_offset,
+                arguments_id: hit.arguments_id,
+            })
+            .collect(),
+        visible_reasoning_ids: base.visible_reasoning_ids,
+        visible_tool_arguments_ids: tool_lines.visible_arguments_ids,
+    }
 }
 
 fn render_assistant_file_output(
@@ -1248,15 +1333,19 @@ fn render_assistant_footer_output(
             false,
         ),
         toggle_line_offsets: Vec::new(),
+        tool_arguments_toggle_line_offsets: Vec::new(),
         visible_reasoning_ids: HashSet::new(),
+        visible_tool_arguments_ids: HashSet::new(),
     }
 }
 
 fn build_assistant_segment_items(
+    message_id: &str,
     terminal_message: &TerminalMessage,
     tool_results: &HashMap<String, TerminalToolResultInfo>,
     running_tool_call: Option<&str>,
     show_thinking: bool,
+    expanded_tool_arguments: &HashSet<String>,
 ) -> Vec<AssistantMessageItem> {
     compose_assistant_segments(
         terminal_message,
@@ -1265,7 +1354,7 @@ fn build_assistant_segment_items(
         show_thinking,
     )
     .into_iter()
-    .map(build_assistant_message_item)
+    .map(|segment| build_assistant_message_item(message_id, expanded_tool_arguments, segment))
     .collect()
 }
 
@@ -1313,7 +1402,11 @@ fn build_assistant_text_segment_output(
     )
 }
 
-fn build_assistant_message_item(segment: TerminalAssistantSegment) -> AssistantMessageItem {
+fn build_assistant_message_item(
+    message_id: &str,
+    expanded_tool_arguments: &HashSet<String>,
+    segment: TerminalAssistantSegment,
+) -> AssistantMessageItem {
     match segment {
         TerminalAssistantSegment::Spacer => AssistantMessageItem::Spacer,
         TerminalAssistantSegment::Text { text, .. } => {
@@ -1327,8 +1420,13 @@ fn build_assistant_message_item(segment: TerminalAssistantSegment) -> AssistantM
             arguments,
             state,
             result,
+            part_index,
             ..
         } => AssistantMessageItem::Tool(AssistantToolBlockItem {
+            message_id: message_id.to_string(),
+            part_index,
+            arguments_expanded: expanded_tool_arguments
+                .contains(&format!("{}:tool-args:{}", message_id, part_index)),
             name,
             arguments,
             state,
@@ -1372,7 +1470,9 @@ fn build_assistant_block_output(
             false,
         ),
         toggle_line_offsets: Vec::new(),
+        tool_arguments_toggle_line_offsets: Vec::new(),
         visible_reasoning_ids: HashSet::new(),
+        visible_tool_arguments_ids: HashSet::new(),
     }
 }
 
@@ -1434,17 +1534,23 @@ fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOu
                 name,
                 arguments,
             } => super::session_tool::render_tool_call(
-                name,
-                arguments,
-                if inline_results.contains_key(id) {
-                    agendao_command_render::terminal_presentation::TerminalToolState::Completed
-                } else {
-                    agendao_command_render::terminal_presentation::TerminalToolState::Pending
+                super::session_tool::ToolCallRenderInput {
+                    message_id: &props.msg.id,
+                    part_index: 0,
+                    name,
+                    arguments,
+                    arguments_expanded: false,
+                    state: if inline_results.contains_key(id) {
+                        agendao_command_render::terminal_presentation::TerminalToolState::Completed
+                    } else {
+                        agendao_command_render::terminal_presentation::TerminalToolState::Pending
+                    },
+                    result: inline_results.get(id),
+                    show_tool_details: props.context.show_tool_details,
                 },
-                inline_results.get(id),
-                props.context.show_tool_details,
                 &props.context.theme,
-            ),
+            )
+            .lines,
             MessagePart::ToolResult {
                 id,
                 result,
@@ -1452,22 +1558,28 @@ fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOu
                 title,
                 metadata,
             } => super::session_tool::render_tool_call(
-                title.as_deref().unwrap_or(id),
-                "",
-                if *is_error {
-                    agendao_command_render::terminal_presentation::TerminalToolState::Failed
-                } else {
-                    agendao_command_render::terminal_presentation::TerminalToolState::Completed
+                super::session_tool::ToolCallRenderInput {
+                    message_id: &props.msg.id,
+                    part_index: 0,
+                    name: title.as_deref().unwrap_or(id),
+                    arguments: "",
+                    arguments_expanded: false,
+                    state: if *is_error {
+                        agendao_command_render::terminal_presentation::TerminalToolState::Failed
+                    } else {
+                        agendao_command_render::terminal_presentation::TerminalToolState::Completed
+                    },
+                    result: Some(&TerminalToolResultInfo {
+                        output: result.clone(),
+                        is_error: *is_error,
+                        title: title.clone(),
+                        metadata: metadata.clone(),
+                    }),
+                    show_tool_details: props.context.show_tool_details,
                 },
-                Some(&TerminalToolResultInfo {
-                    output: result.clone(),
-                    is_error: *is_error,
-                    title: title.clone(),
-                    metadata: metadata.clone(),
-                }),
-                props.context.show_tool_details,
                 &props.context.theme,
-            ),
+            )
+            .lines,
             MessagePart::Text { text } => text
                 .lines()
                 .map(|line_text| {
@@ -1546,6 +1658,25 @@ fn collect_message_expanded_reasoning(
                 expanded_reasoning
                     .contains(&reasoning_id)
                     .then_some(reasoning_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_message_expanded_tool_arguments(
+    msg: &Message,
+    expanded_tool_arguments: &HashSet<String>,
+) -> HashSet<String> {
+    msg.parts
+        .iter()
+        .enumerate()
+        .filter_map(|(part_index, part)| match part {
+            MessagePart::ToolCall { .. } => {
+                let arguments_id = format!("{}:tool-args:{}", msg.id, part_index);
+                expanded_tool_arguments
+                    .contains(&arguments_id)
+                    .then_some(arguments_id)
             }
             _ => None,
         })
