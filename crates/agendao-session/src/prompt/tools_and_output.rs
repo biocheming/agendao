@@ -155,6 +155,7 @@ pub struct ResolvedToolSurface {
     pub all_tools: Vec<ToolDefinition>,
     pub source_digests: Vec<ToolSurfaceSourceDigest>,
     pub catalog_by_tool: BTreeMap<String, ToolCatalogMetadata>,
+    pub external_tool_execution_by_name: BTreeMap<String, bool>,
     pub catalog_hash: String,
     pub catalog_mode: ToolCatalogMode,
 }
@@ -252,6 +253,8 @@ pub fn merge_external_tool_catalogs(
             };
             base.catalog_by_tool
                 .insert(tool_name.clone(), catalog_meta.clone());
+            base.external_tool_execution_by_name
+                .insert(tool_name.clone(), config.is_executable());
             discovered.push(ToolDefinition {
                 name: tool_name.clone(),
                 description: Some(render_external_tool_discovery_description(
@@ -403,6 +406,7 @@ pub async fn resolve_tool_surface_with_mcp(
         all_tools,
         source_digests,
         catalog_by_tool,
+        external_tool_execution_by_name: BTreeMap::new(),
         catalog_hash,
         catalog_mode,
     }
@@ -817,6 +821,7 @@ mod title_tests {
                 }]),
             }],
             catalog_by_tool: BTreeMap::new(),
+            external_tool_execution_by_name: BTreeMap::new(),
             catalog_hash: tool_catalog_fingerprint(&BTreeMap::new()),
             catalog_mode: ToolCatalogMode::FullSchema,
         };
@@ -911,6 +916,7 @@ mod title_tests {
             source_digests: Vec::new(),
             catalog_hash: tool_catalog_fingerprint(&catalog_by_tool),
             catalog_by_tool,
+            external_tool_execution_by_name: BTreeMap::new(),
             catalog_mode: ToolCatalogMode::FullSchema,
         };
         let external = vec![ResolvedExternalToolCatalog {
@@ -949,6 +955,7 @@ mod title_tests {
             all_tools: vec![],
             source_digests: Vec::new(),
             catalog_by_tool: BTreeMap::new(),
+            external_tool_execution_by_name: BTreeMap::new(),
             catalog_hash: tool_catalog_fingerprint(&BTreeMap::new()),
             catalog_mode: ToolCatalogMode::FullSchema,
         };

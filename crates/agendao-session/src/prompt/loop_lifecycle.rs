@@ -1476,6 +1476,9 @@ impl SessionPrompt {
             surface_inputs.tool_catalog_mode,
             surface_inputs.tool_catalog_hash.clone(),
         )
+        .set_external_tool_execution_by_name(
+            surface_inputs.external_tool_execution_by_name.clone(),
+        )
         .set_provider_options(surface_inputs.provider_options.clone());
 
         let used_reserved_token = reserved_token.is_some();
@@ -1718,7 +1721,8 @@ impl SessionPrompt {
                     BTreeMap::new(),
                     super::tools_and_output::ToolCatalogMode::FullSchema,
                     agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
-                );
+                )
+                .set_external_tool_execution_by_name(BTreeMap::new());
         let token = self.resume(session_id).await;
 
         let token = match token {
@@ -3144,6 +3148,9 @@ impl SessionPrompt {
                 prompt_ctx.surface_inputs.tool_catalog_by_name.clone(),
                 prompt_ctx.surface_inputs.tool_catalog_mode,
                 prompt_ctx.surface_inputs.tool_catalog_hash.clone(),
+            )
+            .set_external_tool_execution_by_name(
+                prompt_ctx.surface_inputs.external_tool_execution_by_name.clone(),
             )
             .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
