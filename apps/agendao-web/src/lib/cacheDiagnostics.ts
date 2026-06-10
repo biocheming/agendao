@@ -14,6 +14,8 @@ export interface PromptSurfaceEvidenceRecord {
   severity?: string | null;
   reason?: string | null;
   changed_fields?: string[] | null;
+  stable_prefix_change?: boolean | null;
+  dynamic_overlay_reasons?: string[] | null;
 }
 
 export interface CacheSemanticsRecord {
@@ -92,6 +94,15 @@ export function promptSurfaceEvidenceFromTelemetry(
     reason: typeof evidence.reason === "string" ? evidence.reason : null,
     changed_fields: Array.isArray(evidence.changed_fields)
       ? evidence.changed_fields.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : null,
+    stable_prefix_change:
+      typeof evidence.stable_prefix_change === "boolean"
+        ? evidence.stable_prefix_change
+        : null,
+    dynamic_overlay_reasons: Array.isArray(evidence.dynamic_overlay_reasons)
+      ? evidence.dynamic_overlay_reasons.filter(
           (value): value is string => typeof value === "string",
         )
       : null,

@@ -909,6 +909,18 @@ export function ExecutionActivityPanel({
                       Evidence prompt surface {promptSurfaceEvidence.changed_fields.join(", ")}
                     </p>
                   ) : null}
+                  {typeof promptSurfaceEvidence?.stable_prefix_change === "boolean" ? (
+                    <p className="text-xs text-muted-foreground">
+                      Prefix {promptSurfaceEvidence.stable_prefix_change
+                        ? "stable prefix changed"
+                        : "stable prefix held"}
+                    </p>
+                  ) : null}
+                  {promptSurfaceEvidence?.dynamic_overlay_reasons?.length ? (
+                    <p className="text-xs text-muted-foreground">
+                      Overlay {promptSurfaceEvidence.dynamic_overlay_reasons.join(" · ")}
+                    </p>
+                  ) : null}
                 </ReadOnlyDiagnosticCard>
 
                 <ReadOnlyDiagnosticCard

@@ -342,6 +342,44 @@ impl SessionCacheSeverity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptSurfaceDriftCategory {
+    StableSystemSurface,
+    ToolSurface,
+    ToolSourceSurface,
+    ProviderPolicy,
+    ReasoningMode,
+    ToolPolicy,
+    OutputProjection,
+    IngressPolicy,
+    CloseAiPromptCacheKey,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptSurfaceVolatilityKind {
+    VolatileEnvField,
+    DynamicCatalogBeforeStableGovernance,
+    OversizedCapabilityProjection,
+    ProviderOptionsAffectSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSurfaceDriftDetail {
+    pub category: PromptSurfaceDriftCategory,
+    pub field: String,
+    pub detail: String,
+    pub severity: SessionCacheSeverity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSurfaceVolatilityFinding {
+    pub kind: PromptSurfaceVolatilityKind,
+    pub field: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionCacheSemanticsBasis {
@@ -361,6 +399,14 @@ pub struct PromptSurfaceEvidenceSummary {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_prefix_change: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_overlay_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drift_details: Vec<PromptSurfaceDriftDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volatility_findings: Vec<PromptSurfaceVolatilityFinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -84,6 +84,10 @@ struct PromptSurfaceEvidence {
     severity: agendao_provider::cache::CacheEvidenceSeverity,
     reason: String,
     changed_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    drift_details: Vec<agendao_types::PromptSurfaceDriftDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    volatility_findings: Vec<agendao_types::PromptSurfaceVolatilityFinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +114,29 @@ struct PromptSurfaceStableFields {
 impl RuntimeCancelToken for SessionStepCancelToken {
     fn is_cancelled(&self) -> bool {
         self.user_cancel.is_cancelled() || self.step_complete.load(Ordering::Relaxed)
+    }
+}
+
+fn prompt_surface_volatility_finding_to_internal(
+    finding: agendao_types::PromptSurfaceVolatilityFinding,
+) -> crate::prompt::surface_authority::PromptSurfaceVolatilityFinding {
+    crate::prompt::surface_authority::PromptSurfaceVolatilityFinding {
+        kind: match finding.kind {
+            agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField => {
+                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::VolatileEnvField
+            }
+            agendao_types::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
+                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance
+            }
+            agendao_types::PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
+                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::OversizedCapabilityProjection
+            }
+            agendao_types::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
+                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface
+            }
+        },
+        field: finding.field,
+        detail: finding.detail,
     }
 }
 
@@ -473,8 +500,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         let second_fingerprint =
             test_cache_fingerprint("system-a", "tools-a", "messages-changed", "params-a");
@@ -492,6 +524,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -519,8 +552,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         let second_fingerprint =
             test_cache_fingerprint("system-a", "tools-b", "messages-a", "params-a");
@@ -538,6 +576,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -567,6 +606,8 @@ mod cache_fingerprint_tests {
             severity: agendao_provider::cache::CacheEvidenceSeverity::HighChange,
             reason: "surface changed: toolSurfaceHash".to_string(),
             changed_fields: vec!["toolSurfaceHash".to_string()],
+            drift_details: Vec::new(),
+            volatility_findings: Vec::new(),
         };
 
         let merged = SessionPrompt::merge_snapshot_evidence_into_summary(summary, Some(&evidence));
@@ -617,8 +658,13 @@ mod cache_fingerprint_tests {
             Some(first_system),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         let second_fingerprint =
             test_cache_fingerprint("system-full-b", "tools-a", "messages-a", "params-a");
@@ -636,6 +682,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -669,8 +716,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            stable,
+            Vec::new(),
+            100,
+        );
 
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata(
@@ -691,6 +743,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             stable_again,
+            Vec::new(),
             200,
         );
 
@@ -720,8 +773,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("api"));
         session.insert_metadata(
@@ -742,6 +800,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -819,8 +878,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         let mut full = SessionMessage::assistant(session.id.clone());
         full.add_text("large assistant delivery");
@@ -839,6 +903,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -874,8 +939,13 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
+        let first = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            Vec::new(),
+            100,
+        );
 
         let summary = agendao_provider::ProviderDiagnosticSummary {
             severity: agendao_provider::ProviderDiagnosticSeverity::HardFail,
@@ -901,6 +971,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             second_stable,
+            Vec::new(),
             200,
         );
 
@@ -974,6 +1045,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             None,
             stable.clone(),
+            Vec::new(),
             100,
         );
 
@@ -982,6 +1054,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&first),
             stable,
+            Vec::new(),
             200,
         );
 
@@ -1016,8 +1089,13 @@ mod cache_fingerprint_tests {
             "tool-source-a".to_string(),
         );
 
-        let snapshot =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable, 100);
+        let snapshot = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses_test",
+            None,
+            stable,
+            Vec::new(),
+            100,
+        );
 
         assert!(
             !snapshot.stable_system_surface_hash.is_empty(),
@@ -1043,6 +1121,7 @@ mod cache_fingerprint_tests {
             "ses_test",
             Some(&snapshot),
             stable2,
+            Vec::new(),
             200,
         );
 
@@ -1070,7 +1149,13 @@ mod cache_fingerprint_tests {
             "tool-source-hash-v1".to_string(),
         );
 
-        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            None,
+            stable_a,
+            Vec::new(),
+            100,
+        );
 
         // Same tool source hash → same snapshot tool fields → same generation.
         let fingerprint_b = test_cache_fingerprint("sys", "tool-hash-v1", "msg-changed", "params");
@@ -1085,8 +1170,13 @@ mod cache_fingerprint_tests {
             "tool-source-hash-v1".to_string(),
         );
 
-        let snap_b =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses", Some(&snap_a), stable_b, 200);
+        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            Some(&snap_a),
+            stable_b,
+            Vec::new(),
+            200,
+        );
 
         assert_eq!(
             snap_a.tool_surface_hash, snap_b.tool_surface_hash,
@@ -1116,7 +1206,13 @@ mod cache_fingerprint_tests {
             "tool-source-v1".to_string(),
         );
 
-        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot("ses", None, stable_a, 100);
+        let snap_a = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            None,
+            stable_a,
+            Vec::new(),
+            100,
+        );
 
         let stable_b = SessionPrompt::prompt_surface_stable_fields(
             &session,
@@ -1129,8 +1225,13 @@ mod cache_fingerprint_tests {
             "tool-source-v2".to_string(),
         );
 
-        let snap_b =
-            SessionPrompt::build_prompt_surface_state_snapshot("ses", Some(&snap_a), stable_b, 200);
+        let snap_b = SessionPrompt::build_prompt_surface_state_snapshot(
+            "ses",
+            Some(&snap_a),
+            stable_b,
+            Vec::new(),
+            200,
+        );
 
         assert_ne!(
             snap_a.tool_source_surface_hash, snap_b.tool_source_surface_hash,
@@ -2328,10 +2429,10 @@ impl SessionPrompt {
         session_id: &str,
         previous: Option<&PromptSurfaceStateSnapshot>,
         stable: PromptSurfaceStableFields,
+        volatility_findings: Vec<agendao_types::PromptSurfaceVolatilityFinding>,
         now_ms: i64,
     ) -> PromptSurfaceStateSnapshot {
-        let evidence =
-            previous.and_then(|snapshot| Self::prompt_surface_evidence(snapshot, &stable));
+        let evidence = Self::prompt_surface_evidence(previous, &stable, volatility_findings);
         let generation = match previous {
             Some(snapshot) if evidence.is_none() => snapshot.generation,
             Some(snapshot) => snapshot.generation.saturating_add(1),
@@ -2369,127 +2470,65 @@ impl SessionPrompt {
     }
 
     fn prompt_surface_evidence(
-        previous: &PromptSurfaceStateSnapshot,
+        previous: Option<&PromptSurfaceStateSnapshot>,
         current: &PromptSurfaceStableFields,
+        volatility_findings: Vec<agendao_types::PromptSurfaceVolatilityFinding>,
     ) -> Option<PromptSurfaceEvidence> {
-        let mut changed_fields = Vec::new();
-        let mut severity = agendao_provider::cache::CacheEvidenceSeverity::Stable;
+        let previous = previous?;
+        let previous_sections = PromptSurfaceSections {
+            system_text: String::new(),
+            stable_system_prefix_text: String::new(),
+            dynamic_system_overlay_text: String::new(),
+            stable_system_surface_hash: previous.stable_system_surface_hash.clone(),
+            tool_surface_hash: previous.tool_surface_hash.clone(),
+            tool_source_surface_hash: previous.tool_source_surface_hash.clone(),
+            provider_params_hash: previous.provider_params_hash.clone(),
+            reasoning_mode_hash: previous.reasoning_mode_hash.clone(),
+            tool_policy_hash: previous.tool_policy_hash.clone(),
+            preset_identity: None,
+            closeai_prompt_cache_key: previous.closeai_prompt_cache_key.clone(),
+            ingress_policy_hash: previous.ingress_policy_hash.clone(),
+            output_projection_policy_hash: previous.output_projection_policy_hash.clone(),
+        };
+        let current_sections = PromptSurfaceSections {
+            system_text: String::new(),
+            stable_system_prefix_text: String::new(),
+            dynamic_system_overlay_text: String::new(),
+            stable_system_surface_hash: current.stable_system_surface_hash.clone(),
+            tool_surface_hash: current.tool_surface_hash.clone(),
+            tool_source_surface_hash: current.tool_source_surface_hash.clone(),
+            provider_params_hash: current.provider_params_hash.clone(),
+            reasoning_mode_hash: current.reasoning_mode_hash.clone(),
+            tool_policy_hash: current.tool_policy_hash.clone(),
+            preset_identity: None,
+            closeai_prompt_cache_key: current.closeai_prompt_cache_key.clone(),
+            ingress_policy_hash: current.ingress_policy_hash.clone(),
+            output_projection_policy_hash: current.output_projection_policy_hash.clone(),
+        };
 
-        macro_rules! compare_field {
-            ($field:literal, $prev:expr, $current:expr, $field_severity:expr) => {
-                if $prev != $current {
-                    changed_fields.push($field.to_string());
-                    severity = severity.max($field_severity);
-                }
-            };
-        }
-
-        compare_field!(
-            "protocolFamily",
-            previous.protocol_family,
-            current.protocol_family,
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "providerId",
-            previous.provider_id.as_str(),
-            current.provider_id.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "modelId",
-            previous.model_id.as_str(),
-            current.model_id.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "apiShape",
-            previous.api_shape,
-            current.api_shape,
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "stableSystemSurfaceHash",
-            previous.stable_system_surface_hash.as_str(),
-            current.stable_system_surface_hash.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "toolSurfaceHash",
-            previous.tool_surface_hash.as_str(),
-            current.tool_surface_hash.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "toolSourceSurfaceHash",
-            previous.tool_source_surface_hash.as_str(),
-            current.tool_source_surface_hash.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "providerParamsHash",
-            previous.provider_params_hash.as_str(),
-            current.provider_params_hash.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::HighChange
-        );
-        compare_field!(
-            "toolPolicyHash",
-            previous.tool_policy_hash.as_deref(),
-            current.tool_policy_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "reasoningModeHash",
-            previous.reasoning_mode_hash.as_deref(),
-            current.reasoning_mode_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "outputProjectionPolicyHash",
-            previous.output_projection_policy_hash.as_str(),
-            current.output_projection_policy_hash.as_str(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "sccStableRefsHash",
-            previous.scc_stable_refs_hash.as_deref(),
-            current.scc_stable_refs_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "closeaiPromptCacheKey",
-            previous.closeai_prompt_cache_key.as_deref(),
-            current.closeai_prompt_cache_key.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "ethnopicPolicyHash",
-            previous.ethnopic_policy_hash.as_deref(),
-            current.ethnopic_policy_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "ethnopicBreakpointPlanHash",
-            previous.ethnopic_breakpoint_plan_hash.as_deref(),
-            current.ethnopic_breakpoint_plan_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::MediumChange
-        );
-        compare_field!(
-            "ingressPolicyHash",
-            previous.ingress_policy_hash.as_deref(),
-            current.ingress_policy_hash.as_deref(),
-            agendao_provider::cache::CacheEvidenceSeverity::LowChange
-        );
-
-        if changed_fields.is_empty() {
+        let volatility_report = (!volatility_findings.is_empty()).then(|| {
+            crate::prompt::surface_authority::PromptSurfaceVolatilityReport {
+                findings: volatility_findings
+                    .iter()
+                    .cloned()
+                    .map(prompt_surface_volatility_finding_to_internal)
+                    .collect(),
+            }
+        });
+        let Some(summary) = current_sections.to_prompt_surface_evidence_summary(
+            &previous_sections,
+            volatility_report.as_ref(),
+        )
+        else {
             return None;
-        }
+        };
 
-        let reason = format!("surface changed: {}", changed_fields.join(", "));
         Some(PromptSurfaceEvidence {
-            severity,
-            reason,
-            changed_fields,
+            severity: Self::provider_cache_severity_from_session(summary.severity),
+            reason: summary.reason,
+            changed_fields: summary.changed_fields,
+            drift_details: summary.drift_details,
+            volatility_findings: summary.volatility_findings,
         })
     }
 
@@ -2506,6 +2545,25 @@ impl SessionPrompt {
             summary.primary_cause = Some(evidence.reason.clone());
         }
         summary
+    }
+
+    fn provider_cache_severity_from_session(
+        value: agendao_types::SessionCacheSeverity,
+    ) -> agendao_provider::cache::CacheEvidenceSeverity {
+        match value {
+            agendao_types::SessionCacheSeverity::Stable => {
+                agendao_provider::cache::CacheEvidenceSeverity::Stable
+            }
+            agendao_types::SessionCacheSeverity::LowChange => {
+                agendao_provider::cache::CacheEvidenceSeverity::LowChange
+            }
+            agendao_types::SessionCacheSeverity::MediumChange => {
+                agendao_provider::cache::CacheEvidenceSeverity::MediumChange
+            }
+            agendao_types::SessionCacheSeverity::HighChange => {
+                agendao_provider::cache::CacheEvidenceSeverity::HighChange
+            }
+        }
     }
 
     fn cache_request_fingerprint(
@@ -3037,10 +3095,34 @@ impl SessionPrompt {
                 &surface_sections,
                 tool_source_surface_hash,
             );
+            let prompt_surface_volatility = prompt_surface_inputs
+                .detect_volatility()
+                .findings
+                .into_iter()
+                .map(|finding| agendao_types::PromptSurfaceVolatilityFinding {
+                    kind: match finding.kind {
+                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::VolatileEnvField => {
+                            agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
+                        }
+                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
+                            agendao_types::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance
+                        }
+                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
+                            agendao_types::PromptSurfaceVolatilityKind::OversizedCapabilityProjection
+                        }
+                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
+                            agendao_types::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface
+                        }
+                    },
+                    field: finding.field,
+                    detail: finding.detail,
+                })
+                .collect::<Vec<_>>();
             let prompt_surface_state_snapshot = Self::build_prompt_surface_state_snapshot(
                 &session_id,
                 previous_prompt_surface_state_snapshot.as_ref(),
                 prompt_surface_stable_fields,
+                prompt_surface_volatility,
                 chrono::Utc::now().timestamp_millis(),
             );
             if let Ok(value) = serde_json::to_value(&prompt_surface_state_snapshot) {
