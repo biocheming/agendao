@@ -131,6 +131,9 @@ pub struct PromptSurfaceInputs {
     /// Structured catalog metadata keyed by tool name.
     pub(crate) tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
 
+    /// Imported external-tool execution status keyed by tool name.
+    pub(crate) external_tool_execution_by_name: BTreeMap<String, bool>,
+
     /// Resolved tool catalog render mode for this turn.
     pub(crate) tool_catalog_mode: ToolCatalogMode,
 
@@ -334,6 +337,7 @@ impl PromptSurfaceInputs {
                 tool_catalog_mode,
                 tool_catalog_hash,
             )
+            .set_external_tool_execution_by_name(BTreeMap::new())
             .set_provider_options(provider_options)
     }
 
@@ -356,6 +360,7 @@ impl PromptSurfaceInputs {
             tools: Vec::new(),
             tool_source_digests: Vec::new(),
             tool_catalog_by_name: BTreeMap::new(),
+            external_tool_execution_by_name: BTreeMap::new(),
             tool_catalog_mode: ToolCatalogMode::FullSchema,
             tool_catalog_hash: json_fingerprint(&serde_json::json!({})),
             compiled_request,
@@ -406,6 +411,14 @@ impl PromptSurfaceInputs {
         self.tool_catalog_by_name = tool_catalog_by_name;
         self.tool_catalog_mode = tool_catalog_mode;
         self.tool_catalog_hash = tool_catalog_hash;
+        self
+    }
+
+    pub fn set_external_tool_execution_by_name(
+        mut self,
+        external_tool_execution_by_name: BTreeMap<String, bool>,
+    ) -> Self {
+        self.external_tool_execution_by_name = external_tool_execution_by_name;
         self
     }
 
@@ -642,6 +655,22 @@ impl PromptSurfaceInputs {
                         .to_string();
                     *families.entry((domain, family)).or_default() += 1;
                 }
+                let imported_executable_count = self
+                    .external_tool_execution_by_name
+                    .iter()
+                    .filter(|(tool_name, executable)| {
+                        **executable
+                            && !agendao_tool::tool_catalog::is_tool_catalog_facade_tool(tool_name)
+                    })
+                    .count();
+                let imported_catalog_only_count = self
+                    .external_tool_execution_by_name
+                    .iter()
+                    .filter(|(tool_name, executable)| {
+                        !**executable
+                            && !agendao_tool::tool_catalog::is_tool_catalog_facade_tool(tool_name)
+                    })
+                    .count();
 
                 let model_visible_tool_count = self.tools.len();
                 let all_tool_count = self
@@ -657,8 +686,17 @@ impl PromptSurfaceInputs {
                         format!("- `{domain}/{family}`: {count} tools")
                     })
                     .collect::<Vec<_>>();
+                let imported_summary = if imported_executable_count == 0
+                    && imported_catalog_only_count == 0
+                {
+                    String::new()
+                } else {
+                    format!(
+                        "Imported executable resources: {imported_executable_count}\nImported catalog-only resources: {imported_catalog_only_count}\n\n"
+                    )
+                };
                 Some(format!(
-                    "## Available Execution Resources\nLarge tool catalog detected. Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it.\n\nModel-visible facade tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n\n{}\n\nCatalog mode: search-facade",
+                    "## Available Execution Resources\nLarge tool catalog detected. Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it.\n\nModel-visible facade tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
                     lines.join("\n")
                 ))
             }
@@ -1659,6 +1697,82 @@ mod tests {
         assert!(sections
             .dynamic_system_overlay_text
             .contains("Full catalog resources: 8"));
+    }
+
+    #[test]
+    fn search_facade_summary_surfaces_imported_execution_split() {
+        let facade_tools = vec![
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+        let catalog = BTreeMap::from([
+            (
+                "dock_pose".to_string(),
+                ToolCatalogMetadata {
+                    domain: Some("cadd".to_string()),
+                    family: Some("molecular_docking".to_string()),
+                    subfamily: None,
+                    tags: vec![],
+                    provenance: Some("tool_import".to_string()),
+                },
+            ),
+            (
+                "score_pose".to_string(),
+                ToolCatalogMetadata {
+                    domain: Some("cadd".to_string()),
+                    family: Some("scoring".to_string()),
+                    subfamily: None,
+                    tags: vec![],
+                    provenance: Some("tool_import".to_string()),
+                },
+            ),
+            (
+                "pose_report".to_string(),
+                ToolCatalogMetadata {
+                    domain: Some("cadd".to_string()),
+                    family: Some("reporting".to_string()),
+                    subfamily: None,
+                    tags: vec![],
+                    provenance: Some("tool_import".to_string()),
+                },
+            ),
+        ]);
+        let inputs = PromptSurfaceInputs::builder("ses-tools", CompiledExecutionRequest::default())
+            .set_base_system_prompt(Some("base header".to_string()))
+            .set_tool_surface(
+                facade_tools,
+                vec![],
+                catalog.clone(),
+                ToolCatalogMode::SearchFacade,
+                json_fingerprint(&serde_json::json!(catalog)),
+            )
+            .set_external_tool_execution_by_name(BTreeMap::from([
+                ("dock_pose".to_string(), true),
+                ("score_pose".to_string(), true),
+                ("pose_report".to_string(), false),
+            ]));
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Imported executable resources: 2"));
+        assert!(sections
+            .dynamic_system_overlay_text
+            .contains("Imported catalog-only resources: 1"));
     }
 
     #[test]
