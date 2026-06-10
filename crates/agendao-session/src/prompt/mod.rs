@@ -427,14 +427,27 @@ pub type SteeringBoundaryHook = Arc<
 #[derive(Clone)]
 pub struct PromptRequestContext {
     pub provider: Arc<dyn Provider>,
-    pub system_prompt: Option<String>,
-    pub env_context: Option<String>,
-    pub preset_extension: Option<agendao_types::PresetPromptExtension>,
-    pub memory_prefetch: Option<MemoryRetrievalPacket>,
-    pub tools: Vec<ToolDefinition>,
-    pub tool_source_digests: Vec<agendao_provider::cache::ToolSurfaceSourceDigest>,
+    // Cross-crate callers may supply surface mutations only through the
+    // authority-owned input contract, not by hand-writing raw prompt pieces.
+    pub surface_inputs: surface_authority::PromptSurfaceInputs,
     pub compiled_request: CompiledExecutionRequest,
     pub hooks: PromptHooks,
+}
+
+impl PromptRequestContext {
+    pub fn new(
+        provider: Arc<dyn Provider>,
+        surface_inputs: surface_authority::PromptSurfaceInputs,
+        compiled_request: CompiledExecutionRequest,
+        hooks: PromptHooks,
+    ) -> Self {
+        Self {
+            provider,
+            surface_inputs,
+            compiled_request,
+            hooks,
+        }
+    }
 }
 
 /// Session prompt surface authority.
@@ -2883,20 +2896,21 @@ impl SessionPrompt {
         tools: Vec<ToolDefinition>,
         compiled_request: CompiledExecutionRequest,
     ) -> anyhow::Result<()> {
+        let surface_inputs = surface_authority::PromptSurfaceInputs::builder(
+            input.session_id.clone(),
+            compiled_request.clone(),
+        )
+        .with_system_prompt(system_prompt)
+        .with_tools(tools, Vec::new());
         self.prompt_with_update_hook(
             input,
             session,
-            PromptRequestContext {
+            PromptRequestContext::new(
                 provider,
-                system_prompt,
-                env_context: None,
-                preset_extension: None,
-                memory_prefetch: None,
-                tools,
-                tool_source_digests: Vec::new(),
+                surface_inputs,
                 compiled_request,
-                hooks: PromptHooks::default(),
-            },
+                PromptHooks::default(),
+            ),
         )
         .await
     }

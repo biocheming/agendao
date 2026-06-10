@@ -1278,12 +1278,7 @@ struct PromptLoopContext {
     model_id: String,
     provider_id: String,
     agent_name: Option<String>,
-    system_prompt: Option<String>,
-    env_context: Option<String>,
-    preset_extension: Option<agendao_types::PresetPromptExtension>,
-    memory_prefetch: Option<agendao_types::MemoryRetrievalPacket>,
-    tools: Vec<ToolDefinition>,
-    tool_source_digests: Vec<agendao_provider::cache::ToolSurfaceSourceDigest>,
+    surface_inputs: PromptSurfaceInputs,
     compiled_request: CompiledExecutionRequest,
     hooks: PromptHooks,
     config_store: Option<Arc<agendao_config::ConfigStore>>,
@@ -1404,17 +1399,28 @@ impl SessionPrompt {
     ) -> anyhow::Result<()> {
         let PromptRequestContext {
             provider,
-            system_prompt,
-            env_context,
-            preset_extension,
-            memory_prefetch,
-            tools,
-            tool_source_digests,
+            surface_inputs,
             compiled_request,
             hooks,
         } = request;
-        let system_prompt =
-            skill_reflection::augment_system_prompt_with_skill_reflection(session, system_prompt);
+        // Rehydrate through the authority builder so hot-path mutations
+        // cannot bypass provider-option/default normalization.
+        let surface_inputs = PromptSurfaceInputs::builder(
+            surface_inputs.session_id.clone(),
+            compiled_request.clone(),
+        )
+        .with_system_prompt(skill_reflection::augment_system_prompt_with_skill_reflection(
+            session,
+            surface_inputs.system_prompt.clone(),
+        ))
+        .with_env_context(surface_inputs.env_context.clone())
+        .with_preset_extension(surface_inputs.preset_extension.clone())
+        .with_memory_prefetch(surface_inputs.memory_prefetch.clone())
+        .with_tools(
+            surface_inputs.tools.clone(),
+            surface_inputs.tool_source_digests.clone(),
+        )
+        .with_provider_options(surface_inputs.provider_options.clone());
 
         let used_reserved_token = reserved_token.is_some();
         if !used_reserved_token && Self::is_duplicate_ingress_turn(session, &input) {
@@ -1463,8 +1469,12 @@ impl SessionPrompt {
 
             self.create_user_message(&input, session).await?;
             self.apply_runtime_workspace_context(session).await?;
-            Self::apply_runtime_memory_prefetch(session, memory_prefetch.as_ref())?;
-            Self::annotate_latest_user_message(session, &input, system_prompt.as_deref());
+            Self::apply_runtime_memory_prefetch(session, surface_inputs.memory_prefetch.as_ref())?;
+            Self::annotate_latest_user_message(
+                session,
+                &input,
+                surface_inputs.system_prompt.as_deref(),
+            );
 
             if session.is_default_title() {
                 if let Some(text) = session
@@ -1504,12 +1514,7 @@ impl SessionPrompt {
                         model_id,
                         provider_id,
                         agent_name: input.agent.clone(),
-                        system_prompt,
-                        env_context,
-                        preset_extension,
-                        memory_prefetch,
-                        tools,
-                        tool_source_digests,
+                        surface_inputs,
                         compiled_request,
                         hooks,
                         config_store: self.config_store.clone(),
@@ -1621,18 +1626,6 @@ impl SessionPrompt {
     ) -> anyhow::Result<()> {
         let system_prompt =
             skill_reflection::augment_system_prompt_with_skill_reflection(session, system_prompt);
-        let token = self.resume(session_id).await;
-
-        let token = match token {
-            Some(t) => t,
-            None => {
-                return Err(anyhow::anyhow!(
-                    "Session {} is not running, cannot resume",
-                    session_id
-                ));
-            }
-        };
-
         let model = session.messages.iter().rev().find_map(|m| match m.role {
             MessageRole::User => session
                 .metadata
@@ -1645,7 +1638,6 @@ impl SessionPrompt {
                 }),
             _ => None,
         });
-
         let model_id = model
             .as_ref()
             .map(|m| m.model_id.clone())
@@ -1654,6 +1646,25 @@ impl SessionPrompt {
             .as_ref()
             .map(|m| m.provider_id.clone())
             .unwrap_or_else(|| "ethnopic".to_string());
+        let surface_inputs = PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
+            .with_system_prompt(system_prompt)
+            .with_env_context(Some(SystemPrompt::environment(&EnvironmentContext::from_current(
+                model_id.clone(),
+                provider_id.clone(),
+                session.record().directory.clone(),
+            ))))
+            .with_tools(tools, Vec::new());
+        let token = self.resume(session_id).await;
+
+        let token = match token {
+            Some(t) => t,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Session {} is not running, cannot resume",
+                    session_id
+                ));
+            }
+        };
 
         let session_id = session_id.to_string();
         let resume_agent = session
@@ -1689,16 +1700,7 @@ impl SessionPrompt {
                     model_id: model_id.clone(),
                     provider_id: provider_id.clone(),
                     agent_name: resume_agent,
-                    system_prompt,
-                    env_context: Some(SystemPrompt::environment(&EnvironmentContext::from_current(
-                        model_id.clone(),
-                        provider_id.clone(),
-                        session.record().directory.clone(),
-                    ))),
-                    preset_extension: None,
-                    memory_prefetch: None,
-                    tools,
-                    tool_source_digests: Vec::new(),
+                    surface_inputs,
                     compiled_request: compiled_request.clone(),
                     hooks: PromptHooks::default(),
                     config_store: self.config_store.clone(),
@@ -2333,20 +2335,8 @@ impl SessionPrompt {
         system_prompt: Option<&str>,
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
-        let surface_inputs = PromptSurfaceInputs::from_session_prompt_parts(
-            session.id.clone(),
-            system_prompt.map(str::to_string),
-            None,
-            None,
-            None,
-            Vec::new(),
-            Vec::new(),
-            compiled_request.clone(),
-            compiled_request
-                .provider_options
-                .clone()
-                .unwrap_or_default(),
-        );
+        let surface_inputs = PromptSurfaceInputs::builder(session.id.clone(), compiled_request.clone())
+            .with_system_prompt(system_prompt.map(str::to_string));
         let surface_sections = surface_inputs.assemble_sections(
             PromptSurfaceInputs::output_projection_policy_hash(prompt_messages),
             None,
@@ -2879,21 +2869,7 @@ impl SessionPrompt {
             } = Self::prepare_chat_messages(
                 &session_id,
                 prompt_ctx.agent_name.as_deref(),
-                &PromptSurfaceInputs::from_session_prompt_parts(
-                    session_id.clone(),
-                    prompt_ctx.system_prompt.clone(),
-                    prompt_ctx.env_context.clone(),
-                    prompt_ctx.preset_extension.clone(),
-                    prompt_ctx.memory_prefetch.clone(),
-                    prompt_ctx.tools.clone(),
-                    prompt_ctx.tool_source_digests.clone(),
-                    prompt_ctx.compiled_request.clone(),
-                    prompt_ctx
-                        .compiled_request
-                        .provider_options
-                        .clone()
-                        .unwrap_or_default(),
-                ),
+                &prompt_ctx.surface_inputs,
                 filtered_messages,
                 provider_type,
             )
@@ -3041,10 +3017,10 @@ impl SessionPrompt {
                 request_context_tokens,
                 "prompt loop step start"
             );
-            let base_tools = prompt_ctx.tools.clone();
+            let base_tools = prompt_ctx.surface_inputs.tools.clone();
             let extra_tools = Self::mcp_tools_from_session(session);
             let tool_source_digests = PromptSurfaceInputs::effective_tool_source_digests(
-                prompt_ctx.tool_source_digests.as_slice(),
+                prompt_ctx.surface_inputs.tool_source_digests.as_slice(),
                 &base_tools,
                 &extra_tools,
             );
@@ -3056,7 +3032,7 @@ impl SessionPrompt {
                 &session_id,
                 &prompt_ctx.provider_id,
                 &prompt_ctx.model_id,
-                prompt_ctx.system_prompt.as_deref(),
+                prompt_ctx.surface_inputs.system_prompt.as_deref(),
                 &chat_messages,
                 &resolved_tools,
                 &prompt_ctx.compiled_request,
@@ -3070,21 +3046,14 @@ impl SessionPrompt {
             );
             let previous_prompt_surface_state_snapshot =
                 Self::latest_prompt_surface_state_snapshot(session);
-            let prompt_surface_inputs = PromptSurfaceInputs::from_session_prompt_parts(
-                session_id.clone(),
-                prompt_ctx.system_prompt.clone(),
-                prompt_ctx.env_context.clone(),
-                prompt_ctx.preset_extension.clone(),
-                prompt_ctx.memory_prefetch.clone(),
-                resolved_tools.clone(),
-                tool_source_digests,
-                prompt_ctx.compiled_request.clone(),
-                prompt_ctx
-                    .compiled_request
-                    .provider_options
-                    .clone()
-                    .unwrap_or_default(),
-            );
+            let prompt_surface_inputs =
+                PromptSurfaceInputs::builder(session_id.clone(), prompt_ctx.compiled_request.clone())
+                    .with_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
+                    .with_env_context(prompt_ctx.surface_inputs.env_context.clone())
+                    .with_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
+                    .with_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
+                    .with_tools(resolved_tools.clone(), tool_source_digests)
+                    .with_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
                 session,
                 &prompt_messages,

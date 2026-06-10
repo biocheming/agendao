@@ -1133,24 +1133,23 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
         ingress: None,
     };
 
+    let session_id = session.id.clone();
     prompt
         .prompt_with_update_hook(
             input,
             &mut session,
-            PromptRequestContext {
+            PromptRequestContext::new(
                 provider,
-                system_prompt: None,
-                env_context: None,
-                preset_extension: None,
-                memory_prefetch: None,
-                tools: Vec::new(),
-                tool_source_digests: Vec::new(),
-                compiled_request: CompiledExecutionRequest::default(),
-                hooks: PromptHooks {
+                super::surface_authority::PromptSurfaceInputs::builder(
+                    session_id,
+                    CompiledExecutionRequest::default(),
+                ),
+                CompiledExecutionRequest::default(),
+                PromptHooks {
                     update_hook: Some(hook),
                     ..Default::default()
                 },
-            },
+            ),
         )
         .await
         .expect("prompt_with_update_hook should succeed");
@@ -1245,21 +1244,20 @@ async fn prompt_length_finish_reason_appends_hidden_continuation_turn() {
         ingress: None,
     };
 
+    let session_id = session.id.clone();
     prompt
         .prompt_with_update_hook(
             input,
             &mut session,
-            PromptRequestContext {
+            PromptRequestContext::new(
                 provider,
-                system_prompt: None,
-                env_context: None,
-                preset_extension: None,
-                memory_prefetch: None,
-                tools: Vec::new(),
-                tool_source_digests: Vec::new(),
-                compiled_request: CompiledExecutionRequest::default(),
-                hooks: PromptHooks::default(),
-            },
+                super::surface_authority::PromptSurfaceInputs::builder(
+                    session_id,
+                    CompiledExecutionRequest::default(),
+                ),
+                CompiledExecutionRequest::default(),
+                PromptHooks::default(),
+            ),
         )
         .await
         .expect("prompt_with_update_hook should succeed");
@@ -1380,22 +1378,21 @@ async fn prompt_ignores_duplicate_ingress_idempotency_key() {
         ingress: Some(ingress),
     };
 
+    let session_id = session.id.clone();
     for _ in 0..2 {
         prompt
             .prompt_with_update_hook(
                 input.clone(),
                 &mut session,
-                PromptRequestContext {
-                    provider: provider.clone(),
-                    system_prompt: None,
-                    env_context: None,
-                    preset_extension: None,
-                    memory_prefetch: None,
-                    tools: Vec::new(),
-                    tool_source_digests: Vec::new(),
-                    compiled_request: CompiledExecutionRequest::default(),
-                    hooks: PromptHooks::default(),
-                },
+                PromptRequestContext::new(
+                    provider.clone(),
+                    super::surface_authority::PromptSurfaceInputs::builder(
+                        session_id.clone(),
+                        CompiledExecutionRequest::default(),
+                    ),
+                    CompiledExecutionRequest::default(),
+                    PromptHooks::default(),
+                ),
             )
             .await
             .expect("duplicate ingress should be accepted as a no-op");
@@ -1707,21 +1704,20 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
         ingress: None,
     };
 
+    let session_id = session.id.clone();
     prompt
         .prompt_with_update_hook(
             input,
             &mut session,
-            PromptRequestContext {
+            PromptRequestContext::new(
                 provider,
-                system_prompt: None,
-                env_context: None,
-                preset_extension: None,
-                memory_prefetch: None,
-                tools: Vec::new(),
-                tool_source_digests: Vec::new(),
-                compiled_request: CompiledExecutionRequest::default(),
-                hooks: PromptHooks::default(),
-            },
+                super::surface_authority::PromptSurfaceInputs::builder(
+                    session_id,
+                    CompiledExecutionRequest::default(),
+                ),
+                CompiledExecutionRequest::default(),
+                PromptHooks::default(),
+            ),
         )
         .await
         .expect("prompt_with_update_hook should succeed");

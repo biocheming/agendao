@@ -412,22 +412,23 @@ pub(crate) async fn stream_message(
             .prompt_with_update_hook(
                 input,
                 &mut session,
-                agendao_session::prompt::PromptRequestContext {
-                    provider: stream_provider,
-                    system_prompt: stream_system_prompt.clone(),
-                    env_context: Some(SystemPrompt::environment(
+                agendao_session::prompt::PromptRequestContext::new(
+                    stream_provider,
+                    agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
+                        stream_session_id.clone(),
+                        compiled_request.clone(),
+                    )
+                    .with_system_prompt(stream_system_prompt.clone())
+                    .with_env_context(Some(SystemPrompt::environment(
                         &EnvironmentContext::from_current(
                             stream_model_id.clone(),
                             stream_provider_id.clone(),
                             stream_workdir,
                         ),
-                    )),
-                    preset_extension: None,
-                    memory_prefetch: None,
-                    tools: tool_defs,
-                    tool_source_digests,
-                    compiled_request: compiled_request.clone(),
-                    hooks: agendao_session::prompt::PromptHooks {
+                    )))
+                    .with_tools(tool_defs, tool_source_digests),
+                    compiled_request.clone(),
+                    agendao_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),
                         event_broadcast,
                         compaction_lifecycle_hook: None,
@@ -438,7 +439,7 @@ pub(crate) async fn stream_message(
                         publish_bus_hook: None,
                         steering_boundary_hook: None,
                     },
-                },
+                ),
             )
             .await
         {

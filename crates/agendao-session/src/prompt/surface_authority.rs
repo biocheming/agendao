@@ -41,9 +41,9 @@
 //!
 //! ## Visibility
 //!
-//! All types and fields are `pub(crate)` — this module is a **crate-internal
-//! skeleton**, not a stable public API.  Visibility will be widened only
-//! after Phase 7 when the contract is proven.
+//! `PromptSurfaceInputs` is the sanctioned cross-crate mutation entry for
+//! request construction. Field-level reads stay crate-internal so
+//! `SessionPrompt` remains the sole surface assembler.
 
 // Skeleton types are intentionally unused until Phase 5 cut-over.
 #![allow(dead_code)]
@@ -92,7 +92,7 @@ use crate::SessionMessage;
 /// `PresetPromptExtension`; providers declare capabilities per profile.
 /// Neither constructs the full surface independently.
 #[derive(Debug, Clone)]
-pub(crate) struct PromptSurfaceInputs {
+pub struct PromptSurfaceInputs {
     /// Session identity (used for cache key derivation).
     pub(crate) session_id: String,
 
@@ -303,6 +303,68 @@ impl PromptSurfaceInputs {
             compiled_request,
             provider_options,
         }
+    }
+
+    pub fn builder(
+        session_id: impl Into<String>,
+        compiled_request: CompiledExecutionRequest,
+    ) -> Self {
+        let provider_options = compiled_request.provider_options.clone().unwrap_or_default();
+        Self {
+            session_id: session_id.into(),
+            system_prompt: None,
+            env_context: None,
+            preset_extension: None,
+            memory_prefetch: None,
+            tools: Vec::new(),
+            tool_source_digests: Vec::new(),
+            compiled_request,
+            provider_options,
+        }
+    }
+
+    pub fn with_system_prompt(mut self, system_prompt: Option<String>) -> Self {
+        self.system_prompt = system_prompt;
+        self
+    }
+
+    pub fn with_env_context(mut self, env_context: Option<String>) -> Self {
+        self.env_context = env_context;
+        self
+    }
+
+    pub fn with_preset_extension(
+        mut self,
+        preset_extension: Option<PresetPromptExtension>,
+    ) -> Self {
+        self.preset_extension = preset_extension;
+        self
+    }
+
+    pub fn with_memory_prefetch(
+        mut self,
+        memory_prefetch: Option<MemoryRetrievalPacket>,
+    ) -> Self {
+        self.memory_prefetch = memory_prefetch;
+        self
+    }
+
+    pub fn with_tools(
+        mut self,
+        tools: Vec<ToolDefinition>,
+        tool_source_digests: Vec<ToolSurfaceSourceDigest>,
+    ) -> Self {
+        self.tools = tools;
+        self.tool_source_digests = tool_source_digests;
+        self
+    }
+
+    pub fn with_provider_options(
+        mut self,
+        provider_options: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        self.provider_options = provider_options;
+        self
     }
 
     pub(crate) fn assemble_sections(
