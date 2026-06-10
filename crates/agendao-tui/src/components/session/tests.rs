@@ -411,6 +411,56 @@ fn session_view_first_render_keeps_transcript_visible_with_existing_assistant_ou
 }
 
 #[test]
+fn session_view_first_render_keeps_latest_reasoning_visible_for_tall_assistant_message() {
+    let context = Arc::new(AppContext::new());
+    let session_id = {
+        let mut session = context.session.write();
+        let session_id = session.create_session(Some("Latest Reasoning Visible".to_string()));
+        session.set_current_session_id(session_id.clone());
+        session.set_messages(
+            &session_id,
+            vec![
+                make_message(
+                    "user-1",
+                    MessageRole::User,
+                    "investigate this author".to_string(),
+                    vec![MessagePart::Text {
+                        text: "investigate this author".to_string(),
+                    }],
+                ),
+                make_message(
+                    "assistant-1",
+                    MessageRole::Assistant,
+                    long_block("assistant-final", 16),
+                    vec![
+                        MessagePart::Reasoning {
+                            text: multiline_reasoning_block("latest reasoning", 6),
+                        },
+                        MessagePart::Text {
+                            text: long_block("assistant-final", 16),
+                        },
+                    ],
+                ),
+            ],
+        );
+        session_id
+    };
+    context.navigate_session(session_id.clone());
+
+    let view = SessionView::new(session_id);
+    let prompt = Prompt::new(context.clone())
+        .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
+    let area = Rect::new(0, 0, 78, 18);
+    let buffer = render_session_view_once(&view, &context, area, &prompt);
+
+    let rendered = buffer_text(&buffer);
+    assert!(
+        rendered.contains("reasoning"),
+        "latest reasoning header should remain visible on first render even when assistant body is tall:\n{rendered}"
+    );
+}
+
+#[test]
 fn overlay_sidebar_backdrop_click_closes_sidebar() {
     let context = Arc::new(AppContext::new());
     let view = SessionView::new("session-1".to_string());
