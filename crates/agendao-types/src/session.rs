@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::{
-    MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+    MemoryScope, MessageRole, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
     SessionMemoryTelemetrySummary, SessionRepairQuerySnapshot, ToolTrajectoryQualitySummary,
 };
 
@@ -2152,6 +2152,42 @@ impl PresetPromptExtension {
     pub fn with_tone_augment(mut self, text: impl Into<String>) -> Self {
         self.tone_augment = Some(text.into());
         self
+    }
+}
+
+/// Long-lived prompt constraint that should remain stable across
+/// compaction/resume and therefore belongs to the governed prompt
+/// prefix rather than transient runtime overlays.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PinnedConstraint {
+    pub title: String,
+    pub body: String,
+}
+
+impl PinnedConstraint {
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+}
+
+/// Lightweight, model-visible replay item used for stable few-shot
+/// examples. This intentionally excludes ids, timestamps, and metadata
+/// so cache-relevant drift tracks only what the model can actually see.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FewShotSurfaceItem {
+    pub role: MessageRole,
+    pub text: String,
+}
+
+impl FewShotSurfaceItem {
+    pub fn new(role: MessageRole, text: impl Into<String>) -> Self {
+        Self {
+            role,
+            text: text.into(),
+        }
     }
 }
 

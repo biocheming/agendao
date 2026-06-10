@@ -55,7 +55,8 @@ use agendao_provider::cache::ToolSurfaceSourceDigest;
 use agendao_provider::cache::{json_fingerprint, text_fingerprint};
 use agendao_provider::ToolDefinition;
 use agendao_types::{
-    MemoryRetrievalPacket, PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory,
+    FewShotSurfaceItem, MemoryRetrievalPacket, PinnedConstraint,
+    PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory,
     PromptSurfaceDriftDetail, PromptSurfaceEvidenceSummary,
     PromptSurfaceVolatilityFinding as PublicPromptSurfaceVolatilityFinding,
     PromptSurfaceVolatilityKind as PublicPromptSurfaceVolatilityKind, SessionCacheSeverity,
@@ -112,6 +113,12 @@ pub struct PromptSurfaceInputs {
     /// Memory retrieval packet to be injected into the latest user
     /// message as a `<system-reminder>` block.
     pub(crate) memory_prefetch: Option<MemoryRetrievalPacket>,
+
+    /// Long-lived constraints that belong to the stable prompt prefix.
+    pub(crate) pinned_constraints: Vec<PinnedConstraint>,
+
+    /// Stable few-shot examples replayed before live history.
+    pub(crate) few_shots: Vec<FewShotSurfaceItem>,
 
     /// Tool definitions visible to the model.
     pub(crate) tools: Vec<ToolDefinition>,
@@ -286,6 +293,8 @@ impl PromptSurfaceInputs {
         env_context: Option<String>,
         preset_extension: Option<PresetPromptExtension>,
         memory_prefetch: Option<MemoryRetrievalPacket>,
+        pinned_constraints: Vec<PinnedConstraint>,
+        few_shots: Vec<FewShotSurfaceItem>,
         tools: Vec<ToolDefinition>,
         tool_source_digests: Vec<ToolSurfaceSourceDigest>,
         compiled_request: CompiledExecutionRequest,
@@ -296,6 +305,8 @@ impl PromptSurfaceInputs {
             .set_environment_identity(env_context)
             .set_preset_extension(preset_extension)
             .set_memory_prefetch(memory_prefetch)
+            .set_pinned_constraints(pinned_constraints)
+            .set_few_shots(few_shots)
             .set_tool_surface(tools, tool_source_digests)
             .set_provider_options(provider_options)
     }
@@ -311,6 +322,8 @@ impl PromptSurfaceInputs {
             env_context: None,
             preset_extension: None,
             memory_prefetch: None,
+            pinned_constraints: Vec::new(),
+            few_shots: Vec::new(),
             tools: Vec::new(),
             tool_source_digests: Vec::new(),
             compiled_request,
@@ -341,6 +354,16 @@ impl PromptSurfaceInputs {
         memory_prefetch: Option<MemoryRetrievalPacket>,
     ) -> Self {
         self.memory_prefetch = memory_prefetch;
+        self
+    }
+
+    pub fn set_pinned_constraints(mut self, pinned_constraints: Vec<PinnedConstraint>) -> Self {
+        self.pinned_constraints = pinned_constraints;
+        self
+    }
+
+    pub fn set_few_shots(mut self, few_shots: Vec<FewShotSurfaceItem>) -> Self {
+        self.few_shots = few_shots;
         self
     }
 
@@ -518,6 +541,28 @@ impl PromptSurfaceInputs {
             layers
                 .dynamic_overlay_sections
                 .extend(preset_layers.dynamic_overlay_sections);
+        }
+
+        let pinned_constraints = self
+            .pinned_constraints
+            .iter()
+            .filter_map(|constraint| {
+                let title = constraint.title.trim();
+                let body = constraint.body.trim();
+                (!body.is_empty()).then(|| {
+                    if title.is_empty() {
+                        body.to_string()
+                    } else {
+                        format!("### {title}\n{body}")
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if !pinned_constraints.is_empty() {
+            layers.stable_prefix_sections.push(format!(
+                "## Pinned Constraints\n{}",
+                pinned_constraints.join("\n\n")
+            ));
         }
 
         layers
@@ -897,6 +942,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -924,6 +971,8 @@ mod tests {
                 "delegation-first orchestrator",
             )),
             None,
+            vec![],
+            vec![],
             vec![],
             vec![],
             CompiledExecutionRequest::default(),
@@ -955,6 +1004,43 @@ mod tests {
             via_compat.tool_source_digests
         );
         assert_eq!(via_builder.provider_options, via_compat.provider_options);
+    }
+
+    #[test]
+    fn pinned_constraints_flow_into_stable_prefix_and_hash() {
+        let first = PromptSurfaceInputs::builder(
+            "ses-pinned",
+            CompiledExecutionRequest::default(),
+        )
+        .set_base_system_prompt(Some("base header".to_string()))
+        .set_pinned_constraints(vec![
+            PinnedConstraint::new("Boundary", "Never bypass verification."),
+            PinnedConstraint::new(
+                "Continuity",
+                "Preserve acceptance constraints across compaction.",
+            ),
+        ])
+        .assemble_sections("projection".to_string(), None, None);
+
+        let second = PromptSurfaceInputs::builder(
+            "ses-pinned",
+            CompiledExecutionRequest::default(),
+        )
+        .set_base_system_prompt(Some("base header".to_string()))
+        .set_pinned_constraints(vec![PinnedConstraint::new(
+            "Boundary",
+            "Never bypass verification.",
+        )])
+        .assemble_sections("projection".to_string(), None, None);
+
+        assert!(first.system_text.contains("## Pinned Constraints"));
+        assert!(first
+            .stable_system_prefix_text
+            .contains("Preserve acceptance constraints across compaction."));
+        assert_ne!(
+            first.stable_system_surface_hash, second.stable_system_surface_hash,
+            "changing pinned constraints must change the stable prefix hash"
+        );
     }
 
     #[test]
@@ -994,6 +1080,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest {
                 provider_options: Some(HashMap::from([
                     ("thinking".to_string(), serde_json::json!(true)),
@@ -1026,6 +1114,8 @@ mod tests {
                     .with_tone_augment("Be concise. No flattery."),
             ),
             None,
+            vec![],
+            vec![],
             vec![],
             vec![],
             CompiledExecutionRequest::default(),
@@ -1079,6 +1169,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1110,6 +1202,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1128,6 +1222,8 @@ mod tests {
                     .with_section("Execution Charter", "Always verify delegated work."),
             ),
             None,
+            vec![],
+            vec![],
             vec![],
             vec![],
             CompiledExecutionRequest::default(),
@@ -1162,6 +1258,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1186,6 +1284,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         );
@@ -1207,6 +1307,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1221,6 +1323,8 @@ mod tests {
                     .with_capability("Agents: explore, review."),
             ),
             None,
+            vec![],
+            vec![],
             vec![],
             vec![],
             CompiledExecutionRequest::default(),
@@ -1255,6 +1359,8 @@ mod tests {
             None,
             vec![],
             vec![],
+            vec![],
+            vec![],
             CompiledExecutionRequest::default(),
             HashMap::new(),
         )
@@ -1283,6 +1389,8 @@ mod tests {
             ),
             None,
             None,
+            vec![],
+            vec![],
             vec![],
             vec![],
             CompiledExecutionRequest::default(),

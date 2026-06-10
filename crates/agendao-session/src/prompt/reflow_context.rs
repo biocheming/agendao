@@ -644,6 +644,22 @@ mod tests {
     }
 
     #[test]
+    fn reflow_context_stays_explanatory_not_prompt_authoritative() {
+        let packet = sample_retrieval_packet();
+        let ctx = PromptReflowContext::build("ses-4", Some(&packet), None, false, false, None);
+
+        let debug = format!("{ctx:?}");
+        assert!(
+            !debug.contains("PinnedConstraint"),
+            "reflow context must not own pinned-constraint authority"
+        );
+        assert!(
+            !debug.contains("FewShotSurfaceItem"),
+            "reflow context must not own few-shot authority"
+        );
+    }
+
+    #[test]
     fn reflow_context_handles_empty_state() {
         let ctx = PromptReflowContext::build("ses-4", None, None, false, false, None);
 
