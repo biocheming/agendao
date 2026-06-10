@@ -125,6 +125,10 @@ fn default_offset() -> usize {
 
 const MAX_LIMIT: usize = 50;
 
+fn looks_like_skill_file_or_catalog_path(name: &str) -> bool {
+    name.contains(':') || name.contains('/')
+}
+
 impl ToolCatalogSearchTool {
     pub const fn primary() -> Self {
         Self {
@@ -384,6 +388,12 @@ async fn execute_tool_catalog_call(
     } else {
         Vec::new()
     };
+    if looks_like_skill_file_or_catalog_path(&input.tool) {
+        return Err(ToolError::InvalidArguments(format!(
+            "execution resource `{}` not found. This looks like a skill file or catalog path, not an execution resource id. Use `skill_view(name, file_path)` to inspect skill-owned files, or call `tool_catalog_search` and pass the exact `results[].name` into `tool_catalog_call`.",
+            input.tool
+        )));
+    }
     if suggestions.is_empty() {
         Err(ToolError::InvalidArguments(format!(
             "execution resource `{}` not found",
@@ -1326,6 +1336,41 @@ mod tests {
         match error {
             ToolError::ExecutionError(message) => {
                 assert!(message.contains("catalog-only right now"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_call_rejects_skill_file_like_identifier_with_guidance() {
+        let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
+            id: "dock_pose",
+            description: "Protein-ligand docking",
+            catalog: Some(catalog_metadata(
+                "cadd",
+                "molecular_docking",
+                "protein_ligand",
+                &["pose"],
+            )),
+        }])
+        .await;
+
+        let error = ToolCatalogCallTool::primary()
+            .execute(
+                serde_json::json!({
+                    "tool": "semantic-scholar:s2_search.py",
+                    "arguments": {"query": "xu ximing"}
+                }),
+                ctx,
+            )
+            .await
+            .expect_err("skill-file-like identifiers should reject with guidance");
+
+        match error {
+            ToolError::InvalidArguments(message) => {
+                assert!(message.contains("skill file or catalog path"));
+                assert!(message.contains("skill_view(name, file_path)"));
+                assert!(message.contains("results[].name"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

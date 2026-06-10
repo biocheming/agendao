@@ -47,7 +47,7 @@ impl agendao_orchestrator::ToolExecutor for SessionToolExecutor {
         if let Some(allowed_tools) = self.allowed_tools.as_ref() {
             if !allowed_tools.contains(tool_name) {
                 return Err(agendao_orchestrator::ToolExecError::PermissionDenied(
-                    format!("Tool `{}` is not allowed in this session", tool_name),
+                    format_disallowed_tool_message(tool_name, allowed_tools),
                 ));
             }
         }
@@ -115,6 +115,20 @@ impl agendao_orchestrator::ToolExecutor for SessionToolExecutor {
     }
 }
 
+fn format_disallowed_tool_message(
+    tool_name: &str,
+    allowed_tools: &std::collections::HashSet<String>,
+) -> String {
+    if allowed_tools.contains(agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID) {
+        format!(
+            "Tool `{}` is not allowed in this session. This session is using search-facade exposure: call `tool_catalog_search` to find the execution resource, `tool_catalog_describe` to inspect it, then `tool_catalog_call` with the exact `name` from search results.",
+            tool_name
+        )
+    } else {
+        format!("Tool `{}` is not allowed in this session", tool_name)
+    }
+}
+
 pub(super) struct SessionStepToolDispatcher {
     pub(super) session_id: String,
     pub(super) directory: String,
@@ -135,6 +149,36 @@ pub(super) struct SessionStepToolDispatcher {
     pub(super) tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub(super) config_store: Option<Arc<agendao_config::ConfigStore>>,
     pub(super) runtime_skill_instructions: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_disallowed_tool_message;
+
+    #[test]
+    fn disallowed_tool_message_points_search_facade_sessions_back_to_catalog_flow() {
+        let allowed = std::collections::HashSet::from([
+            "skills_categories".to_string(),
+            "skills_list".to_string(),
+            "skill_view".to_string(),
+            agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+            agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+            agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+        ]);
+
+        let message = format_disallowed_tool_message("bash", &allowed);
+        assert!(message.contains("search-facade exposure"));
+        assert!(message.contains("tool_catalog_search"));
+        assert!(message.contains("tool_catalog_call"));
+        assert!(message.contains("exact `name` from search results"));
+    }
+
+    #[test]
+    fn disallowed_tool_message_stays_generic_without_catalog_facade() {
+        let allowed = std::collections::HashSet::from(["read".to_string(), "write".to_string()]);
+        let message = format_disallowed_tool_message("bash", &allowed);
+        assert_eq!(message, "Tool `bash` is not allowed in this session");
+    }
 }
 
 #[async_trait]
