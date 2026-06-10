@@ -481,18 +481,19 @@ fn apply_catalog_path_defaults(catalog: &mut ToolCatalogMetadata, path: &Path) {
         })
         .collect::<Vec<_>>();
 
-    if catalog.domain.is_none() {
-        if let Some(idx) = components.iter().rposition(|segment| segment == "tools") {
-            catalog.domain = components.get(idx + 1).cloned();
-            catalog.family = catalog
-                .family
-                .clone()
-                .or_else(|| components.get(idx + 2).cloned());
-            catalog.subfamily = catalog
-                .subfamily
-                .clone()
-                .or_else(|| components.get(idx + 3).cloned());
-        }
+    if let Some(idx) = components.iter().rposition(|segment| segment == "tools") {
+        catalog.domain = catalog
+            .domain
+            .clone()
+            .or_else(|| components.get(idx + 1).cloned());
+        catalog.family = catalog
+            .family
+            .clone()
+            .or_else(|| components.get(idx + 2).cloned());
+        catalog.subfamily = catalog
+            .subfamily
+            .clone()
+            .or_else(|| components.get(idx + 3).cloned());
     }
 }
 

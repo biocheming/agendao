@@ -559,6 +559,48 @@ fn test_external_tool_catalog_infers_catalog_from_tools_directory_layout() {
 }
 
 #[test]
+fn test_external_tool_catalog_backfills_missing_catalog_levels_from_directory_layout() {
+    let temp = TestDir::new("agendao_external_tool_catalog_partial_infer");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools/cadd/molecular_docking/protein_ligand");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        config_dir.join("tools/catalog.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "source": { "path": "./cadd/molecular_docking/protein_ligand/dock_pose.py" },
+      "catalog": { "family": "molecular_docking" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+    let catalog = catalogs[0]
+        .tools
+        .get("dock_pose")
+        .and_then(|tool| tool.catalog.as_ref())
+        .expect("catalog should exist");
+
+    assert_eq!(catalog.domain.as_deref(), Some("cadd"));
+    assert_eq!(catalog.family.as_deref(), Some("molecular_docking"));
+    assert_eq!(catalog.subfamily.as_deref(), Some("protein_ligand"));
+}
+
+#[test]
 fn catalog_only_tool_allows_missing_execution() {
     let temp = TestDir::new("agendao_external_tool_catalog_catalog_only");
     let root = temp.path.join("repo");
