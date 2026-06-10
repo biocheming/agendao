@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use agendao_command_render::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
 use agendao_command_render::terminal_segment_display::{
@@ -21,6 +21,129 @@ use crate::theme::Theme;
 
 /// Threshold: tool results longer than this are "block" tools with expandable output
 const BLOCK_RESULT_THRESHOLD: usize = 3;
+const TOOL_ARGUMENTS_PREVIEW_LINES: usize = 10;
+
+pub struct ToolCallRenderInput<'a> {
+    pub message_id: &'a str,
+    pub part_index: usize,
+    pub name: &'a str,
+    pub arguments: &'a str,
+    pub arguments_expanded: bool,
+    pub state: TerminalToolState,
+    pub result: Option<&'a TerminalToolResultInfo>,
+    pub show_tool_details: bool,
+}
+
+pub struct ToolCallRenderOutput {
+    pub lines: Vec<Line<'static>>,
+    pub toggle_line_offsets: Vec<ToolArgumentsToggleLineOffset>,
+    pub visible_arguments_ids: std::collections::HashSet<String>,
+}
+
+pub struct ToolArgumentsToggleLineOffset {
+    pub line_offset: usize,
+    pub arguments_id: String,
+}
+
+fn tool_arguments_id(message_id: &str, part_index: usize) -> String {
+    format!("{message_id}:tool-args:{part_index}")
+}
+
+fn display_argument_lines(arguments: &str) -> Vec<String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
+        if let Some(lines) = extract_argument_value_lines(&value) {
+            return lines;
+        }
+    }
+
+    arguments.lines().map(str::to_string).collect()
+}
+
+fn extract_argument_value_lines(value: &serde_json::Value) -> Option<Vec<String>> {
+    match value {
+        serde_json::Value::String(text) => Some(text.lines().map(str::to_string).collect()),
+        serde_json::Value::Object(map) => {
+            for key in ["command", "cmd", "script", "input", "text"] {
+                if let Some(lines) = map.get(key).and_then(extract_argument_value_lines) {
+                    return Some(lines);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn render_tool_arguments_block(
+    message_id: &str,
+    part_index: usize,
+    arguments: &str,
+    arguments_expanded: bool,
+    theme: &Theme,
+    bg: ratatui::style::Color,
+) -> Option<(Vec<Line<'static>>, Vec<ToolArgumentsToggleLineOffset>, HashSet<String>)> {
+    let argument_lines = display_argument_lines(arguments);
+    if argument_lines.len() <= TOOL_ARGUMENTS_PREVIEW_LINES {
+        return None;
+    }
+
+    let arguments_id = tool_arguments_id(message_id, part_index);
+    let mut lines = Vec::new();
+    let mut toggle_line_offsets = Vec::new();
+    let mut visible_arguments_ids = HashSet::new();
+    let collapsed = !arguments_expanded;
+    let visible_count = if collapsed {
+        TOOL_ARGUMENTS_PREVIEW_LINES
+    } else {
+        argument_lines.len()
+    };
+    let hidden_count = argument_lines.len().saturating_sub(visible_count);
+    let header_label = if collapsed {
+        format!("▶ arguments · {} lines", argument_lines.len())
+    } else {
+        format!("▼ arguments · {} lines", argument_lines.len())
+    };
+
+    visible_arguments_ids.insert(arguments_id.clone());
+    lines.push(block_content_line(
+        header_label,
+        Style::default()
+            .fg(theme.text_muted)
+            .add_modifier(Modifier::ITALIC),
+        theme,
+        bg,
+    ));
+    toggle_line_offsets.push(ToolArgumentsToggleLineOffset {
+        line_offset: 0,
+        arguments_id: arguments_id.clone(),
+    });
+
+    for line in argument_lines.iter().take(visible_count) {
+        lines.push(block_content_line(
+            line.clone(),
+            Style::default().fg(theme.text_muted),
+            theme,
+            bg,
+        ));
+    }
+
+    if hidden_count > 0 {
+        lines.push(block_content_line(
+            format!("… {} more lines · click to expand", hidden_count),
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC),
+            theme,
+            bg,
+        ));
+        toggle_line_offsets.push(ToolArgumentsToggleLineOffset {
+            line_offset: lines.len().saturating_sub(1),
+            arguments_id,
+        });
+    }
+
+    Some((lines, toggle_line_offsets, visible_arguments_ids))
+}
 
 #[derive(Debug, Clone, Default)]
 struct ReadSummary {
@@ -165,14 +288,17 @@ fn should_show_inline_argument_preview(
 }
 
 /// Render a single tool call as lines (inline or block style)
-pub fn render_tool_call(
-    name: &str,
-    arguments: &str,
-    state: TerminalToolState,
-    result: Option<&TerminalToolResultInfo>,
-    show_tool_details: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCallRenderOutput {
+    let ToolCallRenderInput {
+        message_id,
+        part_index,
+        name,
+        arguments,
+        arguments_expanded,
+        state,
+        result,
+        show_tool_details,
+    } = input;
     let normalized = normalize_tool_name(name);
     if matches!(state, TerminalToolState::Completed)
         && !show_tool_details
@@ -187,7 +313,11 @@ pub fn render_tool_call(
                 | "applypatch"
         )
     {
-        return Vec::new();
+        return ToolCallRenderOutput {
+            lines: Vec::new(),
+            toggle_line_offsets: Vec::new(),
+            visible_arguments_ids: std::collections::HashSet::new(),
+        };
     }
 
     let block_mode = is_block_tool(name, state, result, show_tool_details);
@@ -251,6 +381,22 @@ pub fn render_tool_call(
         }
 
         lines.push(Line::from(main_spans));
+
+        let mut toggle_line_offsets = Vec::new();
+        let mut visible_arguments_ids = HashSet::new();
+
+        if let Some((argument_lines, argument_hits, visible_ids)) = render_tool_arguments_block(
+            message_id,
+            part_index,
+            arguments,
+            arguments_expanded,
+            theme,
+            bg,
+        ) {
+            lines.extend(argument_lines);
+            toggle_line_offsets.extend(argument_hits);
+            visible_arguments_ids.extend(visible_ids);
+        }
 
         if let Some(info) = result {
             let result_text = &info.output;
@@ -422,7 +568,11 @@ pub fn render_tool_call(
             render_pending_block_items(&normalized, arguments, theme, bg, &mut lines);
         }
 
-        return lines;
+        return ToolCallRenderOutput {
+            lines,
+            toggle_line_offsets,
+            visible_arguments_ids,
+        };
     }
 
     // Inline mode
@@ -563,7 +713,11 @@ pub fn render_tool_call(
 
     lines.push(Line::from(main_spans));
 
-    lines
+    ToolCallRenderOutput {
+        lines,
+        toggle_line_offsets: Vec::new(),
+        visible_arguments_ids: HashSet::new(),
+    }
 }
 
 fn style_for_segment_tone(tone: TerminalSegmentTone, theme: &Theme) -> Style {
@@ -987,8 +1141,37 @@ fn format_bytes(bytes: usize) -> String {
 mod tests {
     use super::{
         format_read_summary, parse_read_summary, parse_write_summary, tool_argument_preview,
+        ToolCallRenderInput,
     };
     use std::collections::HashMap;
+
+    use agendao_command_render::terminal_presentation::{
+        TerminalToolResultInfo, TerminalToolState,
+    };
+
+    fn render_lines(
+        name: &str,
+        arguments: &str,
+        state: TerminalToolState,
+        result: Option<&TerminalToolResultInfo>,
+        show_tool_details: bool,
+        theme: &crate::theme::Theme,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "test",
+                part_index: 0,
+                name,
+                arguments,
+                arguments_expanded: false,
+                state,
+                result,
+                show_tool_details,
+            },
+            theme,
+        )
+        .lines
+    }
 
     #[test]
     fn list_tool_preview_shows_path() {
@@ -1067,10 +1250,6 @@ mod tests {
 
     #[test]
     fn render_edit_result_block_shows_diff_when_metadata_has_diff() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1085,12 +1264,12 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "edit",
             r#"{"file_path":"test.rs","old_string":"old","new_string":"new"}"#,
             TerminalToolState::Completed,
             Some(&result),
-            true, // show_tool_details = true to trigger diff rendering
+            true,
             &theme,
         );
 
@@ -1118,10 +1297,6 @@ mod tests {
 
     #[test]
     fn render_patch_result_block_shows_per_file_diffs() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1154,7 +1329,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "apply_patch",
             "",
             TerminalToolState::Completed,
@@ -1183,10 +1358,6 @@ mod tests {
 
     #[test]
     fn render_write_result_block_shows_diff_from_metadata() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1200,7 +1371,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "write",
             r#"{"file_path":"./new_file.txt","content":"line1\nline2"}"#,
             TerminalToolState::Completed,
@@ -1225,11 +1396,6 @@ mod tests {
 
     #[test]
     fn inline_tool_prefers_result_title_as_summary() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
             output: "raw body line 1\nraw body line 2".to_string(),
@@ -1238,7 +1404,7 @@ mod tests {
             metadata: None,
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "skill_view",
             r#"{"name":"planner"}"#,
             TerminalToolState::Completed,
@@ -1257,11 +1423,6 @@ mod tests {
 
     #[test]
     fn block_tool_details_show_result_title_line() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
             output: "first output line\nsecond output line\nthird output line\nfourth output line"
@@ -1271,7 +1432,7 @@ mod tests {
             metadata: Some(HashMap::new()),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "repo_status",
             r#"{"path":"."}"#,
             TerminalToolState::Completed,
@@ -1290,11 +1451,8 @@ mod tests {
 
     #[test]
     fn running_bash_without_output_stays_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::TerminalToolState;
-
         let theme = crate::theme::Theme::dark();
-        let lines = render_tool_call(
+        let lines = render_lines(
             "bash",
             r#"{"command":"cargo test -p agendao-tui","description":"Run tests"}"#,
             TerminalToolState::Running,
@@ -1313,11 +1471,8 @@ mod tests {
 
     #[test]
     fn pending_apply_patch_stays_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::TerminalToolState;
-
         let theme = crate::theme::Theme::dark();
-        let lines = render_tool_call(
+        let lines = render_lines(
             "apply_patch",
             "*** Begin Patch\n*** End Patch",
             TerminalToolState::Pending,
@@ -1336,11 +1491,6 @@ mod tests {
 
     #[test]
     fn question_result_uses_structured_q_and_a_over_display_hints() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -1358,7 +1508,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "question",
             r#"{"questions":[{"question":"Choose rollout scope","options":[{"label":"Proceed"}]}]}"#,
             TerminalToolState::Completed,
@@ -1377,11 +1527,8 @@ mod tests {
 
     #[test]
     fn pending_question_stays_inline_with_status_summary() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::TerminalToolState;
-
         let theme = crate::theme::Theme::dark();
-        let lines = render_tool_call(
+        let lines = render_lines(
             "question",
             r#"{"questions":[{"question":"Choose rollout scope"}]}"#,
             TerminalToolState::Pending,
@@ -1401,11 +1548,6 @@ mod tests {
 
     #[test]
     fn completed_question_without_details_stays_visible_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -1419,7 +1561,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "question",
             r#"{"questions":[{"question":"Choose rollout scope"}]}"#,
             TerminalToolState::Completed,
@@ -1438,11 +1580,8 @@ mod tests {
 
     #[test]
     fn pending_todowrite_stays_inline_with_status_summary() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::TerminalToolState;
-
         let theme = crate::theme::Theme::dark();
-        let lines = render_tool_call(
+        let lines = render_lines(
             "todowrite",
             r#"{"todos":[{"content":"Add tests"},{"content":"Refine TUI"}]}"#,
             TerminalToolState::Running,
@@ -1462,11 +1601,6 @@ mod tests {
 
     #[test]
     fn task_result_without_details_stays_visible_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -1482,7 +1616,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "task",
             r###"{"category":"analysis","description":"Inspect migration status"}"###,
             TerminalToolState::Completed,
@@ -1501,11 +1635,6 @@ mod tests {
 
     #[test]
     fn task_result_with_details_uses_structured_block_body() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -1521,7 +1650,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "task",
             r###"{"category":"analysis","description":"Inspect migration status"}"###,
             TerminalToolState::Completed,
@@ -1542,11 +1671,6 @@ mod tests {
 
     #[test]
     fn completed_batch_without_details_stays_visible_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
             output:
@@ -1557,7 +1681,7 @@ mod tests {
             metadata: Some(HashMap::new()),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "batch",
             r#"{"toolCalls":[{"tool":"read","parameters":{"file_path":"a.txt"}},{"tool":"edit","parameters":{"file_path":"b.txt"}}]}"#,
             TerminalToolState::Completed,
@@ -1578,11 +1702,6 @@ mod tests {
 
     #[test]
     fn completed_apply_patch_without_details_stays_visible_inline() {
-        use super::render_tool_call;
-        use agendao_command_render::terminal_presentation::{
-            TerminalToolResultInfo, TerminalToolState,
-        };
-
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -1599,7 +1718,7 @@ mod tests {
             metadata: Some(metadata),
         };
 
-        let lines = render_tool_call(
+        let lines = render_lines(
             "apply_patch",
             "*** Begin Patch\n*** End Patch",
             TerminalToolState::Completed,
@@ -1616,5 +1735,85 @@ mod tests {
         assert!(full_text.contains("Patch"));
         assert!(full_text.contains("Patch Applied"));
         assert!(!full_text.contains("│"));
+    }
+
+    #[test]
+    fn long_tool_arguments_collapse_by_default() {
+        let theme = crate::theme::Theme::dark();
+        let command = (1..=12)
+            .map(|n| format!("echo line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let arguments = format!(r#"{{"command":"{}"}}"#, command.replace('\n', "\\n"));
+
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 2,
+                name: "bash",
+                arguments: &arguments,
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "ok\nline2\nline3\nline4".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let full_text: String = output
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(full_text.contains("▶ arguments"));
+        assert!(full_text.contains("click to expand"));
+        assert!(!full_text.contains("▼ arguments"));
+        assert!(output
+            .visible_arguments_ids
+            .contains("message-1:tool-args:2"));
+        assert_eq!(output.toggle_line_offsets.len(), 2);
+    }
+
+    #[test]
+    fn long_tool_arguments_expand_when_toggled() {
+        let theme = crate::theme::Theme::dark();
+        let command = (1..=12)
+            .map(|n| format!("echo line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let arguments = format!(r#"{{"command":"{}"}}"#, command.replace('\n', "\\n"));
+
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 2,
+                name: "bash",
+                arguments: &arguments,
+                arguments_expanded: true,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "ok\nline2\nline3\nline4".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let full_text: String = output
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(full_text.contains("▼ arguments"));
+        assert!(full_text.contains("echo line-12"));
+        assert!(!full_text.contains("click to expand"));
     }
 }
