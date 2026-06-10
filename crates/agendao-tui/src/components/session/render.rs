@@ -1141,11 +1141,13 @@ fn render_assistant_thinking_output(
         return empty_assistant_segment_output();
     }
 
-    let lines = paint_block_lines(
+    let lines = paint_block_lines_with_padding(
         rendered.lines,
         context.thinking_bg,
         context.thinking_border,
         context.content_width,
+        false,
+        false,
     );
     let mut toggle_line_offsets = Vec::new();
     let mut visible_reasoning_ids = HashSet::new();
