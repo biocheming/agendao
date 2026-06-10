@@ -355,5 +355,9 @@ mod tests {
                 "rendered prompt missing {needle}"
             );
         }
+        assert!(
+            rendered.find("<Constraints>").unwrap()
+                < rendered.find("## Capability Projection").unwrap()
+        );
     }
 }
