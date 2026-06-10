@@ -1739,26 +1739,36 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[cfg(feature = "local-server")]
+    use super::{MessageInfo, PromptPart, RuntimeApiClient};
+    #[cfg(feature = "local-server")]
     use once_cell::sync::Lazy;
+    #[cfg(feature = "local-server")]
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "local-server")]
     use std::sync::Arc;
+    #[cfg(feature = "local-server")]
     use std::sync::Mutex;
+    #[cfg(feature = "local-server")]
     use std::time::{Duration, Instant};
 
+    #[cfg(feature = "local-server")]
     static LOCAL_ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    #[cfg(feature = "local-server")]
     struct LocalTestPaths {
         workspace_root: PathBuf,
         data_root: PathBuf,
     }
 
+    #[cfg(feature = "local-server")]
     struct LocalEnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         old_agendao_data_dir: Option<String>,
         old_xdg_data_home: Option<String>,
     }
 
+    #[cfg(feature = "local-server")]
     impl Drop for LocalEnvGuard {
         fn drop(&mut self) {
             unsafe {
@@ -1774,6 +1784,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     fn test_local_paths() -> LocalTestPaths {
         let root = std::env::temp_dir().join(format!("agendao-tui-local-{}", uuid::Uuid::new_v4()));
         let workspace_root = root.join("workspace");
@@ -1786,6 +1797,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     fn install_local_test_env(data_root: &PathBuf) -> LocalEnvGuard {
         let lock = LOCAL_ENV_LOCK.lock().expect("lock local env");
         let old_agendao_data_dir = std::env::var("AGENDAO_DATA_DIR").ok();
@@ -1801,6 +1813,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     fn wait_for_messages<F>(
         client: &RuntimeApiClient,
         session_id: &str,
@@ -1826,11 +1839,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     struct MockLocalProvider {
         call_count: AtomicUsize,
         model: agendao_provider::ModelInfo,
     }
 
+    #[cfg(feature = "local-server")]
     impl MockLocalProvider {
         fn new() -> Self {
             Self {
@@ -1853,6 +1868,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local-server")]
     #[async_trait::async_trait]
     impl agendao_provider::Provider for MockLocalProvider {
         fn id(&self) -> &str {

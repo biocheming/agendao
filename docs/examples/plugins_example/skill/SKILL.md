@@ -5,7 +5,7 @@ description: Structured folder purpose analysis with concise evidence.
 
 # Folder Inspector Skill
 
-文档基线：v2026.6.6（更新日期：2026-06-06）
+文档基线：v2026.6.10（更新日期：2026-06-10）
 
 When user asks what a folder does, follow this workflow:
 
@@ -16,7 +16,7 @@ When user asks what a folder does, follow this workflow:
 - Key files and roles
 - Next actionable steps
 
-Additional guidance (v2026.6.6):
+Additional guidance (v2026.6.10):
 
 - Prefer representative small / medium files first; avoid reading multiple large binaries in one turn.
 - If a binary file is needed, consume attachment metadata instead of inlining full payload text.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.6.10
+
+- 同步工作区版本到 `v2026.6.10`，统一根配置、README、用户手册、文档首页与示例文档的版本基线。
+- 收紧 TUI session block 显示语义：assistant / reasoning / tool 等语义块按真实输出顺序显式分隔，reasoning 不再靠额外 padding 撑开，长 tool payload 改为统一折叠并去除重复标题/重复参数预览。
+- 修正文档与示例的事实口径：`docs/examples/tools` 现在明确区分 repo-root 入口、目录推断、partial backfill、`catalog-only` 与 executable 示例的真实边界，不再把示例目录清单写成流水账。
+
 ## 2026.6.6
 
 - 同步工作区版本到 `v2026.6.6`，按仓库版本脚本更新工作区版本、Web 根包版本与相关 lock 文件中的 AgenDao 自身条目。
