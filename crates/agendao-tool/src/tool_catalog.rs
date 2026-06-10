@@ -333,31 +333,30 @@ impl Tool for McpCallTool {
 }
 
 async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>, ToolError> {
-    let registry = ctx.registry.clone().ok_or_else(|| {
-        ToolError::ExecutionError("tool registry access not available".to_string())
-    })?;
     let mut entries = BTreeMap::new();
 
-    for id in registry.list_ids().await {
-        if is_tool_catalog_facade_tool(&id) || id == "invalid" {
-            continue;
+    if let Some(registry) = ctx.registry.clone() {
+        for id in registry.list_ids().await {
+            if is_tool_catalog_facade_tool(&id) || id == "invalid" {
+                continue;
+            }
+            let Some(tool) = registry.get(&id).await else {
+                continue;
+            };
+            entries.insert(
+                id.clone(),
+                CatalogEntry {
+                    name: id,
+                    description: tool.description().to_string(),
+                    parameters: tool.parameters(),
+                    source_kind: tool.source_kind(),
+                    catalog: tool.catalog_metadata(),
+                    executable: true,
+                    source_path: None,
+                    manifest_path: None,
+                },
+            );
         }
-        let Some(tool) = registry.get(&id).await else {
-            continue;
-        };
-        entries.insert(
-            id.clone(),
-            CatalogEntry {
-                name: id,
-                description: tool.description().to_string(),
-                parameters: tool.parameters(),
-                source_kind: tool.source_kind(),
-                catalog: tool.catalog_metadata(),
-                executable: true,
-                source_path: None,
-                manifest_path: None,
-            },
-        );
     }
 
     for catalog in load_external_catalogs(ctx)? {
@@ -367,25 +366,7 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
             }
             entries.insert(
                 tool_name.clone(),
-                CatalogEntry {
-                    name: tool_name,
-                    description: "External catalog tool discovered from toolImports".to_string(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "additionalProperties": true
-                    }),
-                    source_kind: agendao_tool_core::ToolSchemaSourceKind::Dynamic,
-                    catalog: config.catalog,
-                    executable: false,
-                    source_path: config
-                        .source
-                        .as_ref()
-                        .and_then(|source| source.path.clone()),
-                    manifest_path: config
-                        .source
-                        .as_ref()
-                        .and_then(|source| source.manifest.clone()),
-                },
+                external_catalog_entry(tool_name, &config),
             );
         }
     }
@@ -415,26 +396,33 @@ fn find_external_catalog_entry(
     tool_name: &str,
 ) -> Option<CatalogEntry> {
     catalogs.iter().find_map(|catalog| {
-        catalog.tools.get(tool_name).map(|config| CatalogEntry {
-            name: tool_name.to_string(),
-            description: "External catalog tool discovered from toolImports".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "additionalProperties": true
-            }),
-            source_kind: ToolSchemaSourceKind::Dynamic,
-            catalog: config.catalog.clone(),
-            executable: config.is_executable(),
-            source_path: config
-                .source
-                .as_ref()
-                .and_then(|source| source.path.clone()),
-            manifest_path: config
-                .source
-                .as_ref()
-                .and_then(|source| source.manifest.clone()),
-        })
+        catalog
+            .tools
+            .get(tool_name)
+            .map(|config| external_catalog_entry(tool_name.to_string(), config))
     })
+}
+
+fn external_catalog_entry(tool_name: String, config: &ExternalToolConfig) -> CatalogEntry {
+    CatalogEntry {
+        name: tool_name,
+        description: "External catalog tool discovered from toolImports".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "additionalProperties": true
+        }),
+        source_kind: ToolSchemaSourceKind::Dynamic,
+        catalog: config.catalog.clone(),
+        executable: config.is_executable(),
+        source_path: config
+            .source
+            .as_ref()
+            .and_then(|source| source.path.clone()),
+        manifest_path: config
+            .source
+            .as_ref()
+            .and_then(|source| source.manifest.clone()),
+    }
 }
 
 fn find_external_catalog_config<'a>(
@@ -1244,5 +1232,106 @@ print(payload["query"])
             result.metadata.get("source"),
             Some(&serde_json::json!("external_catalog"))
         );
+    }
+
+    #[tokio::test]
+    async fn describe_surfaces_catalog_only_vs_executable_state() {
+        let temp = TestDir::new("agendao_tool_catalog_describe_states");
+        let config_dir = temp.path.join(".agendao");
+        let tools_dir = config_dir.join("tools/cadd");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir");
+        std::fs::write(
+            config_dir.join("agendao.jsonc"),
+            r#"{ "toolImports": ["tools/cadd/tools.jsonc"] }"#,
+        )
+        .expect("config");
+        std::fs::write(
+            tools_dir.join("tools.jsonc"),
+            r#"{
+  "tools": {
+    "dock_pose": {
+      "catalog": { "domain": "cadd", "family": "molecular_docking" }
+    },
+    "score_pose": {
+      "catalog": { "domain": "cadd", "family": "scoring" },
+      "execution": { "kind": "script_runner", "entry": "./score_pose.py" }
+    }
+  }
+}"#,
+        )
+        .expect("catalog");
+
+        let store = Arc::new(
+            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
+        );
+        let ctx = ToolContext::new(
+            "ses_tool_catalog".to_string(),
+            "msg_tool_catalog".to_string(),
+            temp.path.to_string_lossy().to_string(),
+        )
+        .with_config_store(store);
+
+        let dock = McpDescribeTool
+            .execute(serde_json::json!({"tool": "dock_pose"}), ctx.clone())
+            .await
+            .expect("describe dock_pose");
+        let score = McpDescribeTool
+            .execute(serde_json::json!({"tool": "score_pose"}), ctx)
+            .await
+            .expect("describe score_pose");
+
+        assert_eq!(dock.metadata["resource"]["executable"], serde_json::json!(false));
+        assert_eq!(score.metadata["resource"]["executable"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn search_finds_imported_tool_by_directory_inferred_family() {
+        let temp = TestDir::new("agendao_tool_catalog_inferred_family_search");
+        let config_dir = temp.path.join(".agendao");
+        let tools_dir = config_dir.join("tools/cadd/molecular_docking");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir");
+        std::fs::write(
+            config_dir.join("agendao.jsonc"),
+            r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+        )
+        .expect("config");
+        std::fs::write(
+            config_dir.join("tools/catalog.jsonc"),
+            r#"{
+  "tools": {
+    "dock_pose": {
+      "source": { "path": "./cadd/molecular_docking/dock_pose.py" },
+      "catalog": {}
+    }
+  }
+}"#,
+        )
+        .expect("catalog");
+
+        let store = Arc::new(
+            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
+        );
+        let ctx = ToolContext::new(
+            "ses_tool_catalog".to_string(),
+            "msg_tool_catalog".to_string(),
+            temp.path.to_string_lossy().to_string(),
+        )
+        .with_config_store(store);
+
+        let result = McpSearchTool
+            .execute(
+                serde_json::json!({"family": "molecular_docking", "limit": 10}),
+                ctx,
+            )
+            .await
+            .expect("search should succeed");
+
+        let names = result.metadata["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|entry| entry["name"].as_str().expect("name").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["dock_pose"]);
     }
 }

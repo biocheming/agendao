@@ -691,6 +691,65 @@ fn execution_paths_are_normalized_relative_to_catalog_file() {
 }
 
 #[test]
+fn multiple_tool_imports_merge_in_order() {
+    let temp = TestDir::new("agendao_external_tool_catalog_import_order");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_a = config_dir.join("tools/a");
+    let tools_b = config_dir.join("tools/b");
+    fs::create_dir_all(&tools_a).unwrap();
+    fs::create_dir_all(&tools_b).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/a/tools.jsonc", "tools/b/tools.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_a.join("tools.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "catalog": { "domain": "cadd", "family": "molecular_docking" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_b.join("tools.jsonc"),
+        r#"{
+  "tools": {
+    "score_pose": {
+      "catalog": { "domain": "cadd", "family": "scoring" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+
+    assert_eq!(catalogs.len(), 2);
+    assert_eq!(
+        catalogs[0].source_path,
+        tools_a.join("tools.jsonc"),
+        "first import should stay first"
+    );
+    assert_eq!(
+        catalogs[1].source_path,
+        tools_b.join("tools.jsonc"),
+        "second import should stay second"
+    );
+    assert!(catalogs[0].tools.contains_key("dock_pose"));
+    assert!(catalogs[1].tools.contains_key("score_pose"));
+}
+
+#[test]
 fn test_load_all_reads_plugins_from_plugin_paths() {
     let temp = TestDir::new("agendao_config_plugin_paths");
     let root = temp.path.join("repo");
