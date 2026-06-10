@@ -6,6 +6,7 @@ use crate::repair_telemetry::ToolArgumentNormalizationTelemetry;
 use crate::tool_access;
 use crate::{Tool, ToolContext, ToolError, ToolRegistryAccess, ToolResult, ToolSchema};
 use agendao_plugin::{HookContext, HookEvent};
+use agendao_types::ToolCatalogMetadata;
 
 /// Tools that should not appear in suggestion lists when a tool is not found.
 const FILTERED_FROM_SUGGESTIONS: &[&str] = &["invalid", "patch", "batch"];
@@ -343,6 +344,84 @@ pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
 }
 
+struct CatalogedTool<T> {
+    inner: T,
+    catalog: ToolCatalogMetadata,
+}
+
+impl<T> CatalogedTool<T> {
+    fn new(inner: T, catalog: ToolCatalogMetadata) -> Self {
+        Self { inner, catalog }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> Tool for CatalogedTool<T>
+where
+    T: Tool + Send + Sync,
+{
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.inner.parameters()
+    }
+
+    fn source_kind(&self) -> crate::ToolSchemaSourceKind {
+        self.inner.source_kind()
+    }
+
+    fn catalog_metadata(&self) -> Option<ToolCatalogMetadata> {
+        Some(self.catalog.clone())
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        self.inner.execute(args, ctx).await
+    }
+
+    fn validate(&self, args: &serde_json::Value) -> Result<(), ToolError> {
+        self.inner.validate(args)
+    }
+}
+
+// First-pass built-in catalog authority lives at registry assembly time so the
+// family map stays centralized instead of being duplicated across individual tools.
+fn builtin_catalog(family: &str, subfamily: Option<&str>, tags: &[&str]) -> ToolCatalogMetadata {
+    ToolCatalogMetadata {
+        domain: Some("agendao_builtin".to_string()),
+        family: Some(family.to_string()),
+        subfamily: subfamily.map(ToOwned::to_owned),
+        tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+        provenance: Some("builtin".to_string()),
+    }
+}
+
+async fn register_builtin_tool<T>(
+    registry: &ToolRegistry,
+    tool: T,
+    family: &str,
+    subfamily: Option<&str>,
+    tags: &[&str],
+) where
+    T: Tool + Send + Sync + 'static,
+{
+    registry
+        .register(CatalogedTool::new(
+            tool,
+            builtin_catalog(family, subfamily, tags),
+        ))
+        .await;
+}
+
 fn rewrite_invalid_arguments(tool_id: &str, err: ToolError) -> ToolError {
     match err {
         ToolError::InvalidArguments(msg) => {
@@ -393,7 +472,10 @@ impl ToolRegistry {
         let tools = self.tools.read().await;
         let mut names: Vec<String> = tools
             .keys()
-            .filter(|name| !FILTERED_FROM_SUGGESTIONS.contains(&name.as_str()))
+            .filter(|name| {
+                !FILTERED_FROM_SUGGESTIONS.contains(&name.as_str())
+                    && !crate::tool_catalog::is_legacy_tool_catalog_facade_alias_tool(name)
+            })
             .cloned()
             .collect();
         names.sort();
@@ -404,11 +486,15 @@ impl ToolRegistry {
         let tools = self.tools.read().await;
         let mut schemas: Vec<ToolSchema> = tools
             .values()
+            .filter(|tool| {
+                !crate::tool_catalog::is_legacy_tool_catalog_facade_alias_tool(tool.id())
+            })
             .map(|t| ToolSchema {
                 name: t.id().to_string(),
                 description: t.description().to_string(),
                 parameters: t.parameters(),
                 source_kind: t.source_kind(),
+                catalog: t.catalog_metadata(),
             })
             .collect();
 
@@ -418,7 +504,8 @@ impl ToolRegistry {
                 HookContext::new(HookEvent::ToolDefinition)
                     .with_data("tool_id", serde_json::json!(&schema.name))
                     .with_data("description", serde_json::json!(&schema.description))
-                    .with_data("parameters", schema.parameters.clone()),
+                    .with_data("parameters", schema.parameters.clone())
+                    .with_data("catalog", serde_json::json!(&schema.catalog)),
             )
             .await;
             for output in hook_outputs {
@@ -570,6 +657,9 @@ fn apply_tool_definition_payload(schema: &mut ToolSchema, payload: &serde_json::
     if let Some(parameters) = object.get("parameters") {
         schema.parameters = parameters.clone();
     }
+    if let Some(catalog) = object.get("catalog") {
+        schema.catalog = serde_json::from_value(catalog.clone()).ok();
+    }
 }
 
 fn apply_tool_before_payload(args: &mut serde_json::Value, payload: &serde_json::Value) {
@@ -647,80 +737,350 @@ pub async fn create_default_registry_with_config(
     #[cfg(not(feature = "web-tools"))]
     let _ = config;
 
-    registry.register(crate::read::ReadTool::new()).await;
-    registry.register(crate::write::WriteTool::new()).await;
-    registry.register(crate::edit::EditTool::new()).await;
-    registry.register(crate::bash::BashTool::new()).await;
+    register_builtin_tool(
+        &registry,
+        crate::read::ReadTool::new(),
+        "filesystem_edit",
+        Some("read"),
+        &["file", "read"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::write::WriteTool::new(),
+        "filesystem_edit",
+        Some("write"),
+        &["file", "write"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::edit::EditTool::new(),
+        "filesystem_edit",
+        Some("patch_edit"),
+        &["file", "edit"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::bash::BashTool::new(),
+        "shell_execution",
+        Some("one_shot"),
+        &["shell", "command"],
+    )
+    .await;
     #[cfg(feature = "terminal-tools")]
-    registry
-        .register(crate::shell_session::ShellSessionTool::new())
-        .await;
-    registry.register(crate::glob_tool::GlobTool::new()).await;
-    registry.register(crate::grep_tool::GrepTool::new()).await;
-    registry.register(crate::ls::LsTool::new()).await;
-    registry.register(crate::task::TaskTool::new()).await;
-    registry
-        .register(crate::task_flow::TaskFlowTool::new())
-        .await;
-    registry
-        .register(crate::question::QuestionTool::new())
-        .await;
+    register_builtin_tool(
+        &registry,
+        crate::shell_session::ShellSessionTool::new(),
+        "shell_execution",
+        Some("interactive_session"),
+        &["shell", "session"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::glob_tool::GlobTool::new(),
+        "filesystem_discovery",
+        Some("glob"),
+        &["file", "glob"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::grep_tool::GrepTool::new(),
+        "filesystem_discovery",
+        Some("content_search"),
+        &["file", "search", "text"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::ls::LsTool::new(),
+        "filesystem_discovery",
+        Some("listing"),
+        &["file", "list", "directory"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::task::TaskTool::new(),
+        "task_governance",
+        Some("delegation"),
+        &["task", "subagent"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::task_flow::TaskFlowTool::new(),
+        "task_governance",
+        Some("workflow"),
+        &["task", "workflow", "subagent"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::question::QuestionTool::new(),
+        "task_governance",
+        Some("user_input"),
+        &["question", "approval"],
+    )
+    .await;
     #[cfg(feature = "web-tools")]
-    registry
-        .register(agendao_tool_web::WebFetchTool::new())
-        .await;
+    register_builtin_tool(
+        &registry,
+        agendao_tool_web::WebFetchTool::new(),
+        "web_research",
+        Some("fetch"),
+        &["web", "http", "fetch"],
+    )
+    .await;
     #[cfg(feature = "web-tools")]
-    registry
-        .register(agendao_tool_web::WebSearchTool::from_config(
-            config.and_then(|c| c.web_search.as_ref()),
-        ))
-        .await;
+    register_builtin_tool(
+        &registry,
+        agendao_tool_web::WebSearchTool::from_config(config.and_then(|c| c.web_search.as_ref())),
+        "web_research",
+        Some("search"),
+        &["web", "search"],
+    )
+    .await;
     #[cfg(feature = "web-tools")]
-    registry.register(agendao_tool_web::CodeSearchTool).await;
+    register_builtin_tool(
+        &registry,
+        agendao_tool_web::CodeSearchTool,
+        "web_research",
+        Some("code_search"),
+        &["web", "code", "search"],
+    )
+    .await;
     #[cfg(feature = "web-tools")]
-    registry
-        .register(agendao_tool_web::GitHubResearchTool::new())
-        .await;
+    register_builtin_tool(
+        &registry,
+        agendao_tool_web::GitHubResearchTool::new(),
+        "web_research",
+        Some("github"),
+        &["web", "github", "research"],
+    )
+    .await;
     #[cfg(feature = "web-tools")]
-    registry
-        .register(agendao_tool_web::BrowserSessionTool::new())
-        .await;
-    registry.register(crate::todo::TodoReadTool).await;
-    registry.register(crate::todo::TodoWriteTool).await;
-    registry.register(crate::multiedit::MultiEditTool).await;
-    registry.register(crate::apply_patch::ApplyPatchTool).await;
-    registry
-        .register(crate::skills_categories::SkillsCategoriesTool)
-        .await;
-    registry.register(crate::skills_list::SkillsListTool).await;
-    registry.register(crate::skill_view::SkillViewTool).await;
-    registry.register(crate::skill::SkillTool).await;
-    registry.register(crate::skill_hub::SkillHubTool).await;
-    registry
-        .register(crate::skill_manage::SkillManageTool)
-        .await;
-    registry.register(crate::lsp_tool::LspTool).await;
-    registry.register(crate::batch::BatchTool).await;
-    registry
-        .register(crate::context_docs::ContextDocsTool::new())
-        .await;
-    registry
-        .register(crate::repo_history::RepoHistoryTool::new())
-        .await;
-    registry
-        .register(crate::media_inspect::MediaInspectTool::new())
-        .await;
+    register_builtin_tool(
+        &registry,
+        agendao_tool_web::BrowserSessionTool::new(),
+        "web_research",
+        Some("browser_session"),
+        &["web", "browser", "session"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::todo::TodoReadTool,
+        "task_governance",
+        Some("todo_read"),
+        &["todo", "read"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::todo::TodoWriteTool,
+        "task_governance",
+        Some("todo_write"),
+        &["todo", "write"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::multiedit::MultiEditTool,
+        "filesystem_edit",
+        Some("multi_edit"),
+        &["file", "edit", "batch"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::apply_patch::ApplyPatchTool,
+        "filesystem_edit",
+        Some("apply_patch"),
+        &["file", "patch", "diff"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skills_categories::SkillsCategoriesTool,
+        "skill_knowledge",
+        Some("catalog_categories"),
+        &["skill", "catalog", "category"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skills_list::SkillsListTool,
+        "skill_knowledge",
+        Some("catalog_list"),
+        &["skill", "catalog", "list"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skill_view::SkillViewTool,
+        "skill_knowledge",
+        Some("catalog_view"),
+        &["skill", "catalog", "view"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skill::SkillTool,
+        "skill_knowledge",
+        Some("execution"),
+        &["skill", "execute"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skill_hub::SkillHubTool,
+        "skill_knowledge",
+        Some("hub_governance"),
+        &["skill", "hub", "governance"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::skill_manage::SkillManageTool,
+        "skill_knowledge",
+        Some("catalog_mutation"),
+        &["skill", "manage", "catalog"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::lsp_tool::LspTool,
+        "code_intelligence",
+        Some("lsp"),
+        &["code", "lsp", "analysis"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::batch::BatchTool,
+        "task_governance",
+        Some("batch"),
+        &["task", "batch", "orchestration"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::context_docs::ContextDocsTool::new(),
+        "skill_knowledge",
+        Some("context_docs"),
+        &["docs", "context", "knowledge"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogSearchTool::primary(),
+        "execution_resource_catalog",
+        Some("search"),
+        &["catalog", "tool", "search"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogSearchTool::legacy_mcp_alias(),
+        "execution_resource_catalog",
+        Some("search"),
+        &["catalog", "tool", "search", "legacy_alias"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogDescribeTool::primary(),
+        "execution_resource_catalog",
+        Some("describe"),
+        &["catalog", "tool", "describe"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogDescribeTool::legacy_mcp_alias(),
+        "execution_resource_catalog",
+        Some("describe"),
+        &["catalog", "tool", "describe", "legacy_alias"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogCallTool::primary(),
+        "execution_resource_catalog",
+        Some("call"),
+        &["catalog", "tool", "call"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::tool_catalog::ToolCatalogCallTool::legacy_mcp_alias(),
+        "execution_resource_catalog",
+        Some("call"),
+        &["catalog", "tool", "call", "legacy_alias"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::repo_history::RepoHistoryTool::new(),
+        "filesystem_discovery",
+        Some("history"),
+        &["repo", "history", "git"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::media_inspect::MediaInspectTool::new(),
+        "specialized_media",
+        Some("inspection"),
+        &["media", "inspect"],
+    )
+    .await;
     #[cfg(feature = "code-intel")]
-    registry
-        .register(crate::ast_grep_search::AstGrepSearchTool::new())
-        .await;
+    register_builtin_tool(
+        &registry,
+        crate::ast_grep_search::AstGrepSearchTool::new(),
+        "code_intelligence",
+        Some("ast_search"),
+        &["code", "ast", "search"],
+    )
+    .await;
     #[cfg(feature = "code-intel")]
-    registry
-        .register(crate::ast_grep_replace::AstGrepReplaceTool::new())
-        .await;
-    registry.register(crate::plan::PlanEnterTool).await;
-    registry.register(crate::plan::PlanExitTool).await;
-    registry.register(crate::invalid::InvalidTool).await;
+    register_builtin_tool(
+        &registry,
+        crate::ast_grep_replace::AstGrepReplaceTool::new(),
+        "code_intelligence",
+        Some("ast_replace"),
+        &["code", "ast", "replace"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::plan::PlanEnterTool,
+        "task_governance",
+        Some("plan_enter"),
+        &["plan", "mode", "enter"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::plan::PlanExitTool,
+        "task_governance",
+        Some("plan_exit"),
+        &["plan", "mode", "exit"],
+    )
+    .await;
+    register_builtin_tool(
+        &registry,
+        crate::invalid::InvalidTool,
+        "internal_sentinel",
+        Some("fallback"),
+        &["internal", "sentinel", "fallback"],
+    )
+    .await;
 
     // Auto-register plugin custom tools (may override same-named built-in tools)
     if let Some(loader) = agendao_plugin::global_loader() {
@@ -855,6 +1215,69 @@ mod tests {
             ToolAccessOutcome::Fresh { consecutive: 1 }
         );
         tool_access::clear_tool_access_tracker(session_id);
+    }
+
+    #[tokio::test]
+    async fn create_default_registry_assigns_catalog_to_builtin_tools() {
+        let registry = create_default_registry().await;
+        let schemas = registry.list_schemas().await;
+
+        let read = schemas
+            .iter()
+            .find(|schema| schema.name == "read")
+            .expect("read schema should exist");
+        let bash = schemas
+            .iter()
+            .find(|schema| schema.name == "bash")
+            .expect("bash schema should exist");
+        let skills_list = schemas
+            .iter()
+            .find(|schema| schema.name == "skills_list")
+            .expect("skills_list schema should exist");
+
+        assert_eq!(read.source_kind, crate::ToolSchemaSourceKind::BuiltIn);
+        assert_eq!(
+            read.catalog
+                .as_ref()
+                .and_then(|catalog| catalog.family.as_deref()),
+            Some("filesystem_edit")
+        );
+        assert_eq!(
+            bash.catalog
+                .as_ref()
+                .and_then(|catalog| catalog.family.as_deref()),
+            Some("shell_execution")
+        );
+        assert_eq!(
+            skills_list
+                .catalog
+                .as_ref()
+                .and_then(|catalog| catalog.family.as_deref()),
+            Some("skill_knowledge")
+        );
+        assert!(
+            schemas
+                .iter()
+                .filter(|schema| schema.source_kind == crate::ToolSchemaSourceKind::BuiltIn)
+                .all(|schema| schema.catalog.is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn create_default_registry_hides_legacy_tool_catalog_aliases_from_schema_listing() {
+        let registry = create_default_registry().await;
+        let schemas = registry.list_schemas().await;
+        let names = schemas
+            .iter()
+            .map(|schema| schema.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID));
+        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID));
+        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID));
+        assert!(!names.contains(&crate::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID));
+        assert!(!names.contains(&crate::tool_catalog::LEGACY_MCP_DESCRIBE_TOOL_ID));
+        assert!(!names.contains(&crate::tool_catalog::LEGACY_MCP_CALL_TOOL_ID));
     }
 
     fn test_tool_context() -> ToolContext {

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dock_pose arguments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protein_pdb", "ligand_sdf"],
+  "properties": {
+    "protein_pdb": {
+      "type": "string"
+    },
+    "ligand_sdf": {
+      "type": "string"
+    },
+    "top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 10
+    }
+  }
+}

@@ -7,7 +7,7 @@ use agendao_provider::cache::{ToolSurfaceSourceDigest, ToolSurfaceSourceKind};
 use agendao_provider::{Content, Message, Provider, Role, ToolDefinition};
 use agendao_types::ToolCatalogMetadata;
 
-use crate::{sanitize_display_text, MessageRole, PartType, Session, SessionMessage};
+use crate::{MessageRole, PartType, Session, SessionMessage, sanitize_display_text};
 
 use super::MAX_STEPS;
 
@@ -419,9 +419,9 @@ fn materialize_model_tool_surface(
     match mode {
         ToolCatalogMode::FullSchema => tools.to_vec(),
         ToolCatalogMode::SearchFacade => {
-            let facade = tools
+            let mut facade = tools
                 .iter()
-                .filter(|tool| agendao_tool::tool_catalog::is_tool_catalog_facade_tool(&tool.name))
+                .filter(|tool| is_search_facade_visible_bridge_tool(&tool.name))
                 .cloned()
                 .collect::<Vec<_>>();
             if facade.is_empty() {
@@ -430,9 +430,33 @@ fn materialize_model_tool_surface(
                 );
                 tools.to_vec()
             } else {
+                facade.sort_by(|a, b| {
+                    search_facade_visible_bridge_rank(&a.name)
+                        .cmp(&search_facade_visible_bridge_rank(&b.name))
+                        .then_with(|| {
+                            agendao_provider::cache::stable_tool_name_cmp(&a.name, &b.name)
+                        })
+                });
                 facade
             }
         }
+    }
+}
+
+fn is_search_facade_visible_bridge_tool(name: &str) -> bool {
+    agendao_tool::tool_catalog::is_model_visible_tool_catalog_facade_tool(name)
+        || matches!(name, "skills_categories" | "skills_list" | "skill_view")
+}
+
+fn search_facade_visible_bridge_rank(name: &str) -> usize {
+    match name {
+        "skills_categories" => 0,
+        "skills_list" => 1,
+        "skill_view" => 2,
+        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 3,
+        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 4,
+        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 5,
+        _ => 100,
     }
 }
 
@@ -663,9 +687,11 @@ mod title_tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].name, "read");
         assert_eq!(merged[0].description.as_deref(), Some("built-in read"));
-        assert!(merged[0].parameters["properties"]
-            .get("file_path")
-            .is_some());
+        assert!(
+            merged[0].parameters["properties"]
+                .get("file_path")
+                .is_some()
+        );
     }
 
     #[test]
@@ -863,14 +889,18 @@ mod title_tests {
             .iter()
             .find(|tool| tool.name == "dock_pose")
             .expect("external tool should be present");
-        assert!(dock_pose
-            .description
-            .as_deref()
-            .expect("description")
-            .contains("catalog-only"));
+        assert!(
+            dock_pose
+                .description
+                .as_deref()
+                .expect("description")
+                .contains("catalog-only")
+        );
         assert_eq!(
             dock_pose.parameters["description"],
-            serde_json::json!("Catalog-only external tool placeholder. Discoverable and describable, but not directly executable until an execution adapter is configured.")
+            serde_json::json!(
+                "Catalog-only external tool placeholder. Discoverable and describable, but not directly executable until an execution adapter is configured."
+            )
         );
         assert_eq!(
             merged
@@ -879,10 +909,12 @@ mod title_tests {
                 .and_then(|catalog| catalog.domain.as_deref()),
             Some("cadd")
         );
-        assert!(merged
-            .source_digests
-            .iter()
-            .any(|digest| digest.source == ToolSurfaceSourceKind::Dynamic));
+        assert!(
+            merged
+                .source_digests
+                .iter()
+                .any(|digest| digest.source == ToolSurfaceSourceKind::Dynamic)
+        );
         assert_ne!(
             merged.catalog_hash,
             tool_catalog_fingerprint(&BTreeMap::new())
@@ -992,19 +1024,23 @@ mod title_tests {
             .find(|tool| tool.name == "score_pose")
             .expect("executable external tool should be present");
 
-        assert!(score_pose
-            .description
-            .as_deref()
-            .expect("description")
-            .contains("executable"));
+        assert!(
+            score_pose
+                .description
+                .as_deref()
+                .expect("description")
+                .contains("executable")
+        );
         assert_eq!(
             score_pose.parameters["description"],
-            serde_json::json!("Executable external tool imported through toolImports. Arguments are forwarded to the configured external execution adapter.")
+            serde_json::json!(
+                "Executable external tool imported through toolImports. Arguments are forwarded to the configured external execution adapter."
+            )
         );
     }
 
     #[test]
-    fn large_catalog_materializes_facade_only_surface() {
+    fn large_catalog_materializes_facade_plus_skill_bridge_surface() {
         let mut tools = Vec::new();
         let mut catalog_by_tool = BTreeMap::new();
         for index in 0..30 {
@@ -1027,17 +1063,32 @@ mod title_tests {
         }
         tools.extend([
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                name: "skills_categories".to_string(),
+                description: Some("categories".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skills_list".to_string(),
+                description: Some("list".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skill_view".to_string(),
+                description: Some("view".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
                 description: Some("search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
                 description: Some("describe".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
                 description: Some("call".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
@@ -1054,15 +1105,18 @@ mod title_tests {
         assert_eq!(
             names,
             vec![
-                agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID,
-                agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID,
-                agendao_tool::tool_catalog::MCP_CALL_TOOL_ID
+                "skills_categories",
+                "skills_list",
+                "skill_view",
+                agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
+                agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
+                agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID
             ]
         );
     }
 
     #[test]
-    fn search_facade_mode_exposes_only_facade_tools() {
+    fn search_facade_mode_exposes_primary_facade_plus_skill_bridges() {
         let tools = vec![
             ToolDefinition {
                 name: "dock_pose".to_string(),
@@ -1070,18 +1124,43 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
                 description: Some("search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
                 description: Some("describe".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
                 description: Some("call".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID.to_string(),
+                description: Some("legacy search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skills_categories".to_string(),
+                description: Some("skill categories".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skills_list".to_string(),
+                description: Some("skill list".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skill_view".to_string(),
+                description: Some("skill view".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "websearch".to_string(),
+                description: Some("web search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
         ];
@@ -1095,11 +1174,73 @@ mod title_tests {
         assert_eq!(
             names,
             vec![
-                agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID,
-                agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID,
-                agendao_tool::tool_catalog::MCP_CALL_TOOL_ID,
+                "skills_categories",
+                "skills_list",
+                "skill_view",
+                agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
+                agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
+                agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID,
             ]
         );
+    }
+
+    #[test]
+    fn search_facade_mode_keeps_execution_catalog_collapsed() {
+        let tools = vec![
+            ToolDefinition {
+                name: "skills_categories".to_string(),
+                description: Some("skill categories".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skills_list".to_string(),
+                description: Some("skill list".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skill_view".to_string(),
+                description: Some("skill view".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+                description: Some("search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+                description: Some("describe".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+                description: Some("call".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "websearch".to_string(),
+                description: Some("web search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "webfetch".to_string(),
+                description: Some("web fetch".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::SearchFacade);
+        let names = visible
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"skills_categories"));
+        assert!(names.contains(&"skills_list"));
+        assert!(names.contains(&"skill_view"));
+        assert!(!names.contains(&"websearch"));
+        assert!(!names.contains(&"webfetch"));
+        assert!(!names.contains(&agendao_tool::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID));
     }
 
     #[tokio::test]

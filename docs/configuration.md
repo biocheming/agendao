@@ -161,8 +161,8 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 - 外部 tool 显式分为两类：
   - `catalog-only`：只有发现/分类能力，没有执行声明
   - `executable`：必须提供 `execution` 块
-- `mcp_search` / `mcp_describe` 会把导入的外部 tools 暴露给用户
-- `mcp_call` 当前只对声明了 `execution` 的外部 tool 提供第一版执行接线
+- `tool_catalog_search` / `tool_catalog_describe` 会把导入的外部 tools 暴露给用户
+- `tool_catalog_call` 当前只对声明了 `execution` 的外部 tool 提供第一版执行接线
 - `catalog-only` tool 会继续保留为“可发现、可描述、不可执行”
 
 #### tools.jsonc 示例
@@ -196,7 +196,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 - 第一版 `execution.kind` 只接受 `script_runner`
 - `execution.entry` 是必填项
 - `execution.entry` / `execution.arguments_schema_ref` 都按 `tools.jsonc` 所在目录解析相对路径
-- `script_runner` 目前通过 `mcp_call` 的第一版外部执行适配器运行
+- `script_runner` 目前通过 `tool_catalog_call` 的第一版外部执行适配器运行
 
 #### 目录推断规则
 

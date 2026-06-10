@@ -51,9 +51,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use agendao_execution_types::CompiledExecutionRequest;
+use agendao_provider::ToolDefinition;
 use agendao_provider::cache::ToolSurfaceSourceDigest;
 use agendao_provider::cache::{json_fingerprint, text_fingerprint};
-use agendao_provider::ToolDefinition;
 use agendao_types::{
     FewShotSurfaceItem, MemoryRetrievalPacket, PinnedConstraint,
     PromptSurfaceDriftCategory as PublicPromptSurfaceDriftCategory, PromptSurfaceDriftDetail,
@@ -64,10 +64,10 @@ use agendao_types::{
 };
 
 use super::surface_contract::{
-    collect_prompt_surface_provider_options, is_dynamic_catalog_header,
-    is_stable_governance_header, is_volatile_system_section, looks_like_clock_line,
-    normalize_stable_system_line, sanctioned_model_context_projection_for_message,
-    PromptSurfaceProviderOptionGroup,
+    PromptSurfaceProviderOptionGroup, collect_prompt_surface_provider_options,
+    is_dynamic_catalog_header, is_stable_governance_header, is_volatile_system_section,
+    looks_like_clock_line, normalize_stable_system_line,
+    sanctioned_model_context_projection_for_message,
 };
 use super::tools_and_output::ToolCatalogMode;
 use crate::SessionMessage;
@@ -684,7 +684,7 @@ impl PromptSurfaceInputs {
                 let lines = families
                     .into_iter()
                     .map(|((domain, family), count)| {
-                        format!("- `{domain}/{family}`: {count} tools")
+                        format!("- `domain={domain}, family={family}`: {count} tools")
                     })
                     .collect::<Vec<_>>();
                 let imported_summary = if imported_executable_count == 0
@@ -697,7 +697,7 @@ impl PromptSurfaceInputs {
                     )
                 };
                 Some(format!(
-                    "## Available Execution Resources\nLarge tool catalog detected. Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it.\n\nModel-visible facade tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
+                    "## Available Execution Resources\nLarge tool catalog detected.\n\nTool flow:\n- `tool_catalog_search` finds relevant execution resources\n- `tool_catalog_describe` inspects one candidate\n- `tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`\n- `domain` / `family` / `subfamily` are catalog projections, not callable ids\n\nSkill flow:\n- `skills_categories` inspects available skill categories\n- `skills_list` lists skills inside one category\n- `skill_view` loads one exact skill after discovery\n\nModel-visible bridge tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
                     lines.join("\n")
                 ))
             }
@@ -1178,9 +1178,11 @@ mod tests {
                 .assemble_sections("projection".to_string(), None, None);
 
         assert!(first.system_text.contains("## Pinned Constraints"));
-        assert!(first
-            .stable_system_prefix_text
-            .contains("Preserve acceptance constraints across compaction."));
+        assert!(
+            first
+                .stable_system_prefix_text
+                .contains("Preserve acceptance constraints across compaction.")
+        );
         assert_ne!(
             first.stable_system_surface_hash, second.stable_system_surface_hash,
             "changing pinned constraints must change the stable prefix hash"
@@ -1277,20 +1279,26 @@ mod tests {
         assert!(sections.system_text.contains("base header"));
         assert!(sections.stable_system_prefix_text.contains("base header"));
         assert!(sections.system_text.contains("## Environment Context"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("## Environment Context"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("## Environment Context")
+        );
         assert!(sections.system_text.contains("Working directory: /repo"));
         assert!(sections.system_text.contains("## Preset Role Summary"));
-        assert!(sections
-            .stable_system_prefix_text
-            .contains("## Preset Role Summary"));
+        assert!(
+            sections
+                .stable_system_prefix_text
+                .contains("## Preset Role Summary")
+        );
         assert!(sections.system_text.contains("coordination orchestrator"));
         assert!(sections.system_text.contains("<identity>Atlas</identity>"));
         assert!(sections.system_text.contains("## Capability Projection"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("## Capability Projection"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("## Capability Projection")
+        );
         assert!(sections.system_text.contains("Agents: explore, review."));
         assert!(sections.system_text.contains("## Tone Augment"));
         assert!(sections.system_text.contains("Be concise. No flattery."));
@@ -1301,12 +1309,16 @@ mod tests {
                     .find("## Capability Projection")
                     .unwrap()
         );
-        assert!(!sections
-            .stable_system_prefix_text
-            .contains("## Capability Projection"));
-        assert!(!sections
-            .dynamic_system_overlay_text
-            .contains("## Tone Augment"));
+        assert!(
+            !sections
+                .stable_system_prefix_text
+                .contains("## Capability Projection")
+        );
+        assert!(
+            !sections
+                .dynamic_system_overlay_text
+                .contains("## Tone Augment")
+        );
     }
 
     #[test]
@@ -1334,9 +1346,11 @@ mod tests {
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
         assert!(sections.system_text.contains("## Environment Context"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("## Environment Context"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("## Environment Context")
+        );
         assert!(sections.system_text.contains("Working directory: /repo"));
         assert!(!sections.system_text.contains("Today's date:"));
         assert!(!sections.system_text.contains("Current local time:"));
@@ -1432,10 +1446,12 @@ mod tests {
         );
 
         let report = inputs.detect_volatility();
-        assert!(report
-            .findings
-            .iter()
-            .any(|finding| matches!(finding.kind, PromptSurfaceVolatilityKind::VolatileEnvField)));
+        assert!(
+            report.findings.iter().any(|finding| matches!(
+                finding.kind,
+                PromptSurfaceVolatilityKind::VolatileEnvField
+            ))
+        );
     }
 
     #[test]
@@ -1512,9 +1528,11 @@ mod tests {
         .assemble_sections("projection".to_string(), None, None);
 
         let drift = second.describe_drift(&first);
-        assert!(!drift
-            .iter()
-            .any(|item| item.field == "stableSystemSurfaceHash"));
+        assert!(
+            !drift
+                .iter()
+                .any(|item| item.field == "stableSystemSurfaceHash")
+        );
         assert_eq!(
             first.stable_system_surface_hash, second.stable_system_surface_hash,
             "env/capability changes should live in the dynamic overlay, not the stable hash"
@@ -1596,14 +1614,46 @@ mod tests {
 
     #[test]
     fn large_tool_catalog_renders_search_facade_summary() {
-        let tools = (0..8)
+        let facade_tools = vec![
+            ToolDefinition {
+                name: "skills_categories".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "skills_list".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "skill_view".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+        let catalog_tools = (0..8)
             .map(|idx| ToolDefinition {
                 name: format!("dock_tool_{idx}"),
                 description: None,
                 parameters: serde_json::json!({}),
             })
             .collect::<Vec<_>>();
-        let catalog = tools
+        let catalog = catalog_tools
             .iter()
             .map(|tool| {
                 (
@@ -1621,7 +1671,7 @@ mod tests {
         let inputs = PromptSurfaceInputs::builder("ses-tools", CompiledExecutionRequest::default())
             .set_base_system_prompt(Some("base header".to_string()))
             .set_tool_surface(
-                tools,
+                facade_tools,
                 vec![],
                 catalog.clone(),
                 ToolCatalogMode::SearchFacade,
@@ -1630,35 +1680,58 @@ mod tests {
 
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Catalog mode: search-facade"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Model-visible facade tools: 8"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Full catalog resources: 8"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("`cadd/molecular_docking`: 8 tools"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Catalog mode: search-facade")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Model-visible bridge tools: 6")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Full catalog resources: 8")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("`domain=cadd, family=molecular_docking`: 8 tools")
+        );
     }
 
     #[test]
     fn search_facade_summary_mentions_facade_flow() {
         let facade_tools = vec![
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                name: "skills_categories".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                name: "skills_list".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                name: "skill_view".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1689,32 +1762,68 @@ mod tests {
 
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Use `mcp_search` to find relevant resources, `mcp_describe` to inspect one candidate, then `mcp_call` to execute it."));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Model-visible facade tools: 3"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Full catalog resources: 8"));
+        assert!(sections.dynamic_system_overlay_text.contains("Tool flow:"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("`tool_catalog_search` finds relevant execution resources")
+        );
+        assert!(sections.dynamic_system_overlay_text.contains(
+            "`tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`"
+        ));
+        assert!(sections.dynamic_system_overlay_text.contains("Skill flow:"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("`skills_categories` inspects available skill categories")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("`skill_view` loads one exact skill after discovery")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Model-visible bridge tools: 6")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Full catalog resources: 8")
+        );
     }
 
     #[test]
     fn search_facade_summary_surfaces_imported_execution_split() {
         let facade_tools = vec![
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_SEARCH_TOOL_ID.to_string(),
+                name: "skills_categories".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_DESCRIBE_TOOL_ID.to_string(),
+                name: "skills_list".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::MCP_CALL_TOOL_ID.to_string(),
+                name: "skill_view".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1768,12 +1877,19 @@ mod tests {
 
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Imported executable resources: 2"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Imported catalog-only resources: 1"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Imported executable resources: 2")
+        );
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Imported catalog-only resources: 1")
+        );
+        assert!(sections.dynamic_system_overlay_text.contains(
+            "domain` / `family` / `subfamily` are catalog projections, not callable ids"
+        ));
     }
 
     #[test]
@@ -1824,9 +1940,11 @@ mod tests {
 
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Catalog mode: full-schema"));
+        assert!(
+            sections
+                .dynamic_system_overlay_text
+                .contains("Catalog mode: full-schema")
+        );
         assert!(sections.dynamic_system_overlay_text.contains("- `read`"));
         assert!(sections.dynamic_system_overlay_text.contains("- `write`"));
     }
