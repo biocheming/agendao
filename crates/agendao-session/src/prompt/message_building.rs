@@ -28,6 +28,7 @@ use super::{
 };
 use agendao_types::{
     tool_call_replay_input, tool_call_replay_text, ContextCompactionBackoffSummary,
+    FewShotSurfaceItem,
     LightweightTrimSummary, SessionContinuityCompactionSummary, SessionContinuityDependency,
     SessionContinuityDependencyKind, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
     SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
@@ -124,11 +125,31 @@ impl SessionPrompt {
     pub(super) fn build_chat_messages(
         session_messages: &[SessionMessage],
         system_prompt: Option<&str>,
+        few_shots: &[FewShotSurfaceItem],
     ) -> anyhow::Result<Vec<Message>> {
         let mut messages = Vec::new();
 
         if let Some(system) = system_prompt {
             messages.push(Message::system(system));
+        }
+
+        for item in few_shots {
+            let text = item.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let role = match item.role {
+                MessageRole::User => Role::User,
+                MessageRole::Assistant => Role::Assistant,
+                MessageRole::System => Role::System,
+                MessageRole::Tool => continue,
+            };
+            messages.push(Message {
+                role,
+                content: Content::Text(text.to_string()),
+                cache_control: None,
+                provider_options: None,
+            });
         }
 
         for msg in session_messages {
@@ -3437,8 +3458,8 @@ mod tests {
             .expect("expected lightweight trim to collapse the old round");
         assert!(summary.trimmed_rounds >= 1 || summary.trimmed_tool_calls >= 1);
 
-        let provider_messages =
-            SessionPrompt::build_chat_messages(&session.messages, None).expect("provider messages");
+        let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None, &[])
+            .expect("provider messages");
         let serialized = serde_json::to_string(&provider_messages).expect("serialize messages");
 
         assert!(
@@ -3453,6 +3474,28 @@ mod tests {
             !serialized.contains("[tool result collapsed before compaction:"),
             "collapsed tool-result placeholder must not reenter next-turn model context"
         );
+    }
+
+    #[test]
+    fn build_chat_messages_places_few_shots_between_system_and_live_history() {
+        let live_user = SessionMessage::user("ses-few", "Live user");
+        let few_shots = vec![
+            FewShotSurfaceItem::new(MessageRole::User, "Example user"),
+            FewShotSurfaceItem::new(MessageRole::Assistant, "Example assistant"),
+        ];
+
+        let messages = SessionPrompt::build_chat_messages(
+            &[live_user],
+            Some("system header"),
+            &few_shots,
+        )
+        .expect("build");
+
+        assert_eq!(messages.len(), 4);
+        assert!(matches!(messages[0].role, Role::System));
+        assert!(matches!(messages[1].role, Role::User));
+        assert!(matches!(messages[2].role, Role::Assistant));
+        assert!(matches!(messages[3].role, Role::User));
     }
 
     #[test]
@@ -3547,7 +3590,7 @@ mod tests {
         let mut msg = SessionMessage::assistant("ses_test");
         msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
         msg.add_tool_result("call-1", "ok", false);
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         assert_eq!(messages.len(), 2);
         // Assistant with tool call.
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3566,7 +3609,7 @@ mod tests {
                 *raw = Some("{\"file_path\":\"raw.txt\"}".to_string());
             }
         }
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         let assistant = &messages[0];
         match &assistant.content {
             Content::Parts(parts) => {
@@ -3608,7 +3651,7 @@ mod tests {
             message_id: None,
         });
 
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         let assistant = &messages[0];
         match &assistant.content {
             Content::Parts(parts) => {
@@ -3632,7 +3675,7 @@ mod tests {
         let mut msg = SessionMessage::tool("ses_test");
         msg.add_text("tool round summary: read ok");
 
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::User));
         assert!(matches!(
@@ -3649,7 +3692,7 @@ mod tests {
         msg.add_tool_result("call-1", "ok", false);
         msg.add_text("synthetic follow-up summary");
 
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::Tool));
         assert!(matches!(messages[1].role, Role::User));
@@ -3669,7 +3712,7 @@ mod tests {
         msg.add_reasoning("internal chain of thought");
         msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
 
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         let assistant = &messages[0];
         match &assistant.content {
             Content::Parts(parts) => {
@@ -3698,7 +3741,7 @@ mod tests {
         msg.add_text("visible response");
         msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
 
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         let assistant = &messages[0];
         match &assistant.content {
             Content::Parts(parts) => {
@@ -3724,7 +3767,7 @@ mod tests {
         );
 
         let messages =
-            SessionPrompt::build_chat_messages(&[user_msg, summary_msg], None).expect("build");
+            SessionPrompt::build_chat_messages(&[user_msg, summary_msg], None, &[]).expect("build");
 
         // All messages must stay Role::User — tool summaries are never Role::Tool.
         for msg in &messages {
@@ -3741,7 +3784,7 @@ mod tests {
     fn build_chat_messages_keeps_text_only_assistant_as_plain_text() {
         let mut msg = SessionMessage::assistant("ses_test");
         msg.add_text("hello world");
-        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
         let assistant = &messages[0];
         assert!(matches!(assistant.role, Role::Assistant));
         assert!(
@@ -3780,7 +3823,7 @@ mod tests {
         assistant.add_text("working");
         assistant.add_tool_result("call_1", "ok", false);
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::Assistant));
         assert!(matches!(messages[1].role, Role::Tool));
@@ -3801,7 +3844,7 @@ mod tests {
             serde_json::json!("compact scheduler summary with artifact reference"),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3821,7 +3864,7 @@ mod tests {
             serde_json::json!("legacy summary"),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3845,7 +3888,7 @@ mod tests {
             serde_json::json!("must not override visible text"),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3864,7 +3907,7 @@ mod tests {
             serde_json::json!("should not replace user intent"),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[user], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[user], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::User));
@@ -3890,7 +3933,7 @@ mod tests {
             },
         });
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(
@@ -3914,7 +3957,7 @@ mod tests {
             },
         });
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(
@@ -3938,7 +3981,7 @@ mod tests {
         }
         .attach_to_metadata(&mut assistant.metadata);
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3981,7 +4024,7 @@ mod tests {
             other => panic!("expected tool result part, got {other:?}"),
         }
 
-        let messages = SessionPrompt::build_chat_messages(&[tool], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[tool], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Tool));
@@ -4007,7 +4050,7 @@ mod tests {
             serde_json::json!("summary must not replace tool call"),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
 
         assert_eq!(messages.len(), 1);
         match &messages[0].content {
@@ -4043,7 +4086,7 @@ mod tests {
         assistant.add_reasoning("internal trace");
         assistant.add_text("visible answer");
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
         assert_eq!(messages.len(), 1);
 
         match &messages[0].content {
@@ -4070,7 +4113,7 @@ mod tests {
             serde_json::json!({ "path": "/tmp/workspace" }),
         );
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
         assert_eq!(messages.len(), 1);
 
         match &messages[0].content {

@@ -1462,7 +1462,7 @@ async fn create_user_message_uses_parts_as_authority_not_ingress_shadow_text() {
         serde_json::json!(IngressSource::Web)
     );
 
-    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None, &[])
         .expect("chat messages should build");
     let rendered = provider_messages
         .iter()
@@ -3081,7 +3081,7 @@ fn proposal_notice_is_hidden_from_model_prompt_surface() {
         Some("proposal_notice")
     );
 
-    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None, &[])
         .expect("chat messages should build");
     let rendered = provider_messages
         .iter()
@@ -3151,7 +3151,7 @@ fn steering_preview_is_hidden_from_model_consumed_is_visible() {
     );
     session.push_message(consumed);
 
-    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None, &[])
         .expect("chat messages should build");
     let rendered = provider_messages
         .iter()
@@ -3239,7 +3239,7 @@ fn ingress_metadata_is_hidden_from_model_prompt_surface() {
         serde_json::json!("session_prompt"),
     );
 
-    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None, &[])
         .expect("chat messages should build");
     let rendered = provider_messages
         .iter()

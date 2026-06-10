@@ -2211,6 +2211,7 @@ impl SessionPrompt {
         let mut chat_messages = Self::build_chat_messages(
             &prompt_messages,
             Some(surface_sections.system_text.as_str()),
+            &surface_inputs.few_shots,
         )?;
         apply_caching(&mut chat_messages, provider_type);
         Ok(PreparedChatMessages {
