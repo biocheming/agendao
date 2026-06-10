@@ -17,7 +17,9 @@ use crate::{ApiError, ServerState};
 use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_provider::ToolDefinition;
 use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
-use agendao_session::{EnvironmentContext, MessageRole as SessionMessageRole, Session, SystemPrompt};
+use agendao_session::{
+    EnvironmentContext, MessageRole as SessionMessageRole, Session, SystemPrompt,
+};
 
 use super::permission::request_permission;
 use super::provider_diagnostics::attach_provider_diagnostic_from_error;
@@ -257,8 +259,10 @@ pub(crate) async fn stream_message(
         ReconcileReason::StatusChange,
     );
 
-    let resolved_tool_surface =
-        agendao_session::resolve_tool_surface(state.tool_registry.as_ref()).await;
+    let resolved_tool_surface = agendao_session::merge_external_tool_catalogs(
+        agendao_session::resolve_tool_surface(state.tool_registry.as_ref()).await,
+        state.external_tool_catalogs.as_ref(),
+    );
     let tool_defs = filtered_tool_definitions(resolved_tool_surface.tools, resolved_agent.as_ref());
     let tool_source_digests = if resolved_agent.is_some() {
         Vec::new()
@@ -426,7 +430,13 @@ pub(crate) async fn stream_message(
                             stream_workdir,
                         ),
                     )))
-                    .set_tool_surface(tool_defs, tool_source_digests),
+                    .set_tool_surface(
+                        tool_defs,
+                        tool_source_digests,
+                        resolved_tool_surface.catalog_by_tool,
+                        resolved_tool_surface.catalog_mode,
+                        resolved_tool_surface.catalog_hash,
+                    ),
                     compiled_request.clone(),
                     agendao_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),
