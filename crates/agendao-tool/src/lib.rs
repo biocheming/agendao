@@ -35,6 +35,7 @@ pub mod shell_session;
 pub mod skill;
 pub mod skill_hub;
 pub mod skill_manage;
+pub mod skill_search;
 pub mod skill_support;
 pub mod skill_view;
 pub mod skills_categories;

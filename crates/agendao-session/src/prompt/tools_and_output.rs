@@ -445,17 +445,21 @@ fn materialize_model_tool_surface(
 
 fn is_search_facade_visible_bridge_tool(name: &str) -> bool {
     agendao_tool::tool_catalog::is_model_visible_tool_catalog_facade_tool(name)
-        || matches!(name, "skills_categories" | "skills_list" | "skill_view")
+        || matches!(
+            name,
+            "skills_categories" | "skill_search" | "skills_list" | "skill_view"
+        )
 }
 
 fn search_facade_visible_bridge_rank(name: &str) -> usize {
     match name {
         "skills_categories" => 0,
-        "skills_list" => 1,
-        "skill_view" => 2,
-        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 3,
-        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 4,
-        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 5,
+        "skill_search" => 1,
+        "skills_list" => 2,
+        "skill_view" => 3,
+        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 4,
+        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 5,
+        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 6,
         _ => 100,
     }
 }
@@ -1073,6 +1077,11 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
+                name: "skill_search".to_string(),
+                description: Some("search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
                 name: "skill_view".to_string(),
                 description: Some("view".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
@@ -1106,6 +1115,7 @@ mod title_tests {
             names,
             vec![
                 "skills_categories",
+                "skill_search",
                 "skills_list",
                 "skill_view",
                 agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
@@ -1154,6 +1164,11 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
+                name: "skill_search".to_string(),
+                description: Some("skill search".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
                 name: "skill_view".to_string(),
                 description: Some("skill view".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
@@ -1175,6 +1190,7 @@ mod title_tests {
             names,
             vec![
                 "skills_categories",
+                "skill_search",
                 "skills_list",
                 "skill_view",
                 agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
@@ -1195,6 +1211,11 @@ mod title_tests {
             ToolDefinition {
                 name: "skills_list".to_string(),
                 description: Some("skill list".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "skill_search".to_string(),
+                description: Some("skill search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
@@ -1236,6 +1257,7 @@ mod title_tests {
             .collect::<Vec<_>>();
 
         assert!(names.contains(&"skills_categories"));
+        assert!(names.contains(&"skill_search"));
         assert!(names.contains(&"skills_list"));
         assert!(names.contains(&"skill_view"));
         assert!(!names.contains(&"websearch"));
