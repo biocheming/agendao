@@ -9,9 +9,10 @@ mod workspace;
 mod tests;
 
 use crate::schema::PluginConfig;
-use crate::Config;
+use crate::{Config, ExternalToolCatalogFile, ExternalToolConfig, ExternalToolExecutionKind};
+use agendao_types::ToolCatalogMetadata;
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,14 +35,20 @@ pub use discovery::{
     collect_plugin_roots as get_plugin_roots, discover_web_plugins, WebPluginInfo,
 };
 use file_ops::{
-    get_global_config_paths, migrate_legacy_toml_config, parse_jsonc, resolve_file_references,
-    substitute_env_vars,
+    get_global_config_paths, migrate_legacy_toml_config, parse_external_tool_catalog_jsonc,
+    parse_jsonc, resolve_file_references, substitute_env_vars,
 };
 use transforms::{apply_post_load_transforms, merge_agent_config};
 
 pub struct ConfigLoader {
     config: Config,
     config_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedExternalToolCatalog {
+    pub source_path: PathBuf,
+    pub tools: HashMap<String, ExternalToolConfig>,
 }
 
 const PROJECT_CONFIG_TARGETS: &[&str] = &["agendao.jsonc", "agendao.json"];
@@ -65,6 +72,44 @@ impl ConfigLoader {
 
     pub fn into_config(self) -> Config {
         self.config
+    }
+
+    pub fn load_external_tool_catalogs(&self) -> Result<Vec<ResolvedExternalToolCatalog>> {
+        let mut catalogs = Vec::new();
+
+        for config_path in &self.config_paths {
+            let Some(base_dir) = config_path.parent() else {
+                continue;
+            };
+
+            for import in &self.config.tool_imports {
+                let resolved = resolve_configured_path(base_dir, import);
+                if !resolved.exists() || resolved.is_dir() {
+                    continue;
+                }
+                let content = fs::read_to_string(&resolved).with_context(|| {
+                    format!(
+                        "Failed to read external tool catalog: {}",
+                        resolved.display()
+                    )
+                })?;
+                let catalog = parse_external_tool_catalog_jsonc(&content).with_context(|| {
+                    format!(
+                        "Failed to parse external tool catalog file: {}",
+                        resolved.display()
+                    )
+                })?;
+                let catalog_base_dir = resolved.parent().unwrap_or(base_dir).to_path_buf();
+                let normalized = normalize_external_tool_catalog_paths(catalog, &catalog_base_dir);
+                validate_external_tool_catalog(&normalized, &resolved)?;
+                catalogs.push(ResolvedExternalToolCatalog {
+                    source_path: resolved,
+                    tools: normalized.tools,
+                });
+            }
+        }
+
+        Ok(catalogs)
     }
 
     pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
@@ -296,10 +341,184 @@ fn normalize_config_paths(config: &mut Config, base_dir: &Path) {
             );
         }
     }
+    for tool_import in &mut config.tool_imports {
+        let trimmed = tool_import.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        *tool_import = resolve_configured_path(base_dir, trimmed)
+            .to_string_lossy()
+            .to_string();
+    }
+}
+
+fn normalize_external_tool_catalog_paths(
+    mut catalog: ExternalToolCatalogFile,
+    base_dir: &Path,
+) -> ExternalToolCatalogFile {
+    for config in catalog.tools.values_mut() {
+        if let Some(source) = config.source.as_mut() {
+            if let Some(path) = source
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|v: &&str| !v.is_empty())
+            {
+                source.path = Some(
+                    normalize_path_lexically(resolve_configured_path(base_dir, path))
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            if let Some(manifest) = source
+                .manifest
+                .as_deref()
+                .map(str::trim)
+                .filter(|v: &&str| !v.is_empty())
+            {
+                source.manifest = Some(
+                    normalize_path_lexically(resolve_configured_path(base_dir, manifest))
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+
+        if let Some(execution) = config.execution.as_mut() {
+            if let Some(entry) = execution
+                .entry
+                .as_deref()
+                .map(str::trim)
+                .filter(|v: &&str| !v.is_empty())
+            {
+                execution.entry = Some(
+                    normalize_path_lexically(resolve_configured_path(base_dir, entry))
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            if let Some(arguments_schema_ref) = execution
+                .arguments_schema_ref
+                .as_deref()
+                .map(str::trim)
+                .filter(|v: &&str| !v.is_empty())
+            {
+                execution.arguments_schema_ref = Some(
+                    normalize_path_lexically(resolve_configured_path(
+                        base_dir,
+                        arguments_schema_ref,
+                    ))
+                    .to_string_lossy()
+                    .to_string(),
+                );
+            }
+        }
+
+        if let Some(catalog_meta) = config.catalog.as_mut() {
+            if catalog_meta.domain.is_none() || catalog_meta.family.is_none() {
+                if let Some(source_path) = config
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.path.as_deref())
+                {
+                    apply_catalog_path_defaults(catalog_meta, Path::new(source_path));
+                }
+            }
+        }
+    }
+    catalog
+}
+
+fn validate_external_tool_catalog(
+    catalog: &ExternalToolCatalogFile,
+    source_path: &Path,
+) -> Result<()> {
+    let mut names = HashSet::new();
+    for (tool_name, config) in &catalog.tools {
+        if !names.insert(tool_name) {
+            anyhow::bail!(
+                "duplicate external tool name `{}` in {}",
+                tool_name,
+                source_path.display()
+            );
+        }
+
+        if let Some(execution) = config.execution.as_ref() {
+            match execution.kind {
+                ExternalToolExecutionKind::ScriptRunner => {
+                    let entry = execution
+                        .entry
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    if entry.is_none() {
+                        anyhow::bail!(
+                            "external tool `{}` in {} declares executable mode but is missing execution.entry",
+                            tool_name,
+                            source_path.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_catalog_path_defaults(catalog: &mut ToolCatalogMetadata, path: &Path) {
+    let components = path
+        .parent()
+        .into_iter()
+        .flat_map(|parent| parent.components())
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if catalog.domain.is_none() {
+        if let Some(idx) = components.iter().rposition(|segment| segment == "tools") {
+            catalog.domain = components.get(idx + 1).cloned();
+            catalog.family = catalog
+                .family
+                .clone()
+                .or_else(|| components.get(idx + 2).cloned());
+            catalog.subfamily = catalog
+                .subfamily
+                .clone()
+                .or_else(|| components.get(idx + 3).cloned());
+        }
+    }
+}
+
+fn normalize_path_lexically(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 impl Default for ConfigLoader {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Resolve and load external tool catalog files for a project/workspace using
+/// the same configuration authority path as the main config loader.
+pub fn load_external_tool_catalogs_for_project<P: AsRef<Path>>(
+    project_dir: P,
+) -> Result<Vec<ResolvedExternalToolCatalog>> {
+    let inputs = ConfigAuthority::resolve_inputs(project_dir.as_ref());
+    let mut loader = ConfigLoader::new();
+    loader.load_with_inputs(&inputs)?;
+    loader.load_external_tool_catalogs()
 }

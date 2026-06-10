@@ -1,5 +1,6 @@
 use super::file_ops::{
-    migrate_legacy_toml_config, parse_jsonc, resolve_file_references, substitute_env_vars,
+    migrate_legacy_toml_config, parse_external_tool_catalog_jsonc, parse_jsonc,
+    resolve_file_references, substitute_env_vars,
 };
 use super::markdown_parser::{
     fallback_sanitize_yaml, parse_markdown_agent, parse_markdown_command,
@@ -8,6 +9,8 @@ use super::markdown_parser::{
 use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::*;
 use crate::{ShareMode, UiPreferencesConfig};
+use std::ffi::OsString;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDir {
@@ -34,6 +37,45 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn env_var_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<OsString>,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl ScopedEnvVar {
+    fn set<K>(key: &'static str, value: K) -> Self
+    where
+        K: AsRef<std::ffi::OsStr>,
+    {
+        let guard = env_var_lock()
+            .lock()
+            .expect("env var test lock should not be poisoned");
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self {
+            key,
+            previous,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
     }
 }
 
@@ -107,6 +149,26 @@ fn test_parse_jsonc_preserves_comment_markers_inside_strings() {
         Some("https://example.com/path//not-comment")
     );
     assert_eq!(openai.api_key.as_deref(), Some("abc/*not-comment*/def"));
+}
+
+#[test]
+fn test_parse_external_tool_catalog_jsonc() {
+    let content = r#"{
+        "tools": {
+            "dock_pose": {
+                "source": { "path": "./tools/cadd/molecular_docking/dock_pose.py" },
+                "catalog": { "domain": "cadd", "family": "molecular_docking" }
+            }
+        }
+    }"#;
+    let catalog = parse_external_tool_catalog_jsonc(content).unwrap();
+    let tool = catalog.tools.get("dock_pose").expect("tool should exist");
+    assert_eq!(
+        tool.catalog
+            .as_ref()
+            .and_then(|catalog| catalog.domain.as_deref()),
+        Some("cadd")
+    );
 }
 
 #[test]
@@ -233,7 +295,7 @@ fn test_isolated_workspace_without_local_agendao_config_still_inherits_global_co
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let resolved = ConfigAuthority::resolve(&child).unwrap();
     let cfg = resolved.config;
@@ -241,8 +303,6 @@ fn test_isolated_workspace_without_local_agendao_config_still_inherits_global_co
     assert_eq!(resolved.inputs.mode, WorkspaceMode::Isolated);
     assert_eq!(cfg.model.as_deref(), Some("global-model"));
     assert_eq!(cfg.theme.as_deref(), Some("light"));
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -268,7 +328,7 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let resolved = ConfigAuthority::resolve(&child).unwrap();
     let cfg = resolved.config;
@@ -277,8 +337,6 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
     assert_eq!(cfg.default_agent.as_deref(), Some("reviewer"));
     assert_eq!(cfg.model.as_deref(), None);
     assert_eq!(cfg.theme.as_deref(), None);
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -380,6 +438,255 @@ fn test_load_from_file_normalizes_scheduler_path_relative_to_config_file() {
                 .to_string_lossy()
                 .as_ref()
         )
+    );
+}
+
+#[test]
+fn test_load_from_file_normalizes_tool_imports_relative_to_config_file() {
+    let temp = TestDir::new("agendao_config_tool_imports");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    fs::create_dir_all(&config_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/cadd/tools.jsonc"] }"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+
+    assert_eq!(
+        loader.config().tool_imports,
+        vec![config_dir
+            .join("tools/cadd/tools.jsonc")
+            .to_string_lossy()
+            .to_string()]
+    );
+}
+
+#[test]
+fn test_load_external_tool_catalogs_reads_imported_files() {
+    let temp = TestDir::new("agendao_external_tool_catalogs");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools/cadd");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/cadd/tools.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_dir.join("tools.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "source": { "path": "./molecular_docking/dock_pose.py" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+
+    assert_eq!(catalogs.len(), 1);
+    let tool = catalogs[0]
+        .tools
+        .get("dock_pose")
+        .expect("dock_pose should exist");
+    assert_eq!(
+        tool.source
+            .as_ref()
+            .and_then(|source| source.path.as_deref()),
+        Some(
+            tools_dir
+                .join("molecular_docking/dock_pose.py")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+}
+
+#[test]
+fn test_external_tool_catalog_infers_catalog_from_tools_directory_layout() {
+    let temp = TestDir::new("agendao_external_tool_catalog_infer");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools/cadd/molecular_docking");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        config_dir.join("tools/catalog.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "source": { "path": "./cadd/molecular_docking/dock_pose.py" },
+      "catalog": {}
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+    let catalog = catalogs[0]
+        .tools
+        .get("dock_pose")
+        .and_then(|tool| tool.catalog.as_ref())
+        .expect("catalog should be inferred");
+
+    assert_eq!(catalog.domain.as_deref(), Some("cadd"));
+    assert_eq!(catalog.family.as_deref(), Some("molecular_docking"));
+}
+
+#[test]
+fn catalog_only_tool_allows_missing_execution() {
+    let temp = TestDir::new("agendao_external_tool_catalog_catalog_only");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_dir.join("catalog.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "source": { "path": "./cadd/molecular_docking/dock_pose.py" },
+      "catalog": { "domain": "cadd", "family": "molecular_docking" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+    let tool = catalogs[0]
+        .tools
+        .get("dock_pose")
+        .expect("dock_pose should exist");
+
+    assert!(tool.execution.is_none());
+}
+
+#[test]
+fn executable_tool_requires_execution_block() {
+    let temp = TestDir::new("agendao_external_tool_catalog_executable_invalid");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/catalog.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_dir.join("catalog.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "execution": { "kind": "script_runner" }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let error = loader
+        .load_external_tool_catalogs()
+        .expect_err("missing execution.entry should fail validation");
+
+    assert!(error
+        .to_string()
+        .contains("declares executable mode but is missing execution.entry"));
+}
+
+#[test]
+fn execution_paths_are_normalized_relative_to_catalog_file() {
+    let temp = TestDir::new("agendao_external_tool_catalog_execution_paths");
+    let root = temp.path.join("repo");
+    let config_dir = root.join(".agendao");
+    let tools_dir = config_dir.join("tools/cadd");
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    fs::write(
+        config_dir.join("agendao.jsonc"),
+        r#"{ "toolImports": ["tools/cadd/tools.jsonc"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        tools_dir.join("tools.jsonc"),
+        r#"{
+  "tools": {
+    "dock_pose": {
+      "execution": {
+        "kind": "script_runner",
+        "entry": "./../runners/dock_pose.py",
+        "arguments_schema_ref": "./schemas/../schemas/dock_pose.schema.json"
+      }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    loader
+        .load_from_file(config_dir.join("agendao.jsonc"))
+        .unwrap();
+    let catalogs = loader.load_external_tool_catalogs().unwrap();
+    let tool = catalogs[0]
+        .tools
+        .get("dock_pose")
+        .expect("dock_pose should exist");
+    let execution = tool.execution.as_ref().expect("execution should exist");
+    let expected_entry = config_dir
+        .join("tools/runners/dock_pose.py")
+        .to_string_lossy()
+        .to_string();
+    let expected_schema = config_dir
+        .join("tools/cadd/schemas/dock_pose.schema.json")
+        .to_string_lossy()
+        .to_string();
+
+    assert_eq!(execution.entry.as_deref(), Some(expected_entry.as_str()));
+    assert_eq!(
+        execution.arguments_schema_ref.as_deref(),
+        Some(expected_schema.as_str())
     );
 }
 
@@ -552,11 +859,10 @@ fn test_discover_web_plugins_prefers_later_roots_and_supports_mjs() {
 
 #[test]
 fn test_substitute_env_vars() {
-    std::env::set_var("AGENDAO_TEST_VAR", "test_value");
+    let _env = ScopedEnvVar::set("AGENDAO_TEST_VAR", "test_value");
     let input = r#"{"api_key": "{env:AGENDAO_TEST_VAR}"}"#;
     let result = substitute_env_vars(input);
     assert_eq!(result, r#"{"api_key": "test_value"}"#);
-    std::env::remove_var("AGENDAO_TEST_VAR");
 }
 
 #[test]
@@ -651,7 +957,7 @@ fn test_load_global_supports_agendao_json() {
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let mut loader = ConfigLoader::new();
     loader.load_global().unwrap();
@@ -659,8 +965,6 @@ fn test_load_global_supports_agendao_json() {
 
     assert_eq!(cfg.model.as_deref(), Some("global-json-model"));
     assert_eq!(cfg.theme.as_deref(), Some("light"));
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -680,7 +984,7 @@ fn test_load_global_prefers_json_over_jsonc_when_both_exist() {
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let mut loader = ConfigLoader::new();
     loader.load_global().unwrap();
@@ -691,8 +995,6 @@ fn test_load_global_prefers_json_over_jsonc_when_both_exist() {
         cfg.instructions,
         vec!["jsonc.md".to_string(), "json.md".to_string()]
     );
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -709,14 +1011,12 @@ fn test_load_all_does_not_double_load_global_config_files() {
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let mut loader = ConfigLoader::new();
     let cfg = loader.load_all(&project).unwrap();
 
     assert_eq!(cfg.instructions, vec!["global.md".to_string()]);
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -744,14 +1044,12 @@ fn test_load_all_ignores_ancestor_dot_agendao_but_keeps_global_config() {
     )
     .unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let cfg = load_config(&child).unwrap();
     let providers = cfg.provider.expect("provider map");
     assert!(providers.contains_key("global"));
     assert!(!providers.contains_key("sandbox"));
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[test]
@@ -763,7 +1061,7 @@ fn test_update_global_config_preserves_existing_json_file() {
     let config_path = agendao_dir.join("agendao.json");
     fs::write(&config_path, r#"{ "theme": "dark" }"#).unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
 
     let patch = Config {
         model: Some("global-model".to_string()),
@@ -776,8 +1074,6 @@ fn test_update_global_config_preserves_existing_json_file() {
     assert_eq!(config.theme.as_deref(), Some("dark"));
     assert_eq!(config.model.as_deref(), Some("global-model"));
     assert!(!agendao_dir.join("agendao.jsonc").exists());
-
-    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 // ── YAML frontmatter parsing tests ──────────────────────────────
