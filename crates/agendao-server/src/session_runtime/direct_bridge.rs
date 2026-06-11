@@ -63,7 +63,6 @@ pub enum DirectEvent {
     ToolCallCompleted {
         session_id: String,
     },
-    ConfigUpdated,
     ControlInputTransition {
         session_id: String,
         phase: String, // "start" | "end"
@@ -119,7 +118,6 @@ async fn direct_poll_loop(
     let mut pending_question_ids = HashSet::new();
     let mut pending_permission_ids: HashMap<String, String> = HashMap::new();
     let mut last_execution_count = 0usize;
-    let mut last_config_snapshot: Option<String> = None;
     let mut last_error: Option<String> = None;
     let mut interval = tokio::time::interval(Duration::from_millis(300));
 
@@ -282,15 +280,6 @@ async fn direct_poll_loop(
             let _ = tx.send(DirectEvent::TopologyChanged {
                 session_id: session_id.to_string(),
             });
-        }
-
-        // ── Config ────────────────────────────────────────────────
-        if let Ok(config) = crate::local_get_config(Arc::clone(state)).await {
-            let snapshot = format!("{:?}", config);
-            if last_config_snapshot.as_deref() != Some(&snapshot) {
-                last_config_snapshot = Some(snapshot);
-                let _ = tx.send(DirectEvent::ConfigUpdated);
-            }
         }
 
         // ── Error ──────────────────────────────────────────────────

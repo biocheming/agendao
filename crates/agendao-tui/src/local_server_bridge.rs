@@ -69,7 +69,6 @@ pub enum LocalServerEvent {
     ToolCallCompleted {
         session_id: String,
     },
-    ConfigUpdated,
     ControlInputTransition {
         session_id: String,
         phase: String,

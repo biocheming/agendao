@@ -341,7 +341,6 @@ pub(super) fn direct_event_to_state_change(
             session_id,
             tool_call_id: String::new(),
         },
-        LocalServerEvent::ConfigUpdated => StateChange::ConfigUpdated,
         LocalServerEvent::TopologyChanged { session_id } => {
             StateChange::TopologyChanged { session_id }
         }
