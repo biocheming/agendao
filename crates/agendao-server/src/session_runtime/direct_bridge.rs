@@ -45,6 +45,7 @@ pub enum DirectEvent {
         questions_json: Option<serde_json::Value>,
     },
     QuestionResolved {
+        session_id: String,
         request_id: String,
     },
     PermissionRequested {
@@ -233,6 +234,7 @@ async fn direct_poll_loop(
             {
                 pending_question_ids.remove(&resolved_id);
                 let _ = tx.send(DirectEvent::QuestionResolved {
+                    session_id: session_id.to_string(),
                     request_id: resolved_id,
                 });
             }
@@ -361,6 +363,18 @@ fn question_info_to_defs_json(info: &agendao_api::QuestionInfo) -> serde_json::V
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn question_resolved_event_carries_session_id() {
+        let event = super::DirectEvent::QuestionResolved {
+            session_id: "ses_direct".to_string(),
+            request_id: "q_123".to_string(),
+        };
+        let value = serde_json::to_value(&event).expect("direct event should serialize");
+        assert_eq!(value["type"], "question_resolved");
+        assert_eq!(value["session_id"], "ses_direct");
+        assert_eq!(value["request_id"], "q_123");
+    }
+
     #[test]
     fn direct_bridge_only_streams_assistant_text_blocks() {
         assert!(super::should_emit_text_output_block("assistant"));

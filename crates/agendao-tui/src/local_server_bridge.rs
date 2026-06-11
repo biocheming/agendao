@@ -51,6 +51,7 @@ pub enum LocalServerEvent {
         request_id: String,
     },
     QuestionResolved {
+        session_id: String,
         request_id: String,
     },
     PermissionRequested {

@@ -900,33 +900,39 @@ impl App {
                         }
                     }
                 }
-                if self.sync_runtime.last_question_sync.elapsed()
-                    >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
-                {
-                    self.queue_question_sync();
-                }
-                if self.sync_runtime.last_permission_sync.elapsed() >= self.permission_sync_interval()
-                {
-                    self.queue_permission_sync();
-                }
-                if self
-                    .sync_runtime
-                    .pending_question_sync_due_at
-                    .map(|due| Instant::now() >= due)
-                    .unwrap_or(false)
-                {
-                    tick_changed |= self.sync_question_requests();
-                    self.sync_runtime.last_question_sync = Instant::now();
+                if matches!(route, Route::Session { .. }) {
+                    if self.sync_runtime.last_question_sync.elapsed()
+                        >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
+                    {
+                        self.queue_question_sync();
+                    }
+                    if self.sync_runtime.last_permission_sync.elapsed()
+                        >= self.permission_sync_interval()
+                    {
+                        self.queue_permission_sync();
+                    }
+                    if self
+                        .sync_runtime
+                        .pending_question_sync_due_at
+                        .map(|due| Instant::now() >= due)
+                        .unwrap_or(false)
+                    {
+                        tick_changed |= self.sync_question_requests();
+                        self.sync_runtime.last_question_sync = Instant::now();
+                        self.sync_runtime.pending_question_sync_due_at = None;
+                    }
+                    if self
+                        .sync_runtime
+                        .pending_permission_sync_due_at
+                        .map(|due| Instant::now() >= due)
+                        .unwrap_or(false)
+                    {
+                        tick_changed |= self.sync_permission_requests();
+                        self.sync_runtime.last_permission_sync = Instant::now();
+                        self.sync_runtime.pending_permission_sync_due_at = None;
+                    }
+                } else {
                     self.sync_runtime.pending_question_sync_due_at = None;
-                }
-                if self
-                    .sync_runtime
-                    .pending_permission_sync_due_at
-                    .map(|due| Instant::now() >= due)
-                    .unwrap_or(false)
-                {
-                    tick_changed |= self.sync_permission_requests();
-                    self.sync_runtime.last_permission_sync = Instant::now();
                     self.sync_runtime.pending_permission_sync_due_at = None;
                 }
                 if self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval() {
@@ -943,7 +949,9 @@ impl App {
                     self.sync_runtime.last_aux_sync = Instant::now();
                     tick_changed = true;
                 }
-                if self.sync_runtime.last_process_refresh.elapsed() >= Duration::from_secs(2) {
+                if matches!(route, Route::Session { .. })
+                    && self.sync_runtime.last_process_refresh.elapsed() >= Duration::from_secs(2)
+                {
                     self.queue_process_refresh();
                 }
                 if self

@@ -783,6 +783,50 @@ fn permission_sync_does_not_clear_submitting_request_on_empty_poll() {
     assert!(app.permission_prompt.is_current_request_submitting());
 }
 
+#[test]
+fn direct_question_resolved_event_uses_payload_session_id() {
+    let direct = crate::local_server_bridge::LocalServerEvent::QuestionResolved {
+        session_id: "ses_direct".to_string(),
+        request_id: "q-1".to_string(),
+    };
+
+    let change = super::runtime::direct_event_to_state_change("ses_fallback", direct)
+        .expect("question resolved should map to state change");
+
+    match change {
+        StateChange::QuestionResolved {
+            session_id,
+            request_id,
+        } => {
+            assert_eq!(session_id, "ses_direct");
+            assert_eq!(request_id, "q-1");
+        }
+        other => panic!("unexpected state change: {other:?}"),
+    }
+}
+
+#[test]
+fn home_route_does_not_schedule_session_only_sync_ticks() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Instant::now();
+    let baseline = app
+        .next_tick_deadline(now)
+        .expect("home route should still have a deadline");
+
+    app.sync_runtime.last_question_sync = now - Duration::from_secs(60);
+    app.sync_runtime.last_permission_sync = now - Duration::from_secs(60);
+    app.sync_runtime.last_process_refresh = now - Duration::from_secs(60);
+    app.sync_runtime.pending_question_sync_due_at = Some(now);
+    app.sync_runtime.pending_permission_sync_due_at = Some(now);
+    app.sync_runtime.pending_process_refresh_due_at = Some(now);
+
+    let updated = app
+        .next_tick_deadline(now)
+        .expect("home route should still have a deadline");
+
+    assert_eq!(updated, baseline);
+}
+
 fn test_session_telemetry_snapshot(
     session_id: &str,
     active_stage_id: &str,

@@ -110,6 +110,16 @@ pub(super) fn spawn_server_event_listener_task(
         let mut recovery_sync_pending = false;
         loop {
             let connected_filter = read_session_filter(&session_filter);
+            if connected_filter
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                recovery_sync_pending = false;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
             let event_url = build_event_url(&base_event_url, connected_filter.as_deref());
             let mut source = match EventSource::new(client.get(event_url.clone())) {
                 Ok(source) => source,
@@ -573,6 +583,16 @@ mod tests {
     fn build_event_url_leaves_unfiltered_stream_plain() {
         let url = build_event_url("http://localhost:3000/event", None);
         assert_eq!(url.as_str(), "http://localhost:3000/event?tier=tui");
+    }
+
+    #[test]
+    fn blank_session_filter_is_treated_as_unsubscribed() {
+        let filter = Some("   ".to_string());
+        let active = filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        assert!(active.is_none());
     }
 
     #[test]
