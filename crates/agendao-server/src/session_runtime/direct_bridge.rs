@@ -80,6 +80,9 @@ pub enum DirectEvent {
 
 /// Spawn a Direct-mode event loop for one session. Returns a receiver
 /// that the frontend consumes.
+///
+/// P3: Now uses event_bus subscription instead of polling. Question/Permission
+/// are in the bus, SessionStatus/ToolCall/Topology flow through StageEvent.
 pub fn spawn_direct_event_loop(
     state: Arc<ServerState>,
     session_id: String,
@@ -87,7 +90,7 @@ pub fn spawn_direct_event_loop(
 ) -> mpsc::UnboundedReceiver<DirectEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        direct_poll_loop(&state, &session_id, tx, cancel).await;
+        direct_event_subscription_loop(&state, &session_id, tx, cancel).await;
     });
     rx
 }
@@ -414,6 +417,94 @@ fn question_info_to_defs_json(info: &agendao_api::QuestionInfo) -> serde_json::V
         })
         .collect();
     serde_json::Value::Array(defs)
+}
+
+/// P3: Event-driven Direct bridge - subscribes to canonical ServerEvent bus.
+/// Replaces polling with push-based events. Now that Question/Permission are
+/// in event_bus and SessionStatus/ToolCall/Topology flow through StageEvent,
+/// this mode should be complete enough for production use.
+async fn direct_event_subscription_loop(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    tx: mpsc::UnboundedSender<DirectEvent>,
+    cancel: CancellationToken,
+) {
+    let mut event_rx = state.event_bus.subscribe();
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            Ok(event_json) = event_rx.recv() => {
+                // Parse ServerEvent and convert to DirectEvent if relevant to this session
+                let Ok(server_event) = serde_json::from_str::<agendao_server_core::runtime_events::ServerEvent>(&event_json) else {
+                    continue;
+                };
+
+                let direct_event = match server_event {
+                    agendao_server_core::runtime_events::ServerEvent::SessionStatus { session_id: sid, status } if sid == session_id => {
+                        // Parse status to determine busy/idle/compacting/retrying
+                        if let Some(status_obj) = status.as_object() {
+                            match status_obj.get("type").and_then(|v| v.as_str()) {
+                                Some("idle") => Some(DirectEvent::SessionIdle { session_id: sid }),
+                                Some("busy") | Some("compacting") | Some("retry") => Some(DirectEvent::SessionBusy { session_id: sid }),
+                                _ => None,
+                            }
+                        } else if let Some(status_str) = status.as_str() {
+                            match status_str {
+                                "idle" => Some(DirectEvent::SessionIdle { session_id: sid }),
+                                _ => Some(DirectEvent::SessionBusy { session_id: sid }),
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::SessionUpdated { session_id: sid, .. } if sid == session_id => {
+                        Some(DirectEvent::SessionUpdated { session_id: sid })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::OutputBlock { session_id: sid, block, .. } if sid == session_id => {
+                        Some(DirectEvent::OutputBlock { session_id: sid, block })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::QuestionCreated { session_id: sid, request_id, questions } if sid == session_id => {
+                        Some(DirectEvent::QuestionCreated {
+                            session_id: sid,
+                            request_id,
+                            questions_json: Some(questions),
+                        })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::QuestionResolved { session_id: sid, request_id, .. } if sid == session_id => {
+                        Some(DirectEvent::QuestionResolved { session_id: sid, request_id })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::PermissionRequested { session_id: sid, permission_id, info } if sid == session_id => {
+                        Some(DirectEvent::PermissionRequested {
+                            session_id: sid,
+                            permission_id,
+                            info_json: Some(info),
+                        })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::PermissionResolved { session_id: sid, permission_id, .. } if sid == session_id => {
+                        Some(DirectEvent::PermissionResolved { session_id: sid, permission_id })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::ControlInputTransition { session_id: sid, kind, phase, .. } if sid == session_id => {
+                        Some(DirectEvent::ControlInputTransition {
+                            session_id: sid,
+                            phase: format!("{:?}", phase).to_lowercase(),
+                        })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::TopologyChanged { session_id: sid, .. } if sid == session_id => {
+                        Some(DirectEvent::TopologyChanged { session_id: sid })
+                    }
+                    agendao_server_core::runtime_events::ServerEvent::DiffUpdated { session_id: sid, .. } if sid == session_id => {
+                        Some(DirectEvent::DiffUpdated { session_id: sid })
+                    }
+                    _ => None,
+                };
+
+                if let Some(event) = direct_event {
+                    let _ = tx.send(event);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

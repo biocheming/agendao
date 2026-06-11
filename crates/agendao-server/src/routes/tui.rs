@@ -72,6 +72,11 @@ pub(crate) async fn request_question_answers_with_hook(
         questions: serde_json::to_value(&questions)
             .unwrap_or_else(|_| serde_json::Value::Array(vec![])),
     };
+
+    // P3: Broadcast to canonical event bus (all transports)
+    crate::session_runtime::events::broadcast_server_event(&state, &created_event);
+
+    // Legacy: Also send via SSE event_hook for backward compatibility
     if let Some(hook) = event_hook.as_ref() {
         if let Some(payload) = created_event.to_json_value() {
             hook(payload);
@@ -87,18 +92,23 @@ pub(crate) async fn request_question_answers_with_hook(
 
     match wait_result {
         Ok(Ok(QuestionReply::Answers(answers))) => {
+            let event = ServerEvent::QuestionResolved {
+                session_id: question_info.session_id.clone(),
+                request_id: question_info.id.clone(),
+                resolution: Some(
+                    crate::session_runtime::events::QuestionResolutionKind::Answered,
+                ),
+                answers: Some(
+                    serde_json::to_value(&answers).unwrap_or(serde_json::Value::Null),
+                ),
+                reason: None,
+            };
+
+            // P3: Broadcast to canonical event bus
+            crate::session_runtime::events::broadcast_server_event(&state, &event);
+
+            // Legacy: Also send via SSE event_hook
             if let Some(hook) = event_hook.as_ref() {
-                let event = ServerEvent::QuestionResolved {
-                    session_id: question_info.session_id,
-                    request_id: question_info.id,
-                    resolution: Some(
-                        crate::session_runtime::events::QuestionResolutionKind::Answered,
-                    ),
-                    answers: Some(
-                        serde_json::to_value(&answers).unwrap_or(serde_json::Value::Null),
-                    ),
-                    reason: None,
-                };
                 if let Some(payload) = event.to_json_value() {
                     hook(payload);
                 }
@@ -106,16 +116,21 @@ pub(crate) async fn request_question_answers_with_hook(
             Ok(answers)
         }
         Ok(Ok(QuestionReply::Rejected)) => {
+            let event = ServerEvent::QuestionResolved {
+                session_id: question_info.session_id.clone(),
+                request_id: question_info.id.clone(),
+                resolution: Some(
+                    crate::session_runtime::events::QuestionResolutionKind::Rejected,
+                ),
+                answers: None,
+                reason: None,
+            };
+
+            // P3: Broadcast to canonical event bus
+            crate::session_runtime::events::broadcast_server_event(&state, &event);
+
+            // Legacy: Also send via SSE event_hook
             if let Some(hook) = event_hook.as_ref() {
-                let event = ServerEvent::QuestionResolved {
-                    session_id: question_info.session_id,
-                    request_id: question_info.id,
-                    resolution: Some(
-                        crate::session_runtime::events::QuestionResolutionKind::Rejected,
-                    ),
-                    answers: None,
-                    reason: None,
-                };
                 if let Some(payload) = event.to_json_value() {
                     hook(payload);
                 }
@@ -125,16 +140,21 @@ pub(crate) async fn request_question_answers_with_hook(
             ))
         }
         Ok(Ok(QuestionReply::Cancelled)) => {
+            let event = ServerEvent::QuestionResolved {
+                session_id: question_info.session_id.clone(),
+                request_id: question_info.id.clone(),
+                resolution: Some(
+                    crate::session_runtime::events::QuestionResolutionKind::Cancelled,
+                ),
+                answers: None,
+                reason: Some("cancelled".to_string()),
+            };
+
+            // P3: Broadcast to canonical event bus
+            crate::session_runtime::events::broadcast_server_event(&state, &event);
+
+            // Legacy: Also send via SSE event_hook
             if let Some(hook) = event_hook.as_ref() {
-                let event = ServerEvent::QuestionResolved {
-                    session_id: question_info.session_id,
-                    request_id: question_info.id,
-                    resolution: Some(
-                        crate::session_runtime::events::QuestionResolutionKind::Cancelled,
-                    ),
-                    answers: None,
-                    reason: Some("cancelled".to_string()),
-                };
                 if let Some(payload) = event.to_json_value() {
                     hook(payload);
                 }
@@ -613,5 +633,72 @@ mod tests {
             event.get("type").and_then(|value| value.as_str()) == Some("question.resolved")
                 && event.get("resolution").and_then(|value| value.as_str()) == Some("rejected")
         }));
+    }
+
+    #[tokio::test]
+    async fn request_question_answers_emits_to_canonical_event_bus() {
+        let state = Arc::new(ServerState::new());
+        let session_id = "session-1".to_string();
+        let mut rx = state.event_bus.subscribe();
+
+        let state_for_answer = state.clone();
+        let responder = tokio::spawn(async move {
+            loop {
+                let questions = state_for_answer.runtime_telemetry.list_questions().await;
+                if let Some(question) = questions.first() {
+                    state_for_answer
+                        .runtime_control
+                        .answer_question(&question.id, vec![vec!["Yes".to_string()]])
+                        .await;
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let request_task = tokio::spawn(async move {
+            request_question_answers_with_hook(
+                state,
+                session_id.clone(),
+                vec![sample_question()],
+                None, // No event_hook - only canonical bus
+            )
+            .await
+        });
+
+        // Expect QuestionCreated on event_bus
+        let mut saw_created = false;
+        let mut saw_resolved = false;
+        let mut question_id = String::new();
+
+        for _ in 0..10 {
+            let raw = rx.recv().await.expect("question lifecycle event");
+            let json: serde_json::Value =
+                serde_json::from_str(&raw).expect("question lifecycle json");
+
+            match json["type"].as_str() {
+                Some("question.created") => {
+                    assert_eq!(json["sessionID"], "session-1");
+                    question_id = json["requestID"].as_str().unwrap_or("").to_string();
+                    saw_created = true;
+                }
+                Some("question.resolved") if json["requestID"] == question_id => {
+                    assert_eq!(json["sessionID"], "session-1");
+                    assert_eq!(json["resolution"], "answered");
+                    saw_resolved = true;
+                }
+                _ => {}
+            }
+
+            if saw_created && saw_resolved {
+                break;
+            }
+        }
+
+        responder.await.expect("responder join");
+        request_task.await.expect("request join").expect("question answers");
+
+        assert!(saw_created, "missing question.created on event_bus");
+        assert!(saw_resolved, "missing question.resolved on event_bus");
     }
 }

@@ -420,6 +420,14 @@ pub(crate) async fn request_permission(
         )
         .await;
 
+    // P3: Broadcast PermissionRequested to canonical event bus
+    let requested_event = agendao_server_core::runtime_events::ServerEvent::PermissionRequested {
+        session_id: session_id.clone(),
+        permission_id: permission_id.clone(),
+        info: serde_json::to_value(&request_info).unwrap_or(serde_json::Value::Null),
+    };
+    crate::session_runtime::events::broadcast_server_event(&state, &requested_event);
+
     // Push session.updated so frontend refresh path triggers for pending state.
     crate::session_runtime::events::broadcast_session_reconcile(
         &state,
@@ -437,17 +445,28 @@ pub(crate) async fn request_permission(
         .await;
 
     match wait_result {
-        Ok(Ok(PermissionReply { reply, message })) => match reply.as_str() {
-            "once" | "turn" | "session" | "always" => Ok(()),
-            "reject" => Err(agendao_tool::ToolError::PermissionDenied(
-                message
-                    .unwrap_or_else(|| format!("Permission rejected for {}", request.permission)),
-            )),
-            other => Err(agendao_tool::ToolError::ExecutionError(format!(
-                "Invalid permission reply: {}",
-                other
-            ))),
-        },
+        Ok(Ok(PermissionReply { reply, message })) => {
+            // P3: Broadcast PermissionResolved to canonical event bus
+            let resolved_event = agendao_server_core::runtime_events::ServerEvent::PermissionResolved {
+                session_id: session_id.clone(),
+                permission_id: permission_id.clone(),
+                reply: reply.clone(),
+                message: message.clone(),
+            };
+            crate::session_runtime::events::broadcast_server_event(&state, &resolved_event);
+
+            match reply.as_str() {
+                "once" | "turn" | "session" | "always" => Ok(()),
+                "reject" => Err(agendao_tool::ToolError::PermissionDenied(
+                    message
+                        .unwrap_or_else(|| format!("Permission rejected for {}", request.permission)),
+                )),
+                other => Err(agendao_tool::ToolError::ExecutionError(format!(
+                    "Invalid permission reply: {}",
+                    other
+                ))),
+            }
+        }
         Ok(Err(_)) => {
             let mut sessions = state.sessions.lock().await;
             if let Some(session) = sessions.get_mut(&session_id) {
