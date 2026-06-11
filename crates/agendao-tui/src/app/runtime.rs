@@ -1,6 +1,17 @@
 use super::*;
 
 impl App {
+    pub(super) fn active_session_status(&self) -> Option<SessionStatus> {
+        let session_id = self.current_session_id()?;
+        let session_ctx = self.context.session.read();
+        Some(session_ctx.status(&session_id).clone())
+    }
+
+    pub(super) fn local_direct_idle_session(&self) -> bool {
+        self.local_direct
+            && matches!(self.active_session_status(), Some(SessionStatus::Idle))
+    }
+
     fn permission_interaction_active(&self) -> bool {
         !self.permission_runtime.pending_ids.is_empty() || self.permission_prompt.is_open
     }
@@ -80,9 +91,12 @@ impl App {
     pub(crate) fn next_tick_deadline(&self, now: Instant) -> Option<Instant> {
         let mut deadline = None;
 
-        let mut schedule_at = |candidate: Instant| match deadline {
+        let mut schedule_at = |candidate: Instant| {
+            let candidate = candidate.max(now);
+            match deadline {
             Some(current) if current <= candidate => {}
             _ => deadline = Some(candidate),
+            }
         };
 
         let mut schedule_after_last_tick = |delta: Duration| {
@@ -119,15 +133,15 @@ impl App {
             }
             if let Some(due_at) = self.sync_runtime.pending_process_refresh_due_at {
                 schedule_at(due_at);
+            } else if self.session_sidebar_visible() && !self.local_direct_idle_session() {
+                schedule_at(self.sync_runtime.last_process_refresh + Duration::from_secs(2));
             }
 
-            schedule_at(
-                self.sync_runtime.last_full_session_sync
-                    + Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS),
-            );
-
-            if self.session_sidebar_visible() {
-                schedule_at(self.sync_runtime.last_process_refresh + Duration::from_secs(2));
+            if !self.local_direct_idle_session() {
+                schedule_at(
+                    self.sync_runtime.last_full_session_sync
+                        + Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS),
+                );
             }
         }
 
@@ -135,7 +149,7 @@ impl App {
         if has_active_session {
             if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
                 schedule_at(due_at);
-            } else {
+            } else if !self.local_direct_idle_session() || self.question_prompt.is_open {
                 schedule_at(
                     self.sync_runtime.last_question_sync
                         + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
@@ -143,7 +157,7 @@ impl App {
             }
             if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
                 schedule_at(due_at);
-            } else {
+            } else if !self.local_direct_idle_session() || self.permission_prompt.is_open {
                 schedule_at(
                     self.sync_runtime.last_permission_sync + self.permission_sync_interval(),
                 );

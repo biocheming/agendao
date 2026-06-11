@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -64,6 +66,15 @@ pub async fn local_list_sessions(
     .await
     .map_err(api_error)?;
     Ok(response.items)
+}
+
+pub async fn local_get_session_status(
+    state: Arc<ServerState>,
+) -> anyhow::Result<std::collections::HashMap<String, agendao_types::SessionStatusInfo>> {
+    let Json(status) = super::session_crud::session_status(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(status)
 }
 
 pub async fn local_delete_session(
@@ -158,6 +169,50 @@ pub async fn local_reply_permission(
     .await
     .map_err(api_error)?;
     Ok(())
+}
+
+pub async fn local_get_session_runtime(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<agendao_server_core::runtime_state::SessionRuntimeState> {
+    let Json(runtime) =
+        super::session_crud::get_session_runtime(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(runtime)
+}
+
+pub async fn local_get_session_telemetry(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<super::telemetry::SessionTelemetrySnapshot> {
+    let Json(snapshot) =
+        super::telemetry::get_session_telemetry(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(snapshot)
+}
+
+pub async fn local_get_session_todos(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<Vec<agendao_types::SessionTodoInfo>> {
+    let Json(todos) =
+        super::session_crud::get_session_todos(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(todos)
+}
+
+pub async fn local_get_session_diff(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<Vec<agendao_types::FileDiff>> {
+    let Json(diffs) =
+        super::session_crud::get_session_diff(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(diffs)
 }
 
 pub async fn local_fork_session(

@@ -113,13 +113,17 @@ async fn direct_poll_loop(
     cancel: CancellationToken,
 ) {
     let mut last_message_count = 0usize;
+    let mut last_session_updated_at = None;
     let mut last_active_state: Option<bool> = None;
     let mut last_tool_state: Option<String> = None;
     let mut pending_question_ids = HashSet::new();
     let mut pending_permission_ids: HashMap<String, String> = HashMap::new();
-    let mut last_execution_count = 0usize;
+    let mut last_execution_count: usize;
     let mut last_error: Option<String> = None;
-    let mut interval = tokio::time::interval(Duration::from_millis(300));
+    let mut idle_rounds = 0u32;
+    if let Ok(session) = crate::local_get_session(Arc::clone(state), session_id).await {
+        last_session_updated_at = Some(session.time.updated);
+    }
 
     if let Ok(messages) = crate::local_list_messages(Arc::clone(state), session_id, None, None).await {
         last_message_count = messages.len();
@@ -158,10 +162,13 @@ async fn direct_poll_loop(
         .await;
     last_execution_count = topology.active_count + topology.running_count;
 
+    let mut current_interval_ms = 300u64;
+
     loop {
+        let deadline = tokio::time::sleep(Duration::from_millis(current_interval_ms));
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = interval.tick() => {},
+            _ = deadline => {},
         }
 
         // ── Run status ─────────────────────────────────────────────
@@ -188,15 +195,21 @@ async fn direct_poll_loop(
             last_active_state = Some(is_active);
         }
 
-        // ── Messages ──────────────────────────────────────────────
-        let Ok(messages) =
-            crate::local_list_messages(Arc::clone(state), session_id, None, None).await
-        else {
+        let Ok(session) = crate::local_get_session(Arc::clone(state), session_id).await else {
             break;
         };
+        let session_changed = last_session_updated_at != Some(session.time.updated);
+        last_session_updated_at = Some(session.time.updated);
 
-        let count = messages.len();
-        if count > last_message_count {
+        // ── Messages ──────────────────────────────────────────────
+        if session_changed {
+            let Ok(messages) =
+                crate::local_list_messages(Arc::clone(state), session_id, None, None).await
+            else {
+                break;
+            };
+
+            let count = messages.len();
             let prev_count = last_message_count;
             last_message_count = count;
             let _ = tx.send(DirectEvent::SessionUpdated {
@@ -208,19 +221,21 @@ async fn direct_poll_loop(
             // optimistic/submit path and later reconciled through
             // SessionUpdated + transcript sync. Re-emitting them here creates
             // transient duplicate/triplicate prompt rows in Direct mode.
-            for msg in messages.iter().skip(prev_count) {
-                if should_emit_text_output_block(&msg.role) {
-                    for part in &msg.parts {
-                        if let Some(text) = part.text.as_deref() {
-                            let _ = tx.send(DirectEvent::OutputBlock {
-                                session_id: session_id.to_string(),
-                                block: serde_json::json!({
-                                    "kind": "message",
-                                    "role": msg.role,
-                                    "text": text,
-                                    "messageId": msg.id,
-                                }),
-                            });
+            if count > prev_count {
+                for msg in messages.iter().skip(prev_count) {
+                    if should_emit_text_output_block(&msg.role) {
+                        for part in &msg.parts {
+                            if let Some(text) = part.text.as_deref() {
+                                let _ = tx.send(DirectEvent::OutputBlock {
+                                    session_id: session_id.to_string(),
+                                    block: serde_json::json!({
+                                        "kind": "message",
+                                        "role": msg.role,
+                                        "text": text,
+                                        "messageId": msg.id,
+                                    }),
+                                });
+                            }
                         }
                     }
                 }
@@ -244,6 +259,24 @@ async fn direct_poll_loop(
                     });
                 }
                 last_tool_state = current_tool_state;
+            }
+            let current_error = messages
+                .last()
+                .and_then(|m| m.error.as_deref())
+                .filter(|e| !e.is_empty())
+                .map(|e| e.to_string());
+            if current_error != last_error {
+                last_error = current_error.clone();
+                if let Some(err) = current_error {
+                    let _ = tx.send(DirectEvent::OutputBlock {
+                        session_id: session_id.to_string(),
+                        block: serde_json::json!({
+                            "kind": "status",
+                            "tone": "error",
+                            "text": err,
+                        }),
+                    });
+                }
             }
         }
 
@@ -319,25 +352,21 @@ async fn direct_poll_loop(
             });
         }
 
-        // ── Error ──────────────────────────────────────────────────
-        let current_error = messages
-            .last()
-            .and_then(|m| m.error.as_deref())
-            .filter(|e| !e.is_empty())
-            .map(|e| e.to_string());
-        if current_error != last_error {
-            last_error = current_error.clone();
-            if let Some(err) = current_error {
-                let _ = tx.send(DirectEvent::OutputBlock {
-                    session_id: session_id.to_string(),
-                    block: serde_json::json!({
-                        "kind": "status",
-                        "tone": "error",
-                        "text": err,
-                    }),
-                });
-            }
+        // ── Adaptive backoff ───────────────────────────────────────
+        let has_activity = is_active
+            || !pending_question_ids.is_empty()
+            || !pending_permission_ids.is_empty()
+            || last_execution_count > 0;
+
+        if !has_activity {
+            idle_rounds = idle_rounds.saturating_add(1);
+        } else {
+            idle_rounds = 0;
         }
+
+        // After 5 consecutive idle rounds, backoff to 1500ms; stay at 300ms otherwise
+        current_interval_ms = if idle_rounds >= 5 { 1500 } else { 300 };
+
     }
 }
 

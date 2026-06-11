@@ -419,7 +419,7 @@ impl App {
             let session_ctx = self.context.session.read();
             session_ctx.status(&session_id).clone()
         };
-        let is_active = !matches!(status, SessionStatus::Idle);
+        let is_active = self.session_status_requires_spinner(&session_id, &status);
         self.prompt.set_spinner_active(is_active);
         if !is_active {
             self.prompt.clear_interrupt_confirmation();
@@ -434,6 +434,33 @@ impl App {
 
         before_active != self.prompt.spinner_active()
             || before_kind != self.prompt.spinner_task_kind()
+    }
+
+    fn session_status_requires_spinner(&self, session_id: &str, status: &SessionStatus) -> bool {
+        // Early exit: Idle status is authoritative
+        if matches!(status, SessionStatus::Idle) {
+            return false;
+        }
+
+        // Runtime is the canonical authority for session running state
+        if let Some(runtime) = self.context.session_runtime() {
+            if runtime.session_id == session_id {
+                return runtime.pending_permission.is_some()
+                    || runtime.pending_question.is_some()
+                    || runtime.active_stage_id.is_some()
+                    || runtime.active_stage_count > 0
+                    || !runtime.active_tools.is_empty()
+                    || !matches!(runtime.run_status, crate::api::SessionRunStatusKind::Idle);
+            }
+        }
+
+        // Fallback: check pending UI-level permission/question
+        if self.context.get_pending_permission().is_some() || self.context.has_pending_question() {
+            return true;
+        }
+
+        // No spinner needed - runtime authority says idle
+        false
     }
 
     pub(super) fn infer_spinner_task_kind(

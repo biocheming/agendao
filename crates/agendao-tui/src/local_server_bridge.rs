@@ -7,7 +7,8 @@ use agendao_client::{
     MultimodalPolicyResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
     PermissionRequestInfo, PromptRequest, PromptResponse, ProviderConnectSchemaResponse,
     ProviderDescriptorResponse, ProviderListResponse, QuestionInfo, RefreshProviderCatalogResponse,
-    ResolveProviderConnectResponse, SessionListItem,
+    ResolveProviderConnectResponse, SessionListItem, SessionRuntimeState,
+    SessionTelemetrySnapshot,
 };
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -201,6 +202,20 @@ pub async fn local_list_sessions(
 }
 
 #[cfg(feature = "local-server")]
+pub async fn local_get_session_status(
+    state: Arc<LocalServerState>,
+) -> Result<std::collections::HashMap<String, agendao_types::SessionStatusInfo>> {
+    agendao_server_local::local_get_session_status(state).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_get_session_status(
+    _state: Arc<LocalServerState>,
+) -> Result<std::collections::HashMap<String, agendao_types::SessionStatusInfo>> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
 pub async fn local_delete_session(state: Arc<LocalServerState>, session_id: &str) -> Result<bool> {
     agendao_server_local::local_delete_session(state, session_id).await
 }
@@ -317,6 +332,70 @@ pub async fn local_reply_permission(
     _reply: String,
     _message: Option<String>,
 ) -> Result<()> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
+pub async fn local_get_session_runtime(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<SessionRuntimeState> {
+    agendao_server_local::local_get_session_runtime(state, session_id).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_get_session_runtime(
+    _state: Arc<LocalServerState>,
+    _session_id: &str,
+) -> Result<SessionRuntimeState> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
+pub async fn local_get_session_telemetry(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<SessionTelemetrySnapshot> {
+    agendao_server_local::local_get_session_telemetry(state, session_id).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_get_session_telemetry(
+    _state: Arc<LocalServerState>,
+    _session_id: &str,
+) -> Result<SessionTelemetrySnapshot> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
+pub async fn local_get_session_todos(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<Vec<agendao_types::SessionTodoInfo>> {
+    agendao_server_local::local_get_session_todos(state, session_id).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_get_session_todos(
+    _state: Arc<LocalServerState>,
+    _session_id: &str,
+) -> Result<Vec<agendao_types::SessionTodoInfo>> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
+pub async fn local_get_session_diff(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<Vec<agendao_types::FileDiff>> {
+    agendao_server_local::local_get_session_diff(state, session_id).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_get_session_diff(
+    _state: Arc<LocalServerState>,
+    _session_id: &str,
+) -> Result<Vec<agendao_types::FileDiff>> {
     Err(anyhow::anyhow!("local server bridge unavailable"))
 }
 
