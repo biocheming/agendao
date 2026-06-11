@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::skill_support::{
     attach_skill_runtime_preflight, authority_for, format_loaded_skill_file_output,
-    format_loaded_skill_output, load_skill_file_with_runtime_materialization,
+    format_loaded_skill_output, format_supporting_files_hint, load_skill_file_with_runtime_materialization,
     load_skill_prompt_packet_with_runtime_materialization, map_skill_error, resolve_skill_filter,
     resolve_skill_with_runtime_materialization,
 };
@@ -71,14 +71,56 @@ impl Tool for SkillViewTool {
                     .with_always(&meta.name),
             )
             .await?;
-            let loaded = load_skill_file_with_runtime_materialization(
+            let loaded = match load_skill_file_with_runtime_materialization(
                 Path::new(&ctx.directory),
                 ctx.config_store.clone(),
                 &input.name,
                 file_path,
                 Some(&filter),
                 Some(&ctx.extra),
-            )?;
+            ) {
+                Ok(loaded) => loaded,
+                Err(ToolError::InvalidArguments(message))
+                    if message.starts_with("Skill file not found for ")
+                        || message.starts_with("Invalid skill file path for ") =>
+                {
+                    let packet = load_skill_prompt_packet_with_runtime_materialization(
+                        Path::new(&ctx.directory),
+                        ctx.config_store.clone(),
+                        &input.name,
+                        Some(&filter),
+                        Some(std::slice::from_ref(&input.name)),
+                    )?;
+                    let (output, mut metadata) =
+                        format_loaded_skill_output(&packet, None, None);
+                    metadata.insert(
+                        "requested_file_path".to_string(),
+                        serde_json::json!(file_path),
+                    );
+                    metadata.insert(
+                        "file_path_error".to_string(),
+                        serde_json::json!(message.clone()),
+                    );
+                    metadata.insert(
+                        "hint".to_string(),
+                        serde_json::json!(format_supporting_files_hint(&meta.supporting_files)),
+                    );
+                    attach_skill_runtime_preflight(
+                        &mut metadata,
+                        &packet.meta.name,
+                        &packet.meta.name,
+                        &meta.supporting_files,
+                        &packet.detail,
+                    );
+                    return Ok(ToolResult {
+                        title: format!("Loaded skill: {}", packet.meta.name),
+                        output,
+                        metadata,
+                        truncated: false,
+                    });
+                }
+                Err(err) => return Err(err),
+            };
             let detail = authority
                 .load_skill_detail_for_meta_for_inspection(&meta)
                 .map_err(map_skill_error)?;
@@ -200,5 +242,55 @@ Use clear visual hierarchy.
             .as_str()
             .expect("file_path description")
             .contains("Do not pass category paths like `skills/semantic-scholar/skill.md`"));
+    }
+
+    #[tokio::test]
+    async fn skill_view_missing_supporting_file_falls_back_to_main_skill_with_hint() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join(".agendao/skills/pubmed-database");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: pubmed-database
+description: PubMed search
+---
+Use PubMed APIs.
+"#,
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("scripts/search.py"), "print('ok')\n").unwrap();
+
+        let ctx = ToolContext::new(
+            "session-1".into(),
+            "message-1".into(),
+            dir.path().to_string_lossy().to_string(),
+        );
+        let result = SkillViewTool
+            .execute(
+                serde_json::json!({
+                    "name": "pubmed-database",
+                    "file_path": "references/api.md"
+                }),
+                ctx,
+            )
+            .await
+            .expect("fallback should succeed");
+
+        assert_eq!(result.title, "Loaded skill: pubmed-database");
+        assert!(result.output.contains("# Skill: pubmed-database"));
+        assert_eq!(
+            result.metadata.get("requested_file_path"),
+            Some(&serde_json::json!("references/api.md"))
+        );
+        assert!(result.metadata["file_path_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Skill file not found"));
+        assert!(!result.metadata["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .is_empty());
     }
 }

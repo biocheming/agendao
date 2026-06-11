@@ -297,6 +297,25 @@ fn result_title(info: &TerminalToolResultInfo) -> Option<&str> {
         .filter(|title| !title.is_empty())
 }
 
+fn equivalent_tool_label<'a>(
+    rendered_name: &'a str,
+    title: Option<&'a str>,
+    summary: Option<&'a str>,
+) -> Option<&'a str> {
+    let rendered_name = rendered_name.trim();
+    if rendered_name.is_empty() {
+        return None;
+    }
+
+    for candidate in [title, summary].into_iter().flatten() {
+        if candidate.trim().eq_ignore_ascii_case(rendered_name) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 fn dedupe_repeated_title_prefix<'a>(
     title: Option<&'a str>,
     lines: &'a [&'a str],
@@ -311,6 +330,26 @@ fn dedupe_repeated_title_prefix<'a>(
         &lines[1..]
     } else {
         lines
+    }
+}
+
+fn should_render_body_title(
+    rendered_name: &str,
+    title: Option<&str>,
+    summary: Option<&str>,
+    output_lines: &[&str],
+) -> bool {
+    let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+
+    if equivalent_tool_label(rendered_name, Some(title), summary).is_some() {
+        return false;
+    }
+
+    match output_lines.first().map(|line| line.trim()) {
+        Some(first) if first.eq_ignore_ascii_case(title) => false,
+        _ => true,
     }
 }
 
@@ -367,6 +406,13 @@ fn should_show_inline_argument_preview(
     }
 }
 
+fn arguments_toggle_promotes_block(normalized: &str) -> bool {
+    !matches!(
+        normalized,
+        "task" | "question" | "todowrite" | "todo_write" | "batch" | "apply_patch" | "applypatch"
+    )
+}
+
 /// Render a single tool call as lines (inline or block style)
 pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCallRenderOutput {
     let ToolCallRenderInput {
@@ -400,8 +446,8 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
         };
     }
 
-    let block_mode =
-        is_block_tool(name, state, result, show_tool_details) || arguments_need_toggle(arguments);
+    let block_mode = is_block_tool(name, state, result, show_tool_details)
+        || (arguments_need_toggle(arguments) && arguments_toggle_promotes_block(&normalized));
     let read_summary = if is_read_tool(&normalized) {
         result.and_then(|info| {
             if info.is_error {
@@ -573,16 +619,17 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
                 render_question_result_block(result_text, arguments, theme, bg, &mut lines);
             } else if show_tool_details {
                 let title = result_title(info);
-                if let Some(title) = result_title(info) {
+                let summary = display_summary(info);
+                let output_lines = result_text.lines().collect::<Vec<_>>();
+                let output_lines = dedupe_repeated_title_prefix(title, &output_lines);
+                if should_render_body_title(name, title, summary, output_lines) {
                     lines.push(block_content_line(
-                        format_preview_line(title, 96),
+                        format_preview_line(title.expect("body title guarded"), 96),
                         Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
                         theme,
                         bg,
                     ));
                 }
-                let output_lines = result_text.lines().collect::<Vec<_>>();
-                let output_lines = dedupe_repeated_title_prefix(title, &output_lines);
                 let (list_root, list_entries) = if is_list_tool(&normalized) {
                     split_list_output(output_lines)
                 } else {
@@ -1990,6 +2037,86 @@ mod tests {
             .filter(|line| line.contains("Execute shell command"))
             .count();
         assert!(repeated <= 2, "{joined_lines:?}");
+    }
+
+    #[test]
+    fn tool_result_message_path_does_not_triple_repeat_catalog_title() {
+        let theme = crate::theme::Theme::dark();
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 0,
+                name: "Catalog search results",
+                arguments: "",
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "Catalog search results\n- `bash` [shell] executable=yes".to_string(),
+                    is_error: false,
+                    title: Some("Catalog search results".to_string()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let joined_lines = output
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let repeated = joined_lines
+            .iter()
+            .filter(|line| line.contains("Catalog search results"))
+            .count();
+        assert_eq!(repeated, 1, "{joined_lines:?}");
+    }
+
+    #[test]
+    fn tool_result_message_path_does_not_triple_repeat_artifact_title() {
+        let theme = crate::theme::Theme::dark();
+        let path = ".agendao/session-artifacts/ses-1/tool-results/tool-call-0.txt";
+        let title = format!("Artifact read: {}", path);
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 0,
+                name: &title,
+                arguments: "",
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: format!("{title}\nline1\nline2"),
+                    is_error: false,
+                    title: Some(title.clone()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let joined_lines = output
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let repeated = joined_lines
+            .iter()
+            .filter(|line| line.contains(path))
+            .count();
+        assert_eq!(repeated, 1, "{joined_lines:?}");
     }
 
     #[test]
