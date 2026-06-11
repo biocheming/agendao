@@ -355,6 +355,7 @@ fn should_render_body_title(
 
 fn header_preview_for_block_tool(
     normalized: &str,
+    rendered_name: &str,
     arguments: &str,
     result: Option<&TerminalToolResultInfo>,
 ) -> Option<String> {
@@ -366,10 +367,14 @@ fn header_preview_for_block_tool(
         return None;
     }
 
+    let title = result.and_then(result_title);
+    let summary = result.and_then(display_summary);
+    if equivalent_tool_label(rendered_name, title, summary).is_some() {
+        return None;
+    }
+
     tool_argument_preview(normalized, arguments).or_else(|| {
-        result
-            .and_then(result_title)
-            .map(|title| format_preview_line(title, 60))
+        title.map(|value| format_preview_line(value, 60))
     })
 }
 
@@ -476,7 +481,7 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             Span::styled(name.to_string(), name_style.bg(bg)),
         ];
 
-        if let Some(preview) = header_preview_for_block_tool(&normalized, arguments, result) {
+        if let Some(preview) = header_preview_for_block_tool(&normalized, name, arguments, result) {
             main_spans.push(Span::styled(
                 format!("  {}", preview),
                 Style::default().fg(theme.text_muted).bg(bg),
@@ -748,15 +753,19 @@ pub fn render_tool_call(input: ToolCallRenderInput<'_>, theme: &Theme) -> ToolCa
             }
         } else {
             if let Some(summary) = display_summary(info) {
-                main_spans.push(Span::styled(
-                    format!(" — {}", format_preview_line(summary, 80)),
-                    Style::default().fg(theme.text_muted),
-                ));
+                if equivalent_tool_label(name, result_title(info), Some(summary)).is_none() {
+                    main_spans.push(Span::styled(
+                        format!(" — {}", format_preview_line(summary, 80)),
+                        Style::default().fg(theme.text_muted),
+                    ));
+                }
             } else if let Some(title) = result_title(info) {
-                main_spans.push(Span::styled(
-                    format!(" — {}", format_preview_line(title, 80)),
-                    Style::default().fg(theme.text_muted),
-                ));
+                if equivalent_tool_label(name, Some(title), None).is_none() {
+                    main_spans.push(Span::styled(
+                        format!(" — {}", format_preview_line(title, 80)),
+                        Style::default().fg(theme.text_muted),
+                    ));
+                }
             } else if normalized == "batch" {
                 let summary = summarize_block_items_inline(&build_batch_result_items(
                     &info.output,
@@ -1259,6 +1268,10 @@ mod tests {
     use agendao_command_render::terminal_presentation::{
         TerminalToolResultInfo, TerminalToolState,
     };
+
+    fn count_occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.match_indices(needle).count()
+    }
 
     fn render_lines(
         name: &str,
@@ -2071,11 +2084,12 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let repeated = joined_lines
-            .iter()
-            .filter(|line| line.contains("Catalog search results"))
-            .count();
-        assert_eq!(repeated, 1, "{joined_lines:?}");
+        let full_text = joined_lines.join("\n");
+        assert_eq!(
+            count_occurrences(&full_text, "Catalog search results"),
+            1,
+            "{joined_lines:?}"
+        );
     }
 
     #[test]
@@ -2112,11 +2126,45 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let repeated = joined_lines
+        let full_text = joined_lines.join("\n");
+        assert_eq!(count_occurrences(&full_text, path), 1, "{joined_lines:?}");
+    }
+
+    #[test]
+    fn tool_result_message_path_does_not_double_repeat_same_title_in_header() {
+        let theme = crate::theme::Theme::dark();
+        let title = "Verify author affiliation details";
+        let output = super::render_tool_call(
+            ToolCallRenderInput {
+                message_id: "message-1",
+                part_index: 0,
+                name: title,
+                arguments: "",
+                arguments_expanded: false,
+                state: TerminalToolState::Completed,
+                result: Some(&TerminalToolResultInfo {
+                    output: "line1\nline2".to_string(),
+                    is_error: false,
+                    title: Some(title.to_string()),
+                    metadata: Some(HashMap::new()),
+                }),
+                show_tool_details: true,
+            },
+            &theme,
+        );
+
+        let full_text = output
+            .lines
             .iter()
-            .filter(|line| line.contains(path))
-            .count();
-        assert_eq!(repeated, 1, "{joined_lines:?}");
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(count_occurrences(&full_text, title), 1, "{full_text}");
     }
 
     #[test]
