@@ -912,6 +912,33 @@ mod tests {
             matches!(error, ToolError::InvalidArguments(message) if message.contains("not available for runtime resolution"))
         );
     }
+
+    #[test]
+    fn format_skill_list_output_uses_category_label_not_path_prefix() {
+        let skills = vec![SkillMetaView {
+            name: "semantic-scholar".to_string(),
+            description: "Search Semantic Scholar".to_string(),
+            category: Some("literature-research/skills".to_string()),
+        }];
+
+        let rendered = format_skill_list_output(&skills);
+        assert!(rendered.contains(
+            "- semantic-scholar [category: literature-research/skills]: Search Semantic Scholar"
+        ));
+        assert!(!rendered.contains("- [literature-research/skills] semantic-scholar"));
+    }
+
+    #[test]
+    fn supporting_files_hint_lists_available_files() {
+        let files = vec![SkillFileRef {
+            relative_path: "scripts/search.py".to_string(),
+            location: PathBuf::from("/tmp/example/scripts/search.py"),
+        }];
+
+        let hint = format_supporting_files_hint(&files);
+        assert!(hint.contains("scripts/search.py"));
+        assert!(hint.contains("skill_view(name) without file_path"));
+    }
 }
 
 pub(crate) fn format_loaded_skill_file_output(file: &LoadedSkillFile) -> (String, Metadata) {
@@ -955,8 +982,8 @@ pub(crate) fn format_skill_list_output(skills: &[SkillMetaView]) -> String {
         match skill.category.as_deref() {
             Some(category) if !category.is_empty() => {
                 output.push_str(&format!(
-                    "- [{}] {}: {}\n",
-                    category, skill.name, skill.description
+                    "- {} [category: {}]: {}\n",
+                    skill.name, category, skill.description
                 ));
             }
             _ => {
@@ -1021,6 +1048,29 @@ pub(crate) fn collect_skill_category_views(skills: &[SkillMetaView]) -> Vec<Skil
             description: None,
         })
         .collect()
+}
+
+pub(crate) fn format_supporting_files_hint(supporting_files: &[SkillFileRef]) -> String {
+    if supporting_files.is_empty() {
+        return "This skill exposes no linked files. Omit file_path and call skill_view(name) to load the main SKILL.md content.".to_string();
+    }
+
+    let preview = supporting_files
+        .iter()
+        .take(8)
+        .map(|file| format!("`{}`", file.relative_path))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if supporting_files.len() > 8 {
+        format!(" ({} total)", supporting_files.len())
+    } else {
+        String::new()
+    };
+
+    format!(
+        "Use one of the linked files listed in `supporting_files`, for example: {}{}. Call skill_view(name) without file_path to inspect the main SKILL.md first.",
+        preview, suffix
+    )
 }
 
 fn build_linked_files(
