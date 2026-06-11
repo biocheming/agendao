@@ -462,7 +462,11 @@ impl App {
             *context.directory.write() = dir.display().to_string();
         }
 
-        let base_url = resolve_tui_base_url(config.base_url.as_deref());
+        let base_url = if config.local_direct {
+            "direct://local".to_string()
+        } else {
+            resolve_tui_base_url(config.base_url.as_deref())
+        };
         let api_client = if config.local_direct {
             Arc::new(ApiClient::new_local_with_server(
                 config.local_server.clone(),
@@ -599,8 +603,10 @@ impl App {
         let _ = app.refresh_skill_list_dialog();
         app.refresh_session_list_dialog();
         app.refresh_theme_list_dialog();
-        let _ = app.refresh_lsp_status();
-        let _ = app.refresh_mcp_dialog();
+        if !app.local_direct {
+            let _ = app.refresh_lsp_status();
+            let _ = app.refresh_mcp_dialog();
+        }
         let _ = app.sync_question_requests();
         let _ = app.sync_permission_requests();
 

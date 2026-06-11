@@ -27,6 +27,17 @@ impl Default for EditTool {
     }
 }
 
+fn extract_edit_file_path(args: &serde_json::Value) -> Result<String, ToolError> {
+    args.get("file_path")
+        .or_else(|| args.get("filePath"))
+        .or_else(|| args.get("filepath"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("file_path (or filePath/filepath) is required".into())
+        })
+        .map(|value| value.trim().to_string())
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn id(&self) -> &str {
@@ -67,15 +78,7 @@ impl Tool for EditTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let file_path: String = args
-            .get("file_path")
-            .or_else(|| args.get("filePath"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("file_path (or filePath) is required".into())
-            })?
-            .trim()
-            .to_string();
+        let file_path = extract_edit_file_path(&args)?;
 
         let old_string: String = args
             .get("old_string")
@@ -471,4 +474,20 @@ fn create_diff(filepath: &str, old_content: &str, new_content: &str) -> String {
 
 fn normalize_line_endings(text: &str) -> String {
     text.replace("\r\n", "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_edit_file_path;
+
+    #[test]
+    fn extract_edit_file_path_accepts_filepath_alias() {
+        let args = serde_json::json!({
+            "filepath": "src/main.ts",
+            "old_string": "a",
+            "new_string": "b"
+        });
+        let path = extract_edit_file_path(&args).expect("filepath alias should be accepted");
+        assert_eq!(path, "src/main.ts");
+    }
 }

@@ -28,6 +28,17 @@ impl Default for WriteTool {
     }
 }
 
+fn extract_write_file_path(args: &serde_json::Value) -> Result<String, ToolError> {
+    args.get("file_path")
+        .or_else(|| args.get("filePath"))
+        .or_else(|| args.get("filepath"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("file_path (or filePath/filepath) is required".into())
+        })
+        .map(|value| value.trim().to_string())
+}
+
 #[async_trait]
 impl Tool for WriteTool {
     fn id(&self) -> &str {
@@ -60,15 +71,7 @@ impl Tool for WriteTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let file_path: String = args
-            .get("file_path")
-            .or_else(|| args.get("filePath"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("file_path (or filePath) is required".into())
-            })?
-            .trim()
-            .to_string();
+        let file_path = extract_write_file_path(&args)?;
 
         let content: String = args["content"]
             .as_str()
@@ -398,4 +401,19 @@ async fn get_lsp_diagnostics_impl(
     }
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_write_file_path;
+
+    #[test]
+    fn extract_write_file_path_accepts_filepath_alias() {
+        let args = serde_json::json!({
+            "filepath": "src/main.ts",
+            "content": "hello"
+        });
+        let path = extract_write_file_path(&args).expect("filepath alias should be accepted");
+        assert_eq!(path, "src/main.ts");
+    }
 }

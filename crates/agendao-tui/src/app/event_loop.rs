@@ -916,8 +916,10 @@ impl App {
                     if self.skill_list_dialog.is_open() {
                         let _ = self.refresh_skill_list_dialog();
                     }
-                    let _ = self.refresh_lsp_status();
-                    let _ = self.refresh_mcp_dialog();
+                    if !self.local_direct {
+                        let _ = self.refresh_lsp_status();
+                        let _ = self.refresh_mcp_dialog();
+                    }
                     self.sync_runtime.last_aux_sync = Instant::now();
                     tick_changed = true;
                 }

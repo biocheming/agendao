@@ -11,7 +11,7 @@ use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
 #[serde(rename_all = "camelCase")]
 pub struct LspParams {
     pub operation: LspOperation,
-    #[serde(alias = "file_path")]
+    #[serde(alias = "file_path", alias = "filepath")]
     pub file_path: String,
     pub line: Option<u32>,
     pub character: Option<u32>,
@@ -432,5 +432,22 @@ fn format_lsp_placeholder(
         LspOperation::OutgoingCalls => {
             format!("LSP outgoingCalls at {}:{}:{}\n\nEnable 'lsp' feature and configure LSP servers for real LSP support.", file_path, line + 1, character + 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LspOperation, LspParams};
+
+    #[test]
+    fn lsp_accepts_filepath_alias() {
+        let input: LspParams = serde_json::from_value(serde_json::json!({
+            "operation": "hover",
+            "filepath": "src/main.rs"
+        }))
+        .expect("filepath alias should deserialize");
+
+        assert!(matches!(input.operation, LspOperation::Hover));
+        assert_eq!(input.file_path, "src/main.rs");
     }
 }

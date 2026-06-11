@@ -15,7 +15,7 @@ struct MultiEditInput {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FileEdit {
-    #[serde(alias = "filePath")]
+    #[serde(alias = "filePath", alias = "filepath")]
     file_path: String,
     edits: Vec<EditOperation>,
 }
@@ -289,4 +289,29 @@ fn create_diff(filepath: &str, old_content: &str, new_content: &str) -> String {
     }
 
     diff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MultiEditInput;
+
+    #[test]
+    fn multiedit_accepts_filepath_alias() {
+        let input: MultiEditInput = serde_json::from_value(serde_json::json!({
+            "edits": [
+                {
+                    "filepath": "src/main.rs",
+                    "edits": [
+                        {
+                            "old_string": "a",
+                            "new_string": "b"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("filepath alias should deserialize");
+
+        assert_eq!(input.edits[0].file_path, "src/main.rs");
+    }
 }

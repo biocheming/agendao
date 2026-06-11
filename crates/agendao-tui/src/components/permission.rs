@@ -1,8 +1,8 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use ratatui::{
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
@@ -119,6 +119,19 @@ fn lifetime_hint(
     Some(parts.join("  |  "))
 }
 
+fn permission_action_chip_with_text(
+    label: &'static str,
+    bg: ratatui::style::Color,
+) -> Span<'static> {
+    Span::styled(
+        format!(" {} ", label),
+        Style::default()
+            .fg(ratatui::style::Color::Black)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct PermissionRequest {
     pub id: String,
@@ -150,6 +163,15 @@ pub struct PermissionPrompt {
     pub is_open: bool,
     last_rendered_area: Cell<Option<Rect>>,
     pending_action: Option<PermissionAction>,
+    click_targets: RefCell<Vec<PermissionClickTarget>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PermissionClickTarget {
+    row: u16,
+    start_col: u16,
+    end_col: u16,
+    action: PermissionAction,
 }
 
 impl PermissionPrompt {
@@ -160,6 +182,7 @@ impl PermissionPrompt {
             is_open: false,
             last_rendered_area: Cell::new(None),
             pending_action: None,
+            click_targets: RefCell::new(Vec::new()),
         }
     }
 
@@ -280,6 +303,7 @@ impl PermissionPrompt {
         self.requests.clear();
         self.current_index = 0;
         self.is_open = false;
+        self.click_targets.borrow_mut().clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -297,50 +321,14 @@ impl PermissionPrompt {
         if self.is_current_request_submitting() {
             return;
         }
-        // Button row is the last content line inside the border.
-        // We store the last rendered area to check clicks.
-        // For simplicity, check if the click is on the button hints row
-        // and map x-position to the three buttons.
-        if let Some(area) = self.last_rendered_area.get() {
-            if row < area.y
-                || row >= area.y + area.height
-                || col < area.x
-                || col >= area.x + area.width
-            {
-                return;
-            }
-            // The button line is at the bottom of the content (area.y + area.height - 2 for border)
-            let button_row = area.y + area.height - 2;
-            if row == button_row {
-                // "[1] Once [2] Turn [3] Session [0] Deny"
-                let inner_col = col.saturating_sub(area.x + 1);
-                let allow_turn = self
-                    .current_request()
-                    .map(|request| {
-                        request
-                            .supported_lifetimes
-                            .contains(&PermissionLifetime::Turn)
-                    })
-                    .unwrap_or(false);
-                let allow_session = self
-                    .current_request()
-                    .map(|request| {
-                        request
-                            .supported_lifetimes
-                            .contains(&PermissionLifetime::Session)
-                    })
-                    .unwrap_or(false);
-
-                if inner_col < 10 {
-                    self.pending_action = Some(PermissionAction::ApproveOnce);
-                } else if allow_turn && inner_col < 20 {
-                    self.pending_action = Some(PermissionAction::ApproveTurn);
-                } else if allow_session && inner_col < 34 {
-                    self.pending_action = Some(PermissionAction::ApproveSession);
-                } else {
-                    self.pending_action = Some(PermissionAction::Deny);
-                }
-            }
+        if let Some(target) = self
+            .click_targets
+            .borrow()
+            .iter()
+            .cloned()
+            .find(|target| row == target.row && col >= target.start_col && col <= target.end_col)
+        {
+            self.pending_action = Some(target.action);
         }
     }
 
@@ -352,6 +340,7 @@ impl PermissionPrompt {
         if !self.is_open || self.requests.is_empty() {
             return;
         }
+        self.click_targets.borrow_mut().clear();
 
         let request = match self.current_request() {
             Some(r) => r,
@@ -365,29 +354,23 @@ impl PermissionPrompt {
                 Style::default().fg(theme.warning),
             )]
         } else {
-            let mut actions = vec![Span::styled(
-                "[1] Once  ",
-                Style::default().fg(theme.success),
-            )];
+            let mut actions = vec![permission_action_chip_with_text("[1] Once", theme.success)];
             if request
                 .supported_lifetimes
                 .contains(&PermissionLifetime::Turn)
             {
-                actions.push(Span::styled(
-                    "[2] Turn  ",
-                    Style::default().fg(theme.primary),
-                ));
+                actions.push(Span::raw(" "));
+                actions.push(permission_action_chip_with_text("[2] Turn", theme.primary));
             }
             if request
                 .supported_lifetimes
                 .contains(&PermissionLifetime::Session)
             {
-                actions.push(Span::styled(
-                    "[3] Session  ",
-                    Style::default().fg(theme.primary),
-                ));
+                actions.push(Span::raw(" "));
+                actions.push(permission_action_chip_with_text("[3] Session", theme.primary));
             }
-            actions.push(Span::styled("[0] Deny", Style::default().fg(theme.error)));
+            actions.push(Span::raw(" "));
+            actions.push(permission_action_chip_with_text("[0] Deny", theme.error));
             actions
         };
 
@@ -486,6 +469,60 @@ impl PermissionPrompt {
         );
 
         self.last_rendered_area.set(Some(popup_area));
+        if !request.is_submitting {
+            let mut click_targets = Vec::new();
+            let button_row = popup_area.y + popup_area.height.saturating_sub(2);
+            let mut cursor_col = popup_area.x + 1;
+
+            let once_label = " [1] Once ";
+            click_targets.push(PermissionClickTarget {
+                row: button_row,
+                start_col: cursor_col,
+                end_col: cursor_col + once_label.len() as u16 - 1,
+                action: PermissionAction::ApproveOnce,
+            });
+            cursor_col += once_label.len() as u16;
+
+            if request
+                .supported_lifetimes
+                .contains(&PermissionLifetime::Turn)
+            {
+                cursor_col += 1;
+                let turn_label = " [2] Turn ";
+                click_targets.push(PermissionClickTarget {
+                    row: button_row,
+                    start_col: cursor_col,
+                    end_col: cursor_col + turn_label.len() as u16 - 1,
+                    action: PermissionAction::ApproveTurn,
+                });
+                cursor_col += turn_label.len() as u16;
+            }
+
+            if request
+                .supported_lifetimes
+                .contains(&PermissionLifetime::Session)
+            {
+                cursor_col += 1;
+                let session_label = " [3] Session ";
+                click_targets.push(PermissionClickTarget {
+                    row: button_row,
+                    start_col: cursor_col,
+                    end_col: cursor_col + session_label.len() as u16 - 1,
+                    action: PermissionAction::ApproveSession,
+                });
+                cursor_col += session_label.len() as u16;
+            }
+
+            cursor_col += 1;
+            let deny_label = " [0] Deny ";
+            click_targets.push(PermissionClickTarget {
+                row: button_row,
+                start_col: cursor_col,
+                end_col: cursor_col + deny_label.len() as u16 - 1,
+                action: PermissionAction::Deny,
+            });
+            self.click_targets.replace(click_targets);
+        }
 
         // Clear underlying content so no text bleeds through
         surface.render_widget(Clear, popup_area);
@@ -512,6 +549,8 @@ impl Default for PermissionPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{theme::Theme, ui::BufferSurface};
+    use ratatui::buffer::Buffer;
 
     fn sample_request() -> PermissionRequest {
         PermissionRequest {
@@ -575,5 +614,29 @@ mod tests {
             .expect("request should still exist");
         assert!(!request.is_submitting);
         assert!(request.submit_error.is_none());
+    }
+
+    #[test]
+    fn clicking_rendered_once_button_sets_pending_action() {
+        let mut prompt = PermissionPrompt::new();
+        prompt.add_request(sample_request());
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
+        let mut surface = BufferSurface::new(&mut buffer);
+        prompt.render(&mut surface, Rect::new(0, 0, 80, 20), &Theme::default());
+
+        let target = prompt
+            .click_targets
+            .borrow()
+            .iter()
+            .cloned()
+            .find(|target| target.action == PermissionAction::ApproveOnce)
+            .expect("once button target should exist");
+        prompt.handle_click(target.start_col, target.row);
+
+        assert_eq!(
+            prompt.take_pending_action(),
+            Some(PermissionAction::ApproveOnce)
+        );
     }
 }

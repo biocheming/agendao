@@ -32,7 +32,7 @@ This tool does not perform OCR or binary parsing itself."#;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MediaInspectInput {
-    #[serde(alias = "file_path")]
+    #[serde(alias = "file_path", alias = "filepath")]
     file_path: String,
     #[serde(default)]
     question: Option<String>,
@@ -413,6 +413,16 @@ mod tests {
     fn schema_requires_file_path() {
         let schema = MediaInspectTool::new().parameters();
         assert_eq!(schema["required"][0], serde_json::json!("file_path"));
+    }
+
+    #[test]
+    fn media_inspect_accepts_filepath_alias() {
+        let input: MediaInspectInput = serde_json::from_value(serde_json::json!({
+            "filepath": "sample.pdf"
+        }))
+        .expect("filepath alias should deserialize");
+
+        assert_eq!(input.file_path, "sample.pdf");
     }
 
     #[test]

@@ -819,6 +819,10 @@ impl App {
     }
 
     pub(super) fn refresh_lsp_status(&mut self) -> anyhow::Result<()> {
+        if self.local_direct {
+            *self.context.lsp_status.write() = Vec::new();
+            return Ok(());
+        }
         let Some(client) = self.context.get_api_client() else {
             return Ok(());
         };
@@ -836,6 +840,11 @@ impl App {
     }
 
     pub(super) fn refresh_mcp_dialog(&mut self) -> anyhow::Result<()> {
+        if self.local_direct {
+            self.mcp_dialog.set_items(Vec::new());
+            *self.context.mcp_servers.write() = Vec::new();
+            return Ok(());
+        }
         let Some(client) = self.context.get_api_client() else {
             return Ok(());
         };
