@@ -19,6 +19,50 @@ fn local_direct_app_uses_direct_base_url_authority() {
     assert_eq!(app.server_event_base_url, "direct://local");
 }
 
+#[cfg(feature = "local-server")]
+#[test]
+fn local_direct_sync_session_loads_existing_history() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("local direct app should initialize");
+
+    let session = app
+        .context
+        .get_api_client()
+        .expect("api client")
+        .create_session(None, Some(".".to_string()))
+        .expect("session should create");
+
+    app.context
+        .get_api_client()
+        .expect("api client")
+        .send_prompt(
+            &session.id,
+            "hello from history".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(format!("tui_test_{}", uuid::Uuid::new_v4().simple())),
+        )
+        .expect("prompt should dispatch");
+
+    app.context.navigate_session(session.id.clone());
+    app.ensure_session_view(&session.id);
+    app.sync_session_from_server(&session.id)
+        .expect("local direct session sync should load history");
+
+    let session_ctx = app.context.session.read();
+    let messages = session_ctx
+        .messages
+        .get(&session.id)
+        .expect("messages should load for selected session");
+    assert!(!messages.is_empty(), "selected session should have message history");
+}
+
 #[test]
 fn session_update_requires_sync_for_prompt_final_sources() {
     assert!(super::sync::session_update_requires_sync(Some(
