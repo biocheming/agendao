@@ -135,15 +135,19 @@ impl App {
         if has_active_session {
             if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
                 schedule_at(due_at);
+            } else {
+                schedule_at(
+                    self.sync_runtime.last_question_sync
+                        + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
+                );
             }
             if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
                 schedule_at(due_at);
+            } else {
+                schedule_at(
+                    self.sync_runtime.last_permission_sync + self.permission_sync_interval(),
+                );
             }
-            schedule_at(
-                self.sync_runtime.last_question_sync
-                    + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
-            );
-            schedule_at(self.sync_runtime.last_permission_sync + self.permission_sync_interval());
         }
         schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
         schedule_at(self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS));

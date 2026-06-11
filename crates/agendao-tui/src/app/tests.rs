@@ -827,6 +827,66 @@ fn home_route_does_not_schedule_session_only_sync_ticks() {
     assert_eq!(updated, baseline);
 }
 
+#[test]
+fn pending_question_sync_deadline_suppresses_stale_fallback_deadline() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-question-debounce";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Question debounce".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+    let now = Instant::now();
+    let pending_due = now + Duration::from_millis(40);
+    app.sync_runtime.last_question_sync = now - Duration::from_secs(60);
+    app.sync_runtime.pending_question_sync_due_at = Some(pending_due);
+
+    let deadline = app
+        .next_tick_deadline(now)
+        .expect("session route should produce a deadline");
+    assert!(deadline > now);
+}
+
+#[test]
+fn tick_does_not_rearm_question_sync_while_debounce_is_pending() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-question-rearm";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Question rearm".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    let pending_due = Instant::now() + Duration::from_millis(40);
+    app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.pending_question_sync_due_at = Some(pending_due);
+
+    app.handle_event(&Event::Tick)
+        .expect("tick should preserve in-flight question debounce");
+
+    assert_eq!(app.sync_runtime.pending_question_sync_due_at, Some(pending_due));
+}
+
 fn test_session_telemetry_snapshot(
     session_id: &str,
     active_stage_id: &str,
