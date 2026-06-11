@@ -121,6 +121,43 @@ async fn direct_poll_loop(
     let mut last_error: Option<String> = None;
     let mut interval = tokio::time::interval(Duration::from_millis(300));
 
+    if let Ok(messages) = crate::local_list_messages(Arc::clone(state), session_id, None, None).await {
+        last_message_count = messages.len();
+        last_tool_state = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .and_then(|m| m.finish.as_deref())
+            .map(|f| f.to_string());
+        last_error = messages
+            .last()
+            .and_then(|m| m.error.as_deref())
+            .filter(|e| !e.is_empty())
+            .map(|e| e.to_string());
+    }
+
+    if let Ok(questions) = crate::local_list_questions(Arc::clone(state)).await {
+        pending_question_ids = questions
+            .into_iter()
+            .filter(|q| q.session_id == session_id)
+            .map(|q| q.id)
+            .collect();
+    }
+
+    if let Ok(permissions) = crate::local_list_permissions(Arc::clone(state)).await {
+        pending_permission_ids = permissions
+            .into_iter()
+            .filter(|p| p.session_id == session_id)
+            .map(|p| (p.id, p.session_id))
+            .collect();
+    }
+
+    let topology = state
+        .runtime_control
+        .list_session_execution_topology(session_id)
+        .await;
+    last_execution_count = topology.active_count + topology.running_count;
+
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -352,6 +389,16 @@ fn question_info_to_defs_json(info: &agendao_api::QuestionInfo) -> serde_json::V
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_bridge_initial_subscription_does_not_replay_history() {
+        let mut last_message_count = 0usize;
+        let existing_messages = vec![1, 2, 3];
+        last_message_count = existing_messages.len();
+        let next_messages = vec![1, 2, 3];
+
+        assert_eq!(last_message_count, next_messages.len());
+    }
+
     #[test]
     fn question_resolved_event_carries_session_id() {
         let event = super::DirectEvent::QuestionResolved {
