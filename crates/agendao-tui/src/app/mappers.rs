@@ -806,6 +806,9 @@ pub(super) fn map_mcp_status(server: &McpStatusInfo) -> McpConnectionStatus {
 }
 
 pub(super) fn map_api_run_status(status: &crate::api::SessionStatusInfo) -> SessionStatus {
+    if status.status.eq_ignore_ascii_case("waiting_on_user") {
+        return SessionStatus::WaitingOnUser;
+    }
     if status.busy {
         if status.status.eq_ignore_ascii_case("compacting") {
             return SessionStatus::Compacting;

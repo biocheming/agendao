@@ -1383,6 +1383,10 @@ impl Prompt {
                 canonical_run_status_title("reconnecting"),
                 Style::default().fg(theme.warning),
             )]),
+            SessionStatus::WaitingOnUser => Line::from(vec![Span::styled(
+                canonical_run_status_title("waiting_on_user"),
+                Style::default().fg(theme.warning),
+            )]),
             SessionStatus::Idle => self.hint_line(theme),
         }
     }

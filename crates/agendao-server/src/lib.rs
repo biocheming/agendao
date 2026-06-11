@@ -25,9 +25,8 @@ pub use mcp_oauth::*;
 pub use oauth::*;
 pub use openapi::*;
 pub use routes::*;
-// Re-export DirectEventBridge for cross-crate use (CLI, TUI).
 pub use server::*;
-pub use session_runtime::direct_bridge::{spawn_direct_event_loop, DirectEvent};
+pub use session_runtime::direct_bridge::spawn_direct_event_loop;
 pub use unix_socket::*;
 pub use web::*;
 pub use worktree::*;

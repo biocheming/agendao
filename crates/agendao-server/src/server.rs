@@ -248,6 +248,14 @@ pub struct ServerState {
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) event_bus: broadcast::Sender<String>,
+    /// Canonical bus for projected FrontendEvents. All transports (SSE, Unix,
+    /// Direct) consume from this bus once wired. Populated by the single
+    /// FrontendProjector subscriber.
+    pub(crate) frontend_bus: broadcast::Sender<String>,
+    /// Guards `ensure_frontend_projector()`: `true` once the background
+    /// projector task has been spawned. The guard tracks projector lifecycle
+    /// directly, independent of downstream transport subscriber count.
+    pub(crate) frontend_projector_spawned: std::sync::atomic::AtomicBool,
     /// Observable event bus telemetry (P0-2). Tracks send volume, errors, and
     /// receiver count so operators can distinguish event backlog from other
     /// sources of CPU/memory pressure.
@@ -316,6 +324,7 @@ impl ServerState {
             Some(config_store.clone()),
         ));
         let (tx, _) = broadcast::channel(1024);
+        let (frontend_tx, _) = broadcast::channel(1024);
         let event_bus_telemetry = Arc::new(EventBusTelemetry::default());
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(
             tx.clone(),
@@ -348,6 +357,8 @@ impl ServerState {
             runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,
+            frontend_bus: frontend_tx,
+            frontend_projector_spawned: std::sync::atomic::AtomicBool::new(false),
             event_bus_telemetry: Some(event_bus_telemetry),
             api_perf: Arc::new(ApiPerfCounters::new()),
             session_repo: None,
@@ -541,6 +552,27 @@ impl ServerState {
             }
         } else if let Some(ref telemetry) = self.event_bus_telemetry {
             telemetry.record_send(receiver_count);
+        }
+    }
+
+    /// Ensures the FrontendEvent projector is running.
+    ///
+    /// Idempotent: tracks projector lifecycle via an `AtomicBool` guard
+    /// (not via downstream `frontend_bus` subscriber count — the projector
+    /// subscribes to `event_bus`, not `frontend_bus`). Safe to call from
+    /// any server entry point; the projector is spawned at most once.
+    pub(crate) fn ensure_frontend_projector(&self) {
+        use std::sync::atomic::Ordering;
+        if !self
+            .frontend_projector_spawned
+            .swap(true, Ordering::SeqCst)
+        {
+            crate::session_runtime::frontend_projection::spawn_frontend_projector(
+                self.event_bus.clone(),
+                self.frontend_bus.clone(),
+                self.runtime_telemetry.clone(),
+                self.sessions.clone(),
+            );
         }
     }
 
@@ -1247,6 +1279,7 @@ pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Re
     let state = Arc::new(
         ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root).await?,
     );
+    state.ensure_frontend_projector();
 
     let app = routes::router()
         .layer(middleware::from_fn(server_auth_middleware))
@@ -1267,6 +1300,7 @@ pub async fn run_server_with_state(
     addr: SocketAddr,
     state: Arc<ServerState>,
 ) -> anyhow::Result<()> {
+    state.ensure_frontend_projector();
     let app = routes::router()
         .layer(middleware::from_fn(server_auth_middleware))
         .layer(cors_layer())
@@ -1292,6 +1326,7 @@ pub async fn run_unix_socket_only(
         ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root.clone())
             .await?,
     );
+    state.ensure_frontend_projector();
 
     // Shared authorities: config, sessions, providers are the same
     // Arc instances as ServerState — HTTP route changes are immediately
@@ -1328,6 +1363,7 @@ async fn run_server_with_unix_socket(
         ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root.clone())
             .await?,
     );
+    state.ensure_frontend_projector();
 
     // Start Unix socket server if path is provided
     if let Some(socket_path) = unix_socket_path {

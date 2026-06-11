@@ -403,6 +403,37 @@ impl AppContext {
         session.session_runtime = Some(telemetry.runtime);
     }
 
+    pub fn apply_session_runtime_snapshot(&self, runtime: crate::api::SessionRuntimeState) {
+        self.session.write().session_runtime = Some(runtime);
+    }
+
+    pub fn apply_session_projection_snapshot(
+        &self,
+        topology: Option<SessionExecutionTopology>,
+        stages: Vec<StageSummary>,
+        usage: Option<SessionUsage>,
+        usage_books: Option<SessionUsageBooks>,
+        context_compaction_summary: Option<crate::api::ContextCompactionSummary>,
+        context_compaction_lifecycle_summary: Option<crate::api::ContextCompactionLifecycleSummary>,
+        cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
+        context_closure_contract: Option<crate::api::SessionContextClosureContract>,
+    ) {
+        let mut session = self.session.write();
+        session.execution_topology = topology;
+        session.stage_summaries = stages;
+        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
+            &session.stage_summaries,
+            &session.sessions,
+        );
+        session.session_usage = usage;
+        session.session_usage_books = usage_books;
+        session.session_context_compaction_summary = context_compaction_summary;
+        session.session_context_compaction_lifecycle_summary =
+            context_compaction_lifecycle_summary;
+        session.session_cache_semantics = cache_semantics;
+        session.session_context_closure_contract = context_closure_contract;
+    }
+
     pub fn apply_scheduler_stage_summary(&self, session_id: &str, block: &SchedulerStageBlock) {
         let mut session = self.session.write();
         if session.current_session_id.as_deref() != Some(session_id) {

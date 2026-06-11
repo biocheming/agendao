@@ -1,4 +1,5 @@
 use super::*;
+use agendao_server_core::frontend_events::FrontendEvent;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct EventStreamQuery {
@@ -23,13 +24,7 @@ pub(super) async fn event_stream(
         is_legacy = subscription.is_legacy_compat,
         "resolved frontend subscription for /event SSE"
     );
-    let telemetry = state.event_bus_telemetry.clone();
-    stream_server_events(
-        state.event_bus.subscribe(),
-        query.session,
-        subscription,
-        telemetry,
-    )
+    stream_frontend_events(state.frontend_bus.subscribe(), query.session, subscription)
 }
 
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
@@ -210,6 +205,52 @@ pub(crate) fn stream_server_events(
     Sse::new(ReceiverStream::new(out_rx))
 }
 
+pub(crate) fn stream_frontend_events(
+    mut rx: broadcast::Receiver<String>,
+    session_filter: Option<String>,
+    subscription: agendao_api::ResolvedFrontendSubscription,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let (tx, out_rx) = mpsc::channel(128);
+
+    tokio::spawn(async move {
+        let caps = subscription.capabilities;
+        let skipped_count = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            match rx.recv().await {
+                Ok(raw) => {
+                    if !frontend_raw_matches_filter(&raw, session_filter.as_deref()) {
+                        continue;
+                    }
+                    let Ok(event) = serde_json::from_str::<FrontendEvent>(&raw) else {
+                        continue;
+                    };
+                    if !frontend_event_passes_subscription_caps(&event, &caps) {
+                        skipped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        continue;
+                    }
+                    if send_raw_server_event(&tx, raw).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    let skipped = skipped_count.load(std::sync::atomic::Ordering::Relaxed);
+                    if skipped > 0 {
+                        tracing::debug!(
+                            skipped,
+                            tier = ?subscription.tier,
+                            "SSE frontend event stream closed; subscription-filtered events skipped"
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(out_rx))
+}
+
 pub(super) struct LiveSnapshotCoalescer {
     pub(super) accum: std::collections::HashMap<String, String>,
     telemetry: Option<std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>>,
@@ -334,6 +375,68 @@ impl LiveSnapshotCoalescer {
 
 fn parse_server_event(raw: &str) -> Option<ServerEvent> {
     serde_json::from_str(raw).ok()
+}
+
+fn frontend_raw_matches_filter(raw: &str, session_filter: Option<&str>) -> bool {
+    let Some(filter) = session_filter else {
+        return true;
+    };
+    let Ok(event) = serde_json::from_str::<FrontendEvent>(raw) else {
+        return false;
+    };
+    frontend_event_session_id(&event) == Some(filter)
+}
+
+fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
+    match event {
+        FrontendEvent::SessionRuntimeReplaced { session_id, .. }
+        | FrontendEvent::SessionProjectionReplaced { session_id, .. }
+        | FrontendEvent::QuestionUpsert { session_id, .. }
+        | FrontendEvent::QuestionRemoved { session_id, .. }
+        | FrontendEvent::PermissionUpsert { session_id, .. }
+        | FrontendEvent::PermissionRemoved { session_id, .. }
+        | FrontendEvent::ToolCallUpsert { session_id, .. }
+        | FrontendEvent::DiffReplaced { session_id, .. }
+        | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
+    }
+}
+
+fn frontend_event_passes_subscription_caps(
+    event: &FrontendEvent,
+    caps: &agendao_api::FrontendSubscriptionCapabilities,
+) -> bool {
+    if !caps.final_only
+        && caps.reasoning_delta
+        && caps.message_text_delta
+        && caps.tool_progress
+        && caps.runtime_live_view
+    {
+        return true;
+    }
+
+    match event {
+        FrontendEvent::OutputBlockAppended { block, .. } => {
+            let kind = block.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let phase = block.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+            match kind {
+                "reasoning" => !caps.final_only && (phase != "delta" || caps.reasoning_delta),
+                "message" => !caps.final_only && caps.message_text_delta,
+                "scheduler_stage" => !caps.final_only && caps.tool_progress,
+                "tool" => {
+                    matches!(phase, "done" | "error") || (!caps.final_only && caps.tool_progress)
+                }
+                _ => !caps.final_only,
+            }
+        }
+        FrontendEvent::SessionRuntimeReplaced { .. }
+        | FrontendEvent::SessionProjectionReplaced { .. }
+        | FrontendEvent::QuestionUpsert { .. }
+        | FrontendEvent::QuestionRemoved { .. }
+        | FrontendEvent::PermissionUpsert { .. }
+        | FrontendEvent::PermissionRemoved { .. }
+        | FrontendEvent::ToolCallUpsert { .. }
+        | FrontendEvent::DiffReplaced { .. } => true,
+    }
 }
 
 pub(super) fn event_passes_subscription_caps(

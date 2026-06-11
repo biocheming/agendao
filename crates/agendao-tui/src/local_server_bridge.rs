@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(not(feature = "local-server"))]
+use agendao_server_core::frontend_events::FrontendEvent;
 use agendao_client::{
     AgentInfo, ConnectProviderRequest, CreateSessionRequest, ExecutionModeInfo,
     FullProviderListResponse, KnownProvidersResponse, MessageInfo, MultimodalCapabilitiesResponse,
@@ -17,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "local-server")]
 pub type LocalServerState = agendao_server_local::LocalServerState;
 #[cfg(feature = "local-server")]
-pub type LocalServerEvent = agendao_server_local::LocalServerEvent;
+pub type FrontendBridgeEvent = agendao_server_local::LocalServerEvent;
 
 #[cfg(feature = "local-server")]
 pub async fn new_local_server_for_workspace(
@@ -31,59 +33,7 @@ pub async fn new_local_server_for_workspace(
 pub struct LocalServerState;
 
 #[cfg(not(feature = "local-server"))]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LocalServerEvent {
-    SessionBusy {
-        session_id: String,
-    },
-    SessionIdle {
-        session_id: String,
-    },
-    SessionUpdated {
-        session_id: String,
-    },
-    OutputBlock {
-        session_id: String,
-        block: serde_json::Value,
-    },
-    QuestionCreated {
-        session_id: String,
-        request_id: String,
-    },
-    QuestionResolved {
-        session_id: String,
-        request_id: String,
-    },
-    PermissionRequested {
-        session_id: String,
-        permission_id: String,
-        info_json: Option<serde_json::Value>,
-    },
-    PermissionResolved {
-        session_id: String,
-        permission_id: String,
-    },
-    ToolCallStarted {
-        session_id: String,
-    },
-    ToolCallCompleted {
-        session_id: String,
-    },
-    ControlInputTransition {
-        session_id: String,
-        phase: String,
-    },
-    TopologyChanged {
-        session_id: String,
-    },
-    DiffUpdated {
-        session_id: String,
-    },
-    SessionTreeChanged {
-        session_id: String,
-    },
-}
+pub type FrontendBridgeEvent = FrontendEvent;
 
 #[cfg(not(feature = "local-server"))]
 pub async fn new_local_server_for_workspace(
@@ -99,7 +49,7 @@ pub fn spawn_direct_event_loop(
     state: Arc<LocalServerState>,
     session_id: String,
     cancel: CancellationToken,
-) -> UnboundedReceiver<LocalServerEvent> {
+) -> UnboundedReceiver<FrontendBridgeEvent> {
     agendao_server_local::spawn_direct_event_loop(state, session_id, cancel)
 }
 
@@ -108,7 +58,7 @@ pub fn spawn_direct_event_loop(
     _state: Arc<LocalServerState>,
     _session_id: String,
     _cancel: CancellationToken,
-) -> UnboundedReceiver<LocalServerEvent> {
+) -> UnboundedReceiver<FrontendBridgeEvent> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     rx
 }

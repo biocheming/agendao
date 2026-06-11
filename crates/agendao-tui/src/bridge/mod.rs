@@ -1,7 +1,10 @@
 use std::any::Any;
 use std::collections::VecDeque;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -17,10 +20,10 @@ use reratui::{
     reset_component_position_counter, Buffer, Component, FiberTree, Rect,
 };
 use tokio::sync::Notify;
-use tokio_stream::StreamExt;
+use tokio_stream::Stream;
 
 use crate::app::{App, RunOutcome};
-use crate::core::{is_primary_key_event, AppContext, CustomEvent, Event, Route, StateChange};
+use crate::core::{is_primary_key_event, AppContext, CustomEvent, Event, Route};
 use crate::ui::BufferSurface;
 
 #[derive(Clone, Debug)]
@@ -154,20 +157,23 @@ fn scheduler_stage_output_block_identity(event: &Event) -> Option<(&str, Option<
     let Event::Custom(custom) = event else {
         return None;
     };
-    let CustomEvent::StateChanged(StateChange::OutputBlock {
-        session_id,
-        id,
-        payload,
-        ..
-    }) = custom.as_ref()
-    else {
-        return None;
+    let (session_id, id, payload) = match custom.as_ref() {
+        CustomEvent::FrontendEvent(event) => match event.as_ref() {
+            agendao_server_core::frontend_events::FrontendEvent::OutputBlockAppended {
+                session_id,
+                id,
+                block,
+                ..
+            } => (session_id.as_str(), id.as_deref(), block),
+            _ => return None,
+        },
+        _ => return None,
     };
     let kind = payload.get("kind").and_then(|value| value.as_str())?;
     if kind != "scheduler_stage" {
         return None;
     }
-    Some((session_id.as_str(), id.as_deref(), kind))
+    Some((session_id, id, kind))
 }
 
 #[derive(Default)]
@@ -451,13 +457,13 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                         tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
                     tokio::pin!(timeout);
                     tokio::select! {
-                        Some(Ok(event)) = events.next() => Some(event),
+                        event = next_relevant_crossterm_event(&mut events) => event,
                         _ = &mut bridge_notified => None,
                         _ = &mut timeout => None,
                     }
                 } else {
                     tokio::select! {
-                        Some(Ok(event)) = events.next() => Some(event),
+                        event = next_relevant_crossterm_event(&mut events) => event,
                         _ = &mut bridge_notified => None,
                     }
                 }
@@ -465,7 +471,7 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 None
             };
 
-            if matches!(polled_event, Some(CrosstermEvent::Resize(_, _))) {
+            if matches!(polled_event, Some(Event::Resize(_, _))) {
                 terminal.autoresize()?;
                 if let Ok(area) = terminal.size() {
                     app.lock().set_viewport_area(area.into());
@@ -489,10 +495,16 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 .max_events_per_frame
                 .max(1);
             should_draw |= drain_app_pending_events_blocking(&app, max_events_per_frame)?;
-
-            let mapped_event = polled_event.and_then(map_crossterm_event);
-            if let Some(event) = mapped_event.as_ref() {
+            if let Some(event) = polled_event.as_ref() {
                 should_draw |= process_app_event_blocking(&app, event)?;
+            }
+
+            // Codex-style event loop principle: ignored terminal noise must not
+            // force reratui bookkeeping/render passes. If no meaningful event,
+            // tick, or bridge update changed state, go back to sleep directly.
+            if !should_draw {
+                clear_current_event();
+                continue;
             }
 
             reratui::fiber_tree::with_fiber_tree_mut(|tree| {
@@ -550,6 +562,28 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
     result
 }
 
+async fn next_relevant_crossterm_event(events: &mut EventStream) -> Option<Event> {
+    next_relevant_event_from_stream(events).await
+}
+
+async fn next_relevant_event_from_stream<S>(events: &mut S) -> Option<Event>
+where
+    S: Stream<Item = std::io::Result<CrosstermEvent>> + Unpin,
+{
+    poll_fn(|cx| loop {
+        match Pin::new(&mut *events).poll_next(cx) {
+            Poll::Ready(Some(Ok(event))) => {
+                if let Some(mapped) = map_crossterm_event(event) {
+                    return Poll::Ready(Some(mapped));
+                }
+            }
+            Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Pending => return Poll::Pending,
+        }
+    })
+    .await
+}
+
 fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
     match event {
         CrosstermEvent::Key(key) if is_primary_key_event(key) => Some(Event::Key(key)),
@@ -557,8 +591,7 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
         CrosstermEvent::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Moved) => None,
         CrosstermEvent::Mouse(mouse) => Some(Event::Mouse(mouse)),
         CrosstermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
-        CrosstermEvent::FocusGained => Some(Event::FocusGained),
-        CrosstermEvent::FocusLost => Some(Event::FocusLost),
+        CrosstermEvent::FocusGained | CrosstermEvent::FocusLost => None,
         CrosstermEvent::Paste(text) => Some(Event::Paste(text)),
     }
 }
@@ -566,35 +599,64 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{CustomEvent, StateChange};
+    use crate::event::CustomEvent;
+    use crossterm::event::{Event as CrosstermEvent, MouseEvent, MouseEventKind};
+    use futures::{Future, task::noop_waker_ref};
+    use std::collections::VecDeque;
+    use std::io;
+    use std::task::Context as TaskContext;
+
+    #[derive(Default)]
+    struct FakeEventStream {
+        events: VecDeque<io::Result<CrosstermEvent>>,
+    }
+
+    impl FakeEventStream {
+        fn with_events(events: Vec<io::Result<CrosstermEvent>>) -> Self {
+            Self {
+                events: events.into(),
+            }
+        }
+    }
+
+    impl Stream for FakeEventStream {
+        type Item = io::Result<CrosstermEvent>;
+
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            Poll::Ready(self.events.pop_front())
+        }
+    }
 
     fn scheduler_stage_event(session_id: &str, id: &str, text: &str) -> Event {
-        Event::Custom(Box::new(CustomEvent::StateChanged(
-            StateChange::OutputBlock {
+        Event::Custom(Box::new(CustomEvent::FrontendEvent(Box::new(
+            agendao_server_core::frontend_events::FrontendEvent::OutputBlockAppended {
                 session_id: session_id.to_string(),
                 id: Some(id.to_string()),
-                payload: serde_json::json!({
+                block: serde_json::json!({
                     "kind": "scheduler_stage",
                     "text": text,
                 }),
                 live_identity: None,
             },
-        )))
+        ))))
     }
 
     fn message_delta_event(session_id: &str, id: &str, text: &str) -> Event {
-        Event::Custom(Box::new(CustomEvent::StateChanged(
-            StateChange::OutputBlock {
+        Event::Custom(Box::new(CustomEvent::FrontendEvent(Box::new(
+            agendao_server_core::frontend_events::FrontendEvent::OutputBlockAppended {
                 session_id: session_id.to_string(),
                 id: Some(id.to_string()),
-                payload: serde_json::json!({
+                block: serde_json::json!({
                     "kind": "message",
                     "phase": "delta",
                     "text": text,
                 }),
                 live_identity: None,
             },
-        )))
+        ))))
     }
 
     #[test]
@@ -613,11 +675,16 @@ mod tests {
         let Event::Custom(custom) = &drained[0] else {
             panic!("expected custom event");
         };
-        let CustomEvent::StateChanged(StateChange::OutputBlock { payload, .. }) = custom.as_ref()
+        let CustomEvent::FrontendEvent(event) = custom.as_ref()
         else {
             panic!("expected output block");
         };
-        assert_eq!(payload["text"], "new");
+        let agendao_server_core::frontend_events::FrontendEvent::OutputBlockAppended { block, .. } =
+            event.as_ref()
+        else {
+            panic!("expected output block");
+        };
+        assert_eq!(block["text"], "new");
     }
 
     #[test]
@@ -671,5 +738,41 @@ mod tests {
         });
 
         assert!(matches!(map_crossterm_event(event), Some(Event::Mouse(_))));
+    }
+
+    #[test]
+    fn map_crossterm_event_ignores_focus_noise() {
+        assert!(map_crossterm_event(CrosstermEvent::FocusGained).is_none());
+        assert!(map_crossterm_event(CrosstermEvent::FocusLost).is_none());
+    }
+
+    #[test]
+    fn next_relevant_crossterm_event_skips_mouse_move_noise() {
+        let mut events = FakeEventStream::with_events(vec![
+            Ok(CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })),
+            Ok(CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 2,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })),
+        ]);
+        let waker = noop_waker_ref();
+        let mut cx = TaskContext::from_waker(waker);
+        let mut future = Box::pin(next_relevant_event_from_stream(&mut events));
+
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(Some(Event::Mouse(mouse))) => {
+                assert!(matches!(mouse.kind, MouseEventKind::Down(_)));
+                assert_eq!(mouse.column, 2);
+                assert_eq!(mouse.row, 3);
+            }
+            other => panic!("expected mouse click after filtering noise, got {other:?}"),
+        }
     }
 }

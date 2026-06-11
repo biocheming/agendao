@@ -1,5 +1,5 @@
-use agendao_types::{ControlInputKind, ControlInputPhase};
 use crossterm::event::{KeyEvent, MouseEvent};
+use agendao_server_core::frontend_events::FrontendEvent;
 
 #[derive(Clone, Debug)]
 pub enum PermissionReplyOutcome {
@@ -79,80 +79,15 @@ pub enum CustomEvent {
         cancelled: bool,
         error: Option<String>,
     },
+    FrontendEvent(Box<FrontendEvent>),
     StateChanged(StateChange),
 }
 
 #[derive(Clone, Debug)]
 pub enum StateChange {
-    SessionCreated(String),
     SessionUpdated {
         session_id: String,
         source: Option<String>,
     },
-    SessionStatusBusy(String),
-    SessionStatusCompacting(String),
-    SessionStatusIdle(String),
     SessionStatusReconnecting(String),
-    SessionStatusRetrying {
-        session_id: String,
-        attempt: u32,
-        message: String,
-        next: i64,
-    },
-    SessionDeleted(String),
-    ModelChanged(String),
-    AgentChanged(String),
-    ProviderConnected(String),
-    ProviderDisconnected(String),
-    ConfigUpdated,
-    McpServerStatusChanged {
-        name: String,
-        status: String,
-    },
-    TodoUpdated,
-    DiffUpdated {
-        session_id: String,
-        diffs: Vec<crate::context::DiffEntry>,
-    },
-    ProcessesUpdated,
-    QuestionCreated {
-        session_id: String,
-        request_id: String,
-    },
-    QuestionResolved {
-        session_id: String,
-        request_id: String,
-    },
-    PermissionRequested {
-        session_id: String,
-        permission: crate::api::PermissionRequestInfo,
-    },
-    PermissionResolved {
-        session_id: String,
-        permission_id: String,
-    },
-    ControlInputTransition {
-        session_id: String,
-        kind: ControlInputKind,
-        phase: ControlInputPhase,
-        at: i64,
-    },
-    ToolCallStarted {
-        session_id: String,
-        tool_call_id: String,
-        tool_name: String,
-    },
-    ToolCallCompleted {
-        session_id: String,
-        tool_call_id: String,
-    },
-    TopologyChanged {
-        session_id: String,
-    },
-    OutputBlock {
-        session_id: String,
-        id: Option<String>,
-        payload: serde_json::Value,
-        live_identity: Option<agendao_types::LiveMessagePartIdentity>,
-    },
 }

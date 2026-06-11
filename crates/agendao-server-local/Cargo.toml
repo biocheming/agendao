@@ -11,6 +11,7 @@ agendao-config = { path = "../agendao-config" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
 agendao-server = { path = "../agendao-server", default-features = false, features = ["http"] }
+agendao-server-core = { path = "../agendao-server-core" }
 agendao-state = { path = "../agendao-state" }
 agendao-types = { path = "../agendao-types" }
 tokio = { version = "1", features = ["sync"] }

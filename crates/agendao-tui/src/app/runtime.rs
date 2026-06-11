@@ -1,4 +1,6 @@
 use super::*;
+use agendao_server_core::frontend_events::FrontendEvent;
+use tokio::sync::watch;
 
 impl App {
     pub(super) fn active_session_status(&self) -> Option<SessionStatus> {
@@ -9,7 +11,10 @@ impl App {
 
     pub(super) fn local_direct_idle_session(&self) -> bool {
         self.local_direct
-            && matches!(self.active_session_status(), Some(SessionStatus::Idle))
+            && matches!(
+                self.active_session_status(),
+                Some(SessionStatus::Idle | SessionStatus::WaitingOnUser)
+            )
     }
 
     fn permission_interaction_active(&self) -> bool {
@@ -30,6 +35,16 @@ impl App {
         } else {
             Duration::from_secs(AUX_SYNC_INTERVAL_SECS)
         }
+    }
+
+    pub(super) fn should_schedule_aux_sync(&self) -> bool {
+        self.session_list_dialog.is_open()
+            || self.skill_list_dialog.is_open()
+            || !self.local_direct
+    }
+
+    pub(super) fn should_schedule_perf_log(&self) -> bool {
+        self.diagnostics.perf_log_info
     }
 
     pub(super) fn session_sidebar_visible(&self) -> bool {
@@ -137,7 +152,7 @@ impl App {
                 schedule_at(self.sync_runtime.last_process_refresh + Duration::from_secs(2));
             }
 
-            if !self.local_direct_idle_session() {
+            if !self.local_direct && !self.local_direct_idle_session() {
                 schedule_at(
                     self.sync_runtime.last_full_session_sync
                         + Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS),
@@ -149,7 +164,7 @@ impl App {
         if has_active_session {
             if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
                 schedule_at(due_at);
-            } else if !self.local_direct_idle_session() || self.question_prompt.is_open {
+            } else if !self.local_direct && !self.local_direct_idle_session() {
                 schedule_at(
                     self.sync_runtime.last_question_sync
                         + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
@@ -157,14 +172,20 @@ impl App {
             }
             if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
                 schedule_at(due_at);
-            } else if !self.local_direct_idle_session() || self.permission_prompt.is_open {
+            } else if !self.local_direct && !self.local_direct_idle_session() {
                 schedule_at(
                     self.sync_runtime.last_permission_sync + self.permission_sync_interval(),
                 );
             }
         }
-        schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
-        schedule_at(self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS));
+        if self.should_schedule_aux_sync() {
+            schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
+        }
+        if self.should_schedule_perf_log() {
+            schedule_at(
+                self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS),
+            );
+        }
 
         deadline
     }
@@ -198,45 +219,42 @@ pub(super) fn spawn_tui_direct_event_bridge(
 ) -> Option<tokio::task::JoinHandle<()>> {
     let state = local_server?;
     Some(tokio::spawn(async move {
-        let mut current_session: Option<String> = None;
+        let mut session_filter_rx = session_filter.subscribe();
         loop {
-            let session_id = session_filter
-                .lock()
-                .ok()
-                .and_then(|g| g.clone())
-                .unwrap_or_default();
+            let session_id = current_session_filter(&session_filter_rx).unwrap_or_default();
             if session_id.is_empty() {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if session_filter_rx.changed().await.is_err() {
+                    break;
+                }
                 continue;
-            }
-            if current_session.as_deref() != Some(&session_id) {
-                current_session = Some(session_id.clone());
             }
             let sid = session_id.clone();
             let cancel = tokio_util::sync::CancellationToken::new();
             let mut rx = spawn_direct_event_loop(Arc::clone(&state), session_id, cancel.clone());
             loop {
-                let filter_id = session_filter
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone())
-                    .unwrap_or_default();
-                if filter_id != sid {
-                    cancel.cancel();
-                    break;
-                }
                 tokio::select! {
                     event = rx.recv() => {
                         match event {
                             Some(direct) => {
-                                if let Some(change) = direct_event_to_state_change(&sid, direct) {
-                                    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
-                                }
+                                let _ = ui_bridge.emit(Event::Custom(Box::new(
+                                    CustomEvent::FrontendEvent(Box::new(direct)),
+                                )));
                             }
                             None => break,
                         }
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                    changed = session_filter_rx.changed() => match changed {
+                        Ok(()) => {
+                            if current_session_filter(&session_filter_rx).as_deref() != Some(sid.as_str()) {
+                                cancel.cancel();
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            cancel.cancel();
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -249,121 +267,46 @@ pub(super) async fn socket_event_subscriber(
     ui_bridge: crate::bridge::UiBridge,
 ) {
     let transport = agendao_client::transport::UnixSocketTransport::new(socket_path);
-    let mut current_session: Option<String> = None;
+    let mut session_filter_rx = session_filter.subscribe();
     loop {
-        let session_id = session_filter
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
-            .unwrap_or_default();
+        let session_id = current_session_filter(&session_filter_rx).unwrap_or_default();
         if session_id.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if session_filter_rx.changed().await.is_err() {
+                break;
+            }
             continue;
         }
-        if current_session.as_deref() != Some(&session_id) {
-            current_session = Some(session_id.clone());
-        }
         let Ok(mut json_rx) = transport.subscribe_events(&session_id).await else {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             continue;
         };
         'inner: loop {
-            let filter_id = session_filter
-                .lock()
-                .ok()
-                .and_then(|g| g.clone())
-                .unwrap_or_default();
-            if filter_id != session_id {
-                break 'inner;
-            }
             tokio::select! {
                 event = json_rx.recv() => {
                     match event {
                         Some(json) => {
-                            if let Ok(direct) = serde_json::from_value::<LocalServerEvent>(json) {
-                                if let Some(change) = direct_event_to_state_change(&session_id, direct) {
-                                    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
-                                }
+                            if let Ok(frontend) = serde_json::from_value::<FrontendEvent>(json) {
+                                let _ = ui_bridge.emit(Event::Custom(Box::new(
+                                    CustomEvent::FrontendEvent(Box::new(frontend)),
+                                )));
                             }
                         }
                         None => break 'inner,
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                changed = session_filter_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    if current_session_filter(&session_filter_rx).as_deref() != Some(session_id.as_str()) {
+                        break 'inner;
+                    }
+                }
             }
         }
     }
 }
 
-pub(super) fn direct_event_to_state_change(
-    _session_id: &str,
-    event: LocalServerEvent,
-) -> Option<StateChange> {
-    use crate::client::LocalServerEvent;
-    Some(match event {
-        LocalServerEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
-        LocalServerEvent::SessionIdle { session_id } => StateChange::SessionStatusIdle(session_id),
-        LocalServerEvent::SessionUpdated { session_id } => StateChange::SessionUpdated {
-            session_id,
-            source: Some("direct_bridge".to_string()),
-        },
-        LocalServerEvent::OutputBlock {
-            session_id,
-            block: payload,
-        } => StateChange::OutputBlock {
-            session_id,
-            id: None,
-            payload,
-            live_identity: None,
-        },
-        LocalServerEvent::QuestionCreated {
-            session_id,
-            request_id,
-            ..
-        } => StateChange::QuestionCreated {
-            session_id,
-            request_id,
-        },
-        LocalServerEvent::QuestionResolved {
-            session_id,
-            request_id,
-        } => StateChange::QuestionResolved {
-            session_id,
-            request_id,
-        },
-        LocalServerEvent::PermissionRequested {
-            session_id,
-            permission_id: _,
-            info_json,
-        } => {
-            let permission = info_json
-                .and_then(|value| serde_json::from_value::<crate::api::PermissionRequestInfo>(value).ok())?;
-            StateChange::PermissionRequested {
-                session_id,
-                permission,
-            }
-        }
-        LocalServerEvent::PermissionResolved {
-            session_id,
-            permission_id,
-        } => StateChange::PermissionResolved {
-            session_id,
-            permission_id,
-        },
-        LocalServerEvent::ToolCallStarted { session_id } => StateChange::ToolCallStarted {
-            session_id,
-            tool_call_id: String::new(),
-            tool_name: String::new(),
-        },
-        LocalServerEvent::ToolCallCompleted { session_id } => StateChange::ToolCallCompleted {
-            session_id,
-            tool_call_id: String::new(),
-        },
-        LocalServerEvent::TopologyChanged { session_id } => {
-            StateChange::TopologyChanged { session_id }
-        }
-        LocalServerEvent::ControlInputTransition { .. }
-        | LocalServerEvent::DiffUpdated { .. }
-        | LocalServerEvent::SessionTreeChanged { .. } => return None,
-    })
+fn current_session_filter(session_filter_rx: &watch::Receiver<Option<String>>) -> Option<String> {
+    session_filter_rx.borrow().clone()
 }

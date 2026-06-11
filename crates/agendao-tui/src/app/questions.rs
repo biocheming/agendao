@@ -162,11 +162,97 @@ impl App {
 
     pub(super) fn clear_question_tracking(&mut self, question_id: &str) {
         self.question_runtime.pending_ids.remove(question_id);
-        self.question_runtime.pending_questions.remove(question_id);
+        self.question_runtime
+            .pending_questions
+            .remove(question_id);
         self.question_runtime
             .pending_queue
             .retain(|id| id != question_id);
         self.question_runtime.pending_drafts.remove(question_id);
+    }
+
+    pub(super) fn upsert_question_request(&mut self, question: crate::api::QuestionInfo) {
+        let request_id = question.id.clone();
+        if self.question_runtime.pending_ids.insert(request_id.clone()) {
+            self.question_runtime
+                .pending_queue
+                .push_back(request_id.clone());
+        }
+        self.question_runtime
+            .pending_questions
+            .insert(request_id, question);
+        self.open_next_question_prompt();
+    }
+
+    /// Directly enqueue a question from event payload — no HTTP round-trip.
+    ///
+    /// The `questions_json` comes from `DirectEvent::QuestionCreated`, which
+    /// carries `serde_json::to_value(&Vec<QuestionDef>)`. `QuestionDef` carries
+    /// the same fields as `QuestionItemInfo` (question, header, options, multiple),
+    /// but `QuestionItemInfo` is not re-exported through the TUI's client API
+    /// dependency chain. We therefore deserialize as a local payload struct and
+    /// populate the legacy `questions`/`options` fields of `QuestionInfo` — the
+    /// `question_prompt_at()` method consumes these through its legacy path.
+    ///
+    /// When the TUI transport switches to `FrontendEvent::QuestionUpsert` (Commit 6),
+    /// the full `QuestionInfo` (with `items`) will be carried directly by the event.
+    pub(super) fn enqueue_question_request(
+        &mut self,
+        session_id: String,
+        request_id: String,
+        questions_json: Option<serde_json::Value>,
+    ) {
+        #[derive(Debug, serde::Deserialize)]
+        struct QuestionItemPayload {
+            question: String,
+            #[serde(default)]
+            options: Vec<QuestionOptionPayload>,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct QuestionOptionPayload {
+            label: String,
+        }
+
+        let json = questions_json.unwrap_or(serde_json::Value::Null);
+
+        let (question_texts, option_labels_by_index): (Vec<String>, Vec<Vec<String>>) = json
+            .as_array()
+            .map(|arr| {
+                let mut texts = Vec::with_capacity(arr.len());
+                let mut opts = Vec::with_capacity(arr.len());
+                for item_json in arr {
+                    let payload: QuestionItemPayload =
+                        serde_json::from_value(item_json.clone()).unwrap_or(QuestionItemPayload {
+                            question: item_json
+                                .get("question")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            options: vec![],
+                        });
+                    texts.push(payload.question);
+                    let labels: Vec<String> =
+                        payload.options.into_iter().map(|o| o.label).collect();
+                    opts.push(labels);
+                }
+                (texts, opts)
+            })
+            .unwrap_or_default();
+
+        let options = if option_labels_by_index.iter().any(|labels| !labels.is_empty()) {
+            Some(option_labels_by_index)
+        } else {
+            None
+        };
+
+        let info = crate::api::QuestionInfo {
+            id: request_id.clone(),
+            session_id,
+            questions: question_texts,
+            options,
+            items: vec![],
+        };
+        self.upsert_question_request(info);
     }
 
     pub(super) fn open_next_question_prompt(&mut self) -> bool {
@@ -302,7 +388,9 @@ impl App {
                 self.set_session_status(&session_id, SessionStatus::Idle);
                 self.prompt.set_spinner_active(false);
                 self.queue_session_telemetry_refresh(&session_id);
-                self.sync_question_requests();
+                if !self.local_direct {
+                    self.sync_question_requests();
+                }
             }
             _ => {
                 self.prompt.set_spinner_active(false);
