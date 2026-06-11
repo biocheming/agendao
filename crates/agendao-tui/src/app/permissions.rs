@@ -142,10 +142,15 @@ impl App {
         }
         permissions.sort_by(|a, b| a.id.cmp(&b.id));
 
-        let latest_ids = permissions
+        let mut latest_ids = permissions
             .iter()
             .map(|permission| permission.id.clone())
             .collect::<HashSet<_>>();
+        for request in self.permission_prompt.requests().iter() {
+            if request.is_submitting {
+                latest_ids.insert(request.id.clone());
+            }
+        }
         let mut changed = latest_ids != self.permission_runtime.pending_ids;
 
         for permission in permissions {
@@ -172,6 +177,8 @@ impl App {
             .retain(|id, _| latest_ids.contains(id));
         self.permission_prompt
             .retain_requests(|request| latest_ids.contains(&request.id));
+        self.context
+            .set_pending_permissions(self.permission_prompt.pending_count());
 
         changed
     }
@@ -229,6 +236,8 @@ impl App {
             .pending_requests
             .insert(permission.id.clone(), permission);
         self.permission_runtime.last_submit_error = None;
+        self.context
+            .set_pending_permissions(self.permission_prompt.pending_count());
     }
 
     pub(super) fn clear_permission_request(&mut self, permission_id: &str) {
@@ -238,6 +247,8 @@ impl App {
             .remove(permission_id);
         self.permission_prompt.clear_submit_state(permission_id);
         self.permission_prompt.remove_request(permission_id);
+        self.context
+            .set_pending_permissions(self.permission_prompt.pending_count());
     }
 
     pub(super) fn resolve_permission_prompt_action(&mut self, action: PermissionAction) {

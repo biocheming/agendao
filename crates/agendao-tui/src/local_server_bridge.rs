@@ -56,6 +56,7 @@ pub enum LocalServerEvent {
     PermissionRequested {
         session_id: String,
         permission_id: String,
+        info_json: Option<serde_json::Value>,
     },
     PermissionResolved {
         session_id: String,

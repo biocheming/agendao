@@ -28,9 +28,13 @@ impl App {
             .unwrap_or(false)
     }
 
-    pub(super) fn toggle_session_sidebar(&self) {
+    pub(super) fn toggle_session_sidebar(&mut self) {
         if let Some(sv) = self.context.session_view_handle() {
             sv.toggle_sidebar(self.terminal_width());
+        }
+        if matches!(self.context.current_route(), Route::Session { .. }) && self.session_sidebar_visible()
+        {
+            self.queue_process_refresh();
         }
     }
 
@@ -113,6 +117,9 @@ impl App {
                     schedule_at(due_at);
                 }
             }
+            if let Some(due_at) = self.sync_runtime.pending_process_refresh_due_at {
+                schedule_at(due_at);
+            }
 
             schedule_at(
                 self.sync_runtime.last_full_session_sync
@@ -124,6 +131,12 @@ impl App {
             }
         }
 
+        if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
+            schedule_at(due_at);
+        }
+        if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
+            schedule_at(due_at);
+        }
         schedule_at(
             self.sync_runtime.last_question_sync + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
         );
@@ -194,7 +207,7 @@ pub(super) fn spawn_tui_direct_event_bridge(
                     event = rx.recv() => {
                         match event {
                             Some(direct) => {
-                                if let Some(change) = direct_event_to_state_change(direct) {
+                                if let Some(change) = direct_event_to_state_change(&sid, direct) {
                                     let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
                                 }
                             }
@@ -246,7 +259,7 @@ pub(super) async fn socket_event_subscriber(
                     match event {
                         Some(json) => {
                             if let Ok(direct) = serde_json::from_value::<LocalServerEvent>(json) {
-                                if let Some(change) = direct_event_to_state_change(direct) {
+                                if let Some(change) = direct_event_to_state_change(&session_id, direct) {
                                     let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
                                 }
                             }
@@ -260,7 +273,7 @@ pub(super) async fn socket_event_subscriber(
     }
 }
 
-fn direct_event_to_state_change(event: LocalServerEvent) -> Option<StateChange> {
+fn direct_event_to_state_change(session_id: &str, event: LocalServerEvent) -> Option<StateChange> {
     use crate::client::LocalServerEvent;
     Some(match event {
         LocalServerEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
@@ -286,6 +299,29 @@ fn direct_event_to_state_change(event: LocalServerEvent) -> Option<StateChange> 
             session_id,
             request_id,
         },
+        LocalServerEvent::QuestionResolved { request_id } => StateChange::QuestionResolved {
+            session_id: session_id.to_string(),
+            request_id,
+        },
+        LocalServerEvent::PermissionRequested {
+            session_id,
+            permission_id: _,
+            info_json,
+        } => {
+            let permission = info_json
+                .and_then(|value| serde_json::from_value::<crate::api::PermissionRequestInfo>(value).ok())?;
+            StateChange::PermissionRequested {
+                session_id,
+                permission,
+            }
+        }
+        LocalServerEvent::PermissionResolved {
+            session_id,
+            permission_id,
+        } => StateChange::PermissionResolved {
+            session_id,
+            permission_id,
+        },
         LocalServerEvent::ToolCallStarted { session_id } => StateChange::ToolCallStarted {
             session_id,
             tool_call_id: String::new(),
@@ -299,10 +335,7 @@ fn direct_event_to_state_change(event: LocalServerEvent) -> Option<StateChange> 
         LocalServerEvent::TopologyChanged { session_id } => {
             StateChange::TopologyChanged { session_id }
         }
-        LocalServerEvent::QuestionResolved { .. }
-        | LocalServerEvent::PermissionRequested { .. }
-        | LocalServerEvent::PermissionResolved { .. }
-        | LocalServerEvent::ControlInputTransition { .. }
+        LocalServerEvent::ControlInputTransition { .. }
         | LocalServerEvent::DiffUpdated { .. }
         | LocalServerEvent::SessionTreeChanged { .. } => return None,
     })

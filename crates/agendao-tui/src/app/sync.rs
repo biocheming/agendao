@@ -20,6 +20,33 @@ pub(super) fn session_update_requires_sync(source: Option<&str>) -> bool {
 }
 
 impl App {
+    pub(super) fn queue_question_sync(&mut self) {
+        self.sync_runtime.pending_question_sync_due_at =
+            Some(Instant::now() + Duration::from_millis(QUESTION_SYNC_DEBOUNCE_MS));
+    }
+
+    pub(super) fn queue_permission_sync(&mut self) {
+        self.sync_runtime.pending_permission_sync_due_at =
+            Some(Instant::now() + Duration::from_millis(PERMISSION_SYNC_DEBOUNCE_MS));
+    }
+
+    pub(super) fn queue_process_refresh(&mut self) {
+        self.sync_runtime.pending_process_refresh_due_at =
+            Some(Instant::now() + Duration::from_millis(PROCESS_REFRESH_DEBOUNCE_MS));
+    }
+
+    pub(super) fn reconcile_pending_user_inputs_from_runtime(&mut self) {
+        let Some(runtime) = self.context.session_runtime() else {
+            return;
+        };
+        if runtime.pending_question.is_some() {
+            self.queue_question_sync();
+        }
+        if runtime.pending_permission.is_some() {
+            self.queue_permission_sync();
+        }
+    }
+
     pub(super) fn handle_session_updated_reconcile(
         &mut self,
         session_id: &str,
@@ -83,6 +110,7 @@ impl App {
         // endless telemetry refreshes.
         if !had_active_view || filter_changed {
             self.queue_session_telemetry_refresh(session_id);
+            self.reconcile_pending_user_inputs_from_runtime();
         }
     }
 
@@ -690,8 +718,7 @@ impl App {
             StateChange::QuestionCreated { session_id, .. }
             | StateChange::QuestionResolved { session_id, .. } => {
                 if self.should_surface_event_for_session(session_id) {
-                    self.event_caused_change = self.sync_question_requests();
-                    self.sync_runtime.last_question_sync = Instant::now();
+                    self.queue_question_sync();
                 }
             }
             StateChange::PermissionRequested {
@@ -700,7 +727,7 @@ impl App {
             } => {
                 if self.should_surface_event_for_session(session_id) {
                     self.enqueue_permission_request(permission.clone());
-                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.queue_permission_sync();
                     self.event_caused_change = true;
                 }
             }
@@ -711,9 +738,12 @@ impl App {
                 if self.should_surface_event_for_session(session_id) {
                     self.clear_permission_request(permission_id);
                     self.permission_runtime.last_submit_error = None;
-                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.queue_permission_sync();
                     self.event_caused_change = true;
                 }
+            }
+            StateChange::ProcessesUpdated => {
+                self.queue_process_refresh();
             }
             StateChange::ControlInputTransition { session_id, .. }
             | StateChange::ToolCallStarted { session_id, .. }

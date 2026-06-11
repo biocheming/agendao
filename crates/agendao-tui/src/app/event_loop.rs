@@ -762,6 +762,7 @@ impl App {
                         crate::event::PermissionReplyOutcome::Succeeded => {
                             self.permission_runtime.last_submit_error = None;
                             self.clear_permission_request(&permission_id);
+                            self.queue_permission_sync();
                             self.context
                                 .set_pending_permissions(self.permission_prompt.pending_count());
                             self.toast.show(
@@ -774,6 +775,7 @@ impl App {
                             self.permission_runtime.last_submit_error = Some(message.clone());
                             self.permission_prompt
                                 .mark_submit_failed(permission_id, message.clone());
+                            self.queue_permission_sync();
                             self.alert_dialog.set_message(&format!(
                                 "Failed to submit permission response:\n{}",
                                 message
@@ -819,6 +821,7 @@ impl App {
                         if let Some(telemetry) = telemetry.as_deref() {
                             self.context
                                 .apply_session_telemetry_snapshot(telemetry.clone());
+                            self.reconcile_pending_user_inputs_from_runtime();
                             self.refresh_attached_sessions();
                             if self.status_dialog.is_open() {
                                 self.refresh_active_status_dialog();
@@ -900,14 +903,31 @@ impl App {
                 if self.sync_runtime.last_question_sync.elapsed()
                     >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
                 {
+                    self.queue_question_sync();
+                }
+                if self.sync_runtime.last_permission_sync.elapsed() >= self.permission_sync_interval()
+                {
+                    self.queue_permission_sync();
+                }
+                if self
+                    .sync_runtime
+                    .pending_question_sync_due_at
+                    .map(|due| Instant::now() >= due)
+                    .unwrap_or(false)
+                {
                     tick_changed |= self.sync_question_requests();
                     self.sync_runtime.last_question_sync = Instant::now();
+                    self.sync_runtime.pending_question_sync_due_at = None;
                 }
-                if self.sync_runtime.last_permission_sync.elapsed()
-                    >= self.permission_sync_interval()
+                if self
+                    .sync_runtime
+                    .pending_permission_sync_due_at
+                    .map(|due| Instant::now() >= due)
+                    .unwrap_or(false)
                 {
                     tick_changed |= self.sync_permission_requests();
                     self.sync_runtime.last_permission_sync = Instant::now();
+                    self.sync_runtime.pending_permission_sync_due_at = None;
                 }
                 if self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval() {
                     if self.session_list_dialog.is_open() {
@@ -924,6 +944,14 @@ impl App {
                     tick_changed = true;
                 }
                 if self.sync_runtime.last_process_refresh.elapsed() >= Duration::from_secs(2) {
+                    self.queue_process_refresh();
+                }
+                if self
+                    .sync_runtime
+                    .pending_process_refresh_due_at
+                    .map(|due| Instant::now() >= due)
+                    .unwrap_or(false)
+                {
                     let should_refresh_processes =
                         matches!(route, Route::Session { .. }) && self.session_sidebar_visible();
                     if should_refresh_processes {
@@ -933,6 +961,7 @@ impl App {
                         tick_changed = true;
                     }
                     self.sync_runtime.last_process_refresh = Instant::now();
+                    self.sync_runtime.pending_process_refresh_due_at = None;
                 }
                 tick_changed |= self.sync_ui_bridge_health();
                 self.maybe_log_perf_snapshot();

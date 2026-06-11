@@ -724,6 +724,7 @@ pub struct ApiClient {
     base_url: String,
     jobs: mpsc::Sender<ApiJob>,
     priority_client: BlockingApiClient,
+    local_server: Option<std::sync::Arc<crate::local_server_bridge::LocalServerState>>,
     current_session: RwLock<Option<SessionInfo>>,
 }
 
@@ -743,10 +744,11 @@ impl ApiClient {
         local_server: Option<std::sync::Arc<crate::local_server_bridge::LocalServerState>>,
     ) -> Self {
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
+        let gateway_local_server = local_server.clone();
         thread::Builder::new()
             .name("agendao-tui-api-gateway".to_string())
             .spawn(move || {
-                let client = if let Some(local_server) = local_server {
+                let client = if let Some(local_server) = gateway_local_server {
                     RuntimeApiClient::new_local_with_server(local_server)
                 } else {
                     RuntimeApiClient::new_local()
@@ -764,6 +766,7 @@ impl ApiClient {
             ),
             base_url: "direct://local".to_string(),
             jobs,
+            local_server,
             current_session: RwLock::new(None),
         }
     }
@@ -796,6 +799,7 @@ impl ApiClient {
             ),
             base_url,
             jobs,
+            local_server: None,
             current_session: RwLock::new(None),
         })
     }
@@ -1027,8 +1031,28 @@ impl ApiClient {
         reply: &str,
         message: Option<String>,
     ) -> anyhow::Result<()> {
-        if self.base_url == "direct://local" {
-            return self.reply_permission(permission_id, reply, message);
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let permission_id = permission_id.to_string();
+            let reply = reply.to_string();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to initialize direct permission reply runtime: {}",
+                        error
+                    )
+                })?;
+            return runtime.block_on(async move {
+                crate::local_server_bridge::local_reply_permission(
+                    state,
+                    &permission_id,
+                    reply,
+                    message,
+                )
+                .await
+            });
         }
         self.priority_client
             .reply_permission(permission_id, reply, message)

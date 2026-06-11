@@ -1,7 +1,7 @@
 use super::*;
 use crate::api::{
-    MessageTokensInfo, SessionExecutionTopology, SessionRunStatusKind, SessionTelemetrySnapshot,
-    SessionTimeInfo,
+    MessageTokensInfo, PendingPermissionSummary, PendingQuestionSummary, SessionExecutionTopology,
+    SessionRunStatusKind, SessionTelemetrySnapshot, SessionTimeInfo,
 };
 use agendao_types::{SessionUsage, SessionUsageBooks};
 use chrono::Utc;
@@ -495,6 +495,49 @@ fn session_telemetry_refresh_finished_applies_snapshot_for_active_session() {
 }
 
 #[test]
+fn session_telemetry_refresh_finished_queues_pending_user_input_syncs() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-telemetry-pending-inputs";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Telemetry".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    let mut telemetry = test_session_telemetry_snapshot(session_id, "stage-1");
+    telemetry.runtime.pending_question = Some(PendingQuestionSummary {
+        request_id: "q-1".to_string(),
+        questions: serde_json::json!([{ "question": "Continue?" }]),
+    });
+    telemetry.runtime.pending_permission = Some(PendingPermissionSummary {
+        permission_id: "perm-1".to_string(),
+        requested_at: Utc::now().timestamp_millis(),
+        tool: Some("bash".to_string()),
+    });
+
+    let event = Event::Custom(Box::new(CustomEvent::SessionTelemetryRefreshFinished {
+        session_id: session_id.to_string(),
+        telemetry: Some(Box::new(telemetry)),
+    }));
+
+    app.handle_event(&event)
+        .expect("telemetry refresh event should be handled");
+
+    assert!(app.sync_runtime.pending_question_sync_due_at.is_some());
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_some());
+}
+
+#[test]
 fn session_telemetry_refresh_finished_ignores_inactive_session_snapshot() {
     let mut app = App::new().expect("app should initialize");
     let active_session_id = "session-active";
@@ -629,6 +672,7 @@ fn permission_requested_event_surfaces_prompt_without_http_sync() {
     assert!(app.event_caused_change);
     assert!(app.permission_runtime.pending_ids.contains("perm-1"));
     assert!(app.permission_prompt.is_open);
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_some());
     assert_eq!(
         app.permission_runtime
             .pending_requests
@@ -636,6 +680,107 @@ fn permission_requested_event_surfaces_prompt_without_http_sync() {
             .map(|request| request.tool.as_str()),
         Some("bash")
     );
+}
+
+#[test]
+fn question_created_event_queues_sync_without_immediate_prompt_sync() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-question-queued";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Question session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    let event = Event::Custom(Box::new(CustomEvent::StateChanged(
+        StateChange::QuestionCreated {
+            session_id: session_id.to_string(),
+            request_id: "q-1".to_string(),
+        },
+    )));
+
+    app.handle_event(&event)
+        .expect("question created event should be handled");
+
+    assert!(app.sync_runtime.pending_question_sync_due_at.is_some());
+    assert!(app.question_prompt.current().is_none());
+}
+
+#[test]
+fn permission_sync_does_not_clear_submitting_request_on_empty_poll() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-permission-keepalive";
+    let permission = crate::api::PermissionRequestInfo {
+        id: "perm-1".to_string(),
+        session_id: session_id.to_string(),
+        tool: "bash".to_string(),
+        permission_class: Some("dangerous_exec".to_string()),
+        scope_key: Some("python3".to_string()),
+        scope_label: Some("Shell commands: python3".to_string()),
+        origin_tool: None,
+        supported_lifetimes: vec!["once".to_string()],
+        matcher_kind: None,
+        matcher_key: None,
+        matcher_label: None,
+        grant_target_summary: None,
+        risk_tags: vec!["dangerous_exec".to_string()],
+        input: serde_json::json!({
+            "permission": "bash",
+            "metadata": { "command": "python3 demo.py" }
+        }),
+        message: "Execute python3 demo.py".to_string(),
+    };
+
+    {
+        let mut session_ctx = app.context.session.write();
+        let now = Utc::now();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Permission keepalive".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+    app.enqueue_permission_request(permission);
+    assert!(app.permission_prompt.mark_submitting("perm-1"));
+
+    app.permission_runtime.pending_ids.clear();
+    app.permission_runtime.pending_requests.clear();
+    app.permission_prompt
+        .retain_requests(|_| true);
+
+    let latest_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    app.permission_runtime
+        .pending_ids
+        .retain(|id| latest_ids.contains(id));
+    app.permission_runtime
+        .pending_requests
+        .retain(|id, _| latest_ids.contains(id));
+    app.permission_prompt.retain_requests(|request| {
+        latest_ids.contains(&request.id) || request.is_submitting
+    });
+
+    assert!(app.permission_prompt.is_open);
+    assert_eq!(
+        app.permission_prompt.current_request().map(|req| req.id.as_str()),
+        Some("perm-1")
+    );
+    assert!(app.permission_prompt.is_current_request_submitting());
 }
 
 fn test_session_telemetry_snapshot(
