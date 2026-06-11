@@ -903,11 +903,13 @@ impl App {
                 if matches!(route, Route::Session { .. }) {
                     if self.sync_runtime.last_question_sync.elapsed()
                         >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
+                        && self.sync_runtime.pending_question_sync_due_at.is_none()
                     {
                         self.queue_question_sync();
                     }
                     if self.sync_runtime.last_permission_sync.elapsed()
                         >= self.permission_sync_interval()
+                        && self.sync_runtime.pending_permission_sync_due_at.is_none()
                     {
                         self.queue_permission_sync();
                     }
