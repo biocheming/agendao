@@ -131,16 +131,20 @@ impl App {
             }
         }
 
-        if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
-            schedule_at(due_at);
+        let has_active_session = matches!(route, Route::Session { .. });
+        if has_active_session {
+            if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
+                schedule_at(due_at);
+            }
+            if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
+                schedule_at(due_at);
+            }
+            schedule_at(
+                self.sync_runtime.last_question_sync
+                    + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
+            );
+            schedule_at(self.sync_runtime.last_permission_sync + self.permission_sync_interval());
         }
-        if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
-            schedule_at(due_at);
-        }
-        schedule_at(
-            self.sync_runtime.last_question_sync + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
-        );
-        schedule_at(self.sync_runtime.last_permission_sync + self.permission_sync_interval());
         schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
         schedule_at(self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS));
 
@@ -273,7 +277,10 @@ pub(super) async fn socket_event_subscriber(
     }
 }
 
-fn direct_event_to_state_change(session_id: &str, event: LocalServerEvent) -> Option<StateChange> {
+pub(super) fn direct_event_to_state_change(
+    _session_id: &str,
+    event: LocalServerEvent,
+) -> Option<StateChange> {
     use crate::client::LocalServerEvent;
     Some(match event {
         LocalServerEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
@@ -299,8 +306,11 @@ fn direct_event_to_state_change(session_id: &str, event: LocalServerEvent) -> Op
             session_id,
             request_id,
         },
-        LocalServerEvent::QuestionResolved { request_id } => StateChange::QuestionResolved {
-            session_id: session_id.to_string(),
+        LocalServerEvent::QuestionResolved {
+            session_id,
+            request_id,
+        } => StateChange::QuestionResolved {
+            session_id,
             request_id,
         },
         LocalServerEvent::PermissionRequested {
