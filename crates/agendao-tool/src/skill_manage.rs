@@ -59,7 +59,7 @@ struct SkillManageInput {
     category: Option<String>,
     #[serde(default)]
     directory_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "filepath")]
     file_path: Option<String>,
 }
 
@@ -1375,5 +1375,18 @@ mod tests {
             .and_then(|value| value.as_array())
             .expect("methodology should accept object or string");
         assert_eq!(methodology_one_of.len(), 2);
+    }
+
+    #[test]
+    fn skill_manage_accepts_filepath_alias() {
+        let input: SkillManageInput = serde_json::from_value(serde_json::json!({
+            "action": "write_file",
+            "name": "pubmed-database",
+            "filepath": "references/api.md",
+            "content": "hello"
+        }))
+        .expect("filepath alias should deserialize");
+
+        assert_eq!(input.file_path.as_deref(), Some("references/api.md"));
     }
 }

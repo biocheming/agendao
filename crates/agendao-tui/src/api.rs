@@ -1613,6 +1613,9 @@ impl ApiClient {
     }
 
     pub fn get_mcp_status(&self) -> anyhow::Result<Vec<McpStatusInfo>> {
+        if self.base_url == "direct://local" {
+            return Ok(Vec::new());
+        }
         self.call("get MCP status", |client| client.get_mcp_status())
     }
 
@@ -1666,6 +1669,9 @@ impl ApiClient {
     }
 
     pub fn get_lsp_servers(&self) -> anyhow::Result<Vec<String>> {
+        if self.base_url == "direct://local" {
+            return Ok(Vec::new());
+        }
         self.call("get LSP servers", |client| client.get_lsp_servers())
     }
 
@@ -1739,6 +1745,7 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
+    use super::ApiClient;
     #[cfg(feature = "local-server")]
     use super::{MessageInfo, PromptPart, RuntimeApiClient};
     #[cfg(feature = "local-server")]
@@ -2117,5 +2124,23 @@ mod tests {
             after.iter().all(|item| item.id != session.id),
             "deleted local session should disappear from local listing"
         );
+    }
+
+    #[test]
+    fn direct_api_client_returns_empty_mcp_status() {
+        let client = ApiClient::new_local();
+        let status = client
+            .get_mcp_status()
+            .expect("direct local MCP status should not hit HTTP");
+        assert!(status.is_empty());
+    }
+
+    #[test]
+    fn direct_api_client_returns_empty_lsp_servers() {
+        let client = ApiClient::new_local();
+        let servers = client
+            .get_lsp_servers()
+            .expect("direct local LSP status should not hit HTTP");
+        assert!(servers.is_empty());
     }
 }

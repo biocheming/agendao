@@ -402,6 +402,9 @@ impl App {
         session_id: &str,
         mode: SessionSyncMode,
     ) -> anyhow::Result<()> {
+        if self.local_direct {
+            return Ok(());
+        }
         let Some(client) = self.context.get_api_client() else {
             return Ok(());
         };

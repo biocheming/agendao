@@ -15,7 +15,7 @@ pub struct SkillViewTool;
 #[derive(Debug, Deserialize)]
 struct SkillViewInput {
     name: String,
-    #[serde(default)]
+    #[serde(default, alias = "filepath")]
     file_path: Option<String>,
 }
 
@@ -292,5 +292,16 @@ Use PubMed APIs.
             .unwrap_or_default()
             .trim()
             .is_empty());
+    }
+
+    #[test]
+    fn skill_view_accepts_filepath_alias() {
+        let input: SkillViewInput = serde_json::from_value(serde_json::json!({
+            "name": "pubmed-database",
+            "filepath": "references/api.md"
+        }))
+        .expect("filepath alias should deserialize");
+
+        assert_eq!(input.file_path.as_deref(), Some("references/api.md"));
     }
 }

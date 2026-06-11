@@ -1525,6 +1525,18 @@ mod tests {
         let content = normalized["content"].as_str().unwrap();
         assert!(content.contains("<html"));
     }
+
+    #[test]
+    fn normalize_tool_arguments_preserves_filepath_alias_for_write() {
+        let input = serde_json::json!({
+            "filepath": "/tmp/test.html",
+            "content": "<html></html>"
+        });
+        let normalized = normalize_tool_arguments("write", input);
+        assert!(normalized.is_object());
+        assert_eq!(normalized["filepath"], "/tmp/test.html");
+        assert_eq!(normalized["content"], "<html></html>");
+    }
 }
 
 #[cfg(test)]

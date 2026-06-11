@@ -7,6 +7,19 @@ use agendao_types::{SessionUsage, SessionUsageBooks};
 use chrono::Utc;
 
 #[test]
+fn local_direct_app_uses_direct_base_url_authority() {
+    let app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        base_url: Some("http://127.0.0.1:0".to_string()),
+        ..AppLaunchConfig::default()
+    })
+    .expect("local direct app should initialize");
+
+    assert!(app.local_direct);
+    assert_eq!(app.server_event_base_url, "direct://local");
+}
+
+#[test]
 fn session_update_requires_sync_for_prompt_final_sources() {
     assert!(super::sync::session_update_requires_sync(Some(
         "prompt.final"
