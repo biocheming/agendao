@@ -10,11 +10,11 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use reratui::element::Element;
 use reratui::fiber_tree::{clear_fiber_tree, set_fiber_tree};
-use reratui::hooks::{use_context, use_context_provider, use_event};
+use reratui::hooks::{use_context, use_context_provider};
 use reratui::scheduler::{batch, effect_queue};
 use reratui::{
     clear_current_event, clear_global_handlers, clear_render_context, init_render_context,
-    reset_component_position_counter, set_current_event, Buffer, Component, FiberTree, Rect,
+    reset_component_position_counter, Buffer, Component, FiberTree, Rect,
 };
 use tokio::sync::Notify;
 use tokio_stream::StreamExt;
@@ -232,12 +232,6 @@ fn draw_app_frame_blocking(
 }
 
 #[derive(Clone)]
-struct TerminalEventBridge {
-    app: Arc<Mutex<App>>,
-    errors: Arc<RuntimeErrorSink>,
-}
-
-#[derive(Clone)]
 struct ReactiveRootComponent {
     app: Arc<Mutex<App>>,
     cursor: Arc<Mutex<Option<(u16, u16)>>>,
@@ -272,22 +266,6 @@ pub(crate) struct ReactiveAppContextHandle(pub(crate) Arc<AppContext>);
 #[derive(Clone)]
 pub(crate) struct ReactiveSessionContext {
     pub(crate) session_id: String,
-}
-
-impl Component for TerminalEventBridge {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let Some(raw_event) = use_event() else {
-            return;
-        };
-
-        let Some(event) = map_crossterm_event(raw_event) else {
-            return;
-        };
-
-        if let Err(error) = process_app_event_blocking(&self.app, &event) {
-            self.errors.store(error);
-        }
-    }
 }
 
 impl Component for ReactiveRootComponent {
@@ -512,18 +490,9 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 .max(1);
             should_draw |= drain_app_pending_events_blocking(&app, max_events_per_frame)?;
 
-            let bridge_event = polled_event.as_ref().and_then(|event| {
-                if map_crossterm_event(event.clone()).is_some() {
-                    Some(event.clone())
-                } else {
-                    None
-                }
-            });
-
-            if let Some(event) = bridge_event.as_ref() {
-                set_current_event(Some(Arc::new(event.clone())));
-            } else {
-                clear_current_event();
+            let mapped_event = polled_event.and_then(map_crossterm_event);
+            if let Some(event) = mapped_event.as_ref() {
+                should_draw |= process_app_event_blocking(&app, event)?;
             }
 
             reratui::fiber_tree::with_fiber_tree_mut(|tree| {
@@ -531,17 +500,6 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
             });
             reset_component_position_counter();
             clear_global_handlers();
-
-            if bridge_event.is_some() {
-                let bridge = Element::component(TerminalEventBridge {
-                    app: app.clone(),
-                    errors: errors.clone(),
-                });
-                let area = Rect::new(0, 0, 1, 1);
-                let mut buffer = Buffer::empty(area);
-                bridge.render(area, &mut buffer);
-                should_draw = true;
-            }
 
             reratui::fiber_tree::with_fiber_tree_mut(|tree| {
                 tree.mark_unseen_for_unmount();
@@ -596,6 +554,7 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
     match event {
         CrosstermEvent::Key(key) if is_primary_key_event(key) => Some(Event::Key(key)),
         CrosstermEvent::Key(_) => None,
+        CrosstermEvent::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Moved) => None,
         CrosstermEvent::Mouse(mouse) => Some(Event::Mouse(mouse)),
         CrosstermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
         CrosstermEvent::FocusGained => Some(Event::FocusGained),
@@ -688,5 +647,29 @@ mod tests {
         assert_eq!(snapshot.pending_events, DEFAULT_UI_BRIDGE_QUEUE);
         assert_eq!(snapshot.dropped_events, 5);
         assert_eq!(snapshot.high_water_mark, DEFAULT_UI_BRIDGE_QUEUE);
+    }
+
+    #[test]
+    fn map_crossterm_event_ignores_mouse_move() {
+        let event = CrosstermEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 7,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert!(map_crossterm_event(event).is_none());
+    }
+
+    #[test]
+    fn map_crossterm_event_keeps_mouse_clicks() {
+        let event = CrosstermEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 7,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert!(matches!(map_crossterm_event(event), Some(Event::Mouse(_))));
     }
 }

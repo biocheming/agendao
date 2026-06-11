@@ -75,6 +75,12 @@ pub async fn local_list_sessions(
     agendao_server::local_list_sessions(state, search, limit).await
 }
 
+pub async fn local_get_session_status(
+    state: Arc<LocalServerState>,
+) -> Result<std::collections::HashMap<String, agendao_types::SessionStatusInfo>> {
+    agendao_server::local_get_session_status(state).await
+}
+
 pub async fn local_delete_session(state: Arc<LocalServerState>, session_id: &str) -> Result<bool> {
     agendao_server::local_delete_session(state, session_id).await
 }
@@ -122,6 +128,36 @@ pub async fn local_reply_permission(
     message: Option<String>,
 ) -> Result<()> {
     agendao_server::local_reply_permission(state, permission_id, reply, message).await
+}
+
+pub async fn local_get_session_runtime(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<agendao_client::SessionRuntimeState> {
+    let runtime = agendao_server::local_get_session_runtime(state, session_id).await?;
+    Ok(serde_json::from_value(serde_json::to_value(runtime)?)?)
+}
+
+pub async fn local_get_session_telemetry(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<agendao_client::SessionTelemetrySnapshot> {
+    let snapshot = agendao_server::local_get_session_telemetry(state, session_id).await?;
+    Ok(serde_json::from_value(serde_json::to_value(snapshot)?)?)
+}
+
+pub async fn local_get_session_todos(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<Vec<agendao_types::SessionTodoInfo>> {
+    agendao_server::local_get_session_todos(state, session_id).await
+}
+
+pub async fn local_get_session_diff(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<Vec<agendao_types::FileDiff>> {
+    agendao_server::local_get_session_diff(state, session_id).await
 }
 
 pub async fn local_get_config_providers(

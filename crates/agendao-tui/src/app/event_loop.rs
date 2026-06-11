@@ -887,7 +887,8 @@ impl App {
                         self.sync_runtime.pending_session_sync = None;
                         self.sync_runtime.pending_session_sync_due_at = None;
                     }
-                    if self.sync_runtime.last_full_session_sync.elapsed()
+                    if !self.local_direct_idle_session()
+                        && self.sync_runtime.last_full_session_sync.elapsed()
                         >= Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS)
                         && self
                             .sync_session_from_server_with_mode(session_id, SessionSyncMode::Full)
@@ -901,13 +902,15 @@ impl App {
                     }
                 }
                 if matches!(route, Route::Session { .. }) {
-                    if self.sync_runtime.last_question_sync.elapsed()
+                    if (!self.local_direct_idle_session() || self.question_prompt.is_open)
+                        && self.sync_runtime.last_question_sync.elapsed()
                         >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
                         && self.sync_runtime.pending_question_sync_due_at.is_none()
                     {
                         self.queue_question_sync();
                     }
-                    if self.sync_runtime.last_permission_sync.elapsed()
+                    if (!self.local_direct_idle_session() || self.permission_prompt.is_open)
+                        && self.sync_runtime.last_permission_sync.elapsed()
                         >= self.permission_sync_interval()
                         && self.sync_runtime.pending_permission_sync_due_at.is_none()
                     {
@@ -952,7 +955,10 @@ impl App {
                     tick_changed = true;
                 }
                 if matches!(route, Route::Session { .. })
+                    && self.session_sidebar_visible()
+                    && !self.local_direct_idle_session()
                     && self.sync_runtime.last_process_refresh.elapsed() >= Duration::from_secs(2)
+                    && self.sync_runtime.pending_process_refresh_due_at.is_none()
                 {
                     self.queue_process_refresh();
                 }

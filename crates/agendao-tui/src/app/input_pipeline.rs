@@ -173,11 +173,13 @@ impl App {
 
     pub(super) fn navigate_session_with_prompt_cleanup(&mut self, session_id: String) {
         self.handle_prompt_route_change();
+        self.selection.clear();
         self.context.navigate_session(session_id);
     }
 
     pub(super) fn navigate_home_with_prompt_cleanup(&mut self) {
         self.handle_prompt_route_change();
+        self.selection.clear();
         self.context.navigate_home();
     }
 

@@ -16,3 +16,4 @@ agendao-types = { path = "../agendao-types" }
 tokio = { version = "1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 anyhow = { workspace = true }
+serde_json = { workspace = true }

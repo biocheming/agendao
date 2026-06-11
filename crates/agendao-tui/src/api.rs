@@ -176,6 +176,90 @@ impl RuntimeApiClient {
         self.block_on(self.client.get_session(session_id))
     }
 
+    fn get_session_status(&self) -> anyhow::Result<HashMap<String, SessionStatusInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                let status = crate::local_server_bridge::local_get_session_status(state).await?;
+                Ok(status
+                    .into_iter()
+                    .map(|(id, value)| {
+                        (
+                            id,
+                            SessionStatusInfo {
+                                status: value.status,
+                                idle: value.idle,
+                                busy: value.busy,
+                                attempt: value.attempt,
+                                message: value.message,
+                                next: value.next,
+                            },
+                        )
+                    })
+                    .collect())
+            });
+        }
+        self.block_on(self.client.get_session_status())
+    }
+
+    fn get_session_runtime(&self, session_id: &str) -> anyhow::Result<SessionRuntimeState> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                let runtime: SessionRuntimeState =
+                    crate::local_server_bridge::local_get_session_runtime(state, &session_id)
+                        .await?;
+                serde_json::from_value(serde_json::to_value(runtime)?)
+                    .map_err(anyhow::Error::from)
+            });
+        }
+        self.block_on(self.client.get_session_runtime(session_id))
+    }
+
+    fn get_session_telemetry(&self, session_id: &str) -> anyhow::Result<SessionTelemetrySnapshot> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                let snapshot: SessionTelemetrySnapshot =
+                    crate::local_server_bridge::local_get_session_telemetry(state, &session_id)
+                        .await?;
+                serde_json::from_value(serde_json::to_value(snapshot)?)
+                    .map_err(anyhow::Error::from)
+            });
+        }
+        self.block_on(self.client.get_session_telemetry(session_id))
+    }
+
+    fn get_session_todos(&self, session_id: &str) -> anyhow::Result<Vec<ApiTodoItem>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                let todos =
+                    crate::local_server_bridge::local_get_session_todos(state, &session_id).await?;
+                serde_json::from_value(serde_json::to_value(todos)?)
+                    .map_err(anyhow::Error::from)
+            });
+        }
+        self.block_on(self.client.get_session_todos(session_id))
+    }
+
+    fn get_session_diff(&self, session_id: &str) -> anyhow::Result<Vec<ApiDiffEntry>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                let diffs =
+                    crate::local_server_bridge::local_get_session_diff(state, &session_id).await?;
+                serde_json::from_value(serde_json::to_value(diffs)?)
+                    .map_err(anyhow::Error::from)
+            });
+        }
+        self.block_on(self.client.get_session_diff(session_id))
+    }
+
     fn send_prompt(
         &self,
         session_id: &str,
@@ -438,14 +522,9 @@ impl RuntimeApiClient {
     }
 
     sync_api_methods! {
-        fn get_session_status(&self) -> HashMap<String, SessionStatusInfo>;
         fn get_session_executions(&self, session_id: &str) -> SessionExecutionTopology;
-        fn get_session_runtime(&self, session_id: &str) -> SessionRuntimeState;
-        fn get_session_telemetry(&self, session_id: &str) -> SessionTelemetrySnapshot;
         fn get_session_insights(&self, session_id: &str) -> SessionInsightsResponse;
         fn get_session_events(&self, session_id: &str, query: &SessionEventsQuery) -> Vec<StageEvent>;
-        fn get_session_todos(&self, session_id: &str) -> Vec<ApiTodoItem>;
-        fn get_session_diff(&self, session_id: &str) -> Vec<ApiDiffEntry>;
         fn get_session_recovery(&self, session_id: &str) -> SessionRecoveryProtocol;
         fn execute_session_recovery(&self, session_id: &str, action: RecoveryActionKind, target_id: Option<String>) -> serde_json::Value;
         fn update_session_title(&self, session_id: &str, title: &str) -> SessionInfo;

@@ -550,6 +550,7 @@ dependencies = [
  "agendao-state",
  "agendao-types",
  "anyhow",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]

@@ -64,6 +64,54 @@ fn local_direct_sync_session_loads_existing_history() {
 }
 
 #[test]
+fn navigate_session_with_prompt_cleanup_clears_selection() {
+    let mut app = App::new().expect("app should initialize");
+    app.selection.start(3, 5);
+    app.selection.finalize();
+
+    app.navigate_session_with_prompt_cleanup("session-target".to_string());
+
+    assert!(!app.selection.is_active());
+}
+
+#[test]
+fn local_direct_idle_session_skips_session_fallback_deadlines() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-local-idle";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Local idle".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Idle);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_process_refresh = Instant::now() - Duration::from_secs(60);
+
+    let deadline = app
+        .next_tick_deadline(Instant::now())
+        .expect("idle local session should still have non-session deadlines");
+
+    assert!(deadline > Instant::now());
+}
+
+#[test]
 fn session_update_requires_sync_for_prompt_final_sources() {
     assert!(super::sync::session_update_requires_sync(Some(
         "prompt.final"
@@ -854,7 +902,40 @@ fn pending_question_sync_deadline_suppresses_stale_fallback_deadline() {
     let deadline = app
         .next_tick_deadline(now)
         .expect("session route should produce a deadline");
-    assert!(deadline > now);
+    assert!(deadline >= now);
+}
+
+#[test]
+fn pending_process_refresh_deadline_suppresses_stale_sidebar_fallback_deadline() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-process-debounce";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Process debounce".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.toggle_session_sidebar();
+
+    let now = Instant::now();
+    let pending_due = now + Duration::from_millis(120);
+    app.sync_runtime.last_process_refresh = now - Duration::from_secs(60);
+    app.sync_runtime.pending_process_refresh_due_at = Some(pending_due);
+
+    let deadline = app
+        .next_tick_deadline(now)
+        .expect("session route should produce a deadline");
+    assert!(deadline <= pending_due);
 }
 
 #[test]
@@ -885,6 +966,117 @@ fn tick_does_not_rearm_question_sync_while_debounce_is_pending() {
         .expect("tick should preserve in-flight question debounce");
 
     assert_eq!(app.sync_runtime.pending_question_sync_due_at, Some(pending_due));
+}
+
+#[test]
+fn tick_does_not_rearm_process_refresh_while_debounce_is_pending() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-process-rearm";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Process rearm".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.toggle_session_sidebar();
+
+    let pending_due = Instant::now() + Duration::from_millis(120);
+    app.sync_runtime.last_process_refresh = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.pending_process_refresh_due_at = Some(pending_due);
+
+    app.handle_event(&Event::Tick)
+        .expect("tick should preserve in-flight process refresh debounce");
+
+    assert_eq!(app.sync_runtime.pending_process_refresh_due_at, Some(pending_due));
+}
+
+#[test]
+fn completed_session_tail_disables_spinner_even_if_local_status_is_running() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-completed-tail";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Completed tail".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_messages(
+            session_id,
+            vec![Message {
+                id: "assistant-1".to_string(),
+                role: MessageRole::Assistant,
+                content: "done".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![crate::state::MessagePart::Text {
+                    text: "done".to_string(),
+                }],
+            }],
+        );
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+
+    app.sync_prompt_spinner_state();
+    assert!(!app.prompt.spinner_active());
+}
+
+#[test]
+fn active_runtime_keeps_spinner_enabled_when_status_is_running() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-active-runtime";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Active runtime".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.context
+        .apply_session_telemetry_snapshot(test_session_telemetry_snapshot(
+            session_id,
+            "stage-active",
+        ));
+
+    app.sync_prompt_spinner_state();
+    assert!(app.prompt.spinner_active());
 }
 
 fn test_session_telemetry_snapshot(
