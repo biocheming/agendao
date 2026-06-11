@@ -219,6 +219,10 @@ impl PermissionPrompt {
         self.requests.get(self.current_index)
     }
 
+    pub fn requests(&self) -> &[PermissionRequest] {
+        &self.requests
+    }
+
     fn clone_current_request(&self) -> Option<PermissionRequest> {
         self.current_request().cloned()
     }

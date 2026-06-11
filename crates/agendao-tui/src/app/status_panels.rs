@@ -948,6 +948,8 @@ impl App {
                 .show(ToastVariant::Error, "API unavailable for /runtime.", 2400);
             return false;
         };
+        agendao_core::process_registry::global_registry().refresh_stats();
+        *self.context.processes.write() = agendao_core::process_registry::global_registry().list();
 
         match client.get_session_telemetry(&session_id) {
             Ok(telemetry) => {
@@ -957,6 +959,7 @@ impl App {
                     &session_id,
                     &telemetry,
                     &self.context.ui_bridge_snapshot(),
+                    &self.context.processes.read().clone(),
                 );
                 self.status_dialog.set_title("Runtime");
                 self.status_dialog.set_footer_hint(Some(
@@ -1834,6 +1837,7 @@ fn tui_runtime_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
     ui_bridge: &crate::bridge::UiBridgeSnapshot,
+    processes: &[agendao_core::process_registry::ProcessInfo],
 ) -> Vec<StatusLine> {
     let runtime = &telemetry.runtime;
     let topology = &telemetry.topology;
@@ -2086,6 +2090,25 @@ fn tui_runtime_status_lines(
                 )));
                 lines.push(StatusLine::muted(format!("  {}", detail)));
             }
+        }
+    }
+
+    if !processes.is_empty() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Local Processes"));
+        for proc in processes.iter().take(5) {
+            lines.push(StatusLine::normal(format!(
+                "{} · {:4.1}% CPU · {} MB RSS",
+                proc.name,
+                proc.cpu_percent,
+                proc.memory_kb / 1024
+            )));
+        }
+        if processes.len() > 5 {
+            lines.push(StatusLine::muted(format!(
+                "{} more process entries",
+                processes.len() - 5
+            )));
         }
     }
 
@@ -4124,7 +4147,7 @@ mod tests {
             capacity: 4096,
         };
 
-        let texts = tui_runtime_status_lines("sess_123", &telemetry, &ui_bridge)
+        let texts = tui_runtime_status_lines("sess_123", &telemetry, &ui_bridge, &[])
             .into_iter()
             .map(|line| line.text)
             .collect::<Vec<_>>();
@@ -4136,6 +4159,94 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| line == "Coalesced: 30 · dropped: 4"));
+    }
+
+    #[test]
+    fn runtime_status_surfaces_local_process_metrics() {
+        let telemetry = crate::api::SessionTelemetrySnapshot {
+            runtime: crate::api::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api::SessionRunStatusKind::Running,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                pending_followup_count: 0,
+                attached_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 1,
+                done_count: 0,
+                running_count: 1,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: agendao_types::SessionUsage::default(),
+            usage_books: SessionUsageBooks::default(),
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: None,
+            tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
+            memory: None,
+            cache_evidence: None,
+            context_explain: None,
+            ownership: None,
+            context_compaction_summary: None,
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: None,
+            context_pressure_governance_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+            prompt_surface_evidence: None,
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
+        };
+        let ui_bridge = crate::bridge::UiBridgeSnapshot {
+            revision: 7,
+            last_event: None,
+            pending_events: 0,
+            high_water_mark: 0,
+            coalesced_events: 0,
+            dropped_events: 0,
+            capacity: 4096,
+        };
+        let processes = vec![agendao_core::process_registry::ProcessInfo {
+            pid: 1234,
+            name: "agendao".to_string(),
+            kind: agendao_core::process_registry::ProcessKind::Agent,
+            started_at: 0,
+            cpu_percent: 87.5,
+            memory_kb: 256 * 1024,
+        }];
+
+        let texts = tui_runtime_status_lines("sess_123", &telemetry, &ui_bridge, &processes)
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|line| line == "Local Processes"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "agendao · 87.5% CPU · 256 MB RSS"));
     }
 }
 

@@ -125,6 +125,9 @@ fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
 
 const SESSION_SYNC_DEBOUNCE_MS: u64 = 180;
 const SESSION_TELEMETRY_SYNC_DEBOUNCE_MS: u64 = 120;
+const QUESTION_SYNC_DEBOUNCE_MS: u64 = 40;
+const PERMISSION_SYNC_DEBOUNCE_MS: u64 = 40;
+const PROCESS_REFRESH_DEBOUNCE_MS: u64 = 120;
 const SESSION_FULL_SYNC_INTERVAL_SECS: u64 = 10;
 const QUESTION_SYNC_FALLBACK_SECS: u64 = 5;
 const PERMISSION_SYNC_FALLBACK_SECS: u64 = 5;
@@ -308,6 +311,9 @@ struct SyncLifecycleState {
     pending_session_sync_due_at: Option<Instant>,
     pending_session_telemetry_sync: Option<String>,
     pending_session_telemetry_sync_due_at: Option<Instant>,
+    pending_question_sync_due_at: Option<Instant>,
+    pending_permission_sync_due_at: Option<Instant>,
+    pending_process_refresh_due_at: Option<Instant>,
     session_telemetry_sync_inflight: bool,
     last_tick_at: Instant,
     last_session_sync: Instant,
@@ -328,6 +334,9 @@ impl SyncLifecycleState {
             pending_session_sync_due_at: None,
             pending_session_telemetry_sync: None,
             pending_session_telemetry_sync_due_at: None,
+            pending_question_sync_due_at: None,
+            pending_permission_sync_due_at: None,
+            pending_process_refresh_due_at: None,
             session_telemetry_sync_inflight: false,
             last_tick_at: now,
             last_session_sync: now,
