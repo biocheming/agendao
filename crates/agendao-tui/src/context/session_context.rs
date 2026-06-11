@@ -196,6 +196,7 @@ pub enum SessionStatus {
     Idle,
     Running,
     Compacting,
+    WaitingOnUser,
     Reconnecting,
     Retrying {
         message: String,

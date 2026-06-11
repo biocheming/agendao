@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agendao_server_core::frontend_events::FrontendEvent;
 use agendao_client::{
     AgentInfo, ConnectProviderRequest, CreateSessionRequest, ExecutionModeInfo,
     FullProviderListResponse, KnownProvidersResponse, MessageInfo, MultimodalCapabilitiesResponse,
@@ -14,7 +15,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 pub type LocalServerState = agendao_server::ServerState;
-pub type LocalServerEvent = agendao_server::DirectEvent;
+pub type LocalServerEvent = FrontendEvent;
 
 pub async fn new_local_server_for_workspace(
     workspace_root: PathBuf,

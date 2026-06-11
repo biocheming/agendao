@@ -437,29 +437,56 @@ impl App {
     }
 
     fn session_status_requires_spinner(&self, session_id: &str, status: &SessionStatus) -> bool {
-        // Early exit: Idle status is authoritative
-        if matches!(status, SessionStatus::Idle) {
+        // Idle and waiting-on-user are authoritative non-animating states.
+        // Approval/question overlays should stay responsive, but they should
+        // not keep the transcript viewport redrawing like an active run.
+        if matches!(status, SessionStatus::Idle | SessionStatus::WaitingOnUser) {
             return false;
         }
 
         // Runtime is the canonical authority for session running state
         if let Some(runtime) = self.context.session_runtime() {
             if runtime.session_id == session_id {
-                return runtime.pending_permission.is_some()
-                    || runtime.pending_question.is_some()
-                    || runtime.active_stage_id.is_some()
+                let waiting_on_user = matches!(
+                    runtime.run_status,
+                    crate::api::SessionRunStatusKind::WaitingOnUser
+                );
+                if waiting_on_user
+                    && runtime.pending_permission.is_some()
+                    && runtime.pending_question.is_none()
+                    && runtime.active_stage_id.is_none()
+                    && runtime.active_stage_count == 0
+                    && runtime.active_tools.is_empty()
+                {
+                    return false;
+                }
+                if waiting_on_user
+                    && runtime.pending_question.is_some()
+                    && runtime.pending_permission.is_none()
+                    && runtime.active_stage_id.is_none()
+                    && runtime.active_stage_count == 0
+                    && runtime.active_tools.is_empty()
+                {
+                    return false;
+                }
+
+                return runtime.active_stage_id.is_some()
                     || runtime.active_stage_count > 0
                     || !runtime.active_tools.is_empty()
-                    || !matches!(runtime.run_status, crate::api::SessionRunStatusKind::Idle);
+                    || matches!(
+                        runtime.run_status,
+                        crate::api::SessionRunStatusKind::Running
+                            | crate::api::SessionRunStatusKind::Compacting
+                            | crate::api::SessionRunStatusKind::WaitingOnTool
+                            | crate::api::SessionRunStatusKind::Cancelling
+                            | crate::api::SessionRunStatusKind::Blocked
+                            | crate::api::SessionRunStatusKind::Sleeping
+                    );
             }
         }
 
-        // Fallback: check pending UI-level permission/question
-        if self.context.get_pending_permission().is_some() || self.context.has_pending_question() {
-            return true;
-        }
-
-        // No spinner needed - runtime authority says idle
+        // Fallback path intentionally stays non-animating for pending
+        // permission/question. The overlay itself is the user-facing signal.
         false
     }
 

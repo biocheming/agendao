@@ -3,6 +3,7 @@ use crate::api::{
     MessageTokensInfo, PendingPermissionSummary, PendingQuestionSummary, SessionExecutionTopology,
     SessionRunStatusKind, SessionTelemetrySnapshot, SessionTimeInfo,
 };
+use agendao_server_core::frontend_events::FrontendEvent;
 use agendao_types::{SessionUsage, SessionUsageBooks};
 use chrono::Utc;
 
@@ -112,6 +113,92 @@ fn local_direct_idle_session_skips_session_fallback_deadlines() {
 }
 
 #[test]
+fn local_direct_waiting_on_user_also_skips_session_fallback_deadlines() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-local-waiting";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Local waiting".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::WaitingOnUser);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_process_refresh = Instant::now() - Duration::from_secs(60);
+
+    let deadline = app
+        .next_tick_deadline(Instant::now())
+        .expect("waiting local session should still have non-session deadlines");
+
+    assert!(deadline > Instant::now());
+}
+
+#[test]
+fn local_direct_open_permission_prompt_does_not_rearm_permission_fallback() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-local-permission-open";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Local permission".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::WaitingOnUser);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.permission_prompt.add_request(crate::components::PermissionRequest {
+        id: "perm-1".to_string(),
+        permission_type: crate::components::PermissionType::Bash,
+        resource: "python3 demo.py".to_string(),
+        tool_name: "bash".to_string(),
+        permission_class: Some("dangerous_exec".to_string()),
+        scope_key: None,
+        scope_label: None,
+        matcher_label: None,
+        grant_target_summary: None,
+        risk_tags: vec!["dangerous_exec".to_string()],
+        supported_lifetimes: vec![crate::components::PermissionLifetime::Once],
+        is_submitting: false,
+        submit_error: None,
+    });
+    app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
+
+    let deadline = app
+        .next_tick_deadline(Instant::now())
+        .expect("permission prompt should not force an immediate fallback sync");
+
+    assert!(deadline > Instant::now());
+}
+
+#[test]
 fn session_update_requires_sync_for_prompt_final_sources() {
     assert!(super::sync::session_update_requires_sync(Some(
         "prompt.final"
@@ -133,6 +220,9 @@ fn session_update_requires_sync_for_prompt_final_sources() {
     )));
     assert!(!super::sync::session_update_requires_sync(Some(
         "prompt.scheduler.stage.reasoning"
+    )));
+    assert!(!super::sync::session_update_requires_sync(Some(
+        "direct_bridge"
     )));
 }
 
@@ -582,7 +672,7 @@ fn session_telemetry_refresh_finished_queues_pending_user_input_syncs() {
         .expect("telemetry refresh event should be handled");
 
     assert!(app.sync_runtime.pending_question_sync_due_at.is_some());
-    assert!(app.sync_runtime.pending_permission_sync_due_at.is_some());
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_none());
 }
 
 #[test]
@@ -707,12 +797,12 @@ fn permission_requested_event_surfaces_prompt_without_http_sync() {
         message: "Execute python3 demo.py".to_string(),
     };
 
-    let event = Event::Custom(Box::new(CustomEvent::StateChanged(
-        StateChange::PermissionRequested {
+    let event = Event::Custom(Box::new(CustomEvent::FrontendEvent(Box::new(
+        FrontendEvent::PermissionUpsert {
             session_id: session_id.to_string(),
             permission: permission.clone(),
         },
-    )));
+    ))));
 
     app.handle_event(&event)
         .expect("permission requested event should be handled");
@@ -731,7 +821,56 @@ fn permission_requested_event_surfaces_prompt_without_http_sync() {
 }
 
 #[test]
-fn question_created_event_queues_sync_without_immediate_prompt_sync() {
+fn waiting_on_user_runtime_snapshot_marks_session_as_waiting() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-waiting-state";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Waiting session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+
+    app.apply_frontend_event(&FrontendEvent::SessionRuntimeReplaced {
+        session_id: session_id.to_string(),
+        runtime: crate::api::SessionRuntimeState {
+            session_id: session_id.to_string(),
+            run_status: SessionRunStatusKind::WaitingOnUser,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: None,
+            active_stage_count: 0,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            pending_followup_count: 0,
+            attached_sessions: Vec::new(),
+        },
+    });
+
+    assert!(matches!(
+        app.active_session_status(),
+        Some(SessionStatus::WaitingOnUser)
+    ));
+    assert!(app.local_direct_idle_session());
+}
+
+#[test]
+fn question_upsert_event_populates_prompt_without_poll_sync() {
     let mut app = App::new().expect("app should initialize");
     let session_id = "session-question-queued";
     let now = Utc::now();
@@ -750,18 +889,78 @@ fn question_created_event_queues_sync_without_immediate_prompt_sync() {
     }
     app.context.navigate_session(session_id);
 
-    let event = Event::Custom(Box::new(CustomEvent::StateChanged(
-        StateChange::QuestionCreated {
+    let event = Event::Custom(Box::new(CustomEvent::FrontendEvent(Box::new(
+        FrontendEvent::QuestionUpsert {
             session_id: session_id.to_string(),
-            request_id: "q-1".to_string(),
+            question: QuestionInfo {
+                id: "q-1".to_string(),
+                session_id: session_id.to_string(),
+                questions: vec!["Proceed?".to_string()],
+                options: Some(vec![vec!["Yes".to_string(), "No".to_string()]]),
+                items: Vec::new(),
+            },
         },
-    )));
+    ))));
 
     app.handle_event(&event)
-        .expect("question created event should be handled");
+        .expect("question upsert event should be handled");
 
-    assert!(app.sync_runtime.pending_question_sync_due_at.is_some());
-    assert!(app.question_prompt.current().is_none());
+    assert!(app.sync_runtime.pending_question_sync_due_at.is_none());
+    assert_eq!(app.question_prompt.current().map(|q| q.id.as_str()), Some("q-1"));
+}
+
+#[test]
+fn local_direct_permission_requested_event_does_not_queue_poll_sync() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-direct-permission";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Direct permission session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    let permission = crate::api::PermissionRequestInfo {
+        id: "perm-direct".to_string(),
+        session_id: session_id.to_string(),
+        tool: "bash".to_string(),
+        permission_class: Some("dangerous_exec".to_string()),
+        scope_key: Some("cargo".to_string()),
+        scope_label: Some("Shell commands: cargo".to_string()),
+        origin_tool: None,
+        supported_lifetimes: vec!["once".to_string()],
+        matcher_kind: None,
+        matcher_key: None,
+        matcher_label: None,
+        grant_target_summary: None,
+        risk_tags: vec!["dangerous_exec".to_string()],
+        input: serde_json::json!({
+            "permission": "bash",
+            "metadata": { "command": "cargo test" }
+        }),
+        message: "Execute cargo test".to_string(),
+    };
+
+    app.apply_frontend_event(&FrontendEvent::PermissionUpsert {
+        session_id: session_id.to_string(),
+        permission,
+    });
+
+    assert!(app.permission_prompt.is_open);
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_none());
 }
 
 #[test]
@@ -831,27 +1030,6 @@ fn permission_sync_does_not_clear_submitting_request_on_empty_poll() {
     assert!(app.permission_prompt.is_current_request_submitting());
 }
 
-#[test]
-fn direct_question_resolved_event_uses_payload_session_id() {
-    let direct = crate::local_server_bridge::LocalServerEvent::QuestionResolved {
-        session_id: "ses_direct".to_string(),
-        request_id: "q-1".to_string(),
-    };
-
-    let change = super::runtime::direct_event_to_state_change("ses_fallback", direct)
-        .expect("question resolved should map to state change");
-
-    match change {
-        StateChange::QuestionResolved {
-            session_id,
-            request_id,
-        } => {
-            assert_eq!(session_id, "ses_direct");
-            assert_eq!(request_id, "q-1");
-        }
-        other => panic!("unexpected state change: {other:?}"),
-    }
-}
 
 #[test]
 fn home_route_does_not_schedule_session_only_sync_ticks() {
@@ -969,6 +1147,45 @@ fn tick_does_not_rearm_question_sync_while_debounce_is_pending() {
 }
 
 #[test]
+fn local_direct_tick_does_not_rearm_session_question_or_permission_fallbacks() {
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        ..AppLaunchConfig::default()
+    })
+    .expect("app should initialize");
+    let session_id = "session-local-direct-no-fallback-rearm";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Local direct no fallback rearm".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.last_aux_sync = Instant::now() - Duration::from_secs(60);
+
+    app.handle_event(&Event::Tick)
+        .expect("tick should not rearm direct-mode fallback syncs");
+
+    assert!(app.sync_runtime.pending_session_sync.is_none());
+    assert!(app.sync_runtime.pending_session_sync_due_at.is_none());
+    assert!(app.sync_runtime.pending_question_sync_due_at.is_none());
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_none());
+}
+
+#[test]
 fn tick_does_not_rearm_process_refresh_while_debounce_is_pending() {
     let mut app = App::new().expect("app should initialize");
     let session_id = "session-process-rearm";
@@ -1077,6 +1294,42 @@ fn active_runtime_keeps_spinner_enabled_when_status_is_running() {
 
     app.sync_prompt_spinner_state();
     assert!(app.prompt.spinner_active());
+}
+
+#[test]
+fn waiting_on_user_pending_permission_keeps_spinner_disabled() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-awaiting-permission";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Awaiting permission".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::WaitingOnUser);
+    }
+    app.context.navigate_session(session_id);
+    app.ensure_session_view(session_id);
+    let mut telemetry = test_session_telemetry_snapshot(session_id, "stage-awaiting");
+    telemetry.runtime.run_status = SessionRunStatusKind::WaitingOnUser;
+    telemetry.runtime.active_stage_id = None;
+    telemetry.runtime.active_stage_count = 0;
+    telemetry.runtime.pending_permission = Some(PendingPermissionSummary {
+        permission_id: "perm-1".to_string(),
+        requested_at: Utc::now().timestamp_millis(),
+        tool: Some("bash".to_string()),
+    });
+    app.context.apply_session_telemetry_snapshot(telemetry);
+
+    app.sync_prompt_spinner_state();
+    assert!(!app.prompt.spinner_active());
 }
 
 fn test_session_telemetry_snapshot(

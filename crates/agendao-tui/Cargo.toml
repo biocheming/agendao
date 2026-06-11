@@ -27,6 +27,7 @@ agendao-multimodal = { path = "../agendao-multimodal", optional = true }
 agendao-voice = { path = "../agendao-voice", optional = true }
 agendao-provider = { path = "../agendao-provider", default-features = false }
 agendao-server-local = { path = "../agendao-server-local", optional = true }
+agendao-server-core = { path = "../agendao-server-core" }
 agendao-skill = { path = "../agendao-skill" }
 agendao-agent = { path = "../agendao-agent" }
 agendao-output-blocks = { path = "../agendao-output-blocks" }

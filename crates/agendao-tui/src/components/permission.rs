@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
@@ -130,6 +131,19 @@ fn permission_action_chip_with_text(
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     )
+}
+
+fn wrapped_line_count(line: &Line<'_>, inner_width: usize) -> usize {
+    if inner_width == 0 {
+        return 1;
+    }
+
+    let width = line
+        .spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    width.max(1).div_ceil(inner_width)
 }
 
 #[derive(Clone, Debug)]
@@ -460,7 +474,12 @@ impl PermissionPrompt {
             ]));
         }
 
-        let height = (content.len() as u16)
+        let inner_width = width.saturating_sub(2) as usize;
+        let content_rows = content
+            .iter()
+            .map(|line| wrapped_line_count(line, inner_width))
+            .sum::<usize>();
+        let height = (content_rows as u16)
             .saturating_add(2)
             .min(area.height.saturating_sub(1));
 
@@ -475,7 +494,13 @@ impl PermissionPrompt {
         self.last_rendered_area.set(Some(popup_area));
         if !request.is_submitting {
             let mut click_targets = Vec::new();
-            let button_row = popup_area.y + popup_area.height.saturating_sub(2);
+            let button_row = popup_area.y
+                + 1
+                + content
+                    .iter()
+                    .take(content.len().saturating_sub(1))
+                    .map(|line| wrapped_line_count(line, inner_width) as u16)
+                    .sum::<u16>();
             let mut cursor_col = popup_area.x + 1;
 
             let once_label = " [1] Once ";
@@ -636,6 +661,38 @@ mod tests {
             .cloned()
             .find(|target| target.action == PermissionAction::ApproveOnce)
             .expect("once button target should exist");
+        prompt.handle_click(target.start_col, target.row);
+
+        assert_eq!(
+            prompt.take_pending_action(),
+            Some(PermissionAction::ApproveOnce)
+        );
+    }
+
+    #[test]
+    fn clicking_rendered_once_button_survives_wrapped_resource_text() {
+        let mut prompt = PermissionPrompt::new();
+        let mut request = sample_request();
+        request.resource = "python3 -c \"this is a deliberately long command that wraps across multiple visual lines so the permission buttons must still be clickable at the correct rendered row\"".to_string();
+        request.supported_lifetimes = vec![
+            PermissionLifetime::Once,
+            PermissionLifetime::Turn,
+            PermissionLifetime::Session,
+        ];
+        prompt.add_request(request);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 20));
+        let mut surface = BufferSurface::new(&mut buffer);
+        prompt.render(&mut surface, Rect::new(0, 0, 50, 20), &Theme::default());
+
+        let target = prompt
+            .click_targets
+            .borrow()
+            .iter()
+            .cloned()
+            .find(|target| target.action == PermissionAction::ApproveOnce)
+            .expect("once button target should exist after wrapping");
+
         prompt.handle_click(target.start_col, target.row);
 
         assert_eq!(

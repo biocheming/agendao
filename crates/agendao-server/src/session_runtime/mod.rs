@@ -1,6 +1,8 @@
 pub mod direct_bridge;
 pub(crate) mod events;
+pub(crate) mod frontend_projection;
 pub(crate) mod memory;
+pub(crate) mod projection_authority;
 pub(crate) mod recheck_loop;
 pub(crate) mod steering;
 pub(crate) mod telemetry;

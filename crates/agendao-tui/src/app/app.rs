@@ -48,11 +48,12 @@ use base64::Engine;
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Block};
+use tokio::sync::watch;
 
 use crate::app::state::AppState;
 use crate::client::{
     spawn_direct_event_loop, ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus,
-    LocalServerEvent, LocalServerState, McpStatusInfo, MemoryConflictResponse, MemoryDetailView,
+    LocalServerState, McpStatusInfo, MemoryConflictResponse, MemoryDetailView,
     MemoryListQuery, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
     MemoryValidationReportResponse, MessageInfo, PermissionRequestInfo, QuestionInfo,
     RecoveryActionKind as ApiRecoveryActionKind,
@@ -102,7 +103,7 @@ use self::support::{
 };
 
 #[cfg(not(feature = "remote-stream"))]
-type SessionFilter = Arc<std::sync::Mutex<Option<String>>>;
+type SessionFilter = watch::Sender<Option<String>>;
 
 #[cfg(not(feature = "remote-stream"))]
 fn env_var_enabled(_name: &str) -> bool {
@@ -488,7 +489,7 @@ impl App {
             )?)
         };
         context.set_api_client(api_client);
-        let sse_session_filter: SessionFilter = Arc::new(std::sync::Mutex::new(None));
+        let (sse_session_filter, _session_filter_rx) = watch::channel(None::<String>);
 
         if let Some(agent) = config
             .agent_name
@@ -524,9 +525,7 @@ impl App {
                 initial_session_id = Some(session_id.to_string());
                 // Set the SSE session filter so the listener subscribes
                 // to this session's events from the start.
-                if let Ok(mut filter) = sse_session_filter.lock() {
-                    *filter = Some(session_id.to_string());
-                }
+                let _ = sse_session_filter.send(Some(session_id.to_string()));
                 context.navigate(Route::Session {
                     session_id: session_id.to_string(),
                 });
@@ -616,8 +615,10 @@ impl App {
             let _ = app.refresh_lsp_status();
             let _ = app.refresh_mcp_dialog();
         }
-        let _ = app.sync_question_requests();
-        let _ = app.sync_permission_requests();
+        if !app.local_direct {
+            let _ = app.sync_question_requests();
+            let _ = app.sync_permission_requests();
+        }
 
         if let Some(session_id) = initial_session_id {
             let _ = app.sync_session_from_server(&session_id);

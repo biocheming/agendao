@@ -544,11 +544,17 @@ pub(crate) async fn reply_permission(
         }
     };
 
-    let permission = PERMISSION_ENGINE
-        .lock()
-        .await
-        .respond_by_id(&id, response)
-        .map_err(|_| ApiError::NotFound(format!("Permission request not found: {}", id)))?;
+    let permission = {
+        let mut engine = PERMISSION_ENGINE.lock().await;
+        let permission = engine
+            .respond_by_id(&id, response)
+            .map_err(|_| ApiError::NotFound(format!("Permission request not found: {}", id)))?;
+        // Approval/rejection must retire the pending entry immediately, otherwise
+        // a follow-up list_permissions() can resurrect the same prompt before the
+        // waiting tool task consumes the reply.
+        engine.remove_pending(&id);
+        permission
+    };
 
     let session_id = permission.session_id.clone();
     let was_grant = response != Response::Reject;
@@ -842,6 +848,70 @@ mod tests {
 
         let result = different_family_task.await.expect("join different family");
         result.expect("different family should still resolve after explicit approval");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn reply_permission_removes_pending_entry_before_followup_sync() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-removes-pending";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                agendao_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_scope_key("cmd:cargo *")
+                    .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:cargo *")
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("command", serde_json::json!("cargo test"))
+                    .with_supported_lifetimes(vec![
+                        PermissionLifetime::Once,
+                        PermissionLifetime::Turn,
+                        PermissionLifetime::Session,
+                    ]),
+            )
+            .await
+        });
+
+        let permission_id = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(id) = engine.list().first().map(|info| info.id.clone()) {
+                break id;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let _ = reply_permission(
+            State(state),
+            Path(permission_id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        assert!(
+            PERMISSION_ENGINE
+                .lock()
+                .await
+                .list()
+                .iter()
+                .all(|info| info.id != permission_id),
+            "resolved permission must not remain in list_permissions authority"
+        );
+
+        request_task
+            .await
+            .expect("request task join")
+            .expect("permission allowed");
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 

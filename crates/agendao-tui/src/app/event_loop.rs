@@ -641,7 +641,9 @@ impl App {
                                     self.set_session_status(&session.id, SessionStatus::Idle);
                                     self.prompt.set_spinner_active(false);
                                     self.queue_session_telemetry_refresh(&session.id);
-                                    self.sync_question_requests();
+                                    if !self.local_direct {
+                                        self.sync_question_requests();
+                                    }
                                 }
                                 Some("queued") => {
                                     self.set_session_status(&session.id, SessionStatus::Running);
@@ -762,7 +764,6 @@ impl App {
                         crate::event::PermissionReplyOutcome::Succeeded => {
                             self.permission_runtime.last_submit_error = None;
                             self.clear_permission_request(&permission_id);
-                            self.queue_permission_sync();
                             self.context
                                 .set_pending_permissions(self.permission_prompt.pending_count());
                             self.toast.show(
@@ -775,7 +776,6 @@ impl App {
                             self.permission_runtime.last_submit_error = Some(message.clone());
                             self.permission_prompt
                                 .mark_submit_failed(permission_id, message.clone());
-                            self.queue_permission_sync();
                             self.alert_dialog.set_message(&format!(
                                 "Failed to submit permission response:\n{}",
                                 message
@@ -830,6 +830,7 @@ impl App {
                         }
                     }
                 }
+                CustomEvent::FrontendEvent(event) => self.apply_frontend_event(event),
                 CustomEvent::StateChanged(change) => self.handle_state_change(change),
                 _ => {}
             },
@@ -887,7 +888,8 @@ impl App {
                         self.sync_runtime.pending_session_sync = None;
                         self.sync_runtime.pending_session_sync_due_at = None;
                     }
-                    if !self.local_direct_idle_session()
+                    if !self.local_direct
+                        && !self.local_direct_idle_session()
                         && self.sync_runtime.last_full_session_sync.elapsed()
                         >= Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS)
                         && self
@@ -902,14 +904,16 @@ impl App {
                     }
                 }
                 if matches!(route, Route::Session { .. }) {
-                    if (!self.local_direct_idle_session() || self.question_prompt.is_open)
+                    if !self.local_direct
+                        && !self.local_direct_idle_session()
                         && self.sync_runtime.last_question_sync.elapsed()
                         >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
                         && self.sync_runtime.pending_question_sync_due_at.is_none()
                     {
                         self.queue_question_sync();
                     }
-                    if (!self.local_direct_idle_session() || self.permission_prompt.is_open)
+                    if !self.local_direct
+                        && !self.local_direct_idle_session()
                         && self.sync_runtime.last_permission_sync.elapsed()
                         >= self.permission_sync_interval()
                         && self.sync_runtime.pending_permission_sync_due_at.is_none()
@@ -940,7 +944,9 @@ impl App {
                     self.sync_runtime.pending_question_sync_due_at = None;
                     self.sync_runtime.pending_permission_sync_due_at = None;
                 }
-                if self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval() {
+                if self.should_schedule_aux_sync()
+                    && self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval()
+                {
                     if self.session_list_dialog.is_open() {
                         self.refresh_session_list_dialog();
                     }

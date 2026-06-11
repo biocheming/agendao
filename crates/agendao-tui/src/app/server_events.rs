@@ -1,13 +1,14 @@
 use super::*;
+use agendao_server_core::frontend_events::FrontendEvent;
 use crate::bridge::UiBridge;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
 use reqwest_eventsource::{Event as SseEvent, EventSource};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::sync::watch;
 
 pub(super) fn env_var_enabled(name: &str) -> bool {
     let Ok(value) = std::env::var(name) else {
@@ -74,7 +75,7 @@ fn endpoint_accepts_tcp(base: &str) -> bool {
 
 /// Shared session filter. Updated by the app when the active session changes.
 /// The SSE listener task reads this on each reconnect to build the URL.
-pub(super) type SessionFilter = Arc<StdMutex<Option<String>>>;
+pub(super) type SessionFilter = watch::Sender<Option<String>>;
 
 pub(super) fn spawn_server_event_listener_task(
     ui_bridge: UiBridge,
@@ -83,6 +84,7 @@ pub(super) fn spawn_server_event_listener_task(
     session_filter: SessionFilter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut session_filter_rx = session_filter.subscribe();
         let mut headers = HeaderMap::new();
         if let Some(password) = server_password
             .as_deref()
@@ -109,7 +111,7 @@ pub(super) fn spawn_server_event_listener_task(
         let base_event_url = format!("{}/event", base_url.trim_end_matches('/'));
         let mut recovery_sync_pending = false;
         loop {
-            let connected_filter = read_session_filter(&session_filter);
+            let connected_filter = current_session_filter(&session_filter_rx);
             if connected_filter
                 .as_deref()
                 .map(str::trim)
@@ -117,7 +119,9 @@ pub(super) fn spawn_server_event_listener_task(
                 .is_none()
             {
                 recovery_sync_pending = false;
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                if session_filter_rx.changed().await.is_err() {
+                    break;
+                }
                 continue;
             }
             let event_url = build_event_url(&base_event_url, connected_filter.as_deref());
@@ -139,7 +143,7 @@ pub(super) fn spawn_server_event_listener_task(
             let reconnect_due_to_filter_change = consume_server_event_stream(
                 &mut source,
                 &ui_bridge,
-                &session_filter,
+                &mut session_filter_rx,
                 &connected_filter,
                 &mut recovery_sync_pending,
             )
@@ -149,7 +153,7 @@ pub(super) fn spawn_server_event_listener_task(
                 continue;
             }
 
-            if read_session_filter(&session_filter) == connected_filter {
+            if current_session_filter(&session_filter_rx) == connected_filter {
                 emit_reconnecting_state(&ui_bridge, connected_filter.as_deref());
                 recovery_sync_pending = true;
                 tokio::time::sleep(Duration::from_millis(400)).await;
@@ -161,7 +165,7 @@ pub(super) fn spawn_server_event_listener_task(
 async fn consume_server_event_stream(
     source: &mut EventSource,
     ui_bridge: &UiBridge,
-    session_filter: &SessionFilter,
+    session_filter_rx: &mut watch::Receiver<Option<String>>,
     connected_filter: &Option<String>,
     recovery_sync_pending: &mut bool,
 ) -> bool {
@@ -179,7 +183,7 @@ async fn consume_server_event_stream(
 
                 // Match the previous behavior: reconnect after a complete
                 // event if the active session filter changed.
-                let current = read_session_filter(session_filter);
+                let current = current_session_filter(session_filter_rx);
                 if current != *connected_filter {
                     tracing::debug!(
                         old = ?connected_filter,
@@ -211,8 +215,8 @@ fn build_event_url(base_event_url: &str, session_id: Option<&str>) -> Url {
     url
 }
 
-fn read_session_filter(session_filter: &SessionFilter) -> Option<String> {
-    session_filter.lock().ok().and_then(|guard| guard.clone())
+fn current_session_filter(session_filter_rx: &watch::Receiver<Option<String>>) -> Option<String> {
+    session_filter_rx.borrow().clone()
 }
 
 #[cfg(test)]
@@ -257,310 +261,12 @@ fn parse_server_event_payload(payload: &str) -> Option<Event> {
         return None;
     }
 
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return None;
-    };
-    parse_server_event_value(value)
-}
-
-fn state_changed_event(change: StateChange) -> Event {
-    Event::Custom(Box::new(CustomEvent::StateChanged(change)))
-}
-
-fn parse_session_id(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("sessionID")
-        .and_then(|item| item.as_str())
-        .or_else(|| value.get("sessionId").and_then(|item| item.as_str()))
-}
-
-fn parse_request_id(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("requestID")
-        .and_then(|item| item.as_str())
-        .or_else(|| value.get("requestId").and_then(|item| item.as_str()))
-}
-
-fn parse_permission_id(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("permissionID")
-        .and_then(|item| item.as_str())
-        .or_else(|| value.get("permissionId").and_then(|item| item.as_str()))
-        .or_else(|| parse_request_id(value))
-}
-
-fn parse_tool_call_id(value: &serde_json::Value) -> Option<&str> {
-    value.get("toolCallId").and_then(|item| item.as_str())
-}
-
-fn parse_tool_name(value: &serde_json::Value) -> Option<&str> {
-    value.get("toolName").and_then(|item| item.as_str())
-}
-
-fn parse_session_updated_event(value: &serde_json::Value, session_id: &str) -> Event {
-    let source = value
-        .get("source")
-        .and_then(|item| item.as_str())
-        .map(str::to_string);
-    state_changed_event(StateChange::SessionUpdated {
-        session_id: session_id.to_string(),
-        source,
-    })
-}
-
-fn parse_session_status_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let status_type = value
-        .get("status")
-        .and_then(|status| status.get("type"))
-        .and_then(|item| item.as_str())
-        .or_else(|| value.get("status").and_then(|item| item.as_str()));
-    match status_type {
-        Some("busy") => Some(state_changed_event(StateChange::SessionStatusBusy(
-            session_id.to_string(),
-        ))),
-        Some("compacting") => Some(state_changed_event(StateChange::SessionStatusCompacting(
-            session_id.to_string(),
-        ))),
-        Some("idle") => Some(state_changed_event(StateChange::SessionStatusIdle(
-            session_id.to_string(),
-        ))),
-        Some("retry") => {
-            let attempt = value
-                .get("status")
-                .and_then(|status| status.get("attempt"))
-                .and_then(|item| item.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(0);
-            let message = value
-                .get("status")
-                .and_then(|status| status.get("message"))
-                .and_then(|item| item.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let next = value
-                .get("status")
-                .and_then(|status| status.get("next"))
-                .and_then(|item| item.as_i64())
-                .unwrap_or_default();
-            Some(state_changed_event(StateChange::SessionStatusRetrying {
-                session_id: session_id.to_string(),
-                attempt,
-                message,
-                next,
-            }))
-        }
-        _ => None,
+    if let Ok(frontend) = serde_json::from_str::<FrontendEvent>(payload) {
+        return Some(Event::Custom(Box::new(CustomEvent::FrontendEvent(Box::new(
+            frontend,
+        )))));
     }
-}
-
-fn parse_question_created_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let request_id = parse_request_id(value)?;
-    Some(state_changed_event(StateChange::QuestionCreated {
-        session_id: session_id.to_string(),
-        request_id: request_id.to_string(),
-    }))
-}
-
-fn parse_question_resolved_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let request_id = parse_request_id(value)?;
-    Some(state_changed_event(StateChange::QuestionResolved {
-        session_id: session_id.to_string(),
-        request_id: request_id.to_string(),
-    }))
-}
-
-fn parse_permission_requested_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let info = value.get("info").cloned()?;
-    let Ok(permission) = serde_json::from_value::<crate::api::PermissionRequestInfo>(info) else {
-        return None;
-    };
-    Some(state_changed_event(StateChange::PermissionRequested {
-        session_id: session_id.to_string(),
-        permission,
-    }))
-}
-
-fn parse_permission_resolved_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let permission_id = parse_permission_id(value)?;
-    Some(state_changed_event(StateChange::PermissionResolved {
-        session_id: session_id.to_string(),
-        permission_id: permission_id.to_string(),
-    }))
-}
-
-fn parse_control_input_transition_event(
-    value: &serde_json::Value,
-    session_id: &str,
-) -> Option<Event> {
-    let kind = value
-        .get("kind")
-        .cloned()
-        .and_then(|raw| serde_json::from_value(raw).ok())?;
-    let phase = value
-        .get("phase")
-        .cloned()
-        .and_then(|raw| serde_json::from_value(raw).ok())?;
-    let at = value
-        .get("at")
-        .and_then(|item| item.as_i64())
-        .unwrap_or_default();
-    Some(state_changed_event(StateChange::ControlInputTransition {
-        session_id: session_id.to_string(),
-        kind,
-        phase,
-        at,
-    }))
-}
-
-fn parse_tool_call_lifecycle_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let Some(tool_call_id) = parse_tool_call_id(value) else {
-        tracing::warn!("tool_call.lifecycle missing toolCallId");
-        return None;
-    };
-    match value.get("phase").and_then(|item| item.as_str()) {
-        Some("start") => {
-            let Some(tool_name) = parse_tool_name(value) else {
-                tracing::warn!("tool_call.lifecycle start missing toolName");
-                return None;
-            };
-            Some(state_changed_event(StateChange::ToolCallStarted {
-                session_id: session_id.to_string(),
-                tool_call_id: tool_call_id.to_string(),
-                tool_name: tool_name.to_string(),
-            }))
-        }
-        Some("complete") => Some(state_changed_event(StateChange::ToolCallCompleted {
-            session_id: session_id.to_string(),
-            tool_call_id: tool_call_id.to_string(),
-        })),
-        Some(other) => {
-            tracing::debug!(phase = other, "ignoring unknown tool_call.lifecycle phase");
-            None
-        }
-        None => {
-            tracing::warn!("tool_call.lifecycle missing phase");
-            None
-        }
-    }
-}
-
-fn parse_tool_call_started_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    tracing::debug!("Received tool_call.start event");
-    let Some(tool_call_id) = parse_tool_call_id(value) else {
-        tracing::warn!("tool_call.start missing toolCallId");
-        return None;
-    };
-    let Some(tool_name) = parse_tool_name(value) else {
-        tracing::warn!("tool_call.start missing toolName");
-        return None;
-    };
-    tracing::info!(
-        "Sending ToolCallStarted: id={}, name={}",
-        tool_call_id,
-        tool_name
-    );
-    Some(state_changed_event(StateChange::ToolCallStarted {
-        session_id: session_id.to_string(),
-        tool_call_id: tool_call_id.to_string(),
-        tool_name: tool_name.to_string(),
-    }))
-}
-
-fn parse_tool_call_completed_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let tool_call_id = parse_tool_call_id(value)?;
-    Some(state_changed_event(StateChange::ToolCallCompleted {
-        session_id: session_id.to_string(),
-        tool_call_id: tool_call_id.to_string(),
-    }))
-}
-
-fn parse_topology_changed_event(session_id: &str) -> Event {
-    state_changed_event(StateChange::TopologyChanged {
-        session_id: session_id.to_string(),
-    })
-}
-
-fn parse_diff_updated_event(value: &serde_json::Value, session_id: &str) -> Event {
-    let diffs = value
-        .get("diff")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|entry| {
-                    let path = entry.get("path")?.as_str()?;
-                    let additions = entry.get("additions")?.as_u64().unwrap_or(0);
-                    let deletions = entry.get("deletions")?.as_u64().unwrap_or(0);
-                    Some(crate::context::DiffEntry {
-                        file: path.to_string(),
-                        additions: additions as u32,
-                        deletions: deletions as u32,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    state_changed_event(StateChange::DiffUpdated {
-        session_id: session_id.to_string(),
-        diffs,
-    })
-}
-
-fn parse_output_block_event(value: &serde_json::Value, session_id: &str) -> Option<Event> {
-    let block = value.get("block")?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_str())
-        .map(str::to_string);
-    let live_identity = value
-        .get("live_identity")
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
-    Some(state_changed_event(StateChange::OutputBlock {
-        session_id: session_id.to_string(),
-        id,
-        payload: block.clone(),
-        live_identity,
-    }))
-}
-
-fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
-    let event_type = value.get("type").and_then(|item| item.as_str());
-    let session_id = parse_session_id(&value);
-
-    match event_type {
-        Some("session.updated") => session_id.map(|id| parse_session_updated_event(&value, id)),
-        Some("config.updated") => Some(state_changed_event(StateChange::ConfigUpdated)),
-        Some("session.status") => session_id.and_then(|id| parse_session_status_event(&value, id)),
-        Some("question.created") => {
-            session_id.and_then(|id| parse_question_created_event(&value, id))
-        }
-        Some("question.resolved") | Some("question.replied") | Some("question.rejected") => {
-            session_id.and_then(|id| parse_question_resolved_event(&value, id))
-        }
-        Some("permission.requested") => {
-            session_id.and_then(|id| parse_permission_requested_event(&value, id))
-        }
-        Some("permission.resolved") | Some("permission.replied") => {
-            session_id.and_then(|id| parse_permission_resolved_event(&value, id))
-        }
-        Some("control_input.transition") => {
-            session_id.and_then(|id| parse_control_input_transition_event(&value, id))
-        }
-        Some("tool_call.lifecycle") => {
-            session_id.and_then(|id| parse_tool_call_lifecycle_event(&value, id))
-        }
-        Some("tool_call.start") => {
-            session_id.and_then(|id| parse_tool_call_started_event(&value, id))
-        }
-        Some("tool_call.complete") => {
-            session_id.and_then(|id| parse_tool_call_completed_event(&value, id))
-        }
-        Some("execution.topology.changed") => session_id.map(parse_topology_changed_event),
-        Some("diff.updated") | Some("session.diff") => {
-            session_id.map(|id| parse_diff_updated_event(&value, id))
-        }
-        Some("output_block") => session_id.and_then(|id| parse_output_block_event(&value, id)),
-        _ => None,
-    }
+    None
 }
 
 #[cfg(test)]
@@ -569,6 +275,8 @@ mod tests {
     use crate::bridge::UiBridge;
     use crate::event::{CustomEvent, StateChange};
     use crate::Event;
+    use agendao_server_core::frontend_events::FrontendEvent;
+    use agendao_server_core::runtime_events::ToolCallPhase;
 
     #[test]
     fn build_event_url_appends_session_filter() {
@@ -613,30 +321,33 @@ mod tests {
         let Event::Custom(custom) = event else {
             panic!("expected custom event");
         };
-        let CustomEvent::StateChanged(StateChange::OutputBlock {
-            session_id,
-            id,
-            payload,
-            ..
-        }) = *custom
+        let CustomEvent::FrontendEvent(frontend) = *custom
         else {
             panic!("expected output block event");
+        };
+        let FrontendEvent::OutputBlockAppended {
+            session_id,
+            id,
+            block,
+            ..
+        } = *frontend
+        else {
+            panic!("expected output block frontend event");
         };
 
         assert_eq!(session_id, "session-1");
         assert_eq!(id.as_deref(), Some("message-1"));
-        assert_eq!(payload["kind"], "reasoning");
-        assert_eq!(payload["phase"], "delta");
-        assert_eq!(payload["text"], "thinking");
+        assert_eq!(block["kind"], "reasoning");
+        assert_eq!(block["phase"], "delta");
+        assert_eq!(block["text"], "thinking");
     }
 
     #[test]
     fn permission_requested_event_is_forwarded() {
         let event = forward_server_event(&[serde_json::json!({
-            "type": "permission.requested",
+            "type": "permission.upsert",
             "sessionID": "session-1",
-            "permissionID": "permission-1",
-            "info": {
+            "permission": {
                 "id": "permission-1",
                 "session_id": "session-1",
                 "tool": "bash",
@@ -654,12 +365,16 @@ mod tests {
         let Event::Custom(custom) = event else {
             panic!("expected custom event");
         };
-        let CustomEvent::StateChanged(StateChange::PermissionRequested {
+        let CustomEvent::FrontendEvent(frontend) = *custom
+        else {
+            panic!("expected permission frontend event");
+        };
+        let FrontendEvent::PermissionUpsert {
             session_id,
             permission,
-        }) = *custom
+        } = *frontend
         else {
-            panic!("expected permission state change");
+            panic!("expected permission upsert frontend event");
         };
 
         assert_eq!(session_id, "session-1");
@@ -668,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn control_input_transition_event_is_forwarded() {
+    fn legacy_control_input_transition_event_is_ignored() {
         let event = forward_server_event(&[serde_json::json!({
             "type": "control_input.transition",
             "sessionID": "session-1",
@@ -676,30 +391,13 @@ mod tests {
             "phase": "queued",
             "at": 123
         })
-        .to_string()])
-        .expect("control input transition event");
+        .to_string()]);
 
-        let Event::Custom(custom) = event else {
-            panic!("expected custom event");
-        };
-        let CustomEvent::StateChanged(StateChange::ControlInputTransition {
-            session_id,
-            kind,
-            phase,
-            at,
-        }) = *custom
-        else {
-            panic!("expected control input transition state change");
-        };
-
-        assert_eq!(session_id, "session-1");
-        assert_eq!(kind, agendao_types::ControlInputKind::Steering);
-        assert_eq!(phase, agendao_types::ControlInputPhase::Queued);
-        assert_eq!(at, 123);
+        assert!(event.is_none());
     }
 
     #[test]
-    fn compacting_session_status_event_is_forwarded() {
+    fn compacting_session_status_event_is_ignored() {
         let event = forward_server_event(&[serde_json::json!({
             "type": "session.status",
             "sessionID": "session-1",
@@ -707,18 +405,56 @@ mod tests {
                 "type": "compacting"
             }
         })
-        .to_string()])
-        .expect("compacting session status event");
+        .to_string()]);
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn waiting_on_user_session_status_event_is_ignored() {
+        let event = forward_server_event(&[serde_json::json!({
+            "type": "session.status",
+            "sessionID": "session-1",
+            "status": {
+                "type": "waiting_on_user"
+            }
+        })
+        .to_string()]);
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn tool_call_frontend_event_is_forwarded() {
+        let event = forward_server_event(&[serde_json::to_string(&FrontendEvent::ToolCallUpsert {
+            session_id: "session-1".to_string(),
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "bash".to_string(),
+            phase: ToolCallPhase::Start,
+        })
+        .expect("serialize frontend event")])
+        .expect("tool call frontend event");
 
         let Event::Custom(custom) = event else {
             panic!("expected custom event");
         };
-        let CustomEvent::StateChanged(StateChange::SessionStatusCompacting(session_id)) = *custom
+        let CustomEvent::FrontendEvent(frontend) = *custom else {
+            panic!("expected frontend event");
+        };
+        let FrontendEvent::ToolCallUpsert {
+            session_id,
+            tool_call_id,
+            tool_name,
+            phase,
+        } = *frontend
         else {
-            panic!("expected compacting session status state change");
+            panic!("expected tool call frontend event");
         };
 
         assert_eq!(session_id, "session-1");
+        assert_eq!(tool_call_id, "tool-1");
+        assert_eq!(tool_name, "bash");
+        assert_eq!(phase, ToolCallPhase::Start);
     }
 
     #[test]

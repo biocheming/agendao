@@ -449,6 +449,11 @@ impl SessionRenderSnapshot {
                             true,
                             false,
                         ),
+                        crate::context::SessionStatus::WaitingOnUser => (
+                            Some(canonical_run_status_badge("waiting_on_user").to_string()),
+                            false,
+                            false,
+                        ),
                         crate::context::SessionStatus::Retrying { attempt, .. } => (
                             Some(format!(
                                 "{} {}",
