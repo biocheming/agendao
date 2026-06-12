@@ -1,6 +1,7 @@
 use super::*;
 use agendao_server_core::frontend_events::FrontendEvent;
 use tokio::sync::watch;
+use crate::local_server_bridge::spawn_direct_event_bus;
 
 impl App {
     pub(super) fn active_session_status(&self) -> Option<SessionStatus> {
@@ -220,40 +221,27 @@ pub(super) fn spawn_tui_direct_event_bridge(
     let state = local_server?;
     Some(tokio::spawn(async move {
         let mut session_filter_rx = session_filter.subscribe();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut rx = spawn_direct_event_bus(state, cancel.clone());
         loop {
-            let session_id = current_session_filter(&session_filter_rx).unwrap_or_default();
-            if session_id.is_empty() {
-                if session_filter_rx.changed().await.is_err() {
-                    break;
-                }
-                continue;
-            }
-            let sid = session_id.clone();
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let mut rx = spawn_direct_event_loop(Arc::clone(&state), session_id, cancel.clone());
-            loop {
-                tokio::select! {
-                    event = rx.recv() => {
-                        match event {
-                            Some(direct) => {
-                                let _ = ui_bridge.emit(Event::Custom(Box::new(
-                                    CustomEvent::FrontendEvent(Box::new(direct)),
-                                )));
-                            }
-                            None => break,
-                        }
+            tokio::select! {
+                event = rx.recv() => {
+                    let Some(frontend) = event else {
+                        break;
+                    };
+                    let Some(session_id) = frontend_event_session_id(&frontend) else {
+                        continue;
+                    };
+                    if current_session_filter(&session_filter_rx).as_deref() == Some(session_id) {
+                        let _ = ui_bridge.emit(Event::Custom(Box::new(
+                            CustomEvent::FrontendEvent(Box::new(frontend)),
+                        )));
                     }
-                    changed = session_filter_rx.changed() => match changed {
-                        Ok(()) => {
-                            if current_session_filter(&session_filter_rx).as_deref() != Some(sid.as_str()) {
-                                cancel.cancel();
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            cancel.cancel();
-                            return;
-                        }
+                }
+                changed = session_filter_rx.changed() => {
+                    if changed.is_err() {
+                        cancel.cancel();
+                        break;
                     }
                 }
             }
@@ -269,37 +257,32 @@ pub(super) async fn socket_event_subscriber(
     let transport = agendao_client::transport::UnixSocketTransport::new(socket_path);
     let mut session_filter_rx = session_filter.subscribe();
     loop {
-        let session_id = current_session_filter(&session_filter_rx).unwrap_or_default();
-        if session_id.is_empty() {
-            if session_filter_rx.changed().await.is_err() {
-                break;
-            }
-            continue;
-        }
-        let Ok(mut json_rx) = transport.subscribe_events(&session_id).await else {
+        let Ok(mut json_rx) = transport.subscribe_events(None, Some("tui")).await else {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             continue;
         };
-        'inner: loop {
+        loop {
             tokio::select! {
                 event = json_rx.recv() => {
                     match event {
                         Some(json) => {
                             if let Ok(frontend) = serde_json::from_value::<FrontendEvent>(json) {
-                                let _ = ui_bridge.emit(Event::Custom(Box::new(
-                                    CustomEvent::FrontendEvent(Box::new(frontend)),
-                                )));
+                                let Some(session_id) = frontend_event_session_id(&frontend) else {
+                                    continue;
+                                };
+                                if current_session_filter(&session_filter_rx).as_deref() == Some(session_id) {
+                                    let _ = ui_bridge.emit(Event::Custom(Box::new(
+                                        CustomEvent::FrontendEvent(Box::new(frontend)),
+                                    )));
+                                }
                             }
                         }
-                        None => break 'inner,
+                        None => break,
                     }
                 }
                 changed = session_filter_rx.changed() => {
                     if changed.is_err() {
                         return;
-                    }
-                    if current_session_filter(&session_filter_rx).as_deref() != Some(session_id.as_str()) {
-                        break 'inner;
                     }
                 }
             }
@@ -309,4 +292,18 @@ pub(super) async fn socket_event_subscriber(
 
 fn current_session_filter(session_filter_rx: &watch::Receiver<Option<String>>) -> Option<String> {
     session_filter_rx.borrow().clone()
+}
+
+fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
+    match event {
+        FrontendEvent::SessionRuntimeReplaced { session_id, .. }
+        | FrontendEvent::SessionProjectionReplaced { session_id, .. }
+        | FrontendEvent::QuestionUpsert { session_id, .. }
+        | FrontendEvent::QuestionRemoved { session_id, .. }
+        | FrontendEvent::PermissionUpsert { session_id, .. }
+        | FrontendEvent::PermissionRemoved { session_id, .. }
+        | FrontendEvent::ToolCallUpsert { session_id, .. }
+        | FrontendEvent::DiffReplaced { session_id, .. }
+        | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
+    }
 }

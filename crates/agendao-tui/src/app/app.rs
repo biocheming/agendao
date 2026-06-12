@@ -52,11 +52,10 @@ use tokio::sync::watch;
 
 use crate::app::state::AppState;
 use crate::client::{
-    spawn_direct_event_loop, ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus,
-    LocalServerState, McpStatusInfo, MemoryConflictResponse, MemoryDetailView,
-    MemoryListQuery, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
-    MemoryValidationReportResponse, MessageInfo, PermissionRequestInfo, QuestionInfo,
-    RecoveryActionKind as ApiRecoveryActionKind,
+    ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus, LocalServerState,
+    McpStatusInfo, MemoryConflictResponse, MemoryDetailView, MemoryListQuery,
+    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryValidationReportResponse,
+    MessageInfo, PermissionRequestInfo, QuestionInfo, RecoveryActionKind as ApiRecoveryActionKind,
     RecoveryProtocolStatus as ApiRecoveryProtocolStatus, SessionExecutionNode, SessionInfo,
     SessionRecoveryProtocol, SessionRevertInfo,
 };
@@ -525,7 +524,7 @@ impl App {
                 initial_session_id = Some(session_id.to_string());
                 // Set the SSE session filter so the listener subscribes
                 // to this session's events from the start.
-                let _ = sse_session_filter.send(Some(session_id.to_string()));
+                sse_session_filter.send_replace(Some(session_id.to_string()));
                 context.navigate(Route::Session {
                     session_id: session_id.to_string(),
                 });

@@ -53,10 +53,27 @@ pub fn spawn_direct_event_loop(
     agendao_server_local::spawn_direct_event_loop(state, session_id, cancel)
 }
 
+#[cfg(feature = "local-server")]
+pub fn spawn_direct_event_bus(
+    state: Arc<LocalServerState>,
+    cancel: CancellationToken,
+) -> UnboundedReceiver<FrontendBridgeEvent> {
+    agendao_server_local::spawn_direct_event_bus(state, cancel)
+}
+
 #[cfg(not(feature = "local-server"))]
 pub fn spawn_direct_event_loop(
     _state: Arc<LocalServerState>,
     _session_id: String,
+    _cancel: CancellationToken,
+) -> UnboundedReceiver<FrontendBridgeEvent> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    rx
+}
+
+#[cfg(not(feature = "local-server"))]
+pub fn spawn_direct_event_bus(
+    _state: Arc<LocalServerState>,
     _cancel: CancellationToken,
 ) -> UnboundedReceiver<FrontendBridgeEvent> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();

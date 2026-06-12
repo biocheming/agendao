@@ -561,7 +561,7 @@ impl ServerState {
     /// (not via downstream `frontend_bus` subscriber count — the projector
     /// subscribes to `event_bus`, not `frontend_bus`). Safe to call from
     /// any server entry point; the projector is spawned at most once.
-    pub(crate) fn ensure_frontend_projector(&self) {
+    pub fn ensure_frontend_projector(&self) {
         use std::sync::atomic::Ordering;
         if !self
             .frontend_projector_spawned

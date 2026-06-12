@@ -153,6 +153,42 @@ impl App {
 
         match self.context.current_route() {
             Route::Home => {
+                if self.local_direct {
+                    let session_directory = self.context.directory.read().clone();
+                    let session = match client.create_session(
+                        selected_mode.scheduler_profile.clone(),
+                        Some(session_directory),
+                    ) {
+                        Ok(session) => session,
+                        Err(err) => {
+                            self.alert_dialog
+                                .set_message(&format!("Failed to create session:\n{}", err));
+                            self.open_alert_dialog();
+                            self.event_caused_change = true;
+                            return Ok(());
+                        }
+                    };
+                    self.cache_session_from_api(&session);
+                    self.context.navigate(Route::Session {
+                        session_id: session.id.clone(),
+                    });
+                    self.sse_session_filter
+                        .send_replace(Some(session.id.clone()));
+                    self.dispatch_prompt_to_session(PromptDispatchRequest {
+                        session_id: &session.id,
+                        display_text,
+                        input,
+                        parts,
+                        agent: selected_mode.agent,
+                        scheduler_profile: selected_mode.scheduler_profile,
+                        display_mode: selected_mode.display_mode,
+                        model,
+                        variant,
+                        idempotency_key: None,
+                    });
+                    return Ok(());
+                }
+
                 let optimistic_session_id = self.create_optimistic_session();
                 let started = self.begin_prompt_dispatch(
                     &optimistic_session_id,
@@ -310,6 +346,55 @@ impl App {
 
         match self.context.current_route() {
             Route::Home => {
+                if self.local_direct {
+                    let session_directory = self.context.directory.read().clone();
+                    let session = match client.create_session(
+                        selected_mode.scheduler_profile.clone(),
+                        Some(session_directory),
+                    ) {
+                        Ok(session) => session,
+                        Err(err) => {
+                            self.alert_dialog
+                                .set_message(&format!("Failed to create session:\n{}", err));
+                            self.open_alert_dialog();
+                            self.event_caused_change = true;
+                            return Ok(());
+                        }
+                    };
+                    self.cache_session_from_api(&session);
+                    self.context.navigate(Route::Session {
+                        session_id: session.id.clone(),
+                    });
+                    self.sse_session_filter
+                        .send_replace(Some(session.id.clone()));
+                    let started = self.begin_prompt_dispatch(
+                        &session.id,
+                        &user_line,
+                        selected_mode.display_mode.clone(),
+                        model.clone(),
+                        variant.clone(),
+                    );
+                    self.pending_shell_dispatch = Some(PendingShellDispatch {
+                        session_id: session.id.clone(),
+                        optimistic_message_id: started.optimistic_message_id.clone(),
+                    });
+
+                    let context = self.context.clone();
+                    let session_id = session.id.clone();
+                    thread::spawn(move || {
+                        let result = client.execute_shell(&session_id, command.clone(), None);
+                        let _ = context.emit_custom_event(CustomEvent::ShellDispatchFinished {
+                            optimistic_session_id: session_id.clone(),
+                            session_id: session_id.clone(),
+                            optimistic_message_id: started.optimistic_message_id,
+                            created_session: None,
+                            cancelled: false,
+                            error: result.err().map(|e| e.to_string()),
+                        });
+                    });
+                    return Ok(());
+                }
+
                 let optimistic_session_id = self.create_optimistic_session();
                 let started = self.begin_prompt_dispatch(
                     &optimistic_session_id,

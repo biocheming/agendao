@@ -16,6 +16,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::server::ServerState;
+use crate::session_runtime::frontend_subscription::{
+    frontend_event_passes_subscription_caps, frontend_event_session_id,
+};
 use agendao_session_core::SessionStore;
 
 /// Unix Socket server. Generic over `S: SessionStore` so it can accept
@@ -187,15 +190,17 @@ async fn handle_connection<S: SessionStore + Send + 'static>(
                 .get("session_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            let subscription = agendao_api::ResolvedFrontendSubscription::from_wire_tier(
+                request.params.get("tier").and_then(|v| v.as_str()),
+            );
             let response = handle_request(request, &state, &core).await;
             let response_json = serde_json::to_string(&response)?;
             writer.write_all(response_json.as_bytes()).await?;
             writer.write_all(b"\n").await?;
             writer.flush().await?;
 
-            if let Some(sid) = session_id {
-                stream_direct_events_to_writer(&state, &sid, writer).await;
-            }
+            stream_frontend_events_to_writer(&state, session_id.as_deref(), subscription, writer)
+                .await;
             return Ok(());
         }
 
@@ -485,19 +490,24 @@ async fn handle_subscribe_events(
     }))
 }
 
-async fn stream_direct_events_to_writer(
+async fn stream_frontend_events_to_writer(
     state: &Arc<ServerState>,
-    session_id: &str,
+    session_id: Option<&str>,
+    subscription: agendao_api::ResolvedFrontendSubscription,
     mut writer: impl tokio::io::AsyncWrite + Unpin,
 ) {
     use tokio::io::AsyncWriteExt;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_loop(
-        Arc::clone(state),
-        session_id.to_string(),
-        cancel,
-    );
+    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_bus(Arc::clone(state), cancel);
     while let Some(event) = rx.recv().await {
+        if let Some(filter) = session_id {
+            if frontend_event_session_id(&event) != Some(filter) {
+                continue;
+            }
+        }
+        if !frontend_event_passes_subscription_caps(&event, &subscription.capabilities) {
+            continue;
+        }
         let Ok(line) = serde_json::to_string(&event) else {
             break;
         };
@@ -579,7 +589,9 @@ struct PromptRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::PromptRequest;
+    use super::{frontend_event_passes_subscription_caps, PromptRequest};
+    use agendao_server_core::frontend_events::FrontendEvent;
+    use agendao_server_core::runtime_events::ToolCallPhase;
 
     #[test]
     fn prompt_request_deserializes_command_scheduler_and_variant() {
@@ -599,6 +611,37 @@ mod tests {
         assert_eq!(request.scheduler_profile.as_deref(), Some("default"));
         assert_eq!(request.variant.as_deref(), Some("fast"));
         assert!(request.continue_last);
+    }
+
+    #[test]
+    fn unix_socket_cli_tier_filters_message_delta_but_keeps_tool_completion() {
+        let cli_caps = agendao_api::FrontendSubscriptionTier::CliLowFrequency.default_capabilities();
+
+        let delta = FrontendEvent::OutputBlockAppended {
+            session_id: "ses_1".to_string(),
+            id: Some("msg_1".to_string()),
+            block: serde_json::json!({
+                "kind": "message",
+                "phase": "delta",
+                "text": "hi"
+            }),
+            live_identity: None,
+        };
+        let tool_done = FrontendEvent::ToolCallUpsert {
+            session_id: "ses_1".to_string(),
+            tool_call_id: "tool_1".to_string(),
+            tool_name: "bash".to_string(),
+            phase: ToolCallPhase::Complete,
+        };
+
+        assert!(
+            !frontend_event_passes_subscription_caps(&delta, &cli_caps),
+            "CLI tier must not receive message delta over unix transport"
+        );
+        assert!(
+            frontend_event_passes_subscription_caps(&tool_done, &cli_caps),
+            "must-deliver tool lifecycle events must survive unix transport filtering"
+        );
     }
 }
 

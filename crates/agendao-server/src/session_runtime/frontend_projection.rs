@@ -103,15 +103,18 @@ pub(crate) async fn project_server_event(
                 ToolCallPhase::Start => ToolCallPhase::Start,
                 ToolCallPhase::Complete => ToolCallPhase::Complete,
             };
-            let mut events = vec![FrontendEvent::ToolCallUpsert {
+            let events = vec![FrontendEvent::ToolCallUpsert {
                 session_id: session_id.clone(),
                 tool_call_id: tool_call_id.clone(),
                 tool_name: tool_name.clone().unwrap_or_default(),
                 phase: frontend_phase,
             }];
-            if let Some(rt) = project_runtime_replaced(telemetry, session_id).await {
-                events.push(rt);
-            }
+            // Do NOT emit SessionRuntimeReplaced here. Tool call lifecycle
+            // events are high-frequency during LLM execution. Pairing every
+            // ToolCallUpsert with a full runtime snapshot doubles the event
+            // load on the TUI hot path and causes lock contention on
+            // parking_lot::RwLock (CPU spike). Status transitions are emitted
+            // as separate SessionStatus events and handled independently.
             events
         }
 
@@ -176,10 +179,28 @@ pub(crate) async fn project_server_event(
 
         // ── Session state changes: runtime + projection snapshot ────────
         ServerEvent::SessionStatus { session_id, .. }
-        | ServerEvent::SessionUpdated { session_id, .. }
         | ServerEvent::TopologyChanged { session_id, .. }
         | ServerEvent::AttachedSessionAttached { parent_id: session_id, .. }
         | ServerEvent::AttachedSessionDetached { parent_id: session_id, .. } => {
+            let mut events = Vec::new();
+            if let Some(rt) = project_runtime_replaced(telemetry, session_id).await {
+                events.push(rt);
+            }
+            if let Some(proj) = project_projection_replaced(telemetry, sessions, session_id).await {
+                events.push(proj);
+            }
+            events
+        }
+
+        ServerEvent::SessionUpdated { session_id, source } => {
+            // High-frequency scheduler/stage reconcile is already carried by
+            // OutputBlockAppended plus stage-summary application. Re-projecting
+            // full runtime/projection snapshots here turns every stage delta
+            // into a snapshot storm on Direct transport.
+            if session_update_source_projects_nothing(source.as_str()) {
+                return vec![];
+            }
+
             let mut events = Vec::new();
             if let Some(rt) = project_runtime_replaced(telemetry, session_id).await {
                 events.push(rt);
@@ -198,6 +219,19 @@ pub(crate) async fn project_server_event(
             vec![]
         }
     }
+}
+
+fn session_update_source_projects_nothing(source: &str) -> bool {
+    matches!(
+        source,
+        "prompt.stream"
+            | "stream.prompt"
+            | "prompt.scheduler.stage.content"
+            | "prompt.scheduler.stage.reasoning"
+            | "prompt.scheduler.stage.child.final"
+            | "direct_bridge"
+            | "topology"
+    )
 }
 
 /// Spawn a background task that subscribes to the ServerEvent bus,
@@ -306,15 +340,6 @@ async fn project_projection_replaced(
         session_id: session_id.to_string(),
         topology,
         stages,
-        attached_sessions: runtime
-            .attached_sessions
-            .iter()
-            .map(|a| agendao_api::AttachedSessionSummary {
-                attached_id: a.attached_id.clone(),
-                parent_id: a.parent_id.clone(),
-                context_kind: Some(a.context_kind),
-            })
-            .collect(),
         usage: runtime.usage.clone(),
         usage_books: Some(projection_fields.usage_books),
         context_compaction_summary: projection_fields.context_compaction_summary,
@@ -802,6 +827,52 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[tokio::test]
+    async fn session_updated_topology_source_projects_nothing() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let sid = {
+            let mut guard = sessions.lock().await;
+            let session = agendao_session::Session::new("test_project", "/tmp/test");
+            let id = session.record().id.clone();
+            guard.update(session);
+            id
+        };
+
+        let event = ServerEvent::SessionUpdated {
+            session_id: sid,
+            source: "topology".to_string(),
+        };
+        let result = project_server_event(&telemetry, &sessions, &event).await;
+        assert!(
+            result.is_empty(),
+            "topology reconcile must not project frontend snapshots"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_updated_prompt_stream_source_projects_nothing() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let sid = {
+            let mut guard = sessions.lock().await;
+            let session = agendao_session::Session::new("test_project", "/tmp/test");
+            let id = session.record().id.clone();
+            guard.update(session);
+            id
+        };
+
+        let event = ServerEvent::SessionUpdated {
+            session_id: sid,
+            source: "prompt.stream".to_string(),
+        };
+        let result = project_server_event(&telemetry, &sessions, &event).await;
+        assert!(
+            result.is_empty(),
+            "prompt.stream reconcile must not project frontend snapshots"
+        );
     }
 
     /// When the question request_id does not match any question in the

@@ -20,10 +20,12 @@ pub(super) async fn create_local_server_state(
     base_url: String,
     working_dir: PathBuf,
 ) -> anyhow::Result<Arc<CliLocalServerState>> {
-    Ok(Arc::new(
+    let state = Arc::new(
         agendao_server::ServerState::new_with_storage_for_url_in_workspace(base_url, working_dir)
             .await?,
-    ))
+    );
+    state.ensure_frontend_projector();
+    Ok(state)
 }
 
 #[cfg(not(feature = "local-server"))]

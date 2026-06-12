@@ -11,11 +11,7 @@ pub fn init_logging() {
         .ok();
     if let Some(file) = log_file {
         use tracing_subscriber::EnvFilter;
-        let default_level = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "warn"
-        };
+        let default_level = "warn";
         let filter =
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
         tracing_subscriber::fmt()
@@ -25,11 +21,7 @@ pub fn init_logging() {
             .init();
     } else {
         use tracing_subscriber::EnvFilter;
-        let default_level = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "warn"
-        };
+        let default_level = "warn";
         tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level)),

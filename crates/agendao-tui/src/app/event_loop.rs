@@ -37,16 +37,16 @@ impl App {
                     if sv.handle_sidebar_click(&self.context, col, row) {
                         if let Some(session_id) = sv.take_pending_navigate_session() {
                             self.navigate_session_with_prompt_cleanup(session_id.clone());
-                            self.ensure_session_view(&session_id);
                             let _ = self.sync_session_from_server(&session_id);
+                            self.ensure_session_view(&session_id);
                         }
                         if let Some(cs_idx) = sv.take_pending_navigate_attached() {
                             let sessions = self.context.attached_sessions();
                             if let Some(child) = sessions.get(cs_idx) {
                                 let attached_id = child.session_id.clone();
                                 self.navigate_session_with_prompt_cleanup(attached_id.clone());
-                                self.ensure_session_view(&attached_id);
                                 let _ = self.sync_session_from_server(&attached_id);
+                                self.ensure_session_view(&attached_id);
                             }
                         }
                         if sv.take_pending_navigate_parent() {

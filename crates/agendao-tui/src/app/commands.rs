@@ -227,8 +227,8 @@ impl App {
                                 self.context.navigate(Route::Session {
                                     session_id: session.id.clone(),
                                 });
-                                self.ensure_session_view(&session.id);
                                 let _ = self.sync_session_from_server(&session.id);
+                                self.ensure_session_view(&session.id);
                                 self.toast.show(
                                     ToastVariant::Success,
                                     &format!("Session switched: {}", session.id),
