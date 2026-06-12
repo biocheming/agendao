@@ -6,6 +6,7 @@ use crate::api::{
 use agendao_server_core::frontend_events::FrontendEvent;
 use agendao_types::{SessionUsage, SessionUsageBooks};
 use chrono::Utc;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn local_direct_app_uses_direct_base_url_authority() {
@@ -161,6 +162,39 @@ fn ensure_session_view_after_sync_preserves_loaded_history() {
         .expect("messages should remain loaded");
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].id, "m1");
+}
+
+#[test]
+fn plain_q_does_not_exit_tui() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )))
+    .expect("plain q should be handled");
+
+    assert!(!app.is_exiting());
+}
+
+#[test]
+fn ctrl_x_then_q_exits_tui() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL,
+    )))
+    .expect("ctrl+x should arm leader state");
+    assert!(app.leader_state.active);
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )))
+    .expect("leader q should exit");
+
+    assert!(app.is_exiting());
 }
 
 #[test]

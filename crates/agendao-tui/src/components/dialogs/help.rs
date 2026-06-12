@@ -69,7 +69,7 @@ impl HelpDialog {
             Line::from("  F1      Open help"),
             Line::from("  Ctrl+K  Cancel running tool/session"),
             Line::from("  Ctrl+G  Toggle reasoning blocks"),
-            Line::from("  Ctrl+C/q Exit TUI"),
+            Line::from("  Ctrl+C or Ctrl+X q  Exit TUI"),
             Line::from(""),
             Line::from(Span::styled(
                 "Prompt",
