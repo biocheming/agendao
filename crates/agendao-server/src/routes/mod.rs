@@ -1274,6 +1274,68 @@ mod tests {
     }
 
     #[test]
+    fn coalescer_keeps_longer_snapshot_when_later_snapshot_is_shorter_fragment() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let first = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "full", "text": "hello" }),
+            live_identity: Some(agendao_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
+                part_kind: agendao_types::LiveMessagePartKind::AssistantText,
+                phase: agendao_types::LivePartPhase::Snapshot,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
+        };
+        let second = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "full", "text": "o" }),
+            live_identity: Some(agendao_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
+                part_kind: agendao_types::LiveMessagePartKind::AssistantText,
+                phase: agendao_types::LivePartPhase::Snapshot,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
+        };
+
+        let first = c.coalesce(first);
+        let second = c.coalesce(second);
+
+        assert_eq!(snapshot_block_text(&first), Some("hello".to_string()));
+        assert_eq!(snapshot_block_text(&second), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn coalescer_can_stitch_fragmented_snapshots_into_cumulative_text() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let fragments = ["你", "好", "，世界"];
+        let mut last = None;
+
+        for fragment in fragments {
+            last = Some(c.coalesce(ServerEvent::OutputBlock {
+                session_id: "sess-1".to_string(),
+                id: Some("block-1".to_string()),
+                block: serde_json::json!({ "kind": "reasoning", "phase": "full", "text": fragment }),
+                live_identity: Some(agendao_types::LiveMessagePartIdentity {
+                    message_id: "msg-1".to_string(),
+                    part_key: agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
+                    part_kind: agendao_types::LiveMessagePartKind::AssistantReasoning,
+                    phase: agendao_types::LivePartPhase::Snapshot,
+                    legacy_block_id: Some("block-1".to_string()),
+                }),
+            }));
+        }
+
+        assert_eq!(
+            snapshot_block_text(&last.expect("final snapshot")),
+            Some("你好，世界".to_string())
+        );
+    }
+
+    #[test]
     fn coalesced_snapshots_stay_mergeable_for_pending_debounce() {
         let mut c = LiveSnapshotCoalescer::new();
         let mut first = c.coalesce(coalesce_delta(
