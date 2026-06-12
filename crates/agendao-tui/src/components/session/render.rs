@@ -192,7 +192,7 @@ fn resolve_session_render_model(
         thinking_border: message_palette::thinking_border_color(&theme),
         message_gap_lines: match snapshot.message_density {
             crate::context::MessageDensity::Compact => 1,
-            crate::context::MessageDensity::Cozy => 2,
+            crate::context::MessageDensity::Cozy => 1,
         },
     };
     let (rendered_messages, next_message_cache) =

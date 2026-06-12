@@ -340,11 +340,6 @@ impl App {
                     }
                 }
 
-                if key.code == KeyCode::Char('q') && key.modifiers.is_empty() {
-                    self.state = AppState::Exiting;
-                    return Ok(());
-                }
-
                 if self.matches_keybind("session_interrupt", key) {
                     let current_sid = self.current_session_id();
                     if let Some(ref pending) = self.pending_shell_dispatch {
