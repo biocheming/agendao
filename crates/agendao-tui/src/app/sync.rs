@@ -124,8 +124,21 @@ impl App {
                     self.event_caused_change = true;
                 }
             }
-            FrontendEvent::ToolCallUpsert { session_id, .. } => {
-                self.queue_session_telemetry_refresh(session_id);
+            FrontendEvent::ToolCallUpsert {
+                session_id,
+                tool_call_id,
+                tool_name,
+                phase,
+            } => {
+                let updated = self.context.apply_tool_call_upsert(
+                    session_id,
+                    tool_call_id,
+                    tool_name,
+                    phase.clone(),
+                );
+                if !updated && self.current_session_id().as_deref() == Some(session_id.as_str()) {
+                    self.queue_session_telemetry_refresh(session_id);
+                }
                 if self.should_surface_event_for_session(session_id) {
                     self.event_caused_change = true;
                 }

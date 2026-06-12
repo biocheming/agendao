@@ -407,6 +407,75 @@ impl AppContext {
         self.session.write().session_runtime = Some(runtime);
     }
 
+    pub fn apply_tool_call_upsert(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        tool_name: &str,
+        phase: agendao_server_core::runtime_events::ToolCallPhase,
+    ) -> bool {
+        let mut session = self.session.write();
+        if session.session_runtime.is_none()
+            && session.current_session_id.as_deref() == Some(session_id)
+        {
+            session.session_runtime = Some(crate::api::SessionRuntimeState {
+                session_id: session_id.to_string(),
+                run_status: crate::api::SessionRunStatusKind::Idle,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                pending_followup_count: 0,
+                attached_sessions: Vec::new(),
+            });
+        }
+
+        let Some(runtime) = session.session_runtime.as_mut() else {
+            return false;
+        };
+        if runtime.session_id != session_id {
+            return false;
+        }
+
+        match phase {
+            agendao_server_core::runtime_events::ToolCallPhase::Start => {
+                if runtime.active_tools.is_empty()
+                    && matches!(runtime.run_status, crate::api::SessionRunStatusKind::Idle)
+                {
+                    runtime.run_status = crate::api::SessionRunStatusKind::WaitingOnTool;
+                }
+                if runtime
+                    .active_tools
+                    .iter()
+                    .all(|tool| tool.tool_call_id != tool_call_id)
+                {
+                    runtime.active_tools.push(crate::api::ActiveToolSummary {
+                        tool_call_id: tool_call_id.to_string(),
+                        tool_name: tool_name.to_string(),
+                        started_at: chrono::Utc::now().timestamp_millis(),
+                    });
+                }
+            }
+            agendao_server_core::runtime_events::ToolCallPhase::Complete => {
+                runtime
+                    .active_tools
+                    .retain(|tool| tool.tool_call_id != tool_call_id);
+                if runtime.active_tools.is_empty()
+                    && matches!(
+                        runtime.run_status,
+                        crate::api::SessionRunStatusKind::WaitingOnTool
+                    )
+                {
+                    runtime.run_status = crate::api::SessionRunStatusKind::Idle;
+                }
+            }
+        }
+        true
+    }
+
     pub fn apply_session_projection_snapshot(
         &self,
         topology: Option<SessionExecutionTopology>,

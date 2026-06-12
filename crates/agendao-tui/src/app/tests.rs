@@ -64,6 +64,105 @@ fn local_direct_sync_session_loads_existing_history() {
     assert!(!messages.is_empty(), "selected session should have message history");
 }
 
+#[cfg(feature = "local-server")]
+#[test]
+fn local_direct_home_submit_uses_real_session_id_immediately() {
+    let root =
+        std::env::temp_dir().join(format!("agendao-tui-home-submit-{}", uuid::Uuid::new_v4()));
+    let workspace_root = root.join("workspace");
+    let data_root = root.join("data");
+    std::fs::create_dir_all(&workspace_root).expect("create temp workspace root");
+    std::fs::create_dir_all(&data_root).expect("create temp data root");
+    unsafe {
+        std::env::set_var("AGENDAO_DATA_DIR", &data_root);
+        std::env::set_var("XDG_DATA_HOME", &data_root);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let local_server = runtime
+        .block_on(crate::local_server_bridge::new_local_server_for_workspace(
+            workspace_root,
+        ))
+        .expect("local server");
+    let mut app = App::new_with_config(AppLaunchConfig {
+        local_direct: true,
+        local_server: Some(local_server),
+        ..AppLaunchConfig::default()
+    })
+    .expect("local direct app should initialize");
+
+    app.prompt.set_input("hello live output".to_string());
+    app.submit_prompt().expect("prompt should submit");
+
+    let current_session_id = app.current_session_id().expect("current session");
+    assert!(
+        !current_session_id.starts_with("local_session_"),
+        "direct home submit must switch to a real session before dispatch, got {current_session_id}"
+    );
+    assert_eq!(
+        app.sse_session_filter.borrow().as_deref(),
+        Some(current_session_id.as_str())
+    );
+}
+
+#[test]
+fn ensure_session_view_after_sync_preserves_loaded_history() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-loaded-before-view";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Loaded session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_messages(
+            session_id,
+            vec![Message {
+                id: "m1".to_string(),
+                role: MessageRole::Assistant,
+                content: "hello".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+        );
+    }
+    app.context.navigate_session(session_id);
+
+    app.ensure_session_view(session_id);
+
+    let messages = app
+        .context
+        .session
+        .read()
+        .messages
+        .get(session_id)
+        .cloned()
+        .expect("messages should remain loaded");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "m1");
+}
+
 #[test]
 fn navigate_session_with_prompt_cleanup_clears_selection() {
     let mut app = App::new().expect("app should initialize");
@@ -907,6 +1006,182 @@ fn question_upsert_event_populates_prompt_without_poll_sync() {
 
     assert!(app.sync_runtime.pending_question_sync_due_at.is_none());
     assert_eq!(app.question_prompt.current().map(|q| q.id.as_str()), Some("q-1"));
+}
+
+#[test]
+fn tool_call_upsert_start_updates_runtime_active_tools_without_telemetry_poll() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-tool-upsert-start";
+    app.context.apply_session_runtime_snapshot(crate::api::SessionRuntimeState {
+        session_id: session_id.to_string(),
+        run_status: SessionRunStatusKind::Running,
+        current_message_id: None,
+        usage: None,
+        active_stage_id: None,
+        active_stage_count: 0,
+        active_tools: Vec::new(),
+        pending_question: None,
+        pending_permission: None,
+        pending_followup_count: 0,
+        attached_sessions: Vec::new(),
+    });
+    {
+        let mut session_ctx = app.context.session.write();
+        let now = Utc::now();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Tool start".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    app.apply_frontend_event(&FrontendEvent::ToolCallUpsert {
+        session_id: session_id.to_string(),
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "bash".to_string(),
+        phase: agendao_server_core::runtime_events::ToolCallPhase::Start,
+    });
+
+    let runtime = app.context.session_runtime().expect("runtime");
+    assert_eq!(runtime.active_tools.len(), 1);
+    assert_eq!(runtime.active_tools[0].tool_call_id, "tool-1");
+    assert_eq!(runtime.active_tools[0].tool_name, "bash");
+    assert!(app.sync_runtime.pending_session_telemetry_sync.is_none());
+    assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+}
+
+#[test]
+fn tool_call_upsert_complete_removes_runtime_active_tool_without_telemetry_poll() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-tool-upsert-complete";
+    app.context.apply_session_runtime_snapshot(crate::api::SessionRuntimeState {
+        session_id: session_id.to_string(),
+        run_status: SessionRunStatusKind::WaitingOnTool,
+        current_message_id: None,
+        usage: None,
+        active_stage_id: None,
+        active_stage_count: 0,
+        active_tools: vec![crate::api::ActiveToolSummary {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "bash".to_string(),
+            started_at: Utc::now().timestamp_millis(),
+        }],
+        pending_question: None,
+        pending_permission: None,
+        pending_followup_count: 0,
+        attached_sessions: Vec::new(),
+    });
+    {
+        let mut session_ctx = app.context.session.write();
+        let now = Utc::now();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Tool complete".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    app.apply_frontend_event(&FrontendEvent::ToolCallUpsert {
+        session_id: session_id.to_string(),
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "bash".to_string(),
+        phase: agendao_server_core::runtime_events::ToolCallPhase::Complete,
+    });
+
+    let runtime = app.context.session_runtime().expect("runtime");
+    assert!(runtime.active_tools.is_empty());
+    assert!(app.sync_runtime.pending_session_telemetry_sync.is_none());
+    assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+}
+
+#[test]
+fn tool_call_upsert_start_creates_minimal_runtime_for_current_session() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-tool-upsert-placeholder";
+    {
+        let mut session_ctx = app.context.session.write();
+        let now = Utc::now();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Tool placeholder".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+    }
+    app.context.navigate_session(session_id);
+
+    app.apply_frontend_event(&FrontendEvent::ToolCallUpsert {
+        session_id: session_id.to_string(),
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "bash".to_string(),
+        phase: agendao_server_core::runtime_events::ToolCallPhase::Start,
+    });
+
+    let runtime = app.context.session_runtime().expect("runtime");
+    assert_eq!(runtime.session_id, session_id);
+    assert_eq!(runtime.run_status, SessionRunStatusKind::WaitingOnTool);
+    assert_eq!(runtime.active_tools.len(), 1);
+    assert_eq!(runtime.active_tools[0].tool_call_id, "tool-1");
+    assert!(app.sync_runtime.pending_session_telemetry_sync.is_none());
+    assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+}
+
+#[test]
+fn tool_call_upsert_non_current_session_does_not_create_runtime_placeholder() {
+    let mut app = App::new().expect("app should initialize");
+    let current_session_id = "session-current";
+    let other_session_id = "session-other";
+    {
+        let mut session_ctx = app.context.session.write();
+        let now = Utc::now();
+        session_ctx.upsert_session(Session {
+            id: current_session_id.to_string(),
+            title: "Current".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: other_session_id.to_string(),
+            title: "Other".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(current_session_id.to_string());
+    }
+    app.context.navigate_session(current_session_id);
+
+    app.apply_frontend_event(&FrontendEvent::ToolCallUpsert {
+        session_id: other_session_id.to_string(),
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "bash".to_string(),
+        phase: agendao_server_core::runtime_events::ToolCallPhase::Start,
+    });
+
+    assert!(app.context.session_runtime().is_none());
+    assert!(app.sync_runtime.pending_session_telemetry_sync.is_none());
+    assert!(!app.sync_runtime.session_telemetry_sync_inflight);
 }
 
 #[test]
