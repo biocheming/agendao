@@ -128,12 +128,6 @@ const SESSION_TELEMETRY_SYNC_DEBOUNCE_MS: u64 = 120;
 const QUESTION_SYNC_DEBOUNCE_MS: u64 = 40;
 const PERMISSION_SYNC_DEBOUNCE_MS: u64 = 40;
 const PROCESS_REFRESH_DEBOUNCE_MS: u64 = 120;
-const SESSION_FULL_SYNC_INTERVAL_SECS: u64 = 10;
-const QUESTION_SYNC_FALLBACK_SECS: u64 = 5;
-const PERMISSION_SYNC_FALLBACK_SECS: u64 = 5;
-const PERMISSION_SYNC_BACKOFF_SECS: u64 = 15;
-const AUX_SYNC_INTERVAL_SECS: u64 = 5;
-const AUX_SYNC_BACKOFF_SECS: u64 = 15;
 const PERF_LOG_INTERVAL_SECS: u64 = 10;
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[90m";
@@ -317,10 +311,8 @@ struct SyncLifecycleState {
     session_telemetry_sync_inflight: bool,
     last_tick_at: Instant,
     last_session_sync: Instant,
-    last_full_session_sync: Instant,
     last_question_sync: Instant,
     last_permission_sync: Instant,
-    last_aux_sync: Instant,
     last_process_refresh: Instant,
     last_perf_log: Instant,
     last_ui_bridge_dropped_events: u64,
@@ -340,10 +332,8 @@ impl SyncLifecycleState {
             session_telemetry_sync_inflight: false,
             last_tick_at: now,
             last_session_sync: now,
-            last_full_session_sync: now,
             last_question_sync: now,
             last_permission_sync: now,
-            last_aux_sync: now,
             last_process_refresh: now,
             last_perf_log: now,
             last_ui_bridge_dropped_events: 0,

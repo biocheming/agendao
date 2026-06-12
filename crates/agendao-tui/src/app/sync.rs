@@ -60,6 +60,7 @@ impl App {
                 context_closure_contract,
             } => {
                 self.context.apply_session_projection_snapshot(
+                    session_id,
                     topology.clone(),
                     stages.clone(),
                     usage.clone(),
@@ -129,15 +130,12 @@ impl App {
                 tool_name,
                 phase,
             } => {
-                let updated = self.context.apply_tool_call_upsert(
+                self.context.apply_tool_call_upsert(
                     session_id,
                     tool_call_id,
                     tool_name,
                     phase.clone(),
                 );
-                if !updated && self.current_session_id().as_deref() == Some(session_id.as_str()) {
-                    self.queue_session_telemetry_refresh(session_id);
-                }
                 if self.should_surface_event_for_session(session_id) {
                     self.event_caused_change = true;
                 }
@@ -276,8 +274,19 @@ impl App {
         // Only arm telemetry when entering a session or when the SSE filter
         // actually changes, otherwise rendering a session view self-schedules
         // endless telemetry refreshes.
-        if !had_active_view || filter_changed {
-            self.queue_session_telemetry_refresh(session_id);
+        let authority_gap = self.session_authority_gap(session_id);
+        let repair_pending = self
+            .sync_runtime
+            .pending_session_sync
+            .as_deref()
+            == Some(session_id)
+            || self
+                .sync_runtime
+                .pending_session_telemetry_sync
+                .as_deref()
+                == Some(session_id);
+        if !had_active_view || filter_changed || (authority_gap && !repair_pending) {
+            self.queue_session_scoped_repair(session_id);
             self.reconcile_pending_user_inputs_from_runtime();
         }
     }
@@ -293,6 +302,39 @@ impl App {
         self.sync_runtime.pending_session_telemetry_sync = Some(session_id.to_string());
         self.sync_runtime.pending_session_telemetry_sync_due_at =
             Some(Instant::now() + Duration::from_millis(SESSION_TELEMETRY_SYNC_DEBOUNCE_MS));
+    }
+
+    fn session_projection_present(&self, session_id: &str) -> bool {
+        self.context.execution_topology_for(session_id).is_some()
+            || !self.context.stage_summaries_for(session_id).is_empty()
+            || self.context.session_usage_for(session_id).is_some()
+            || self.context.session_usage_books_for(session_id).is_some()
+    }
+
+    fn session_messages_cached(&self, session_id: &str) -> bool {
+        self.context
+            .session
+            .read()
+            .messages
+            .contains_key(session_id)
+    }
+
+    pub(super) fn session_authority_gap(&self, session_id: &str) -> bool {
+        !self.session_messages_cached(session_id)
+            || self.context.session_runtime_for(session_id).is_none()
+            || !self.session_projection_present(session_id)
+    }
+
+    pub(super) fn queue_session_scoped_repair(&mut self, session_id: &str) {
+        if self.current_session_id().as_deref() != Some(session_id) {
+            return;
+        }
+        if self.sync_runtime.pending_session_sync.as_deref() != Some(session_id) {
+            self.sync_runtime.pending_session_sync = Some(session_id.to_string());
+            self.sync_runtime.pending_session_sync_due_at =
+                Some(Instant::now() + Duration::from_millis(SESSION_SYNC_DEBOUNCE_MS));
+        }
+        self.queue_session_telemetry_refresh(session_id);
     }
 
     pub(super) fn spawn_queued_session_telemetry_refresh(&mut self) {
@@ -346,14 +388,15 @@ impl App {
         };
         let attached_id = {
             let session_ctx = self.context.session.read();
-            let active_stage_id = session_ctx
-                .session_runtime
-                .as_ref()
-                .and_then(|runtime| runtime.active_stage_id.as_deref());
+            let active_stage_id = self
+                .context
+                .session_runtime_for(&session_id)
+                .and_then(|runtime| runtime.active_stage_id);
             active_stage_id
+                .as_deref()
                 .and_then(|active_stage_id| {
-                    session_ctx
-                        .stage_summaries
+                    self.context
+                        .stage_summaries_for(&session_id)
                         .iter()
                         .find(|stage| stage.stage_id == active_stage_id)
                         .and_then(|stage| stage.primary_attached_session_id.clone())
@@ -417,15 +460,12 @@ impl App {
             Some(id) => id,
             None => return,
         };
+        let graph_root_id = self.context.graph_root_session_id(&session_id);
         let session_ctx = self.context.session.read();
-        let graph_root_id = session_ctx
-            .sessions
-            .get(&session_id)
-            .and_then(|session| session.parent_id.clone())
-            .unwrap_or(session_id);
-        let children = if !session_ctx.stage_summaries.is_empty() {
+        let stage_summaries = self.context.stage_summaries_for(&graph_root_id);
+        let children = if !stage_summaries.is_empty() {
             collect_attached_sessions_from_stage_summaries(
-                &session_ctx.stage_summaries,
+                &stage_summaries,
                 &session_ctx.sessions,
             )
         } else {
@@ -435,7 +475,7 @@ impl App {
             }
         };
         drop(session_ctx);
-        self.context.set_attached_sessions(children);
+        self.context.set_attached_sessions(&graph_root_id, children);
     }
 
     pub(super) fn cache_session_from_api(&self, session: &SessionInfo) {
@@ -676,7 +716,6 @@ impl App {
         drop(session_ctx);
 
         self.sync_runtime.last_session_sync = Instant::now();
-        self.sync_runtime.last_full_session_sync = self.sync_runtime.last_session_sync;
         self.diagnostics.perf.session_sync_full =
             self.diagnostics.perf.session_sync_full.saturating_add(1);
         Ok(())
@@ -840,6 +879,9 @@ impl App {
     pub(super) fn handle_state_change(&mut self, change: &StateChange) {
         match change {
             StateChange::SessionUpdated { session_id, source } => {
+                if source.as_deref() == Some("stream.reconnected") {
+                    self.queue_session_scoped_repair(session_id);
+                }
                 self.handle_session_updated_reconcile(session_id, source.as_deref());
             }
             StateChange::SessionStatusReconnecting(session_id) => {

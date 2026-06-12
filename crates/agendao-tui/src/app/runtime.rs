@@ -18,32 +18,6 @@ impl App {
             )
     }
 
-    fn permission_interaction_active(&self) -> bool {
-        !self.permission_runtime.pending_ids.is_empty() || self.permission_prompt.is_open
-    }
-
-    pub(super) fn permission_sync_interval(&self) -> Duration {
-        if self.permission_interaction_active() {
-            Duration::from_secs(PERMISSION_SYNC_BACKOFF_SECS)
-        } else {
-            Duration::from_secs(PERMISSION_SYNC_FALLBACK_SECS)
-        }
-    }
-
-    pub(super) fn aux_sync_interval(&self) -> Duration {
-        if self.permission_interaction_active() {
-            Duration::from_secs(AUX_SYNC_BACKOFF_SECS)
-        } else {
-            Duration::from_secs(AUX_SYNC_INTERVAL_SECS)
-        }
-    }
-
-    pub(super) fn should_schedule_aux_sync(&self) -> bool {
-        self.session_list_dialog.is_open()
-            || self.skill_list_dialog.is_open()
-            || !self.local_direct
-    }
-
     pub(super) fn should_schedule_perf_log(&self) -> bool {
         self.diagnostics.perf_log_info
     }
@@ -147,17 +121,20 @@ impl App {
                     schedule_at(due_at);
                 }
             }
+            if self
+                .sync_runtime
+                .pending_session_telemetry_sync
+                .as_deref()
+                == Some(session_id.as_str())
+            {
+                if let Some(due_at) = self.sync_runtime.pending_session_telemetry_sync_due_at {
+                    schedule_at(due_at);
+                }
+            }
             if let Some(due_at) = self.sync_runtime.pending_process_refresh_due_at {
                 schedule_at(due_at);
             } else if self.session_sidebar_visible() && !self.local_direct_idle_session() {
                 schedule_at(self.sync_runtime.last_process_refresh + Duration::from_secs(2));
-            }
-
-            if !self.local_direct && !self.local_direct_idle_session() {
-                schedule_at(
-                    self.sync_runtime.last_full_session_sync
-                        + Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS),
-                );
             }
         }
 
@@ -165,22 +142,10 @@ impl App {
         if has_active_session {
             if let Some(due_at) = self.sync_runtime.pending_question_sync_due_at {
                 schedule_at(due_at);
-            } else if !self.local_direct && !self.local_direct_idle_session() {
-                schedule_at(
-                    self.sync_runtime.last_question_sync
-                        + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
-                );
             }
             if let Some(due_at) = self.sync_runtime.pending_permission_sync_due_at {
                 schedule_at(due_at);
-            } else if !self.local_direct && !self.local_direct_idle_session() {
-                schedule_at(
-                    self.sync_runtime.last_permission_sync + self.permission_sync_interval(),
-                );
             }
-        }
-        if self.should_schedule_aux_sync() {
-            schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
         }
         if self.should_schedule_perf_log() {
             schedule_at(
@@ -209,6 +174,9 @@ impl App {
             ),
             4200,
         );
+        if let Some(session_id) = self.current_session_id() {
+            self.queue_session_scoped_repair(&session_id);
+        }
         true
     }
 }
