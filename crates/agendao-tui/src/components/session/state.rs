@@ -155,10 +155,8 @@ impl SessionMessagesSnapshot {
             let session_ctx = context.session.read();
             (
                 session_ctx.status(session_id).clone(),
-                session_ctx.session_context_compaction_summary.clone(),
-                session_ctx
-                    .session_context_compaction_lifecycle_summary
-                    .clone(),
+                context.session_context_compaction_summary(),
+                context.session_context_compaction_lifecycle_summary(),
             )
         };
 

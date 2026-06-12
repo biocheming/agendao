@@ -199,7 +199,6 @@ fn local_direct_idle_session_skips_session_fallback_deadlines() {
     }
     app.context.navigate_session(session_id);
     app.ensure_session_view(session_id);
-    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_process_refresh = Instant::now() - Duration::from_secs(60);
@@ -236,7 +235,6 @@ fn local_direct_waiting_on_user_also_skips_session_fallback_deadlines() {
     }
     app.context.navigate_session(session_id);
     app.ensure_session_view(session_id);
-    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_process_refresh = Instant::now() - Duration::from_secs(60);
@@ -1143,7 +1141,7 @@ fn tool_call_upsert_start_creates_minimal_runtime_for_current_session() {
 }
 
 #[test]
-fn tool_call_upsert_non_current_session_does_not_create_runtime_placeholder() {
+fn tool_call_upsert_non_current_session_updates_its_own_runtime_store() {
     let mut app = App::new().expect("app should initialize");
     let current_session_id = "session-current";
     let other_session_id = "session-other";
@@ -1180,6 +1178,14 @@ fn tool_call_upsert_non_current_session_does_not_create_runtime_placeholder() {
     });
 
     assert!(app.context.session_runtime().is_none());
+    let other_runtime = app
+        .context
+        .session_runtime_for(other_session_id)
+        .expect("other session runtime");
+    assert_eq!(other_runtime.session_id, other_session_id);
+    assert_eq!(other_runtime.run_status, SessionRunStatusKind::WaitingOnTool);
+    assert_eq!(other_runtime.active_tools.len(), 1);
+    assert_eq!(other_runtime.active_tools[0].tool_call_id, "tool-1");
     assert!(app.sync_runtime.pending_session_telemetry_sync.is_none());
     assert!(!app.sync_runtime.session_telemetry_sync_inflight);
 }
@@ -1446,10 +1452,12 @@ fn local_direct_tick_does_not_rearm_session_question_or_permission_fallbacks() {
     }
     app.context.navigate_session(session_id);
     app.ensure_session_view(session_id);
-    app.sync_runtime.last_full_session_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_question_sync = Instant::now() - Duration::from_secs(60);
     app.sync_runtime.last_permission_sync = Instant::now() - Duration::from_secs(60);
-    app.sync_runtime.last_aux_sync = Instant::now() - Duration::from_secs(60);
+    app.sync_runtime.pending_session_sync = None;
+    app.sync_runtime.pending_session_sync_due_at = None;
+    app.sync_runtime.pending_session_telemetry_sync = None;
+    app.sync_runtime.pending_session_telemetry_sync_due_at = None;
 
     app.handle_event(&Event::Tick)
         .expect("tick should not rearm direct-mode fallback syncs");

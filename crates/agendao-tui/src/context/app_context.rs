@@ -244,17 +244,6 @@ pub struct DialogLifecycleState {
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
     pub data: SessionContext,
-    pub attached_sessions: Vec<AttachedSessionInfo>,
-    pub execution_topology: Option<SessionExecutionTopology>,
-    pub stage_summaries: Vec<StageSummary>,
-    pub session_usage: Option<SessionUsage>,
-    pub session_usage_books: Option<SessionUsageBooks>,
-    pub session_context_compaction_summary: Option<crate::api::ContextCompactionSummary>,
-    pub session_context_compaction_lifecycle_summary:
-        Option<crate::api::ContextCompactionLifecycleSummary>,
-    pub session_cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
-    pub session_context_closure_contract: Option<crate::api::SessionContextClosureContract>,
-    pub session_runtime: Option<crate::api::SessionRuntimeState>,
 }
 
 impl Deref for SessionState {
@@ -269,6 +258,21 @@ impl DerefMut for SessionState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionAuthorityState {
+    pub attached_sessions: Vec<AttachedSessionInfo>,
+    pub execution_topology: Option<SessionExecutionTopology>,
+    pub stage_summaries: Vec<StageSummary>,
+    pub session_usage: Option<SessionUsage>,
+    pub session_usage_books: Option<SessionUsageBooks>,
+    pub session_context_compaction_summary: Option<crate::api::ContextCompactionSummary>,
+    pub session_context_compaction_lifecycle_summary:
+        Option<crate::api::ContextCompactionLifecycleSummary>,
+    pub session_cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
+    pub session_context_closure_contract: Option<crate::api::SessionContextClosureContract>,
+    pub session_runtime: Option<crate::api::SessionRuntimeState>,
 }
 
 impl MessageDensity {
@@ -335,6 +339,7 @@ pub struct AppContext {
     pub router: RwLock<Router>,
     pub keybind: RwLock<KeybindRegistry>,
     pub session: RwLock<SessionState>,
+    session_authority: RwLock<HashMap<String, SessionAuthorityState>>,
     session_view: RwLock<Option<SessionView>>,
     pub providers: RwLock<Vec<ProviderInfo>>,
     pub mcp_servers: RwLock<Vec<McpServerStatus>>,
@@ -366,6 +371,7 @@ impl AppContext {
                 data: SessionContext::new(),
                 ..Default::default()
             }),
+            session_authority: RwLock::new(HashMap::new()),
             session_view: RwLock::new(None),
             providers: RwLock::new(Vec::new()),
             mcp_servers: RwLock::new(Vec::new()),
@@ -386,25 +392,34 @@ impl AppContext {
     }
 
     pub fn apply_session_telemetry_snapshot(&self, telemetry: SessionTelemetrySnapshot) {
-        let mut session = self.session.write();
-        session.execution_topology = Some(telemetry.topology);
-        session.stage_summaries = telemetry.stages;
-        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
-            &session.stage_summaries,
-            &session.sessions,
-        );
-        session.session_usage = Some(telemetry.usage);
-        session.session_usage_books = Some(telemetry.usage_books);
-        session.session_context_compaction_summary = telemetry.context_compaction_summary;
-        session.session_context_compaction_lifecycle_summary =
+        let session_id = telemetry.runtime.session_id.clone();
+        let stages = telemetry.stages;
+        let attached_sessions = {
+            let session = self.session.read();
+            collect_attached_sessions_from_stage_summaries(&stages, &session.sessions)
+        };
+        let mut authority = self.session_authority.write();
+        let entry = authority.entry(session_id).or_default();
+        entry.execution_topology = Some(telemetry.topology);
+        entry.stage_summaries = stages;
+        entry.attached_sessions = attached_sessions;
+        entry.session_usage = Some(telemetry.usage);
+        entry.session_usage_books = Some(telemetry.usage_books);
+        entry.session_context_compaction_summary = telemetry.context_compaction_summary;
+        entry.session_context_compaction_lifecycle_summary =
             telemetry.context_compaction_lifecycle_summary;
-        session.session_cache_semantics = telemetry.cache_semantics;
-        session.session_context_closure_contract = telemetry.context_closure_contract;
-        session.session_runtime = Some(telemetry.runtime);
+        entry.session_cache_semantics = telemetry.cache_semantics;
+        entry.session_context_closure_contract = telemetry.context_closure_contract;
+        entry.session_runtime = Some(telemetry.runtime);
     }
 
     pub fn apply_session_runtime_snapshot(&self, runtime: crate::api::SessionRuntimeState) {
-        self.session.write().session_runtime = Some(runtime);
+        let session_id = runtime.session_id.clone();
+        self.session_authority
+            .write()
+            .entry(session_id)
+            .or_default()
+            .session_runtime = Some(runtime);
     }
 
     pub fn apply_tool_call_upsert(
@@ -414,11 +429,12 @@ impl AppContext {
         tool_name: &str,
         phase: agendao_server_core::runtime_events::ToolCallPhase,
     ) -> bool {
-        let mut session = self.session.write();
-        if session.session_runtime.is_none()
-            && session.current_session_id.as_deref() == Some(session_id)
-        {
-            session.session_runtime = Some(crate::api::SessionRuntimeState {
+        let mut authority = self.session_authority.write();
+        let runtime = authority
+            .entry(session_id.to_string())
+            .or_default()
+            .session_runtime
+            .get_or_insert_with(|| crate::api::SessionRuntimeState {
                 session_id: session_id.to_string(),
                 run_status: crate::api::SessionRunStatusKind::Idle,
                 current_message_id: None,
@@ -431,14 +447,6 @@ impl AppContext {
                 pending_followup_count: 0,
                 attached_sessions: Vec::new(),
             });
-        }
-
-        let Some(runtime) = session.session_runtime.as_mut() else {
-            return false;
-        };
-        if runtime.session_id != session_id {
-            return false;
-        }
 
         match phase {
             agendao_server_core::runtime_events::ToolCallPhase::Start => {
@@ -478,6 +486,7 @@ impl AppContext {
 
     pub fn apply_session_projection_snapshot(
         &self,
+        session_id: &str,
         topology: Option<SessionExecutionTopology>,
         stages: Vec<StageSummary>,
         usage: Option<SessionUsage>,
@@ -487,42 +496,42 @@ impl AppContext {
         cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
         context_closure_contract: Option<crate::api::SessionContextClosureContract>,
     ) {
-        let mut session = self.session.write();
-        session.execution_topology = topology;
-        session.stage_summaries = stages;
-        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
-            &session.stage_summaries,
-            &session.sessions,
-        );
-        session.session_usage = usage;
-        session.session_usage_books = usage_books;
-        session.session_context_compaction_summary = context_compaction_summary;
-        session.session_context_compaction_lifecycle_summary =
+        let attached_sessions = {
+            let session = self.session.read();
+            collect_attached_sessions_from_stage_summaries(&stages, &session.sessions)
+        };
+        let mut authority = self.session_authority.write();
+        let entry = authority.entry(session_id.to_string()).or_default();
+        entry.execution_topology = topology;
+        entry.stage_summaries = stages;
+        entry.attached_sessions = attached_sessions;
+        entry.session_usage = usage;
+        entry.session_usage_books = usage_books;
+        entry.session_context_compaction_summary = context_compaction_summary;
+        entry.session_context_compaction_lifecycle_summary =
             context_compaction_lifecycle_summary;
-        session.session_cache_semantics = cache_semantics;
-        session.session_context_closure_contract = context_closure_contract;
+        entry.session_cache_semantics = cache_semantics;
+        entry.session_context_closure_contract = context_closure_contract;
     }
 
     pub fn apply_scheduler_stage_summary(&self, session_id: &str, block: &SchedulerStageBlock) {
-        let mut session = self.session.write();
-        if session.current_session_id.as_deref() != Some(session_id) {
-            return;
-        }
-
         let summary = block.to_summary();
         if summary.stage_id.is_empty() {
             return;
         }
 
-        if let Some(existing) = session
+        let sessions = self.session.read().sessions.clone();
+        let mut authority = self.session_authority.write();
+        let entry = authority.entry(session_id.to_string()).or_default();
+        if let Some(existing) = entry
             .stage_summaries
             .iter_mut()
             .find(|stage| stage.stage_id == summary.stage_id)
         {
             *existing = summary;
         } else {
-            session.stage_summaries.push(summary);
-            session.stage_summaries.sort_by(|left, right| {
+            entry.stage_summaries.push(summary);
+            entry.stage_summaries.sort_by(|left, right| {
                 let left_index = left.index.unwrap_or(u64::MAX);
                 let right_index = right.index.unwrap_or(u64::MAX);
                 left_index
@@ -530,10 +539,8 @@ impl AppContext {
                     .then_with(|| left.stage_id.cmp(&right.stage_id))
             });
         }
-        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
-            &session.stage_summaries,
-            &session.sessions,
-        );
+        entry.attached_sessions =
+            collect_attached_sessions_from_stage_summaries(&entry.stage_summaries, &sessions);
     }
 
     pub fn navigate(&self, route: crate::router::Route) {
@@ -590,64 +597,170 @@ impl AppContext {
         self.router.read().session_id().map(str::to_string)
     }
 
-    pub fn attached_sessions(&self) -> Vec<AttachedSessionInfo> {
-        self.session.read().attached_sessions.clone()
+    pub(crate) fn graph_root_session_id(&self, session_id: &str) -> String {
+        let session = self.session.read();
+        let mut current = session_id;
+        let mut root = session_id.to_string();
+        while let Some(parent_id) = session
+            .sessions
+            .get(current)
+            .and_then(|session| session.parent_id.as_deref())
+        {
+            root = parent_id.to_string();
+            current = parent_id;
+        }
+        root
     }
 
-    pub fn set_attached_sessions(&self, attached_sessions: Vec<AttachedSessionInfo>) {
-        self.session.write().attached_sessions = attached_sessions;
+    pub fn attached_sessions(&self) -> Vec<AttachedSessionInfo> {
+        self.current_route_session_id()
+            .as_deref()
+            .map(|session_id| {
+                let graph_root_id = self.graph_root_session_id(session_id);
+                self.attached_sessions_for(&graph_root_id)
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn attached_sessions_for(&self, session_id: &str) -> Vec<AttachedSessionInfo> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .map(|state| state.attached_sessions.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_attached_sessions(&self, session_id: &str, attached_sessions: Vec<AttachedSessionInfo>) {
+        self.session_authority
+            .write()
+            .entry(session_id.to_string())
+            .or_default()
+            .attached_sessions = attached_sessions;
     }
 
     pub fn execution_topology(&self) -> Option<SessionExecutionTopology> {
-        self.session.read().execution_topology.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.execution_topology_for(session_id))
+    }
+
+    pub fn execution_topology_for(&self, session_id: &str) -> Option<SessionExecutionTopology> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .and_then(|state| state.execution_topology.clone())
     }
 
     pub fn stage_summaries(&self) -> Vec<StageSummary> {
-        self.session.read().stage_summaries.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .map(|session_id| self.stage_summaries_for(session_id))
+            .unwrap_or_default()
+    }
+
+    pub fn stage_summaries_for(&self, session_id: &str) -> Vec<StageSummary> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .map(|state| state.stage_summaries.clone())
+            .unwrap_or_default()
     }
 
     pub fn session_usage(&self) -> Option<SessionUsage> {
-        self.session.read().session_usage.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.session_usage_for(session_id))
+    }
+
+    pub fn session_usage_for(&self, session_id: &str) -> Option<SessionUsage> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .and_then(|state| state.session_usage.clone())
     }
 
     pub fn session_usage_books(&self) -> Option<SessionUsageBooks> {
-        self.session.read().session_usage_books.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.session_usage_books_for(session_id))
+    }
+
+    pub fn session_usage_books_for(&self, session_id: &str) -> Option<SessionUsageBooks> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .and_then(|state| state.session_usage_books.clone())
     }
 
     pub fn session_context_compaction_summary(
         &self,
     ) -> Option<crate::api::ContextCompactionSummary> {
-        self.session
-            .read()
-            .session_context_compaction_summary
-            .clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| {
+                self.session_authority
+                    .read()
+                    .get(session_id)
+                    .and_then(|state| state.session_context_compaction_summary.clone())
+            })
     }
 
     pub fn session_context_compaction_lifecycle_summary(
         &self,
     ) -> Option<crate::api::ContextCompactionLifecycleSummary> {
-        self.session
-            .read()
-            .session_context_compaction_lifecycle_summary
-            .clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| {
+                self.session_authority.read().get(session_id).and_then(|state| {
+                    state
+                        .session_context_compaction_lifecycle_summary
+                        .clone()
+                })
+            })
     }
 
     pub fn session_cache_semantics(&self) -> Option<crate::api::SessionCacheSemanticsSummary> {
-        self.session.read().session_cache_semantics.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| {
+                self.session_authority
+                    .read()
+                    .get(session_id)
+                    .and_then(|state| state.session_cache_semantics.clone())
+            })
     }
 
     pub fn session_context_closure_contract(
         &self,
     ) -> Option<crate::api::SessionContextClosureContract> {
-        self.session.read().session_context_closure_contract.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| {
+                self.session_authority.read().get(session_id).and_then(|state| {
+                    state.session_context_closure_contract.clone()
+                })
+            })
     }
 
     pub fn session_runtime(&self) -> Option<crate::api::SessionRuntimeState> {
-        self.session.read().session_runtime.clone()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.session_runtime_for(session_id))
+    }
+
+    pub fn session_runtime_for(&self, session_id: &str) -> Option<crate::api::SessionRuntimeState> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .and_then(|state| state.session_runtime.clone())
     }
 
     pub fn current_context_tokens(&self) -> Option<u64> {
-        current_context_tokens_from_state(&self.session.read())
+        let session = self.session.read();
+        let authority = self
+            .current_route_session_id()
+            .and_then(|session_id| self.session_authority.read().get(&session_id).cloned());
+        current_context_tokens_from_state(&session, authority.as_ref())
     }
 
     pub fn session_terminal_tail_status(&self, session_id: &str) -> Option<String> {
@@ -934,11 +1047,8 @@ impl AppContext {
     }
 
     pub fn queued_prompts_for_session(&self, session_id: &str) -> usize {
-        self.session
-            .read()
-            .session_runtime
+        self.session_runtime_for(session_id)
             .as_ref()
-            .filter(|runtime| runtime.session_id == session_id)
             .map(|runtime| runtime.pending_followup_count as usize)
             .unwrap_or(0)
     }
@@ -1278,35 +1388,38 @@ impl AppContext {
     }
 }
 
-fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
+fn current_context_tokens_from_state(
+    state: &SessionState,
+    authority: Option<&SessionAuthorityState>,
+) -> Option<u64> {
     // Keep the primary TUI context meter aligned with root-session governance.
     // Stage estimates remain visible in runtime/status views, but they should
     // not override the owner session's authoritative live/request counters.
-    let usage_context_tokens = state
-        .session_usage_books
+    let usage_context_tokens = authority
+        .and_then(|state| state.session_usage_books.as_ref())
         .as_ref()
         .and_then(|books| books.live_context_tokens)
         .or_else(|| {
-            state
-                .session_usage
+            authority
+                .and_then(|state| state.session_usage.as_ref())
                 .as_ref()
                 .and_then(|usage| usage.live_context_tokens())
         })
         .or_else(|| {
-            state
-                .session_usage_books
+            authority
+                .and_then(|state| state.session_usage_books.as_ref())
                 .as_ref()
                 .and_then(|books| books.request_context_tokens)
         })
         .filter(|tokens| *tokens > 0);
-    let active_stage_id = state
-        .session_runtime
+    let active_stage_id = authority
+        .and_then(|state| state.session_runtime.as_ref())
         .as_ref()
         .and_then(|runtime| runtime.active_stage_id.as_deref());
     let active_stage_context_tokens = active_stage_id.and_then(|active_stage_id| {
-        state
-            .stage_summaries
-            .iter()
+        authority
+            .into_iter()
+            .flat_map(|state| state.stage_summaries.iter())
             .find(|stage| stage.stage_id == active_stage_id)
             .and_then(|stage| stage.estimated_context_tokens)
     });
@@ -1482,9 +1595,9 @@ fn split_theme_variant(name: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{current_context_tokens_from_state, AppContext, SessionState};
+    use super::{current_context_tokens_from_state, AppContext, SessionAuthorityState, SessionState};
     use crate::api::SessionRuntimeState;
-    use crate::context::{Message, MessagePart, MessageRole, TokenUsage};
+    use crate::context::{Message, MessagePart, MessageRole, Session, TokenUsage};
     use agendao_command_render::output_blocks::SchedulerStageBlock;
     use agendao_stage_protocol::{StageStatus, StageSummary};
     use agendao_types::{SessionUsage, SessionUsageBooks, WorkflowUsageSummary};
@@ -1516,14 +1629,86 @@ mod tests {
     }
 
     #[test]
+    fn per_session_authority_store_switches_with_route() {
+        let context = AppContext::new();
+        {
+            let mut session = context.session.write();
+            session.upsert_session(Session {
+                id: "session-1".to_string(),
+                title: "One".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session.upsert_session(Session {
+                id: "session-2".to_string(),
+                title: "Two".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+        }
+
+        context.apply_session_runtime_snapshot(SessionRuntimeState {
+            session_id: "session-1".to_string(),
+            run_status: crate::api::SessionRunStatusKind::Running,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-1".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            pending_followup_count: 0,
+            attached_sessions: Vec::new(),
+        });
+        context.apply_session_runtime_snapshot(SessionRuntimeState {
+            session_id: "session-2".to_string(),
+            run_status: crate::api::SessionRunStatusKind::WaitingOnTool,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-2".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            pending_followup_count: 0,
+            attached_sessions: Vec::new(),
+        });
+
+        context.navigate_session("session-1");
+        assert_eq!(
+            context
+                .session_runtime()
+                .as_ref()
+                .and_then(|runtime| runtime.active_stage_id.as_deref()),
+            Some("stage-1")
+        );
+
+        context.navigate_session("session-2");
+        assert_eq!(
+            context
+                .session_runtime()
+                .as_ref()
+                .and_then(|runtime| runtime.active_stage_id.as_deref()),
+            Some("stage-2")
+        );
+    }
+
+    #[test]
     fn current_context_tokens_prefers_root_usage_over_active_stage_estimate() {
-        let mut state = SessionState::default();
-        state.session_usage_books = Some(SessionUsageBooks {
+        let state = SessionState::default();
+        let authority = SessionAuthorityState {
+            session_usage_books: Some(SessionUsageBooks {
             request_context_tokens: Some(52_830),
             live_context_tokens: Some(52_830),
             workflow_cumulative: WorkflowUsageSummary::default(),
-        });
-        state.session_runtime = Some(SessionRuntimeState {
+        }),
+            session_runtime: Some(SessionRuntimeState {
             session_id: "sess_123".to_string(),
             run_status: crate::api::SessionRunStatusKind::Running,
             current_message_id: None,
@@ -1535,21 +1720,24 @@ mod tests {
             pending_permission: None,
             pending_followup_count: 0,
             attached_sessions: Vec::new(),
-        });
-        state.stage_summaries = vec![stage_summary("stage-exec", Some(1_105_000))];
+        }),
+            stage_summaries: vec![stage_summary("stage-exec", Some(1_105_000))],
+            ..Default::default()
+        };
 
-        assert_eq!(current_context_tokens_from_state(&state), Some(52_830));
+        assert_eq!(current_context_tokens_from_state(&state, Some(&authority)), Some(52_830));
     }
 
     #[test]
     fn current_context_tokens_falls_back_to_request_usage_before_stage_estimate() {
-        let mut state = SessionState::default();
-        state.session_usage_books = Some(SessionUsageBooks {
+        let state = SessionState::default();
+        let authority = SessionAuthorityState {
+            session_usage_books: Some(SessionUsageBooks {
             request_context_tokens: Some(48_000),
             live_context_tokens: None,
             workflow_cumulative: WorkflowUsageSummary::default(),
-        });
-        state.session_runtime = Some(SessionRuntimeState {
+        }),
+            session_runtime: Some(SessionRuntimeState {
             session_id: "sess_456".to_string(),
             run_status: crate::api::SessionRunStatusKind::Running,
             current_message_id: None,
@@ -1561,20 +1749,23 @@ mod tests {
             pending_permission: None,
             pending_followup_count: 0,
             attached_sessions: Vec::new(),
-        });
-        state.stage_summaries = vec![stage_summary("stage-exec", Some(990_000))];
+        }),
+            stage_summaries: vec![stage_summary("stage-exec", Some(990_000))],
+            ..Default::default()
+        };
 
-        assert_eq!(current_context_tokens_from_state(&state), Some(48_000));
+        assert_eq!(current_context_tokens_from_state(&state, Some(&authority)), Some(48_000));
     }
 
     #[test]
     fn current_context_tokens_uses_stage_estimate_only_when_root_usage_missing() {
-        let mut state = SessionState::default();
-        state.session_usage = Some(SessionUsage {
+        let state = SessionState::default();
+        let authority = SessionAuthorityState {
+            session_usage: Some(SessionUsage {
             context_tokens: 0,
             ..SessionUsage::default()
-        });
-        state.session_runtime = Some(SessionRuntimeState {
+        }),
+            session_runtime: Some(SessionRuntimeState {
             session_id: "sess_789".to_string(),
             run_status: crate::api::SessionRunStatusKind::Running,
             current_message_id: None,
@@ -1586,10 +1777,12 @@ mod tests {
             pending_permission: None,
             pending_followup_count: 0,
             attached_sessions: Vec::new(),
-        });
-        state.stage_summaries = vec![stage_summary("stage-exec", Some(256_000))];
+        }),
+            stage_summaries: vec![stage_summary("stage-exec", Some(256_000))],
+            ..Default::default()
+        };
 
-        assert_eq!(current_context_tokens_from_state(&state), Some(256_000));
+        assert_eq!(current_context_tokens_from_state(&state, Some(&authority)), Some(256_000));
     }
 
     #[test]
@@ -1619,7 +1812,7 @@ mod tests {
             }],
         );
 
-        assert_eq!(current_context_tokens_from_state(&state), Some(1000));
+        assert_eq!(current_context_tokens_from_state(&state, None), Some(1000));
     }
 
     #[test]

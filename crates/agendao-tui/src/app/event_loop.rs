@@ -888,38 +888,8 @@ impl App {
                         self.sync_runtime.pending_session_sync = None;
                         self.sync_runtime.pending_session_sync_due_at = None;
                     }
-                    if !self.local_direct
-                        && !self.local_direct_idle_session()
-                        && self.sync_runtime.last_full_session_sync.elapsed()
-                        >= Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS)
-                        && self
-                            .sync_session_from_server_with_mode(session_id, SessionSyncMode::Full)
-                            .is_ok()
-                    {
-                        tick_changed = true;
-                        self.refresh_attached_sessions();
-                        if self.status_dialog.is_open() {
-                            self.refresh_active_status_dialog();
-                        }
-                    }
                 }
                 if matches!(route, Route::Session { .. }) {
-                    if !self.local_direct
-                        && !self.local_direct_idle_session()
-                        && self.sync_runtime.last_question_sync.elapsed()
-                        >= Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS)
-                        && self.sync_runtime.pending_question_sync_due_at.is_none()
-                    {
-                        self.queue_question_sync();
-                    }
-                    if !self.local_direct
-                        && !self.local_direct_idle_session()
-                        && self.sync_runtime.last_permission_sync.elapsed()
-                        >= self.permission_sync_interval()
-                        && self.sync_runtime.pending_permission_sync_due_at.is_none()
-                    {
-                        self.queue_permission_sync();
-                    }
                     if self
                         .sync_runtime
                         .pending_question_sync_due_at
@@ -943,22 +913,6 @@ impl App {
                 } else {
                     self.sync_runtime.pending_question_sync_due_at = None;
                     self.sync_runtime.pending_permission_sync_due_at = None;
-                }
-                if self.should_schedule_aux_sync()
-                    && self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval()
-                {
-                    if self.session_list_dialog.is_open() {
-                        self.refresh_session_list_dialog();
-                    }
-                    if self.skill_list_dialog.is_open() {
-                        let _ = self.refresh_skill_list_dialog();
-                    }
-                    if !self.local_direct {
-                        let _ = self.refresh_lsp_status();
-                        let _ = self.refresh_mcp_dialog();
-                    }
-                    self.sync_runtime.last_aux_sync = Instant::now();
-                    tick_changed = true;
                 }
                 if matches!(route, Route::Session { .. })
                     && self.session_sidebar_visible()

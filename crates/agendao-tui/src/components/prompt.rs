@@ -2204,14 +2204,22 @@ mod tests {
             prompt
                 .context
                 .set_model("openai/gpt-5".to_string(), "openai".to_string());
-            {
-                let mut session = prompt.context.session.write();
-                session.session_usage_books = Some(agendao_types::SessionUsageBooks {
+            prompt.context.navigate_session("session-1");
+            prompt.context.apply_session_projection_snapshot(
+                "session-1",
+                None,
+                Vec::new(),
+                None,
+                Some(agendao_types::SessionUsageBooks {
                     live_context_tokens: Some(52_830),
                     request_context_tokens: Some(52_830),
                     ..Default::default()
-                });
-            }
+                }),
+                None,
+                None,
+                None,
+                None,
+            );
 
             assert_eq!(prompt.desired_height(80), 7);
         });

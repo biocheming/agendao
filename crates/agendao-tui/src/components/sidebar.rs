@@ -2479,7 +2479,14 @@ mod tests {
         let session_id = {
             let mut session = context.session.write();
             let session_id = session.create_session(Some("Token Session".to_string()));
-            session.session_usage = Some(agendao_types::SessionUsage {
+            session_id
+        };
+        context.navigate_session(session_id.clone());
+        context.apply_session_projection_snapshot(
+            &session_id,
+            None,
+            Vec::new(),
+            Some(agendao_types::SessionUsage {
                 input_tokens: 150_000,
                 output_tokens: 150_000,
                 reasoning_tokens: 0,
@@ -2488,9 +2495,13 @@ mod tests {
                 cache_miss_tokens: 50_000,
                 context_tokens: 0,
                 total_cost: 0.0,
-            });
-            session_id
-        };
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         context
             .providers
             .write()
