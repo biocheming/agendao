@@ -123,12 +123,13 @@ impl UnixSocketTransport {
             .await
     }
 
-    /// Subscribe to server events for a session. Returns a channel receiver
-    /// that yields JSON event payloads (one per line). The connection is held
-    /// open in a spawned background task.
+    /// Subscribe to server events. When `session_id` is `Some`, the server may
+    /// pre-filter by session. When `None`, the server streams the canonical
+    /// frontend bus and the caller is expected to filter locally.
     pub async fn subscribe_events(
         &self,
-        session_id: &str,
+        session_id: Option<&str>,
+        tier: Option<&str>,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .await
@@ -137,7 +138,10 @@ impl UnixSocketTransport {
         let request = JsonRpcRequest {
             jsonrpc: "2.0",
             method: "subscribe_events",
-            params: serde_json::json!({ "session_id": session_id }),
+            params: serde_json::json!({
+                "session_id": session_id,
+                "tier": tier,
+            }),
             id: 0,
         };
         let mut request_line = serde_json::to_string(&request)?;
@@ -234,7 +238,7 @@ struct PromptRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::PromptRequest;
+    use super::{JsonRpcRequest, PromptRequest};
 
     #[test]
     fn prompt_request_serializes_command_scheduler_and_variant() {
@@ -256,5 +260,40 @@ mod tests {
             Some("default")
         );
         assert_eq!(value.get("variant").and_then(|v| v.as_str()), Some("fast"));
+    }
+
+    #[test]
+    fn subscribe_events_request_serializes_tier() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            method: "subscribe_events",
+            params: serde_json::json!({
+                "session_id": "ses_1",
+                "tier": "tui",
+            }),
+            id: 0,
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize subscribe_events");
+        assert_eq!(value["method"], "subscribe_events");
+        assert_eq!(value["params"]["session_id"], "ses_1");
+        assert_eq!(value["params"]["tier"], "tui");
+    }
+
+    #[test]
+    fn subscribe_events_request_allows_global_scope() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            method: "subscribe_events",
+            params: serde_json::json!({
+                "session_id": serde_json::Value::Null,
+                "tier": "tui",
+            }),
+            id: 0,
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize global subscribe_events");
+        assert!(value["params"]["session_id"].is_null());
+        assert_eq!(value["params"]["tier"], "tui");
     }
 }

@@ -318,13 +318,15 @@ async fn create_local_server_state(
         Some(dir) => dir.canonicalize().unwrap_or(dir),
         None => std::env::current_dir()?,
     };
-    Ok(Arc::new(
+    let state = Arc::new(
         agendao_server::ServerState::new_with_storage_for_url_in_workspace(
             "http://127.0.0.1:0".to_string(),
             workspace_root,
         )
         .await?,
-    ))
+    );
+    state.ensure_frontend_projector();
+    Ok(state)
 }
 
 async fn resolve_requested_session_local(

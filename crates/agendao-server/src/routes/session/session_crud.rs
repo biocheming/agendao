@@ -15,10 +15,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::session_runtime::events::broadcast_session_reconcile;
+use crate::session_runtime::events::{broadcast_server_event, broadcast_session_reconcile};
 use crate::{ApiError, Result, ServerState};
 use agendao_server_core::runtime_control::SessionRunStatus;
-use agendao_server_core::runtime_events::ReconcileReason;
+use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 
 use super::scheduler::resolve_scheduler_request_defaults_validated;
 
@@ -443,8 +443,15 @@ pub(super) async fn set_session_run_status(
 ) {
     state
         .runtime_telemetry
-        .set_session_run_status(session_id, status)
+        .set_session_run_status(session_id, status.clone())
         .await;
+    broadcast_server_event(
+        state,
+        &ServerEvent::SessionStatus {
+            session_id: session_id.to_string(),
+            status: serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
+        },
+    );
 }
 
 pub(super) fn compaction_lifecycle_status_hook(

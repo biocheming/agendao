@@ -19,7 +19,7 @@
 //! apply them through a single applier.
 
 use agendao_api::{
-    AttachedSessionSummary, ContextCompactionLifecycleSummary, ContextCompactionSummary,
+    ContextCompactionLifecycleSummary, ContextCompactionSummary,
     PermissionRequestInfo, QuestionInfo, SessionCacheSemanticsSummary,
     SessionContextClosureContract, SessionExecutionTopology, SessionRuntimeState,
     SessionUsage, SessionUsageBooks,
@@ -49,14 +49,18 @@ pub enum FrontendEvent {
 
     // ── Projection (topology / stages / attached sessions) ───────────
 
-    /// Replace the projection snapshot (topology, stages, attached sessions,
-    /// usage, usage_books, compaction, cache, closure).
-    /// Emitted on: topology change, stage change, attached session
-    /// attach/detach, usage update, telemetry projection change.
+    /// Replace the projection snapshot (topology, stages, usage,
+    /// usage_books, compaction, cache, closure).
+    /// Emitted on: topology change, stage change, usage update,
+    /// telemetry projection change.
     ///
     /// This is the single authority for the "projection" layer of session
     /// telemetry — the fields below cover everything the TUI sidebar / status /
     /// insights panels need without a follow-up get_session_telemetry() query.
+    ///
+    /// Note: attached sessions are NOT carried here. The TUI derives them
+    /// locally from `stages` via `collect_attached_sessions_from_stage_summaries`,
+    /// which carries richer per-stage metadata than `AttachedSessionSummary`.
     #[serde(rename = "session.projection.replaced")]
     SessionProjectionReplaced {
         #[serde(rename = "sessionID")]
@@ -67,8 +71,6 @@ pub enum FrontendEvent {
         topology: Option<SessionExecutionTopology>,
         #[serde(default)]
         stages: Vec<StageSummary>,
-        #[serde(default)]
-        attached_sessions: Vec<AttachedSessionSummary>,
         #[serde(default)]
         usage: Option<SessionUsage>,
         #[serde(default)]

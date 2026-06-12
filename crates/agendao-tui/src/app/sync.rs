@@ -52,7 +52,6 @@ impl App {
                 session_id,
                 topology,
                 stages,
-                attached_sessions: _,
                 usage,
                 usage_books,
                 context_compaction_summary,
@@ -269,7 +268,8 @@ impl App {
         // with server-side filtering for this session.
         let filter_changed = self.sse_session_filter.borrow().as_deref() != Some(session_id);
         if filter_changed {
-            let _ = self.sse_session_filter.send(Some(session_id.to_string()));
+            self.sse_session_filter
+                .send_replace(Some(session_id.to_string()));
         }
 
         // Reactive session renders call ensure_session_view() every frame.

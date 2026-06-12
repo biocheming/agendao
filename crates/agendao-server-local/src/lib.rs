@@ -20,13 +20,15 @@ pub type LocalServerEvent = FrontendEvent;
 pub async fn new_local_server_for_workspace(
     workspace_root: PathBuf,
 ) -> Result<Arc<LocalServerState>> {
-    Ok(Arc::new(
+    let state = Arc::new(
         agendao_server::ServerState::new_with_storage_for_url_in_workspace(
             "http://127.0.0.1:0".to_string(),
             workspace_root,
         )
         .await?,
-    ))
+    );
+    state.ensure_frontend_projector();
+    Ok(state)
 }
 
 pub fn spawn_direct_event_loop(
@@ -35,6 +37,13 @@ pub fn spawn_direct_event_loop(
     cancel: CancellationToken,
 ) -> UnboundedReceiver<LocalServerEvent> {
     agendao_server::spawn_direct_event_loop(state, session_id, cancel)
+}
+
+pub fn spawn_direct_event_bus(
+    state: Arc<LocalServerState>,
+    cancel: CancellationToken,
+) -> UnboundedReceiver<LocalServerEvent> {
+    agendao_server::spawn_direct_event_bus(state, cancel)
 }
 
 pub async fn local_list_messages(

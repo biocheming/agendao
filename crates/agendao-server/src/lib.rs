@@ -25,6 +25,7 @@ pub use mcp_oauth::*;
 pub use oauth::*;
 pub use openapi::*;
 pub use routes::*;
+pub use session_runtime::direct_bridge::spawn_direct_event_bus;
 pub use server::*;
 pub use session_runtime::direct_bridge::spawn_direct_event_loop;
 pub use unix_socket::*;

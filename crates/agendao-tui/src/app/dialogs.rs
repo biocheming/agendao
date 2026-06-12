@@ -1237,8 +1237,8 @@ impl App {
                     self.close_session_list_dialog_modal();
                     if let Some(session_id) = target {
                         self.navigate_session_with_prompt_cleanup(session_id.clone());
-                        self.ensure_session_view(&session_id);
                         let _ = self.sync_session_from_server(&session_id);
+                        self.ensure_session_view(&session_id);
                     }
                 }
                 KeyCode::Char('r') if self.matches_keybind("session_rename", key) => {
