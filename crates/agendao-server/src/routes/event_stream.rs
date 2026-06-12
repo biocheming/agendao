@@ -349,8 +349,9 @@ impl LiveSnapshotCoalescer {
             self.accum.entry(key.clone()).or_default().push_str(text);
             self.accum[&key].clone()
         } else {
-            self.accum.insert(key, text.to_string());
-            text.to_string()
+            let merged = merge_snapshot_text(self.accum.get(&key).map(String::as_str), text);
+            self.accum.insert(key, merged.clone());
+            merged
         };
 
         if let Some(obj) = block.as_object_mut() {
@@ -371,6 +372,47 @@ impl LiveSnapshotCoalescer {
             }),
         }
     }
+}
+
+fn merge_snapshot_text(existing: Option<&str>, incoming: &str) -> String {
+    let Some(existing) = existing.filter(|value| !value.is_empty()) else {
+        return incoming.to_string();
+    };
+    if incoming.is_empty() {
+        return existing.to_string();
+    }
+    if incoming.starts_with(existing) {
+        return incoming.to_string();
+    }
+    if existing.starts_with(incoming) {
+        return existing.to_string();
+    }
+
+    let overlap = suffix_prefix_overlap(existing, incoming);
+    if overlap > 0 {
+        let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
+        merged.push_str(existing);
+        merged.push_str(&incoming[overlap..]);
+        return merged;
+    }
+
+    let mut merged = String::with_capacity(existing.len() + incoming.len());
+    merged.push_str(existing);
+    merged.push_str(incoming);
+    merged
+}
+
+fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
+    let max = existing.len().min(incoming.len());
+    for size in (1..=max).rev() {
+        if existing.is_char_boundary(existing.len() - size)
+            && incoming.is_char_boundary(size)
+            && existing[existing.len() - size..] == incoming[..size]
+        {
+            return size;
+        }
+    }
+    0
 }
 
 fn parse_server_event(raw: &str) -> Option<ServerEvent> {
