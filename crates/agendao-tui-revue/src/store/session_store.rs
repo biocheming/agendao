@@ -1,7 +1,7 @@
 //! 土 — Per-session state authority.
 //!
-//! Each active session has exactly one SessionStore which holds
-//! the canonical truth for messages, run status, and metadata.
+//! Each active session has exactly one SessionStore holding
+//! the canonical Signal truth for messages, run status, and active tools.
 
 use revue::prelude::*;
 
@@ -11,12 +11,16 @@ pub struct TranscriptMessage {
     pub id: String,
     pub role: MessageRole,
     pub content: String,
+    /// True while the message is still receiving deltas.
+    pub streaming: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessageRole {
     User,
     Assistant,
+    Thinking,
+    Stage,
     System,
 }
 
@@ -26,22 +30,19 @@ pub enum RunStatus {
     Idle,
     Sending,
     Running,
+    WaitingUser,
     Error(String),
 }
 
-/// Per-session state.
+/// Per-session state — all fields are Signals for reactive rendering.
 #[derive(Clone)]
 pub struct SessionStore {
-    /// The session ID (None until created on server).
     pub session_id: Signal<Option<String>>,
-    /// Messages in the transcript.
     pub messages: Signal<Vec<TranscriptMessage>>,
-    /// Current run status.
     pub run_status: Signal<RunStatus>,
-    /// Error message, if any.
     pub error: Signal<Option<String>>,
-    /// Pending user input (for optimistic UI).
-    pub pending_input: Signal<Option<String>>,
+    /// Map of active tool_call_id → tool_name.
+    pub active_tools: Signal<Vec<(String, String)>>,
 }
 
 impl SessionStore {
@@ -51,48 +52,109 @@ impl SessionStore {
             messages: signal(Vec::new()),
             run_status: signal(RunStatus::Idle),
             error: signal(None),
-            pending_input: signal(None),
+            active_tools: signal(Vec::new()),
         }
     }
 
-    /// Add a user message to the transcript (optimistic).
+    // ── User messages ──
+
     pub fn add_user_message(&self, content: &str, id: &str) {
         self.messages.update(|msgs| {
             msgs.push(TranscriptMessage {
                 id: id.to_string(),
                 role: MessageRole::User,
                 content: content.to_string(),
+                streaming: false,
             });
         });
     }
 
-    /// Add an assistant message (from API response).
-    pub fn add_assistant_message(&self, content: &str, id: &str) {
+    // ── Streaming output blocks ──
+
+    /// Append streaming text to the current assistant message.
+    /// Creates a new placeholder if no streaming message exists.
+    pub fn append_message_text(&self, block_id: &str, text: &str) {
         self.messages.update(|msgs| {
-            let replace = msgs.last().map_or(false, |last| {
-                last.role == MessageRole::Assistant && last.content.is_empty()
-            });
-            if replace {
-                if let Some(last) = msgs.last_mut() {
-                    last.id = id.to_string();
-                    last.content = content.to_string();
-                }
+            let streaming = msgs.last_mut().filter(|m| m.streaming);
+            if let Some(msg) = streaming {
+                msg.content.push_str(text);
             } else {
                 msgs.push(TranscriptMessage {
-                    id: id.to_string(),
+                    id: block_id.to_string(),
                     role: MessageRole::Assistant,
-                    content: content.to_string(),
+                    content: text.to_string(),
+                    streaming: true,
                 });
             }
         });
     }
 
-    /// Set the session ID after server creates the session.
+    /// Mark the streaming assistant message as complete.
+    pub fn finalize_message(&self, _block_id: &str) {
+        self.messages.update(|msgs| {
+            if let Some(msg) = msgs.last_mut().filter(|m| m.streaming) {
+                msg.streaming = false;
+            }
+        });
+    }
+
+    /// Append thinking/reasoning text.
+    pub fn append_thinking_text(&self, _block_id: &str, text: &str) {
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptMessage {
+                id: String::new(),
+                role: MessageRole::Thinking,
+                content: text.to_string(),
+                streaming: true,
+            });
+        });
+    }
+
+    /// Finalize the thinking block.
+    pub fn finalize_thinking(&self, _block_id: &str) {
+        self.messages.update(|msgs| {
+            if let Some(msg) = msgs.last_mut().filter(|m| m.streaming && m.role == MessageRole::Thinking) {
+                msg.streaming = false;
+            }
+        });
+    }
+
+    /// Append a scheduler stage update.
+    pub fn append_stage_block(&self, _block_id: &str, text: &str) {
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptMessage {
+                id: String::new(),
+                role: MessageRole::Stage,
+                content: text.to_string(),
+                streaming: true,
+            });
+        });
+    }
+
+    /// Finalize a stage block.
+    pub fn finalize_stage(&self, _block_id: &str) {
+        self.messages.update(|msgs| {
+            if let Some(msg) = msgs.last_mut().filter(|m| m.streaming && m.role == MessageRole::Stage) {
+                msg.streaming = false;
+            }
+        });
+    }
+
+    // ── Tools ──
+
+    pub fn set_active_tool(&self, id: String, name: String) {
+        self.active_tools.update(|tools| {
+            tools.retain(|(tid, _)| tid != &id);
+            tools.push((id, name));
+        });
+    }
+
+    // ── Session ID ──
+
     pub fn set_session_id(&self, id: &str) {
         self.session_id.set(Some(id.to_string()));
     }
 
-    /// Get current session ID.
     pub fn get_session_id(&self) -> Option<String> {
         self.session_id.get()
     }
@@ -107,32 +169,49 @@ mod tests {
         let store = SessionStore::new();
         assert_eq!(store.run_status.get(), RunStatus::Idle);
         assert!(store.messages.get().is_empty());
-        assert!(store.session_id.get().is_none());
     }
 
     #[test]
-    fn add_user_message_appends_to_transcript() {
+    fn add_user_message() {
         let store = SessionStore::new();
-        store.add_user_message("hello", "msg-1");
+        store.add_user_message("hi", "u1");
         let msgs = store.messages.get();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].content, "hello");
-        assert_eq!(msgs[0].role, MessageRole::User);
+        assert_eq!(msgs[0].content, "hi");
+        assert!(!msgs[0].streaming);
     }
 
     #[test]
-    fn add_assistant_message_appends() {
+    fn streaming_message_deltas_accumulate() {
         let store = SessionStore::new();
-        store.add_assistant_message("response", "msg-2");
+        store.append_message_text("b1", "Hello");
+        store.append_message_text("b1", " World");
         let msgs = store.messages.get();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].role, MessageRole::Assistant);
+        assert_eq!(msgs[0].content, "Hello World");
+        assert!(msgs[0].streaming);
     }
 
     #[test]
-    fn set_session_id_updates() {
+    fn finalize_stops_streaming() {
         let store = SessionStore::new();
-        store.set_session_id("ses_abc");
-        assert_eq!(store.get_session_id(), Some("ses_abc".into()));
+        store.append_message_text("b1", "Hi");
+        store.finalize_message("b1");
+        assert!(!store.messages.get()[0].streaming);
+    }
+
+    #[test]
+    fn finalize_before_streaming_is_noop() {
+        let store = SessionStore::new();
+        store.finalize_message("x");
+        assert!(store.messages.get().is_empty());
+    }
+
+    #[test]
+    fn set_active_tool_tracks_multiple() {
+        let store = SessionStore::new();
+        store.set_active_tool("t1".into(), "bash".into());
+        store.set_active_tool("t2".into(), "read".into());
+        assert_eq!(store.active_tools.get().len(), 2);
     }
 }

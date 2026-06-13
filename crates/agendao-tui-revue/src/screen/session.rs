@@ -73,7 +73,9 @@ impl SessionScreen {
             match api.send_prompt(&sid, text) {
                 Ok(response) => {
                     let status_msg = format_status(&response);
-                    self.session.add_assistant_message(&status_msg, &format!("r-{}", ts_now()));
+                    let id = format!("r-{}", ts_now());
+                    self.session.append_message_text(&id, &status_msg);
+                    self.session.finalize_message(&id);
                     self.session.run_status.set(RunStatus::Idle);
                 }
                 Err(e) => {
@@ -83,10 +85,9 @@ impl SessionScreen {
             }
         } else {
             // No API — echo mode for dev
-            self.session.add_assistant_message(
-                &format!("[echo] {}", text),
-                &format!("echo-{}", ts_now()),
-            );
+            let id = format!("echo-{}", ts_now());
+            self.session.append_message_text(&id, &format!("[echo] {}", text));
+            self.session.finalize_message(&id);
             self.session.run_status.set(RunStatus::Idle);
         }
     }
@@ -125,6 +126,7 @@ impl View for SessionScreen {
             RunStatus::Idle => Color::rgb(86, 95, 137),
             RunStatus::Sending => Color::rgb(224, 175, 104),
             RunStatus::Running => Color::rgb(125, 207, 255),
+            RunStatus::WaitingUser => Color::rgb(224, 175, 104),
             RunStatus::Error(_) => Color::rgb(247, 118, 142),
         };
         ctx.draw_text(0, transcript_bottom + 1, &format!(" {}", hint), status_color);
@@ -158,6 +160,8 @@ impl SessionScreen {
             let (prefix, color) = match msg.role {
                 MessageRole::User => ("> ", Color::rgb(125, 207, 255)),
                 MessageRole::Assistant => ("  ", Color::rgb(169, 177, 214)),
+                MessageRole::Thinking => ("💭 ", Color::rgb(86, 95, 137)),
+                MessageRole::Stage => ("⚙  ", Color::rgb(224, 175, 104)),
                 MessageRole::System => ("  ", Color::rgb(86, 95, 137)),
             };
             for line in msg.content.lines() {
