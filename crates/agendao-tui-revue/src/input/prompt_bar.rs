@@ -69,7 +69,8 @@ impl PromptBar {
             match status {
                 RunStatus::Idle => "Type to start... | q: quit | h: home".into(),
                 RunStatus::Sending => "Sending...".into(),
-                RunStatus::Running => "Running... | Ctrl+C: interrupt".into(),
+                RunStatus::Running => "Running... | Esc: stop".into(),
+                RunStatus::WaitingUser => "Waiting for your input...".into(),
                 RunStatus::Error(_) => "Error — type to retry".into(),
             }
         }

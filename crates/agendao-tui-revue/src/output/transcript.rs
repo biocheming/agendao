@@ -27,6 +27,8 @@ impl TranscriptPanel {
             let (prefix, color) = match msg.role {
                 MessageRole::User => ("> ", Color::rgb(125, 207, 255)),
                 MessageRole::Assistant => ("", Color::rgb(169, 177, 214)),
+                MessageRole::Thinking => ("", Color::rgb(86, 95, 137)),
+                MessageRole::Stage => ("", Color::rgb(224, 175, 104)),
                 MessageRole::System => ("", Color::rgb(86, 95, 137)),
             };
 
