@@ -6,7 +6,8 @@ use revue::prelude::*;
 use revue::event::Key;
 
 use crate::bridge::api::{ApiBridge, PromptResponse};
-use crate::input::{PromptAction, PromptInput, ContextStrip};
+use crate::input::{PromptAction, PromptInput};
+use crate::output::TranscriptFeed;
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
 
@@ -79,16 +80,9 @@ fn format_status(r: &PromptResponse) -> String {
 
 impl View for SessionScreen {
     fn render(&self, ctx: &mut RenderContext) {
-        let area = ctx.area;
-        let transcript_bottom = area.height.saturating_sub(3);
         let msgs = self.session.messages.get();
-        self.render_messages(ctx, &msgs, area.y + 1, transcript_bottom);
+        let blocks = TranscriptFeed::render_blocks(&msgs);
 
-        // Divider
-        let div_y = transcript_bottom;
-        for x in 0..area.width { ctx.draw_text(x, div_y, "─", Color::rgb(59, 66, 97)); }
-
-        // Status hint + ContextStrip
         let is_running = matches!(self.session.run_status.get(), RunStatus::Sending | RunStatus::Running);
         let hint = self.prompt.status_hint(is_running);
         let status_color = match self.session.run_status.get() {
@@ -97,75 +91,11 @@ impl View for SessionScreen {
             RunStatus::Running => Color::rgb(125, 207, 255),
             RunStatus::Error(_) => Color::rgb(247, 118, 142),
         };
-        ctx.draw_text(0, transcript_bottom + 1, &format!(" {}", hint), status_color);
 
-        let att = self.session.attachments.get();
-        let mode = self.session.prompt_mode.get();
-        ContextStrip::render(&att, &mode, ctx);
-    }
-}
-
-impl SessionScreen {
-    fn render_messages(&self, ctx: &mut RenderContext, messages: &[TranscriptBlock], start_y: u16, max_y: u16) {
-        let mut y = start_y;
-        if messages.is_empty() && y < max_y {
-            ctx.draw_text(ctx.area.x + 2, y, "(no messages)", Color::rgb(86, 95, 137));
-            return;
-        }
-        for block in messages {
-            if y >= max_y { break; }
-            match block {
-                TranscriptBlock::UserPrompt { content, .. } => {
-                    y = self.render_block_lines(ctx, "> ", content, Color::rgb(125, 207, 255), y, max_y);
-                }
-                TranscriptBlock::AssistantMsg { content, .. } => {
-                    y = self.render_block_lines(ctx, "  ", content, Color::rgb(169, 177, 214), y, max_y);
-                }
-                TranscriptBlock::Thinking { content, folded, .. } => {
-                    let prefix = if *folded { "▶ " } else { "▼ " };
-                    y = self.render_block_lines(ctx, prefix, content, Color::rgb(86, 95, 137), y, max_y);
-                }
-                TranscriptBlock::ToolCall { name, params, phase, .. } => {
-                    let icon = match phase { ToolPhase::Starting => "○", ToolPhase::Running => "◉", ToolPhase::Done => "●" };
-                    let line = format!("{} {} {}", icon, name, params);
-                    ctx.draw_text(ctx.area.x + 1, y, &line, Color::rgb(224, 175, 104));
-                    y += 1;
-                }
-                TranscriptBlock::ToolResult { name, result, is_error, .. } => {
-                    let color = if *is_error { Color::rgb(247, 118, 142) } else { Color::rgb(158, 206, 106) };
-                    y = self.render_block_lines(ctx, &format!("{}: ", name), result, color, y, max_y);
-                }
-                TranscriptBlock::SkillActivated { name, .. } => {
-                    ctx.draw_text(ctx.area.x + 1, y, &format!("⚡ Skill: {}", name), Color::rgb(187, 154, 247));
-                    y += 1;
-                }
-                TranscriptBlock::StageUpdate { name, status, .. } => {
-                    ctx.draw_text(ctx.area.x + 1, y, &format!("⚙ {} — {}", name, status), Color::rgb(224, 175, 104));
-                    y += 1;
-                }
-                TranscriptBlock::CompactionHint { before_tokens, after_tokens, .. } => {
-                    ctx.draw_text(ctx.area.x + 1, y, &format!("📦 Compacted: {}→{} tokens", before_tokens, after_tokens), Color::rgb(86, 95, 137));
-                    y += 1;
-                }
-                TranscriptBlock::ImageRef { mime, .. } => {
-                    ctx.draw_text(ctx.area.x + 1, y, &format!("🖼 [{}]", mime), Color::rgb(86, 95, 137));
-                    y += 1;
-                }
-                TranscriptBlock::SystemNotice { text, .. } => {
-                    y = self.render_block_lines(ctx, "ℹ ", text, Color::rgb(86, 95, 137), y, max_y);
-                }
-            }
-            y += 1; // gap between blocks
-        }
-    }
-
-    fn render_block_lines(&self, ctx: &mut RenderContext, prefix: &str, content: &str, color: Color, mut y: u16, max_y: u16) -> u16 {
-        for line in content.lines() {
-            if y >= max_y { break; }
-            ctx.draw_text(ctx.area.x + 1, y, &format!("{}{}", prefix, line), color);
-            y += 1;
-        }
-        y
+        let layout = vstack()
+            .child(blocks)
+            .child(Text::new(format!(" {}", hint)).fg(status_color));
+        layout.render(ctx);
     }
 }
 
