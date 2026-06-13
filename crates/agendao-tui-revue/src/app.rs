@@ -3,8 +3,6 @@
 use anyhow::Context;
 use revue::prelude::*;
 use revue::event::{Event, Key};
-use std::path::PathBuf;
-
 use crate::bridge::api::ApiBridge;
 use crate::dialog::{AlertDialog, DialogKind, HelpDialog};
 use crate::store::app_store::{AppStore, Route};
@@ -16,14 +14,19 @@ use crate::transport;
 
 pub fn run_app() -> anyhow::Result<()> {
     let store = AppStore::new();
-    let api = ApiBridge::new("http://127.0.0.1:3000").ok();
+
+    // Create tokio runtime for API + transport
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| anyhow::anyhow!("tokio runtime: {}", e))?;
+
+    let api = ApiBridge::new("http://127.0.0.1:3000", rt.handle().clone()).ok();
     let event_bus = EventBus::new();
     let active_session: SessionStore = SessionStore::new();
 
-    // Spawn transport (no-op when local-server feature disabled)
+    // Spawn transport on our runtime
     let tx = event_bus.sender();
-    let wd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let _transport_task = transport::spawn_event_source(tx, wd);
+    let wd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let _transport_task = transport::spawn_event_source(tx, wd, &rt.handle());
 
     let mut app = App::builder().mouse_capture(true)
         .style("styles/base.css")

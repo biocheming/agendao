@@ -13,12 +13,13 @@ use agendao_server_core::frontend_events::FrontendEvent;
 /// Spawn a background task that forwards local-direct events to `tx`.
 ///
 /// Creates an in-process `LocalServerState` for the given workspace,
-/// then spawns the direct event bus. Each event is sent via `tx`.
+/// then spawns the direct event bus on the given runtime handle.
 pub fn spawn_event_source(
     tx: UnboundedSender<FrontendEvent>,
     workspace_root: PathBuf,
+    handle: &tokio::runtime::Handle,
 ) -> Option<JoinHandle<()>> {
-    let handle = tokio::spawn(async move {
+    let handle = handle.spawn(async move {
         let state = match agendao_server_local::new_local_server_for_workspace(
             workspace_root.clone(),
         )
