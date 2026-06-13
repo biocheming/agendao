@@ -291,6 +291,7 @@ pub(crate) struct ReactiveAnimationsEnabled(pub(crate) bool);
 pub(crate) struct ReactivePromptInputBlocked(pub(crate) bool);
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct ReactiveSlashPopupOpen(pub(crate) bool);
 
 #[derive(Clone)]
