@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 pub fn spawn_event_source(
     _tx: UnboundedSender<FrontendEvent>,
     _workspace_root: std::path::PathBuf,
+    _handle: &tokio::runtime::Handle,
 ) -> Option<JoinHandle<()>> {
     tracing::info!("local-server feature disabled — no event transport");
     None
