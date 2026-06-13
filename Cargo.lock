@@ -871,6 +871,7 @@ name = "agendao-tui-revue"
 version = "2026.6.10"
 dependencies = [
  "agendao-client",
+ "agendao-command-render",
  "agendao-server-core",
  "agendao-server-local",
  "agendao-types",
