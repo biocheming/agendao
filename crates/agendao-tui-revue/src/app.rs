@@ -41,12 +41,16 @@ pub fn run_app_with_config(config: AppConfig) -> anyhow::Result<()> {
         store.navigate(Route::Session { session_id: sid.clone() });
     }
 
-    // EventBus + transport (local-direct by default)
+    // EventBus + transport (priority: unix socket > HTTP > local-direct)
     let event_bus = EventBus::new();
     let active_session: SessionStore = SessionStore::new();
     let tx = event_bus.sender();
     let wd = config.working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let _transport_task = transport::spawn_event_source(tx, wd, &rt.handle(), session_filter_rx);
+    let _transport_task = transport::spawn_event_source(
+        tx, wd, &rt.handle(), session_filter_rx,
+        config.unix_socket_path.clone(),
+        config.base_url.clone(),
+    );
 
     // Apply initial config
     if let Some(ref agent) = config.agent_name { store.selected_agent.set(Some(agent.clone())); }
