@@ -187,12 +187,7 @@ impl View for RootView {
         let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running);
         let hint = h.prompt.status_hint(is_running);
         ctx.draw_text(0, py, &format!(" {}", hint), Color::rgb(86, 95, 137));
-
-        // Show typed text + blinking cursor
-        let text = h.prompt.text();
-        let cursor = if h.prompt.is_focused() { "█" } else { "" };
-        let display = format!("> {}{}", text, cursor);
-        ctx.draw_text(0, py + 1, &display, Color::rgb(169, 177, 214));
+        h.prompt.render_prompt(ctx, py + 1);
 
         // ── Status bar ──
         let bar_y = area.height.saturating_sub(1);

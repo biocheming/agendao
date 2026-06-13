@@ -1,232 +1,140 @@
 //! 木 — PromptInput: single authority for all user text input.
 //!
-//! Old TUI: ~1100 line ratatui prompt with shells/history/autocomplete/attachments.
-//! New: Revue Input wrapper + shell mode (! toggle), history, slash, paste.
+//! Manages text directly (String) rather than recreating Revue Input widget.
+//! Key handling: append/backspace/Enter/history navigation.
 
 use revue::prelude::*;
 use revue::event::Key;
 
 #[derive(Clone, Debug)]
-pub enum PromptAction {
-    None,
-    Submit(String),
-    SubmitShell(String), // shell command (! prefix)
-}
+pub enum PromptAction { None, Submit(String), SubmitShell(String) }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputMode { Normal, Shell }
 
 pub struct PromptInput {
-    input: revue::widget::Input,
-    focused: bool,
+    text: String,
+    cursor: usize,
     mode: InputMode,
-
+    focused: bool,
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: Option<String>,
-
-    slash_cmds: Vec<String>,
-    slash_visible: bool,
-    slash_sel: usize,
 }
-
-const SLASH_COMMANDS: &[&str] = &[
-    "help", "clear", "model", "agent", "theme",
-    "session", "list", "export", "rename", "delete",
-    "mcp", "lsp", "sidebar", "quit",
-];
 
 impl PromptInput {
     pub fn new() -> Self {
-        Self {
-            input: revue::widget::Input::new().placeholder("Ask anything..."),
-            focused: false, mode: InputMode::Normal,
-            history: Vec::new(), history_idx: None, draft: None,
-            slash_cmds: SLASH_COMMANDS.iter().map(|s| s.to_string()).collect(),
-            slash_visible: false, slash_sel: 0,
-        }
+        Self { text: String::new(), cursor: 0, mode: InputMode::Normal, focused: false, history: Vec::new(), history_idx: None, draft: None }
     }
 
-    pub fn mode(&self) -> &InputMode { &self.mode }
-    pub fn is_shell(&self) -> bool { self.mode == InputMode::Shell }
-
-    /// Handle a key event. Returns a PromptAction.
     pub fn handle_key(&mut self, key: &Key) -> PromptAction {
-        // Shell mode: ! at start of input toggles shell mode
+        // Shell mode toggle
         if let Key::Char('!') = key {
-            if self.text().is_empty() {
-                self.mode = InputMode::Shell;
-                self.input = revue::widget::Input::new()
-                    .placeholder("Run a command... \"ls -la\"");
-                return PromptAction::None;
-            }
+            if self.text.is_empty() { self.mode = InputMode::Shell; self.focused = true; return PromptAction::None; }
         }
         if matches!(key, Key::Escape) && self.mode == InputMode::Shell {
-            self.mode = InputMode::Normal;
-            self.clear();
-            return PromptAction::None;
+            self.mode = InputMode::Normal; self.clear(); return PromptAction::None;
         }
 
         match key {
-            // Shell submit: Enter sends as command
-            Key::Enter if self.mode == InputMode::Shell => {
-                let text = self.text().trim().to_string();
-                if !text.is_empty() {
-                    self.history.push(text.clone());
-                    self.history_idx = None; self.draft = None;
-                    self.mode = InputMode::Normal;
-                    self.clear();
-                    return PromptAction::SubmitShell(text);
-                }
-                PromptAction::None
-            }
             Key::Enter => {
-                if self.slash_visible && !self.filtered_cmds().is_empty() {
-                    let sel = self.slash_sel.min(self.filtered_cmds().len().saturating_sub(1));
-                    if let Some(cmd) = self.filtered_cmds().get(sel) {
-                        self.input = revue::widget::Input::new()
-                            .placeholder(&format!("/{} ", cmd));
-                        self.slash_visible = false;
-                        return PromptAction::None;
-                    }
+                if self.mode == InputMode::Shell {
+                    let cmd = self.text.trim().to_string();
+                    if !cmd.is_empty() { self.history.push(cmd.clone()); self.history_idx = None; self.draft = None; self.clear(); self.mode = InputMode::Normal; return PromptAction::SubmitShell(cmd); }
                 }
-                let text = self.text().trim().to_string();
+                let text = self.text.trim().to_string();
                 if !text.is_empty() {
-                    self.history.push(text.clone());
-                    self.history_idx = None;
-                    self.draft = None;
-                    self.clear();
+                    self.history.push(text.clone()); self.history_idx = None; self.draft = None; self.clear();
                     return PromptAction::Submit(text);
                 }
                 PromptAction::None
             }
-
-            // ── History: Up ──
-            Key::Up => {
-                if self.history.is_empty() { return PromptAction::None; }
-                if self.history_idx.is_none() {
-                    self.draft = Some(self.text());
-                    self.history_idx = Some(self.history.len().saturating_sub(1));
-                } else if let Some(idx) = self.history_idx {
-                    if idx > 0 { self.history_idx = Some(idx - 1); }
-                }
-                if let Some(idx) = self.history_idx {
-                    if let Some(entry) = self.history.get(idx) {
-                        self.input = revue::widget::Input::new()
-                            .placeholder(entry);
-                    }
-                }
-                PromptAction::None
-            }
-
-            // ── History: Down ──
-            Key::Down => {
-                if self.history_idx.is_none() { return PromptAction::None; }
-                match self.history_idx {
-                    Some(idx) if idx + 1 < self.history.len() => {
-                        self.history_idx = Some(idx + 1);
-                        if let Some(entry) = self.history.get(idx + 1) {
-                            self.input = revue::widget::Input::new().placeholder(entry);
-                        }
-                    }
-                    _ => {
-                        self.history_idx = None;
-                        let draft = self.draft.take().unwrap_or_default();
-                        self.input = revue::widget::Input::new().placeholder(&draft);
-                    }
-                }
-                PromptAction::None
-            }
-
-            // ── Slash trigger ──
-            Key::Char('/') => {
-                self.input.handle_key(key);
-                self.slash_sel = 0;
-                PromptAction::None
-            }
-
-            // ── Slash navigation ──
-            Key::Tab if self.text().starts_with('/') => {
-                self.slash_visible = true;
-                let cmds = self.filtered_cmds();
-                self.slash_sel = (self.slash_sel + 1) % cmds.len().max(1);
-                PromptAction::None
-            }
-
-            // ── Escape: cancel slash or blur ──
-            Key::Escape => {
-                if self.slash_visible {
-                    self.slash_visible = false;
-                    self.clear();
-                    return PromptAction::None;
-                }
-                self.focused = false;
-                PromptAction::None
-            }
-
-            // ── Any other key activates input ──
-            _ => {
+            Key::Char(c) => {
                 self.focused = true;
-                if self.text().starts_with('/') {
-                    self.slash_visible = true;
-                }
-                self.input.handle_key(key);
+                self.insert_char(*c);
                 PromptAction::None
             }
+            Key::Backspace => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.text.remove(self.cursor);
+                }
+                PromptAction::None
+            }
+            Key::Delete => {
+                if self.cursor < self.text.len() {
+                    self.text.remove(self.cursor);
+                }
+                PromptAction::None
+            }
+            Key::Left => { if self.cursor > 0 { self.cursor -= 1; } PromptAction::None }
+            Key::Right => { if self.cursor < self.text.len() { self.cursor += 1; } PromptAction::None }
+            Key::Home => { self.cursor = 0; PromptAction::None }
+            Key::End => { self.cursor = self.text.len(); PromptAction::None }
+            Key::Up => self.history_up(),
+            Key::Down => self.history_down(),
+            _ => PromptAction::None,
         }
     }
 
-    /// Get current text content.
-    pub fn text(&self) -> String {
-        self.input.text().trim().to_string()
+    fn history_up(&mut self) -> PromptAction {
+        if self.history.is_empty() { return PromptAction::None; }
+        if self.history_idx.is_none() { self.draft = Some(self.text.clone()); self.history_idx = Some(self.history.len().saturating_sub(1)); }
+        else if let Some(idx) = self.history_idx { if idx > 0 { self.history_idx = Some(idx - 1); } }
+        if let Some(idx) = self.history_idx {
+            if let Some(entry) = self.history.get(idx) { self.text = entry.clone(); self.cursor = self.text.len(); }
+        }
+        PromptAction::None
     }
 
-    /// Clear the input.
-    pub fn clear(&mut self) {
-        self.input = revue::widget::Input::new()
-            .placeholder("Ask anything...");
-        self.slash_visible = false;
-        self.focused = false;
+    fn history_down(&mut self) -> PromptAction {
+        if self.history_idx.is_none() { return PromptAction::None; }
+        if let Some(idx) = self.history_idx {
+            if idx + 1 < self.history.len() {
+                self.history_idx = Some(idx + 1);
+                if let Some(entry) = self.history.get(idx + 1) { self.text = entry.clone(); self.cursor = self.text.len(); }
+            } else {
+                self.history_idx = None;
+                self.text = self.draft.take().unwrap_or_default();
+                self.cursor = self.text.len();
+            }
+        }
+        PromptAction::None
     }
 
-    /// Whether the input is focused.
+    fn insert_char(&mut self, c: char) {
+        self.text.insert(self.cursor, c);
+        self.cursor += 1;
+    }
+
+    pub fn text(&self) -> &str { &self.text }
+    pub fn set_text(&mut self, t: &str) { self.text = t.to_string(); self.cursor = self.text.len(); self.focused = true; }
+    pub fn clear(&mut self) { self.text.clear(); self.cursor = 0; self.focused = false; }
     pub fn is_focused(&self) -> bool { self.focused }
+    pub fn mode(&self) -> &InputMode { &self.mode }
 
-    /// Filtered slash commands matching current input.
-    pub fn filtered_cmds(&self) -> Vec<&String> {
-        let query = self.text().trim_start_matches('/').to_lowercase();
-        if query.is_empty() {
-            self.slash_cmds.iter().collect()
-        } else {
-            self.slash_cmds.iter()
-                .filter(|c| c.to_lowercase().contains(&query))
-                .collect()
-        }
-    }
-
-    pub fn slash_visible(&self) -> bool { self.slash_visible }
-    pub fn slash_selected(&self) -> usize { self.slash_sel }
-
-    /// Check if the prompt can be submitted.
-    pub fn can_submit(&self) -> bool {
-        !self.text().trim().is_empty()
-    }
-
-    /// Status hint text for the bar above the input.
+    /// Show status hint above the prompt bar.
     pub fn status_hint(&self, is_running: bool) -> String {
         if is_running { return "Running... Esc: stop".into(); }
         if self.focused {
-            let lines = self.text().lines().count();
-            if lines > 1 { format!("{} lines | Enter: send | Esc: cancel", lines) }
-            else if !self.text().is_empty() { format!("{} chars | Enter: send", self.text().len()) }
-            else { "Type... | Enter: send".into() }
-        } else {
-            "Type to start...".into()
-        }
+            if self.text.len() > 40 { format!("{} chars | Enter: send", self.text.len()) }
+            else if !self.text.is_empty() { format!("{} chars | Enter: send", self.text.len()) }
+            else { "Type to start... | Enter: send".into() }
+        } else { "Type to start...".into() }
     }
 
-    /// Render the input widget.
-    pub fn render(&self, ctx: &mut RenderContext) {
-        self.input.render(ctx);
+    /// Render the prompt text with cursor at the bottom.
+    pub fn render_prompt(&self, ctx: &mut RenderContext, y: u16) {
+        let before = if self.cursor <= self.text.len() { &self.text[..self.cursor] } else { &self.text };
+        let after = if self.cursor < self.text.len() { &self.text[self.cursor..] } else { "" };
+        let display = format!("> {}{}{}", before, if self.focused { "█" } else { "" }, after);
+        ctx.draw_text(0, y, &display, Color::rgb(169, 177, 214));
+        if self.focused {
+            // Dim placeholder if text is empty
+            if self.text.is_empty() {
+                let ph = if self.mode == InputMode::Shell { "Run a command... \"ls -la\"" } else { "Ask anything..." };
+                ctx.draw_text(2, y, ph, Color::rgb(86, 95, 137));
+            }
+        }
     }
 }
