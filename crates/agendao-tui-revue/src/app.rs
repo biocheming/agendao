@@ -62,6 +62,21 @@ impl AppHandler {
                 changed
             }
             Event::Key(key) => self.handle_key(&key.key),
+            Event::Mouse(mouse) => {
+                // Scroll: adjust transcript scroll offset in active session
+                use revue::event::MouseEventKind;
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.active_session.scroll_up();
+                        true
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.active_session.scroll_down();
+                        true
+                    }
+                    _ => false,
+                }
+            }
             Event::Resize(..) => true,
             _ => false,
         }

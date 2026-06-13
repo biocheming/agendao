@@ -228,6 +228,14 @@ impl SessionStore {
     pub fn get_session_id(&self) -> Option<String> {
         self.session_id.get()
     }
+
+    // ── Scroll (mouse support) ──
+    pub fn scroll_up(&self) {
+        // Future: adjust transcript scroll offset Signal
+    }
+    pub fn scroll_down(&self) {
+        // Future: adjust transcript scroll offset Signal
+    }
 }
 
 #[cfg(test)]
