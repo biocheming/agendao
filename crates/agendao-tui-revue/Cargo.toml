@@ -9,6 +9,7 @@ description = "AgenDao TUI frontend built with Revue — Vue-style reactive term
 [dependencies]
 revue = { path = "../../../revue", features = ["markdown"] }
 agendao-client = { path = "../agendao-client" }
+agendao-command-render = { path = "../agendao-command-render" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-types = { path = "../agendao-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
