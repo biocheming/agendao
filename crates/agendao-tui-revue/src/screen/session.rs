@@ -6,20 +6,20 @@ use revue::prelude::*;
 use revue::event::Key;
 
 use crate::bridge::api::{ApiBridge, PromptResponse};
-use crate::input::prompt_bar::{PromptAction, PromptBar};
+use crate::input::{PromptAction, PromptInput, ContextStrip};
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
 
 pub struct SessionScreen {
     pub session_id: String,
     pub session: SessionStore,
-    pub prompt_bar: PromptBar,
+    pub prompt: PromptInput,
     pub api: Option<ApiBridge>,
 }
 
 impl SessionScreen {
     pub fn new(session_id: String, api: Option<ApiBridge>) -> Self {
-        Self { session_id, session: SessionStore::new(), prompt_bar: PromptBar::new(), api }
+        Self { session_id, session: SessionStore::new(), prompt: PromptInput::new(), api }
     }
 
     pub fn handle_key(&mut self, key: &Key) -> bool {
@@ -30,7 +30,7 @@ impl SessionScreen {
             }
             return false;
         }
-        match self.prompt_bar.handle_key(key) {
+        match self.prompt.handle_key(key) {
             PromptAction::Submit(text) => { self.dispatch_prompt(text); true }
             PromptAction::None => true,
         }
@@ -88,10 +88,10 @@ impl View for SessionScreen {
         let div_y = transcript_bottom;
         for x in 0..area.width { ctx.draw_text(x, div_y, "─", Color::rgb(59, 66, 97)); }
 
-        // Status hint
-        let status = self.session.run_status.get();
-        let hint = self.prompt_bar.status_hint(&status);
-        let status_color = match status {
+        // Status hint + ContextStrip
+        let is_running = matches!(self.session.run_status.get(), RunStatus::Sending | RunStatus::Running);
+        let hint = self.prompt.status_hint(is_running);
+        let status_color = match self.session.run_status.get() {
             RunStatus::Idle => Color::rgb(86, 95, 137),
             RunStatus::Sending | RunStatus::WaitingUser => Color::rgb(224, 175, 104),
             RunStatus::Running => Color::rgb(125, 207, 255),
@@ -99,11 +99,9 @@ impl View for SessionScreen {
         };
         ctx.draw_text(0, transcript_bottom + 1, &format!(" {}", hint), status_color);
 
-        // Session ID
-        if let Some(ref id) = self.session.get_session_id() {
-            let x = area.width.saturating_sub(id.len() as u16 + 2);
-            ctx.draw_text(x, transcript_bottom + 1, id, Color::rgb(86, 95, 137));
-        }
+        let att = self.session.attachments.get();
+        let mode = self.session.prompt_mode.get();
+        ContextStrip::render(&att, &mode, ctx);
     }
 }
 
