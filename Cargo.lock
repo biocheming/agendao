@@ -4037,6 +4037,7 @@ dependencies = [
  "bitflags 2.11.0",
  "crossterm",
  "dirs",
+ "pulldown-cmark",
  "revue-macros",
  "serde",
  "textwrap",
