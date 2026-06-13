@@ -869,6 +869,7 @@ dependencies = [
 name = "agendao-tui-revue"
 version = "2026.6.10"
 dependencies = [
+ "agendao-client",
  "agendao-server-core",
  "agendao-types",
  "anyhow",
