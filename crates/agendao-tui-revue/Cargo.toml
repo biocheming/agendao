@@ -7,7 +7,7 @@ license.workspace = true
 description = "AgenDao TUI frontend built with Revue — Vue-style reactive terminal UI"
 
 [dependencies]
-revue = { path = "../../../revue" }
+revue = { path = "../../../revue", features = ["markdown"] }
 agendao-client = { path = "../agendao-client" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-types = { path = "../agendao-types" }

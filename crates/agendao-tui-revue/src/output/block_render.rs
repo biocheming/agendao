@@ -61,7 +61,7 @@ pub fn render_block(block: &TranscriptBlock) -> revue::widget::Stack {
         }
 
         TranscriptBlock::AssistantMsg { content, .. } => {
-            vstack().child(Text::new(content.as_str()).class("AssistantMsg"))
+            vstack().child(revue::widget::markdown(content.as_str()))
         }
 
         TranscriptBlock::ImageRef { mime, .. } => {
