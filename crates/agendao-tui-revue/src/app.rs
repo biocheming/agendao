@@ -11,7 +11,7 @@ use crate::config::AppConfig;
 use crate::dialog::{AlertDialog, DialogKind, HelpDialog};
 use crate::input::{PromptAction, PromptInput};
 use crate::store::app_store::{AppStore, Route};
-use crate::screen::{HomeScreen, SessionScreen};
+use crate::screen::SessionScreen;
 use crate::telemetry::event_bus::EventBus;
 use crate::telemetry::event_handler::apply_frontend_event;
 use crate::store::session_store::SessionStore;
@@ -27,21 +27,21 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     let api = if !config.local_direct {
         ApiBridge::new(&config.base_url.clone().unwrap_or_else(|| "http://127.0.0.1:3000".into()), rt.handle().clone()).ok()
     } else { None };
-    let (session_filter_tx, session_filter_rx) = watch::channel::<Option<String>>(None);
+    let (sf_tx, sf_rx) = watch::channel::<Option<String>>(None);
     if let Some(ref sid) = config.session_id {
-        session_filter_tx.send_replace(Some(sid.clone()));
+        sf_tx.send_replace(Some(sid.clone()));
         store.navigate(Route::Session { session_id: sid.clone() });
     }
-    let event_bus = EventBus::new();
+    let eb = EventBus::new();
     let active_session = SessionStore::new();
-    let tx = event_bus.sender();
+    let tx = eb.sender();
     let wd = config.working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let _ = transport::spawn_event_source(tx, wd, &rt.handle(), session_filter_rx, config.unix_socket_path.clone(), config.base_url.clone());
+    let _ = transport::spawn_event_source(tx, wd, &rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
     if let Some(ref a) = config.agent_name { store.selected_agent.set(Some(a.clone())); }
     if let Some(ref m) = config.model { store.selected_model.set(Some(m.clone())); }
 
     let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
-    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), event_bus, session_filter_tx));
+    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx));
     let view = RootView { store, api, active_session, handler };
 
     app.run(view, move |event, view, _app| {
@@ -56,12 +56,12 @@ struct AppHandler {
     alert: AlertDialog, help: HelpDialog,
     dialog_open: bool, dialog_kind: Option<DialogKind>,
     active_session: SessionStore, event_bus: EventBus,
-    #[allow(dead_code)] session_filter_tx: watch::Sender<Option<String>>,
+    #[allow(dead_code)] sf_tx: watch::Sender<Option<String>>,
 }
 
 impl AppHandler {
     fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>) -> Self {
-        Self { store: s, api: a, prompt: PromptInput::new(), alert: AlertDialog::new(), help: HelpDialog::new(), dialog_open: false, dialog_kind: None, active_session: ss, event_bus: eb, session_filter_tx: sf }
+        Self { store: s, api: a, prompt: PromptInput::new(), alert: AlertDialog::new(), help: HelpDialog::new(), dialog_open: false, dialog_kind: None, active_session: ss, event_bus: eb, sf_tx: sf }
     }
 
     fn handle(&mut self, event: &Event) -> bool {
@@ -115,8 +115,7 @@ impl AppHandler {
         if let Some(ref api) = self.api {
             match api.send_prompt(&sid, text) {
                 Ok(r) => {
-                    let rid = format!("r-{}", ts_now());
-                    self.active_session.push_assistant_delta(&rid, &format_status(&r));
+                    self.active_session.push_assistant_delta(&format!("r-{}", ts_now()), &fmt_status(&r));
                     self.active_session.run_status.set(RunStatus::Idle);
                 }
                 Err(e) => { self.active_session.run_status.set(RunStatus::Error(format!("{}", e))); }
@@ -149,33 +148,64 @@ impl View for RootView {
         let route = self.store.route.get();
         let h = self.handler.borrow();
         let area = ctx.area;
+        let prompt_h = 2u16;
+        let content_h = area.height.saturating_sub(prompt_h + 1);
 
+        // ── Content area (top) ──
         match &route {
-            Route::Home => { HomeScreen { store: &self.store }.render(ctx); }
+            Route::Home => {
+                // Render home content centered within content_h
+                let lines = agendao_command_render::branding::logo_lines("  ");
+                let logo_h = lines.len() as u16;
+                let total_h = logo_h + 5u16; // logo + gap + hint + gap + bindings
+                let top_pad = content_h.saturating_sub(total_h) / 2;
+                let mut y = top_pad;
+
+                for line in &lines {
+                    let lw = line.chars().count() as u16;
+                    let x = area.width.saturating_sub(lw) / 2;
+                    ctx.draw_text(x, y, line, Color::rgb(189, 147, 249));
+                    y += 1;
+                }
+                y += 2;
+                let hint = "Type below and press Enter to start";
+                ctx.draw_text(area.width.saturating_sub(hint.len() as u16) / 2, y, hint, Color::rgb(150, 150, 170));
+                y += 2;
+                for (key, desc) in [("Enter", "Start a new session"), ("h", "Home"), ("q/Esc", "Quit")] {
+                    ctx.draw_text(2, y, &format!("  {:<6}", key), Color::rgb(125, 207, 255));
+                    ctx.draw_text(10, y, desc, Color::rgb(169, 177, 214));
+                    y += 1;
+                }
+            }
             Route::Session { session_id } => {
                 SessionScreen::new(session_id.clone(), self.api.clone()).render(ctx);
             }
         }
 
-        // Global prompt bar at bottom
-        let py = area.height.saturating_sub(2);
+        // ── Prompt bar (bottom 2 rows) ──
+        let py = content_h;
         let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running);
         let hint = h.prompt.status_hint(is_running);
         ctx.draw_text(0, py, &format!(" {}", hint), Color::rgb(86, 95, 137));
-        ctx.draw_text(0, py + 1, "> ", Color::rgb(125, 207, 255));
 
-        // Status bar
+        // Show typed text + blinking cursor
+        let text = h.prompt.text();
+        let cursor = if h.prompt.is_focused() { "█" } else { "" };
+        let display = format!("> {}{}", text, cursor);
+        ctx.draw_text(0, py + 1, &display, Color::rgb(169, 177, 214));
+
+        // ── Status bar ──
         let bar_y = area.height.saturating_sub(1);
         let route_label = route.as_str();
-        let text = format!(" agendao | [{}] | q:quit ?:help ", route_label);
+        let status = format!(" agendao | [{}] | q:quit ?:help | type then Enter ", route_label);
         for x in 0..area.width { ctx.draw_text(x, bar_y, " ", Color::rgb(30, 32, 44)); }
-        ctx.draw_text(0, bar_y, &text, Color::rgb(169, 177, 214));
+        ctx.draw_text(0, bar_y, &status, Color::rgb(169, 177, 214));
     }
 }
 
-fn format_status(r: &agendao_client::PromptResponse) -> String {
+fn fmt_status(r: &agendao_client::PromptResponse) -> String {
     match r.status.as_str() {
-        "awaiting_user" => format!("⏳ Awaiting{}", r.pending_question_id.as_deref().map_or(String::new(), |id| format!(" ({})", id))),
+        "awaiting_user" => "⏳ Awaiting input".into(),
         "queued" => format!("📨 Queued ({} ahead)", r.queued_count.unwrap_or(0)),
         _ => format!("✅ Sent ({})", r.status),
     }
