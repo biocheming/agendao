@@ -55,10 +55,22 @@ impl SessionSidebar {
     // ── Individual panels ──
 
     fn token_panel(t: &TokenUsage) -> revue::widget::Stack {
-        vstack()
+        let mut s = vstack()
             .child(Text::new(format!("Input:  {:>8}", fmt_count(t.input))).class("SidebarText"))
             .child(Text::new(format!("Output: {:>8}", fmt_count(t.output))).class("SidebarText"))
-            .child(Text::new(format!("Total:  {:>8}", fmt_count(t.total))).class("SidebarText"))
+            .child(Text::new(format!("Total:  {:>8}", fmt_count(t.total))).class("SidebarText"));
+
+        // Per-turn breakdown (from cache tokens)
+        if t.cache_read > 0 || t.cache_miss > 0 {
+            let turn_total = t.cache_read + t.cache_miss;
+            s = s
+                .child(Text::new("─".repeat(20)).fg(Color::rgb(59, 66, 97)))
+                .child(Text::new(format!("Turn read: {:>5}", fmt_count(t.cache_read))).class("SidebarText"))
+                .child(Text::new(format!("Turn miss: {:>5}", fmt_count(t.cache_miss))).class("SidebarText"))
+                .child(Text::new(format!("Turn write:{:>5}", fmt_count(t.cache_write))).class("SidebarText"))
+                .child(Text::new(format!("Turn total:{:>5}", fmt_count(turn_total))).class("SidebarText"));
+        }
+        s
     }
 
     fn cache_panel(c: &CacheStats) -> revue::widget::Stack {
@@ -122,10 +134,22 @@ impl SessionSidebar {
             .child(Text::new(lsp_status).class("SidebarText"))
     }
 
+    /// Render tree nodes flat (max 30 items, indent via "  ".repeat(depth)).
     fn tree_panel(nodes: &[SidebarNode]) -> revue::widget::Stack {
+        // Flatten the tree into lines first, then build stack once
+        let mut lines: Vec<(String, Color)> = Vec::new();
+        Self::flatten_nodes(nodes, &mut lines);
         let mut s = vstack();
-        for n in nodes.iter().take(15) {
-            let indent = "  ".repeat(n.depth as usize);
+        for (label, color) in lines.iter().take(30) {
+            s = s.child(Text::new(label.as_str()).fg(*color));
+        }
+        s
+    }
+
+    fn flatten_nodes(nodes: &[SidebarNode], lines: &mut Vec<(String, Color)>) {
+        for n in nodes {
+            if lines.len() >= 30 { break; }
+            let indent = "  ".repeat((n.depth as usize).min(6));
             let icon = if !n.children.is_empty() {
                 if n.expanded { "▼ " } else { "▶ " }
             } else { "  " };
@@ -135,9 +159,11 @@ impl SessionSidebar {
                 Some(TreeIntent::OpenFile(_)) => Color::rgb(158, 206, 106),
                 None => Color::rgb(169, 177, 214),
             };
-            s = s.child(Text::new(label).fg(color));
+            lines.push((label, color));
+            if n.expanded {
+                Self::flatten_nodes(&n.children, lines);
+            }
         }
-        s
     }
 
     /// Render the sidebar at the given area.
