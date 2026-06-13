@@ -11,7 +11,6 @@ use crate::config::AppConfig;
 use crate::dialog::{AlertDialog, DialogKind, HelpDialog};
 use crate::input::{PromptAction, PromptInput};
 use crate::store::app_store::{AppStore, Route};
-use crate::screen::SessionScreen;
 use crate::telemetry::event_bus::EventBus;
 use crate::telemetry::event_handler::apply_frontend_event;
 use crate::store::session_store::SessionStore;
@@ -85,7 +84,7 @@ impl AppHandler {
             PromptAction::None => {}
         }
         match key {
-            Key::Char('q') | Key::Escape => { self.store.request_exit(); true }
+            Key::Char('q') => { self.store.request_exit(); true }
             Key::Char('h') => { self.store.navigate(Route::Home); true }
             Key::Char('?') => { self.toggle_help(); true }
             _ => false,
@@ -147,54 +146,56 @@ impl View for RootView {
     fn render(&self, ctx: &mut RenderContext) {
         let route = self.store.route.get();
         let h = self.handler.borrow();
-        let area = ctx.area;
-        let prompt_h = 2u16;
-        let content_h = area.height.saturating_sub(prompt_h + 1);
+        let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running);
 
-        // ── Content area (top) ──
+        // ── Build layout ──
+        let mut content_stack = vstack();
+
         match &route {
             Route::Home => {
-                // Render home content centered within content_h
+                // Home content: logo + keybindings
                 let lines = agendao_command_render::branding::logo_lines("  ");
-                let logo_h = lines.len() as u16;
-                let total_h = logo_h + 5u16; // logo + gap + hint + gap + bindings
-                let top_pad = content_h.saturating_sub(total_h) / 2;
-                let mut y = top_pad;
-
                 for line in &lines {
-                    let lw = line.chars().count() as u16;
-                    let x = area.width.saturating_sub(lw) / 2;
-                    ctx.draw_text(x, y, line, Color::rgb(189, 147, 249));
-                    y += 1;
+                    content_stack = content_stack.child(Text::new(line).fg(Color::rgb(189, 147, 249)));
                 }
-                y += 2;
-                let hint = "Type below and press Enter to start";
-                ctx.draw_text(area.width.saturating_sub(hint.len() as u16) / 2, y, hint, Color::rgb(150, 150, 170));
-                y += 2;
-                for (key, desc) in [("Enter", "Start a new session"), ("h", "Home"), ("q/Esc", "Quit")] {
-                    ctx.draw_text(2, y, &format!("  {:<6}", key), Color::rgb(125, 207, 255));
-                    ctx.draw_text(10, y, desc, Color::rgb(169, 177, 214));
-                    y += 1;
-                }
+                content_stack = content_stack
+                    .child(Text::new(""))
+                    .child(Text::new(""))
+                    .child(Text::new("Type below and press Enter to start").fg(Color::rgb(150, 150, 170)))
+                    .child(Text::new(""))
+                    .child(hstack().child(Text::new("  Enter ").fg(Color::rgb(125, 207, 255))).child(Text::new("Start a new session").fg(Color::rgb(169, 177, 214))))
+                    .child(hstack().child(Text::new("  h     ").fg(Color::rgb(125, 207, 255))).child(Text::new("Home").fg(Color::rgb(169, 177, 214))))
+                    .child(hstack().child(Text::new("  q     ").fg(Color::rgb(125, 207, 255))).child(Text::new("Quit").fg(Color::rgb(169, 177, 214))));
             }
             Route::Session { session_id } => {
-                SessionScreen::new(session_id.clone(), self.api.clone()).render(ctx);
+                // Session content placeholder (SessionScreen needs refactor to return widgets)
+                content_stack = content_stack.child(Text::new(&format!("Session: {}", session_id)).fg(Color::WHITE));
             }
         }
 
-        // ── Prompt bar (bottom 2 rows) ──
-        let py = content_h;
-        let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running);
+        // ── Prompt bar ──
         let hint = h.prompt.status_hint(is_running);
-        ctx.draw_text(0, py, &format!(" {}", hint), Color::rgb(86, 95, 137));
-        h.prompt.render_prompt(ctx, py + 1);
+        let hint_text = Text::new(&format!(" {}", hint)).fg(Color::rgb(86, 95, 137));
+        let input_border = if h.prompt.is_focused() {
+            Border::rounded().fg(Color::CYAN)
+        } else {
+            Border::rounded().fg(Color::rgb(60, 60, 60))
+        };
+        let input_widget = input_border.child(h.prompt.widget());
+        let prompt_bar = vstack().child(hint_text).child(input_widget);
 
         // ── Status bar ──
-        let bar_y = area.height.saturating_sub(1);
         let route_label = route.as_str();
-        let status = format!(" agendao | [{}] | q:quit ?:help | type then Enter ", route_label);
-        for x in 0..area.width { ctx.draw_text(x, bar_y, " ", Color::rgb(30, 32, 44)); }
-        ctx.draw_text(0, bar_y, &status, Color::rgb(169, 177, 214));
+        let status_text = format!(" agendao | [{}] | q:quit ?:help ", route_label);
+        let status_bar = Text::new(&status_text).fg(Color::rgb(169, 177, 214)).bg(Color::rgb(30, 32, 44));
+
+        // ── Full layout ──
+        let layout = vstack()
+            .child(content_stack)
+            .child(prompt_bar)
+            .child(status_bar);
+
+        layout.render(ctx);
     }
 }
 
