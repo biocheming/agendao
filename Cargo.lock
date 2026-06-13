@@ -875,6 +875,7 @@ dependencies = [
  "agendao-server-local",
  "agendao-types",
  "anyhow",
+ "dirs",
  "revue",
  "serde",
  "serde_json",

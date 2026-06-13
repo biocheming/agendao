@@ -9,6 +9,7 @@ pub fn spawn_event_source(
     _tx: UnboundedSender<FrontendEvent>,
     _workspace_root: std::path::PathBuf,
     _handle: &tokio::runtime::Handle,
+    _session_filter: tokio::sync::watch::Receiver<Option<String>>,
 ) -> Option<JoinHandle<()>> {
     tracing::info!("local-server feature disabled — no event transport");
     None
