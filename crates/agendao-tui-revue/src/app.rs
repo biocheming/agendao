@@ -25,7 +25,9 @@ pub fn run_app() -> anyhow::Result<()> {
     let wd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _transport_task = transport::spawn_event_source(tx, wd);
 
-    let mut app = App::builder().mouse_capture(true).build();
+    let mut app = App::builder().mouse_capture(true)
+        .style("styles/base.css")
+        .build();
     let view = RootView::new(store.clone(), api, active_session.clone());
     let mut handler = AppHandler { store, api: None, alert: AlertDialog::new(), help: HelpDialog::new(), dialog_open: false, dialog_kind: None, active_session, event_bus };
 

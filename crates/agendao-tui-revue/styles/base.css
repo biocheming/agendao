@@ -1,0 +1,128 @@
+/* ── AgenDao TUI Theme ── */
+
+:root {
+    --bg-primary: #1a1b26;
+    --bg-secondary: #24283b;
+    --bg-surface: #2f3346;
+    --fg-primary: #c0caf5;
+    --fg-secondary: #a9b1d6;
+    --fg-muted: #565f89;
+    --accent-cyan: #7dcfff;
+    --accent-green: #9ece6a;
+    --accent-yellow: #e0af68;
+    --accent-red: #f7768e;
+    --accent-purple: #bb9af7;
+    --accent-blue: #7aa2f7;
+    --border-color: #3b4261;
+}
+
+/* ── App ── */
+App {
+    background: var(--bg-primary);
+}
+
+/* ── Transcript blocks ── */
+.UserPrompt {
+    color: var(--accent-cyan);
+}
+
+.ThinkingBlock {
+    color: var(--fg-muted);
+}
+
+.ToolCall {
+    color: var(--accent-yellow);
+}
+
+.ToolResult {
+    color: var(--accent-green);
+}
+
+.ToolResultError {
+    color: var(--accent-red);
+}
+
+.SkillBlock {
+    color: var(--accent-purple);
+}
+
+.StageBlock {
+    color: var(--accent-yellow);
+}
+
+.AssistantMsg {
+    color: var(--fg-secondary);
+}
+
+.SystemNotice {
+    color: var(--fg-muted);
+}
+
+.Compaction {
+    color: var(--fg-muted);
+}
+
+/* ── Dialogs ── */
+.Dialog {
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+}
+
+.DialogTitle {
+    color: var(--accent-red);
+}
+
+.HelpDialogTitle {
+    color: var(--accent-blue);
+}
+
+.DialogBody {
+    color: var(--fg-secondary);
+}
+
+.DialogHint {
+    color: var(--fg-muted);
+}
+
+.DialogBackdrop {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+/* ── Prompt input ── */
+.PromptInput {
+    background: var(--bg-secondary);
+    color: var(--fg-primary);
+}
+
+.ContextStrip {
+    color: var(--fg-muted);
+}
+
+/* ── Status bar ── */
+.StatusBar {
+    background: var(--bg-primary);
+    color: var(--fg-muted);
+}
+
+/* ── Sidebar ── */
+.Sidebar {
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+}
+
+.SidebarPanel {
+    color: var(--fg-secondary);
+}
+
+.SidebarTitle {
+    color: var(--accent-blue);
+}
+
+/* ── Key bindings ── */
+.KeyBind {
+    color: var(--accent-cyan);
+}
+
+.KeyDesc {
+    color: var(--fg-secondary);
+}

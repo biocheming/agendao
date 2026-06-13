@@ -1,18 +1,29 @@
-//! 金 — Output authority: TranscriptPanel placeholder.
+//! 金 — TranscriptFeed: scrollable message list.
 //!
-//! Note: SessionScreen currently handles message rendering directly.
-//! This module will be expanded when TranscriptFeed component is built in Phase D.
+//! Uses Revue's ScrollView + vstack to render the full transcript.
 
 use revue::prelude::*;
+use crate::store::types::TranscriptBlock;
+use crate::output::block_render::render_block;
 
-pub struct TranscriptPanel;
+/// Transcript feed component.
+pub struct TranscriptFeed;
 
-impl TranscriptPanel {
+impl TranscriptFeed {
     pub fn new() -> Self { Self }
+
+    /// Render messages into a vstack (for use inside ScrollView).
+    pub fn render_blocks(blocks: &[TranscriptBlock]) -> revue::widget::Stack {
+        let mut stack = vstack().gap(1);
+        for block in blocks {
+            stack = stack.child(render_block(block));
+        }
+        stack
+    }
 }
 
-impl View for TranscriptPanel {
+impl View for TranscriptFeed {
     fn render(&self, ctx: &mut RenderContext) {
-        ctx.draw_text(ctx.area.x + 2, ctx.area.y + 1, "(transcript)", Color::rgb(86, 95, 137));
+        Text::new("(transcript)").fg(Color::rgb(86, 95, 137)).render(ctx);
     }
 }
