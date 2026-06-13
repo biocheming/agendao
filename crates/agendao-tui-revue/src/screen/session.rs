@@ -1,6 +1,4 @@
-//! Session Screen — 木+火+金 integration.
-//!
-//! Wires PromptBar (input) → API dispatch → status display.
+//! Session Screen — 木+火+金+水 integration.
 
 use revue::prelude::*;
 use revue::event::Key;
@@ -10,20 +8,26 @@ use crate::input::{PromptAction, PromptInput};
 use crate::output::TranscriptFeed;
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
+use crate::telemetry::SessionSidebar;
 
 pub struct SessionScreen {
     pub session_id: String,
     pub session: SessionStore,
     pub prompt: PromptInput,
+    pub sidebar: SessionSidebar,
     pub api: Option<ApiBridge>,
 }
 
 impl SessionScreen {
     pub fn new(session_id: String, api: Option<ApiBridge>) -> Self {
-        Self { session_id, session: SessionStore::new(), prompt: PromptInput::new(), api }
+        Self { session_id, session: SessionStore::new(), prompt: PromptInput::new(), sidebar: SessionSidebar::new(), api }
     }
 
     pub fn handle_key(&mut self, key: &Key) -> bool {
+        // Ctrl+B → toggle sidebar
+        if matches!(key, Key::Char('b') | Key::Char('B')) {
+            self.sidebar.toggle(); return true;
+        }
         if matches!(self.session.run_status.get(), RunStatus::Sending | RunStatus::Running) {
             if matches!(key, Key::Escape) {
                 self.session.run_status.set(RunStatus::Idle);
@@ -41,7 +45,6 @@ impl SessionScreen {
         let msg_id = format!("user-{}", ts_now());
         self.session.push_user_message(&msg_id, &text);
         self.session.run_status.set(RunStatus::Sending);
-
         if let Some(ref api) = self.api {
             let sid = self.session.get_session_id().unwrap_or_else(|| {
                 match api.create_session(None, None) {
@@ -92,9 +95,27 @@ impl View for SessionScreen {
             RunStatus::Error(_) => Color::rgb(247, 118, 142),
         };
 
+        // Sidebar content
+        let sidebar_tree = if self.sidebar.visible {
+            let token = self.session.token_usage.get();
+            let cache = self.session.cache_stats.get();
+            let price = self.session.pricing.get();
+            let ctx_pct = self.session.context_pct.get();
+            let trees = self.session.sidebar_trees.get();
+            let mcp = self.session.mcp_lsp.get();
+            let tools = self.session.active_tools.get();
+            Some(SessionSidebar::build(&token, &cache, &price, ctx_pct, &trees, &mcp, &tools))
+        } else { None };
+
+        let mut main = hstack().gap(0);
+        main = main.child(blocks);
+        if let Some(tree) = sidebar_tree {
+            main = main.child(tree);
+        }
+
         let layout = vstack()
-            .child(blocks)
-            .child(Text::new(format!(" {}", hint)).fg(status_color));
+            .child(main)
+            .child(Text::new(format!(" {} | Ctrl+B: sidebar", hint)).fg(status_color));
         layout.render(ctx);
     }
 }
