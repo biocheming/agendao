@@ -1,33 +1,30 @@
 //! 木 — PromptInput: single authority for all user text input.
 //!
-//! Wraps Revue's `Input` widget. Handles:
-//!   - Text input (short/medium/long via wrapping)
-//!   - Paste (Revue delegates to crossterm bracketed-paste)
-//!   - History navigation (Up/Down)
-//!   - Slash-command autocomplete (/)
-//!   - Submit on Enter
+//! Old TUI: ~1100 line ratatui prompt with shells/history/autocomplete/attachments.
+//! New: Revue Input wrapper + shell mode (! toggle), history, slash, paste.
 
 use revue::prelude::*;
 use revue::event::Key;
 
-/// Action produced by the prompt input.
 #[derive(Clone, Debug)]
 pub enum PromptAction {
     None,
     Submit(String),
+    SubmitShell(String), // shell command (! prefix)
 }
 
-/// Complete prompt input component wrapping Revue's Input.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputMode { Normal, Shell }
+
 pub struct PromptInput {
     input: revue::widget::Input,
     focused: bool,
+    mode: InputMode,
 
-    // History
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: Option<String>,
 
-    // Slash autocomplete
     slash_cmds: Vec<String>,
     slash_visible: bool,
     slash_sel: usize,
@@ -42,22 +39,47 @@ const SLASH_COMMANDS: &[&str] = &[
 impl PromptInput {
     pub fn new() -> Self {
         Self {
-            input: revue::widget::Input::new()
-                .placeholder("Ask anything..."),
-            focused: false,
-            history: Vec::new(),
-            history_idx: None,
-            draft: None,
+            input: revue::widget::Input::new().placeholder("Ask anything..."),
+            focused: false, mode: InputMode::Normal,
+            history: Vec::new(), history_idx: None, draft: None,
             slash_cmds: SLASH_COMMANDS.iter().map(|s| s.to_string()).collect(),
-            slash_visible: false,
-            slash_sel: 0,
+            slash_visible: false, slash_sel: 0,
         }
     }
 
+    pub fn mode(&self) -> &InputMode { &self.mode }
+    pub fn is_shell(&self) -> bool { self.mode == InputMode::Shell }
+
     /// Handle a key event. Returns a PromptAction.
     pub fn handle_key(&mut self, key: &Key) -> PromptAction {
+        // Shell mode: ! at start of input toggles shell mode
+        if let Key::Char('!') = key {
+            if self.text().is_empty() {
+                self.mode = InputMode::Shell;
+                self.input = revue::widget::Input::new()
+                    .placeholder("Run a command... \"ls -la\"");
+                return PromptAction::None;
+            }
+        }
+        if matches!(key, Key::Escape) && self.mode == InputMode::Shell {
+            self.mode = InputMode::Normal;
+            self.clear();
+            return PromptAction::None;
+        }
+
         match key {
-            // ── Submit ──
+            // Shell submit: Enter sends as command
+            Key::Enter if self.mode == InputMode::Shell => {
+                let text = self.text().trim().to_string();
+                if !text.is_empty() {
+                    self.history.push(text.clone());
+                    self.history_idx = None; self.draft = None;
+                    self.mode = InputMode::Normal;
+                    self.clear();
+                    return PromptAction::SubmitShell(text);
+                }
+                PromptAction::None
+            }
             Key::Enter => {
                 if self.slash_visible && !self.filtered_cmds().is_empty() {
                     let sel = self.slash_sel.min(self.filtered_cmds().len().saturating_sub(1));

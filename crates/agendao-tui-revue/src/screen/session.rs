@@ -38,7 +38,31 @@ impl SessionScreen {
         }
         match self.prompt.handle_key(key) {
             PromptAction::Submit(text) => { self.dispatch_prompt(text); true }
+            PromptAction::SubmitShell(cmd) => { self.dispatch_shell(cmd); true }
             PromptAction::None => true,
+        }
+    }
+
+    fn dispatch_shell(&mut self, command: String) {
+        let msg_id = format!("shell-{}", ts_now());
+        self.session.push_user_message(&msg_id, &format!("$ {}", command));
+        self.session.run_status.set(RunStatus::Sending);
+        // Shell dispatch: send as command via API
+        if let Some(ref api) = self.api {
+            let sid = self.session.get_session_id().unwrap_or_else(|| {
+                match api.create_session(None, None) {
+                    Ok(info) => { self.session.set_session_id(&info.id); info.id }
+                    Err(e) => { self.session.run_status.set(RunStatus::Error(format!("{}", e))); String::new() }
+                }
+            });
+            if !sid.is_empty() {
+                match api.send_prompt(&sid, command) {
+                    Ok(_) => self.session.run_status.set(RunStatus::Idle),
+                    Err(e) => { self.session.run_status.set(RunStatus::Error(format!("{}", e))); }
+                }
+            }
+        } else {
+            self.session.run_status.set(RunStatus::Idle);
         }
     }
 
