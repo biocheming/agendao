@@ -6,6 +6,7 @@ use revue::event::Key;
 use crate::bridge::api::{ApiBridge, PromptResponse};
 use crate::input::{PromptAction, PromptInput};
 use crate::output::TranscriptFeed;
+use crate::screen::render_session_header;
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
 use crate::telemetry::SessionSidebar;
@@ -83,6 +84,16 @@ fn format_status(r: &PromptResponse) -> String {
 
 impl View for SessionScreen {
     fn render(&self, ctx: &mut RenderContext) {
+        // Header (2 rows)
+        render_session_header(
+            &self.session.working_dir.get(),
+            &self.session.title.get(),
+            None, // agent — from AppStore in future
+            None, // model — from AppStore in future
+            ctx,
+        );
+
+        // Transcript + sidebar below header
         let msgs = self.session.messages.get();
         let blocks = TranscriptFeed::render_blocks(&msgs);
 
