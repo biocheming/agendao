@@ -1,7 +1,10 @@
-//! 土 — 全局编排权威 (State Authority)
+//! 土 — Global orchestration authority.
+//!
+//! AppStore holds cross-session state: routing, available models/agents,
+//! session list, and a map of active SessionStores.
 
 use revue::prelude::*;
-use crate::dialog::DialogStack;
+use crate::store::types::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Route {
@@ -22,21 +25,19 @@ impl Route {
 pub struct AppStore {
     pub route: Signal<Route>,
     pub exiting: Signal<bool>,
-    pub toasts: Signal<Vec<ToastMessage>>,
-    pub dialog_stack: DialogStack,
-}
+    pub working_dir: Signal<String>,
 
-#[derive(Clone)]
-pub struct ToastMessage {
-    pub text: String,
-    pub variant: ToastVariant,
-}
+    // 土：可用模型/Agent（ModelSelect/AgentSelect dialog 消费）
+    pub available_models: Signal<Vec<ModelInfo>>,
+    pub available_agents: Signal<Vec<AgentInfo>>,
+    pub selected_model: Signal<Option<String>>,
+    pub selected_agent: Signal<Option<String>>,
 
-#[derive(Clone)]
-pub enum ToastVariant {
-    Success,
-    Error,
-    Info,
+    // 土：可用会话列表（SessionList dialog 消费）
+    pub session_list: Signal<Vec<SessionListItem>>,
+
+    // 土：Toast 队列（ToastLayer 消费）
+    pub toasts: Signal<Vec<ToastMsg>>,
 }
 
 impl AppStore {
@@ -44,21 +45,26 @@ impl AppStore {
         Self {
             route: signal(Route::Home),
             exiting: signal(false),
+            working_dir: signal(
+                std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            ),
+            available_models: signal(Vec::new()),
+            available_agents: signal(Vec::new()),
+            selected_model: signal(None),
+            selected_agent: signal(None),
+            session_list: signal(Vec::new()),
             toasts: signal(Vec::new()),
-            dialog_stack: DialogStack::new(),
         }
     }
 
-    pub fn navigate(&self, route: Route) {
-        self.route.set(route);
-    }
+    pub fn navigate(&self, route: Route) { self.route.set(route); }
+    pub fn navigate_home(&self) { self.navigate(Route::Home); }
+    pub fn request_exit(&self) { self.exiting.set(true); }
 
-    pub fn navigate_home(&self) {
-        self.navigate(Route::Home);
-    }
-
-    pub fn request_exit(&self) {
-        self.exiting.set(true);
+    pub fn push_toast(&self, text: &str, variant: ToastMsgVariant) {
+        self.toasts.update(|t| t.push(ToastMsg { text: text.into(), variant }));
     }
 }
 
@@ -67,26 +73,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_store_has_dialog_stack() {
-        let store = AppStore::new();
-        assert!(!store.dialog_stack.is_open());
+    fn new_store_defaults() {
+        let s = AppStore::new();
+        assert_eq!(s.route.get(), Route::Home);
+        assert!(!s.exiting.get());
+        assert!(s.available_models.get().is_empty());
     }
 
     #[test]
-    fn navigate_updates_route() {
-        let store = AppStore::new();
-        store.navigate(Route::Session { session_id: "ses_1".into() });
-        assert!(matches!(
-            store.route.get(),
-            Route::Session { ref session_id } if session_id == "ses_1"
-        ));
+    fn navigate_and_exit() {
+        let s = AppStore::new();
+        s.navigate(Route::Session { session_id: "s1".into() });
+        assert!(matches!(s.route.get(), Route::Session { .. }));
+        s.request_exit();
+        assert!(s.exiting.get());
     }
 
     #[test]
-    fn request_exit_sets_flag() {
-        let store = AppStore::new();
-        assert!(!store.exiting.get());
-        store.request_exit();
-        assert!(store.exiting.get());
+    fn push_toast() {
+        let s = AppStore::new();
+        s.push_toast("done", ToastMsgVariant::Success);
+        assert_eq!(s.toasts.get().len(), 1);
     }
 }
