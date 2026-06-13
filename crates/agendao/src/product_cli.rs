@@ -94,6 +94,9 @@ struct TuiArgs {
     /// Use the standard local Unix socket path instead of Direct mode.
     #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
     socket: bool,
+    /// Use the new Revue-based TUI frontend.
+    #[arg(long, default_value_t = false)]
+    revue: bool,
 }
 
 #[derive(Args)]
@@ -285,6 +288,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 attach_url: args.attach_url,
                 password: None,
                 unix_socket_path,
+                revue: args.revue,
             })
             .await?;
         }
@@ -305,6 +309,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 attach_url: Some(args.url),
                 password: args.password,
                 unix_socket_path: resolve_socket_path(args.socket)?,
+                revue: false,
             })
             .await?;
         }
@@ -476,6 +481,7 @@ fn default_tui_request() -> TuiCommandRequest {
         attach_url: None,
         password: None,
         unix_socket_path: None,
+        revue: false,
     }
 }
 

@@ -19,7 +19,7 @@ pub fn run_app() -> anyhow::Result<()> {
     run_app_with_config(AppConfig::default())
 }
 
-pub fn run_app_with_config(config: AppConfig) -> anyhow::Result<()> {
+pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
     let store = AppStore::new();
     if let Some(ref dir) = config.working_dir {
         store.working_dir.set(dir.display().to_string());
