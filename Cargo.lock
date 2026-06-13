@@ -17,6 +17,7 @@ dependencies = [
  "agendao-launcher",
  "agendao-server",
  "agendao-tui",
+ "agendao-tui-revue",
  "anyhow",
  "async-trait",
  "clap",

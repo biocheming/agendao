@@ -47,6 +47,11 @@ product-tui-bin = [
     "dep:dirs",
     "dep:tracing-subscriber",
 ]
+product-tui-revue-bin = [
+    "dep:agendao-tui-revue",
+    "dep:dirs",
+    "dep:tracing-subscriber",
+]
 product-serve-bin = [
     "dep:agendao-launcher",
     "agendao-launcher/embedded-web",
@@ -80,12 +85,18 @@ name = "agendao-product-serve"
 path = "src/bin/agendao-product-serve.rs"
 required-features = ["product-serve-bin"]
 
+[[bin]]
+name = "agendao-product-tui-revue"
+path = "src/bin/agendao-product-tui-revue.rs"
+required-features = ["product-tui-revue-bin"]
+
 [dependencies]
 agendao-cli = { path = "../agendao-cli", optional = true, default-features = false }
 agendao-client = { path = "../agendao-client", optional = true }
 agendao-launcher = { path = "../agendao-launcher", optional = true }
 agendao-server = { path = "../agendao-server", optional = true, default-features = false }
 agendao-tui = { path = "../agendao-tui", optional = true, default-features = false }
+agendao-tui-revue = { path = "../agendao-tui-revue", optional = true, default-features = false }
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
