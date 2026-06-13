@@ -1,12 +1,15 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub struct SubagentInfo {
@@ -22,6 +25,7 @@ pub struct SubagentMessage {
     pub content: String,
 }
 
+#[derive(Clone)]
 pub struct SubagentDialog {
     pub subagent: Option<SubagentInfo>,
     pub open: bool,
@@ -64,7 +68,7 @@ impl SubagentDialog {
         }
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -120,6 +124,14 @@ impl SubagentDialog {
     }
 }
 
+impl Component for SubagentDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for SubagentDialog {
     fn default() -> Self {
         Self::new()
@@ -150,7 +162,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

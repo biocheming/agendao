@@ -1,15 +1,18 @@
 use std::cell::{Cell, RefCell};
 
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PermissionType {
@@ -171,6 +174,7 @@ pub enum PermissionAction {
     ApproveSession,
 }
 
+#[derive(Clone)]
 pub struct PermissionPrompt {
     requests: Vec<PermissionRequest>,
     current_index: usize,
@@ -354,7 +358,7 @@ impl PermissionPrompt {
         self.pending_action.take()
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.is_open || self.requests.is_empty() {
             return;
         }
@@ -569,6 +573,14 @@ impl PermissionPrompt {
     }
 }
 
+impl Component for PermissionPrompt {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for PermissionPrompt {
     fn default() -> Self {
         Self::new()
@@ -652,7 +664,7 @@ mod tests {
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
         let mut surface = BufferSurface::new(&mut buffer);
-        prompt.render(&mut surface, Rect::new(0, 0, 80, 20), &Theme::default());
+        prompt.render_surface(&mut surface, Rect::new(0, 0, 80, 20), &Theme::default());
 
         let target = prompt
             .click_targets
@@ -683,7 +695,7 @@ mod tests {
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 20));
         let mut surface = BufferSurface::new(&mut buffer);
-        prompt.render(&mut surface, Rect::new(0, 0, 50, 20), &Theme::default());
+        prompt.render_surface(&mut surface, Rect::new(0, 0, 50, 20), &Theme::default());
 
         let target = prompt
             .click_targets

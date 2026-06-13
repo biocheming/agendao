@@ -1,11 +1,13 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
+use reratui::Component;
 
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 const DEFAULT_WIDTH: usize = 8;
 const DEFAULT_HOLD_START: usize = 30;
@@ -189,7 +191,7 @@ impl KnightRiderSpinner {
         ))
     }
 
-    pub fn render<S: RenderSurface>(
+    pub fn render_surface<S: RenderSurface>(
         &self,
         surface: &mut S,
         area: Rect,
@@ -253,6 +255,35 @@ impl KnightRiderSpinner {
         }
 
         surface.render_widget(Paragraph::new(Line::from(spans)).style(base_style), area);
+    }
+
+    pub fn render_to_buffer(
+        &self,
+        buffer: &mut Buffer,
+        area: Rect,
+        animations_enabled: bool,
+        background: Color,
+    ) {
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, animations_enabled, background);
+    }
+
+    pub fn frame_symbol(&self, animations_enabled: bool) -> &'static str {
+        if matches!(self.mode, SpinnerMode::Braille) {
+            if !self.active {
+                "·"
+            } else if !animations_enabled {
+                "⋯"
+            } else {
+                BRAILLE_FRAMES[self.frame_index % BRAILLE_FRAMES.len()]
+            }
+        } else if !self.active {
+            TaskKind::inactive_shape()
+        } else if !animations_enabled {
+            "⋯"
+        } else {
+            self.task_kind.shape()
+        }
     }
 
     fn render_braille<S: RenderSurface>(
@@ -358,6 +389,12 @@ impl KnightRiderSpinner {
 impl Default for KnightRiderSpinner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Component for KnightRiderSpinner {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        self.render_to_buffer(buffer, area, true, Color::Reset);
     }
 }
 

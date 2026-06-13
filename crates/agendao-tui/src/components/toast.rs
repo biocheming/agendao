@@ -1,16 +1,20 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 const TRANSITION_MS: u64 = 120;
 const SLIDE_OFFSET_COLS: u16 = 4;
 const MIN_FADE_ALPHA: f32 = 0.45;
 
+#[derive(Clone)]
 pub struct Toast {
     message: Option<String>,
     variant: ToastVariant,
@@ -124,7 +128,7 @@ impl Toast {
         (lines + 2).clamp(3, 6)
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if let Some(msg) = &self.message {
             let progress = self.animation_progress();
             let fade_alpha = MIN_FADE_ALPHA + (1.0 - MIN_FADE_ALPHA) * progress;
@@ -162,6 +166,14 @@ impl Toast {
             ToastPhase::Exiting => 1.0 - progress_ratio(self.phase_elapsed_ms, TRANSITION_MS),
         }
         .clamp(0.0, 1.0)
+    }
+}
+
+impl Component for Toast {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
     }
 }
 

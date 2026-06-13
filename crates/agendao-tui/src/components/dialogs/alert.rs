@@ -1,13 +1,17 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
+#[derive(Clone)]
 pub enum AlertType {
     Info,
     Success,
@@ -15,6 +19,7 @@ pub enum AlertType {
     Error,
 }
 
+#[derive(Clone)]
 pub struct AlertDialog {
     title: String,
     message: String,
@@ -86,7 +91,7 @@ impl AlertDialog {
         }
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -162,6 +167,14 @@ impl AlertDialog {
     }
 }
 
+impl Component for AlertDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for AlertDialog {
     fn default() -> Self {
         Self::info("Message")
@@ -187,7 +200,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

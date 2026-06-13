@@ -287,32 +287,36 @@ fn render_visible_message_lines(
         return;
     }
 
+    let mut viewport_buffer = VirtualBuffer::new(area.width, area.height);
     let blank_line = " ".repeat(area.width as usize);
     for row in 0..area.height {
-        buffer.set_stringn(
-            area.x,
-            area.y + row,
+        viewport_buffer.buffer_mut().set_stringn(
+            0,
+            row,
             blank_line.as_str(),
             area.width as usize,
             Style::default().bg(theme.background),
         );
     }
 
-    let mut y = area.y;
-    let max_y = area.y.saturating_add(area.height);
+    let mut y = 0u16;
+    let max_y = area.height;
     for range in visible_ranges {
         let Some(chunk) = model.chunks.get(range.chunk_index) else {
             continue;
         };
         for line in &chunk.lines[range.start_in_chunk..range.end_in_chunk] {
             if y >= max_y {
+                viewport_buffer.copy_to(buffer, area, 0);
                 return;
             }
-            buffer.set_line(area.x, y, line, area.width);
+            viewport_buffer.buffer_mut().set_line(0, y, line, area.width);
             record_session_render_perf(|counters| counters.visible_lines_written += 1);
             y += 1;
         }
     }
+
+    viewport_buffer.copy_to(buffer, area, 0);
 }
 
 fn build_session_render_model(
@@ -328,11 +332,13 @@ fn build_session_render_model(
 
     if let Some(revert) = resources.revert_info.as_ref() {
         let card_lines = super::revert_card::render_revert_card(revert, &resources.theme);
-        buffer.append_non_message(shared_lines(paint_block_lines(
+        buffer.append_non_message(shared_lines(render_block_widget_lines(
             card_lines,
             resources.theme.background_panel,
             resources.theme.warning,
             resources.content_width,
+            true,
+            true,
         )));
         if !resources.messages.is_empty() {
             buffer.push_spacing(
@@ -474,15 +480,20 @@ fn build_session_message_render_inputs(
             &mut rendered_first_system_prompt,
         );
         last_visible_role = Some(message_role_for_render_props(&props));
-        let has_more_visible_messages = idx + 1 < resources.messages.len();
+        let gap_after = resources
+            .messages
+            .get(idx + 1)
+            .map(|next| {
+                usize::from(!should_insert_message_gap(
+                    last_visible_role.as_ref(),
+                    &next.role,
+                )) * resources.message_gap_lines
+            })
+            .unwrap_or(0);
         inputs.push(SessionMessageRenderInput {
             message_id: msg.id.clone(),
             gap_before,
-            gap_after: if has_more_visible_messages {
-                resources.message_gap_lines
-            } else {
-                0
-            },
+            gap_after,
             memo_key: build_message_output_memo_key(&props),
             props,
         });
@@ -828,11 +839,13 @@ fn build_user_message_output(props: &UserMessageRenderProps) -> MessageRenderOut
     );
     let message_border =
         user_border_color_for_agent(props.msg.agent.as_deref(), &props.context.theme);
-    MessageRenderOutput::new(paint_block_lines(
+    MessageRenderOutput::new(render_block_widget_lines(
         user_lines,
         props.context.user_bg,
         message_border,
         props.context.content_width,
+        true,
+        true,
     ))
 }
 
@@ -864,212 +877,38 @@ fn build_assistant_message_items_from_props(
 }
 
 fn render_assistant_block_outputs(
-    area: Rect,
-    buffer: &mut Buffer,
+    _area: Rect,
+    _buffer: &mut Buffer,
     props: &AssistantMessageRenderProps,
     style: AssistantMessageRenderStyle,
 ) -> Vec<AssistantSegmentRenderOutput> {
-    let inputs = build_assistant_block_render_inputs(props, style);
-    let mut outputs = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        let output = Arc::new(Mutex::new(None));
-        let child = match &input.item {
-            AssistantMessageItem::Spacer => Element::component(AssistantSpacerBlockComponent {
-                context: props.context.clone(),
-                style,
-                memo_key: input.memo_key,
-                output: output.clone(),
-            })
-            .with_key(format!(
-                "assistant-message-block-spacer:{}:{}",
-                props.msg.id, input.block_key
-            )),
-            AssistantMessageItem::Text(item) => Element::component(AssistantTextBlockComponent {
-                msg: props.msg.clone(),
-                context: props.context.clone(),
-                style,
-                memo_key: input.memo_key,
-                item: item.clone(),
-                output: output.clone(),
-            })
-            .with_key(format!(
-                "assistant-message-block-text:{}:{}",
-                props.msg.id, input.block_key
-            )),
-            AssistantMessageItem::Thinking(item) => {
-                Element::component(AssistantThinkingBlockComponent {
-                    msg: props.msg.clone(),
-                    context: props.context.clone(),
-                    expanded_reasoning: props.expanded_reasoning.clone(),
-                    memo_key: input.memo_key,
-                    item: item.clone(),
-                    output: output.clone(),
-                })
-                .with_key(format!(
-                    "assistant-message-block-thinking:{}:{}",
-                    props.msg.id, input.block_key
-                ))
-            }
-            AssistantMessageItem::Tool(item) => Element::component(AssistantToolOutputComponent {
-                context: props.context.clone(),
-                style,
-                memo_key: input.memo_key,
-                item: item.clone(),
-                output: output.clone(),
-            })
-            .with_key(format!(
-                "assistant-message-block-tool:{}:{}",
-                props.msg.id, input.block_key
-            )),
-            AssistantMessageItem::File(item) => Element::component(AssistantFileBlockComponent {
-                context: props.context.clone(),
-                style,
-                memo_key: input.memo_key,
-                item: item.clone(),
-                output: output.clone(),
-            })
-            .with_key(format!(
-                "assistant-message-block-file:{}:{}",
-                props.msg.id, input.block_key
-            )),
-            AssistantMessageItem::Image(item) => Element::component(AssistantImageBlockComponent {
-                context: props.context.clone(),
-                style,
-                memo_key: input.memo_key,
-                item: item.clone(),
-                output: output.clone(),
-            })
-            .with_key(format!(
-                "assistant-message-block-image:{}:{}",
-                props.msg.id, input.block_key
-            )),
-            AssistantMessageItem::Footer(item) => {
-                Element::component(AssistantFooterBlockComponent {
-                    context: props.context.clone(),
-                    style,
-                    memo_key: input.memo_key,
-                    item: item.clone(),
-                    output: output.clone(),
-                })
-                .with_key(format!(
-                    "assistant-message-block-footer:{}:{}",
-                    props.msg.id, input.block_key
-                ))
-            }
-        };
-        child.render(area, buffer);
-        let next_output = output.lock().take();
-        if let Some(output) = next_output {
-            outputs.push(output);
-        } else {
-            outputs.push(empty_assistant_segment_output());
-        }
-    }
-    outputs
-}
-
-fn build_assistant_block_render_inputs(
-    props: &AssistantMessageRenderProps,
-    style: AssistantMessageRenderStyle,
-) -> Vec<AssistantBlockRenderInput> {
     build_assistant_message_items_from_props(props)
         .into_iter()
-        .enumerate()
-        .map(|(index, item)| AssistantBlockRenderInput {
-            block_key: format!("{index}:{}", assistant_block_kind(&item)),
-            memo_key: build_assistant_block_memo_key(
+        .map(|item| match item {
+            AssistantMessageItem::Spacer => render_assistant_spacer_block(style, &props.context),
+            AssistantMessageItem::Text(item) => {
+                render_assistant_text_block(&props.msg, &item, &props.context, style)
+            }
+            AssistantMessageItem::Thinking(item) => render_assistant_thinking_output(
                 &props.msg,
-                &props.context,
-                style,
-                &props.expanded_reasoning,
                 &item,
+                &props.context,
+                &props.expanded_reasoning,
             ),
-            item,
+            AssistantMessageItem::Tool(item) => {
+                render_assistant_tool_output(&item, style, &props.context)
+            }
+            AssistantMessageItem::File(item) => {
+                render_assistant_file_output(&item, style, &props.context)
+            }
+            AssistantMessageItem::Image(item) => {
+                render_assistant_image_output(&item, style, &props.context)
+            }
+            AssistantMessageItem::Footer(item) => {
+                render_assistant_footer_output(&item, style, &props.context)
+            }
         })
         .collect()
-}
-
-fn assistant_block_kind(item: &AssistantMessageItem) -> &'static str {
-    match item {
-        AssistantMessageItem::Spacer => "spacer",
-        AssistantMessageItem::Text(_) => "text",
-        AssistantMessageItem::Thinking(_) => "thinking",
-        AssistantMessageItem::Tool(_) => "tool",
-        AssistantMessageItem::File(_) => "file",
-        AssistantMessageItem::Image(_) => "image",
-        AssistantMessageItem::Footer(_) => "footer",
-    }
-}
-
-fn build_assistant_block_memo_key(
-    msg: &Message,
-    context: &MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    expanded_reasoning: &HashSet<String>,
-    item: &AssistantMessageItem,
-) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_message_render_content(msg, &mut hasher);
-    format!("{:?}", context.theme).hash(&mut hasher);
-    context.content_width.hash(&mut hasher);
-    context.show_timestamps.hash(&mut hasher);
-    context.show_tool_details.hash(&mut hasher);
-    context.semantic_hl.hash(&mut hasher);
-    format!("{:?}", context.fallback_model).hash(&mut hasher);
-    format!("{:?}", style.marker).hash(&mut hasher);
-    format!("{:?}", style.background).hash(&mut hasher);
-    format!("{:?}", style.border).hash(&mut hasher);
-    format!("{:?}", expanded_reasoning).hash(&mut hasher);
-    hash_assistant_message_item(item, &mut hasher);
-    hasher.finish()
-}
-
-fn hash_assistant_message_item(item: &AssistantMessageItem, hasher: &mut DefaultHasher) {
-    match item {
-        AssistantMessageItem::Spacer => "spacer".hash(hasher),
-        AssistantMessageItem::Text(item) => {
-            "text".hash(hasher);
-            item.text.hash(hasher);
-        }
-        AssistantMessageItem::Thinking(item) => {
-            "thinking".hash(hasher);
-            item.part_index.hash(hasher);
-            item.text.hash(hasher);
-        }
-        AssistantMessageItem::Tool(item) => {
-            "tool".hash(hasher);
-            item.message_id.hash(hasher);
-            item.part_index.hash(hasher);
-            item.arguments_expanded.hash(hasher);
-            item.name.hash(hasher);
-            item.arguments.hash(hasher);
-            format!("{:?}", item.state).hash(hasher);
-            format!("{:?}", item.result).hash(hasher);
-        }
-        AssistantMessageItem::File(item) => {
-            "file".hash(hasher);
-            item.path.hash(hasher);
-            item.mime.hash(hasher);
-        }
-        AssistantMessageItem::Image(item) => {
-            "image".hash(hasher);
-            item.url.hash(hasher);
-        }
-        AssistantMessageItem::Footer(item) => {
-            "footer".hash(hasher);
-            format!("{:?}", item.line).hash(hasher);
-        }
-    }
-}
-
-fn empty_assistant_segment_output() -> AssistantSegmentRenderOutput {
-    AssistantSegmentRenderOutput {
-        lines: Vec::new(),
-        toggle_line_offsets: Vec::new(),
-        tool_arguments_toggle_line_offsets: Vec::new(),
-        visible_reasoning_ids: HashSet::new(),
-        visible_tool_arguments_ids: HashSet::new(),
-    }
 }
 
 fn build_assistant_render_resources(
@@ -1093,6 +932,124 @@ fn build_assistant_render_resources(
         thinking_border: context.thinking_border,
         message_gap_lines: 0,
     }
+}
+
+fn render_block_widget_lines(
+    lines: Vec<Line<'static>>,
+    background: Color,
+    border_color: Color,
+    width: usize,
+    pad_top: bool,
+    pad_bottom: bool,
+) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let lines = strip_message_block_gutter(lines);
+    let body_width = width.saturating_sub(2);
+    if body_width == 0 {
+        return Vec::new();
+    }
+
+    let body_height = lines
+        .iter()
+        .map(|line| wrap_block_line(line.clone(), width).len())
+        .sum::<usize>();
+    let total_height =
+        body_height + usize::from(pad_top) + usize::from(pad_bottom);
+    if total_height == 0 {
+        return Vec::new();
+    }
+
+    let area = Rect::new(0, 0, width as u16, total_height as u16);
+    let mut scratch = Buffer::empty(area);
+    let mut inner_lines = Vec::with_capacity(body_height);
+    for line in lines {
+        inner_lines.extend(wrap_block_line(line, width));
+    }
+
+    let paragraph = Paragraph::new(inner_lines)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(border_color).bg(background))
+                .style(Style::default().bg(background))
+                .padding(ratatui::widgets::Padding::new(1, 0, 0, 0)),
+        )
+        .style(Style::default().bg(background));
+    paragraph.render(area, &mut scratch);
+
+    (0..area.height)
+        .map(|row| {
+            let mut spans = Vec::new();
+            let mut pending = String::new();
+            let mut pending_style: Option<Style> = None;
+            let mut trailing_blank = 0usize;
+            for col in 0..area.width {
+                let cell = &scratch[(col, row)];
+                let symbol = cell.symbol();
+                let style = cell.style();
+                if symbol == " " {
+                    trailing_blank += 1;
+                    continue;
+                }
+
+                if trailing_blank > 0 {
+                    let blank_style = pending_style.unwrap_or(style);
+                    if pending_style == Some(blank_style) && !pending.is_empty() {
+                        pending.push_str(&" ".repeat(trailing_blank));
+                    } else {
+                        if !pending.is_empty() {
+                            spans.push(Span::styled(
+                                std::mem::take(&mut pending),
+                                pending_style.unwrap_or_default(),
+                            ));
+                        }
+                        pending = " ".repeat(trailing_blank);
+                        pending_style = Some(blank_style);
+                    }
+                    trailing_blank = 0;
+                }
+
+                if pending_style == Some(style) || pending_style.is_none() {
+                    pending.push_str(symbol);
+                    pending_style = Some(style);
+                } else {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut pending),
+                        pending_style.unwrap_or_default(),
+                    ));
+                    pending.push_str(symbol);
+                    pending_style = Some(style);
+                }
+            }
+
+            if !pending.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut pending),
+                    pending_style.unwrap_or_default(),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn strip_message_block_gutter(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines.into_iter()
+        .map(|line| {
+            let mut spans = line.spans;
+            if spans
+                .first()
+                .is_some_and(|span| is_message_block_gutter(span.content.as_ref()))
+            {
+                spans.remove(0);
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn render_assistant_spacer_block(
@@ -1138,10 +1095,16 @@ fn render_assistant_thinking_output(
         Some(context.content_width as u16),
     );
     if rendered.lines.is_empty() {
-        return empty_assistant_segment_output();
+        return AssistantSegmentRenderOutput {
+            lines: Vec::new(),
+            toggle_line_offsets: Vec::new(),
+            tool_arguments_toggle_line_offsets: Vec::new(),
+            visible_reasoning_ids: HashSet::new(),
+            visible_tool_arguments_ids: HashSet::new(),
+        };
     }
 
-    let lines = paint_block_lines_with_padding(
+    let lines = render_block_widget_lines(
         rendered.lines,
         context.thinking_bg,
         context.thinking_border,
@@ -1255,7 +1218,7 @@ fn render_assistant_footer_output(
 ) -> AssistantSegmentRenderOutput {
     let resources = build_assistant_render_resources(context);
     AssistantSegmentRenderOutput {
-        lines: paint_block_lines_with_padding(
+        lines: render_block_widget_lines(
             vec![item.line.clone()],
             style.background,
             style.border,
@@ -1404,7 +1367,7 @@ fn build_assistant_block_output(
     content_width: usize,
 ) -> AssistantSegmentRenderOutput {
     AssistantSegmentRenderOutput {
-        lines: paint_block_lines_with_padding(
+        lines: render_block_widget_lines(
             lines,
             background,
             border,
@@ -1452,18 +1415,14 @@ fn build_plain_message_output(props: &PlainMessageRenderProps) -> MessageRenderO
             ))
         })
         .collect();
-    let painted: Vec<Line<'static>> = plain_lines
-        .into_iter()
-        .map(|line| {
-            paint_block_line(
-                line,
-                props.context.theme.background,
-                props.context.theme.border,
-                props.context.content_width,
-            )
-        })
-        .collect();
-    MessageRenderOutput::new(painted)
+    MessageRenderOutput::new(render_block_widget_lines(
+        plain_lines,
+        props.context.theme.background,
+        props.context.theme.border,
+        props.context.content_width,
+        false,
+        false,
+    ))
 }
 
 fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOutput {
@@ -1534,13 +1493,13 @@ fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOu
                 .collect(),
             MessagePart::File { path, mime } => render_shared_message_block_items(
                 build_file_items(path, mime),
-                "│ ",
+                message_block_gutter(),
                 props.context.theme.border_subtle,
                 &props.context.theme,
             ),
             MessagePart::Image { url } => render_shared_message_block_items(
                 build_image_items(url),
-                "│ ",
+                message_block_gutter(),
                 props.context.theme.border_subtle,
                 &props.context.theme,
             ),
@@ -1578,7 +1537,7 @@ fn build_tool_message_output(props: &PlainMessageRenderProps) -> MessageRenderOu
             .collect();
     }
 
-    MessageRenderOutput::new(paint_block_lines_with_padding(
+    MessageRenderOutput::new(render_block_widget_lines(
         rendered_parts,
         props.context.theme.background,
         props.context.theme.border,
@@ -1626,91 +1585,6 @@ fn collect_message_expanded_tool_arguments(
         .collect()
 }
 
-fn paint_block_lines(
-    lines: Vec<Line<'static>>,
-    background: Color,
-    border_color: Color,
-    width: usize,
-) -> Vec<Line<'static>> {
-    paint_block_lines_with_padding(lines, background, border_color, width, true, true)
-}
-
-fn paint_block_lines_with_padding(
-    lines: Vec<Line<'static>>,
-    background: Color,
-    border_color: Color,
-    width: usize,
-    pad_top: bool,
-    pad_bottom: bool,
-) -> Vec<Line<'static>> {
-    let painted: Vec<Line<'static>> = lines
-        .into_iter()
-        .flat_map(|line| wrap_block_line(line, width))
-        .map(|line| paint_block_line(line, background, border_color, width))
-        .collect();
-
-    if painted.is_empty() {
-        return painted;
-    }
-
-    let gutter = painted
-        .first()
-        .and_then(|line| line.spans.first())
-        .map(|span| span.content.to_string())
-        .filter(|value| is_gutter_span(value.as_str()));
-
-    let padding_line = if let Some(gutter) = gutter {
-        paint_block_line(
-            Line::from(vec![Span::raw(gutter)]),
-            background,
-            border_color,
-            width,
-        )
-    } else {
-        paint_block_line(Line::from(""), background, border_color, width)
-    };
-
-    let mut padded =
-        Vec::with_capacity(painted.len() + usize::from(pad_top) + usize::from(pad_bottom));
-    if pad_top {
-        padded.push(padding_line.clone());
-    }
-    padded.extend(painted);
-    if pad_bottom {
-        padded.push(padding_line);
-    }
-    padded
-}
-
-fn paint_block_line(
-    line: Line<'static>,
-    background: Color,
-    border_color: Color,
-    width: usize,
-) -> Line<'static> {
-    let mut styled = Vec::with_capacity(line.spans.len() + 1);
-    let mut rendered_width = 0usize;
-
-    for (idx, span) in line.spans.into_iter().enumerate() {
-        rendered_width += UnicodeWidthStr::width(span.content.as_ref());
-        let style = if idx == 0 && is_gutter_span(span.content.as_ref()) {
-            span.style.fg(border_color).bg(background)
-        } else {
-            span.style.bg(background)
-        };
-        styled.push(Span::styled(span.content, style));
-    }
-
-    if rendered_width < width {
-        styled.push(Span::styled(
-            " ".repeat(width - rendered_width),
-            Style::default().bg(background),
-        ));
-    }
-
-    Line::from(styled)
-}
-
 fn wrap_block_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     if width == 0 || line.spans.is_empty() {
         return vec![line];
@@ -1720,7 +1594,7 @@ fn wrap_block_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let Some(gutter) = iter.next() else {
         return vec![Line::from("")];
     };
-    if !is_gutter_span(gutter.content.as_ref()) {
+    if !is_message_block_gutter(gutter.content.as_ref()) {
         let mut all_spans = vec![gutter];
         all_spans.extend(iter);
         let wrapped = wrap_spans(all_spans, width);
@@ -1751,16 +1625,34 @@ fn wrap_block_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn is_gutter_span(content: &str) -> bool {
-    let mut has_border = false;
-    for ch in content.chars() {
-        match ch {
-            '│' | '┃' => has_border = true,
-            ' ' => {}
-            _ => return false,
-        }
+fn message_block_gutter() -> &'static str {
+    concat_message_block_gutter(message_block_border_symbol())
+}
+
+fn is_message_block_gutter(content: &str) -> bool {
+    [
+        message_block_gutter(),
+        ratatui::symbols::border::PLAIN.vertical_left,
+        ratatui::symbols::border::THICK.vertical_left,
+        ratatui::symbols::border::DOUBLE.vertical_left,
+        concat_message_block_gutter(ratatui::symbols::border::THICK.vertical_left),
+        concat_message_block_gutter(ratatui::symbols::border::DOUBLE.vertical_left),
+    ]
+    .contains(&content)
+}
+
+fn message_block_border_symbol() -> &'static str {
+    ratatui::symbols::border::PLAIN.vertical_left
+}
+
+fn concat_message_block_gutter(symbol: &'static str) -> &'static str {
+    if symbol == ratatui::symbols::border::THICK.vertical_left {
+        "┃ "
+    } else if symbol == ratatui::symbols::border::DOUBLE.vertical_left {
+        "║ "
+    } else {
+        "│ "
     }
-    has_border
 }
 
 fn map_scrollbar_row_to_offset(area: Option<Rect>, row: u16, max_scroll: usize) -> usize {

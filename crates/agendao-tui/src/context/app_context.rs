@@ -585,6 +585,14 @@ impl AppContext {
         self.ui_bridge.snapshot()
     }
 
+    pub fn ui_bridge_pending_event_count(&self) -> usize {
+        self.ui_bridge_snapshot().pending_events
+    }
+
+    pub fn ui_bridge_notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.ui_bridge.notified()
+    }
+
     pub fn drain_ui_events(&self, limit: usize) -> Vec<Event> {
         self.ui_bridge.drain(limit)
     }
@@ -697,12 +705,17 @@ impl AppContext {
     ) -> Option<crate::api::ContextCompactionSummary> {
         self.current_route_session_id()
             .as_deref()
-            .and_then(|session_id| {
-                self.session_authority
-                    .read()
-                    .get(session_id)
-                    .and_then(|state| state.session_context_compaction_summary.clone())
-            })
+            .and_then(|session_id| self.session_context_compaction_summary_for(session_id))
+    }
+
+    pub fn session_context_compaction_summary_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::api::ContextCompactionSummary> {
+        self.session_authority
+            .read()
+            .get(session_id)
+            .and_then(|state| state.session_context_compaction_summary.clone())
     }
 
     pub fn session_context_compaction_lifecycle_summary(
@@ -710,13 +723,18 @@ impl AppContext {
     ) -> Option<crate::api::ContextCompactionLifecycleSummary> {
         self.current_route_session_id()
             .as_deref()
-            .and_then(|session_id| {
-                self.session_authority.read().get(session_id).and_then(|state| {
-                    state
-                        .session_context_compaction_lifecycle_summary
-                        .clone()
-                })
-            })
+            .and_then(|session_id| self.session_context_compaction_lifecycle_summary_for(session_id))
+    }
+
+    pub fn session_context_compaction_lifecycle_summary_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::api::ContextCompactionLifecycleSummary> {
+        self.session_authority.read().get(session_id).and_then(|state| {
+            state
+                .session_context_compaction_lifecycle_summary
+                .clone()
+        })
     }
 
     pub fn session_cache_semantics(&self) -> Option<crate::api::SessionCacheSemanticsSummary> {
@@ -735,11 +753,16 @@ impl AppContext {
     ) -> Option<crate::api::SessionContextClosureContract> {
         self.current_route_session_id()
             .as_deref()
-            .and_then(|session_id| {
-                self.session_authority.read().get(session_id).and_then(|state| {
-                    state.session_context_closure_contract.clone()
-                })
-            })
+            .and_then(|session_id| self.session_context_closure_contract_for(session_id))
+    }
+
+    pub fn session_context_closure_contract_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::api::SessionContextClosureContract> {
+        self.session_authority.read().get(session_id).and_then(|state| {
+            state.session_context_closure_contract.clone()
+        })
     }
 
     pub fn session_runtime(&self) -> Option<crate::api::SessionRuntimeState> {
@@ -756,10 +779,14 @@ impl AppContext {
     }
 
     pub fn current_context_tokens(&self) -> Option<u64> {
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.current_context_tokens_for(session_id))
+    }
+
+    pub fn current_context_tokens_for(&self, session_id: &str) -> Option<u64> {
         let session = self.session.read();
-        let authority = self
-            .current_route_session_id()
-            .and_then(|session_id| self.session_authority.read().get(&session_id).cloned());
+        let authority = self.session_authority.read().get(session_id).cloned();
         current_context_tokens_from_state(&session, authority.as_ref())
     }
 
@@ -908,6 +935,14 @@ impl AppContext {
 
     pub fn has_open_dialogs(&self) -> bool {
         !self.dialog_lifecycle.read().open_dialogs.is_empty()
+    }
+
+    pub fn has_blocking_dialogs(&self) -> bool {
+        self.dialog_lifecycle
+            .read()
+            .open_dialogs
+            .iter()
+            .any(|slot| *slot != DialogSlot::SlashPopup)
     }
 
     pub fn top_close_dialog(&self) -> Option<DialogSlot> {
@@ -1350,7 +1385,16 @@ impl AppContext {
     /// Get pending permission from the server-side session runtime state.
     /// Returns None if session_runtime is not available or no pending permission.
     pub fn get_pending_permission(&self) -> Option<(String, PermissionRequestInfo)> {
-        self.session_runtime().as_ref().and_then(|runtime| {
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.get_pending_permission_for(session_id))
+    }
+
+    pub fn get_pending_permission_for(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, PermissionRequestInfo)> {
+        self.session_runtime_for(session_id).as_ref().and_then(|runtime| {
             runtime.pending_permission.as_ref().map(|perm| {
                 (
                     perm.permission_id.clone(),
@@ -1374,7 +1418,13 @@ impl AppContext {
 
     /// Check if there's a pending question from the server-side session runtime state.
     pub fn has_pending_question(&self) -> bool {
-        self.session_runtime()
+        self.current_route_session_id()
+            .as_deref()
+            .is_some_and(|session_id| self.has_pending_question_for(session_id))
+    }
+
+    pub fn has_pending_question_for(&self, session_id: &str) -> bool {
+        self.session_runtime_for(session_id)
             .as_ref()
             .map(|r| r.pending_question.is_some())
             .unwrap_or(false)
@@ -1382,7 +1432,13 @@ impl AppContext {
 
     /// Get pending question request_id from the server-side session runtime state.
     pub fn get_pending_question_id(&self) -> Option<String> {
-        self.session_runtime()
+        self.current_route_session_id()
+            .as_deref()
+            .and_then(|session_id| self.get_pending_question_id_for(session_id))
+    }
+
+    pub fn get_pending_question_id_for(&self, session_id: &str) -> Option<String> {
+        self.session_runtime_for(session_id)
             .as_ref()
             .and_then(|r| r.pending_question.as_ref().map(|q| q.request_id.clone()))
     }

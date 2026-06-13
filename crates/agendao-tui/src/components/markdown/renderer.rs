@@ -1,9 +1,12 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
+    buffer::Buffer,
+    layout::Constraint,
     layout::Rect,
     style::{Modifier, Style},
+    symbols::{border, line},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Block, Cell, Paragraph, Row, Table, Widget, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -125,34 +128,60 @@ impl TableBuilder {
         alignments: &[Alignment],
         theme: &Theme,
     ) {
-        lines.push(table_border_line(
-            '┌',
-            '┬',
-            '┐',
-            widths,
-            theme.markdown_horizontal_rule,
-        ));
-        for (idx, row) in rows.iter().enumerate() {
-            lines.push(table_row_line(row, widths, alignments, theme));
-            let is_header_break =
-                row.is_header && rows.get(idx + 1).is_some_and(|next| !next.is_header);
-            if is_header_break {
-                lines.push(table_border_line(
-                    '├',
-                    '┼',
-                    '┤',
-                    widths,
-                    theme.markdown_horizontal_rule,
-                ));
+        let border_set = table_border_set();
+        let border_style = Style::default().fg(theme.markdown_horizontal_rule);
+        let mut constraints = Vec::with_capacity(widths.len().saturating_mul(2).saturating_sub(1));
+        for (idx, width) in widths.iter().enumerate() {
+            constraints.push(Constraint::Length((width + 2) as u16));
+            if idx + 1 < widths.len() {
+                constraints.push(Constraint::Length(1));
             }
         }
-        lines.push(table_border_line(
-            '└',
-            '┴',
-            '┘',
-            widths,
-            theme.markdown_horizontal_rule,
-        ));
+
+        let header_row_count = rows.iter().take_while(|row| row.is_header).count();
+        let has_header_break =
+            header_row_count > 0 && rows.get(header_row_count).is_some();
+        let mut table_rows = Vec::with_capacity(rows.len() + usize::from(has_header_break));
+        for (row_idx, row) in rows.iter().enumerate() {
+            table_rows.push(Row::new(build_table_display_cells(
+                row,
+                widths,
+                alignments,
+                theme,
+            )));
+            if has_header_break && row_idx + 1 == header_row_count {
+                table_rows.push(Row::new(build_table_separator_cells(
+                    widths,
+                    line::NORMAL.cross,
+                    theme,
+                )));
+            }
+        }
+
+        let inner_width: usize = widths.iter().map(|w| w + 2).sum::<usize>()
+            + widths.len().saturating_sub(1);
+        let area = Rect::new(0, 0, (inner_width + 2) as u16, (table_rows.len() + 2) as u16);
+        let mut scratch = Buffer::empty(area);
+        let table = Table::new(table_rows, constraints)
+            .block(
+                Block::bordered()
+                    .border_set(border_set)
+                    .border_style(border_style),
+            )
+            .column_spacing(0);
+        table.render(area, &mut scratch);
+
+        if has_header_break {
+            let separator_y = 1 + header_row_count as u16;
+            if let Some(cell) = scratch.cell_mut((0, separator_y)) {
+                cell.set_symbol(border_set.vertical_right);
+            }
+            if let Some(cell) = scratch.cell_mut((area.width.saturating_sub(1), separator_y)) {
+                cell.set_symbol(border_set.vertical_left);
+            }
+        }
+
+        lines.extend(buffer_to_lines(&scratch));
     }
 
     /// Narrow-width degradation: render each row as `Header: Value` pairs.
@@ -189,7 +218,7 @@ impl TableBuilder {
                 continue;
             }
             lines.push(Line::from(Span::styled(
-                "─".repeat(avail.min(40) as usize),
+                markdown_rule(avail.min(40) as usize),
                 dim_style,
             )));
             for (idx, cell) in row.cells.iter().enumerate() {
@@ -380,7 +409,7 @@ impl MarkdownRenderer {
                             ensure_prefix(&mut current, blockquote_depth, &self.theme);
                             if !current.is_empty() {
                                 current.push(Span::styled(
-                                    " │ ",
+                                    format!(" {} ", table_vertical_separator()),
                                     Style::default().fg(self.theme.text_muted),
                                 ));
                             }
@@ -504,7 +533,7 @@ impl MarkdownRenderer {
                 Event::Rule => {
                     flush_line(&mut lines, &mut current);
                     lines.push(Line::from(Span::styled(
-                        "─".repeat(40),
+                        markdown_rule(40),
                         Style::default().fg(self.theme.markdown_horizontal_rule),
                     )));
                     push_blank_line(&mut lines);
@@ -570,10 +599,11 @@ impl MarkdownRenderer {
         }
 
         let code_block = CodeBlock::new(language.clone(), code.to_string());
+        let border_set = code_block_border_set();
 
         lines.push(Line::from(vec![
             Span::styled(
-                "╭",
+                border_set.top_left,
                 Style::default().fg(self.theme.markdown_horizontal_rule),
             ),
             Span::styled(
@@ -581,14 +611,14 @@ impl MarkdownRenderer {
                 Style::default().fg(self.theme.markdown_code_block),
             ),
             Span::styled(
-                "─".repeat(20),
+                border_set.horizontal_top.repeat(20),
                 Style::default().fg(self.theme.markdown_horizontal_rule),
             ),
         ]));
 
         for code_spans in code_block.to_lines(&self.code_theme) {
             let mut line_spans = vec![Span::styled(
-                "│ ",
+                format!("{} ", border_set.vertical_left),
                 Style::default().fg(self.theme.markdown_horizontal_rule),
             )];
             line_spans.extend(code_spans);
@@ -596,38 +626,39 @@ impl MarkdownRenderer {
         }
 
         lines.push(Line::from(Span::styled(
-            "╰───",
+            format!(
+                "{}{}",
+                border_set.bottom_left,
+                border_set.horizontal_bottom.repeat(3)
+            ),
             Style::default().fg(self.theme.markdown_horizontal_rule),
         )));
     }
 }
 
-fn table_border_line(
-    left: char,
-    middle: char,
-    right: char,
-    widths: &[usize],
-    color: ratatui::style::Color,
-) -> Line<'static> {
-    let mut text = String::new();
-    text.push(left);
-    for (idx, width) in widths.iter().enumerate() {
-        text.push_str(&"─".repeat(width + 2));
-        if idx + 1 < widths.len() {
-            text.push(middle);
-        }
-    }
-    text.push(right);
-    Line::from(Span::styled(text, Style::default().fg(color)))
+fn table_border_set() -> border::Set<'static> {
+    border::PLAIN
 }
 
-fn table_row_line(
+fn code_block_border_set() -> border::Set<'static> {
+    border::ROUNDED
+}
+
+fn markdown_rule(width: usize) -> String {
+    line::NORMAL.horizontal.repeat(width)
+}
+
+fn table_vertical_separator() -> &'static str {
+    table_border_set().vertical_left
+}
+
+fn build_table_display_cells(
     row: &TableRow,
     widths: &[usize],
     alignments: &[Alignment],
     theme: &Theme,
-) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
+) -> Vec<Cell<'static>> {
+    let mut cells = Vec::with_capacity(widths.len().saturating_mul(2).saturating_sub(1));
     let border_style = Style::default().fg(theme.markdown_horizontal_rule);
     let content_style = if row.is_header {
         Style::default()
@@ -637,7 +668,6 @@ fn table_row_line(
         Style::default().fg(theme.text)
     };
 
-    spans.push(Span::styled("│", border_style));
     for (idx, width) in widths.iter().enumerate() {
         let cell = row.cells.get(idx).cloned().unwrap_or_default();
         let cell_width = cell_span_width(&cell);
@@ -649,7 +679,7 @@ fn table_row_line(
             _ => (0, padding),
         };
 
-        spans.push(Span::styled(" ", content_style));
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", content_style)];
         if left_pad > 0 {
             spans.push(Span::styled(" ".repeat(left_pad), content_style));
         }
@@ -733,10 +763,35 @@ fn table_row_line(
             spans.push(Span::styled(" ".repeat(right_pad), content_style));
         }
         spans.push(Span::styled(" ", content_style));
-        spans.push(Span::styled("│", border_style));
+        cells.push(Cell::from(Line::from(spans)));
+        if idx + 1 < widths.len() {
+            cells.push(Cell::from(Line::from(Span::styled(
+                table_vertical_separator(),
+                border_style,
+            ))));
+        }
     }
 
-    Line::from(spans)
+    cells
+}
+
+fn build_table_separator_cells(
+    widths: &[usize],
+    middle: &'static str,
+    theme: &Theme,
+) -> Vec<Cell<'static>> {
+    let border_style = Style::default().fg(theme.markdown_horizontal_rule);
+    let mut cells = Vec::with_capacity(widths.len().saturating_mul(2).saturating_sub(1));
+    for (idx, width) in widths.iter().enumerate() {
+        cells.push(Cell::from(Line::from(Span::styled(
+            markdown_rule(width + 2),
+            border_style,
+        ))));
+        if idx + 1 < widths.len() {
+            cells.push(Cell::from(Line::from(Span::styled(middle, border_style))));
+        }
+    }
+    cells
 }
 
 fn cell_span_width(spans: &[Span<'static>]) -> usize {
@@ -744,6 +799,39 @@ fn cell_span_width(spans: &[Span<'static>]) -> usize {
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum::<usize>()
+}
+
+fn buffer_to_lines(buffer: &Buffer) -> Vec<Line<'static>> {
+    (0..buffer.area.height)
+        .map(|row| {
+            let mut spans = Vec::new();
+            let mut pending = String::new();
+            let mut pending_style: Option<Style> = None;
+            for col in 0..buffer.area.width {
+                let cell = &buffer[(col, row)];
+                let symbol = cell.symbol();
+                let style = cell.style();
+                if pending_style == Some(style) || pending_style.is_none() {
+                    pending.push_str(symbol);
+                    pending_style = Some(style);
+                } else {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut pending),
+                        pending_style.unwrap_or_default(),
+                    ));
+                    pending.push_str(symbol);
+                    pending_style = Some(style);
+                }
+            }
+            if !pending.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut pending),
+                    pending_style.unwrap_or_default(),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn heading_level_to_u8(level: HeadingLevel) -> u8 {
@@ -774,7 +862,7 @@ fn ensure_prefix(spans: &mut Vec<Span<'static>>, depth: usize, theme: &Theme) {
     }
     for _ in 0..depth {
         spans.push(Span::styled(
-            "│ ",
+            format!("{} ", table_vertical_separator()),
             Style::default().fg(theme.markdown_block_quote),
         ));
     }
@@ -805,4 +893,49 @@ fn line_is_blank(line: &Line<'_>) -> bool {
     line.spans
         .iter()
         .all(|span| span.content.as_ref().trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+
+    fn lines_text(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn markdown_table_renders_as_box_table_when_width_allows() {
+        let renderer = MarkdownRenderer::new(Theme::default());
+        let lines = renderer.to_lines(
+            "| Name | Value |\n| --- | --- |\n| Alpha | Beta |",
+            Some(40),
+        );
+        let rendered = lines_text(&lines);
+
+        assert!(rendered.iter().any(|line| line.contains("┌")), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line.contains("│ Name ")), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line.contains("│ Alpha ")), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line.contains("└")), "{rendered:?}");
+    }
+
+    #[test]
+    fn markdown_table_falls_back_to_stacked_layout_when_too_narrow() {
+        let renderer = MarkdownRenderer::new(Theme::default());
+        let lines = renderer.to_lines(
+            "| Name | Value |\n| --- | --- |\n| Alpha | Beta |",
+            Some(8),
+        );
+        let rendered = lines_text(&lines);
+
+        assert!(rendered.iter().any(|line| line.contains("Name:")), "{rendered:?}");
+        assert!(rendered.iter().any(|line| line.contains("Value:")), "{rendered:?}");
+    }
 }

@@ -37,7 +37,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use agendao_command::{CommandRegistry, UiActionId};
@@ -47,7 +46,7 @@ use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 use base64::Engine;
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Block};
+use ratatui::layout::Rect;
 use tokio::sync::watch;
 
 use crate::app::state::AppState;
@@ -63,17 +62,14 @@ use crate::components::prompt_return_flow::{format_return_flow_item, resolve_ret
 use crate::core::{
     collect_attached_sessions, is_primary_key_event, normalize_key_event, AppContext, CustomEvent,
     Event, LeaderKeyState, McpConnectionStatus, McpServerStatus, Message, MessageRole, RevertInfo,
-    Route, Session, SessionDeleteOutcome, SessionStatus, StateChange, StatusDialogView, TokenUsage,
+    Route, Session, SessionDeleteOutcome, SessionStatus, StatusDialogView, TokenUsage,
     TuiEventsBrowserState, TuiMemoryConsolidationState, TuiMemoryDetailState, TuiMemoryListState,
     TuiMemoryPreviewState, TuiMemoryRuleHitsState,
 };
-use crate::render::{
-    apply_selection_highlight, capture_screen_lines, strip_session_gutter, truncate, BufferSurface,
-    Clipboard, RenderSurface, Selection,
-};
+use crate::render::{strip_session_gutter, truncate, Clipboard, Selection};
 use crate::render::{
     exit_logo_lines, Agent, AgentSelectDialog, AlertDialog, CommandPalette, ForkDialog, ForkEntry,
-    HelpDialog, HomeView, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, PendingSubmit,
+    HelpDialog, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, PendingSubmit,
     PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption, QuestionPrompt,
     QuestionRequest, QuestionType, RecoveryActionDialog, RecoveryActionItem, SessionDeleteState,
     SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog, SkillListDialog,
@@ -168,7 +164,7 @@ pub struct App {
     question_prompt: QuestionPrompt,
     toast: Toast,
     /// Snapshot of rendered screen lines for text selection copy.
-    screen_lines: Vec<String>,
+    screen_lines: Arc<std::sync::Mutex<Vec<String>>>,
     available_models: HashSet<String>,
     model_variants: HashMap<String, Vec<String>>,
     model_variant_selection: HashMap<String, Option<String>>,
@@ -177,6 +173,7 @@ pub struct App {
     sync_runtime: SyncLifecycleState,
     diagnostics: DiagnosticsState,
     event_caused_change: bool,
+    suppress_current_terminal_event_for_reratui: bool,
     /// Session IDs whose scheduler handoff metadata has been consumed.
     consumed_handoffs: HashSet<String>,
     /// Base URL for the server event stream.
@@ -190,6 +187,35 @@ pub struct App {
     unix_socket_path: Option<String>,
     prompt_draft: PromptDraft,
     pending_shell_dispatch: Option<PendingShellDispatch>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReactiveDialogLayerSnapshot {
+    pub(crate) show_backdrop: bool,
+    pub(crate) permission_prompt: PermissionPrompt,
+    pub(crate) question_prompt: QuestionPrompt,
+    pub(crate) help_dialog: HelpDialog,
+    pub(crate) alert_dialog: AlertDialog,
+    pub(crate) slash_popup: SlashCommandPopup,
+    pub(crate) command_palette: CommandPalette,
+    pub(crate) model_select: ModelSelectDialog,
+    pub(crate) agent_select: AgentSelectDialog,
+    pub(crate) status_dialog: StatusDialog,
+    pub(crate) session_list_dialog: SessionListDialog,
+    pub(crate) session_export_dialog: SessionExportDialog,
+    pub(crate) session_rename_dialog: SessionRenameDialog,
+    pub(crate) skill_list_dialog: SkillListDialog,
+    pub(crate) mcp_dialog: McpDialog,
+    pub(crate) timeline_dialog: TimelineDialog,
+    pub(crate) fork_dialog: ForkDialog,
+    pub(crate) provider_dialog: ProviderDialog,
+    pub(crate) recovery_action_dialog: RecoveryActionDialog,
+    pub(crate) skill_proposal_review_dialog: SkillProposalReviewDialog,
+    pub(crate) subagent_dialog: SubagentDialog,
+    pub(crate) tag_dialog: TagDialog,
+    pub(crate) theme_list_dialog: ThemeListDialog,
+    pub(crate) prompt_stash_dialog: PromptStashDialog,
+    pub(crate) tool_call_cancel_dialog: ToolCallCancelDialog,
 }
 
 /// Tracks an in-flight shell dispatch so the TUI can observe the
@@ -355,6 +381,31 @@ struct PerfCounters {
 struct DiagnosticsState {
     perf: PerfCounters,
     perf_log_info: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct BridgeLoopSnapshot {
+    pub(crate) is_exiting: bool,
+    pub(crate) tick_due: bool,
+    pub(crate) wait_strategy: BridgeWaitStrategy,
+    pub(crate) max_events_per_frame: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BridgeWaitStrategy {
+    PollReady,
+    Wait { deadline: Option<Instant> },
+}
+
+pub(crate) struct BridgeIterationOutcome {
+    pub(crate) should_draw: bool,
+    pub(crate) reratui_event: Option<crossterm::event::Event>,
+    pub(crate) reactive_root_snapshot: Option<crate::bridge::ReactiveRootSnapshot>,
+}
+
+pub(crate) struct BridgeRuntimeStartup {
+    pub(crate) app_context: Arc<AppContext>,
+    pub(crate) server_event_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -573,7 +624,7 @@ impl App {
             permission_prompt: PermissionPrompt::new(),
             question_prompt: QuestionPrompt::new(),
             toast: Toast::new(),
-            screen_lines: Vec::new(),
+            screen_lines: Arc::new(std::sync::Mutex::new(Vec::new())),
             available_models: HashSet::new(),
             model_variants: HashMap::new(),
             model_variant_selection: HashMap::new(),
@@ -585,6 +636,7 @@ impl App {
                 perf_log_info: env_var_enabled("AGENDAO_PERF_LOG"),
             },
             event_caused_change: true,
+            suppress_current_terminal_event_for_reratui: false,
             consumed_handoffs: HashSet::new(),
             server_event_base_url: base_url,
             server_password: config.server_password,
@@ -652,9 +704,28 @@ impl App {
     }
 
     pub(crate) fn process_event(&mut self, event: &Event) -> anyhow::Result<bool> {
+        self.suppress_current_terminal_event_for_reratui = false;
         self.context.record_ui_event(event);
         self.handle_event(event)?;
         Ok(self.event_caused_change)
+    }
+
+    pub(crate) fn should_forward_current_terminal_event_to_reratui(&self) -> bool {
+        !self.suppress_current_terminal_event_for_reratui
+    }
+
+    pub(crate) fn current_reratui_event(
+        &self,
+        event: Option<&Event>,
+    ) -> Option<crossterm::event::Event> {
+        if !self.should_forward_current_terminal_event_to_reratui() {
+            return None;
+        }
+        event.and_then(Self::map_terminal_event_for_reratui)
+    }
+
+    pub(crate) fn suppress_current_terminal_event_for_reratui(&mut self) {
+        self.suppress_current_terminal_event_for_reratui = true;
     }
 
     pub(crate) fn drain_pending_events(&mut self, limit: usize) -> anyhow::Result<bool> {
@@ -667,8 +738,77 @@ impl App {
         Ok(should_draw)
     }
 
+    pub(crate) fn process_bridge_iteration(
+        &mut self,
+        resized_area: Option<Rect>,
+        tick_due: bool,
+        max_events_per_frame: usize,
+        polled_event: Option<&Event>,
+        capture_root_snapshot: bool,
+    ) -> anyhow::Result<BridgeIterationOutcome> {
+        if let Some(area) = resized_area {
+            self.set_viewport_area(area);
+        }
+
+        let mut should_draw = false;
+        if tick_due {
+            should_draw |= self.process_event(&Event::Tick)?;
+        }
+        should_draw |= self.drain_pending_events(max_events_per_frame)?;
+        if let Some(event) = polled_event {
+            should_draw |= self.process_event(event)?;
+        }
+
+        let reactive_root_snapshot = if should_draw || capture_root_snapshot {
+            Some(self.prepare_reactive_root_snapshot(self.viewport_area))
+        } else {
+            None
+        };
+
+        Ok(BridgeIterationOutcome {
+            should_draw,
+            reratui_event: self.current_reratui_event(polled_event),
+            reactive_root_snapshot,
+        })
+    }
+
     pub(crate) fn is_exiting(&self) -> bool {
         self.state == AppState::Exiting
+    }
+
+    pub(crate) fn bridge_loop_snapshot(
+        &self,
+        now: Instant,
+        first_frame: bool,
+    ) -> BridgeLoopSnapshot {
+        let tick_deadline = self.next_tick_deadline(now);
+        let tick_due = tick_deadline.is_some_and(|deadline| deadline <= now);
+        let bridge_pending = self.context.ui_bridge_pending_event_count() > 0;
+        BridgeLoopSnapshot {
+            is_exiting: self.is_exiting(),
+            tick_due,
+            wait_strategy: if !first_frame && !tick_due && !bridge_pending {
+                BridgeWaitStrategy::Wait {
+                    deadline: tick_deadline,
+                }
+            } else {
+                BridgeWaitStrategy::PollReady
+            },
+            max_events_per_frame: self.context.runtime_budget().max_events_per_frame.max(1),
+        }
+    }
+
+    pub(crate) fn prepare_bridge_runtime_start(
+        &mut self,
+        initial_area: Option<Rect>,
+    ) -> BridgeRuntimeStartup {
+        if let Some(area) = initial_area {
+            self.set_viewport_area(area);
+        }
+        BridgeRuntimeStartup {
+            app_context: self.context.clone(),
+            server_event_task: self.spawn_server_event_listener_task(),
+        }
     }
 
     pub(crate) fn spawn_server_event_listener_task(&self) -> Option<tokio::task::JoinHandle<()>> {
@@ -714,124 +854,120 @@ impl App {
         self.context.clone()
     }
 
-    pub(crate) fn begin_reactive_render(&mut self, area: Rect) {
+    pub(crate) fn prepare_reactive_render(&mut self, area: Rect) {
         self.viewport_area = area;
         self.context
             .set_pending_permissions(self.permission_prompt.pending_count());
     }
 
-    pub(crate) fn render_home_view<S: RenderSurface>(&self, surface: &mut S, area: Rect) {
-        let home = HomeView::new(self.context.clone());
-        home.render_with_prompt(surface, area, &self.prompt);
-    }
-
-    pub(crate) fn render_session_view(
-        &self,
-        view: &crate::components::SessionView,
-        context: &Arc<AppContext>,
-        buffer: &mut Buffer,
-        area: Rect,
-    ) -> Option<(u16, u16)> {
-        let mut surface = BufferSurface::new(buffer);
-        view.render(context, &mut surface, area, &self.prompt);
-        surface.cursor_position()
-    }
-
-    pub(crate) fn render_reactive_dialog_layer<S: RenderSurface>(
+    pub(crate) fn prepare_reactive_root_snapshot(
         &mut self,
-        surface: &mut S,
         area: Rect,
-        theme: &crate::theme::Theme,
-    ) {
-        if !self.has_reactive_home_dialog_layer()
-            && !self.permission_prompt.is_open
-            && !self.question_prompt.is_open
-            && !self.tool_call_cancel_dialog.is_open()
-        {
-            return;
-        }
-
-        if self.has_reactive_home_dialog_layer()
-            || self.permission_prompt.is_open
-            || self.question_prompt.is_open
-        {
-            let modal_backdrop = Block::default().style(Style::default().bg(theme.background_menu));
-            surface.render_widget(modal_backdrop, area);
-        }
-        self.slash_popup.render(surface, area, theme);
-        self.help_dialog.render(surface, area, theme);
-        self.alert_dialog.render(surface, area, theme);
-        self.command_palette.render(surface, area, theme);
-        self.model_select.render(surface, area, theme);
-        self.agent_select.render(surface, area, theme);
-        self.session_list_dialog.render(surface, area, theme);
-        self.theme_list_dialog.render(surface, area, theme);
-        self.mcp_dialog.render(surface, area, theme);
-        self.timeline_dialog.render(surface, area, theme);
-        self.fork_dialog.render(surface, area, theme);
-        self.subagent_dialog.render(surface, area, theme);
-        self.tag_dialog.render(surface, area, theme);
-        self.recovery_action_dialog.render(surface, area, theme);
-        self.skill_proposal_review_dialog
-            .render(surface, area, theme);
-        self.status_dialog.render(surface, area, theme);
-        self.session_rename_dialog.render(surface, area, theme);
-        self.session_export_dialog.render(surface, area, theme);
-        self.prompt_stash_dialog.render(surface, area, theme);
-        self.skill_list_dialog.render(surface, area, theme);
-        self.provider_dialog.render(surface, area, theme);
-        self.permission_prompt.render(surface, area, theme);
-        self.question_prompt.render(surface, area, theme);
-        self.tool_call_cancel_dialog.render(surface, area, theme);
+    ) -> crate::bridge::ReactiveRootSnapshot {
+        debug_assert!(
+            self.can_render_reactive_route(),
+            "legacy frame fallback should be unreachable after reratui migration"
+        );
+        self.prepare_reactive_render(area);
+        self.reactive_root_snapshot()
     }
 
-    pub(crate) fn render_reactive_toast<S: RenderSurface>(
-        &self,
-        surface: &mut S,
-        area: Rect,
-        theme: &crate::theme::Theme,
-    ) {
-        if !self.toast.is_visible() {
-            return;
+    fn map_terminal_event_for_reratui(event: &Event) -> Option<crossterm::event::Event> {
+        match event {
+            Event::Key(key) => Some(crossterm::event::Event::Key(*key)),
+            Event::Mouse(mouse) => Some(crossterm::event::Event::Mouse(*mouse)),
+            Event::Resize(width, height) => {
+                Some(crossterm::event::Event::Resize(*width, *height))
+            }
+            Event::Paste(text) => Some(crossterm::event::Event::Paste(text.clone())),
+            Event::FocusGained => Some(crossterm::event::Event::FocusGained),
+            Event::FocusLost => Some(crossterm::event::Event::FocusLost),
+            Event::Tick | Event::Custom(_) => None,
         }
-
-        let toast_width = 60u16.min(area.width.saturating_sub(4));
-        let toast_height = self.toast.desired_height(toast_width);
-        let base_x = area.x + area.width.saturating_sub(toast_width.saturating_add(2));
-        let max_x = area.x + area.width.saturating_sub(toast_width);
-        let toast_x = base_x.saturating_add(self.toast.slide_offset()).min(max_x);
-        let toast_area = Rect {
-            x: toast_x,
-            y: 2.min(area.height.saturating_sub(1)),
-            width: toast_width,
-            height: toast_height.min(area.height.saturating_sub(2)),
-        };
-        self.toast.render(surface, toast_area, &theme);
     }
 
-    pub(crate) fn capture_reactive_screen_lines(&mut self, buffer: &Buffer, area: Rect) {
-        let should_capture_screen_lines =
-            self.selection.is_active() || self.selection.is_selecting();
-        if !should_capture_screen_lines {
-            return;
+    pub(crate) fn reactive_root_snapshot(&self) -> crate::bridge::ReactiveRootSnapshot {
+        let dialog_layer = self.reactive_dialog_layer_snapshot();
+        let app_context = self.context_handle();
+        let theme = app_context.theme.read().clone();
+        let keybinds = app_context.keybind.read().clone();
+        let route = app_context.current_route();
+        let animations_enabled = *app_context.animations_enabled.read();
+        let prompt_input_blocked = app_context.has_blocking_dialogs();
+        let slash_popup_open = app_context.is_dialog_open(crate::context::DialogSlot::SlashPopup);
+        let prompt = self.prompt_handle();
+        let selection = self.selection_snapshot();
+        let toast = self.toast_snapshot();
+        let screen_lines = self.take_reactive_screen_lines();
+        crate::bridge::ReactiveRootSnapshot {
+            app_context,
+            theme,
+            keybinds,
+            route,
+            animations_enabled,
+            prompt_input_blocked,
+            slash_popup_open,
+            prompt,
+            selection,
+            toast,
+            dialog_layer,
+            screen_lines,
         }
-
-        self.screen_lines = capture_screen_lines(buffer, area);
-        self.diagnostics.perf.screen_snapshots =
-            self.diagnostics.perf.screen_snapshots.saturating_add(1);
     }
 
-    pub(crate) fn apply_reactive_selection(&self, buffer: &mut Buffer, area: Rect) {
-        apply_selection_highlight(buffer, area, &self.selection);
+    pub(crate) fn prompt_handle(&self) -> Prompt {
+        self.prompt.clone()
+    }
+
+    pub(crate) fn selection_snapshot(&self) -> Selection {
+        self.selection.clone()
+    }
+
+    pub(crate) fn toast_snapshot(&self) -> Toast {
+        self.toast.clone()
+    }
+
+    pub(crate) fn reactive_dialog_layer_snapshot(&self) -> ReactiveDialogLayerSnapshot {
+        ReactiveDialogLayerSnapshot {
+            show_backdrop: self.has_reactive_home_dialog_layer()
+                || self.permission_prompt.is_open
+                || self.question_prompt.is_open,
+            permission_prompt: self.permission_prompt.clone(),
+            question_prompt: self.question_prompt.clone(),
+            help_dialog: self.help_dialog.clone(),
+            alert_dialog: self.alert_dialog.clone(),
+            slash_popup: self.slash_popup.clone(),
+            command_palette: self.command_palette.clone(),
+            model_select: self.model_select.clone(),
+            agent_select: self.agent_select.clone(),
+            status_dialog: self.status_dialog.clone(),
+            session_list_dialog: self.session_list_dialog.clone(),
+            session_export_dialog: self.session_export_dialog.clone(),
+            session_rename_dialog: self.session_rename_dialog.clone(),
+            skill_list_dialog: self.skill_list_dialog.clone(),
+            mcp_dialog: self.mcp_dialog.clone(),
+            timeline_dialog: self.timeline_dialog.clone(),
+            fork_dialog: self.fork_dialog.clone(),
+            provider_dialog: self.provider_dialog.clone(),
+            recovery_action_dialog: self.recovery_action_dialog.clone(),
+            skill_proposal_review_dialog: self.skill_proposal_review_dialog.clone(),
+            subagent_dialog: self.subagent_dialog.clone(),
+            tag_dialog: self.tag_dialog.clone(),
+            theme_list_dialog: self.theme_list_dialog.clone(),
+            prompt_stash_dialog: self.prompt_stash_dialog.clone(),
+            tool_call_cancel_dialog: self.tool_call_cancel_dialog.clone(),
+        }
+    }
+
+    pub(crate) fn take_reactive_screen_lines(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+        Arc::clone(&self.screen_lines)
     }
 
     // P0-3: TUI state mutation gate (lock-level, documented; full semantic
-    // convergence is P1 scope).
-    // All state changes flow through:
-    //   SSE event → parse → StateChange → handle_event → context mutation → rerender
-    // The context.session.write() lock is the single state mutation gate.
-    // handle_state_change dispatched to sync.rs (C4 — state-change dispatcher
-    // is now the single authority for routing StateChange → App side effects).
+    // convergence is ongoing).
+    // All transport-driven state changes now flow through explicit CustomEvent /
+    // FrontendEvent variants before mutating context and triggering rerender.
+    // The context.session.write() lock remains the single state mutation gate.
 
     fn terminal_width(&self) -> u16 {
         self.viewport_area.width

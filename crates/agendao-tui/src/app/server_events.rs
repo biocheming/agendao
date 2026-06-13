@@ -238,21 +238,21 @@ fn emit_reconnecting_state(ui_bridge: &UiBridge, session_id: Option<&str>) {
     let Some(session_id) = session_id.filter(|value| !value.is_empty()) else {
         return;
     };
-    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(
-        StateChange::SessionStatusReconnecting(session_id.to_string()),
-    ))));
+    let _ = ui_bridge.emit(Event::Custom(Box::new(
+        CustomEvent::SessionStatusReconnecting {
+            session_id: session_id.to_string(),
+        },
+    )));
 }
 
 fn emit_reconnected_sync(ui_bridge: &UiBridge, session_id: Option<&str>) {
     let Some(session_id) = session_id.filter(|value| !value.is_empty()) else {
         return;
     };
-    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(
-        StateChange::SessionUpdated {
+    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::SessionUpdated {
             session_id: session_id.to_string(),
             source: Some("stream.reconnected".to_string()),
-        },
-    ))));
+        })));
 }
 
 fn parse_server_event_payload(payload: &str) -> Option<Event> {
@@ -273,7 +273,7 @@ fn parse_server_event_payload(payload: &str) -> Option<Event> {
 mod tests {
     use super::{build_event_url, emit_reconnected_sync, forward_server_event};
     use crate::bridge::UiBridge;
-    use crate::event::{CustomEvent, StateChange};
+    use crate::event::CustomEvent;
     use crate::Event;
     use agendao_server_core::frontend_events::FrontendEvent;
     use agendao_server_core::runtime_events::ToolCallPhase;
@@ -471,7 +471,7 @@ mod tests {
         let Event::Custom(custom) = event else {
             panic!("expected custom event");
         };
-        let CustomEvent::StateChanged(StateChange::SessionUpdated { session_id, source }) = *custom
+        let CustomEvent::SessionUpdated { session_id, source } = *custom
         else {
             panic!("expected session updated state change");
         };

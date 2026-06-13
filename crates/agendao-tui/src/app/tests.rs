@@ -4,9 +4,11 @@ use crate::api::{
     SessionRunStatusKind, SessionTelemetrySnapshot, SessionTimeInfo,
 };
 use agendao_server_core::frontend_events::FrontendEvent;
+use agendao_stage_protocol::{StageStatus, StageSummary};
 use agendao_types::{SessionUsage, SessionUsageBooks};
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::state::DialogSlot;
 
 #[test]
 fn local_direct_app_uses_direct_base_url_authority() {
@@ -109,6 +111,604 @@ fn local_direct_home_submit_uses_real_session_id_immediately() {
 }
 
 #[test]
+fn prompt_edited_event_updates_app_prompt_state() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("edited in component".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should apply");
+
+    assert_eq!(app.prompt.get_input(), "edited in component");
+}
+
+#[test]
+fn prompt_edited_event_opens_slash_popup_for_slash_commands() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should apply");
+
+    assert!(app.context.has_open_dialogs());
+}
+
+#[test]
+fn prompt_submit_requested_event_reuses_existing_submit_flow() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("submit through component".to_string());
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::PromptSubmitRequested {
+            prompt: Box::new(prompt),
+        },
+    )))
+    .expect("prompt submit requested event should submit");
+
+    assert!(app.prompt.get_input().is_empty());
+}
+
+#[test]
+fn prompt_submit_requested_from_home_navigates_to_session_route() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("Hi".to_string());
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::PromptSubmitRequested {
+            prompt: Box::new(prompt),
+        },
+    )))
+    .expect("prompt submit requested event should submit");
+
+    assert!(
+        matches!(app.context.current_route(), Route::Session { .. }),
+        "home submit should navigate to session route"
+    );
+}
+
+#[test]
+fn prompt_submit_requested_help_command_opens_help_dialog() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::PromptSubmitRequested {
+            prompt: Box::new(prompt),
+        },
+    )))
+    .expect("prompt submit requested event should execute help command");
+
+    assert!(app.context.has_open_dialogs());
+}
+
+#[test]
+fn slash_popup_enter_executes_selected_help_action() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )))
+    .expect("enter should execute slash popup selection");
+
+    assert!(app.context.is_dialog_open(DialogSlot::Help));
+}
+
+#[test]
+fn slash_popup_intent_close_closes_popup() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    assert!(app.context.is_dialog_open(DialogSlot::SlashPopup));
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::SlashPopupIntent {
+        kind: crate::event::SlashPopupIntentKind::Close,
+    })))
+    .expect("slash popup close intent should process");
+
+    assert!(!app.context.is_dialog_open(DialogSlot::SlashPopup));
+}
+
+#[test]
+fn slash_popup_intent_select_current_executes_selected_action() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::SlashPopupIntent {
+        kind: crate::event::SlashPopupIntentKind::SelectCurrent,
+    })))
+    .expect("slash popup select intent should process");
+
+    assert!(app.context.is_dialog_open(DialogSlot::Help));
+}
+
+#[test]
+fn reactive_route_slash_popup_char_input_falls_through_to_prompt_authority() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/he".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    assert!(app.context.is_dialog_open(DialogSlot::SlashPopup));
+
+    let consumed = app
+        .handle_dialog_key(KeyEvent::new(
+        KeyCode::Char('l'),
+        KeyModifiers::NONE,
+    ))
+        .expect("reactive slash popup should yield text input back to prompt");
+
+    assert!(
+        !consumed,
+        "reactive slash popup text keys must fall through to reratui prompt authority"
+    );
+    assert_eq!(app.prompt.get_input(), "/he");
+    assert_eq!(app.slash_popup.query(), "he");
+}
+
+#[test]
+fn reactive_route_slash_popup_backspace_falls_through_to_prompt_authority() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/help".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    assert!(app.context.is_dialog_open(DialogSlot::SlashPopup));
+
+    let consumed = app
+        .handle_dialog_key(KeyEvent::new(
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+    ))
+        .expect("reactive slash popup should yield backspace to prompt");
+
+    assert!(
+        !consumed,
+        "reactive slash popup backspace must fall through to reratui prompt authority"
+    );
+    assert_eq!(app.prompt.get_input(), "/help");
+    assert_eq!(app.slash_popup.query(), "help");
+}
+
+#[test]
+fn reactive_route_slash_popup_space_falls_through_to_prompt_authority() {
+    let mut app = App::new().expect("app should initialize");
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/model".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+        prompt: Box::new(prompt),
+    })))
+    .expect("prompt edited event should open slash popup");
+
+    assert!(app.context.is_dialog_open(DialogSlot::SlashPopup));
+
+    let consumed = app
+        .handle_dialog_key(KeyEvent::new(
+        KeyCode::Char(' '),
+        KeyModifiers::NONE,
+    ))
+        .expect("reactive slash popup should yield space to prompt");
+
+    assert!(
+        !consumed,
+        "reactive slash popup space must fall through to reratui prompt authority"
+    );
+    assert_eq!(app.prompt.get_input(), "/model");
+    assert_eq!(app.slash_popup.query(), "model");
+}
+
+#[test]
+fn prompt_paste_text_event_updates_app_prompt_state() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptPasteText {
+        text: "pasted text".to_string(),
+    })))
+    .expect("prompt paste text event should apply");
+
+    assert_eq!(app.prompt.get_input(), "pasted text");
+}
+
+#[test]
+fn ui_action_requested_help_opens_help_dialog() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::ShowHelp,
+    })))
+    .expect("ui action request should execute");
+
+    assert!(app.context.is_dialog_open(DialogSlot::Help));
+}
+
+#[test]
+fn ui_action_requested_clear_prompt_discards_draft() {
+    let mut app = App::new().expect("app should initialize");
+    app.prompt.set_input("to be cleared".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::ClearPrompt,
+    })))
+    .expect("ui action request should execute");
+
+    assert!(app.prompt.get_input().is_empty());
+}
+
+#[test]
+fn ui_action_requested_model_opens_model_dialog() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::OpenModelList,
+    })))
+    .expect("ui action request should execute");
+
+    assert!(app.context.is_dialog_open(DialogSlot::ModelSelect));
+}
+
+#[test]
+fn ui_action_requested_variant_cycles_model_variant() {
+    let mut app = App::new().expect("app should initialize");
+    app.available_models = ["model-a".to_string(), "model-a/fast".to_string()]
+        .into_iter()
+        .collect();
+    app.model_variants.insert(
+        "model-a".to_string(),
+        vec!["fast".to_string()],
+    );
+    app.context.set_model_selection("model-a".to_string(), None);
+    app.context.set_model_variant(None);
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::CycleVariant,
+    })))
+    .expect("ui action request should execute");
+
+    assert_eq!(app.context.current_model_variant().as_deref(), Some("fast"));
+}
+
+#[test]
+fn ui_action_requested_toggle_thinking_updates_preferences() {
+    let mut app = App::new().expect("app should initialize");
+    let before = app.context.show_thinking_enabled();
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::ToggleThinking,
+    })))
+    .expect("ui action request should execute");
+
+    assert_ne!(app.context.show_thinking_enabled(), before);
+}
+
+#[test]
+fn ui_action_requested_toggle_tool_details_updates_preferences() {
+    let mut app = App::new().expect("app should initialize");
+    let before = app.context.show_tool_details_enabled();
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::ToggleToolDetails,
+    })))
+    .expect("ui action request should execute");
+
+    assert_ne!(app.context.show_tool_details_enabled(), before);
+}
+
+#[test]
+fn ui_action_requested_cycle_agent_next_rotates_current_agent() {
+    let mut app = App::new().expect("app should initialize");
+    let first = app
+        .agent_select
+        .agents()
+        .first()
+        .expect("default agent")
+        .name
+        .clone();
+    let second = app
+        .agent_select
+        .agents()
+        .get(1)
+        .expect("second default agent")
+        .name
+        .clone();
+    app.context.set_agent(first);
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::CycleAgentNext,
+    })))
+    .expect("ui action request should execute");
+
+    assert_eq!(app.context.current_agent(), second);
+}
+
+#[test]
+fn ui_action_requested_cycle_agent_previous_rotates_current_agent_backward() {
+    let mut app = App::new().expect("app should initialize");
+    let first = app
+        .agent_select
+        .agents()
+        .first()
+        .expect("default agent")
+        .name
+        .clone();
+    let last = app
+        .agent_select
+        .agents()
+        .last()
+        .expect("last default agent")
+        .name
+        .clone();
+    app.context.set_agent(first);
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::CycleAgentPrevious,
+    })))
+    .expect("ui action request should execute");
+
+    assert_eq!(app.context.current_agent(), last);
+}
+
+#[test]
+fn ui_action_requested_paste_clipboard_executes_without_error() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::PromptPasteText {
+        text: "clipboard text".to_string(),
+    })))
+    .expect("seed prompt paste text");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::PasteClipboard,
+    })))
+    .expect("ui action request should execute");
+}
+
+#[test]
+fn ui_action_requested_cut_prompt_clears_input() {
+    let mut app = App::new().expect("app should initialize");
+    app.prompt.set_input("cut me".to_string());
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+        action: agendao_command::UiActionId::CutPrompt,
+    })))
+    .expect("ui action request should execute");
+
+    assert!(app.prompt.get_input().is_empty());
+}
+
+#[test]
+fn reactive_route_ctrl_k_global_handler_yields_to_prompt_authority() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('k'),
+        KeyModifiers::CONTROL,
+    )))
+    .expect("reactive route ctrl-k should no-op in global handler");
+
+    let drained = app.context.drain_ui_events(4);
+    assert!(
+        drained.is_empty(),
+        "global handler must not emit or execute abort directly under reactive prompt authority"
+    );
+}
+
+#[test]
+fn reactive_route_escape_global_handler_yields_to_prompt_authority() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )))
+    .expect("reactive route escape should no-op in global handler when no selection is active");
+
+    let drained = app.context.drain_ui_events(4);
+    assert!(
+        drained.is_empty(),
+        "global handler must not execute session interrupt directly under reactive prompt authority"
+    );
+}
+
+#[test]
+fn reactive_route_ctrl_c_global_handler_yields_to_prompt_authority_without_selection() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )))
+    .expect("reactive route ctrl-c should no-op in global handler without selection");
+
+    assert!(!app.is_exiting());
+    let drained = app.context.drain_ui_events(4);
+    assert!(
+        drained.is_empty(),
+        "global handler must not execute exit directly under reactive prompt authority"
+    );
+}
+
+#[test]
+fn reactive_route_ctrl_shift_c_global_handler_yields_to_prompt_authority_without_selection() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )))
+    .expect("reactive route ctrl+shift+c should no-op in global handler without selection");
+
+    let drained = app.context.drain_ui_events(4);
+    assert!(
+        drained.is_empty(),
+        "global handler must not execute copy-selection directly under reactive prompt authority"
+    );
+}
+
+#[test]
+fn session_interrupt_requested_exits_shell_mode() {
+    let mut app = App::new().expect("app should initialize");
+    app.prompt.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    assert!(app.prompt.is_shell_mode(), "prompt should enter shell mode");
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::SessionInterruptRequested,
+    )))
+    .expect("session interrupt request should process");
+
+    assert!(
+        !app.prompt.is_shell_mode(),
+        "interrupt request should exit shell mode"
+    );
+}
+
+#[test]
+fn session_interrupt_requested_requires_confirmation_before_interrupting_running_session() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-interrupt-confirm";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Interrupt confirm".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::SessionInterruptRequested,
+    )))
+    .expect("first interrupt request should process");
+
+    let status = {
+        let session_ctx = app.context.session.read();
+        session_ctx.status(session_id).clone()
+    };
+    assert!(
+        matches!(status, SessionStatus::Running),
+        "first interrupt request should not abort immediately, got {status:?}"
+    );
+}
+
+#[test]
+fn session_interrupt_requested_second_press_sets_running_session_idle() {
+    let mut app = App::new().expect("app should initialize");
+    let session_id = "session-interrupt-confirm-2";
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Interrupt confirm second".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id(session_id.to_string());
+        session_ctx.set_status(session_id, SessionStatus::Running);
+    }
+    app.context.navigate_session(session_id);
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::SessionInterruptRequested,
+    )))
+    .expect("first interrupt request should process");
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::SessionInterruptRequested,
+    )))
+    .expect("second interrupt request should process");
+
+    let status = {
+        let session_ctx = app.context.session.read();
+        session_ctx.status(session_id).clone()
+    };
+    assert!(
+        matches!(status, SessionStatus::Idle),
+        "second interrupt request should settle to idle, got {status:?}"
+    );
+}
+
+#[test]
+fn raw_paste_event_targets_provider_dialog_not_prompt() {
+    let mut app = App::new().expect("app should initialize");
+    app.prompt.set_input("prompt".to_string());
+    app.open_provider_dialog_modal();
+    let provider = crate::render::Provider {
+        id: "demo".to_string(),
+        name: "Demo".to_string(),
+        env_hint: "DEMO_API_KEY".to_string(),
+        base_url: None,
+        protocol: None,
+        descriptor_candidate: None,
+        descriptor_candidate_error: None,
+        model_count: 0,
+        status: crate::render::ProviderStatus::Disconnected,
+    };
+    app.provider_dialog.enter_input_mode_for_provider(provider);
+
+    app.process_event(&Event::Paste("secret".to_string()))
+        .expect("paste event should be handled");
+
+    assert_eq!(app.prompt.get_input(), "prompt");
+    let pending = app.provider_dialog.pending_submit();
+    match pending {
+        Some(crate::render::PendingSubmit::Known {
+            provider_id,
+            api_key,
+        }) => {
+            assert_eq!(provider_id, "demo");
+            assert_eq!(api_key, "secret");
+        }
+        other => panic!("unexpected pending submit: {:?}", other),
+    }
+}
+
+#[test]
 fn ensure_session_view_after_sync_preserves_loaded_history() {
     let mut app = App::new().expect("app should initialize");
     let session_id = "session-loaded-before-view";
@@ -198,6 +798,34 @@ fn ctrl_x_then_q_exits_tui() {
 }
 
 #[test]
+fn ctrl_c_without_selection_exits_via_ui_action() {
+    let mut app = App::new().expect("app should initialize");
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )))
+    .expect("ctrl+c should be handled");
+
+    assert!(app.is_exiting());
+}
+
+#[test]
+fn ctrl_c_with_selection_copies_instead_of_exiting() {
+    let mut app = App::new().expect("app should initialize");
+    app.selection.start(1, 1);
+    app.selection.finalize();
+
+    app.handle_event(&Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )))
+    .expect("ctrl+c should be handled");
+
+    assert!(!app.is_exiting());
+}
+
+#[test]
 fn navigate_session_with_prompt_cleanup_clears_selection() {
     let mut app = App::new().expect("app should initialize");
     app.selection.start(3, 5);
@@ -206,6 +834,293 @@ fn navigate_session_with_prompt_cleanup_clears_selection() {
     app.navigate_session_with_prompt_cleanup("session-target".to_string());
 
     assert!(!app.selection.is_active());
+}
+
+#[test]
+fn session_list_dialog_can_switch_between_existing_sessions() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "First".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: "session-2".to_string(),
+            title: "Second".to_string(),
+            created_at: now,
+            updated_at: now - chrono::Duration::seconds(1),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_messages(
+            "session-1",
+            vec![Message {
+                id: "m1".to_string(),
+                role: MessageRole::Assistant,
+                content: "one".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "one".to_string(),
+                }],
+            }],
+        );
+        session_ctx.set_messages(
+            "session-2",
+            vec![Message {
+                id: "m2".to_string(),
+                role: MessageRole::Assistant,
+                content: "two".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "two".to_string(),
+                }],
+            }],
+        );
+    }
+    app.context.navigate_session("session-1");
+    app.ensure_session_view("session-1");
+    app.session_list_dialog.set_sessions(vec![
+        SessionItem {
+            id: "session-1".to_string(),
+            title: "First".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            updated_at: now.timestamp_millis(),
+            is_busy: false,
+        },
+        SessionItem {
+            id: "session-2".to_string(),
+            title: "Second".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            updated_at: (now - chrono::Duration::seconds(1)).timestamp_millis(),
+            is_busy: false,
+        },
+    ]);
+    app.open_session_list_dialog_modal(Some("session-1"));
+    app.session_list_dialog.move_down();
+
+    app.handle_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("session list enter should navigate");
+
+    assert_eq!(app.current_session_id().as_deref(), Some("session-2"));
+    assert_eq!(
+        app.context
+            .session_view_handle()
+            .as_ref()
+            .map(|view| view.session_id()),
+        Some("session-2")
+    );
+    let messages = app
+        .context
+        .session
+        .read()
+        .messages
+        .get("session-2")
+        .cloned()
+        .expect("second session messages should remain available");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "two");
+}
+
+#[test]
+fn prompt_submit_requested_session_command_opens_session_list_from_session_route() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "First".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id("session-1".to_string());
+    }
+    app.context.navigate_session("session-1");
+    app.ensure_session_view("session-1");
+
+    let mut prompt = app.prompt.clone();
+    prompt.set_input("/session".to_string());
+
+    app.process_event(&Event::Custom(Box::new(
+        CustomEvent::PromptSubmitRequested {
+            prompt: Box::new(prompt),
+        },
+    )))
+    .expect("session command should process through prompt submit");
+
+    assert!(
+        app.context.is_dialog_open(DialogSlot::SessionList),
+        "session command should open the session list dialog even when already inside a session"
+    );
+}
+
+#[test]
+fn session_list_dialog_mouse_selection_switches_session() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "First".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: "session-2".to_string(),
+            title: "Second".to_string(),
+            created_at: now,
+            updated_at: now - chrono::Duration::seconds(1),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_messages(
+            "session-1",
+            vec![Message {
+                id: "m1".to_string(),
+                role: MessageRole::Assistant,
+                content: "one".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "one".to_string(),
+                }],
+            }],
+        );
+        session_ctx.set_messages(
+            "session-2",
+            vec![Message {
+                id: "m2".to_string(),
+                role: MessageRole::Assistant,
+                content: "two".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "two".to_string(),
+                }],
+            }],
+        );
+    }
+    app.context.navigate_session("session-1");
+    app.ensure_session_view("session-1");
+    app.session_list_dialog.set_sessions(vec![
+        SessionItem {
+            id: "session-1".to_string(),
+            title: "First".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            updated_at: now.timestamp_millis(),
+            is_busy: false,
+        },
+        SessionItem {
+            id: "session-2".to_string(),
+            title: "Second".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            updated_at: (now - chrono::Duration::seconds(1)).timestamp_millis(),
+            is_busy: false,
+        },
+    ]);
+    app.open_session_list_dialog_modal(Some("session-1"));
+
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    let mut surface = crate::ui::BufferSurface::new(&mut buffer);
+    app.session_list_dialog
+        .render_surface(&mut surface, area, &crate::theme::Theme::dark());
+    let list_area = app
+        .session_list_dialog
+        .test_list_area()
+        .expect("session list area should exist after render");
+    let target_column = list_area.x;
+    let target_row = list_area.y + 1;
+
+    let consumed_down = app
+        .handle_dialog_mouse(&crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: target_column,
+            row: target_row,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("mouse down should process");
+    let consumed_up = app
+        .handle_dialog_mouse(&crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            column: target_column,
+            row: target_row,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("mouse up should process");
+
+    assert!(consumed_down, "session list should consume mouse-down");
+    assert!(consumed_up, "session list should consume mouse-up");
+    assert_eq!(app.current_session_id().as_deref(), Some("session-2"));
+    assert_eq!(
+        app.context
+            .session_view_handle()
+            .as_ref()
+            .map(|view| view.session_id()),
+        Some("session-2")
+    );
+    assert!(
+        !app.context.is_dialog_open(DialogSlot::SessionList),
+        "session list should close after mouse selection switches session"
+    );
 }
 
 #[test]
@@ -941,7 +1856,7 @@ fn permission_requested_event_surfaces_prompt_without_http_sync() {
     assert!(app.event_caused_change);
     assert!(app.permission_runtime.pending_ids.contains("perm-1"));
     assert!(app.permission_prompt.is_open);
-    assert!(app.sync_runtime.pending_permission_sync_due_at.is_some());
+    assert!(app.sync_runtime.pending_permission_sync_due_at.is_none());
     assert_eq!(
         app.permission_runtime
             .pending_requests
@@ -1432,6 +2347,59 @@ fn pending_process_refresh_deadline_suppresses_stale_sidebar_fallback_deadline()
 }
 
 #[test]
+fn bridge_loop_snapshot_waits_when_idle_after_first_frame() {
+    let app = App::new().expect("app should initialize");
+    let now = Instant::now();
+
+    let snapshot = app.bridge_loop_snapshot(now, false);
+
+    assert!(matches!(
+        snapshot.wait_strategy,
+        BridgeWaitStrategy::Wait { .. }
+    ));
+}
+
+#[test]
+fn bridge_loop_snapshot_polls_ready_on_first_frame() {
+    let app = App::new().expect("app should initialize");
+    let now = Instant::now();
+
+    let snapshot = app.bridge_loop_snapshot(now, true);
+
+    assert_eq!(snapshot.wait_strategy, BridgeWaitStrategy::PollReady);
+}
+
+#[test]
+fn bridge_iteration_skips_root_snapshot_when_no_draw_is_needed() {
+    let mut app = App::new().expect("app should initialize");
+
+    let outcome = app
+        .process_bridge_iteration(None, false, 16, None, false)
+        .expect("bridge iteration should succeed");
+
+    assert!(!outcome.should_draw);
+    assert!(outcome.reactive_root_snapshot.is_none());
+}
+
+#[test]
+fn bridge_iteration_can_capture_root_snapshot_without_forcing_draw() {
+    let mut app = App::new().expect("app should initialize");
+    let area = Rect::new(0, 0, 100, 30);
+    app.set_viewport_area(area);
+
+    let outcome = app
+        .process_bridge_iteration(None, false, 16, None, true)
+        .expect("bridge iteration should succeed");
+
+    assert!(!outcome.should_draw);
+    let snapshot = outcome
+        .reactive_root_snapshot
+        .expect("snapshot should be captured when explicitly requested");
+    assert_eq!(snapshot.route, Route::Home);
+    assert_eq!(snapshot.prompt.get_input(), "");
+}
+
+#[test]
 fn tick_does_not_rearm_question_sync_while_debounce_is_pending() {
     let mut app = App::new().expect("app should initialize");
     let session_id = "session-question-rearm";
@@ -1647,6 +2615,177 @@ fn waiting_on_user_pending_permission_keeps_spinner_disabled() {
 
     app.sync_prompt_spinner_state();
     assert!(!app.prompt.spinner_active());
+}
+
+#[test]
+fn session_navigation_intent_parent_uses_existing_app_navigation_gate() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "parent-session".to_string(),
+            title: "Parent".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: "child-session".to_string(),
+            title: "Child".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: Some("parent-session".to_string()),
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id("child-session".to_string());
+    }
+    app.context.navigate_session("child-session");
+    app.ensure_session_view("child-session");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::SessionNavigationIntent {
+        kind: crate::event::SessionNavigationIntentKind::Parent,
+    })))
+    .expect("parent intent should process");
+
+    assert_eq!(app.current_session_id().as_deref(), Some("parent-session"));
+}
+
+#[test]
+fn session_navigation_intent_attached_uses_existing_app_navigation_gate() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "root-session".to_string(),
+            title: "Root".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: "attached-session".to_string(),
+            title: "Attached".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: Some("root-session".to_string()),
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id("root-session".to_string());
+    }
+    app.context.navigate_session("root-session");
+    app.ensure_session_view("root-session");
+    let mut telemetry = test_session_telemetry_snapshot("root-session", "stage-1");
+    telemetry.stages = vec![StageSummary {
+        stage_id: "stage-1".to_string(),
+        stage_name: "Attached".to_string(),
+        index: None,
+        total: None,
+        step: None,
+        step_total: None,
+        status: StageStatus::Running,
+        prompt_tokens: None,
+        context_tokens: None,
+        completion_tokens: None,
+        reasoning_tokens: None,
+        cache_read_tokens: None,
+        cache_miss_tokens: None,
+        cache_write_tokens: None,
+        focus: None,
+        last_event: None,
+        waiting_on: None,
+        activity: None,
+        estimated_context_tokens: None,
+        skill_tree_budget: None,
+        skill_tree_truncation_strategy: None,
+        skill_tree_truncated: None,
+        retry_attempt: None,
+        active_agent_count: 0,
+        active_tool_count: 0,
+        attached_session_count: 1,
+        primary_attached_session_id: Some("attached-session".to_string()),
+    }];
+    app.context.apply_session_telemetry_snapshot(telemetry);
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::SessionNavigationIntent {
+        kind: crate::event::SessionNavigationIntentKind::Attached,
+    })))
+    .expect("attached intent should process");
+
+    assert_eq!(app.current_session_id().as_deref(), Some("attached-session"));
+}
+
+#[test]
+fn session_navigation_intent_session_uses_existing_app_navigation_gate() {
+    let mut app = App::new().expect("app should initialize");
+    let now = Utc::now();
+    {
+        let mut session_ctx = app.context.session.write();
+        session_ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "One".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.upsert_session(Session {
+            id: "session-2".to_string(),
+            title: "Two".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        session_ctx.set_current_session_id("session-1".to_string());
+        session_ctx.set_messages(
+            "session-2",
+            vec![Message {
+                id: "m2".to_string(),
+                role: MessageRole::Assistant,
+                content: "two".to_string(),
+                created_at: now,
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(now),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "two".to_string(),
+                }],
+            }],
+        );
+    }
+    app.context.navigate_session("session-1");
+    app.ensure_session_view("session-1");
+
+    app.process_event(&Event::Custom(Box::new(CustomEvent::SessionNavigationIntent {
+        kind: crate::event::SessionNavigationIntentKind::Session("session-2".to_string()),
+    })))
+    .expect("session intent should process");
+
+    assert_eq!(app.current_session_id().as_deref(), Some("session-2"));
+    assert_eq!(
+        app.context
+            .session_view_handle()
+            .as_ref()
+            .map(|view| view.session_id()),
+        Some("session-2")
+    );
 }
 
 fn test_session_telemetry_snapshot(

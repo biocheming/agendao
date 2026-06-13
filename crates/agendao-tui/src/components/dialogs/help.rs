@@ -1,13 +1,17 @@
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
+#[derive(Clone)]
 pub struct HelpDialog {
     open: bool,
 }
@@ -29,7 +33,7 @@ impl HelpDialog {
         self.open
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -92,7 +96,7 @@ impl HelpDialog {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from("  Ctrl+M  Model list"),
-            Line::from("  Ctrl+V  Cycle model variant"),
+            Line::from("  Ctrl+L  Cycle model variant"),
             Line::from("  Use /agents to open full agent list"),
             Line::from("  Ctrl+S  Toggle sidebar"),
             Line::from("  Use command palette for session/theme/status/MCP dialogs"),
@@ -110,6 +114,14 @@ impl HelpDialog {
             ])),
             layout[1],
         );
+    }
+}
+
+impl Component for HelpDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
     }
 }
 
@@ -138,7 +150,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

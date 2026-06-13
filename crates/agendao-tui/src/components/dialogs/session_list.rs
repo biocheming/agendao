@@ -1,13 +1,16 @@
 use chrono::{Local, TimeZone};
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub struct SessionItem {
@@ -25,6 +28,7 @@ pub enum DeleteState {
     Confirmed(String),
 }
 
+#[derive(Clone)]
 pub struct SessionListDialog {
     sessions: Vec<SessionItem>,
     filtered: Vec<usize>,
@@ -35,6 +39,7 @@ pub struct SessionListDialog {
     pending_delete_session_id: Option<String>,
     rename_session_id: Option<String>,
     rename_input: String,
+    list_area: Option<Rect>,
 }
 
 impl SessionListDialog {
@@ -51,6 +56,7 @@ impl SessionListDialog {
             pending_delete_session_id: None,
             rename_session_id: None,
             rename_input: String::new(),
+            list_area: None,
         }
     }
 
@@ -86,6 +92,7 @@ impl SessionListDialog {
         self.pending_delete_session_id = None;
         self.rename_session_id = None;
         self.rename_input.clear();
+        self.list_area = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -136,6 +143,29 @@ impl SessionListDialog {
             .and_then(|idx| self.filtered.get(idx))
             .and_then(|session_idx| self.sessions.get(*session_idx))
             .map(|s| s.id.clone())
+    }
+
+    pub fn select_at(&mut self, col: u16, row: u16) -> bool {
+        let Some(area) = self.list_area else {
+            return false;
+        };
+        let max_x = area.x.saturating_add(area.width);
+        let max_y = area.y.saturating_add(area.height);
+        if col < area.x || col >= max_x || row < area.y || row >= max_y {
+            return false;
+        }
+        let index = usize::from(row.saturating_sub(area.y));
+        if index >= self.filtered.len() {
+            return false;
+        }
+        self.state.select(Some(index));
+        self.pending_delete_session_id = None;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_list_area(&self) -> Option<Rect> {
+        self.list_area
     }
 
     pub fn start_rename_selected(&mut self) -> bool {
@@ -209,7 +239,7 @@ impl SessionListDialog {
         });
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    pub(crate) fn render_surface<S: RenderSurface>(&mut self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -239,6 +269,7 @@ impl SessionListDialog {
                 Constraint::Length(1),
             ])
             .split(inner);
+        self.list_area = Some(layout[1]);
 
         surface.render_widget(
             Paragraph::new(Line::from(vec![
@@ -341,6 +372,16 @@ impl SessionListDialog {
         };
         surface.render_widget(footer, layout[3]);
     }
+
+}
+
+impl Component for SessionListDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        let mut dialog = self.clone();
+        dialog.render_surface(&mut surface, area, &theme);
+    }
 }
 
 impl Default for SessionListDialog {
@@ -392,7 +433,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content
@@ -400,5 +441,41 @@ mod tests {
             .filter(|cell| !cell.symbol().trim().is_empty())
             .count();
         assert!(rendered > 0);
+    }
+
+    #[test]
+    fn session_list_dialog_selects_row_at_mouse_position() {
+        let mut dialog = SessionListDialog::new();
+        dialog.set_sessions(vec![
+            SessionItem {
+                id: "session-123".to_string(),
+                title: "Migration Work".to_string(),
+                directory: "/tmp/agendao".to_string(),
+                parent_id: None,
+                updated_at: 0,
+                is_busy: false,
+            },
+            SessionItem {
+                id: "session-456".to_string(),
+                title: "Second Session".to_string(),
+                directory: "/tmp/agendao".to_string(),
+                parent_id: None,
+                updated_at: -1,
+                is_busy: false,
+            },
+        ]);
+        dialog.open(None);
+
+        let area = Rect::new(0, 0, 120, 32);
+        let mut buffer = Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+        dialog.render_surface(&mut surface, area, &Theme::dark());
+
+        let list_area = dialog.list_area.expect("list area");
+        assert!(dialog.select_at(list_area.x, list_area.y + 1));
+        assert_eq!(
+            dialog.selected_session_id().as_deref(),
+            Some("session-456")
+        );
     }
 }

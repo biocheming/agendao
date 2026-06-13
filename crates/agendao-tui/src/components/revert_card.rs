@@ -13,7 +13,6 @@ const DIFF_PREVIEW_LINES: usize = 8;
 pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(
                 "⟲ Revert",
                 Style::default()
@@ -23,7 +22,6 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
             Span::styled(" pending", Style::default().fg(theme.text_muted)),
         ]),
         Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(
                 format!("message {}", short_id(&revert.message_id)),
                 Style::default().fg(theme.text_muted),
@@ -37,7 +35,6 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
         .filter(|value| !value.trim().is_empty())
     {
         lines.push(Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(
                 format!("part {}", short_id(part_id)),
                 Style::default().fg(theme.text_muted),
@@ -51,7 +48,6 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
         .filter(|value| !value.trim().is_empty())
     {
         lines.push(Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(
                 format!("snapshot {}", short_id(snapshot)),
                 Style::default().fg(theme.text_muted),
@@ -65,19 +61,17 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
             DiffPreview::FromSnapshot(diff) => ("snapshot diff preview", diff),
         };
         lines.push(Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(preview_title, Style::default().fg(theme.text_muted)),
         ]));
 
         let diff_lines = DiffView::new().with_content(&diff).to_lines(theme);
         for line in diff_lines.iter().take(DIFF_PREVIEW_LINES) {
-            let mut spans = vec![Span::styled("│ ", Style::default().fg(theme.warning))];
+            let mut spans = Vec::new();
             spans.extend(line.spans.clone());
             lines.push(Line::from(spans));
         }
         if diff_lines.len() > DIFF_PREVIEW_LINES {
             lines.push(Line::from(vec![
-                Span::styled("│ ", Style::default().fg(theme.warning)),
                 Span::styled(
                     format!(
                         "… {} more diff lines",
@@ -89,7 +83,6 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
         }
     } else {
         lines.push(Line::from(vec![
-            Span::styled("│ ", Style::default().fg(theme.warning)),
             Span::styled(
                 "no diff preview available",
                 Style::default().fg(theme.text_muted),
@@ -98,7 +91,6 @@ pub fn render_revert_card(revert: &RevertInfo, theme: &Theme) -> Vec<Line<'stati
     }
 
     lines.push(Line::from(vec![
-        Span::styled("│ ", Style::default().fg(theme.warning)),
         Span::styled("Use ", Style::default().fg(theme.text_muted)),
         Span::styled("/undo", Style::default().fg(theme.primary)),
         Span::styled(" or ", Style::default().fg(theme.text_muted)),

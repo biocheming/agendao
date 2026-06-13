@@ -5,6 +5,27 @@ use crate::components::ProviderConnectMode;
 use crate::context::DialogSlot;
 
 impl App {
+    pub(super) fn sync_slash_popup_from_prompt(&mut self) {
+        let token = self
+            .prompt
+            .get_input()
+            .split_whitespace()
+            .last()
+            .filter(|token| token.starts_with('/'))
+            .map(|token| token.trim_start_matches('/').to_string())
+            .filter(|token| !token.is_empty());
+
+        match token {
+            Some(query) => {
+                self.slash_popup.open_with_query(query);
+                self.context.sync_dialog_open(DialogSlot::SlashPopup, true);
+            }
+            None => {
+                self.close_slash_popup_dialog();
+            }
+        }
+    }
+
     pub(super) fn open_alert_dialog(&mut self) {
         self.alert_dialog.open();
         self.context.sync_dialog_open(DialogSlot::Alert, true);
@@ -500,6 +521,32 @@ impl App {
                 Ok(true)
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.session_list_dialog.is_open() {
+                    let selected = self
+                        .session_list_dialog
+                        .select_at(mouse_event.column, mouse_event.row);
+                    self.event_caused_change = selected;
+                    return Ok(selected);
+                }
+                self.event_caused_change = false;
+                Ok(true)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.session_list_dialog.is_open()
+                    && self
+                        .session_list_dialog
+                        .select_at(mouse_event.column, mouse_event.row)
+                {
+                    let target = self.session_list_dialog.selected_session_id();
+                    self.close_session_list_dialog_modal();
+                    if let Some(session_id) = target {
+                        self.navigate_session_with_prompt_cleanup(session_id.clone());
+                        let _ = self.sync_session_from_server(&session_id);
+                        self.ensure_session_view(&session_id);
+                    }
+                    self.event_caused_change = true;
+                    return Ok(true);
+                }
                 self.event_caused_change = false;
                 Ok(true)
             }
@@ -1064,6 +1111,12 @@ impl App {
         }
 
         if self.slash_popup.is_open() {
+            let reactive_prompt_authority = self.can_render_reactive_route();
+            if reactive_prompt_authority {
+                // In reactive routes, slash popup keys flow through PromptComponent
+                // and re-enter App as explicit CustomEvent intents.
+                return Ok(false);
+            }
             match key.code {
                 KeyCode::Esc => self.close_slash_popup_dialog(),
                 KeyCode::Up => self.slash_popup.move_up(),

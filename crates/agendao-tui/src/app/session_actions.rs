@@ -20,7 +20,7 @@ impl App {
         };
 
         let context = self.context.clone();
-        std::thread::spawn(move || {
+        crate::app::app_impl::support::spawn_background_task(async move {
             let outcome = match client.delete_session(&session_id) {
                 Ok(_) => crate::event::SessionDeleteOutcome::Succeeded,
                 Err(error) => crate::event::SessionDeleteOutcome::Failed {

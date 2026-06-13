@@ -49,7 +49,10 @@ pub use question::{
     QuestionOption, QuestionPrompt, QuestionRequest, QuestionType, OTHER_OPTION_ID,
     OTHER_OPTION_LABEL,
 };
-pub use session::SessionView;
+pub use session::{SessionLeftMouseDownOutcome, SessionView};
+pub(crate) use sidebar::{
+    SidebarChromeMode, SidebarChromeProps, SidebarRenderInputs,
+};
 pub use sidebar::Sidebar;
 pub use slash_command::SlashCommandPopup;
 pub use spinner::{KnightRiderSpinner, Spinner, SpinnerMode, TaskKind};

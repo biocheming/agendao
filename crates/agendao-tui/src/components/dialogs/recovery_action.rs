@@ -1,12 +1,15 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub struct RecoveryActionItem {
@@ -15,6 +18,7 @@ pub struct RecoveryActionItem {
     pub description: String,
 }
 
+#[derive(Clone)]
 pub struct RecoveryActionDialog {
     items: Vec<RecoveryActionItem>,
     state: ListState,
@@ -76,7 +80,7 @@ impl RecoveryActionDialog {
             .map(|item| item.key.clone())
     }
 
-    pub fn render<S: RenderSurface>(&mut self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -116,7 +120,15 @@ impl RecoveryActionDialog {
             )
             .highlight_symbol("> ");
 
-        surface.render_stateful_widget(list, area, &mut self.state);
+        surface.render_stateful_widget(list, area, &mut self.state.clone());
+    }
+}
+
+impl Component for RecoveryActionDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
     }
 }
 
@@ -146,7 +158,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

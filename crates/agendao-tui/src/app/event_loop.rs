@@ -1,6 +1,55 @@
 use super::*;
+use crate::components::SessionLeftMouseDownOutcome;
 
 impl App {
+    fn handle_session_interrupt_request(&mut self) -> anyhow::Result<()> {
+        let current_sid = self.current_session_id();
+        if let Some(ref pending) = self.pending_shell_dispatch {
+            if current_sid.as_deref() == Some(&pending.session_id) {
+                let session_id = pending.session_id.clone();
+                let msg_id = pending.optimistic_message_id.clone();
+                if let Some(client) = self.context.get_api_client() {
+                    let _ = client.abort_session(&session_id);
+                }
+                self.settle_shell_dispatch(
+                    &session_id,
+                    Some(&msg_id),
+                    self::prompt_flow::ShellDispatchOutcome::Cancelled,
+                );
+                if self.prompt.is_shell_mode() {
+                    self.prompt.exit_shell_mode();
+                }
+                self.prompt.clear_interrupt_confirmation();
+                return Ok(());
+            }
+        }
+        if self.prompt.is_shell_mode() {
+            self.prompt.exit_shell_mode();
+            self.prompt.clear_interrupt_confirmation();
+            return Ok(());
+        }
+        if let Route::Session { session_id } = self.context.current_route() {
+            let status = {
+                let session_ctx = self.context.session.read();
+                session_ctx.status(&session_id).clone()
+            };
+            if !matches!(status, SessionStatus::Idle) {
+                if !self.prompt.register_interrupt_keypress() {
+                    return Ok(());
+                }
+                if let Some(client) = self.context.get_api_client() {
+                    let _ = client.abort_session(&session_id);
+                }
+                self.prompt.clear_interrupt_confirmation();
+                self.set_session_status(&session_id, SessionStatus::Idle);
+                self.sync_prompt_spinner_state();
+                return Ok(());
+            }
+        }
+        self.prompt.clear_interrupt_confirmation();
+        Ok(())
+    }
+
     fn handle_mouse_down(
         &mut self,
         button: crossterm::event::MouseButton,
@@ -12,73 +61,45 @@ impl App {
             if self.selection.is_active() {
                 self.copy_selection();
             }
+            self.suppress_current_terminal_event_for_reratui();
             return Ok(true);
         }
 
         if self.handle_permission_prompt_mouse(col, row) {
+            self.suppress_current_terminal_event_for_reratui();
             return Ok(true);
         }
 
         if self.handle_question_prompt_mouse(col, row) {
+            self.suppress_current_terminal_event_for_reratui();
             return Ok(true);
         }
 
         if self.handle_status_dialog_mouse(button, col, row) {
+            self.suppress_current_terminal_event_for_reratui();
             return Ok(true);
         }
 
         if self.handle_dialog_mouse(mouse_event)? {
+            self.suppress_current_terminal_event_for_reratui();
             return Ok(true);
         }
 
         if button == crossterm::event::MouseButton::Left {
             if let Route::Session { .. } = self.context.current_route() {
                 if let Some(sv) = self.context.session_view_handle() {
-                    if sv.handle_sidebar_click(&self.context, col, row) {
-                        if let Some(session_id) = sv.take_pending_navigate_session() {
-                            self.navigate_session_with_prompt_cleanup(session_id.clone());
-                            let _ = self.sync_session_from_server(&session_id);
-                            self.ensure_session_view(&session_id);
+                    match sv.left_mouse_down_outcome(col, row) {
+                        SessionLeftMouseDownOutcome::Consumed => {
+                            self.selection.clear();
+                            self.suppress_current_terminal_event_for_reratui();
+                            return Ok(true);
                         }
-                        if let Some(cs_idx) = sv.take_pending_navigate_attached() {
-                            let sessions = self.context.attached_sessions();
-                            if let Some(child) = sessions.get(cs_idx) {
-                                let attached_id = child.session_id.clone();
-                                self.navigate_session_with_prompt_cleanup(attached_id.clone());
-                                let _ = self.sync_session_from_server(&attached_id);
-                                self.ensure_session_view(&attached_id);
-                            }
-                        }
-                        if sv.take_pending_navigate_parent() {
-                            self.navigate_to_parent_session();
-                        }
-                        return Ok(true);
-                    }
-                    if sv.is_point_in_sidebar(col, row) {
-                        return Ok(true);
-                    }
-                    if sv.handle_scrollbar_click(col, row) {
-                        return Ok(true);
-                    }
-                    if sv.handle_click(col, row) {
-                        return Ok(true);
-                    }
-                }
-            }
-            if let Route::Session { .. } = self.context.current_route() {
-                if let Some(sv) = self.context.session_view_handle() {
-                    if let Some(area) = sv.selection_area() {
-                        if col >= area.x
-                            && col < area.x.saturating_add(area.width)
-                            && row >= area.y
-                            && row < area.y.saturating_add(area.height)
-                        {
+                        SessionLeftMouseDownOutcome::BeginSelection { area } => {
                             self.selection.start_scoped(row, col, Some(area));
-                        } else {
+                        }
+                        SessionLeftMouseDownOutcome::ClearSelection => {
                             self.selection.clear();
                         }
-                    } else {
-                        self.selection.clear();
                     }
                 }
             } else {
@@ -100,14 +121,17 @@ impl App {
                 let key = normalize_key_event(*key);
 
                 if self.handle_permission_prompt_key(key) {
+                    self.suppress_current_terminal_event_for_reratui();
                     return Ok(());
                 }
 
                 if self.handle_question_prompt_key(key) {
+                    self.suppress_current_terminal_event_for_reratui();
                     return Ok(());
                 }
 
                 if self.handle_dialog_key(key)? {
+                    self.suppress_current_terminal_event_for_reratui();
                     return Ok(());
                 }
 
@@ -131,12 +155,14 @@ impl App {
                         if let Some(action) = action {
                             self.execute_ui_action(action)?;
                         }
+                        self.suppress_current_terminal_event_for_reratui();
                         return Ok(());
                     }
                 }
 
                 if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
                     self.leader_state.start(KeyCode::Char('x'));
+                    self.suppress_current_terminal_event_for_reratui();
                     return Ok(());
                 }
 
@@ -144,353 +170,122 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.modifiers.contains(KeyModifiers::SHIFT)
                 {
+                    if !self.selection.is_active() && self.can_render_reactive_route() {
+                        return Ok(());
+                    }
                     self.copy_selection();
+                    self.suppress_current_terminal_event_for_reratui();
                     return Ok(());
                 }
 
                 if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
                     if self.selection.is_active() {
                         self.copy_selection();
+                        self.suppress_current_terminal_event_for_reratui();
                         return Ok(());
                     }
-                    self.state = AppState::Exiting;
+                    if self.can_render_reactive_route() {
+                        return Ok(());
+                    }
+                    self.execute_ui_action(UiActionId::Exit)?;
                     return Ok(());
                 }
 
                 if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
-                    tracing::info!("Ctrl+K pressed");
-                    if let Some(session_id) = self.current_session_id() {
-                        let active_tool_calls = self.context.get_active_tool_calls();
-                        let tool_call_count = active_tool_calls.len();
-                        tracing::info!(
-                            "Active session: {}, tool call count: {}",
-                            session_id,
-                            tool_call_count
-                        );
-
-                        if tool_call_count > 1 {
-                            let items: Vec<ToolCallItem> = active_tool_calls
-                                .values()
-                                .map(|info| ToolCallItem {
-                                    id: info.id.clone(),
-                                    tool_name: info.tool_name.clone(),
-                                })
-                                .collect();
-                            self.open_tool_call_cancel_dialog_modal(items);
-                        } else if tool_call_count == 1 {
-                            if let Some(api) = self.context.get_api_client() {
-                                let tool_call_id = active_tool_calls.keys().next().unwrap().clone();
-                                if let Err(e) = api.cancel_tool_call(&session_id, &tool_call_id) {
-                                    self.toast.show(
-                                        ToastVariant::Error,
-                                        &format!("Failed to cancel tool: {}", e),
-                                        3000,
-                                    );
-                                } else {
-                                    self.toast.show(
-                                        ToastVariant::Info,
-                                        "Tool cancellation requested",
-                                        3000,
-                                    );
-                                }
-                            }
-                        } else if let Some(api) = self.context.get_api_client() {
-                            match api.abort_session(&session_id) {
-                                Err(e) => {
-                                    self.toast.show(
-                                        ToastVariant::Error,
-                                        &format!("Failed to cancel session: {}", e),
-                                        3000,
-                                    );
-                                }
-                                Ok(value) => {
-                                    let message = value
-                                        .get("target")
-                                        .and_then(|value| value.as_str())
-                                        .map(|target| match target {
-                                            "stage" => {
-                                                let stage = value
-                                                    .get("stage")
-                                                    .and_then(|value| value.as_str())
-                                                    .unwrap_or("current stage");
-                                                format!("Stage cancellation requested: {}", stage)
-                                            }
-                                            _ => "Run cancellation requested".to_string(),
-                                        })
-                                        .unwrap_or_else(|| {
-                                            "Run cancellation requested".to_string()
-                                        });
-                                    self.toast.show(ToastVariant::Info, &message, 3000);
-                                }
-                            }
-                        }
+                    if self.can_render_reactive_route() {
+                        return Ok(());
                     }
+                    self.request_abort_execution();
                     return Ok(());
                 }
 
                 if key.code == KeyCode::Esc {
-                    if let Some(sv) = self.context.session_view_handle() {
-                        if sv.clear_sidebar_focus() {
-                            return Ok(());
-                        }
-                    }
                     if self.selection.is_active() {
                         self.selection.clear();
+                        self.suppress_current_terminal_event_for_reratui();
                         return Ok(());
-                    }
-                }
-
-                if let Some(sv) = self
-                    .context
-                    .session_view_handle()
-                    .filter(|sv| sv.sidebar_process_focus())
-                {
-                    let proc_count = self.context.processes.read().len();
-                    match key.code {
-                        KeyCode::Up => {
-                            sv.move_sidebar_process_selection_up();
-                            return Ok(());
-                        }
-                        KeyCode::Down => {
-                            sv.move_sidebar_process_selection_down(proc_count);
-                            return Ok(());
-                        }
-                        KeyCode::Char('d') | KeyCode::Delete => {
-                            let procs = self.context.processes.read().clone();
-                            if let Some(proc) = procs.get(sv.sidebar_process_selected()) {
-                                let _ =
-                                    agendao_orchestrator::global_lifecycle().kill_process(proc.pid);
-                                *self.context.processes.write() =
-                                    agendao_core::process_registry::global_registry().list();
-                                sv.clamp_sidebar_process_selection(
-                                    self.context.processes.read().len(),
-                                );
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(sv) = self
-                    .context
-                    .session_view_handle()
-                    .filter(|sv| sv.sidebar_workspace_focus())
-                {
-                    match key.code {
-                        KeyCode::Up => {
-                            sv.move_sidebar_workspace_selection_up();
-                            return Ok(());
-                        }
-                        KeyCode::Down => {
-                            let count = sv.sidebar_workspace_node_count();
-                            sv.move_sidebar_workspace_selection_down(count);
-                            return Ok(());
-                        }
-                        KeyCode::Left => {
-                            if sv.collapse_sidebar_workspace_selection() {
-                                return Ok(());
-                            }
-                        }
-                        KeyCode::Right => {
-                            if sv.expand_sidebar_workspace_selection() {
-                                return Ok(());
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(sv) = self
-                    .context
-                    .session_view_handle()
-                    .filter(|sv| sv.sidebar_attached_session_focus())
-                {
-                    match key.code {
-                        KeyCode::Up => {
-                            sv.move_sidebar_attached_session_selection_up();
-                            return Ok(());
-                        }
-                        KeyCode::Down => {
-                            let count = self.context.attached_sessions().len();
-                            sv.move_sidebar_attached_session_selection_down(count);
-                            return Ok(());
-                        }
-                        KeyCode::Enter => {
-                            let sessions = self.context.attached_sessions();
-                            if let Some(child) =
-                                sessions.get(sv.sidebar_attached_session_selected())
-                            {
-                                let attached_id = child.session_id.clone();
-                                self.context.navigate_session(attached_id.clone());
-                                self.ensure_session_view(&attached_id);
-                                let _ = self.sync_session_from_server(&attached_id);
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-                }
-
-                if key.code == KeyCode::Char('p') && key.modifiers.is_empty() {
-                    if let Some(sv) = self.context.session_view_handle() {
-                        if sv.toggle_sidebar_process_focus(self.terminal_width()) {
-                            return Ok(());
-                        }
                     }
                 }
 
                 if self.matches_keybind("session_interrupt", key) {
-                    let current_sid = self.current_session_id();
-                    if let Some(ref pending) = self.pending_shell_dispatch {
-                        if current_sid.as_deref() == Some(&pending.session_id) {
-                            let session_id = pending.session_id.clone();
-                            let msg_id = pending.optimistic_message_id.clone();
-                            if let Some(client) = self.context.get_api_client() {
-                                let _ = client.abort_session(&session_id);
-                            }
-                            self.settle_shell_dispatch(
-                                &session_id,
-                                Some(&msg_id),
-                                self::prompt_flow::ShellDispatchOutcome::Cancelled,
-                            );
-                            if self.prompt.is_shell_mode() {
-                                self.prompt.exit_shell_mode();
-                            }
-                            self.prompt.clear_interrupt_confirmation();
-                            return Ok(());
-                        }
-                    }
-                    if self.prompt.is_shell_mode() {
-                        self.prompt.exit_shell_mode();
-                        self.prompt.clear_interrupt_confirmation();
+                    if self.can_render_reactive_route() {
                         return Ok(());
                     }
-                    if let Route::Session { session_id } = self.context.current_route() {
-                        let status = {
-                            let session_ctx = self.context.session.read();
-                            session_ctx.status(&session_id).clone()
-                        };
-                        if !matches!(status, SessionStatus::Idle) {
-                            if !self.prompt.register_interrupt_keypress() {
-                                return Ok(());
-                            }
-                            if let Some(client) = self.context.get_api_client() {
-                                let _ = client.abort_session(&session_id);
-                            }
-                            self.prompt.clear_interrupt_confirmation();
-                            self.set_session_status(&session_id, SessionStatus::Idle);
-                            self.sync_prompt_spinner_state();
-                            return Ok(());
-                        }
-                    }
-                    self.prompt.clear_interrupt_confirmation();
+                    self.handle_session_interrupt_request()?;
                     return Ok(());
                 }
 
-                if self.matches_keybind("input_paste", key) {
+                if self.matches_keybind("input_paste", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.paste_clipboard_to_prompt();
                     return Ok(());
                 }
-                if self.matches_keybind("input_copy", key) {
+                if self.matches_keybind("input_copy", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.copy_prompt_to_clipboard();
                     return Ok(());
                 }
-                if self.matches_keybind("input_cut", key) {
+                if self.matches_keybind("input_cut", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.cut_prompt_to_clipboard();
                     return Ok(());
                 }
-                if self.matches_keybind("history_previous", key) {
-                    self.prompt.history_previous_entry();
-                    return Ok(());
-                }
-                if self.matches_keybind("history_next", key) {
-                    self.prompt.history_next_entry();
-                    return Ok(());
-                }
-                if self.matches_keybind("page_up", key) {
-                    if let Route::Session { .. } = self.context.current_route() {
-                        if let Some(sv) = self.context.session_view_handle() {
-                            sv.scroll_page_up();
-                            return Ok(());
-                        }
-                    }
-                }
-                if self.matches_keybind("page_down", key) {
-                    if let Route::Session { .. } = self.context.current_route() {
-                        if let Some(sv) = self.context.session_view_handle() {
-                            sv.scroll_page_down();
-                            return Ok(());
-                        }
-                    }
-                }
-
-                if self.matches_keybind("command_palette", key) {
+                if self.matches_keybind("command_palette", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.sync_command_palette_labels();
                     self.open_command_palette_dialog();
                     return Ok(());
                 }
-                if self.matches_keybind("model_cycle", key) {
+                if self.matches_keybind("model_cycle", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.refresh_model_dialog();
                     self.open_model_select_dialog();
                     return Ok(());
                 }
-                if self.matches_keybind("agent_cycle", key) {
+                if self.matches_keybind("agent_cycle", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.cycle_agent(1);
                     return Ok(());
                 }
-                if self.matches_keybind("agent_cycle_reverse", key) {
+                if self.matches_keybind("agent_cycle_reverse", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.cycle_agent(-1);
                     return Ok(());
                 }
-                if self.matches_keybind("variant_cycle", key) {
+                if self.matches_keybind("variant_cycle", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.cycle_model_variant();
                     return Ok(());
                 }
-                if self.matches_keybind("session_parent", key) {
-                    self.navigate_to_parent_session();
-                    return Ok(());
-                }
-                if self.matches_keybind("session_attached_open", key) {
-                    self.navigate_to_attached_session();
-                    return Ok(());
-                }
-                if self.matches_keybind("session_attached_focus", key) {
-                    if let Some(sv) = self.context.session_view_handle() {
-                        let _ = sv.toggle_sidebar_attached_session_focus(self.terminal_width());
-                    }
-                    return Ok(());
-                }
-                if self.matches_keybind("session_workspace_focus", key) {
-                    if let Some(sv) = self.context.session_view_handle() {
-                        let _ = sv.toggle_sidebar_workspace_focus(self.terminal_width());
-                    }
-                    return Ok(());
-                }
-                if self.matches_keybind("sidebar_toggle", key) {
-                    self.toggle_session_sidebar();
-                    return Ok(());
-                }
-                if self.matches_keybind("display_thinking", key) {
+                if self.matches_keybind("display_thinking", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.context.toggle_thinking();
                     return Ok(());
                 }
-                if self.matches_keybind("tool_details", key) {
+                if self.matches_keybind("tool_details", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.context.toggle_tool_details();
                     return Ok(());
                 }
-                if self.matches_keybind("input_clear", key) {
+                if self.matches_keybind("input_clear", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.discard_prompt_draft();
                     return Ok(());
                 }
-                if self.matches_keybind("input_newline", key) {
-                    let route = self.context.current_route();
-                    if matches!(route, Route::Home | Route::Session { .. }) {
-                        self.prompt.insert_text("\n");
-                        return Ok(());
-                    }
-                }
-                if self.matches_keybind("help_toggle", key) {
+                if self.matches_keybind("help_toggle", key)
+                    && !self.can_render_reactive_route()
+                {
                     self.open_help_dialog();
                     return Ok(());
                 }
@@ -499,20 +294,13 @@ impl App {
                 match route {
                     Route::Home | Route::Session { .. } => {
                         if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+                            if self.can_render_reactive_route() {
+                                return Ok(());
+                            }
                             self.submit_prompt()?;
-                        } else if !key.modifiers.contains(KeyModifiers::CONTROL)
-                            && !key.modifiers.contains(KeyModifiers::ALT)
-                        {
-                            self.prompt.handle_key(key);
                         }
                     }
-                    _ => {
-                        if !key.modifiers.contains(KeyModifiers::CONTROL)
-                            && !key.modifiers.contains(KeyModifiers::ALT)
-                        {
-                            self.prompt.handle_key(key);
-                        }
-                    }
+                    _ => {}
                 }
             }
             Event::Resize(width, height) => {
@@ -530,60 +318,58 @@ impl App {
                     }
                     MouseEventKind::ScrollUp => {
                         if self.handle_dialog_mouse(mouse_event)? {
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
-                        }
-                        if let Some(sv) = self.context.session_view_handle() {
-                            if !sv.scroll_sidebar_up_at(mouse_event.column, mouse_event.row) {
-                                sv.scroll_up_mouse();
-                            }
                         }
                     }
                     MouseEventKind::ScrollDown => {
                         if self.handle_dialog_mouse(mouse_event)? {
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
-                        }
-                        if let Some(sv) = self.context.session_view_handle() {
-                            if !sv.scroll_sidebar_down_at(mouse_event.column, mouse_event.row) {
-                                sv.scroll_down_mouse();
-                            }
                         }
                     }
                     MouseEventKind::Drag(_) => {
                         if self.status_dialog.is_open() {
                             self.selection.update(mouse_event.row, mouse_event.column);
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
+                        }
+                        if let Route::Session { .. } = self.context.current_route() {
+                            if let Some(sv) = self.context.session_view_handle() {
+                                if sv.consumes_left_drag(mouse_event.column, mouse_event.row) {
+                                    self.suppress_current_terminal_event_for_reratui();
+                                    return Ok(());
+                                }
+                            }
                         }
                         let col = mouse_event.column;
                         let row = mouse_event.row;
-                        if let Some(sv) = self.context.session_view_handle() {
-                            if sv.handle_scrollbar_drag(col, row) {
-                                return Ok(());
-                            }
-                        }
                         self.selection.update(row, col);
                     }
                     MouseEventKind::Moved => {
                         if self.status_dialog.is_open() {
                             self.event_caused_change = false;
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
                         }
                         if self.handle_dialog_mouse(mouse_event)? {
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
                         }
-                        self.event_caused_change = self
-                            .context
-                            .session_view_handle()
-                            .map(|sv| sv.handle_mouse_move(mouse_event.column, mouse_event.row))
-                            .unwrap_or(false);
+                        self.event_caused_change = false;
                     }
                     MouseEventKind::Up(_) => {
                         if self.status_dialog.is_open() {
                             self.selection.finalize();
+                            self.suppress_current_terminal_event_for_reratui();
                             return Ok(());
                         }
-                        if let Some(sv) = self.context.session_view_handle() {
-                            if sv.stop_scrollbar_drag() {
-                                return Ok(());
+                        if let Route::Session { .. } = self.context.current_route() {
+                            if let Some(sv) = self.context.session_view_handle() {
+                                if sv.consumes_left_mouse_up() {
+                                    self.suppress_current_terminal_event_for_reratui();
+                                    return Ok(());
+                                }
                             }
                         }
                         self.selection.finalize();
@@ -592,13 +378,13 @@ impl App {
                 }
             }
             Event::Paste(text) => {
+                // Terminal paste is now reserved for legacy dialog text fields.
+                // Reactive prompt paste flows through PromptComponent -> PromptEdited.
                 if !text.is_empty() {
                     if self.provider_dialog.is_open() && self.provider_dialog.accepts_text_input() {
                         for c in text.chars() {
                             self.provider_dialog.push_char(c);
                         }
-                    } else {
-                        self.prompt.insert_text(text);
                     }
                 }
             }
@@ -825,8 +611,101 @@ impl App {
                         }
                     }
                 }
+                CustomEvent::SessionNavigationIntent { kind } => {
+                    match kind {
+                        crate::event::SessionNavigationIntentKind::Parent => {
+                            self.navigate_to_parent_session();
+                        }
+                        crate::event::SessionNavigationIntentKind::Attached => {
+                            self.navigate_to_attached_session();
+                        }
+                        crate::event::SessionNavigationIntentKind::Session(session_id) => {
+                            self.navigate_session_with_prompt_cleanup(session_id.clone());
+                            self.ensure_session_view(session_id);
+                            let _ = self.sync_session_from_server(session_id);
+                        }
+                    }
+                    self.event_caused_change = true;
+                }
+                CustomEvent::SessionSidebarIntent { kind } => {
+                    match kind {
+                        crate::event::SessionSidebarIntentKind::KillSelectedProcess => {
+                            if let Some(sv) = self
+                                .context
+                                .session_view_handle()
+                                .filter(|sv| sv.sidebar_process_focus())
+                            {
+                                let procs = self.context.processes.read().clone();
+                                if let Some(proc) = procs.get(sv.sidebar_process_selected()) {
+                                    let _ = agendao_orchestrator::global_lifecycle()
+                                        .kill_process(proc.pid);
+                                    *self.context.processes.write() =
+                                        agendao_core::process_registry::global_registry().list();
+                                    sv.clamp_sidebar_process_selection(
+                                        self.context.processes.read().len(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    self.event_caused_change = true;
+                }
+                CustomEvent::SlashPopupIntent { kind } => {
+                    if self.slash_popup.is_open() {
+                        match kind {
+                            crate::event::SlashPopupIntentKind::Close => {
+                                self.close_slash_popup_dialog();
+                            }
+                            crate::event::SlashPopupIntentKind::MoveUp => {
+                                self.slash_popup.move_up();
+                            }
+                            crate::event::SlashPopupIntentKind::MoveDown => {
+                                self.slash_popup.move_down();
+                            }
+                            crate::event::SlashPopupIntentKind::SelectCurrent => {
+                                self.slash_popup.select_current();
+                                if let Some(action) = self.slash_popup.take_action() {
+                                    self.execute_ui_action(action)?;
+                                }
+                            }
+                        }
+                        self.event_caused_change = true;
+                    }
+                }
+                CustomEvent::SessionInterruptRequested => {
+                    self.handle_session_interrupt_request()?;
+                    self.event_caused_change = true;
+                }
+                CustomEvent::PromptEdited { prompt } => {
+                    self.prompt = (*prompt.clone()).clone();
+                    self.sync_slash_popup_from_prompt();
+                    self.event_caused_change = true;
+                }
+                CustomEvent::PromptSubmitRequested { prompt } => {
+                    self.prompt = (*prompt.clone()).clone();
+                    self.close_slash_popup_dialog();
+                    self.submit_prompt()?;
+                    self.event_caused_change = true;
+                }
+                CustomEvent::PromptPasteText { text } => {
+                    self.prompt.insert_text(text);
+                    self.sync_slash_popup_from_prompt();
+                    self.event_caused_change = true;
+                }
+                CustomEvent::UiActionRequested { action } => {
+                    self.execute_ui_action(*action)?;
+                    self.event_caused_change = true;
+                }
+                CustomEvent::SessionUpdated { session_id, source } => {
+                    if source.as_deref() == Some("stream.reconnected") {
+                        self.queue_session_scoped_repair(session_id);
+                    }
+                    self.handle_session_updated_reconcile(session_id, source.as_deref());
+                }
+                CustomEvent::SessionStatusReconnecting { session_id } => {
+                    self.apply_session_run_status_change(session_id, SessionStatus::Reconnecting);
+                }
                 CustomEvent::FrontendEvent(event) => self.apply_frontend_event(event),
-                CustomEvent::StateChanged(change) => self.handle_state_change(change),
                 _ => {}
             },
             Event::Tick => {

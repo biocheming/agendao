@@ -1,10 +1,18 @@
 use super::*;
+use std::future::Future;
 
 pub(super) fn format_theme_option_label(theme_id: &str) -> String {
     if let Some((base, variant)) = split_theme_variant(theme_id) {
         return format!("{base} ({variant})");
     }
     theme_id.to_string()
+}
+
+pub(super) fn spawn_background_task<F>(task: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(task);
 }
 
 fn split_theme_variant(theme_id: &str) -> Option<(&str, &str)> {

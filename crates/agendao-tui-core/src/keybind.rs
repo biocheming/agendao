@@ -149,6 +149,7 @@ impl std::fmt::Display for Keybind {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct KeybindRegistry {
     bindings: HashMap<String, Keybind>,
 }
@@ -188,7 +189,7 @@ impl KeybindRegistry {
         self.register("agent_cycle", Keybind::key(KeyCode::Tab));
         self.register("agent_cycle_reverse", Keybind::key(KeyCode::BackTab));
         self.register("model_cycle", Keybind::ctrl(KeyCode::Char('m')));
-        self.register("variant_cycle", Keybind::ctrl(KeyCode::Char('v')));
+        self.register("variant_cycle", Keybind::ctrl(KeyCode::Char('l')));
 
         self.register("session_attached_focus", Keybind::ctrl(KeyCode::Char('j')));
         self.register("session_workspace_focus", Keybind::ctrl(KeyCode::Char('k')));
@@ -309,6 +310,20 @@ mod tests {
         assert_eq!(
             registry.get("display_thinking"),
             Some(&Keybind::ctrl(KeyCode::Char('g')))
+        );
+    }
+
+    #[test]
+    fn variant_cycle_no_longer_conflicts_with_clipboard_paste() {
+        let registry = KeybindRegistry::new();
+
+        assert_eq!(
+            registry.get("input_paste"),
+            Some(&Keybind::ctrl(KeyCode::Char('v')))
+        );
+        assert_eq!(
+            registry.get("variant_cycle"),
+            Some(&Keybind::ctrl(KeyCode::Char('l')))
         );
     }
 }
