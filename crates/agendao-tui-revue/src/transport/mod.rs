@@ -11,6 +11,7 @@ pub mod local;
 pub mod noop;
 
 pub mod unix;
+pub mod http_sse;
 
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
@@ -33,9 +34,12 @@ pub fn spawn_event_source(
     if let Some(ref path) = unix_socket {
         return unix::spawn_unix_event_source(tx, path.clone(), handle, session_filter);
     }
-    // 2. HTTP SSE (TODO: implement http_sse.rs)
-    if let Some(_url) = base_url {
-        tracing::info!("HTTP SSE transport not yet implemented, falling back to local-direct");
+    // 2. HTTP SSE
+    if let Some(ref url) = base_url {
+        #[cfg(feature = "local-server")]
+        return http_sse::spawn_http_event_source(tx, url.clone(), None, handle, session_filter);
+        #[cfg(not(feature = "local-server"))]
+        return http_sse::spawn_http_event_source(tx, url.clone(), None, handle, session_filter);
     }
     // 3. Local-direct
     #[cfg(feature = "local-server")]

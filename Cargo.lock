@@ -876,6 +876,9 @@ dependencies = [
  "agendao-types",
  "anyhow",
  "dirs",
+ "futures",
+ "reqwest",
+ "reqwest-eventsource",
  "revue",
  "serde",
  "serde_json",
@@ -883,6 +886,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
