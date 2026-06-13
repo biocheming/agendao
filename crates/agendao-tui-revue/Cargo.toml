@@ -1,0 +1,18 @@
+[package]
+name = "agendao-tui-revue"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AgenDao TUI frontend built with Revue — Vue-style reactive terminal UI"
+
+[dependencies]
+revue = { path = "../../../revue" }
+agendao-server-core = { path = "../agendao-server-core" }
+agendao-types = { path = "../agendao-types" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
