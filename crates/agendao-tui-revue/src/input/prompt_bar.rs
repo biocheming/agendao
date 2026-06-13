@@ -6,7 +6,7 @@
 use revue::prelude::*;
 use revue::event::Key;
 
-use crate::store::session_store::RunStatus;
+use crate::store::types::RunStatus;
 
 /// The prompt input bar at the bottom of the session screen.
 pub struct PromptBar {
