@@ -12,8 +12,13 @@ agendao-client = { path = "../agendao-client" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-types = { path = "../agendao-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-util = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+agendao-server-local = { path = "../agendao-server-local", optional = true }
+
+[features]
+local-server = ["dep:agendao-server-local", "dep:tokio-util"]

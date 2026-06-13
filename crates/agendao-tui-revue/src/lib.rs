@@ -6,5 +6,6 @@ pub mod output;
 pub mod screen;
 pub mod store;
 pub mod telemetry;
+pub mod transport;
 
 pub use app::run_app;
