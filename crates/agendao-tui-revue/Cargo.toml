@@ -21,4 +21,5 @@ tracing-subscriber = "0.3"
 agendao-server-local = { path = "../agendao-server-local", optional = true }
 
 [features]
+default = ["local-server"]
 local-server = ["dep:agendao-server-local", "dep:tokio-util"]

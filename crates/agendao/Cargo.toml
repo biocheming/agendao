@@ -49,6 +49,7 @@ product-tui-bin = [
 ]
 product-tui-revue-bin = [
     "dep:agendao-tui-revue",
+    "agendao-tui-revue/local-server",
     "dep:dirs",
     "dep:tracing-subscriber",
 ]

@@ -82,7 +82,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
         }
 
         FrontendEvent::SessionProjectionReplaced { session_id, usage, .. } => {
-            if let Some(u) = usage {
+            if let Some(ref u) = usage {
                 let input = u.input_tokens;
                 let output = u.output_tokens;
                 let read = u.cache_read_tokens;

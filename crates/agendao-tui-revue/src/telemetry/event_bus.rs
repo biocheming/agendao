@@ -79,4 +79,74 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EventBus>();
     }
+
+    /// Integration test: EventBus → SessionStore full pipeline.
+    #[test]
+    fn event_bus_to_session_pipeline() {
+        let mut bus = EventBus::new();
+        let session = crate::store::session_store::SessionStore::new();
+        let tx = bus.sender();
+
+        // Simulate SSE: OutputBlockAppended (assistant message delta)
+        tx.send(FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({"kind": "message", "phase": "delta", "text": "Hello"}),
+            id: Some("msg-1".into()),
+            live_identity: None,
+        }).unwrap();
+
+        tx.send(FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({"kind": "message", "phase": "delta", "text": " World"}),
+            id: Some("msg-1".into()),
+            live_identity: None,
+        }).unwrap();
+
+        // Drain and apply
+        let events = bus.drain();
+        assert_eq!(events.len(), 2);
+        for e in &events {
+            crate::telemetry::event_handler::apply_frontend_event(e, &session);
+        }
+
+        // Verify: session has 1 assistant message with "Hello World"
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            crate::store::types::TranscriptBlock::AssistantMsg { content, .. } => {
+                assert_eq!(content, "Hello World");
+            }
+            _ => panic!("expected AssistantMsg"),
+        }
+    }
+
+    /// Integration test: ToolCall lifecycle.
+    #[test]
+    fn event_bus_tool_call_lifecycle() {
+        let mut bus = EventBus::new();
+        let session = crate::store::session_store::SessionStore::new();
+        let tx = bus.sender();
+
+        tx.send(FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({"kind": "tool_call", "phase": "start", "tool_name": "bash", "params": "ls -la"}),
+            id: Some("t1".into()),
+            live_identity: None,
+        }).unwrap();
+
+        let events = bus.drain();
+        for e in &events {
+            crate::telemetry::event_handler::apply_frontend_event(e, &session);
+        }
+
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            crate::store::types::TranscriptBlock::ToolCall { name, params, .. } => {
+                assert_eq!(name, "bash");
+                assert_eq!(params, "ls -la");
+            }
+            _ => panic!("expected ToolCall block"),
+        }
+    }
 }
