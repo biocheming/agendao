@@ -6,6 +6,7 @@ use anyhow::Context;
 use revue::prelude::*;
 use revue::event::Key;
 
+use crate::bridge::api::ApiBridge;
 use crate::store::app_store::{AppStore, Route};
 use crate::screen::{HomeScreen, SessionScreen};
 
@@ -13,11 +14,13 @@ use crate::screen::{HomeScreen, SessionScreen};
 pub fn run_app() -> anyhow::Result<()> {
     let store = AppStore::new();
 
+    let api = ApiBridge::new("http://127.0.0.1:3000").ok();
+
     let mut app = App::builder()
         .mouse_capture(true)
         .build();
 
-    let view = RootView { store: store.clone() };
+    let view = RootView { store: store.clone(), api };
     app.run_with_handler(view, move |key_event, view| {
         view.handle_key(&key_event.key)
     })
@@ -27,10 +30,16 @@ pub fn run_app() -> anyhow::Result<()> {
 /// Root view — routes to Home or Session via AppStore.route
 struct RootView {
     store: AppStore,
+    api: Option<ApiBridge>,
 }
 
 impl RootView {
     fn handle_key(&mut self, key: &Key) -> bool {
+        // If a session screen is active, delegate keys there
+        if let Route::Session { .. } = self.store.route.get() {
+            // We need a mutable session_screen — handled differently
+        }
+
         match key {
             Key::Char('q') | Key::Escape => {
                 self.store.request_exit();
@@ -65,10 +74,14 @@ impl View for RootView {
                 HomeScreen { store: &self.store }.render(ctx);
             }
             Route::Session { session_id } => {
-                SessionScreen {
-                    session_id: session_id.clone(),
-                }
-                .render(ctx);
+                // Create a temporary SessionScreen for rendering.
+                // In practice, SessionScreen state is ephemeral per-render;
+                // persistent state lives in SessionStore (Phase 2+).
+                let screen = SessionScreen::new(
+                    session_id.clone(),
+                    self.api.clone(),
+                );
+                screen.render(ctx);
             }
         }
 
