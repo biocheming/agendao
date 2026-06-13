@@ -177,6 +177,7 @@ impl UsageMessage for Message {
 pub struct SessionContext {
     pub sessions: HashMap<String, Session>,
     pub messages: HashMap<String, Vec<Message>>,
+    pub message_revisions: HashMap<String, u64>,
     pub message_index: HashMap<String, HashMap<String, usize>>,
     // P0-4: Legacy fallback routing cache. Only populated when blocks
     // arrive without live_identity. The cache maps (session_id, prefix) →
@@ -380,6 +381,7 @@ impl SessionContext {
         };
         self.sessions.insert(id.clone(), session);
         self.messages.insert(id.clone(), Vec::new());
+        self.message_revisions.insert(id.clone(), 0);
         self.message_index.insert(id.clone(), HashMap::new());
         self.session_status.insert(id.clone(), SessionStatus::Idle);
         self.current_session_id = Some(id.clone());
@@ -390,6 +392,7 @@ impl SessionContext {
         let id = session.id.clone();
         self.sessions.insert(id.clone(), session);
         self.messages.entry(id.clone()).or_default();
+        self.message_revisions.entry(id.clone()).or_insert(0);
         self.message_index.entry(id.clone()).or_default();
         self.session_status
             .entry(id.clone())
@@ -416,6 +419,15 @@ impl SessionContext {
             index.insert(message.id.clone(), pos);
         }
         self.messages.insert(session_id.to_string(), messages);
+        *self
+            .message_revisions
+            .entry(session_id.to_string())
+            .or_default() = self
+            .message_revisions
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
         self.message_index.insert(session_id.to_string(), index);
     }
 
@@ -438,6 +450,7 @@ impl SessionContext {
         if let Some(existing_pos) = index.get(&message.id).copied() {
             if existing_pos < messages.len() {
                 messages[existing_pos] = message;
+                self.bump_message_revision(session_id);
                 return;
             }
             // Index drift should be rare; rebuild once to recover.
@@ -449,6 +462,7 @@ impl SessionContext {
         let message_id = message.id.clone();
         messages.push(message);
         index.insert(message_id, messages.len().saturating_sub(1));
+        self.bump_message_revision(session_id);
     }
 
     fn upsert_message_for_incremental_sync(&mut self, session_id: &str, message: Message) {
@@ -460,6 +474,7 @@ impl SessionContext {
         if let Some(existing_pos) = index.get(&message.id).copied() {
             if let Some(existing) = messages.get_mut(existing_pos) {
                 *existing = Self::merge_incremental_sync_message(existing, message);
+                self.bump_message_revision(session_id);
                 return;
             }
             index.clear();
@@ -473,12 +488,26 @@ impl SessionContext {
             messages[existing_pos] = message;
             index.remove(&previous_id);
             index.insert(messages[existing_pos].id.clone(), existing_pos);
+            self.bump_message_revision(session_id);
             return;
         }
 
         let message_id = message.id.clone();
         messages.push(message);
         index.insert(message_id, messages.len().saturating_sub(1));
+        self.bump_message_revision(session_id);
+    }
+
+    pub fn message_revision(&self, session_id: &str) -> u64 {
+        self.message_revisions.get(session_id).copied().unwrap_or(0)
+    }
+
+    fn bump_message_revision(&mut self, session_id: &str) {
+        let revision = self
+            .message_revisions
+            .entry(session_id.to_string())
+            .or_default();
+        *revision = revision.saturating_add(1);
     }
 
     fn matching_optimistic_user_message_pos(

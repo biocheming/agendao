@@ -2,14 +2,17 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+        Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph,
+        Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
     },
 };
+use reratui::{Buffer, Component};
 
 use crate::branding::{APP_NAME, APP_SHORT_NAME, APP_VERSION_DATE};
 use crate::components::usage_resolver::resolve_usage;
@@ -17,17 +20,88 @@ use crate::context::session_context::fold_messages;
 use crate::file_index::FileIndex;
 use crate::render::RenderSurface;
 use crate::state::{
-    AppContext, LspConnectionStatus, McpConnectionStatus, MessageRole, SidebarLifecycleState,
-    SidebarTab, TodoStatus,
+    AppContext, LspConnectionStatus, McpConnectionStatus, MessageRole, ProviderInfo,
+    SidebarLifecycleState, SidebarMode, SidebarTab, TodoStatus,
 };
 use crate::theme::Theme;
 use agendao_core::process_registry::ProcessKind;
+use agendao_core::process_registry::ProcessInfo;
+use agendao_types::{SessionContextClosureContract, SessionUsage, SessionUsageBooks};
+use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+use reratui::hooks::{stop_propagation, use_context, use_keyboard_press, use_mouse};
 
 const SIDEBAR_WORKSPACE_INDEX_MAX_DEPTH: usize = 8;
 
+#[derive(Clone)]
 pub struct Sidebar {
-    context: Arc<AppContext>,
     session_id: String,
+}
+
+struct SidebarComponent {
+    sidebar: Sidebar,
+    render_inputs: SidebarRenderInputs,
+    area: Rect,
+    state: Arc<Mutex<SidebarRenderState>>,
+    lifecycle: Arc<Mutex<SidebarLifecycleState>>,
+    floating: bool,
+    bg_override: Option<ratatui::style::Color>,
+    chrome: SidebarChromeProps,
+}
+
+#[derive(Clone)]
+struct SidebarRenderSnapshot {
+    session_ctx: crate::context::SessionContext,
+    mcp_servers: Vec<crate::context::McpServerStatus>,
+    lsp_status: Vec<crate::context::LspStatus>,
+    providers: Vec<ProviderInfo>,
+    processes: Vec<ProcessInfo>,
+    directory: String,
+    attached_sessions: Vec<crate::context::AttachedSessionInfo>,
+    execution_topology: Option<crate::api::SessionExecutionTopology>,
+    session_usage: Option<SessionUsage>,
+    session_usage_books: Option<SessionUsageBooks>,
+    context_closure_contract: Option<SessionContextClosureContract>,
+    current_context_tokens: Option<u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SidebarRenderSeed {
+    theme: Theme,
+    session_ctx: crate::context::SessionContext,
+    mcp_servers: Vec<crate::context::McpServerStatus>,
+    lsp_status: Vec<crate::context::LspStatus>,
+    providers: Vec<ProviderInfo>,
+    processes: Vec<ProcessInfo>,
+    directory: String,
+    attached_sessions: Vec<crate::context::AttachedSessionInfo>,
+    execution_topology: Option<crate::api::SessionExecutionTopology>,
+    session_usage: Option<SessionUsage>,
+    session_usage_books: Option<SessionUsageBooks>,
+    context_closure_contract: Option<SessionContextClosureContract>,
+    current_context_tokens: Option<u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SidebarRenderInputs {
+    theme: Theme,
+    snapshot: SidebarRenderSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarChromeMode {
+    Docked,
+    Overlay,
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SidebarChromeProps {
+    pub mode: SidebarChromeMode,
+    pub container_area: Rect,
+    pub layout_width: u16,
+    pub open_button_area: Option<Rect>,
+    pub close_button_area: Option<Rect>,
+    pub backdrop_area: Option<Rect>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -123,6 +197,10 @@ impl SidebarRenderState {
 
     pub fn contains_sidebar_point(&self, col: u16, row: u16) -> bool {
         contains_point(self.sidebar_area, col, row)
+    }
+
+    pub fn sidebar_area(&self) -> Option<Rect> {
+        self.sidebar_area
     }
 
     pub fn handle_click(
@@ -446,37 +524,520 @@ fn clamp_sidebar_workspace_selection(lifecycle: &mut SidebarLifecycleState, coun
     }
 }
 
+fn sidebar_is_visible(lifecycle: &SidebarLifecycleState, terminal_width: u16) -> bool {
+    match lifecycle.mode {
+        SidebarMode::Hide => false,
+        SidebarMode::Show => true,
+        SidebarMode::Auto => {
+            sidebar_is_wide(terminal_width) || lifecycle.visible
+        }
+    }
+}
+
+fn sidebar_is_wide(terminal_width: u16) -> bool {
+    terminal_width > crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD
+}
+
+fn sidebar_default_visible(terminal_width: u16) -> bool {
+    !sidebar_is_wide(terminal_width)
+}
+
 struct SidebarSection {
     key: &'static str,
     title: &'static str,
     lines: Vec<Line<'static>>,
+    meter: Option<SidebarSectionMeter>,
     attached_session_hit_rows: Option<Vec<Option<usize>>>,
     workspace_hit_rows: Option<Vec<Option<usize>>>,
     summary: Option<String>,
     collapsible: bool,
 }
 
-impl Sidebar {
-    pub fn new(context: Arc<AppContext>, session_id: String) -> Self {
-        Self {
-            context,
-            session_id,
+#[derive(Clone)]
+struct SidebarSectionMeter {
+    label: String,
+    ratio: f64,
+    style: Style,
+}
+
+struct SidebarSectionsDocument {
+    rows: Vec<SidebarSectionRow>,
+    toggle_hits: Vec<SidebarToggleHit>,
+    process_line_hits: Vec<(usize, usize)>,
+    attached_session_line_hits: Vec<(usize, usize)>,
+    workspace_line_hits: Vec<(usize, usize)>,
+}
+
+enum SidebarSectionRow {
+    Line(Line<'static>),
+    Gauge(SidebarSectionMeter),
+}
+
+fn build_sidebar_sections_document(
+    theme: &Theme,
+    state: &SidebarRenderState,
+    sections: Vec<SidebarSection>,
+) -> SidebarSectionsDocument {
+    let mut rows: Vec<SidebarSectionRow> = Vec::new();
+    let mut line_index = 0usize;
+    let mut toggle_hits: Vec<SidebarToggleHit> = Vec::new();
+    let mut process_line_hits: Vec<(usize, usize)> = Vec::new();
+    let mut attached_session_line_hits: Vec<(usize, usize)> = Vec::new();
+    let mut workspace_line_hits: Vec<(usize, usize)> = Vec::new();
+
+    for section in sections {
+        if !rows.is_empty() {
+            rows.push(SidebarSectionRow::Line(Line::from("")));
+            line_index += 1;
+        }
+
+        let collapsed = section.collapsible && state.is_collapsed(section.key);
+        let mut header = Vec::new();
+        if section.collapsible {
+            toggle_hits.push(SidebarToggleHit {
+                line_index,
+                section_key: section.key,
+            });
+            header.push(Span::styled(
+                if collapsed { "▶ " } else { "▼ " },
+                Style::default().fg(theme.text_muted),
+            ));
+        } else {
+            header.push(Span::styled("  ", Style::default().fg(theme.text_muted)));
+        }
+        header.push(Span::styled(
+            section.title.to_string(),
+            Style::default().fg(theme.text).bold(),
+        ));
+        if let Some(summary) = section.summary {
+            header.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
+            header.push(Span::styled(summary, Style::default().fg(theme.text_muted)));
+        }
+        rows.push(SidebarSectionRow::Line(Line::from(header)));
+        line_index += 1;
+
+        if !collapsed {
+            let is_processes = section.key == "processes";
+            let child_hit_rows = section.attached_session_hit_rows.as_ref();
+            let workspace_hit_rows = section.workspace_hit_rows.as_ref();
+            rows.push(SidebarSectionRow::Line(Line::from(Span::styled(
+                "  ",
+                Style::default().fg(theme.border_subtle),
+            ))));
+            line_index += 1;
+            for (row_idx, row) in section.lines.into_iter().enumerate() {
+                if is_processes {
+                    process_line_hits.push((line_index, row_idx));
+                }
+                if let Some(hit_rows) = child_hit_rows {
+                    if let Some(Some(child_index)) = hit_rows.get(row_idx) {
+                        attached_session_line_hits.push((line_index, *child_index));
+                    }
+                }
+                if let Some(hit_rows) = workspace_hit_rows {
+                    if let Some(Some(node_index)) = hit_rows.get(row_idx) {
+                        workspace_line_hits.push((line_index, *node_index));
+                    }
+                }
+                let mut spans = Vec::with_capacity(row.spans.len() + 1);
+                spans.push(Span::styled("  ", Style::default().fg(theme.border_subtle)));
+                spans.extend(
+                    row.spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content, span.style)),
+                );
+                rows.push(SidebarSectionRow::Line(Line::from(spans)));
+                line_index += 1;
+            }
+            if let Some(meter) = section.meter {
+                rows.push(SidebarSectionRow::Gauge(meter));
+                line_index += 1;
+            }
         }
     }
 
-    pub fn render<S: RenderSurface>(
+    SidebarSectionsDocument {
+        rows,
+        toggle_hits,
+        process_line_hits,
+        attached_session_line_hits,
+        workspace_line_hits,
+    }
+}
+
+impl Component for SidebarComponent {
+    fn render(&self, _area: Rect, buffer: &mut Buffer) {
+        let render_state_ref = Arc::new(Mutex::new(self.state.lock().clone()));
+        let lifecycle_ref = Arc::new(Mutex::new(self.lifecycle.lock().clone()));
+        let event_emitter = use_context::<crate::bridge::ReactiveUiEventEmitter>().0;
+        let keybind = use_context::<crate::context::KeybindRegistry>();
+        let terminal_width = self.chrome.layout_width;
+        let process_count = self.render_inputs.snapshot.processes.len();
+        let attached_sessions = self.render_inputs.snapshot.attached_sessions.clone();
+        let render_state_for_keys = render_state_ref.clone();
+        let lifecycle_for_keys = lifecycle_ref.clone();
+        let emitter_for_keys = event_emitter.clone();
+        use_keyboard_press(move |key_event| {
+            let key = crate::context::normalize_key_event(key_event);
+            let mut render_state = render_state_for_keys.lock();
+            let mut lifecycle = lifecycle_for_keys.lock();
+
+            if key.code == KeyCode::Esc {
+                let had_focus = lifecycle.process_focus
+                    || lifecycle.attached_session_focus
+                    || lifecycle.workspace_focus;
+                lifecycle.process_focus = false;
+                lifecycle.attached_session_focus = false;
+                lifecycle.workspace_focus = false;
+                if had_focus {
+                    stop_propagation();
+                }
+            } else if keybind.match_key("session_attached_focus", key.code, key.modifiers) {
+                if sidebar_is_visible(&lifecycle, terminal_width) {
+                    lifecycle.active_tab = SidebarTab::Session;
+                    lifecycle.attached_session_focus = !lifecycle.attached_session_focus;
+                    if lifecycle.attached_session_focus {
+                        lifecycle.process_focus = false;
+                        lifecycle.workspace_focus = false;
+                    }
+                    stop_propagation();
+                }
+            } else if keybind.match_key("session_workspace_focus", key.code, key.modifiers) {
+                if sidebar_is_visible(&lifecycle, terminal_width) {
+                    lifecycle.active_tab = SidebarTab::Workspace;
+                    lifecycle.workspace_focus = !lifecycle.workspace_focus;
+                    if lifecycle.workspace_focus {
+                        lifecycle.process_focus = false;
+                        lifecycle.attached_session_focus = false;
+                    }
+                    stop_propagation();
+                }
+            } else if keybind.match_key("sidebar_toggle", key.code, key.modifiers) {
+                if sidebar_is_visible(&lifecycle, terminal_width) {
+                    if sidebar_is_wide(terminal_width) {
+                        lifecycle.mode = crate::context::SidebarMode::Hide;
+                    }
+                    lifecycle.visible = false;
+                    lifecycle.process_focus = false;
+                    lifecycle.attached_session_focus = false;
+                    lifecycle.workspace_focus = false;
+                } else {
+                    lifecycle.mode = crate::context::SidebarMode::Auto;
+                    lifecycle.visible = sidebar_default_visible(terminal_width);
+                }
+                stop_propagation();
+            } else if key.code == KeyCode::Char('p') && key.modifiers.is_empty() {
+                if sidebar_is_visible(&lifecycle, terminal_width) {
+                    lifecycle.active_tab = SidebarTab::Session;
+                    lifecycle.process_focus = !lifecycle.process_focus;
+                    if lifecycle.process_focus {
+                        lifecycle.attached_session_focus = false;
+                        lifecycle.workspace_focus = false;
+                    }
+                    stop_propagation();
+                }
+            } else if lifecycle.process_focus {
+                match key.code {
+                    KeyCode::Up => {
+                        lifecycle.process_selected = lifecycle.process_selected.saturating_sub(1);
+                        stop_propagation();
+                    }
+                    KeyCode::Down => {
+                        if process_count > 0 {
+                            lifecycle.process_selected =
+                                (lifecycle.process_selected + 1).min(process_count - 1);
+                        }
+                        stop_propagation();
+                    }
+                    KeyCode::Char('d') | KeyCode::Delete => {
+                        let _ = emitter_for_keys.emit_custom_event(
+                            crate::event::CustomEvent::SessionSidebarIntent {
+                                kind: crate::event::SessionSidebarIntentKind::KillSelectedProcess,
+                            },
+                        );
+                        stop_propagation();
+                    }
+                    _ => {}
+                }
+            } else if lifecycle.workspace_focus {
+                match key.code {
+                    KeyCode::Up => {
+                        let next_index = lifecycle.workspace_selected.saturating_sub(1);
+                        render_state.set_workspace_selected_index(&mut lifecycle, next_index);
+                        stop_propagation();
+                    }
+                    KeyCode::Down => {
+                        let count = render_state.workspace_visible_count();
+                        if count > 0 {
+                            let next_index = (lifecycle.workspace_selected + 1).min(count - 1);
+                            render_state.set_workspace_selected_index(&mut lifecycle, next_index);
+                        }
+                        stop_propagation();
+                    }
+                    KeyCode::Left => {
+                        if render_state.collapse_selected_workspace_dir(&mut lifecycle) {
+                            stop_propagation();
+                        }
+                    }
+                    KeyCode::Right => {
+                        if render_state.expand_selected_workspace_dir(&mut lifecycle) {
+                            stop_propagation();
+                        }
+                    }
+                    _ => {}
+                }
+            } else if lifecycle.attached_session_focus {
+                match key.code {
+                    KeyCode::Up => {
+                        lifecycle.attached_session_selected =
+                            lifecycle.attached_session_selected.saturating_sub(1);
+                        stop_propagation();
+                    }
+                    KeyCode::Down => {
+                        if !attached_sessions.is_empty() {
+                            lifecycle.attached_session_selected =
+                                (lifecycle.attached_session_selected + 1)
+                                    .min(attached_sessions.len() - 1);
+                        }
+                        stop_propagation();
+                    }
+                    KeyCode::Enter => {
+                        let selected = lifecycle.attached_session_selected;
+                        if let Some(child) = attached_sessions.get(selected) {
+                            let _ = emitter_for_keys.emit_custom_event(
+                                crate::event::CustomEvent::SessionNavigationIntent {
+                                    kind: crate::event::SessionNavigationIntentKind::Session(
+                                        child.session_id.clone(),
+                                    ),
+                                },
+                            );
+                            stop_propagation();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let render_state_for_mouse = render_state_ref.clone();
+        let lifecycle_for_mouse = lifecycle_ref.clone();
+        let emitter_for_mouse = event_emitter.clone();
+        let attached_sessions_for_mouse = self.render_inputs.snapshot.attached_sessions.clone();
+        let chrome = self.chrome;
+        use_mouse(move |mouse_event| {
+            let mut render_state = render_state_for_mouse.lock();
+            let mut lifecycle = lifecycle_for_mouse.lock();
+            match mouse_event.kind {
+                MouseEventKind::ScrollUp => {
+                    if render_state.scroll_up_at(mouse_event.column, mouse_event.row) {
+                        stop_propagation();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if render_state.scroll_down_at(mouse_event.column, mouse_event.row) {
+                        stop_propagation();
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if handle_sidebar_chrome_mouse_down(
+                        chrome,
+                        &mut render_state,
+                        &mut lifecycle,
+                        mouse_event.column,
+                        mouse_event.row,
+                    ) {
+                        let pending_attached = render_state.take_pending_navigate_attached();
+                        let pending_session = render_state.take_pending_navigate_session();
+                        let pending_parent = render_state.take_pending_navigate_parent();
+
+                        if let Some(session_id) = pending_session {
+                            let _ = emitter_for_mouse.emit_custom_event(
+                                crate::event::CustomEvent::SessionNavigationIntent {
+                                    kind: crate::event::SessionNavigationIntentKind::Session(
+                                        session_id,
+                                    ),
+                                },
+                            );
+                        }
+                        if pending_parent {
+                            let _ = emitter_for_mouse.emit_custom_event(
+                                crate::event::CustomEvent::SessionNavigationIntent {
+                                    kind: crate::event::SessionNavigationIntentKind::Parent,
+                                },
+                            );
+                        }
+                        if let Some(cs_idx) = pending_attached {
+                            if let Some(child) = attached_sessions_for_mouse.get(cs_idx) {
+                                let _ = emitter_for_mouse.emit_custom_event(
+                                    crate::event::CustomEvent::SessionNavigationIntent {
+                                        kind: crate::event::SessionNavigationIntentKind::Session(
+                                            child.session_id.clone(),
+                                        ),
+                                    },
+                                );
+                            }
+                        }
+                        stop_propagation();
+                    }
+                }
+                _ => {}
+            }
+        });
+        if self.chrome.mode != SidebarChromeMode::Hidden {
+            let mut surface = crate::ui::BufferSurface::new(buffer);
+            self.sidebar.render_with_inputs_and_bg(
+                &self.render_inputs,
+                &mut surface,
+                self.area,
+                &mut render_state_ref.lock(),
+                &mut lifecycle_ref.lock(),
+                self.floating,
+                self.bg_override,
+            );
+        }
+        *self.state.lock() = render_state_ref.lock().clone();
+        *self.lifecycle.lock() = lifecycle_ref.lock().clone();
+    }
+}
+
+fn handle_sidebar_chrome_mouse_down(
+    chrome: SidebarChromeProps,
+    render_state: &mut SidebarRenderState,
+    lifecycle: &mut SidebarLifecycleState,
+    col: u16,
+    row: u16,
+) -> bool {
+    if !point_in_rect(chrome.container_area, col, row) {
+        return false;
+    }
+
+    match chrome.mode {
+        SidebarChromeMode::Docked => {
+            if point_in_optional_rect(chrome.close_button_area, col, row) {
+                lifecycle.mode = SidebarMode::Hide;
+                lifecycle.visible = false;
+                lifecycle.process_focus = false;
+                lifecycle.attached_session_focus = false;
+                lifecycle.workspace_focus = false;
+                return true;
+            }
+            if point_in_optional_rect(render_state.sidebar_area(), col, row) {
+                render_state.handle_click(lifecycle, col, row)
+            } else {
+                false
+            }
+        }
+        SidebarChromeMode::Overlay => {
+            if point_in_optional_rect(chrome.close_button_area, col, row) {
+                lifecycle.visible = false;
+                lifecycle.process_focus = false;
+                lifecycle.attached_session_focus = false;
+                lifecycle.workspace_focus = false;
+                return true;
+            }
+            if point_in_optional_rect(chrome.backdrop_area, col, row)
+                && !point_in_optional_rect(render_state.sidebar_area(), col, row)
+            {
+                lifecycle.visible = false;
+                lifecycle.process_focus = false;
+                lifecycle.attached_session_focus = false;
+                lifecycle.workspace_focus = false;
+                return true;
+            }
+            if point_in_optional_rect(render_state.sidebar_area(), col, row) {
+                render_state.handle_click(lifecycle, col, row)
+            } else {
+                lifecycle.visible = false;
+                lifecycle.process_focus = false;
+                lifecycle.attached_session_focus = false;
+                lifecycle.workspace_focus = false;
+                true
+            }
+        }
+        SidebarChromeMode::Hidden => {
+            if point_in_optional_rect(chrome.open_button_area, col, row) {
+                lifecycle.mode = SidebarMode::Auto;
+                lifecycle.visible = sidebar_default_visible(chrome.layout_width);
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+impl Sidebar {
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
+    }
+
+    pub(crate) fn capture_render_seed(context: &Arc<AppContext>, session_id: &str) -> SidebarRenderSeed {
+        let session_ctx = context.session.read().data.clone();
+        let graph_root_id = context.graph_root_session_id(session_id);
+        SidebarRenderSeed {
+            theme: context.theme.read().clone(),
+            session_ctx,
+            mcp_servers: context.mcp_servers.read().clone(),
+            lsp_status: context.lsp_status.read().clone(),
+            providers: context.providers.read().clone(),
+            processes: context.processes.read().clone(),
+            directory: context.directory.read().clone(),
+            attached_sessions: context.attached_sessions_for(&graph_root_id),
+            execution_topology: context.execution_topology_for(session_id),
+            session_usage: context.session_usage_for(session_id),
+            session_usage_books: context.session_usage_books_for(session_id),
+            context_closure_contract: context.session_context_closure_contract_for(session_id),
+            current_context_tokens: context.current_context_tokens_for(session_id),
+        }
+    }
+
+    pub(crate) fn render_inputs_from_seed(seed: &SidebarRenderSeed) -> SidebarRenderInputs {
+        SidebarRenderInputs {
+            theme: seed.theme.clone(),
+            snapshot: Self::render_snapshot_from_seed(seed),
+        }
+    }
+
+    fn render_snapshot_from_seed(seed: &SidebarRenderSeed) -> SidebarRenderSnapshot {
+        SidebarRenderSnapshot {
+            session_ctx: seed.session_ctx.clone(),
+            mcp_servers: seed.mcp_servers.clone(),
+            lsp_status: seed.lsp_status.clone(),
+            providers: seed.providers.clone(),
+            processes: seed.processes.clone(),
+            directory: seed.directory.clone(),
+            attached_sessions: seed.attached_sessions.clone(),
+            execution_topology: seed.execution_topology.clone(),
+            session_usage: seed.session_usage.clone(),
+            session_usage_books: seed.session_usage_books.clone(),
+            context_closure_contract: seed.context_closure_contract.clone(),
+            current_context_tokens: seed.current_context_tokens,
+        }
+    }
+
+    pub(crate) fn render_surface<S: RenderSurface>(
         &self,
+        render_inputs: &SidebarRenderInputs,
         surface: &mut S,
         area: Rect,
         state: &mut SidebarRenderState,
         lifecycle: &mut SidebarLifecycleState,
         floating: bool,
     ) {
-        self.render_with_bg(surface, area, state, lifecycle, floating, None);
+        self.render_with_inputs_and_bg(
+            render_inputs,
+            surface,
+            area,
+            state,
+            lifecycle,
+            floating,
+            None,
+        );
     }
 
-    pub fn render_with_bg<S: RenderSurface>(
+    pub(crate) fn render_with_inputs_and_bg<S: RenderSurface>(
         &self,
+        render_inputs: &SidebarRenderInputs,
         surface: &mut S,
         area: Rect,
         state: &mut SidebarRenderState,
@@ -490,7 +1051,7 @@ impl Sidebar {
         }
 
         state.set_sidebar_area(area);
-        let theme = self.context.theme.read().clone();
+        let theme = render_inputs.theme.clone();
         let panel_bg = bg_override.unwrap_or(theme.background_panel);
 
         if !floating {
@@ -524,9 +1085,48 @@ impl Sidebar {
             surface, layout[0], &theme, state, lifecycle, floating, panel_bg,
         );
         self.render_sections_with_bg(
-            surface, layout[1], &theme, state, lifecycle, floating, panel_bg,
+            surface,
+            layout[1],
+            &theme,
+            &render_inputs.snapshot,
+            state,
+            lifecycle,
+            floating,
+            panel_bg,
         );
-        self.render_footer_with_bg(surface, layout[2], &theme, floating, panel_bg);
+        self.render_footer_with_bg(
+            surface,
+            layout[2],
+            &theme,
+            &render_inputs.snapshot.directory,
+            floating,
+            panel_bg,
+        );
+    }
+
+    pub(crate) fn render_reactive(
+        &self,
+        render_inputs: SidebarRenderInputs,
+        buffer: &mut Buffer,
+        area: Rect,
+        state: Arc<Mutex<SidebarRenderState>>,
+        lifecycle: Arc<Mutex<SidebarLifecycleState>>,
+        floating: bool,
+        bg_override: Option<ratatui::style::Color>,
+        chrome: SidebarChromeProps,
+    ) {
+        reratui::element::Element::component(SidebarComponent {
+            sidebar: self.clone(),
+            render_inputs,
+            area,
+            state,
+            lifecycle,
+            floating,
+            bg_override,
+            chrome,
+        })
+        .with_key(format!("sidebar:{}", self.session_id))
+        .render(area, buffer);
     }
 
     fn render_tabs_with_bg<S: RenderSurface>(
@@ -580,20 +1180,20 @@ impl Sidebar {
             );
         }
 
-        render_sidebar_tab(
-            surface,
-            session_area,
-            theme,
-            lifecycle.active_tab == SidebarTab::Session,
-            "Session",
-        );
-        render_sidebar_tab(
-            surface,
-            workspace_area,
-            theme,
-            lifecycle.active_tab == SidebarTab::Workspace,
-            "Workspace",
-        );
+        let tabs = Tabs::new(vec!["Session", "Workspace"])
+            .select(match lifecycle.active_tab {
+                SidebarTab::Session => 0,
+                SidebarTab::Workspace => 1,
+            })
+            .style(Style::default().fg(theme.text_muted).bg(panel_bg))
+            .highlight_style(
+                Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.background_element)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .divider(Span::styled(" ", Style::default().bg(panel_bg)));
+        surface.render_widget(tabs, area);
     }
 
     fn render_sections_with_bg<S: RenderSurface>(
@@ -601,6 +1201,7 @@ impl Sidebar {
         surface: &mut S,
         area: Rect,
         theme: &Theme,
+        snapshot: &SidebarRenderSnapshot,
         state: &mut SidebarRenderState,
         lifecycle: &mut SidebarLifecycleState,
         floating: bool,
@@ -611,17 +1212,14 @@ impl Sidebar {
             return;
         }
 
-        let session_ctx = self.context.session.read();
-        let mcp_servers = self.context.mcp_servers.read();
-        let lsp_status = self.context.lsp_status.read();
-
         let sections: Vec<SidebarSection> = if lifecycle.active_tab == SidebarTab::Workspace {
             state.session_graph_root_id = None;
             state.session_graph_active_id = None;
-            self.build_workspace_sections(area, theme, state, lifecycle, &session_ctx)
+            self.build_workspace_sections(area, theme, snapshot, state, lifecycle)
         } else {
-            let session = session_ctx.sessions.get(&self.session_id);
-            let messages = session_ctx
+            let session = snapshot.session_ctx.sessions.get(&self.session_id);
+            let messages = snapshot
+                .session_ctx
                 .messages
                 .get(&self.session_id)
                 .cloned()
@@ -632,7 +1230,7 @@ impl Sidebar {
                 .unwrap_or_else(|| "New Session".to_string());
             let graph_root_session = session
                 .and_then(|session| session.parent_id.as_ref())
-                .and_then(|parent_id| session_ctx.sessions.get(parent_id))
+                .and_then(|parent_id| snapshot.session_ctx.sessions.get(parent_id))
                 .or(session);
             let graph_root_id = graph_root_session
                 .map(|session| session.id.as_str())
@@ -661,6 +1259,7 @@ impl Sidebar {
                 key: "session",
                 title: "Session",
                 lines: session_lines,
+                meter: None,
                 attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: None,
@@ -675,6 +1274,7 @@ impl Sidebar {
                         truncate_text(&share.url, area.width as usize),
                         Style::default().fg(theme.info),
                     ))],
+                    meter: None,
                     attached_session_hit_rows: None,
                     workspace_hit_rows: None,
                     summary: None,
@@ -684,8 +1284,8 @@ impl Sidebar {
 
             let message_fold = fold_messages(messages.as_slice());
             let resolved_usage = resolve_usage(
-                self.context.session_usage_books().as_ref(),
-                self.context.session_usage().as_ref(),
+                snapshot.session_usage_books.as_ref(),
+                snapshot.session_usage.as_ref(),
                 Some(&message_fold),
             );
             let active_model = messages
@@ -701,8 +1301,8 @@ impl Sidebar {
                 .iter()
                 .rev()
                 .find(|m| matches!(m.role, MessageRole::User));
-            let current_context_tokens = self.context.current_context_tokens();
-            let active_model_info = self.context.resolve_model_info(active_model);
+            let current_context_tokens = snapshot.current_context_tokens;
+            let active_model_info = resolve_model_info_from_providers(&snapshot.providers, active_model);
             sections.push(SidebarSection {
                 key: "context",
                 title: "Usage",
@@ -811,9 +1411,8 @@ impl Sidebar {
                             ]));
                         }
                     }
-                    let cache_diagnostic = self
-                        .context
-                        .session_context_closure_contract()
+                    let cache_diagnostic = snapshot
+                        .context_closure_contract
                         .as_ref()
                         .and_then(context_closure_cache_diagnostic_label)
                         .or_else(|| {
@@ -879,33 +1478,48 @@ impl Sidebar {
                     ]));
                     lines
                 },
+                meter: current_context_tokens
+                    .zip(active_model_info.as_ref().map(|model| model.context_window))
+                    .and_then(|(used, limit)| {
+                        (limit > 0).then(|| SidebarSectionMeter {
+                            label: "Meter".to_string(),
+                            ratio: (used as f64 / limit as f64).clamp(0.0, 1.0),
+                            style: context_usage_style(
+                                theme,
+                                context_usage_percent(used, limit),
+                            ),
+                        })
+                    }),
                 attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: None,
                 collapsible: false,
             });
 
-            let connected_mcp = mcp_servers
+            let connected_mcp = snapshot
+                .mcp_servers
                 .iter()
                 .filter(|s| matches!(s.status, McpConnectionStatus::Connected))
                 .count();
-            let failed_mcp = mcp_servers
+            let failed_mcp = snapshot
+                .mcp_servers
                 .iter()
                 .filter(|s| matches!(s.status, McpConnectionStatus::Failed))
                 .count();
-            let registration_needed_mcp = mcp_servers
+            let registration_needed_mcp = snapshot
+                .mcp_servers
                 .iter()
                 .filter(|s| matches!(s.status, McpConnectionStatus::NeedsClientRegistration))
                 .count();
             let problematic_mcp = failed_mcp + registration_needed_mcp;
             let mut mcp_lines: Vec<Line<'static>> = Vec::new();
-            if mcp_servers.is_empty() {
+            if snapshot.mcp_servers.is_empty() {
                 mcp_lines.push(Line::from(Span::styled(
                     "No MCP servers",
                     Style::default().fg(theme.text_muted),
                 )));
             } else {
-                for server in mcp_servers.iter() {
+                for server in snapshot.mcp_servers.iter() {
                     let (status_text, color) = match server.status {
                         McpConnectionStatus::Connected => ("connected", theme.success),
                         McpConnectionStatus::Failed => ("failed", theme.error),
@@ -933,31 +1547,34 @@ impl Sidebar {
                 key: "mcp",
                 title: "MCP",
                 lines: mcp_lines,
+                meter: None,
                 attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: Some(format!(
                     "{} active, {} errors",
                     connected_mcp, problematic_mcp
                 )),
-                collapsible: mcp_servers.len() > 2,
+                collapsible: snapshot.mcp_servers.len() > 2,
             });
 
-            let connected_lsp = lsp_status
+            let connected_lsp = snapshot
+                .lsp_status
                 .iter()
                 .filter(|s| matches!(s.status, LspConnectionStatus::Connected))
                 .count();
-            let errored_lsp = lsp_status
+            let errored_lsp = snapshot
+                .lsp_status
                 .iter()
                 .filter(|s| matches!(s.status, LspConnectionStatus::Error))
                 .count();
             let mut lsp_lines: Vec<Line<'static>> = Vec::new();
-            if lsp_status.is_empty() {
+            if snapshot.lsp_status.is_empty() {
                 lsp_lines.push(Line::from(Span::styled(
                     "No active LSP",
                     Style::default().fg(theme.text_muted),
                 )));
             } else {
-                for server in lsp_status.iter() {
+                for server in snapshot.lsp_status.iter() {
                     let (status_text, color) = match server.status {
                         LspConnectionStatus::Connected => ("connected", theme.success),
                         LspConnectionStatus::Error => ("error", theme.error),
@@ -979,16 +1596,17 @@ impl Sidebar {
                 key: "lsp",
                 title: "LSP",
                 lines: lsp_lines,
+                meter: None,
                 attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: Some(format!(
                     "{} connected, {} errors",
                     connected_lsp, errored_lsp
                 )),
-                collapsible: lsp_status.len() > 2,
+                collapsible: snapshot.lsp_status.len() > 2,
             });
 
-            if let Some(todos) = session_ctx.todos.get(&self.session_id) {
+            if let Some(todos) = snapshot.session_ctx.todos.get(&self.session_id) {
                 let pending = todos
                     .iter()
                     .filter(|todo| {
@@ -1010,6 +1628,7 @@ impl Sidebar {
                         key: "todo",
                         title: "Todo",
                         lines: todo_lines,
+                        meter: None,
                         attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(format!("{} pending", pending.len())),
@@ -1018,7 +1637,7 @@ impl Sidebar {
                 }
             }
 
-            if let Some(entries) = session_ctx.session_diff.get(&self.session_id) {
+            if let Some(entries) = snapshot.session_ctx.session_diff.get(&self.session_id) {
                 if !entries.is_empty() {
                     let mut file_lines: Vec<Line<'static>> = Vec::new();
                     for entry in entries.iter().take(8) {
@@ -1043,6 +1662,7 @@ impl Sidebar {
                         key: "diff",
                         title: "Modified Files",
                         lines: file_lines,
+                        meter: None,
                         attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(format!("{} files changed", entries.len())),
@@ -1052,7 +1672,7 @@ impl Sidebar {
             }
 
             // Processes section
-            let proc_list = self.context.processes.read().clone();
+            let proc_list = snapshot.processes.clone();
             clamp_sidebar_process_selection(lifecycle, proc_list.len());
             if !proc_list.is_empty() {
                 let mut proc_lines: Vec<Line<'static>> = Vec::new();
@@ -1109,6 +1729,7 @@ impl Sidebar {
                     key: "processes",
                     title: "Processes",
                     lines: proc_lines,
+                    meter: None,
                     attached_session_hit_rows: None,
                     workspace_hit_rows: None,
                     summary: Some(format!("{} running", proc_list.len())),
@@ -1118,8 +1739,7 @@ impl Sidebar {
 
             // Agents section — sourced from execution topology (server-side)
             {
-                let topology = self.context.execution_topology();
-                let agent_nodes = collect_agent_nodes_from_topology(&topology);
+                let agent_nodes = collect_agent_nodes_from_topology(&snapshot.execution_topology);
                 if !agent_nodes.is_empty() {
                     let mut agent_lines: Vec<Line<'static>> = Vec::new();
                     let mut running = 0usize;
@@ -1157,6 +1777,7 @@ impl Sidebar {
                         key: "agents",
                         title: "Agents",
                         lines: agent_lines,
+                        meter: None,
                         attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(summary),
@@ -1166,7 +1787,7 @@ impl Sidebar {
             }
 
             // Session Graph section
-            let child_list = self.context.attached_sessions();
+            let child_list = snapshot.attached_sessions.clone();
             clamp_sidebar_attached_session_selection(lifecycle, child_list.len());
             if !child_list.is_empty() {
                 let current_child_index = child_list
@@ -1189,8 +1810,8 @@ impl Sidebar {
                     graph_root_id,
                     &self.session_id,
                     &child_list,
-                    &session_ctx.sessions,
-                    &session_ctx.session_diff,
+                    &snapshot.session_ctx.sessions,
+                    &snapshot.session_ctx.session_diff,
                     lifecycle,
                     selected_child,
                 );
@@ -1198,6 +1819,7 @@ impl Sidebar {
                     key: "session_graph",
                     title: "Session Graph",
                     lines: cs_lines,
+                    meter: None,
                     attached_session_hit_rows: Some(attached_session_hit_rows),
                     workspace_hit_rows: None,
                     summary: Some(format!("{} sessions", child_list.len())),
@@ -1208,83 +1830,10 @@ impl Sidebar {
             sections
         };
 
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let mut line_index = 0usize;
-        let mut toggle_hits: Vec<SidebarToggleHit> = Vec::new();
-        let mut process_line_hits: Vec<(usize, usize)> = Vec::new();
-        let mut attached_session_line_hits: Vec<(usize, usize)> = Vec::new();
-        let mut workspace_line_hits: Vec<(usize, usize)> = Vec::new();
-        for section in sections {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-                line_index += 1;
-            }
+        let document = build_sidebar_sections_document(theme, state, sections);
+        let rows = document.rows;
 
-            let collapsed = section.collapsible && state.is_collapsed(section.key);
-            let mut header = Vec::new();
-            if section.collapsible {
-                toggle_hits.push(SidebarToggleHit {
-                    line_index,
-                    section_key: section.key,
-                });
-                header.push(Span::styled(
-                    if collapsed { "▶ " } else { "▼ " },
-                    Style::default().fg(theme.text_muted),
-                ));
-            } else {
-                header.push(Span::styled("  ", Style::default().fg(theme.text_muted)));
-            }
-            header.push(Span::styled(
-                section.title.to_string(),
-                Style::default().fg(theme.text).bold(),
-            ));
-            if let Some(summary) = section.summary {
-                header.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
-                header.push(Span::styled(summary, Style::default().fg(theme.text_muted)));
-            }
-            lines.push(Line::from(header));
-            line_index += 1;
-
-            if !collapsed {
-                let is_processes = section.key == "processes";
-                let child_hit_rows = section.attached_session_hit_rows.as_ref();
-                let workspace_hit_rows = section.workspace_hit_rows.as_ref();
-                lines.push(Line::from(Span::styled(
-                    "  ",
-                    Style::default().fg(theme.border_subtle),
-                )));
-                line_index += 1;
-                for (row_idx, row) in section.lines.into_iter().enumerate() {
-                    if is_processes {
-                        process_line_hits.push((line_index, row_idx));
-                    }
-                    if let Some(hit_rows) = child_hit_rows {
-                        if let Some(Some(child_index)) = hit_rows.get(row_idx) {
-                            attached_session_line_hits.push((line_index, *child_index));
-                        }
-                    }
-                    if let Some(hit_rows) = workspace_hit_rows {
-                        if let Some(Some(node_index)) = hit_rows.get(row_idx) {
-                            workspace_line_hits.push((line_index, *node_index));
-                        }
-                    }
-                    let mut spans = Vec::with_capacity(row.spans.len() + 1);
-                    spans.push(Span::styled("  ", Style::default().fg(theme.border_subtle)));
-                    spans.extend(row.spans.into_iter().map(|span| {
-                        let style = if span.style.add_modifier.contains(Modifier::BOLD) {
-                            span.style
-                        } else {
-                            span.style
-                        };
-                        Span::styled(span.content, style)
-                    }));
-                    lines.push(Line::from(spans));
-                    line_index += 1;
-                }
-            }
-        }
-
-        let has_overflow = lines.len() > usize::from(area.height);
+        let has_overflow = rows.len() > usize::from(area.height);
         let sections_text_area = if has_overflow && area.width > 1 {
             Rect {
                 x: area.x,
@@ -1306,19 +1855,59 @@ impl Sidebar {
             None
         };
 
-        state.set_sections_layout(sections_text_area, lines.len(), toggle_hits);
-        state.process_line_hits = process_line_hits;
-        state.attached_session_line_hits = attached_session_line_hits;
-        state.workspace_line_hits = workspace_line_hits;
+        state.set_sections_layout(sections_text_area, rows.len(), document.toggle_hits);
+        state.process_line_hits = document.process_line_hits;
+        state.attached_session_line_hits = document.attached_session_line_hits;
+        state.workspace_line_hits = document.workspace_line_hits;
 
-        let mut paragraph = Paragraph::new(lines)
-            .scroll((state.scroll_offset.min(usize::from(u16::MAX)) as u16, 0));
-        if !floating {
-            paragraph = paragraph
-                .block(Block::default().borders(Borders::NONE))
-                .style(Style::default().bg(panel_bg));
+        let items = rows
+            .iter()
+            .map(|row| match row {
+                SidebarSectionRow::Line(line) => ListItem::new(line.clone()),
+                SidebarSectionRow::Gauge(meter) => ListItem::new(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(theme.border_subtle)),
+                    Span::styled(
+                        format!("{:<7}", meter.label),
+                        Style::default().fg(theme.text_muted),
+                    ),
+                ])),
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(items).style(if floating {
+            Style::default()
+        } else {
+            Style::default().bg(panel_bg)
+        });
+        let mut list_state = ListState::default().with_offset(state.scroll_offset);
+        surface.render_stateful_widget(list, sections_text_area, &mut list_state);
+
+        let visible_height = usize::from(sections_text_area.height);
+        let start = state.scroll_offset.min(rows.len());
+        let end = (start + visible_height).min(rows.len());
+        for (visible_idx, row) in rows[start..end].iter().enumerate() {
+            let SidebarSectionRow::Gauge(meter) = row else {
+                continue;
+            };
+            let row_area = Rect {
+                x: sections_text_area.x.saturating_add(9),
+                y: sections_text_area.y.saturating_add(visible_idx as u16),
+                width: sections_text_area.width.saturating_sub(10),
+                height: 1,
+            };
+            if row_area.width == 0 {
+                continue;
+            }
+            let gauge = Gauge::default()
+                .ratio(meter.ratio.clamp(0.0, 1.0))
+                .gauge_style(meter.style)
+                .style(if floating {
+                    Style::default()
+                } else {
+                    Style::default().bg(panel_bg)
+                })
+                .use_unicode(true);
+            surface.render_widget(gauge, row_area);
         }
-        surface.render_widget(paragraph, sections_text_area);
 
         if let Some(scroll_area) = scrollbar_area {
             let mut scrollbar_state = ScrollbarState::new(state.content_lines)
@@ -1340,22 +1929,22 @@ impl Sidebar {
         &self,
         area: Rect,
         theme: &Theme,
+        snapshot: &SidebarRenderSnapshot,
         state: &mut SidebarRenderState,
         lifecycle: &mut SidebarLifecycleState,
-        session_ctx: &crate::context::SessionContext,
     ) -> Vec<SidebarSection> {
-        let directory = self.context.directory.read().clone();
-        let workspace_root = workspace_root_path(&directory);
+        let workspace_root = workspace_root_path(&snapshot.directory);
         state.refresh_workspace_index(&workspace_root);
-        if state.workspace_seeded_root.as_deref() != Some(directory.as_str()) {
+        if state.workspace_seeded_root.as_deref() != Some(snapshot.directory.as_str()) {
             state.workspace_expanded_dirs =
                 top_level_workspace_dirs(state.workspace_index.entries());
-            state.workspace_seeded_root = Some(directory.clone());
+            state.workspace_seeded_root = Some(snapshot.directory.clone());
             state.workspace_selected_path = None;
             state.workspace_tooltip = None;
         }
 
-        let modified_paths = session_ctx
+        let modified_paths = snapshot
+            .session_ctx
             .session_diff
             .get(&self.session_id)
             .map(|entries| {
@@ -1365,7 +1954,8 @@ impl Sidebar {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        let current_path = session_ctx
+        let current_path = snapshot
+            .session_ctx
             .session_diff
             .get(&self.session_id)
             .and_then(|entries| entries.last())
@@ -1385,9 +1975,9 @@ impl Sidebar {
         state.sync_workspace_selection(lifecycle, current_path.as_deref());
         clamp_sidebar_workspace_selection(lifecycle, state.workspace_visible_count());
 
-        let (root_prefix, root_leaf) = split_path_segments(directory.as_str());
+        let (root_prefix, root_leaf) = split_path_segments(snapshot.directory.as_str());
         let workspace_label = if root_leaf.is_empty() {
-            directory.clone()
+            snapshot.directory.clone()
         } else {
             root_leaf
         };
@@ -1409,6 +1999,7 @@ impl Sidebar {
                     Style::default().fg(theme.text_muted),
                 )]),
             ],
+            meter: None,
             attached_session_hit_rows: None,
             workspace_hit_rows: None,
             summary: None,
@@ -1424,6 +2015,7 @@ impl Sidebar {
             key: "workspace_tree",
             title: "Files",
             lines: tree_lines,
+            meter: None,
             attached_session_hit_rows: None,
             workspace_hit_rows: Some(workspace_hit_rows),
             summary: Some(tree_summary),
@@ -1502,6 +2094,7 @@ impl Sidebar {
         surface: &mut S,
         area: Rect,
         theme: &Theme,
+        directory: &str,
         floating: bool,
         panel_bg: ratatui::style::Color,
     ) {
@@ -1509,8 +2102,7 @@ impl Sidebar {
             return;
         }
 
-        let directory = self.context.directory.read().clone();
-        let (prefix, leaf) = split_path_segments(&directory);
+        let (prefix, leaf) = split_path_segments(directory);
         let lines = vec![
             Line::from(vec![
                 Span::styled(prefix, Style::default().fg(theme.text_muted)),
@@ -1543,32 +2135,42 @@ fn contains_point(area: Option<Rect>, col: u16, row: u16) -> bool {
     col >= area.x && col < max_x && row >= area.y && row < max_y
 }
 
+fn point_in_optional_rect(area: Option<Rect>, col: u16, row: u16) -> bool {
+    contains_point(area, col, row)
+}
+
+fn point_in_rect(area: Rect, col: u16, row: u16) -> bool {
+    contains_point(Some(area), col, row)
+}
+
+fn resolve_model_info_from_providers(
+    providers: &[ProviderInfo],
+    model_ref: Option<&str>,
+) -> Option<crate::state::ModelInfo> {
+    let model_ref = model_ref?.trim();
+    if model_ref.is_empty() {
+        return None;
+    }
+
+    if let Some((provider_id, model_id)) = model_ref.split_once('/') {
+        return providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .and_then(|provider| provider.models.iter().find(|model| model.id == model_id))
+            .cloned();
+    }
+
+    providers
+        .iter()
+        .flat_map(|provider| provider.models.iter())
+        .find(|model| model.id == model_ref || model.name == model_ref)
+        .cloned()
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 struct WorkspaceTreeDir {
     dirs: BTreeMap<String, WorkspaceTreeDir>,
     files: Vec<String>,
-}
-
-fn render_sidebar_tab<S: RenderSurface>(
-    surface: &mut S,
-    area: Rect,
-    theme: &Theme,
-    active: bool,
-    label: &str,
-) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let style = if active {
-        Style::default()
-            .bg(theme.background_element)
-            .fg(theme.text)
-            .bold()
-    } else {
-        Style::default().fg(theme.text_muted)
-    };
-    let text = format!(" {label} ");
-    surface.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
@@ -2326,6 +2928,7 @@ fn collect_agent_nodes_from_topology(
 mod tests {
     use super::*;
     use crate::context::{AttachedSessionInfo, Session};
+    use agendao_stage_protocol::StageSummary;
     use chrono::Utc;
 
     #[test]
@@ -2519,14 +3122,23 @@ mod tests {
                     cost_per_million_output: None,
                 }],
             });
-        let sidebar = Sidebar::new(context, session_id);
+        let sidebar_seed = Sidebar::capture_render_seed(&context, &session_id);
+        let sidebar_inputs = Sidebar::render_inputs_from_seed(&sidebar_seed);
+        let sidebar = Sidebar::new(session_id);
         let mut state = SidebarRenderState::default();
         let mut lifecycle = SidebarLifecycleState::default();
         let area = Rect::new(0, 0, 64, 24);
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         let mut surface = crate::ui::BufferSurface::new(&mut buffer);
 
-        sidebar.render(&mut surface, area, &mut state, &mut lifecycle, false);
+        sidebar.render_surface(
+            &sidebar_inputs,
+            &mut surface,
+            area,
+            &mut state,
+            &mut lifecycle,
+            false,
+        );
 
         let rendered = buffer
             .content
@@ -2540,6 +3152,101 @@ mod tests {
         assert!(rendered.contains("300K cumulative"));
         assert!(!rendered.contains("450K cumulative"));
         assert!(rendered.contains("H/M/W 100K / 50K / 0"));
+    }
+
+    #[test]
+    fn sidebar_uses_explicit_session_authority_not_current_route() {
+        let context = Arc::new(AppContext::new());
+        let (root_session_id, child_session_id) = {
+            let mut session = context.session.write();
+            let root = session.create_session(Some("Root Session".to_string()));
+            let child = session.create_session(Some("Child Session".to_string()));
+            session
+                .sessions
+                .get_mut(&child)
+                .expect("child session")
+                .parent_id = Some(root.clone());
+            (root, child)
+        };
+        context.navigate_session(root_session_id.clone());
+        context.set_attached_sessions(
+            &root_session_id,
+            vec![AttachedSessionInfo {
+                session_id: child_session_id.clone(),
+                stage_name: "review".to_string(),
+                stage_title: "Review".to_string(),
+                stage_id: Some("stg_1".to_string()),
+                stage_index: Some(1),
+                stage_total: Some(1),
+                status: "running".to_string(),
+            }],
+        );
+        context.apply_session_projection_snapshot(
+            &child_session_id,
+            None,
+            Vec::<StageSummary>::new(),
+            Some(agendao_types::SessionUsage {
+                input_tokens: 1_000,
+                output_tokens: 2_000,
+                reasoning_tokens: 0,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                cache_miss_tokens: 0,
+                context_tokens: 0,
+                total_cost: 0.25,
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        context
+            .providers
+            .write()
+            .push(crate::context::ProviderInfo {
+                id: "openai".to_string(),
+                name: "OpenAI".to_string(),
+                models: vec![crate::context::ModelInfo {
+                    id: "openai/gpt-5".to_string(),
+                    name: "GPT-5".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 16_000,
+                    supports_vision: false,
+                    supports_tools: true,
+                    cost_per_million_input: None,
+                    cost_per_million_output: None,
+                }],
+            });
+
+        let sidebar_seed = Sidebar::capture_render_seed(&context, &child_session_id);
+        let sidebar_inputs = Sidebar::render_inputs_from_seed(&sidebar_seed);
+        let sidebar = Sidebar::new(child_session_id);
+        let mut state = SidebarRenderState::default();
+        let mut lifecycle = SidebarLifecycleState::default();
+        let area = Rect::new(0, 0, 64, 24);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        let mut surface = crate::ui::BufferSurface::new(&mut buffer);
+
+        sidebar.render_surface(
+            &sidebar_inputs,
+            &mut surface,
+            area,
+            &mut state,
+            &mut lifecycle,
+            false,
+        );
+
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(rendered.contains("3K cumulative"));
+        assert!(rendered.contains("1 sessions"));
+        assert!(rendered.contains("Child Session"));
     }
 
     #[test]

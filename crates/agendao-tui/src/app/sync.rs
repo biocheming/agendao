@@ -362,7 +362,7 @@ impl App {
         self.sync_runtime.pending_session_telemetry_sync_due_at = None;
 
         let context = self.context.clone();
-        std::thread::spawn(move || {
+        crate::app::app_impl::support::spawn_background_task(async move {
             let telemetry = match client.get_session_telemetry(&session_id) {
                 Ok(telemetry) => Some(Box::new(telemetry)),
                 Err(error) => {
@@ -871,22 +871,6 @@ impl App {
 
         if is_active_session && self.status_dialog.is_open() {
             self.refresh_active_status_dialog();
-        }
-    }
-
-    /// Server → client state-change dispatcher for local control events that
-    /// are outside the canonical FrontendEvent transport contract.
-    pub(super) fn handle_state_change(&mut self, change: &StateChange) {
-        match change {
-            StateChange::SessionUpdated { session_id, source } => {
-                if source.as_deref() == Some("stream.reconnected") {
-                    self.queue_session_scoped_repair(session_id);
-                }
-                self.handle_session_updated_reconcile(session_id, source.as_deref());
-            }
-            StateChange::SessionStatusReconnecting(session_id) => {
-                self.apply_session_run_status_change(session_id, SessionStatus::Reconnecting);
-            }
         }
     }
 }

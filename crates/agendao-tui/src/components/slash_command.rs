@@ -1,15 +1,18 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use agendao_command::{CommandRegistry, UiActionId};
 
 use crate::command::fuzzy_match;
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 pub struct SlashCommandPopup {
     pub registry: CommandRegistry,
@@ -18,6 +21,19 @@ pub struct SlashCommandPopup {
     pub state: ListState,
     pub open: bool,
     pub selected_action: Option<UiActionId>,
+}
+
+impl Clone for SlashCommandPopup {
+    fn clone(&self) -> Self {
+        Self {
+            registry: CommandRegistry::new(),
+            query: self.query.clone(),
+            filtered: self.filtered.clone(),
+            state: self.state.clone(),
+            open: self.open,
+            selected_action: self.selected_action,
+        }
+    }
 }
 
 impl SlashCommandPopup {
@@ -34,6 +50,14 @@ impl SlashCommandPopup {
 
     pub fn open(&mut self) {
         self.query = String::new();
+        self.refresh_filter();
+        self.state.select(Some(0));
+        self.open = true;
+        self.selected_action = None;
+    }
+
+    pub fn open_with_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
         self.refresh_filter();
         self.state.select(Some(0));
         self.open = true;
@@ -133,7 +157,7 @@ impl SlashCommandPopup {
         }
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open || self.filtered.is_empty() {
             return;
         }
@@ -196,6 +220,14 @@ impl SlashCommandPopup {
     }
 }
 
+impl Component for SlashCommandPopup {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for SlashCommandPopup {
     fn default() -> Self {
         Self::new()
@@ -218,7 +250,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        popup.render(&mut surface, area, &Theme::dark());
+        popup.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

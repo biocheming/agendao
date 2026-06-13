@@ -85,16 +85,9 @@ struct SessionMessagesOutput {
     render_model_cache: SessionRenderModelCache,
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
-struct SessionMessagesRenderState {
-    messages_area: Option<Rect>,
-    scrollbar_area: Option<Rect>,
-    rendered_line_count: usize,
-    viewport_height: usize,
-}
-
 struct SessionMessagesComponent {
     area: Rect,
+    snapshot: SessionMessagesSnapshot,
     viewport: SessionMessageViewportState,
     reasoning: SessionReasoningState,
     output: Arc<Mutex<Option<SessionMessagesOutput>>>,
@@ -124,43 +117,58 @@ struct SessionMessagesSnapshot {
     fallback_model: Option<String>,
 }
 
+#[derive(Clone)]
+struct SessionMessagesSnapshotSeed {
+    session_id: String,
+    theme: crate::theme::Theme,
+    messages: Vec<Message>,
+    revert_info: Option<RevertInfo>,
+    directory: String,
+    message_density: crate::context::MessageDensity,
+    show_scrollbar: bool,
+    show_timestamps: bool,
+    show_thinking: bool,
+    show_tool_details: bool,
+    semantic_hl: bool,
+    fallback_model: Option<String>,
+    status: crate::context::SessionStatus,
+    context_compaction_summary: Option<agendao_types::ContextCompactionSummary>,
+    context_compaction_lifecycle_summary: Option<agendao_types::ContextCompactionLifecycleSummary>,
+}
+
+#[derive(Clone)]
+struct SessionMessagesSnapshotKey {
+    session_id: String,
+    theme_debug: String,
+    directory: String,
+    message_density: crate::context::MessageDensity,
+    show_scrollbar: bool,
+    show_timestamps: bool,
+    show_thinking: bool,
+    show_tool_details: bool,
+    semantic_hl: bool,
+    fallback_model: Option<String>,
+    revert_debug: String,
+    message_revision: u64,
+    status_debug: String,
+    context_compaction_summary_debug: String,
+    context_compaction_lifecycle_summary_debug: String,
+}
+
 impl SessionMessagesSnapshot {
     /// P2-3: max messages rendered in the session viewport.
     /// Derived from agendao_config::RuntimeBudgetConfig.tui_max_viewport_messages (default 200).
     const MAX_VIEWPORT_MESSAGES: usize = 200;
 
-    fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
-        let theme = context.theme.read().clone();
-        let directory = context.directory.read().clone();
-        let message_density = context.message_density();
-        let show_scrollbar = context.show_scrollbar_enabled();
-        let show_timestamps = context.show_timestamps_enabled();
-        let show_thinking = context.show_thinking_enabled();
-        let show_tool_details = context.show_tool_details_enabled();
-        let semantic_hl = context.semantic_highlight_enabled();
-        let fallback_model = context.current_model();
-        let (mut messages, revert_info) = {
-            let session_ctx = context.session.read();
-            (
-                session_ctx
-                    .messages
-                    .get(session_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                session_ctx.revert.get(session_id).cloned(),
-            )
-        };
+    fn from_seed(seed: &SessionMessagesSnapshotSeed) -> Self {
+        let mut messages = seed.messages.clone();
+        let compaction = (
+            seed.status.clone(),
+            seed.context_compaction_summary.clone(),
+            seed.context_compaction_lifecycle_summary.clone(),
+        );
 
-        let compaction = {
-            let session_ctx = context.session.read();
-            (
-                session_ctx.status(session_id).clone(),
-                context.session_context_compaction_summary(),
-                context.session_context_compaction_lifecycle_summary(),
-            )
-        };
-
-        if let Some(message) = synthetic_compaction_message(session_id, compaction) {
+        if let Some(message) = synthetic_compaction_message(&seed.session_id, compaction) {
             messages.push(message);
         }
 
@@ -174,6 +182,50 @@ impl SessionMessagesSnapshot {
         }
 
         Self {
+            theme: seed.theme.clone(),
+            messages,
+            revert_info: seed.revert_info.clone(),
+            directory: seed.directory.clone(),
+            message_density: seed.message_density,
+            show_scrollbar: seed.show_scrollbar,
+            show_timestamps: seed.show_timestamps,
+            show_thinking: seed.show_thinking,
+            show_tool_details: seed.show_tool_details,
+            semantic_hl: seed.semantic_hl,
+            fallback_model: seed.fallback_model.clone(),
+        }
+    }
+}
+
+impl SessionMessagesSnapshotSeed {
+    fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
+        let theme = context.theme.read().clone();
+        let directory = context.directory.read().clone();
+        let message_density = context.message_density();
+        let show_scrollbar = context.show_scrollbar_enabled();
+        let show_timestamps = context.show_timestamps_enabled();
+        let show_thinking = context.show_thinking_enabled();
+        let show_tool_details = context.show_tool_details_enabled();
+        let semantic_hl = context.semantic_highlight_enabled();
+        let fallback_model = context.current_model();
+        let context_compaction_summary = context.session_context_compaction_summary_for(session_id);
+        let context_compaction_lifecycle_summary =
+            context.session_context_compaction_lifecycle_summary_for(session_id);
+        let (messages, revert_info, status) = {
+            let session_ctx = context.session.read();
+            (
+                session_ctx
+                    .messages
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                session_ctx.revert.get(session_id).cloned(),
+                session_ctx.status(session_id).clone(),
+            )
+        };
+
+        Self {
+            session_id: session_id.to_string(),
             theme,
             messages,
             revert_info,
@@ -185,9 +237,82 @@ impl SessionMessagesSnapshot {
             show_tool_details,
             semantic_hl,
             fallback_model,
+            status,
+            context_compaction_summary,
+            context_compaction_lifecycle_summary,
         }
     }
 }
+
+impl SessionMessagesSnapshotKey {
+    fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
+        let theme = context.theme.read().clone();
+        let directory = context.directory.read().clone();
+        let message_density = context.message_density();
+        let show_scrollbar = context.show_scrollbar_enabled();
+        let show_timestamps = context.show_timestamps_enabled();
+        let show_thinking = context.show_thinking_enabled();
+        let show_tool_details = context.show_tool_details_enabled();
+        let semantic_hl = context.semantic_highlight_enabled();
+        let fallback_model = context.current_model();
+        let context_compaction_summary = context.session_context_compaction_summary_for(session_id);
+        let context_compaction_lifecycle_summary =
+            context.session_context_compaction_lifecycle_summary_for(session_id);
+        let (revert_info, message_revision, status) = {
+            let session_ctx = context.session.read();
+            (
+                session_ctx.revert.get(session_id).cloned(),
+                session_ctx.message_revision(session_id),
+                session_ctx.status(session_id).clone(),
+            )
+        };
+
+        Self {
+            session_id: session_id.to_string(),
+            theme_debug: format!("{:?}", theme),
+            directory,
+            message_density,
+            show_scrollbar,
+            show_timestamps,
+            show_thinking,
+            show_tool_details,
+            semantic_hl,
+            fallback_model,
+            revert_debug: format!("{:?}", revert_info),
+            message_revision,
+            status_debug: format!("{:?}", status),
+            context_compaction_summary_debug: format!("{:?}", context_compaction_summary),
+            context_compaction_lifecycle_summary_debug: format!(
+                "{:?}",
+                context_compaction_lifecycle_summary
+            ),
+        }
+    }
+
+}
+
+impl PartialEq for SessionMessagesSnapshotKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.session_id == other.session_id
+            && self.theme_debug == other.theme_debug
+            && self.directory == other.directory
+            && self.message_density == other.message_density
+            && self.show_scrollbar == other.show_scrollbar
+            && self.show_timestamps == other.show_timestamps
+            && self.show_thinking == other.show_thinking
+            && self.show_tool_details == other.show_tool_details
+            && self.semantic_hl == other.semantic_hl
+            && self.fallback_model == other.fallback_model
+            && self.revert_debug == other.revert_debug
+            && self.message_revision == other.message_revision
+            && self.status_debug == other.status_debug
+            && self.context_compaction_summary_debug == other.context_compaction_summary_debug
+            && self.context_compaction_lifecycle_summary_debug
+                == other.context_compaction_lifecycle_summary_debug
+    }
+}
+
+impl Eq for SessionMessagesSnapshotKey {}
 
 fn synthetic_compaction_message(
     session_id: &str,
@@ -352,146 +477,118 @@ struct SessionRenderSnapshot {
     header: SessionHeaderSnapshot,
 }
 
+#[derive(Clone)]
+struct SessionRenderSnapshotSeed {
+    theme: crate::theme::Theme,
+    show_header: bool,
+    selection: crate::context::SelectionState,
+    session: Option<crate::context::Session>,
+    parent_title: Option<String>,
+    last_assistant_tokens: Option<crate::context::TokenUsage>,
+    fallback_total_cost: f64,
+    fallback_total_tokens: u64,
+    status: crate::context::SessionStatus,
+    session_usage: Option<agendao_types::SessionUsage>,
+    pending_permission: bool,
+    pending_question: bool,
+    tail_status: Option<String>,
+}
+
 impl SessionRenderSnapshot {
-    fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
-        let theme = context.theme.read().clone();
-        let show_header = context.show_header_enabled();
-        let selection = context.selection_state();
-        let (parent_title, title, subtitle, usage, status_label, status_running, status_retrying) = {
-            let session_ctx = context.session.read();
-            let session = session_ctx.sessions.get(session_id);
-            let title = session
-                .map(|s| s.title.clone())
-                .unwrap_or_else(|| "New Session".to_string());
-            let parent_title = session
-                .and_then(|session| session.parent_id.as_ref())
-                .and_then(|parent_id| session_ctx.sessions.get(parent_id))
-                .map(|session| session.title.clone());
-            let messages = session_ctx
-                .messages
-                .get(session_id)
-                .cloned()
-                .unwrap_or_default();
-            let subtitle = build_session_header_subtitle(
-                session.and_then(|session| session.metadata.as_ref()),
-                &selection,
-            );
-            let status = session_ctx
-                .session_status
-                .get(session_id)
-                .cloned()
-                .unwrap_or_default();
-
-            let last_assistant = messages
-                .iter()
-                .rev()
-                .find(|m| matches!(m.role, MessageRole::Assistant) && m.tokens.output > 0);
-
-            let total_cost = context
-                .session_usage()
+    fn from_seed(seed: &SessionRenderSnapshotSeed) -> Self {
+        let title = seed
+            .session
+            .as_ref()
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "New Session".to_string());
+        let subtitle = build_session_header_subtitle(
+            seed.session
                 .as_ref()
-                .map(|usage| usage.total_cost)
-                .unwrap_or_else(|| {
-                    messages
-                        .iter()
-                        .filter(|m| matches!(m.role, MessageRole::Assistant))
-                        .map(|m| m.cost)
-                        .sum()
-                });
-            let usage = last_assistant.and_then(|assistant_msg| {
-                let total_tokens = context
-                    .session_usage()
-                    .as_ref()
-                    .map(total_session_tokens)
-                    .unwrap_or_else(|| {
-                        let t = &assistant_msg.tokens;
-                        t.input + t.output + t.reasoning
-                    });
-                if total_tokens == 0 {
-                    return None;
-                }
+                .and_then(|session| session.metadata.as_ref()),
+            &seed.selection,
+        );
+        let total_cost = seed
+            .session_usage
+            .as_ref()
+            .map(|usage| usage.total_cost)
+            .unwrap_or(seed.fallback_total_cost);
+        let usage = seed.last_assistant_tokens.as_ref().and_then(|_tokens| {
+            let total_tokens = seed
+                .session_usage
+                .as_ref()
+                .map(total_session_tokens)
+                .unwrap_or(seed.fallback_total_tokens);
+            if total_tokens == 0 {
+                return None;
+            }
 
-                let mut parts = Vec::new();
-                parts.push(format!("session {} total", format_compact_number(total_tokens)));
-                parts.push(format!("${:.4}", total_cost));
-                Some(parts.join("  ·  "))
-            });
+            let mut parts = Vec::new();
+            parts.push(format!("session {} total", format_compact_number(total_tokens)));
+            parts.push(format!("${:.4}", total_cost));
+            Some(parts.join("  ·  "))
+        });
 
-            let (status_label, status_running, status_retrying) =
-                if *context.pending_permissions.read() > 0 || context.get_pending_permission().is_some() {
-                    (
-                        Some(canonical_run_status_badge("awaiting_permission").to_string()),
-                        false,
-                        false,
-                    )
-                } else if context.has_pending_question() {
-                    (
-                        Some(canonical_run_status_badge("awaiting_user").to_string()),
-                        false,
-                        false,
-                    )
-                } else {
-                    match status {
-                        crate::context::SessionStatus::Running => (
-                            Some(canonical_run_status_badge("running").to_string()),
-                            true,
-                            false,
-                        ),
-                        crate::context::SessionStatus::Compacting => (
-                            Some(canonical_run_status_badge("compacting").to_string()),
-                            true,
-                            false,
-                        ),
-                        crate::context::SessionStatus::Reconnecting => (
-                            Some(canonical_run_status_badge("reconnecting").to_string()),
-                            true,
-                            false,
-                        ),
-                        crate::context::SessionStatus::WaitingOnUser => (
-                            Some(canonical_run_status_badge("waiting_on_user").to_string()),
-                            false,
-                            false,
-                        ),
-                        crate::context::SessionStatus::Retrying { attempt, .. } => (
-                            Some(format!(
-                                "{} {}",
-                                canonical_run_status_badge("retrying"),
-                                attempt
-                            )),
-                            true,
-                            true,
-                        ),
-                        crate::context::SessionStatus::Idle => (
-                            Some(
-                                context
-                                    .session_terminal_tail_status(session_id)
-                                    .map(|status| canonical_run_status_badge(&status).to_string())
-                                    .unwrap_or_else(|| {
-                                        canonical_run_status_badge("idle").to_string()
-                                    }),
-                            ),
-                            false,
-                            false,
-                        ),
-                    }
-                };
-
+        let (status_label, status_running, status_retrying) = if seed.pending_permission {
             (
-                parent_title,
-                title,
-                subtitle,
-                usage,
-                status_label,
-                status_running,
-                status_retrying,
+                Some(canonical_run_status_badge("awaiting_permission").to_string()),
+                false,
+                false,
             )
+        } else if seed.pending_question {
+            (
+                Some(canonical_run_status_badge("awaiting_user").to_string()),
+                false,
+                false,
+            )
+        } else {
+            match &seed.status {
+                crate::context::SessionStatus::Running => (
+                    Some(canonical_run_status_badge("running").to_string()),
+                    true,
+                    false,
+                ),
+                crate::context::SessionStatus::Compacting => (
+                    Some(canonical_run_status_badge("compacting").to_string()),
+                    true,
+                    false,
+                ),
+                crate::context::SessionStatus::Reconnecting => (
+                    Some(canonical_run_status_badge("reconnecting").to_string()),
+                    true,
+                    false,
+                ),
+                crate::context::SessionStatus::WaitingOnUser => (
+                    Some(canonical_run_status_badge("waiting_on_user").to_string()),
+                    false,
+                    false,
+                ),
+                crate::context::SessionStatus::Retrying { attempt, .. } => (
+                    Some(format!(
+                        "{} {}",
+                        canonical_run_status_badge("retrying"),
+                        attempt
+                    )),
+                    true,
+                    true,
+                ),
+                crate::context::SessionStatus::Idle => (
+                    Some(
+                        seed.tail_status
+                            .as_deref()
+                            .map(|status| canonical_run_status_badge(status).to_string())
+                            .unwrap_or_else(|| canonical_run_status_badge("idle").to_string()),
+                    ),
+                    false,
+                    false,
+                ),
+            }
         };
 
         Self {
-            theme,
-            show_header,
+            theme: seed.theme.clone(),
+            show_header: seed.show_header,
             header: SessionHeaderSnapshot {
-                parent_title,
+                parent_title: seed.parent_title.clone(),
                 title,
                 subtitle,
                 usage,
@@ -499,6 +596,85 @@ impl SessionRenderSnapshot {
                 status_running,
                 status_retrying,
             },
+        }
+    }
+}
+
+impl SessionRenderSnapshotSeed {
+    fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
+        let theme = context.theme.read().clone();
+        let show_header = context.show_header_enabled();
+        let selection = context.selection_state();
+        let session_usage = context.session_usage_for(session_id);
+        let pending_permission = context.get_pending_permission_for(session_id).is_some();
+        let pending_question = context.has_pending_question_for(session_id);
+        let tail_status = context.session_terminal_tail_status(session_id);
+        let (session, parent_title, last_assistant_tokens, fallback_total_cost, fallback_total_tokens, status) = {
+            let session_ctx = context.session.read();
+            let session = session_ctx.sessions.get(session_id).cloned();
+            let parent_title = session
+                .as_ref()
+                .and_then(|session| session.parent_id.as_ref())
+                .and_then(|parent_id| session_ctx.sessions.get(parent_id))
+                .map(|session| session.title.clone());
+            let messages = session_ctx.messages.get(session_id);
+            let last_assistant_tokens = messages.and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, MessageRole::Assistant) && m.tokens.output > 0)
+                    .map(|m| m.tokens.clone())
+            });
+            let fallback_total_cost = messages
+                .map(|messages| {
+                    messages
+                        .iter()
+                        .filter(|m| matches!(m.role, MessageRole::Assistant))
+                        .map(|m| m.cost)
+                        .sum()
+                })
+                .unwrap_or(0.0);
+            let fallback_total_tokens = messages
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|m| matches!(m.role, MessageRole::Assistant) && m.tokens.output > 0)
+                        .map(|m| {
+                            let t = &m.tokens;
+                            t.input + t.output + t.reasoning
+                        })
+                })
+                .unwrap_or(0);
+            let status = session_ctx
+                .session_status
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default();
+            (
+                session,
+                parent_title,
+                last_assistant_tokens,
+                fallback_total_cost,
+                fallback_total_tokens,
+                status,
+            )
+        };
+
+        Self {
+            theme,
+            show_header,
+            selection,
+            session,
+            parent_title,
+            last_assistant_tokens,
+            fallback_total_cost,
+            fallback_total_tokens,
+            status,
+            session_usage,
+            pending_permission,
+            pending_question,
+            tail_status,
         }
     }
 }
@@ -595,6 +771,7 @@ struct SessionRenderResources<'a> {
     message_gap_lines: usize,
 }
 
+#[derive(PartialEq, Eq)]
 struct SessionRenderChunk {
     start_line: usize,
     end_line: usize,
@@ -664,6 +841,7 @@ impl SessionRenderBuffer {
     }
 }
 
+#[derive(PartialEq, Eq)]
 struct SessionRenderModel {
     memo_key: u64,
     chunks: Vec<SessionRenderChunk>,
@@ -805,7 +983,7 @@ struct CachedMessageRenderOutput {
     output: MessageRenderOutput,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 struct SessionRenderModelCache {
     memo_key: Option<u64>,
     model: Option<Arc<SessionRenderModel>>,
@@ -872,83 +1050,9 @@ struct SessionMessageItemComponent {
     output: Arc<Mutex<Option<SessionMessageRenderItem>>>,
 }
 
-struct UserMessageOutputComponent {
-    props: UserMessageRenderProps,
-    output: Arc<Mutex<Option<MessageRenderOutput>>>,
-}
-
 struct AssistantMessageOutputComponent {
     props: AssistantMessageRenderProps,
     output: Arc<Mutex<Option<MessageRenderOutput>>>,
-}
-
-struct PlainMessageOutputComponent {
-    props: PlainMessageRenderProps,
-    output: Arc<Mutex<Option<MessageRenderOutput>>>,
-}
-
-#[derive(Clone)]
-struct AssistantBlockRenderInput {
-    block_key: String,
-    memo_key: u64,
-    item: AssistantMessageItem,
-}
-
-struct AssistantSpacerBlockComponent {
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantTextBlockComponent {
-    msg: Message,
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    item: AssistantTextItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantThinkingBlockComponent {
-    msg: Message,
-    context: MessageRenderContext,
-    expanded_reasoning: HashSet<String>,
-    memo_key: u64,
-    item: AssistantThinkingItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantToolOutputComponent {
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    item: AssistantToolBlockItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantFileBlockComponent {
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    item: AssistantFileItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantImageBlockComponent {
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    item: AssistantImageItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
-}
-
-struct AssistantFooterBlockComponent {
-    context: MessageRenderContext,
-    style: AssistantMessageRenderStyle,
-    memo_key: u64,
-    item: AssistantFooterItem,
-    output: Arc<Mutex<Option<AssistantSegmentRenderOutput>>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1096,6 +1200,7 @@ impl Component for SessionStateBinderComponent {
         let (sidebar, sidebar_setter) = use_state(|| self.sidebar_seed.clone());
         let mut next_viewport = viewport.clone();
         let mut next_reasoning = reasoning.clone();
+        let next_sidebar = sidebar.clone();
         {
             let mut pending_actions = self.pending_actions.lock();
             for action in pending_actions.drain(..) {
@@ -1108,13 +1213,16 @@ impl Component for SessionStateBinderComponent {
         if next_reasoning != reasoning {
             reasoning_setter.set_if_changed(next_reasoning.clone());
         }
+        if next_sidebar != sidebar {
+            sidebar_setter.set_if_changed(next_sidebar.clone());
+        }
 
         *self.bindings.lock() = SessionReactiveBindings {
             viewport: next_viewport,
             viewport_setter: Some(viewport_setter),
             reasoning: next_reasoning,
             reasoning_setter: Some(reasoning_setter),
-            sidebar,
+            sidebar: next_sidebar,
             sidebar_setter: Some(sidebar_setter),
         };
     }
@@ -1122,41 +1230,165 @@ impl Component for SessionStateBinderComponent {
 
 impl Component for SessionMessagesComponent {
     fn render(&self, _area: Rect, buffer: &mut Buffer) {
-        let context = use_context::<ReactiveAppContextHandle>().0;
-        let session = use_context::<ReactiveSessionContext>();
-        let (render_state, set_render_state) = use_state(SessionMessagesRenderState::default);
+        let prompt_input_blocked =
+            use_context::<crate::bridge::ReactivePromptInputBlocked>().0;
+        let event_emitter = use_context::<crate::bridge::ReactiveUiEventEmitter>().0;
+        let session_view = use_context::<crate::bridge::ReactiveSessionViewHandle>().0;
         let (message_cache, set_message_cache) = use_state(SessionMessageOutputCache::default);
         let (render_model_cache, set_render_model_cache) =
             use_state(SessionRenderModelCache::default);
-        let snapshot = SessionMessagesSnapshot::capture(&context, &session.session_id);
+        let viewport_ref = use_ref(|| self.viewport.clone());
+        if !prompt_input_blocked {
+            let keybind = use_context::<crate::context::KeybindRegistry>();
+            let viewport_for_keys = viewport_ref.clone();
+            let emitter_for_keys = event_emitter.clone();
+            use_keyboard_press(move |key_event| {
+                let key = crate::context::normalize_key_event(key_event);
+                if keybind.match_key("page_up", key.code, key.modifiers) {
+                    viewport_for_keys.update(|viewport| {
+                        let step = viewport.messages_viewport_height.saturating_sub(1).max(1);
+                        viewport.scroll_offset = viewport.scroll_offset.saturating_sub(step);
+                    });
+                    stop_propagation();
+                } else if keybind.match_key("page_down", key.code, key.modifiers) {
+                    viewport_for_keys.update(|viewport| {
+                        let step = viewport.messages_viewport_height.saturating_sub(1).max(1);
+                        let max_scroll = viewport
+                            .rendered_line_count
+                            .saturating_sub(viewport.messages_viewport_height);
+                        viewport.scroll_offset =
+                            viewport.scroll_offset.saturating_add(step).min(max_scroll);
+                    });
+                    stop_propagation();
+                } else if keybind.match_key("session_parent", key.code, key.modifiers) {
+                    let _ = emitter_for_keys.emit_custom_event(
+                        crate::event::CustomEvent::SessionNavigationIntent {
+                            kind: crate::event::SessionNavigationIntentKind::Parent,
+                        },
+                    );
+                    stop_propagation();
+                } else if keybind.match_key("session_attached_open", key.code, key.modifiers) {
+                    let _ = emitter_for_keys.emit_custom_event(
+                        crate::event::CustomEvent::SessionNavigationIntent {
+                            kind: crate::event::SessionNavigationIntentKind::Attached,
+                        },
+                    );
+                    stop_propagation();
+                }
+            });
+
+            let viewport_for_mouse = viewport_ref.clone();
+            let session_view_for_mouse = session_view.clone();
+            use_mouse(move |mouse_event| {
+                let in_messages = viewport_for_mouse.with(|viewport| {
+                    viewport
+                        .last_messages_area
+                        .is_some_and(|area| point_in_rect(area, mouse_event.column, mouse_event.row))
+                });
+                let in_scrollbar = viewport_for_mouse.with(|viewport| {
+                    viewport
+                        .last_scrollbar_area
+                        .is_some_and(|area| point_in_rect(area, mouse_event.column, mouse_event.row))
+                });
+                match mouse_event.kind {
+                    MouseEventKind::Down(MouseButton::Left) if in_scrollbar => {
+                        viewport_for_mouse.update(|viewport| {
+                            viewport.scrollbar_drag_active = true;
+                            let max_scroll = viewport
+                                .rendered_line_count
+                                .saturating_sub(viewport.messages_viewport_height);
+                            viewport.scroll_offset = map_scrollbar_row_to_offset(
+                                viewport.last_scrollbar_area,
+                                mouse_event.row,
+                                max_scroll,
+                            );
+                        });
+                        stop_propagation();
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(view) = session_view_for_mouse.as_ref() {
+                            if view.handle_click(mouse_event.column, mouse_event.row) {
+                                stop_propagation();
+                            }
+                        }
+                    }
+                    MouseEventKind::Drag(MouseButton::Left)
+                        if viewport_for_mouse.with(|viewport| viewport.scrollbar_drag_active)
+                            || in_scrollbar =>
+                    {
+                        viewport_for_mouse.update(|viewport| {
+                            viewport.scrollbar_drag_active = true;
+                            let max_scroll = viewport
+                                .rendered_line_count
+                                .saturating_sub(viewport.messages_viewport_height);
+                            viewport.scroll_offset = map_scrollbar_row_to_offset(
+                                viewport.last_scrollbar_area,
+                                mouse_event.row,
+                                max_scroll,
+                            );
+                        });
+                        stop_propagation();
+                    }
+                    MouseEventKind::Up(MouseButton::Left)
+                        if viewport_for_mouse.with(|viewport| viewport.scrollbar_drag_active) =>
+                    {
+                        viewport_for_mouse.update(|viewport| {
+                            viewport.scrollbar_drag_active = false;
+                        });
+                        stop_propagation();
+                    }
+                    MouseEventKind::ScrollUp if in_messages || in_scrollbar => {
+                        viewport_for_mouse.update(|viewport| {
+                            viewport.scroll_offset =
+                                viewport.scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
+                        });
+                        stop_propagation();
+                    }
+                    MouseEventKind::ScrollDown if in_messages || in_scrollbar => {
+                        viewport_for_mouse.update(|viewport| {
+                            let max_scroll = viewport
+                                .rendered_line_count
+                                .saturating_sub(viewport.messages_viewport_height);
+                            viewport.scroll_offset = viewport
+                                .scroll_offset
+                                .saturating_add(MOUSE_SCROLL_LINES)
+                                .min(max_scroll);
+                        });
+                        stop_propagation();
+                    }
+                    MouseEventKind::Moved => {
+                        if let Some(view) = session_view_for_mouse.as_ref() {
+                            if view.handle_mouse_move(mouse_event.column, mouse_event.row) {
+                                stop_propagation();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        }
         let output = render_session_messages_child(
             self.area,
-            &snapshot,
-            &self.viewport,
+            &self.snapshot,
+            &viewport_ref.get(),
             &self.reasoning,
             &message_cache,
             &render_model_cache,
             buffer,
         );
 
-        let next_render_state = SessionMessagesRenderState {
-            messages_area: output.viewport.last_messages_area,
-            scrollbar_area: output.viewport.last_scrollbar_area,
-            rendered_line_count: output.viewport.rendered_line_count,
-            viewport_height: output.viewport.messages_viewport_height,
-        };
-        if render_state != next_render_state {
-            set_render_state.set_if_changed(next_render_state);
-        }
-        if message_cache != output.message_cache {
-            set_message_cache.set(output.message_cache.clone());
-        }
-        if render_model_cache.memo_key != output.render_model_cache.memo_key {
-            set_render_model_cache.set(output.render_model_cache.clone());
-        }
+        set_message_cache.set_if_changed(output.message_cache.clone());
+        set_render_model_cache.set_if_changed(output.render_model_cache.clone());
 
         *self.output.lock() = Some(output);
     }
+}
+
+fn point_in_rect(area: Rect, col: u16, row: u16) -> bool {
+    col >= area.x
+        && col < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
 }
 
 impl Component for SessionMessageViewportComponent {
@@ -1191,16 +1423,10 @@ impl Component for SessionMessageViewportComponent {
 
 impl Component for SessionMessageItemComponent {
     fn render(&self, area: Rect, buffer: &mut Buffer) {
-        let output = Arc::new(Mutex::new(None));
-        let child = match &self.input.props {
-            SessionMessageRenderProps::User(props) => {
-                Element::component(UserMessageOutputComponent {
-                    props: props.clone(),
-                    output: output.clone(),
-                })
-                .with_key(format!("session-message-user:{}", self.input.message_id))
-            }
+        let output = match &self.input.props {
+            SessionMessageRenderProps::User(props) => build_user_message_output(props),
             SessionMessageRenderProps::Assistant(props) => {
+                let output = Arc::new(Mutex::new(None));
                 Element::component(AssistantMessageOutputComponent {
                     props: props.clone(),
                     output: output.clone(),
@@ -1209,34 +1435,21 @@ impl Component for SessionMessageItemComponent {
                     "session-message-assistant:{}",
                     self.input.message_id
                 ))
+                .render(area, buffer);
+                let next_output = output
+                    .lock()
+                    .take()
+                    .unwrap_or_else(|| MessageRenderOutput::new(Vec::new()));
+                next_output
             }
-            SessionMessageRenderProps::Plain(props) => {
-                Element::component(PlainMessageOutputComponent {
-                    props: props.clone(),
-                    output: output.clone(),
-                })
-                .with_key(format!("session-message-plain:{}", self.input.message_id))
-            }
+            SessionMessageRenderProps::Plain(props) => build_plain_message_output(props),
         };
-        child.render(area, buffer);
-        let next_output = output.lock().take();
-        let output = next_output.unwrap_or_else(|| MessageRenderOutput::new(Vec::new()));
         *self.output.lock() = Some(SessionMessageRenderItem {
             message_id: self.input.message_id.clone(),
             gap_before: self.input.gap_before,
             gap_after: self.input.gap_after,
             output,
         });
-    }
-}
-
-impl Component for UserMessageOutputComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || build_user_message_output(&self.props),
-            Some(build_user_message_memo_key(&self.props)),
-        );
-        *self.output.lock() = Some(output);
     }
 }
 
@@ -1254,93 +1467,6 @@ impl Component for AssistantMessageOutputComponent {
         for segment in render_assistant_block_outputs(area, buffer, &self.props, style) {
             output.append_segment(segment);
         }
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for PlainMessageOutputComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || build_plain_message_output(&self.props),
-            Some(build_plain_message_memo_key(&self.props)),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantSpacerBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_spacer_block(self.style, &self.context),
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantTextBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_text_block(&self.msg, &self.item, &self.context, self.style),
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantThinkingBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || {
-                render_assistant_thinking_output(
-                    &self.msg,
-                    &self.item,
-                    &self.context,
-                    &self.expanded_reasoning,
-                )
-            },
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantToolOutputComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_tool_output(&self.item, self.style, &self.context),
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantFileBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_file_output(&self.item, self.style, &self.context),
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantImageBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_image_output(&self.item, self.style, &self.context),
-            Some(self.memo_key),
-        );
-        *self.output.lock() = Some(output);
-    }
-}
-
-impl Component for AssistantFooterBlockComponent {
-    fn render(&self, _area: Rect, _buffer: &mut Buffer) {
-        let output = use_memo(
-            || render_assistant_footer_output(&self.item, self.style, &self.context),
-            Some(self.memo_key),
-        );
         *self.output.lock() = Some(output);
     }
 }

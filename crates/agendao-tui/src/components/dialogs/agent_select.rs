@@ -1,12 +1,15 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModeKind {
@@ -24,6 +27,7 @@ pub struct Agent {
     pub orchestrator: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct AgentSelectDialog {
     agents: Vec<Agent>,
     state: ListState,
@@ -128,7 +132,7 @@ impl AgentSelectDialog {
         self.state.selected().and_then(|i| self.agents.get(i))
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -184,6 +188,14 @@ impl AgentSelectDialog {
 
         let list = List::new(items);
         surface.render_stateful_widget(list, inner_area, &mut self.state.clone());
+    }
+}
+
+impl Component for AgentSelectDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
     }
 }
 

@@ -3,11 +3,14 @@ use agendao_skill::{
     SkillMethodologyReference, SkillMethodologyStep, SkillMethodologyTemplate,
 };
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::api::{
     ManagedSkillRecord, SkillArtifactCacheEntry, SkillAuditEvent, SkillCatalogEntry,
@@ -15,7 +18,10 @@ use crate::api::{
     SkillHubPolicy, SkillManagedLifecycleRecord, SkillRemoteInstallPlan, SkillSourceIndexSnapshot,
     SkillSyncPlan,
 };
-use crate::{theme::Theme, ui::RenderSurface};
+use crate::{
+    theme::Theme,
+    ui::{BufferSurface, RenderSurface},
+};
 
 #[derive(Clone, Debug, Default)]
 struct TextEditorState {
@@ -491,7 +497,8 @@ enum SkillBrowsePane {
     Timeline,
 }
 
-pub struct SkillListDialog {
+#[derive(Clone)]
+ pub struct SkillListDialog {
     skills: Vec<SkillCatalogEntry>,
     managed_skills: Vec<ManagedSkillRecord>,
     source_indices: Vec<SkillSourceIndexSnapshot>,
@@ -1208,7 +1215,7 @@ impl SkillListDialog {
         self.detail_scroll = 0;
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -2355,6 +2362,14 @@ impl SkillListDialog {
     }
 }
 
+impl Component for SkillListDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 fn split_non_empty_lines(input: &str) -> Vec<String> {
     input
         .lines()
@@ -2631,7 +2646,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

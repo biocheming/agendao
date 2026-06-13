@@ -17,14 +17,17 @@ use reratui::hooks::{use_context, use_context_provider};
 use reratui::scheduler::{batch, effect_queue};
 use reratui::{
     clear_current_event, clear_global_handlers, clear_render_context, init_render_context,
-    reset_component_position_counter, Buffer, Component, FiberTree, Rect,
+    reset_component_position_counter, set_current_event, Buffer, Component, FiberTree, Rect,
 };
 use tokio::sync::Notify;
 use tokio_stream::Stream;
 
-use crate::app::{App, RunOutcome};
+use crate::app::{
+    App, BridgeIterationOutcome, BridgeWaitStrategy, ReactiveDialogLayerSnapshot, RunOutcome,
+};
+use crate::components::HomeView;
 use crate::core::{is_primary_key_event, AppContext, CustomEvent, Event, Route};
-use crate::ui::BufferSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub struct UiBridgeSnapshot {
@@ -204,28 +207,16 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-fn process_app_event_blocking(app: &Arc<Mutex<App>>, event: &Event) -> anyhow::Result<bool> {
-    app.lock().process_event(event)
-}
-
-fn drain_app_pending_events_blocking(app: &Arc<Mutex<App>>, limit: usize) -> anyhow::Result<bool> {
-    app.lock().drain_pending_events(limit)
-}
-
 fn draw_app_frame_blocking(
     terminal: &mut crate::app::terminal::Tui,
-    app: &Arc<Mutex<App>>,
+    snapshot: ReactiveRootSnapshot,
     errors: &Arc<RuntimeErrorSink>,
 ) -> anyhow::Result<Arc<Mutex<Option<(u16, u16)>>>> {
     let reactive_cursor = Arc::new(Mutex::new(None));
-    debug_assert!(
-        app.lock().can_render_reactive_route(),
-        "legacy frame fallback should be unreachable after reratui migration"
-    );
     terminal.draw(|frame| {
         reset_component_position_counter();
         let root = Element::component(ReactiveRootComponent {
-            app: app.clone(),
+            snapshot: snapshot.clone(),
             cursor: reactive_cursor.clone(),
             errors: errors.clone(),
         });
@@ -239,21 +230,37 @@ fn draw_app_frame_blocking(
 
 #[derive(Clone)]
 struct ReactiveRootComponent {
-    app: Arc<Mutex<App>>,
+    snapshot: ReactiveRootSnapshot,
     cursor: Arc<Mutex<Option<(u16, u16)>>>,
     errors: Arc<RuntimeErrorSink>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReactiveRootSnapshot {
+    pub(crate) app_context: Arc<AppContext>,
+    pub(crate) theme: crate::theme::Theme,
+    pub(crate) keybinds: crate::context::KeybindRegistry,
+    pub(crate) route: Route,
+    pub(crate) animations_enabled: bool,
+    pub(crate) prompt_input_blocked: bool,
+    pub(crate) slash_popup_open: bool,
+    pub(crate) prompt: crate::components::Prompt,
+    pub(crate) selection: crate::ui::Selection,
+    pub(crate) toast: crate::components::Toast,
+    pub(crate) dialog_layer: ReactiveDialogLayerSnapshot,
+    pub(crate) screen_lines: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 #[derive(Clone)]
 struct ReactiveRouteComponent {
-    app: Arc<Mutex<App>>,
     cursor: Arc<Mutex<Option<(u16, u16)>>>,
     errors: Arc<RuntimeErrorSink>,
+    screen_lines: Arc<std::sync::Mutex<Vec<String>>>,
+    dialog_layer: ReactiveDialogLayerSnapshot,
 }
 
 #[derive(Clone)]
 struct ReactiveSessionRouteComponent {
-    app: Arc<Mutex<App>>,
     cursor: Arc<Mutex<Option<(u16, u16)>>>,
     errors: Arc<RuntimeErrorSink>,
     session_id: String,
@@ -261,7 +268,12 @@ struct ReactiveSessionRouteComponent {
 
 #[derive(Clone)]
 struct ReactiveSessionViewComponent {
-    app: Arc<Mutex<App>>,
+    cursor: Arc<Mutex<Option<(u16, u16)>>>,
+    errors: Arc<RuntimeErrorSink>,
+}
+
+#[derive(Clone)]
+struct ReactiveHomeRouteComponent {
     cursor: Arc<Mutex<Option<(u16, u16)>>>,
     errors: Arc<RuntimeErrorSink>,
 }
@@ -270,27 +282,57 @@ struct ReactiveSessionViewComponent {
 pub(crate) struct ReactiveAppContextHandle(pub(crate) Arc<AppContext>);
 
 #[derive(Clone)]
-pub(crate) struct ReactiveSessionContext {
-    pub(crate) session_id: String,
-}
+pub(crate) struct ReactiveRouteSnapshot(pub(crate) Route);
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReactiveAnimationsEnabled(pub(crate) bool);
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReactivePromptInputBlocked(pub(crate) bool);
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReactiveSlashPopupOpen(pub(crate) bool);
+
+#[derive(Clone)]
+pub(crate) struct ReactiveUiEventEmitter(pub(crate) Arc<AppContext>);
+
+#[derive(Clone)]
+pub(crate) struct ReactiveSessionViewHandle(pub(crate) Option<crate::components::SessionView>);
+
+#[derive(Clone)]
+pub(crate) struct ReactivePromptHandle(pub(crate) crate::components::Prompt);
+
+#[derive(Clone)]
+struct ReactiveSelection(pub(crate) crate::ui::Selection);
+
+#[derive(Clone)]
+struct ReactiveToast(pub(crate) crate::components::Toast);
 
 impl Component for ReactiveRootComponent {
     fn render(&self, area: Rect, buffer: &mut Buffer) {
-        let app_context = {
-            let app = self.app.lock();
-            if !app.can_render_reactive_route() {
-                *self.cursor.lock() = None;
-                return;
-            }
-
-            app.context_handle()
-        };
-
-        let _app_context = use_context_provider(|| ReactiveAppContextHandle(app_context));
+        let _app_context =
+            use_context_provider(|| ReactiveAppContextHandle(self.snapshot.app_context.clone()));
+        let _event_emitter =
+            use_context_provider(|| ReactiveUiEventEmitter(self.snapshot.app_context.clone()));
+        let _theme = use_context_provider(|| self.snapshot.theme.clone());
+        let _keybinds = use_context_provider(|| self.snapshot.keybinds.clone());
+        let _route = use_context_provider(|| ReactiveRouteSnapshot(self.snapshot.route.clone()));
+        let _animations =
+            use_context_provider(|| ReactiveAnimationsEnabled(self.snapshot.animations_enabled));
+        let _prompt_input_blocked = use_context_provider(|| {
+            ReactivePromptInputBlocked(self.snapshot.prompt_input_blocked)
+        });
+        let _slash_popup_open =
+            use_context_provider(|| ReactiveSlashPopupOpen(self.snapshot.slash_popup_open));
+        let _prompt = use_context_provider(|| ReactivePromptHandle(self.snapshot.prompt.clone()));
+        let _selection =
+            use_context_provider(|| ReactiveSelection(self.snapshot.selection.clone()));
+        let _toast_clone = use_context_provider(|| ReactiveToast(self.snapshot.toast.clone()));
         let root = Element::component(ReactiveRouteComponent {
-            app: self.app.clone(),
             cursor: self.cursor.clone(),
             errors: self.errors.clone(),
+            screen_lines: self.snapshot.screen_lines.clone(),
+            dialog_layer: self.snapshot.dialog_layer.clone(),
         });
         root.render(area, buffer);
     }
@@ -298,12 +340,9 @@ impl Component for ReactiveRootComponent {
 
 impl Component for ReactiveRouteComponent {
     fn render(&self, area: Rect, buffer: &mut Buffer) {
-        let app_context = use_context::<ReactiveAppContextHandle>().0;
-        let route = app_context.current_route();
-
-        {
-            self.app.lock().begin_reactive_render(area);
-        }
+        let route = use_context::<ReactiveRouteSnapshot>().0.clone();
+        let selection = use_context::<ReactiveSelection>().0;
+        let toast = use_context::<ReactiveToast>().0;
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             *self.cursor.lock() = None;
@@ -311,7 +350,6 @@ impl Component for ReactiveRouteComponent {
             match &route {
                 Route::Session { session_id } => {
                     let session_route = Element::component(ReactiveSessionRouteComponent {
-                        app: self.app.clone(),
                         cursor: self.cursor.clone(),
                         errors: self.errors.clone(),
                         session_id: session_id.clone(),
@@ -320,24 +358,47 @@ impl Component for ReactiveRouteComponent {
                     session_route.render(area, buffer);
                 }
                 _ => {
-                    let mut surface = BufferSurface::new(buffer);
-                    let app = self.app.lock();
-                    app.render_home_view(&mut surface, area);
-                    *self.cursor.lock() = surface.cursor_position();
+                    let home_route = Element::component(ReactiveHomeRouteComponent {
+                        cursor: self.cursor.clone(),
+                        errors: self.errors.clone(),
+                    })
+                        .with_key("reactive-home-route");
+                    home_route.render(area, buffer);
                 }
             }
 
-            let theme = app_context.theme.read().clone();
             {
                 let mut surface = BufferSurface::new(buffer);
-                let mut app = self.app.lock();
-                app.render_reactive_dialog_layer(&mut surface, area, &theme);
-                app.render_reactive_toast(&mut surface, area, &theme);
+                render_reactive_dialog_layer_snapshot(&self.dialog_layer, &mut surface, area);
+                if toast.is_visible() {
+                    let toast_width = 60u16.min(area.width.saturating_sub(4));
+                    let toast_height = toast.desired_height(toast_width);
+                    let base_x =
+                        area.x + area.width.saturating_sub(toast_width.saturating_add(2));
+                    let max_x = area.x + area.width.saturating_sub(toast_width);
+                    let toast_x = base_x.saturating_add(toast.slide_offset()).min(max_x);
+                    let toast_area = Rect {
+                        x: toast_x,
+                        y: 2.min(area.height.saturating_sub(1)),
+                        width: toast_width,
+                        height: toast_height.min(area.height.saturating_sub(2)),
+                    };
+                    Element::component(toast.clone())
+                        .with_key("toast")
+                        .render(toast_area, surface.buffer_mut());
+                }
             }
 
-            let mut app = self.app.lock();
-            app.capture_reactive_screen_lines(buffer, area);
-            app.apply_reactive_selection(buffer, area);
+            let should_capture_screen_lines =
+                selection.is_active() || selection.is_selecting();
+            if should_capture_screen_lines {
+                let lines = crate::ui::capture_screen_lines(buffer, area);
+                self.screen_lines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone_from(&lines);
+            }
+            crate::ui::apply_selection_highlight(buffer, area, &selection);
         }));
 
         if let Err(payload) = result {
@@ -349,14 +410,198 @@ impl Component for ReactiveRouteComponent {
     }
 }
 
+fn render_reactive_dialog_layer_snapshot(
+    dialog_layer: &ReactiveDialogLayerSnapshot,
+    surface: &mut BufferSurface<'_>,
+    area: Rect,
+) {
+    let theme = use_context::<crate::theme::Theme>();
+    if dialog_layer.show_backdrop {
+        let modal_backdrop =
+            ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(
+                theme.background_menu,
+            ));
+        surface.render_widget(modal_backdrop, area);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.permission_prompt.clone())
+            .with_key("dialog-permission-prompt")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.question_prompt.clone())
+            .with_key("dialog-question-prompt")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.help_dialog.clone())
+            .with_key("dialog-help")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.alert_dialog.clone())
+            .with_key("dialog-alert")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.slash_popup.clone())
+            .with_key("dialog-slash")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.command_palette.clone())
+            .with_key("dialog-command-palette")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.model_select.clone())
+            .with_key("dialog-model-select")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.agent_select.clone())
+            .with_key("dialog-agent-select")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.status_dialog.clone())
+            .with_key("dialog-status")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.session_list_dialog.clone())
+            .with_key("dialog-session-list")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.session_export_dialog.clone())
+            .with_key("dialog-session-export")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.session_rename_dialog.clone())
+            .with_key("dialog-session-rename")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.skill_list_dialog.clone())
+            .with_key("dialog-skill-list")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.mcp_dialog.clone())
+            .with_key("dialog-mcp")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.timeline_dialog.clone())
+            .with_key("dialog-timeline")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.fork_dialog.clone())
+            .with_key("dialog-fork")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.provider_dialog.clone())
+            .with_key("dialog-provider")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.recovery_action_dialog.clone())
+            .with_key("dialog-recovery-action")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.skill_proposal_review_dialog.clone())
+            .with_key("dialog-skill-proposal-review")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.subagent_dialog.clone())
+            .with_key("dialog-subagent")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.tag_dialog.clone())
+            .with_key("dialog-tag")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.theme_list_dialog.clone())
+            .with_key("dialog-theme-list")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.prompt_stash_dialog.clone())
+            .with_key("dialog-prompt-stash")
+            .render(area, buffer);
+    }
+    {
+        let buffer = surface.buffer_mut();
+        Element::component(dialog_layer.tool_call_cancel_dialog.clone())
+            .with_key("dialog-tool-call-cancel")
+            .render(area, buffer);
+    }
+}
+
+impl Component for ReactiveHomeRouteComponent {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let app_context = use_context::<ReactiveAppContextHandle>().0;
+        let prompt = use_context::<ReactivePromptHandle>().0;
+        let home = HomeView::new(app_context);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            home.render_reactive_with_cursor(buffer, area, &prompt)
+        }));
+
+        match result {
+            Ok(cursor) => {
+                *self.cursor.lock() = cursor;
+            }
+            Err(payload) => {
+                self.errors.store(anyhow::anyhow!(
+                    "reactive home render panicked: {}",
+                    panic_payload_message(payload.as_ref())
+                ));
+            }
+        }
+    }
+}
+
 impl Component for ReactiveSessionRouteComponent {
     fn render(&self, area: Rect, buffer: &mut Buffer) {
-        let _session_context = use_context_provider(|| ReactiveSessionContext {
-            session_id: self.session_id.clone(),
-        });
+        let app_context = use_context::<ReactiveAppContextHandle>().0;
+        let session_view = {
+            Some(app_context.ensure_session_view_handle(&self.session_id))
+        };
+        let _session_view_handle =
+            use_context_provider(|| ReactiveSessionViewHandle(session_view));
 
         let child = Element::component(ReactiveSessionViewComponent {
-            app: self.app.clone(),
             cursor: self.cursor.clone(),
             errors: self.errors.clone(),
         });
@@ -367,21 +612,15 @@ impl Component for ReactiveSessionRouteComponent {
 impl Component for ReactiveSessionViewComponent {
     fn render(&self, area: Rect, buffer: &mut Buffer) {
         let app_context = use_context::<ReactiveAppContextHandle>().0;
-        let session = use_context::<ReactiveSessionContext>();
-
-        let view = {
-            let mut app = self.app.lock();
-            app.ensure_session_view(&session.session_id);
-            app_context.session_view_handle()
-        };
+        let prompt = use_context::<ReactivePromptHandle>().0;
+        let view = use_context::<ReactiveSessionViewHandle>().0;
         let Some(view) = view else {
             *self.cursor.lock() = None;
             return;
         };
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let app = self.app.lock();
-            app.render_session_view(&view, &app_context, buffer, area)
+            view.render_reactive_with_prompt(&app_context, buffer, area, &prompt)
         }));
 
         match result {
@@ -426,78 +665,68 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
     let mut first_frame = true;
     let mut terminal = crate::app::terminal::init()
         .context("failed to initialize ratatui terminal for reratui bridge")?;
-    let ui_bridge = app.lock().context_handle().ui_bridge.clone();
 
     set_fiber_tree(FiberTree::new());
     init_render_context();
     batch::init_main_thread();
-    let server_event_task = app.lock().spawn_server_event_listener_task();
-
-    if let Ok(area) = terminal.size() {
-        app.lock().set_viewport_area(area.into());
-    }
+    let startup = {
+        let mut app = app.lock();
+        app.prepare_bridge_runtime_start(terminal.size().ok().map(Rect::from))
+    };
+    let app_context = startup.app_context;
+    let server_event_task = startup.server_event_task;
 
     let result = async {
         loop {
-            if app.lock().is_exiting() {
+            let now = Instant::now();
+            let loop_snapshot = app.lock().bridge_loop_snapshot(now, first_frame);
+            if loop_snapshot.is_exiting {
                 break;
             }
-
-            let now = Instant::now();
-            let tick_deadline = app.lock().next_tick_deadline(now);
-            let tick_due = tick_deadline.is_some_and(|deadline| deadline <= now);
-            let bridge_pending = ui_bridge.snapshot().pending_events > 0;
-            let should_wait = !first_frame && !tick_due && !bridge_pending;
-
-            let polled_event = if should_wait {
-                let bridge_notified = ui_bridge.notified();
-                tokio::pin!(bridge_notified);
-                if let Some(deadline) = tick_deadline {
-                    let timeout =
-                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
-                    tokio::pin!(timeout);
-                    tokio::select! {
-                        event = next_relevant_crossterm_event(&mut events) => event,
-                        _ = &mut bridge_notified => None,
-                        _ = &mut timeout => None,
-                    }
-                } else {
-                    tokio::select! {
-                        event = next_relevant_crossterm_event(&mut events) => event,
-                        _ = &mut bridge_notified => None,
+            let polled_event = match loop_snapshot.wait_strategy {
+                BridgeWaitStrategy::PollReady => poll_ready_relevant_event(&mut events),
+                BridgeWaitStrategy::Wait { deadline } => {
+                    let bridge_notified = app_context.ui_bridge_notified();
+                    tokio::pin!(bridge_notified);
+                    if let Some(deadline) = deadline {
+                        let timeout =
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+                        tokio::pin!(timeout);
+                        tokio::select! {
+                            event = next_relevant_crossterm_event(&mut events) => event,
+                            _ = &mut bridge_notified => None,
+                            _ = &mut timeout => None,
+                        }
+                    } else {
+                        tokio::select! {
+                            event = next_relevant_crossterm_event(&mut events) => event,
+                            _ = &mut bridge_notified => None,
+                        }
                     }
                 }
+            };
+
+            let resized_area = if matches!(polled_event, Some(Event::Resize(_, _))) {
+                terminal.autoresize()?;
+                terminal.size().ok().map(Rect::from)
             } else {
                 None
             };
 
-            if matches!(polled_event, Some(Event::Resize(_, _))) {
-                terminal.autoresize()?;
-                if let Ok(area) = terminal.size() {
-                    app.lock().set_viewport_area(area.into());
-                }
-            }
-
             let mut should_draw = first_frame;
 
-            let tick_due_now = app
-                .lock()
-                .next_tick_deadline(Instant::now())
-                .is_some_and(|deadline| deadline <= Instant::now());
-            if tick_due_now {
-                should_draw |= process_app_event_blocking(&app, &Event::Tick)?;
-            }
-
-            let max_events_per_frame = app
-                .lock()
-                .context_handle()
-                .runtime_budget()
-                .max_events_per_frame
-                .max(1);
-            should_draw |= drain_app_pending_events_blocking(&app, max_events_per_frame)?;
-            if let Some(event) = polled_event.as_ref() {
-                should_draw |= process_app_event_blocking(&app, event)?;
-            }
+            let max_events_per_frame = loop_snapshot.max_events_per_frame;
+            let iteration = {
+                let mut app = app.lock();
+                app.process_bridge_iteration(
+                    resized_area,
+                    loop_snapshot.tick_due,
+                    max_events_per_frame,
+                    polled_event.as_ref(),
+                    first_frame,
+                )?
+            };
+            should_draw |= iteration.should_draw;
 
             // Codex-style event loop principle: ignored terminal noise must not
             // force reratui bookkeeping/render passes. If no meaningful event,
@@ -516,13 +745,22 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
             reratui::fiber_tree::with_fiber_tree_mut(|tree| {
                 tree.mark_unseen_for_unmount();
             });
+            let BridgeIterationOutcome {
+                should_draw: _,
+                reratui_event,
+                reactive_root_snapshot,
+            } = iteration;
+            set_current_event(reratui_event.map(Arc::new));
 
             if let Some(error) = errors.take() {
                 return Err(error);
             }
 
             if should_draw {
-                let _ = draw_app_frame_blocking(&mut terminal, &app, &errors)?;
+                let snapshot = reactive_root_snapshot.unwrap_or_else(|| unreachable!(
+                    "reactive root snapshot must exist whenever a frame draw is requested"
+                ));
+                let _ = draw_app_frame_blocking(&mut terminal, snapshot, &errors)?;
                 first_frame = false;
             }
 
@@ -566,6 +804,25 @@ async fn next_relevant_crossterm_event(events: &mut EventStream) -> Option<Event
     next_relevant_event_from_stream(events).await
 }
 
+fn poll_ready_relevant_event<S>(events: &mut S) -> Option<Event>
+where
+    S: Stream<Item = std::io::Result<CrosstermEvent>> + Unpin,
+{
+    futures::pin_mut!(events);
+    let waker = futures::task::noop_waker_ref();
+    let mut cx = std::task::Context::from_waker(waker);
+    loop {
+        match events.as_mut().poll_next(&mut cx) {
+            Poll::Ready(Some(Ok(event))) => {
+                if let Some(mapped) = map_crossterm_event(event) {
+                    return Some(mapped);
+                }
+            }
+            Poll::Ready(Some(Err(_))) | Poll::Ready(None) | Poll::Pending => return None,
+        }
+    }
+}
+
 async fn next_relevant_event_from_stream<S>(events: &mut S) -> Option<Event>
 where
     S: Stream<Item = std::io::Result<CrosstermEvent>> + Unpin,
@@ -599,9 +856,17 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{App, AppLaunchConfig};
     use crate::event::CustomEvent;
-    use crossterm::event::{Event as CrosstermEvent, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
     use futures::{Future, task::noop_waker_ref};
+    use ratatui::{buffer::Buffer as TerminalBuffer, layout::Rect};
+    use reratui::{
+        clear_current_event, clear_global_handlers, clear_render_context, init_render_context,
+        reset_component_position_counter, set_current_event, with_render_context_mut, FiberTree,
+    };
     use std::collections::VecDeque;
     use std::io;
     use std::task::Context as TaskContext;
@@ -627,6 +892,117 @@ mod tests {
             _cx: &mut TaskContext<'_>,
         ) -> Poll<Option<Self::Item>> {
             Poll::Ready(self.events.pop_front())
+        }
+    }
+
+    struct ReactiveRenderHarness {
+        app: Arc<Mutex<App>>,
+        errors: Arc<RuntimeErrorSink>,
+        area: Rect,
+        cursor: Arc<Mutex<Option<(u16, u16)>>>,
+    }
+
+    impl ReactiveRenderHarness {
+        fn new(app: Arc<Mutex<App>>, area: Rect) -> Self {
+            clear_fiber_tree();
+            clear_render_context();
+            set_fiber_tree(FiberTree::new());
+            init_render_context();
+
+            Self {
+                app,
+                errors: Arc::new(RuntimeErrorSink::default()),
+                area,
+                cursor: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn errors(&self) -> Arc<RuntimeErrorSink> {
+            self.errors.clone()
+        }
+
+        fn cursor(&self) -> Arc<Mutex<Option<(u16, u16)>>> {
+            self.cursor.clone()
+        }
+
+        fn render(&self, event: Option<CrosstermEvent>) {
+            self.render_frame(event, false, |_| {});
+        }
+
+        fn render_with_forward_gate(&self, event: Option<CrosstermEvent>) {
+            self.render_frame(event, true, |_| {});
+        }
+
+        fn render_to_string(&self, event: Option<CrosstermEvent>) -> String {
+            let mut frame_text = String::new();
+            self.render_frame(event, false, |buffer| {
+                let width = buffer.area.width as usize;
+                frame_text = buffer
+                    .content
+                    .chunks(width)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            });
+            frame_text
+        }
+
+        fn render_frame<F>(
+            &self,
+            event: Option<CrosstermEvent>,
+            gate_with_forwarding: bool,
+            on_buffer: F,
+        ) where
+            F: FnOnce(&TerminalBuffer),
+        {
+            reratui::fiber_tree::with_fiber_tree_mut(|tree| {
+                tree.prepare_for_render();
+                tree.mark_unseen_for_unmount();
+            });
+            reset_component_position_counter();
+            clear_global_handlers();
+
+            let reratui_event = if gate_with_forwarding {
+                let app = self.app.lock();
+                if app.should_forward_current_terminal_event_to_reratui() {
+                    event.map(Arc::new)
+                } else {
+                    None
+                }
+            } else {
+                event.map(Arc::new)
+            };
+            set_current_event(reratui_event);
+
+            let snapshot = {
+                let mut app = self.app.lock();
+                app.prepare_reactive_root_snapshot(self.area)
+            };
+            let root = Element::component(ReactiveRootComponent {
+                snapshot,
+                cursor: self.cursor.clone(),
+                errors: self.errors.clone(),
+            });
+            let mut buffer = TerminalBuffer::empty(self.area);
+            root.render(self.area, &mut buffer);
+            on_buffer(&buffer);
+
+            reratui::fiber_tree::with_fiber_tree_mut(|tree| {
+                tree.process_unmounts();
+            });
+            with_render_context_mut(|ctx| {
+                ctx.begin_batch();
+                let _ = ctx.end_batch();
+            });
+            clear_current_event();
+        }
+    }
+
+    impl Drop for ReactiveRenderHarness {
+        fn drop(&mut self) {
+            clear_current_event();
+            clear_fiber_tree();
+            clear_render_context();
         }
     }
 
@@ -741,6 +1117,29 @@ mod tests {
     }
 
     #[test]
+    fn map_terminal_event_for_reratui_keeps_mouse_scroll() {
+        let app = App::new_with_config(AppLaunchConfig::default())
+            .expect("app should initialize");
+        let event = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 9,
+            row: 4,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        let mapped = app.current_reratui_event(Some(&event));
+        assert!(matches!(
+            mapped,
+            Some(CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 9,
+                row: 4,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
     fn map_crossterm_event_ignores_focus_noise() {
         assert!(map_crossterm_event(CrosstermEvent::FocusGained).is_none());
         assert!(map_crossterm_event(CrosstermEvent::FocusLost).is_none());
@@ -774,5 +1173,390 @@ mod tests {
             }
             other => panic!("expected mouse click after filtering noise, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn poll_ready_relevant_event_returns_immediate_key_without_waiting() {
+        let mut events = FakeEventStream::with_events(vec![Ok(CrosstermEvent::Key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+        ))]);
+
+        let ready = poll_ready_relevant_event(&mut events);
+        assert!(matches!(
+            ready,
+            Some(Event::Key(KeyEvent {
+                code: KeyCode::Char('x'),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn poll_ready_relevant_event_skips_mouse_move_noise() {
+        let mut events = FakeEventStream::with_events(vec![
+            Ok(CrosstermEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })),
+            Ok(CrosstermEvent::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::empty(),
+            ))),
+        ]);
+
+        let ready = poll_ready_relevant_event(&mut events);
+        assert!(matches!(
+            ready,
+            Some(Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn reactive_home_prompt_submit_exposes_cursor() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        harness.render(None);
+        assert!(
+            harness.cursor().lock().is_some(),
+            "home route should expose cursor"
+        );
+
+        let submit_prompt = |event: CrosstermEvent| {
+            let mapped_event = map_crossterm_event(event.clone());
+            if let Some(mapped) = mapped_event {
+                let mut app = app.lock();
+                app.process_event(&mapped).expect("event should process");
+            }
+            harness.render(Some(event.clone()));
+            {
+                let mut app = app.lock();
+                app.drain_pending_events(32)
+                    .expect("pending reactive events should drain");
+            }
+        };
+
+        submit_prompt(CrosstermEvent::Key(KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::empty(),
+        )));
+        submit_prompt(CrosstermEvent::Key(KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::empty(),
+        )));
+        submit_prompt(CrosstermEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::empty(),
+        )));
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive home render should not panic"
+        );
+    }
+
+    #[test]
+    fn reactive_home_char_input_updates_app_prompt_after_drain() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        harness.render(None);
+        let event = CrosstermEvent::Key(KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::empty(),
+        ));
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("event should process");
+        }
+        let rendered = harness.render_to_string(Some(event));
+        {
+            let mut app = app.lock();
+            app.drain_pending_events(32)
+                .expect("pending reactive events should drain");
+            assert_eq!(app.prompt_handle().get_input(), "H");
+        }
+        assert!(
+            rendered.contains('H'),
+            "rendered home frame should contain typed text"
+        );
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive home render should not panic"
+        );
+    }
+
+    #[test]
+    fn globally_consumed_selection_escape_is_not_forwarded_to_reratui() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        {
+            let mut app = app.lock();
+            app.process_event(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            }))
+            .expect("seed selection down");
+            app.process_event(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            }))
+            .expect("seed selection up");
+        }
+
+        let event = CrosstermEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("event should process");
+            assert!(
+                !app.selection_snapshot().is_active(),
+                "global handler should clear selection"
+            );
+            assert!(
+                !app.should_forward_current_terminal_event_to_reratui(),
+                "consumed selection escape must not reach reratui prompt"
+            );
+        }
+        harness.render_with_forward_gate(Some(event));
+
+        {
+            let app = app.lock();
+            let drained = app.context_handle().drain_ui_events(8);
+            assert!(
+                drained.is_empty(),
+                "reratui prompt must not emit follow-up interrupt for consumed escape"
+            );
+        }
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive render should not panic"
+        );
+    }
+
+    #[test]
+    fn globally_consumed_selection_ctrl_c_is_not_forwarded_to_reratui() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        {
+            let mut app = app.lock();
+            app.process_event(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            }))
+            .expect("seed selection down");
+            app.process_event(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            }))
+            .expect("seed selection up");
+        }
+
+        let event =
+            CrosstermEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("event should process");
+            assert!(
+                !app.selection_snapshot().is_active(),
+                "global handler should finalize copy and clear selection"
+            );
+            assert!(
+                !app.should_forward_current_terminal_event_to_reratui(),
+                "consumed selection copy must not reach reratui prompt"
+            );
+        }
+        harness.render_with_forward_gate(Some(event));
+
+        {
+            let app = app.lock();
+            let drained = app.context_handle().drain_ui_events(8);
+            assert!(
+                drained.is_empty(),
+                "reratui prompt must not emit exit for consumed selection ctrl-c"
+            );
+        }
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive render should not panic"
+        );
+    }
+
+    #[test]
+    fn help_dialog_escape_is_not_forwarded_to_reratui_prompt() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        {
+            let mut app = app.lock();
+            app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+                action: agendao_command::UiActionId::ShowHelp,
+            })))
+            .expect("open help dialog through public action");
+        }
+
+        let event = CrosstermEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("event should process");
+            assert!(
+                !app.context_handle().is_dialog_open(crate::state::DialogSlot::Help),
+                "global dialog handler should close help dialog"
+            );
+            assert!(
+                !app.should_forward_current_terminal_event_to_reratui(),
+                "consumed dialog escape must not reach reratui prompt"
+            );
+        }
+        harness.render_with_forward_gate(Some(event));
+
+        {
+            let app = app.lock();
+            let drained = app.context_handle().drain_ui_events(8);
+            assert!(
+                drained.is_empty(),
+                "reratui prompt must not emit follow-up interrupt for consumed dialog escape"
+            );
+        }
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive render should not panic"
+        );
+    }
+
+    #[test]
+    fn reactive_slash_popup_text_key_is_forwarded_to_reratui_prompt() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        {
+            let mut app = app.lock();
+            let mut prompt = app.prompt_handle();
+            prompt.set_input("/he".to_string());
+            app.process_event(&Event::Custom(Box::new(CustomEvent::PromptEdited {
+                prompt: Box::new(prompt),
+            })))
+            .expect("seed slash popup through prompt authority");
+            assert!(
+                app.context_handle()
+                    .is_dialog_open(crate::state::DialogSlot::SlashPopup),
+                "slash popup should be open before forwarding text key"
+            );
+        }
+
+        let event = CrosstermEvent::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("event should process");
+            assert!(
+                app.should_forward_current_terminal_event_to_reratui(),
+                "reactive slash popup text input must remain visible to reratui prompt"
+            );
+        }
+        harness.render_with_forward_gate(Some(event));
+
+        {
+            let app = app.lock();
+            let drained = app.context_handle().drain_ui_events(8);
+            assert!(
+                drained.iter().any(|event| matches!(
+                    event,
+                    Event::Custom(custom)
+                        if matches!(
+                            custom.as_ref(),
+                            CustomEvent::PromptEdited { prompt }
+                                if prompt.get_input() == "/hel"
+                        )
+                )),
+                "reratui prompt should emit PromptEdited with the continued slash input"
+            );
+        }
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive render should not panic"
+        );
+    }
+
+    #[test]
+    fn dialog_mouse_down_is_not_forwarded_to_reratui() {
+        let app = Arc::new(Mutex::new(
+            App::new_with_config(AppLaunchConfig::default()).expect("app should initialize"),
+        ));
+        let area = Rect::new(0, 0, 100, 30);
+        let harness = ReactiveRenderHarness::new(app.clone(), area);
+
+        {
+            let mut app = app.lock();
+            app.process_event(&Event::Custom(Box::new(CustomEvent::UiActionRequested {
+                action: agendao_command::UiActionId::OpenModelList,
+            })))
+            .expect("open model dialog through public action");
+        }
+
+        let event = CrosstermEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 10,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+        if let Some(mapped) = map_crossterm_event(event.clone()) {
+            let mut app = app.lock();
+            app.process_event(&mapped).expect("mouse event should process");
+            assert!(
+                !app.should_forward_current_terminal_event_to_reratui(),
+                "consumed dialog mouse down must not reach reratui"
+            );
+        }
+        harness.render_with_forward_gate(Some(event));
+
+        {
+            let app = app.lock();
+            let drained = app.context_handle().drain_ui_events(8);
+            assert!(
+                drained.is_empty(),
+                "reratui tree must not emit follow-up events for consumed dialog click"
+            );
+        }
+
+        assert!(
+            harness.errors().take().is_none(),
+            "reactive render should not panic"
+        );
     }
 }

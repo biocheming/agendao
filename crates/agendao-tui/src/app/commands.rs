@@ -42,6 +42,68 @@ fn session_matches_target(id: &str, title: &str, target: &str) -> bool {
 }
 
 impl App {
+    pub(super) fn request_abort_execution(&mut self) {
+        if let Some(session_id) = self.current_session_id() {
+            let active_tool_calls = self.context.get_active_tool_calls();
+            let tool_call_count = active_tool_calls.len();
+
+            if tool_call_count > 1 {
+                let items: Vec<ToolCallItem> = active_tool_calls
+                    .values()
+                    .map(|info| ToolCallItem {
+                        id: info.id.clone(),
+                        tool_name: info.tool_name.clone(),
+                    })
+                    .collect();
+                self.open_tool_call_cancel_dialog_modal(items);
+            } else if tool_call_count == 1 {
+                if let Some(api) = self.context.get_api_client() {
+                    let tool_call_id = active_tool_calls.keys().next().unwrap().clone();
+                    if let Err(e) = api.cancel_tool_call(&session_id, &tool_call_id) {
+                        self.toast.show(
+                            ToastVariant::Error,
+                            &format!("Failed to cancel tool: {}", e),
+                            3000,
+                        );
+                    } else {
+                        self.toast.show(
+                            ToastVariant::Info,
+                            "Tool cancellation requested",
+                            3000,
+                        );
+                    }
+                }
+            } else if let Some(api) = self.context.get_api_client() {
+                match api.abort_session(&session_id) {
+                    Err(e) => {
+                        self.toast.show(
+                            ToastVariant::Error,
+                            &format!("Failed to cancel session: {}", e),
+                            3000,
+                        );
+                    }
+                    Ok(value) => {
+                        let message = value
+                            .get("target")
+                            .and_then(|value| value.as_str())
+                            .map(|target| match target {
+                                "stage" => {
+                                    let stage = value
+                                        .get("stage")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("current stage");
+                                    format!("Stage cancellation requested: {}", stage)
+                                }
+                                _ => "Run cancellation requested".to_string(),
+                            })
+                            .unwrap_or_else(|| "Run cancellation requested".to_string());
+                        self.toast.show(ToastVariant::Info, &message, 3000);
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn execute_ui_action_invocation(
         &mut self,
         invocation: &ResolvedUiCommand,
@@ -255,36 +317,7 @@ impl App {
     pub(super) fn execute_ui_action(&mut self, action: UiActionId) -> anyhow::Result<()> {
         match action {
             UiActionId::AbortExecution => {
-                if let Some(session_id) = self.current_session_id() {
-                    if let Some(api) = self.context.get_api_client() {
-                        match api.abort_session(&session_id) {
-                            Err(e) => {
-                                self.toast.show(
-                                    ToastVariant::Error,
-                                    &format!("Failed to cancel run: {}", e),
-                                    3000,
-                                );
-                            }
-                            Ok(value) => {
-                                let message = value
-                                    .get("target")
-                                    .and_then(|value| value.as_str())
-                                    .map(|target| match target {
-                                        "stage" => {
-                                            let stage = value
-                                                .get("stage")
-                                                .and_then(|value| value.as_str())
-                                                .unwrap_or("current stage");
-                                            format!("Stage cancellation requested: {}", stage)
-                                        }
-                                        _ => "Run cancellation requested".to_string(),
-                                    })
-                                    .unwrap_or_else(|| "Run cancellation requested".to_string());
-                                self.toast.show(ToastVariant::Info, &message, 3000);
-                            }
-                        }
-                    }
-                }
+                self.request_abort_execution();
             }
             UiActionId::SubmitPrompt => self.submit_prompt()?,
             UiActionId::VoiceInput => self.capture_voice_prompt()?,
@@ -328,6 +361,12 @@ impl App {
             }
             UiActionId::PromptSkillList => {
                 self.open_skill_list_dialog();
+            }
+            UiActionId::CycleAgentNext => {
+                self.cycle_agent(1);
+            }
+            UiActionId::CycleAgentPrevious => {
+                self.cycle_agent(-1);
             }
             UiActionId::OpenThemeList => {
                 self.refresh_theme_list_dialog();
@@ -674,28 +713,108 @@ impl App {
                 // so built-in/custom scheduler commands like `/autoresearch` still work.
                 return Ok(false);
             }
-            InteractiveCommand::Exit
-            | InteractiveCommand::ShowHelp
-            | InteractiveCommand::Abort
-            | InteractiveCommand::ShowRecovery
-            | InteractiveCommand::NewSession
-            | InteractiveCommand::ShowStatus
-            | InteractiveCommand::ListModels
-            | InteractiveCommand::ListProviders
-            | InteractiveCommand::ConnectProvider(_)
-            | InteractiveCommand::ListThemes
-            | InteractiveCommand::ListPresets
-            | InteractiveCommand::ListSessions
-            | InteractiveCommand::ParentSession
-            | InteractiveCommand::ListTasks
-            | InteractiveCommand::Compact(_)
-            | InteractiveCommand::Copy
-            | InteractiveCommand::ListAgents
-            | InteractiveCommand::ToggleSidebar
-            | InteractiveCommand::SelectModel(_)
-            | InteractiveCommand::SelectAgent(_)
-            | InteractiveCommand::SelectPreset(_) => {
-                // Ignore unknown commands in TUI
+            InteractiveCommand::Exit => {
+                self.execute_ui_action(UiActionId::Exit)?;
+            }
+            InteractiveCommand::ShowHelp => {
+                self.execute_ui_action(UiActionId::ShowHelp)?;
+            }
+            InteractiveCommand::Abort => {
+                self.execute_ui_action(UiActionId::AbortExecution)?;
+            }
+            InteractiveCommand::ShowRecovery => {
+                self.execute_ui_action(UiActionId::OpenRecoveryList)?;
+            }
+            InteractiveCommand::NewSession => {
+                self.execute_ui_action(UiActionId::NewSession)?;
+            }
+            InteractiveCommand::ShowStatus => {
+                self.execute_ui_action(UiActionId::ShowStatus)?;
+            }
+            InteractiveCommand::ListModels => {
+                self.execute_ui_action(UiActionId::OpenModelList)?;
+            }
+            InteractiveCommand::ListProviders => {
+                self.execute_ui_action(UiActionId::ConnectProvider)?;
+            }
+            InteractiveCommand::ConnectProvider(query) => {
+                self.execute_ui_action_invocation(
+                    &ResolvedUiCommand {
+                        action_id: UiActionId::ConnectProvider,
+                        argument_kind: agendao_command::ui_command_argument_kind(
+                            UiActionId::ConnectProvider,
+                        ),
+                        argument: query,
+                    },
+                )?;
+            }
+            InteractiveCommand::ListThemes => {
+                self.execute_ui_action(UiActionId::OpenThemeList)?;
+            }
+            InteractiveCommand::ListPresets => {
+                self.execute_ui_action(UiActionId::OpenPresetList)?;
+            }
+            InteractiveCommand::ListSessions => {
+                self.execute_ui_action(UiActionId::OpenSessionList)?;
+            }
+            InteractiveCommand::ParentSession => {
+                self.execute_ui_action(UiActionId::NavigateParentSession)?;
+            }
+            InteractiveCommand::ListTasks => {
+                self.execute_ui_action(UiActionId::ListTasks)?;
+            }
+            InteractiveCommand::Compact(focus) => {
+                self.execute_ui_action_invocation(
+                    &ResolvedUiCommand {
+                        action_id: UiActionId::CompactSession,
+                        argument_kind: agendao_command::ui_command_argument_kind(
+                            UiActionId::CompactSession,
+                        ),
+                        argument: focus,
+                    },
+                )?;
+            }
+            InteractiveCommand::Copy => {
+                self.execute_ui_action(UiActionId::CopySession)?;
+            }
+            InteractiveCommand::ListAgents => {
+                self.execute_ui_action(UiActionId::OpenAgentList)?;
+            }
+            InteractiveCommand::ToggleSidebar => {
+                self.execute_ui_action(UiActionId::ToggleSidebar)?;
+            }
+            InteractiveCommand::SelectModel(model_ref) => {
+                self.execute_ui_action_invocation(
+                    &ResolvedUiCommand {
+                        action_id: UiActionId::OpenModelList,
+                        argument_kind: agendao_command::ui_command_argument_kind(
+                            UiActionId::OpenModelList,
+                        ),
+                        argument: Some(model_ref),
+                    },
+                )?;
+            }
+            InteractiveCommand::SelectAgent(agent) => {
+                self.execute_ui_action_invocation(
+                    &ResolvedUiCommand {
+                        action_id: UiActionId::OpenAgentList,
+                        argument_kind: agendao_command::ui_command_argument_kind(
+                            UiActionId::OpenAgentList,
+                        ),
+                        argument: Some(agent),
+                    },
+                )?;
+            }
+            InteractiveCommand::SelectPreset(preset) => {
+                self.execute_ui_action_invocation(
+                    &ResolvedUiCommand {
+                        action_id: UiActionId::OpenPresetList,
+                        argument_kind: agendao_command::ui_command_argument_kind(
+                            UiActionId::OpenPresetList,
+                        ),
+                        argument: Some(preset),
+                    },
+                )?;
             }
         }
 

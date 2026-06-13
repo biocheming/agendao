@@ -1,5 +1,6 @@
 use agendao_config::ModelConfig;
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
@@ -8,6 +9,8 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 use std::collections::HashSet;
 
 use crate::api::{
@@ -15,7 +18,7 @@ use crate::api::{
     ProviderConnectionDescriptorCandidate, ResolveProviderConnectResponse,
 };
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub struct Provider {
@@ -185,6 +188,7 @@ impl ModelOverrideState {
     }
 }
 
+#[derive(Clone)]
 pub struct ProviderDialog {
     pub providers: Vec<Provider>,
     pub model_overrides: Vec<ProviderModelOverride>,
@@ -929,7 +933,7 @@ impl ProviderDialog {
     pub fn set_submit_result(&mut self, result: SubmitResult) {
         self.submit_result = Some(result);
     }
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -1777,6 +1781,14 @@ impl ProviderDialog {
     }
 }
 
+impl Component for ProviderDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for ProviderDialog {
     fn default() -> Self {
         Self::new()
@@ -1810,7 +1822,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

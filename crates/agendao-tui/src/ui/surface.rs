@@ -19,6 +19,10 @@ pub trait RenderSurface {
     // surfaces can honor it, while offscreen/test surfaces may safely ignore
     // it and still reuse the same rendering code.
     fn set_cursor_position(&mut self, _x: u16, _y: u16) {}
+
+    fn buffer_mut_opt(&mut self) -> Option<&mut Buffer> {
+        None
+    }
 }
 
 impl RenderSurface for Frame<'_> {
@@ -78,5 +82,9 @@ impl RenderSurface for BufferSurface<'_> {
 
     fn set_cursor_position(&mut self, x: u16, y: u16) {
         self.cursor_position = Some((x, y));
+    }
+
+    fn buffer_mut_opt(&mut self) -> Option<&mut Buffer> {
+        Some(self.buffer)
     }
 }

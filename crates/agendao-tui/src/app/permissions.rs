@@ -206,7 +206,7 @@ impl App {
         let permission_id = permission_id.to_string();
         let reply = reply.to_string();
         let context = self.context.clone();
-        std::thread::spawn(move || {
+        crate::app::app_impl::support::spawn_background_task(async move {
             let outcome = match client.reply_permission_priority(&permission_id, &reply, message) {
                 Ok(()) => PermissionReplyOutcome::Succeeded,
                 Err(error) => PermissionReplyOutcome::Failed {

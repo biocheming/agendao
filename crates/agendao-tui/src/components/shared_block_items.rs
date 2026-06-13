@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use super::markdown::MarkdownRenderer;
 use crate::theme::Theme;
 
 pub fn render_shared_message_block_items(
@@ -21,11 +22,15 @@ pub fn render_shared_message_block_items(
                 Span::styled(line.text, Style::default().fg(tone_color(line.tone, theme))),
             ])),
             TerminalBlockItem::Markdown { content } => {
-                for raw_line in content.lines() {
-                    lines.push(Line::from(vec![
-                        Span::styled(marker, Style::default().fg(marker_color)),
-                        Span::styled(raw_line.to_string(), Style::default().fg(theme.text)),
-                    ]));
+                for markdown_line in MarkdownRenderer::new(theme.clone()).to_lines(&content, None) {
+                    let mut spans = vec![Span::styled(
+                        marker,
+                        Style::default().fg(marker_color),
+                    )];
+                    spans.extend(markdown_line.spans.into_iter().map(|span| {
+                        Span::styled(span.content, span.style)
+                    }));
+                    lines.push(Line::from(spans));
                 }
             }
             TerminalBlockItem::Diff { label, content } => {
@@ -69,5 +74,39 @@ fn tone_color(tone: TerminalSegmentTone, theme: &Theme) -> Color {
         TerminalSegmentTone::Error => theme.error,
         TerminalSegmentTone::Info => theme.info,
         TerminalSegmentTone::Warning => theme.warning,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn markdown_block_items_render_via_markdown_renderer() {
+        let lines = render_shared_message_block_items(
+            vec![TerminalBlockItem::Markdown {
+                content: "**bold**\n- item".to_string(),
+            }],
+            "│ ",
+            Color::Blue,
+            &Theme::default(),
+        );
+
+        let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
+        assert!(
+            rendered.iter().any(|line| line == "│ bold"),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|line| line == "│ • item"),
+            "{rendered:?}"
+        );
     }
 }

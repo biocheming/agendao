@@ -1,14 +1,17 @@
 use std::cell::{Cell, RefCell};
 
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 pub const OTHER_OPTION_ID: &str = "__other__";
 pub const OTHER_OPTION_LABEL: &str = "Other (type your own)";
@@ -35,6 +38,7 @@ pub struct QuestionRequest {
     pub options: Vec<QuestionOption>,
 }
 
+#[derive(Clone)]
 pub struct QuestionPrompt {
     current_question: Option<QuestionRequest>,
     pub is_open: bool,
@@ -235,7 +239,7 @@ impl QuestionPrompt {
         }
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.is_open {
             return;
         }
@@ -381,6 +385,14 @@ impl QuestionPrompt {
     }
 }
 
+impl Component for QuestionPrompt {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for QuestionPrompt {
     fn default() -> Self {
         Self::new()
@@ -454,7 +466,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        prompt.render(&mut surface, area, &Theme::dark());
+        prompt.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content
@@ -471,7 +483,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        prompt.render(&mut surface, area, &Theme::dark());
+        prompt.render_surface(&mut surface, area, &Theme::dark());
         let target = prompt.click_targets.borrow()[1];
         prompt.handle_click(5, target.start_row);
 

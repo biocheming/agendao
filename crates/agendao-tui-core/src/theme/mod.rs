@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 const PRESET_SOURCES: &[(&str, &str)] = &[
+    ("agendao", include_str!("presets/agendao.json")),
     ("aura", include_str!("presets/aura.json")),
     ("ayu", include_str!("presets/ayu.json")),
     ("carbonfox", include_str!("presets/carbonfox.json")),
@@ -133,11 +134,11 @@ impl Theme {
     }
 
     pub fn dark() -> Self {
-        Self::from_preset("opencode", ThemeMode::Dark).unwrap_or_else(Self::fallback_dark)
+        Self::from_preset("agendao", ThemeMode::Dark).unwrap_or_else(Self::fallback_dark)
     }
 
     pub fn light() -> Self {
-        Self::from_preset("opencode", ThemeMode::Light).unwrap_or_else(Self::fallback_light)
+        Self::from_preset("agendao", ThemeMode::Light).unwrap_or_else(Self::fallback_light)
     }
 
     pub fn agent_color(&self, index: usize) -> Color {
@@ -179,57 +180,57 @@ impl Theme {
 
     fn fallback_dark() -> Self {
         Self {
-            text: Color::Rgb(255, 255, 255),
-            text_muted: Color::Rgb(128, 128, 128),
+            text: Color::Rgb(228, 227, 224),
+            text_muted: Color::Rgb(139, 138, 133),
             background: Color::Reset,
-            background_panel: Color::Rgb(30, 30, 30),
-            background_element: Color::Rgb(45, 45, 45),
-            border: Color::Rgb(80, 80, 80),
-            primary: Color::Rgb(100, 200, 255),
-            secondary: Color::Rgb(180, 180, 255),
-            success: Color::Rgb(80, 200, 120),
-            warning: Color::Rgb(255, 200, 80),
-            error: Color::Rgb(255, 80, 80),
-            info: Color::Rgb(100, 180, 255),
-            diff_added: Color::Rgb(80, 200, 120),
-            diff_removed: Color::Rgb(255, 80, 80),
+            background_panel: Color::Rgb(22, 23, 27),
+            background_element: Color::Rgb(30, 31, 38),
+            border: Color::Rgb(74, 77, 88),
+            primary: Color::Rgb(240, 168, 82),
+            secondary: Color::Rgb(60, 184, 162),
+            success: Color::Rgb(127, 216, 143),
+            warning: Color::Rgb(240, 168, 82),
+            error: Color::Rgb(224, 108, 117),
+            info: Color::Rgb(86, 182, 194),
+            diff_added: Color::Rgb(127, 216, 143),
+            diff_removed: Color::Rgb(224, 108, 117),
             agent_colors: vec![
-                Color::Rgb(255, 100, 100),
-                Color::Rgb(100, 255, 100),
-                Color::Rgb(100, 100, 255),
-                Color::Rgb(255, 255, 100),
-                Color::Rgb(255, 100, 255),
-                Color::Rgb(100, 255, 255),
-                Color::Rgb(255, 180, 100),
-                Color::Rgb(180, 100, 255),
+                Color::Rgb(240, 168, 82),
+                Color::Rgb(60, 184, 162),
+                Color::Rgb(194, 120, 216),
+                Color::Rgb(86, 182, 194),
+                Color::Rgb(224, 108, 117),
+                Color::Rgb(229, 192, 123),
+                Color::Rgb(127, 216, 143),
+                Color::Rgb(139, 138, 133),
             ],
-            background_menu: Color::Rgb(50, 50, 55),
-            border_active: Color::Rgb(100, 200, 255),
-            border_subtle: Color::Rgb(60, 60, 60),
-            markdown_heading: Color::Rgb(100, 200, 255),
-            markdown_link: Color::Rgb(100, 180, 255),
-            markdown_link_text: Color::Rgb(100, 255, 255),
-            markdown_code: Color::Rgb(220, 220, 170),
-            markdown_code_bg: Color::Rgb(40, 40, 40),
-            markdown_block_quote: Color::Rgb(255, 200, 80),
-            markdown_emph: Color::Rgb(255, 200, 80),
-            markdown_strong: Color::Rgb(255, 255, 255),
-            markdown_horizontal_rule: Color::Rgb(80, 80, 80),
-            markdown_list_item: Color::Rgb(100, 180, 255),
-            markdown_list_enumeration: Color::Rgb(100, 255, 255),
-            markdown_image: Color::Rgb(100, 180, 255),
-            markdown_image_text: Color::Rgb(100, 255, 255),
-            markdown_code_block: Color::Rgb(255, 255, 255),
+            background_menu: Color::Rgb(36, 37, 45),
+            border_active: Color::Rgb(240, 168, 82),
+            border_subtle: Color::Rgb(54, 55, 64),
+            markdown_heading: Color::Rgb(240, 168, 82),
+            markdown_link: Color::Rgb(60, 184, 162),
+            markdown_link_text: Color::Rgb(60, 184, 162),
+            markdown_code: Color::Rgb(240, 168, 82),
+            markdown_code_bg: Color::Rgb(30, 31, 38),
+            markdown_block_quote: Color::Rgb(139, 138, 133),
+            markdown_emph: Color::Rgb(240, 168, 82),
+            markdown_strong: Color::Rgb(228, 227, 224),
+            markdown_horizontal_rule: Color::Rgb(54, 55, 64),
+            markdown_list_item: Color::Rgb(240, 168, 82),
+            markdown_list_enumeration: Color::Rgb(240, 168, 82),
+            markdown_image: Color::Rgb(60, 184, 162),
+            markdown_image_text: Color::Rgb(60, 184, 162),
+            markdown_code_block: Color::Rgb(228, 227, 224),
             syntax_comment: Color::Rgb(106, 153, 85),
-            syntax_keyword: Color::Rgb(197, 134, 192),
-            syntax_function: Color::Rgb(220, 220, 170),
+            syntax_keyword: Color::Rgb(194, 120, 216),
+            syntax_function: Color::Rgb(228, 227, 224),
             syntax_string: Color::Rgb(206, 145, 120),
             syntax_number: Color::Rgb(181, 206, 168),
-            diff_added_bg: Color::Rgb(30, 60, 30),
-            diff_removed_bg: Color::Rgb(60, 30, 30),
-            diff_context_bg: Color::Rgb(40, 40, 40),
-            tool_icon: Color::Rgb(180, 180, 255),
-            tool_border: Color::Rgb(60, 60, 80),
+            diff_added_bg: Color::Rgb(30, 58, 47),
+            diff_removed_bg: Color::Rgb(58, 30, 30),
+            diff_context_bg: Color::Rgb(30, 31, 38),
+            tool_icon: Color::Rgb(60, 184, 162),
+            tool_border: Color::Rgb(54, 55, 64),
         }
     }
 

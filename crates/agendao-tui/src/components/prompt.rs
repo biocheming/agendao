@@ -1,22 +1,27 @@
 use agendao_command_render::run_status_labels::canonical_run_status_title;
+use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
+use reratui::element::Element;
+use reratui::hooks::{stop_propagation, use_context, use_event, use_keyboard_press};
+use reratui::Component;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
 
 use crate::context::{AppContext, MessageRole, SessionStatus};
 use crate::file_index::FileIndex;
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 use super::spinner::{KnightRiderSpinner, SpinnerMode, TaskKind};
 
@@ -35,8 +40,6 @@ const PROMPT_BLOCK_PAD_RIGHT: u16 = 1;
 const PROMPT_BLOCK_PAD_TOP: u16 = 0;
 const PROMPT_BLOCK_PAD_BOTTOM: u16 = 1;
 const PROMPT_LINE_H_INSET: u16 = 1;
-const PROMPT_SPINNER_FRAME_MS: u128 = 280;
-const PROMPT_SPINNER_FRAMES: [&str; 3] = ["•··", "·•·", "··•"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptMode {
@@ -71,6 +74,7 @@ struct StashStore {
     entries: Vec<PromptStashEntry>,
 }
 
+#[derive(Clone)]
 pub struct Prompt {
     context: Arc<AppContext>,
     input: String,
@@ -99,6 +103,12 @@ pub struct Prompt {
     last_interrupt_time: Option<Instant>,
     attachment_status_hint: Option<String>,
     return_flow_text: Option<String>,
+}
+
+#[derive(Clone)]
+struct PromptComponent {
+    prompt: Prompt,
+    cursor_sink: Option<Arc<Mutex<Option<(u16, u16)>>>>,
 }
 
 impl Prompt {
@@ -242,18 +252,74 @@ impl Prompt {
         self.recompute_suggestions();
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect) {
-        let theme = self.context.theme.read();
+    pub fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect) {
+        let theme = self.context.theme.read().clone();
+        let animations_enabled = *self.context.animations_enabled.read();
+        self.render_with_theme_and_animations(
+            surface,
+            area,
+            &theme,
+            animations_enabled,
+            None,
+        );
+    }
+
+    pub fn render_with_theme<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+        let animations_enabled = *self.context.animations_enabled.read();
+        self.render_with_theme_and_animations(
+            surface,
+            area,
+            theme,
+            animations_enabled,
+            None,
+        );
+    }
+
+    pub fn render_reactive(&self, buffer: &mut Buffer, area: Rect) {
+        Element::component(PromptComponent {
+            prompt: self.clone(),
+            cursor_sink: None,
+        })
+        .with_key("prompt")
+        .render(area, buffer);
+    }
+
+    pub fn render_reactive_with_cursor(
+        &self,
+        buffer: &mut Buffer,
+        area: Rect,
+        cursor_sink: Arc<Mutex<Option<(u16, u16)>>>,
+    ) -> Option<(u16, u16)> {
+        {
+            let mut cursor = cursor_sink.lock().expect("prompt cursor lock");
+            *cursor = None;
+        }
+        Element::component(PromptComponent {
+            prompt: self.clone(),
+            cursor_sink: Some(cursor_sink.clone()),
+        })
+        .with_key("prompt")
+        .render(area, buffer);
+        *cursor_sink.lock().expect("prompt cursor lock")
+    }
+
+    fn render_with_theme_and_animations<S: RenderSurface>(
+        &self,
+        surface: &mut S,
+        area: Rect,
+        theme: &Theme,
+        animations_enabled: bool,
+        cursor_sink: Option<&Arc<Mutex<Option<(u16, u16)>>>>,
+    ) {
         let mode_name = current_mode_name(&self.context);
         let selection = self.context.selection_state();
         let variant = self.context.current_model_variant();
-        let animations_enabled = *self.context.animations_enabled.read();
         let show_activity_row = self.shows_activity_row();
         let inline_token_line = (!show_activity_row)
-            .then(|| self.render_token_line(&theme))
+            .then(|| self.render_token_line(theme))
             .filter(|line| !line.spans.is_empty());
 
-        let highlight_color = prompt_agent_color(&theme, mode_name.as_deref().unwrap_or(""));
+        let highlight_color = prompt_agent_color(theme, mode_name.as_deref().unwrap_or(""));
         let active_color = if matches!(self.mode, PromptMode::Shell) {
             theme.primary
         } else {
@@ -400,6 +466,10 @@ impl Prompt {
                 .saturating_add(cursor_row as u16)
                 .min(chunks[0].bottom().saturating_sub(1));
             surface.set_cursor_position(cursor_x, cursor_y);
+            if let Some(cursor_sink) = cursor_sink {
+                let mut cursor = cursor_sink.lock().expect("prompt cursor lock");
+                *cursor = Some((cursor_x, cursor_y));
+            }
         }
 
         let mut chunk_index = 1usize;
@@ -458,26 +528,22 @@ impl Prompt {
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
                 .split(spinner_row);
 
-            let spinner_icon = if animations_enabled {
-                prompt_spinner_frame()
-            } else {
-                PROMPT_SPINNER_FRAMES[0]
-            };
+            let spinner_icon = self.spinner.frame_symbol(animations_enabled);
             let spinner = Paragraph::new(Line::from(vec![Span::styled(
                 spinner_icon,
                 Style::default().fg(active_color),
             )]))
             .style(Style::default().bg(meta_background));
             surface.render_widget(spinner, spinner_chunks[0]);
-            let token_line = Paragraph::new(self.render_token_line(&theme))
+            let token_line = Paragraph::new(self.render_token_line(theme))
                 .style(Style::default().bg(meta_background));
             surface.render_widget(token_line, spinner_chunks[1]);
 
-            let status_line = Paragraph::new(self.render_status_line(&theme))
+            let status_line = Paragraph::new(self.render_status_line(theme))
                 .style(Style::default().bg(meta_background));
             surface.render_widget(status_line, chunks[chunk_index + 1]);
         } else {
-            let status_line = Paragraph::new(self.render_status_line(&theme))
+            let status_line = Paragraph::new(self.render_status_line(theme))
                 .style(Style::default().bg(meta_background));
             surface.render_widget(status_line, chunks[chunk_index]);
         }
@@ -1579,6 +1645,63 @@ impl Prompt {
     }
 }
 
+impl Component for PromptComponent {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let animations_enabled = use_context::<crate::bridge::ReactiveAnimationsEnabled>().0;
+        let prompt_input_blocked = use_context::<crate::bridge::ReactivePromptInputBlocked>().0;
+        let event_emitter = use_context::<crate::bridge::ReactiveUiEventEmitter>().0;
+
+        if !prompt_input_blocked {
+            let prompt = self.prompt.clone();
+            let emitter = event_emitter.clone();
+            use_keyboard_press(move |key_event| {
+                let key = crate::context::normalize_key_event(key_event);
+                if !reactive_prompt_handles_key(key) {
+                    return;
+                }
+
+                let mut next_prompt = prompt.clone();
+                let submit = next_prompt.handle_key(key);
+                let emitted = if submit {
+                    emitter.emit_custom_event(crate::event::CustomEvent::PromptSubmitRequested {
+                        prompt: Box::new(next_prompt),
+                    })
+                } else {
+                    emitter.emit_custom_event(crate::event::CustomEvent::PromptEdited {
+                        prompt: Box::new(next_prompt),
+                    })
+                };
+
+                if emitted {
+                    stop_propagation();
+                }
+            });
+
+            if let Some(CrosstermEvent::Paste(text)) = use_event() {
+                if !text.is_empty() {
+                    let emitted =
+                        event_emitter.emit_custom_event(crate::event::CustomEvent::PromptPasteText {
+                            text: text.to_string(),
+                        });
+                    if emitted {
+                        stop_propagation();
+                    }
+                }
+            }
+        }
+
+        let mut surface = BufferSurface::new(buffer);
+        self.prompt.render_with_theme_and_animations(
+            &mut surface,
+            area,
+            &theme,
+            animations_enabled,
+            self.cursor_sink.as_ref(),
+        );
+    }
+}
+
 fn truncate_for_status(input: &str, max_chars: usize) -> String {
     if input.chars().count() <= max_chars {
         return input.to_string();
@@ -1759,12 +1882,27 @@ fn render_prompt_identity_spans(
     ]
 }
 
-fn prompt_spinner_frame() -> &'static str {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    PROMPT_SPINNER_FRAMES[(ms / PROMPT_SPINNER_FRAME_MS) as usize % PROMPT_SPINNER_FRAMES.len()]
+fn reactive_prompt_handles_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(_) => {
+            let forbidden_modifiers =
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+            !key.modifiers.intersects(forbidden_modifiers)
+        }
+        KeyCode::Backspace
+        | KeyCode::Delete
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Enter
+        | KeyCode::Esc
+        | KeyCode::Up
+        | KeyCode::Down => true,
+        _ => false,
+    }
 }
 
 fn prompt_model_summary(model: Option<&str>, provider: Option<&str>) -> Option<String> {

@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 /// Popular providers shown first (matches TS opencode ordering).
 const POPULAR_PROVIDERS: &[&str] = &[
@@ -39,6 +42,7 @@ enum Row {
     Model { index: usize, is_recent: bool },
 }
 
+#[derive(Clone)]
 pub struct ModelSelectDialog {
     models: Vec<Model>,
     /// (provider_id, model_id) pairs, most recent first.
@@ -244,7 +248,7 @@ impl ModelSelectDialog {
         self.scroll_offset = 0;
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -409,6 +413,14 @@ impl ModelSelectDialog {
     }
 }
 
+impl Component for ModelSelectDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for ModelSelectDialog {
     fn default() -> Self {
         Self::new()
@@ -487,7 +499,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content
@@ -521,7 +533,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

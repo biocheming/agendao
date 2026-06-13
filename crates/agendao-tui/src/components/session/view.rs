@@ -1,16 +1,38 @@
+use reratui::hooks::use_media_query;
+
+fn session_sidebar_is_wide(terminal_width: u16) -> bool {
+    terminal_width > crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD
+}
+
+fn session_sidebar_is_wide_reactive() -> bool {
+    use_media_query(|(width, _)| session_sidebar_is_wide(width))
+}
+
+fn session_sidebar_default_visible(terminal_width: u16) -> bool {
+    !session_sidebar_is_wide(terminal_width)
+}
+
+fn session_sidebar_should_render_overlay(
+    lifecycle: &SidebarLifecycleState,
+    terminal_width: u16,
+) -> bool {
+    session_sidebar_visible(lifecycle, terminal_width) && !session_sidebar_is_wide(terminal_width)
+}
+
 #[derive(Default)]
 struct SessionViewState {
     viewport: SessionMessageViewportState,
     reasoning: SessionReasoningState,
     sidebar: SessionSidebarChromeState,
+    snapshot_cache: Option<SessionMessagesSnapshot>,
+    snapshot_cache_key: Option<SessionMessagesSnapshotKey>,
+    message_cache: SessionMessageOutputCache,
+    render_model_cache: SessionRenderModelCache,
     reactive_bindings: Arc<Mutex<SessionReactiveBindings>>,
     pending_actions: Arc<Mutex<Vec<SessionInteractionAction>>>,
     viewport_dirty: bool,
     reasoning_dirty: bool,
     sidebar_dirty: bool,
-    pending_navigate_attached: Option<usize>,
-    pending_navigate_session: Option<String>,
-    pending_navigate_parent: bool,
 }
 
 impl SessionViewState {
@@ -55,6 +77,7 @@ impl SessionViewState {
         apply_session_interaction_action(&mut self.viewport, &mut self.reasoning, &action);
         self.pending_actions.lock().push(action);
     }
+
 }
 
 #[derive(Clone)]
@@ -63,7 +86,48 @@ pub struct SessionView {
     state: Arc<Mutex<SessionViewState>>,
 }
 
+#[derive(Clone)]
+struct SessionViewRenderInputs {
+    render_snapshot: SessionRenderSnapshot,
+    message_snapshot_key: SessionMessagesSnapshotKey,
+    sidebar_render_inputs: SidebarRenderInputs,
+    session_theme: crate::theme::Theme,
+}
+
 impl SessionView {
+    fn capture_messages_snapshot(
+        &self,
+        context: &Arc<AppContext>,
+        snapshot_key: &SessionMessagesSnapshotKey,
+        state: &mut SessionViewState,
+    ) -> SessionMessagesSnapshot {
+        if state.snapshot_cache_key.as_ref() == Some(snapshot_key) {
+            return state
+                .snapshot_cache
+                .as_ref()
+                .expect("cached snapshot should exist")
+                .clone();
+        }
+
+        let seed = SessionMessagesSnapshotSeed::capture(context, &self.session_id);
+        let snapshot = SessionMessagesSnapshot::from_seed(&seed);
+        state.snapshot_cache = Some(snapshot.clone());
+        state.snapshot_cache_key = Some(snapshot_key.clone());
+        snapshot
+    }
+
+    fn capture_render_inputs(&self, context: &Arc<AppContext>) -> SessionViewRenderInputs {
+        let render_seed = SessionRenderSnapshotSeed::capture(context, &self.session_id);
+        let message_snapshot_key = SessionMessagesSnapshotKey::capture(context, &self.session_id);
+        let sidebar_seed = Sidebar::capture_render_seed(context, &self.session_id);
+        SessionViewRenderInputs {
+            render_snapshot: SessionRenderSnapshot::from_seed(&render_seed),
+            message_snapshot_key,
+            sidebar_render_inputs: Sidebar::render_inputs_from_seed(&sidebar_seed),
+            session_theme: context.theme.read().clone(),
+        }
+    }
+
     pub fn new(session_id: String) -> Self {
         Self {
             session_id,
@@ -86,14 +150,20 @@ impl SessionView {
         area: Rect,
         prompt: &Prompt,
     ) {
-        let snapshot = SessionRenderSnapshot::capture(context, &self.session_id);
+        let render_inputs = self.capture_render_inputs(context);
         let mut state = self.state.lock();
         self.bind_reactive_state(&mut state, surface, area);
-        let layout = self.plan_render_layout(&mut state, &snapshot, area);
+        let is_wide = if with_current_fiber(|_| ()).is_some() {
+            session_sidebar_is_wide_reactive() || session_sidebar_is_wide(area.width)
+        } else {
+            session_sidebar_is_wide(area.width)
+        };
+        let layout =
+            self.plan_render_layout(&mut state, &render_inputs.render_snapshot, area, is_wide);
         self.render_main(
-            &mut state,
             context,
-            &snapshot,
+            &mut state,
+            &render_inputs,
             surface,
             layout.main_area,
             prompt,
@@ -101,15 +171,39 @@ impl SessionView {
 
         match layout.sidebar {
             SessionSidebarLayout::Docked { sidebar_area } => {
-                self.render_sidebar_docked(&mut state, context, surface, sidebar_area);
+                self.render_sidebar_docked(
+                    &mut state,
+                    context,
+                    &render_inputs,
+                    surface,
+                    sidebar_area,
+                );
             }
             SessionSidebarLayout::Overlay => {
-                self.render_sidebar_overlay(&mut state, context, surface, area);
+                self.render_sidebar_overlay(
+                    &mut state,
+                    context,
+                    &render_inputs,
+                    surface,
+                    area,
+                );
             }
             SessionSidebarLayout::Hidden => {
-                self.render_sidebar_open_button(&mut state, context, surface, area);
+                self.render_sidebar_open_button(&mut state, &render_inputs, surface, area);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn render_once_for_test(
+        &self,
+        context: &Arc<AppContext>,
+        area: Rect,
+        prompt: &Prompt,
+    ) {
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+        self.render(context, &mut surface, area, prompt);
     }
 
     fn bind_reactive_state(
@@ -161,12 +255,12 @@ impl SessionView {
         state: &mut SessionViewState,
         _snapshot: &SessionRenderSnapshot,
         area: Rect,
+        is_wide: bool,
     ) -> SessionRenderLayout {
         let mut next_sidebar = state.sidebar.clone();
         next_sidebar.last_terminal_width = area.width;
         let show_sidebar = session_sidebar_visible(&next_sidebar.lifecycle, area.width);
-        let docked_sidebar =
-            show_sidebar && area.width > crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD;
+        let docked_sidebar = show_sidebar && is_wide;
 
         let layout = if docked_sidebar {
             next_sidebar.open_button_area = None;
@@ -185,7 +279,7 @@ impl SessionView {
                     sidebar_area: layout[1],
                 },
             }
-        } else if show_sidebar {
+        } else if session_sidebar_should_render_overlay(&next_sidebar.lifecycle, area.width) {
             next_sidebar.open_button_area = None;
             SessionRenderLayout {
                 main_area: area,
@@ -205,11 +299,12 @@ impl SessionView {
         layout
     }
 
-    fn render_sidebar_docked<S: RenderSurface>(
+    fn render_sidebar_docked(
         &self,
         state: &mut SessionViewState,
-        context: &Arc<AppContext>,
-        surface: &mut S,
+        _context: &Arc<AppContext>,
+        render_inputs: &SessionViewRenderInputs,
+        surface: &mut BufferSurface<'_>,
         area: Rect,
     ) {
         if area.width == 0 || area.height == 0 {
@@ -219,8 +314,12 @@ impl SessionView {
             return;
         }
 
-        let sidebar = Sidebar::new(context.clone(), self.session_id.clone());
-        let theme = context.theme.read();
+        let sidebar = Sidebar::new(self.session_id.clone());
+        let theme = if with_current_fiber(|_| ()).is_some() {
+            use_context::<crate::theme::Theme>()
+        } else {
+            render_inputs.session_theme.clone()
+        };
         let mut next_sidebar = state.sidebar.clone();
         next_sidebar.close_button_area = Some(Rect {
             x: area
@@ -230,13 +329,38 @@ impl SessionView {
             width: SIDEBAR_CLOSE_BUTTON_WIDTH.min(area.width),
             height: 1,
         });
-        sidebar.render(
-            surface,
-            area,
-            &mut next_sidebar.render_state,
-            &mut next_sidebar.lifecycle,
-            false,
-        );
+        if with_current_fiber(|_| ()).is_some() {
+            let render_state = Arc::new(Mutex::new(next_sidebar.render_state.clone()));
+            let lifecycle = Arc::new(Mutex::new(next_sidebar.lifecycle.clone()));
+            sidebar.render_reactive(
+                render_inputs.sidebar_render_inputs.clone(),
+                surface.buffer_mut(),
+                area,
+                render_state.clone(),
+                lifecycle.clone(),
+                false,
+                None,
+                SidebarChromeProps {
+                    mode: SidebarChromeMode::Docked,
+                    container_area: area,
+                    layout_width: state.sidebar.last_terminal_width.max(area.width),
+                    open_button_area: None,
+                    close_button_area: next_sidebar.close_button_area,
+                    backdrop_area: None,
+                },
+            );
+            next_sidebar.render_state = render_state.lock().clone();
+            next_sidebar.lifecycle = lifecycle.lock().clone();
+        } else {
+            sidebar.render_surface(
+                &render_inputs.sidebar_render_inputs,
+                surface,
+                area,
+                &mut next_sidebar.render_state,
+                &mut next_sidebar.lifecycle,
+                false,
+            );
+        }
         if let Some(close_area) = next_sidebar.close_button_area {
             let close = Paragraph::new("  ✕  ")
                 .style(
@@ -251,15 +375,20 @@ impl SessionView {
         state.update_sidebar_state(next_sidebar);
     }
 
-    fn render_sidebar_overlay<S: RenderSurface>(
+    fn render_sidebar_overlay(
         &self,
         state: &mut SessionViewState,
-        context: &Arc<AppContext>,
-        surface: &mut S,
+        _context: &Arc<AppContext>,
+        render_inputs: &SessionViewRenderInputs,
+        surface: &mut BufferSurface<'_>,
         area: Rect,
     ) {
-        let theme = context.theme.read();
-        let sidebar = Sidebar::new(context.clone(), self.session_id.clone());
+        let theme = if with_current_fiber(|_| ()).is_some() {
+            use_context::<crate::theme::Theme>()
+        } else {
+            render_inputs.session_theme.clone()
+        };
+        let sidebar = Sidebar::new(self.session_id.clone());
         let mut next_sidebar = state.sidebar.clone();
 
         let overlay_width = SIDEBAR_WIDTH.min(area.width);
@@ -290,14 +419,39 @@ impl SessionView {
             height: 1,
         });
 
-        sidebar.render_with_bg(
-            surface,
-            sidebar_area,
-            &mut next_sidebar.render_state,
-            &mut next_sidebar.lifecycle,
-            false,
-            Some(sidebar_bg),
-        );
+        if with_current_fiber(|_| ()).is_some() {
+            let render_state = Arc::new(Mutex::new(next_sidebar.render_state.clone()));
+            let lifecycle = Arc::new(Mutex::new(next_sidebar.lifecycle.clone()));
+            sidebar.render_reactive(
+                render_inputs.sidebar_render_inputs.clone(),
+                surface.buffer_mut(),
+                sidebar_area,
+                render_state.clone(),
+                lifecycle.clone(),
+                false,
+                Some(sidebar_bg),
+                SidebarChromeProps {
+                    mode: SidebarChromeMode::Overlay,
+                    container_area: area,
+                    layout_width: state.sidebar.last_terminal_width.max(area.width),
+                    open_button_area: None,
+                    close_button_area: next_sidebar.close_button_area,
+                    backdrop_area: next_sidebar.backdrop_area,
+                },
+            );
+            next_sidebar.render_state = render_state.lock().clone();
+            next_sidebar.lifecycle = lifecycle.lock().clone();
+        } else {
+            sidebar.render_with_inputs_and_bg(
+                &render_inputs.sidebar_render_inputs,
+                surface,
+                sidebar_area,
+                &mut next_sidebar.render_state,
+                &mut next_sidebar.lifecycle,
+                false,
+                Some(sidebar_bg),
+            );
+        }
         if let Some(close_area) = next_sidebar.close_button_area {
             let close = Paragraph::new("  ✕  ")
                 .style(Style::default().fg(theme.text_muted).bg(theme.background_element))
@@ -307,11 +461,11 @@ impl SessionView {
         state.update_sidebar_state(next_sidebar);
     }
 
-    fn render_sidebar_open_button<S: RenderSurface>(
+    fn render_sidebar_open_button(
         &self,
         state: &mut SessionViewState,
-        context: &Arc<AppContext>,
-        surface: &mut S,
+        render_inputs: &SessionViewRenderInputs,
+        surface: &mut BufferSurface<'_>,
         area: Rect,
     ) {
         if area.width == 0 || area.height == 0 {
@@ -320,7 +474,11 @@ impl SessionView {
             state.update_sidebar_state(next_sidebar);
             return;
         }
-        let theme = context.theme.read();
+        let theme = if with_current_fiber(|_| ()).is_some() {
+            use_context::<crate::theme::Theme>()
+        } else {
+            render_inputs.session_theme.clone()
+        };
         let mut next_sidebar = state.sidebar.clone();
         let button = Rect {
             x: area
@@ -344,6 +502,18 @@ impl SessionView {
             .alignment(ratatui::layout::Alignment::Center);
         surface.render_widget(glyph, button);
         state.update_sidebar_state(next_sidebar);
+    }
+
+    pub fn render_reactive_with_prompt(
+        &self,
+        context: &Arc<AppContext>,
+        buffer: &mut Buffer,
+        area: Rect,
+        prompt: &Prompt,
+    ) -> Option<(u16, u16)> {
+        let mut surface = BufferSurface::new(buffer);
+        self.render(context, &mut surface, area, prompt);
+        surface.cursor_position()
     }
 
     pub fn clear_sidebar_focus(&self) -> bool {
@@ -551,7 +721,7 @@ impl SessionView {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
         if session_sidebar_visible(&next_sidebar.lifecycle, terminal_width) {
-            if terminal_width > crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD {
+            if session_sidebar_is_wide(terminal_width) {
                 next_sidebar.lifecycle.mode = SidebarMode::Hide;
             }
             next_sidebar.lifecycle.visible = false;
@@ -560,31 +730,40 @@ impl SessionView {
             next_sidebar.lifecycle.workspace_focus = false;
         } else {
             next_sidebar.lifecycle.mode = SidebarMode::Auto;
-            next_sidebar.lifecycle.visible =
-                terminal_width <= crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD;
+            next_sidebar.lifecycle.visible = session_sidebar_default_visible(terminal_width);
         }
         state.update_sidebar_state(next_sidebar);
     }
 
     fn render_main(
         &self,
-        state: &mut SessionViewState,
         context: &Arc<AppContext>,
-        snapshot: &SessionRenderSnapshot,
+        state: &mut SessionViewState,
+        render_inputs: &SessionViewRenderInputs,
         surface: &mut BufferSurface<'_>,
         area: Rect,
         prompt: &Prompt,
     ) {
-        let Some(layout) = self.plan_main_layout(state, snapshot, area, prompt) else {
+        let Some(layout) = self.plan_main_layout(state, &render_inputs.render_snapshot, area, prompt) else {
             return;
         };
 
         if layout.show_header && layout.header_area.height > 0 {
-            self.render_header(snapshot, surface, layout.header_area);
+            self.render_header(&render_inputs.render_snapshot, surface, layout.header_area);
         }
-        self.render_messages(state, context, surface, layout.messages_area);
+        self.render_messages(
+            context,
+            state,
+            &render_inputs.message_snapshot_key,
+            surface,
+            layout.messages_area,
+        );
         if layout.show_prompt && layout.prompt_area.height > 0 {
-            prompt.render(surface, layout.prompt_area);
+            if with_current_fiber(|_| ()).is_some() {
+                prompt.render_reactive(surface.buffer_mut(), layout.prompt_area);
+            } else {
+                prompt.render_surface(surface, layout.prompt_area);
+            }
         }
     }
 
@@ -795,30 +974,34 @@ impl SessionView {
 
     fn render_messages(
         &self,
-        state: &mut SessionViewState,
         context: &Arc<AppContext>,
+        state: &mut SessionViewState,
+        snapshot_key: &SessionMessagesSnapshotKey,
         surface: &mut BufferSurface<'_>,
         area: Rect,
     ) {
+        let snapshot = self.capture_messages_snapshot(context, snapshot_key, state);
         if with_current_fiber(|_| ()).is_none() {
-            let snapshot = SessionMessagesSnapshot::capture(context, &self.session_id);
             let output = render_session_messages_child(
                 area,
                 &snapshot,
                 &state.viewport,
                 &state.reasoning,
-                &SessionMessageOutputCache::default(),
-                &SessionRenderModelCache::default(),
+                &state.message_cache,
+                &state.render_model_cache,
                 surface.buffer_mut(),
             );
             state.update_reasoning_state(output.reasoning);
             state.update_viewport_state(output.viewport);
+            state.message_cache = output.message_cache;
+            state.render_model_cache = output.render_model_cache;
             return;
         }
 
         let output = Arc::new(Mutex::new(None));
         let child = Element::component(SessionMessagesComponent {
             area,
+            snapshot,
             viewport: state.viewport.clone(),
             reasoning: state.reasoning.clone(),
             output: output.clone(),
@@ -835,6 +1018,18 @@ impl SessionView {
 
     pub fn handle_click(&self, col: u16, row: u16) -> bool {
         let mut state = self.state.lock();
+        if point_in_optional_rect(state.sidebar.open_button_area, col, row) {
+            state.sidebar.lifecycle.mode = SidebarMode::Auto;
+            state.sidebar.lifecycle.visible = session_sidebar_default_visible(
+                state.sidebar.last_terminal_width,
+            );
+            state.sidebar.open_button_area = None;
+            state.sidebar_dirty = true;
+            if let Some(setter) = state.reactive_bindings.lock().sidebar_setter {
+                setter.set_if_changed(state.sidebar.clone());
+            }
+            return true;
+        }
         let Some(area) = state.viewport.last_messages_area else {
             return false;
         };
@@ -876,6 +1071,63 @@ impl SessionView {
         false
     }
 
+    pub fn consumes_left_click(&self, col: u16, row: u16) -> bool {
+        let state = self.state.lock();
+
+        if point_in_optional_rect(state.sidebar.open_button_area, col, row)
+            || point_in_optional_rect(state.sidebar.close_button_area, col, row)
+            || point_in_optional_rect(state.sidebar.backdrop_area, col, row)
+            || state.sidebar.render_state.contains_sidebar_point(col, row)
+            || point_in_optional_rect(state.viewport.last_scrollbar_area, col, row)
+        {
+            return true;
+        }
+
+        let Some(area) = state.viewport.last_messages_area else {
+            return false;
+        };
+        if !point_in_rect(area, col, row) {
+            return false;
+        }
+
+        let line_index = state.viewport.scroll_offset + usize::from(row.saturating_sub(area.y));
+        if line_index >= state.viewport.rendered_line_count {
+            return false;
+        }
+
+        state
+            .reasoning
+            .toggle_hits
+            .iter()
+            .any(|hit| hit.line_index == line_index)
+            || state
+                .reasoning
+            .tool_arguments_toggle_hits
+            .iter()
+            .any(|hit| hit.line_index == line_index)
+    }
+
+    pub fn left_mouse_down_outcome(&self, col: u16, row: u16) -> SessionLeftMouseDownOutcome {
+        if self.consumes_left_click(col, row) {
+            return SessionLeftMouseDownOutcome::Consumed;
+        }
+
+        match self.selection_area() {
+            Some(area) if point_in_rect(area, col, row) => {
+                SessionLeftMouseDownOutcome::BeginSelection { area }
+            }
+            Some(_) | None => SessionLeftMouseDownOutcome::ClearSelection,
+        }
+    }
+
+    pub fn contains_messages_point(&self, col: u16, row: u16) -> bool {
+        self.state
+            .lock()
+            .viewport
+            .last_messages_area
+            .is_some_and(|area| point_in_rect(area, col, row))
+    }
+
     pub fn handle_scrollbar_click(&self, col: u16, row: u16) -> bool {
         let mut state = self.state.lock();
         if !point_in_optional_rect(state.viewport.last_scrollbar_area, col, row) {
@@ -907,6 +1159,16 @@ impl SessionView {
         was_active
     }
 
+    pub fn consumes_left_drag(&self, col: u16, row: u16) -> bool {
+        let state = self.state.lock();
+        state.viewport.scrollbar_drag_active
+            || point_in_optional_rect(state.viewport.last_scrollbar_area, col, row)
+    }
+
+    pub fn consumes_left_mouse_up(&self) -> bool {
+        self.state.lock().viewport.scrollbar_drag_active
+    }
+
     fn scroll_to_scrollbar_row(&self, state: &mut SessionViewState, row: u16) {
         let max_scroll = state.max_scroll_offset();
         let next_offset =
@@ -914,96 +1176,8 @@ impl SessionView {
         state.queue_interaction_action(SessionInteractionAction::SetScrollOffset(next_offset));
     }
 
-    pub fn handle_sidebar_click(&self, _context: &Arc<AppContext>, col: u16, row: u16) -> bool {
-        let mut state = self.state.lock();
-        let mut next_sidebar = state.sidebar.clone();
-        if point_in_optional_rect(next_sidebar.open_button_area, col, row) {
-            next_sidebar.lifecycle.mode = SidebarMode::Auto;
-            next_sidebar.lifecycle.visible =
-                state.sidebar.last_terminal_width <= crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD;
-            next_sidebar.open_button_area = None;
-            state.update_sidebar_state(next_sidebar);
-            return true;
-        }
-        if point_in_optional_rect(next_sidebar.close_button_area, col, row) {
-            if state.sidebar.last_terminal_width > crate::context::SESSION_SIDEBAR_WIDE_THRESHOLD {
-                next_sidebar.lifecycle.mode = SidebarMode::Hide;
-            }
-            next_sidebar.lifecycle.visible = false;
-            next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.attached_session_focus = false;
-            next_sidebar.lifecycle.workspace_focus = false;
-            next_sidebar.close_button_area = None;
-            state.update_sidebar_state(next_sidebar);
-            return true;
-        }
-        if point_in_optional_rect(next_sidebar.backdrop_area, col, row)
-            && !next_sidebar.render_state.contains_sidebar_point(col, row)
-        {
-            next_sidebar.lifecycle.visible = false;
-            next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.attached_session_focus = false;
-            next_sidebar.lifecycle.workspace_focus = false;
-            next_sidebar.backdrop_area = None;
-            next_sidebar.close_button_area = None;
-            state.update_sidebar_state(next_sidebar);
-            return true;
-        }
-        if !next_sidebar
-            .render_state
-            .handle_click(&mut next_sidebar.lifecycle, col, row)
-        {
-            return false;
-        }
-        state.pending_navigate_attached = next_sidebar.render_state.take_pending_navigate_attached();
-        state.pending_navigate_session = next_sidebar.render_state.take_pending_navigate_session();
-        state.pending_navigate_parent = next_sidebar.render_state.take_pending_navigate_parent();
-        state.update_sidebar_state(next_sidebar);
-        true
-    }
-
-    pub fn is_point_in_sidebar(&self, col: u16, row: u16) -> bool {
-        self.state
-            .lock()
-            .sidebar
-            .render_state
-            .contains_sidebar_point(col, row)
-    }
-
     pub fn selection_area(&self) -> Option<Rect> {
         self.state.lock().viewport.last_messages_area
-    }
-
-    pub fn scroll_sidebar_up_at(&self, col: u16, row: u16) -> bool {
-        let mut state = self.state.lock();
-        let mut next_sidebar = state.sidebar.clone();
-        let changed = next_sidebar.render_state.scroll_up_at(col, row);
-        if changed {
-            state.update_sidebar_state(next_sidebar);
-        }
-        changed
-    }
-
-    pub fn scroll_sidebar_down_at(&self, col: u16, row: u16) -> bool {
-        let mut state = self.state.lock();
-        let mut next_sidebar = state.sidebar.clone();
-        let changed = next_sidebar.render_state.scroll_down_at(col, row);
-        if changed {
-            state.update_sidebar_state(next_sidebar);
-        }
-        changed
-    }
-
-    pub fn take_pending_navigate_attached(&self) -> Option<usize> {
-        self.state.lock().pending_navigate_attached.take()
-    }
-
-    pub fn take_pending_navigate_session(&self) -> Option<String> {
-        self.state.lock().pending_navigate_session.take()
-    }
-
-    pub fn take_pending_navigate_parent(&self) -> bool {
-        std::mem::take(&mut self.state.lock().pending_navigate_parent)
     }
 
     pub fn scroll_up(&self) {

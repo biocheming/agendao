@@ -1,13 +1,16 @@
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use reratui::hooks::use_context;
+use reratui::Component;
 use std::cell::Cell;
 
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
+use crate::ui::{BufferSurface, RenderSurface};
 
 #[derive(Clone, Debug)]
 pub enum StatusLineKind {
@@ -69,6 +72,7 @@ impl StatusLine {
     }
 }
 
+#[derive(Clone)]
 pub struct StatusDialog {
     lines: Vec<StatusLine>,
     open: bool,
@@ -178,7 +182,7 @@ impl StatusDialog {
             .is_some_and(|area| contains_point(area, col, row))
     }
 
-    pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
+    fn render_surface<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
         if !self.open {
             return;
         }
@@ -301,6 +305,14 @@ impl StatusDialog {
     }
 }
 
+impl Component for StatusDialog {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let theme = use_context::<Theme>();
+        let mut surface = BufferSurface::new(buffer);
+        self.render_surface(&mut surface, area, &theme);
+    }
+}
+
 impl Default for StatusDialog {
     fn default() -> Self {
         Self::new()
@@ -338,7 +350,7 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
 
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content
@@ -357,7 +369,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 32);
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         assert!(dialog.contains_point(15, 5));
         assert!(dialog.handle_click(102, 4));
@@ -378,7 +390,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 18);
         let mut buffer = Buffer::empty(area);
         let mut surface = BufferSurface::new(&mut buffer);
-        dialog.render(&mut surface, area, &Theme::dark());
+        dialog.render_surface(&mut surface, area, &Theme::dark());
 
         let rendered = buffer
             .content

@@ -997,6 +997,14 @@ mod tests {
             .ui_palette_commands()
             .iter()
             .any(|command| command.action_id == UiActionId::SubmitPrompt));
+        assert!(registry
+            .ui_palette_commands()
+            .iter()
+            .any(|command| command.action_id == UiActionId::CycleAgentNext));
+        assert!(registry
+            .ui_palette_commands()
+            .iter()
+            .any(|command| command.action_id == UiActionId::CycleAgentPrevious));
     }
 
     #[test]

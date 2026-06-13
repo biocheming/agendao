@@ -81,7 +81,7 @@ impl App {
         if !self.selection.is_active() {
             return;
         }
-        let lines = self.screen_lines.clone();
+        let lines = self.screen_lines.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let mut text = self
             .selection
             .get_selected_text(|row| lines.get(row as usize).cloned());
@@ -202,7 +202,7 @@ impl App {
                 });
                 let context = self.context.clone();
                 let session_directory = self.context.directory.read().clone();
-                thread::spawn(move || {
+                crate::app::app_impl::support::spawn_background_task(async move {
                     let (created_session, response, error) = match client.create_session(
                         selected_mode.scheduler_profile.clone(),
                         Some(session_directory),
@@ -280,7 +280,7 @@ impl App {
 
         let context = self.context.clone();
         let session_id = session_id.to_string();
-        thread::spawn(move || {
+        crate::app::app_impl::support::spawn_background_task(async move {
             let (response, error) = match client.send_prompt(
                 &session_id,
                 input,
@@ -381,7 +381,7 @@ impl App {
 
                     let context = self.context.clone();
                     let session_id = session.id.clone();
-                    thread::spawn(move || {
+                    crate::app::app_impl::support::spawn_background_task(async move {
                         let result = client.execute_shell(&session_id, command.clone(), None);
                         let _ = context.emit_custom_event(CustomEvent::ShellDispatchFinished {
                             optimistic_session_id: session_id.clone(),
@@ -414,7 +414,7 @@ impl App {
                 let context = self.context.clone();
                 let session_directory = self.context.directory.read().clone();
                 let opt_session_id = optimistic_session_id.clone();
-                thread::spawn(move || {
+                crate::app::app_impl::support::spawn_background_task(async move {
                     let (real_session_id, created_session, error) = match client.create_session(
                         selected_mode.scheduler_profile.clone(),
                         Some(session_directory),
@@ -453,7 +453,7 @@ impl App {
 
                 let context = self.context.clone();
                 let session_id = session_id.to_string();
-                thread::spawn(move || {
+                crate::app::app_impl::support::spawn_background_task(async move {
                     let result = client.execute_shell(&session_id, command.clone(), None);
                     let _ = context.emit_custom_event(CustomEvent::ShellDispatchFinished {
                         optimistic_session_id: session_id.clone(),

@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthChar;
 /// - Middle rows: entire line
 /// - Last row: from start of line to end column
 /// - Single row: from start column to end column
+#[derive(Clone)]
 pub struct Selection {
     /// Anchor point (where mouse-down happened).
     anchor: Option<(u16, u16)>,

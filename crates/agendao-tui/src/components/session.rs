@@ -18,25 +18,42 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Widget,
+    },
 };
 use reratui::element::Element;
 use reratui::fiber_tree::with_current_fiber;
-use reratui::hooks::{use_context, use_memo, use_state, StateSetter};
+use reratui::hooks::{
+    stop_propagation, use_context, use_keyboard_press, use_memo, use_mouse, use_ref, use_state,
+    StateSetter,
+};
+use reratui::components::VirtualBuffer;
 use reratui::{Buffer, Component};
 
 use super::message_palette;
 use super::shared_block_items::render_shared_message_block_items;
 use super::sidebar::SidebarRenderState;
-use crate::bridge::{ReactiveAppContextHandle, ReactiveSessionContext};
-use crate::components::{Prompt, Sidebar};
+use crate::components::{
+    Prompt, Sidebar, SidebarChromeMode, SidebarChromeProps, SidebarRenderInputs,
+};
 use crate::context::{
     AppContext, Message, MessagePart, MessageRole, RevertInfo, SidebarLifecycleState, SidebarMode,
 };
 use crate::ui::{BufferSurface, RenderSurface};
+use crossterm::event::{MouseButton, MouseEventKind};
 
 include!("session/state.rs");
 include!("session/render.rs");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionLeftMouseDownOutcome {
+    Consumed,
+    BeginSelection { area: Rect },
+    ClearSelection,
+}
+
 include!("session/view.rs");
 
 #[cfg(test)]
