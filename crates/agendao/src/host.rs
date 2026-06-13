@@ -7,6 +7,7 @@ use std::time::Duration;
 use agendao_launcher as launcher;
 use agendao_server::ServerRuntimeOptions;
 use agendao_tui::AppLaunchConfig;
+use agendao_tui_revue::{self, AppConfig as RevueAppConfig};
 
 #[derive(Clone, Debug)]
 pub struct TuiCommandRequest {
@@ -25,6 +26,7 @@ pub struct TuiCommandRequest {
     pub attach_url: Option<String>,
     pub password: Option<String>,
     pub unix_socket_path: Option<String>,
+    pub revue: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +204,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         attach_url,
         password,
         unix_socket_path,
+        revue,
     } = request;
 
     if fork && !continue_last && session.is_none() {
@@ -213,6 +216,27 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     let use_http = attach_url.is_some();
     let use_socket = !use_http && unix_socket_path.is_some();
     let use_direct = !use_http && !use_socket;
+
+    if revue {
+        let cfg = RevueAppConfig {
+            working_dir: working_dir.clone(),
+            model: model.clone(),
+            agent_name: agent.clone(),
+            session_id: session.clone(),
+            initial_prompt: prompt.clone(),
+            base_url: attach_url.clone(),
+            unix_socket_path: unix_socket_path.clone(),
+            local_direct: use_direct,
+        };
+        let mode = if use_direct { "Direct" } else if use_socket { "Unix socket" } else { "HTTP" };
+        eprintln!("Starting TUI Revue in {} mode", mode);
+        let run_result = tokio::task::spawn_blocking(move || {
+            agendao_tui_revue::run_app_with_config(cfg)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("agendao-tui-revue task failed to join: {}", error))?;
+        return run_result;
+    }
 
     if use_direct {
         eprintln!("Starting TUI in Direct (in-process) mode");

@@ -25,6 +25,8 @@ product-shell = [
     "agendao-tui/voice",
     "agendao-tui/multimodal",
     "agendao-tui/local-server",
+    "dep:agendao-tui-revue",
+    "agendao-tui-revue/local-server",
     "dep:clap",
     "dep:dirs",
     "dep:reqwest",

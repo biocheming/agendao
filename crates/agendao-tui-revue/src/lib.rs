@@ -9,5 +9,5 @@ pub mod store;
 pub mod telemetry;
 pub mod transport;
 
-pub use app::run_app;
+pub use app::{run_app, run_app_with_config};
 pub use config::AppConfig;
