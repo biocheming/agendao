@@ -4,10 +4,11 @@
 //! New: AppConfig matches the same pattern.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Application launch configuration.
 /// Transport priority: local_direct > unix_socket > base_url (HTTP SSE).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppConfig {
     // ── Transport ──
     /// Run in-process (default: true). No server/HTTP needed.
@@ -16,6 +17,9 @@ pub struct AppConfig {
     pub unix_socket_path: Option<String>,
     /// HTTP base URL for SSE event stream (only when !local_direct).
     pub base_url: Option<String>,
+    /// Pre-created local server state (from outer async context).
+    /// When provided, run_app_with_config skips internal server creation.
+    pub local_server: Option<Arc<agendao_server_local::LocalServerState>>,
 
     // ── Session ──
     pub agent_name: Option<String>,
@@ -31,6 +35,7 @@ impl Default for AppConfig {
             local_direct: env_bool("AGENDAO_TUI_LOCAL_DIRECT").unwrap_or(true),
             unix_socket_path: env_str("AGENDAO_UNIX_SOCKET"),
             base_url: env_str("AGENDAO_TUI_BASE_URL"),
+            local_server: None,
             agent_name: env_str("AGENDAO_TUI_AGENT"),
             model: env_str("AGENDAO_TUI_MODEL"),
             session_id: env_str("AGENDAO_TUI_SESSION"),

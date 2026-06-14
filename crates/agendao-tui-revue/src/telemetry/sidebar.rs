@@ -9,6 +9,7 @@ use crate::store::types::{
     ActiveTool, CacheStats, McpLspInfo, Pricing, SidebarTrees, ToolPhase, TokenUsage,
     TreeNode as SidebarNode, TreeIntent,
 };
+use crate::theme::colors;
 
 /// Sidebar component — renders when visible.
 pub struct SessionSidebar {
@@ -30,24 +31,41 @@ impl SessionSidebar {
         mcp: &McpLspInfo,
         tools: &[ActiveTool],
     ) -> revue::widget::Stack {
+        // Each panel's height = border (2) + content rows. Compute once
+        // and use child_sized so vstack stops squeezing dead air between
+        // panels by stretching every Border to fill its share of height.
+        let token_h = 2 + (3 + if token.cache_read > 0 || token.cache_miss > 0 { 5 } else { 0 });
+        let cache_h = 2 + 3;
+        let price_h = 2 + 2;
+        let meter_h = 2 + 2;
+        let tools_rows = if tools.is_empty() { 1 } else { 1 + tools.len().min(8) as u16 };
+        let tools_h = 2 + tools_rows;
+        let mcp_h = 2 + 2;
+
         let mut sidebar = vstack().gap(1)
-            .child(Self::panel("📊 Token Usage", Self::token_panel(token)))
-            .child(Self::panel("💾 Cache", Self::cache_panel(cache)))
-            .child(Self::panel("💰 Pricing", Self::pricing_panel(price)))
-            .child(Self::panel("📐 Context", Self::meter_panel(ctx_pct)))
-            .child(Self::panel("🔧 Tools", Self::tools_panel(tools)))
-            .child(Self::panel("🌐 MCP/LSP", Self::mcp_panel(mcp)));
+            .child_sized(Self::panel("📊 Token Usage", Self::token_panel(token)), token_h)
+            .child_sized(Self::panel("💾 Cache", Self::cache_panel(cache)), cache_h)
+            .child_sized(Self::panel("💰 Pricing", Self::pricing_panel(price)), price_h)
+            .child_sized(Self::panel("📐 Context", Self::meter_panel(ctx_pct)), meter_h)
+            .child_sized(Self::panel("🔧 Tools", Self::tools_panel(tools)), tools_h)
+            .child_sized(Self::panel("🌐 MCP/LSP", Self::mcp_panel(mcp)), mcp_h);
 
         if !trees.session_nodes.is_empty() {
-            sidebar = sidebar.child(Self::panel("🌳 Sessions", Self::tree_panel(&trees.session_nodes)));
+            let tree_rows = trees.session_nodes.iter().map(|n| 1 + n.children.len() as u16).sum::<u16>().min(30);
+            sidebar = sidebar.child_sized(
+                Self::panel("🌳 Sessions", Self::tree_panel(&trees.session_nodes)),
+                2 + tree_rows,
+            );
         }
         sidebar
     }
 
-    /// Wrap content in a Border panel.
+    /// Wrap content in a Border panel. Title gets a leading and trailing
+    /// space so it reads as " 📊 Token Usage " — symmetric padding —
+    /// instead of "📊Token Usage   " from the bare emoji-prefix style.
     fn panel(title: &str, content: revue::widget::Stack) -> revue::widget::Border {
         Border::rounded()
-            .title(title.to_string())
+            .title(format!(" {} ", title))
             .child(content)
             .class("SidebarPanel")
     }
@@ -56,63 +74,70 @@ impl SessionSidebar {
 
     fn token_panel(t: &TokenUsage) -> revue::widget::Stack {
         let mut s = vstack()
-            .child(Text::new(format!("Input:  {:>8}", fmt_count(t.input))).class("SidebarText"))
-            .child(Text::new(format!("Output: {:>8}", fmt_count(t.output))).class("SidebarText"))
-            .child(Text::new(format!("Total:  {:>8}", fmt_count(t.total))).class("SidebarText"));
+            .child_sized(Text::new(format!("Input:  {:>8}", fmt_count(t.input))).class("SidebarText"), 1)
+            .child_sized(Text::new(format!("Output: {:>8}", fmt_count(t.output))).class("SidebarText"), 1)
+            .child_sized(Text::new(format!("Total:  {:>8}", fmt_count(t.total))).class("SidebarText"), 1);
 
         // Per-turn breakdown (from cache tokens)
         if t.cache_read > 0 || t.cache_miss > 0 {
             let turn_total = t.cache_read + t.cache_miss;
             s = s
-                .child(Text::new("─".repeat(20)).fg(Color::rgb(59, 66, 97)))
-                .child(Text::new(format!("Turn read: {:>5}", fmt_count(t.cache_read))).class("SidebarText"))
-                .child(Text::new(format!("Turn miss: {:>5}", fmt_count(t.cache_miss))).class("SidebarText"))
-                .child(Text::new(format!("Turn write:{:>5}", fmt_count(t.cache_write))).class("SidebarText"))
-                .child(Text::new(format!("Turn total:{:>5}", fmt_count(turn_total))).class("SidebarText"));
+                .child_sized(Text::new("─".repeat(20)).fg(colors::BORDER), 1)
+                .child_sized(Text::new(format!("Turn read: {:>5}", fmt_count(t.cache_read))).class("SidebarText"), 1)
+                .child_sized(Text::new(format!("Turn miss: {:>5}", fmt_count(t.cache_miss))).class("SidebarText"), 1)
+                .child_sized(Text::new(format!("Turn write:{:>5}", fmt_count(t.cache_write))).class("SidebarText"), 1)
+                .child_sized(Text::new(format!("Turn total:{:>5}", fmt_count(turn_total))).class("SidebarText"), 1);
         }
         s
     }
 
     fn cache_panel(c: &CacheStats) -> revue::widget::Stack {
         vstack()
-            .child(Text::new(format!("Hits:   {:>8}", c.hits)).class("SidebarText"))
-            .child(Text::new(format!("Misses: {:>8}", c.misses)).class("SidebarText"))
-            .child(Text::new(format!("Writes: {:>8}", c.writes)).class("SidebarText"))
+            .child_sized(Text::new(format!("Hits:   {:>8}", c.hits)).class("SidebarText"), 1)
+            .child_sized(Text::new(format!("Misses: {:>8}", c.misses)).class("SidebarText"), 1)
+            .child_sized(Text::new(format!("Writes: {:>8}", c.writes)).class("SidebarText"), 1)
     }
 
     fn pricing_panel(p: &Pricing) -> revue::widget::Stack {
         vstack()
-            .child(Text::new(format!("In:  ${:.6}/1k", p.input_per_1k)).class("SidebarText"))
-            .child(Text::new(format!("Out: ${:.6}/1k", p.output_per_1k)).class("SidebarText"))
+            .child_sized(Text::new(format!("In:  ${:.6}/1k", p.input_per_1k)).class("SidebarText"), 1)
+            .child_sized(Text::new(format!("Out: ${:.6}/1k", p.output_per_1k)).class("SidebarText"), 1)
     }
 
     fn meter_panel(pct: u8) -> revue::widget::Stack {
         let bar = Self::meter_bar(pct);
         vstack()
-            .child(Text::new(format!("{}% used", pct)).class("SidebarText"))
-            .child(bar)
+            .child_sized(Text::new(format!("{}% used", pct)).class("SidebarText"), 1)
+            .child_sized(bar, 1)
     }
 
-    /// Build a text-based progress bar.
-    fn meter_bar(pct: u8) -> revue::widget::Text {
-        let filled = (pct as usize * 20 / 100).min(20);
-        let bar: String = std::iter::repeat('█').take(filled)
-            .chain(std::iter::repeat('░').take(20 - filled))
-            .collect();
-        let color = if pct > 80 { Color::rgb(247, 118, 142) }
-                   else if pct > 50 { Color::rgb(224, 175, 104) }
-                   else { Color::rgb(158, 206, 106) };
-        Text::new(bar).fg(color)
+    /// Build a progress bar using revue's Progress widget.
+    fn meter_bar(pct: u8) -> revue::widget::Progress {
+        let color = if pct > 80 { colors::ACCENT_RED }
+                   else if pct > 50 { colors::ACCENT_YELLOW }
+                   else { colors::ACCENT_GREEN };
+        revue::widget::progress(pct as f32 / 100.0)
+            .filled_color(color)
+            .show_percentage(true)
     }
 
     fn tools_panel(tools: &[ActiveTool]) -> revue::widget::Stack {
         let mut s = vstack();
+        let running = tools.iter().filter(|t| t.phase == ToolPhase::Running).count();
+        let done = tools.iter().filter(|t| t.phase == ToolPhase::Done).count();
+        let starting = tools.iter().filter(|t| t.phase == ToolPhase::Starting).count();
         if tools.is_empty() {
-            s = s.child(Text::new("(none)").class("SidebarText"));
+            s = s.child_sized(Text::new("(idle)").class("SidebarText"), 1);
         } else {
-            for t in tools {
-                let icon = match t.phase { ToolPhase::Starting => "○", ToolPhase::Running => "◉", ToolPhase::Done => "●" };
-                s = s.child(Text::new(format!("{} {}", icon, t.name)).class("SidebarText"));
+            s = s.child_sized(Text::new(format!("▶ {}  ◉ {}  ● {}", starting, running, done))
+                .fg(colors::ACCENT_BLUE), 1);
+            for t in tools.iter().take(8) {
+                let icon = match t.phase {
+                    ToolPhase::Starting => "○",
+                    ToolPhase::Running => "◉",
+                    ToolPhase::Done => "●",
+                };
+                s = s.child_sized(Text::new(format!("  {} {}", icon, t.name)).class("SidebarText"), 1);
             }
         }
         s
@@ -130,18 +155,20 @@ impl SessionSidebar {
             format!("LSP: {}", m.lsp_active.join(", "))
         };
         vstack()
-            .child(Text::new(mcp_status).class("SidebarText"))
-            .child(Text::new(lsp_status).class("SidebarText"))
+            .child_sized(Text::new(mcp_status).class("SidebarText"), 1)
+            .child_sized(Text::new(lsp_status).class("SidebarText"), 1)
     }
 
     /// Render tree nodes flat (max 30 items, indent via "  ".repeat(depth)).
     fn tree_panel(nodes: &[SidebarNode]) -> revue::widget::Stack {
-        // Flatten the tree into lines first, then build stack once
+        // Flatten the tree into lines first, then build stack once.
+        // Each row is `child_sized(_, 1)` so panel rows don't get
+        // stretched apart by Auto distribution inside the Border.
         let mut lines: Vec<(String, Color)> = Vec::new();
         Self::flatten_nodes(nodes, &mut lines);
         let mut s = vstack();
         for (label, color) in lines.iter().take(30) {
-            s = s.child(Text::new(label.as_str()).fg(*color));
+            s = s.child_sized(Text::new(label.as_str()).fg(*color), 1);
         }
         s
     }
@@ -155,9 +182,9 @@ impl SessionSidebar {
             } else { "  " };
             let label = format!("{}{}{}", indent, icon, n.label);
             let color = match &n.intent {
-                Some(TreeIntent::NavigateSession(_)) => Color::rgb(125, 207, 255),
-                Some(TreeIntent::OpenFile(_)) => Color::rgb(158, 206, 106),
-                None => Color::rgb(169, 177, 214),
+                Some(TreeIntent::NavigateSession(_)) => colors::ACCENT_CYAN,
+                Some(TreeIntent::OpenFile(_)) => colors::ACCENT_GREEN,
+                None => colors::FG_SECONDARY,
             };
             lines.push((label, color));
             if n.expanded {

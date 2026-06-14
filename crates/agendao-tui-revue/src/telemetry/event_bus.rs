@@ -121,6 +121,10 @@ mod tests {
     }
 
     /// Integration test: ToolCall lifecycle.
+    /// Uses the web-aligned schema: `kind: "tool"` + `phase: "start" | "running" |
+    /// "done" | "error"` + `name`. The previous test used a legacy
+    /// `tool_call` kind that the server never emits, masking the
+    /// "transcript stays empty" bug we hit in real runs.
     #[test]
     fn event_bus_tool_call_lifecycle() {
         let mut bus = EventBus::new();
@@ -129,7 +133,7 @@ mod tests {
 
         tx.send(FrontendEvent::OutputBlockAppended {
             session_id: "s1".into(),
-            block: serde_json::json!({"kind": "tool_call", "phase": "start", "tool_name": "bash", "params": "ls -la"}),
+            block: serde_json::json!({"kind": "tool", "phase": "start", "name": "bash", "detail": "ls -la"}),
             id: Some("t1".into()),
             live_identity: None,
         }).unwrap();

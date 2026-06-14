@@ -5,17 +5,56 @@
 
 // ── Transcript blocks (金：TranscriptFeed 唯一消费者) ──
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum TodoStatus { Pending, InProgress, Completed, Cancelled }
+
+#[derive(Clone, Debug)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+/// Metadata for the running task list header.
+#[derive(Clone, Debug, Default)]
+pub struct TodoSummary {
+    pub duration: String,    // e.g. "19m 49s"
+    pub tokens: String,      // e.g. "50.4k"
+    pub phase: String,       // e.g. "still thinking"
+}
+
+/// Three-state fold for transcript blocks.
+///
+/// - `Folded`   — role label + one-line summary (current "closed" state)
+/// - `Truncated` — role label + first N lines + "… +M more" hint (DEFAULT)
+/// - `Expanded`  — full content, no truncation
+#[derive(Clone, Debug, PartialEq)]
+pub enum FoldState {
+    Folded,
+    Truncated,
+    Expanded,
+}
+
+impl FoldState {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Folded => Self::Truncated,
+            Self::Truncated => Self::Expanded,
+            Self::Expanded => Self::Folded,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TranscriptBlock {
     UserPrompt {
         id: String,
         content: String,
-        folded: bool,
+        fold: FoldState,
     },
     Thinking {
         id: String,
         content: String,
-        folded: bool,
+        fold: FoldState,
         duration_ms: u64,
     },
     ToolCall {
@@ -29,16 +68,27 @@ pub enum TranscriptBlock {
         name: String,
         result: String,
         is_error: bool,
-        folded: bool,
+        fold: FoldState,
     },
     SkillActivated {
         id: String,
         name: String,
     },
+    /// Task/todo list emitted during execution.
+    TodoList {
+        id: String,
+        /// Individual todo items with status.
+        items: Vec<TodoItem>,
+        fold: FoldState,
+        /// Running header summary: duration, token count, phase.
+        summary: Option<TodoSummary>,
+    },
     StageUpdate {
         id: String,
         name: String,
         status: String,
+        /// Optional JSON metadata rendered via JsonViewer
+        metadata: Option<String>,
     },
     AssistantMsg {
         id: String,
@@ -57,6 +107,85 @@ pub enum TranscriptBlock {
         id: String,
         text: String,
     },
+}
+
+impl TranscriptBlock {
+    /// Number of terminal rows this block occupies when rendered.
+    /// Mirrors `transcript_block_height` in `screen/session.rs` so the
+    /// store layer can compute layout (e.g. auto-scroll to keep the
+    /// cursor block in view) without depending on the screen layer.
+    pub fn height(&self) -> u16 {
+        const FOLD_PREVIEW_LINES: usize = 3;
+        match self {
+            TranscriptBlock::UserPrompt { content, fold, .. } => {
+                let total = content.lines().count();
+                match fold {
+                    FoldState::Folded => 1, // role label only (inline summary)
+                    FoldState::Truncated => {
+                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                        1 + body + extra
+                    }
+                    FoldState::Expanded => total.max(1) as u16 + 1,
+                }
+            }
+            TranscriptBlock::Thinking { content, fold, .. } => {
+                match fold {
+                    FoldState::Folded => 1,
+                    FoldState::Truncated => {
+                        let total = content.lines().count();
+                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                        1 + body + extra
+                    }
+                    FoldState::Expanded => 1 + content.lines().count().max(1) as u16,
+                }
+            }
+            TranscriptBlock::ToolCall { params, .. } => {
+                if params.is_empty() { 1 } else { 2 }
+            }
+            TranscriptBlock::ToolResult { result, fold, .. } => {
+                match fold {
+                    FoldState::Folded => 1,
+                    FoldState::Truncated => {
+                        let total = result.lines().count();
+                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                        1 + body + extra
+                    }
+                    FoldState::Expanded => {
+                        let lines = result.lines().count().min(20).max(1) as u16;
+                        let extra = if result.lines().count() > 20 { 1 } else { 0 };
+                        1 + lines + extra
+                    }
+                }
+            }
+            TranscriptBlock::StageUpdate { metadata, .. } => {
+                let extra = metadata.as_ref().map(|m| m.lines().count() as u16).unwrap_or(0);
+                3 + extra
+            }
+            TranscriptBlock::TodoList { items, fold, .. } => match fold {
+                FoldState::Folded => 1, // header only
+                FoldState::Truncated => {
+                    let body = FOLD_PREVIEW_LINES.min(items.len()) as u16;
+                    let extra = if items.len() > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                    1 + body + extra
+                }
+                FoldState::Expanded => 1 + items.len().max(1) as u16,
+            },
+            TranscriptBlock::SkillActivated { .. }
+            | TranscriptBlock::CompactionHint { .. }
+            | TranscriptBlock::SystemNotice { .. }
+            | TranscriptBlock::ImageRef { .. } => 1,
+            TranscriptBlock::AssistantMsg { content, .. } => {
+                // Rough estimate: role label + body lines. The renderer's
+                // exact height (which walks markdown segments + tables)
+                // is close enough for auto-scroll math — a row or two of
+                // difference won't change the "is cursor visible" answer.
+                if content.is_empty() { 2 } else { content.lines().count().max(1) as u16 + 1 }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,10 +212,15 @@ pub enum RunStatus {
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
+    pub reasoning: u64,
     pub total: u64,
     pub cache_read: u64,
     pub cache_miss: u64,
     pub cache_write: u64,
+    /// Latest turn context tokens (non-cumulative, for meter bar)
+    pub context_tokens: u64,
+    /// Cumulative total cost in USD
+    pub total_cost: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -184,6 +318,11 @@ pub enum DialogKind {
 pub struct ToastMsg {
     pub text: String,
     pub variant: ToastMsgVariant,
+    /// Wall-clock deadline (millis since UNIX epoch) after which the
+    /// toast should be considered expired. The renderer reads
+    /// `expires_at` and skips rendering if the deadline passed —
+    /// without it toasts pile up forever and obscure the prompt area.
+    pub expires_at: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +330,10 @@ pub enum ToastMsgVariant {
     Success,
     Error,
     Info,
+    /// Soft warning — used for "this didn't fail but you should know why"
+    /// signals like "Provider not connected — selection blocked". Renders
+    /// in the same accent_yellow band as Sending status.
+    Warning,
 }
 
 // ── 模型/Agent 信息 ──

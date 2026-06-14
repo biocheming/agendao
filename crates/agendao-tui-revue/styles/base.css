@@ -1,9 +1,10 @@
-/* ── AgenDao TUI Theme ── */
+/* ── AgenDao TUI Theme — Tokyo Night ── */
 
 :root {
     --bg-primary: #1a1b26;
     --bg-secondary: #24283b;
     --bg-surface: #2f3346;
+    --bg-highlight: #282a36;
     --fg-primary: #c0caf5;
     --fg-secondary: #a9b1d6;
     --fg-muted: #565f89;
@@ -13,21 +14,52 @@
     --accent-red: #f7768e;
     --accent-purple: #bb9af7;
     --accent-blue: #7aa2f7;
+    --accent-orange: #ffb86c;
     --border-color: #3b4261;
+    --border-focus: #7dcfff;
 }
 
-/* ── App ── */
+/* ── App Shell ── */
 App {
     background: var(--bg-primary);
 }
 
+/* ── Header ── */
+.Header {
+    background: var(--bg-secondary);
+    color: var(--fg-muted);
+    border-bottom: solid var(--border-color);
+}
+
+.HeaderDir {
+    color: var(--fg-muted);
+}
+
+.HeaderBadge {
+    color: var(--accent-cyan);
+}
+
+.HeaderTitle {
+    color: var(--fg-secondary);
+}
+
 /* ── Transcript blocks ── */
+.Transcript {
+    color: var(--fg-primary);
+}
+
 .UserPrompt {
     color: var(--accent-cyan);
 }
 
 .ThinkingBlock {
     color: var(--fg-muted);
+    background: rgba(240, 168, 82, 0.08);
+}
+
+.TodoBlock {
+    color: var(--fg-muted);
+    background: rgba(187, 154, 247, 0.06);
 }
 
 .ToolCall {
@@ -64,7 +96,7 @@ App {
 
 /* ── Dialogs ── */
 .Dialog {
-    border: 1px solid var(--border-color);
+    border: rounded var(--border-color);
     background: var(--bg-surface);
 }
 
@@ -100,14 +132,19 @@ App {
 
 /* ── Status bar ── */
 .StatusBar {
-    background: var(--bg-primary);
+    background: var(--bg-secondary);
     color: var(--fg-muted);
+}
+
+.StatusBarSection {
+    color: var(--fg-secondary);
 }
 
 /* ── Sidebar ── */
 .Sidebar {
     background: var(--bg-secondary);
-    border-left: 1px solid var(--border-color);
+    border-left: solid var(--border-color);
+    max-width: 32;
 }
 
 .SidebarPanel {
@@ -118,11 +155,46 @@ App {
     color: var(--accent-blue);
 }
 
-/* ── Key bindings ── */
+/* ── Home page ── */
+.HomeTitle {
+    color: var(--accent-purple);
+}
+
+.HomeSubtitle {
+    color: var(--fg-muted);
+}
+
+.HomeHint {
+    color: var(--fg-secondary);
+}
+
+.HomeKeyBind {
+    color: var(--accent-cyan);
+}
+
+.HomeKeyDesc {
+    color: var(--fg-secondary);
+}
+
+.HomeTip {
+    color: var(--accent-orange);
+}
+
+.HomeFooter {
+    color: var(--fg-muted);
+}
+
+/* ── Key bindings (shared) ── */
 .KeyBind {
     color: var(--accent-cyan);
 }
 
 .KeyDesc {
     color: var(--fg-secondary);
+}
+
+/* ── Selected row highlight ── */
+.SelectedRow {
+    background: var(--bg-highlight);
+    color: var(--accent-cyan);
 }

@@ -1,10 +1,9 @@
 //! 金 — Agent selection dialog.
-//!
-//! Old TUI: ratatui list with colored agent names.
-//! New: Revue Border::rounded() + vstack() + Text::new().
 
 use revue::prelude::*;
 use revue::event::Key;
+use crate::theme::colors;
+use crate::dialog::backdrop::{self, ListItem};
 
 #[derive(Clone)]
 pub struct AgentEntry {
@@ -40,17 +39,20 @@ impl AgentSelectDialog {
 
     pub fn render(&self, ctx: &mut RenderContext) {
         if !self.visible { return; }
-        let mut content = vstack().gap(0);
-        for (i, agent) in self.agents.iter().enumerate().take(12) {
-            let marker = if i == self.selected { "▶" } else { " " };
-            let color = if i == self.selected { Color::rgb(125, 207, 255) } else { Color::rgb(169, 177, 214) };
-            let line = format!("{} {} — {}", marker, agent.display, agent.description);
-            content = content.child(Text::new(line).fg(color));
-        }
-        let dialog = Border::rounded().title(" Select Agent ").fg(Color::rgb(187, 154, 247)).child(content);
-        let w = 52u16.min(ctx.area.width - 4);
-        let h = (self.agents.len().min(12) as u16 + 3).min(ctx.area.height - 4);
-        let x = (ctx.area.width - w) / 2; let y = (ctx.area.height - h) / 2;
-        revue::widget::positioned(dialog).x(x as i16).y(y as i16).width(w).height(h).render(ctx);
+        let items: Vec<ListItem> = self.agents.iter().enumerate().take(12).map(|(i, a)| {
+            let marker = if i == self.selected { "▶ " } else { "  " };
+            ListItem::Row {
+                display: format!("{}{} — {}", marker, a.display, a.description),
+                muted: false,
+            }
+        }).collect();
+        backdrop::render_list_dialog(
+            "Select Agent",
+            colors::ACCENT_PURPLE,
+            &items,
+            self.selected,
+            "↑↓ navigate  Enter: select  Esc: close",
+            ctx, 56, 12,
+        );
     }
 }

@@ -218,6 +218,21 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     let use_direct = !use_http && !use_socket;
 
     if revue {
+        // Pre-create local server state in the OUTER async runtime (same as old TUI).
+        // This ensures server's internal tasks (projector, recheck loop) run on the
+        // outer runtime, matching the old TUI's proven architecture.
+        let local_server = if use_direct {
+            match create_local_server_state(working_dir.clone()).await {
+                Ok(state) => Some(state),
+                Err(e) => {
+                    eprintln!("Warning: failed to create local server for revue TUI: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let cfg = RevueAppConfig {
             working_dir: working_dir.clone(),
             model: model.clone(),
@@ -226,7 +241,8 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
             initial_prompt: prompt.clone(),
             base_url: attach_url.clone(),
             unix_socket_path: unix_socket_path.clone(),
-            local_direct: use_direct,
+            local_direct: use_direct && local_server.is_some(),
+            local_server,
         };
         let mode = if use_direct { "Direct" } else if use_socket { "Unix socket" } else { "HTTP" };
         eprintln!("Starting TUI Revue in {} mode", mode);

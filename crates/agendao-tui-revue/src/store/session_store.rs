@@ -18,6 +18,20 @@ pub struct SessionStore {
     // ── 金：消息流（TranscriptFeed 唯一消费者）──
     pub messages: Signal<Vec<TranscriptBlock>>,
 
+    /// Number of rendered rows to scroll back from the latest. 0 = pinned
+    /// to the bottom (default — newest content visible). Higher values
+    /// shift the visible window earlier in the transcript so users can
+    /// re-read history. Updated by mouse wheel and PageUp/PageDown.
+    pub scroll_offset: Signal<u16>,
+
+    /// Index of the transcript block currently under the keyboard
+    /// cursor. The cursor moves with j/k (vim) and is the target of
+    /// Space (toggle fold). When `None`, no block is selected — typical
+    /// when the user is composing in the prompt and hasn't tabbed into
+    /// the transcript yet. Rendering can paint a left-bar accent on
+    /// the cursor block to indicate focus.
+    pub transcript_cursor: Signal<Option<usize>>,
+
     // ── 金：对话栈（DialogLayer 唯一消费者）──
     pub dialog_stack: Signal<Vec<DialogKind>>,
 
@@ -47,6 +61,8 @@ impl SessionStore {
             run_status: signal(RunStatus::Idle),
             working_dir: signal(String::new()),
             messages: signal(Vec::new()),
+            scroll_offset: signal(0),
+            transcript_cursor: signal(None),
             dialog_stack: signal(Vec::new()),
             token_usage: signal(TokenUsage::default()),
             cache_stats: signal(CacheStats::default()),
@@ -67,7 +83,7 @@ impl SessionStore {
     /// Append a user message block.
     pub fn push_user_message(&self, id: &str, content: &str) {
         self.messages.update(|msgs| msgs.push(TranscriptBlock::UserPrompt {
-            id: id.into(), content: content.into(), folded: false,
+            id: id.into(), content: content.into(), fold: FoldState::Truncated,
         }));
     }
 
@@ -85,11 +101,23 @@ impl SessionStore {
         });
     }
 
-    /// Append a thinking block.
+    /// Append a thinking block, or extend the most-recent reasoning block
+    /// when the id matches. Without this delta-aware merge, every
+    /// reasoning chunk from the LLM stream appended a NEW thinking row,
+    /// turning a single chain-of-thought into dozens of single-character
+    /// blocks in the transcript.
     pub fn push_thinking(&self, id: &str, text: &str) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::Thinking {
-            id: id.into(), content: text.into(), folded: true, duration_ms: 0,
-        }));
+        self.messages.update(|msgs| {
+            if let Some(TranscriptBlock::Thinking { id: bid, content, .. }) = msgs.last_mut() {
+                if bid == id {
+                    content.push_str(text);
+                    return;
+                }
+            }
+            msgs.push(TranscriptBlock::Thinking {
+                id: id.into(), content: text.into(), fold: FoldState::Truncated, duration_ms: 0,
+            });
+        });
     }
 
     /// Append or update a tool call.
@@ -107,16 +135,21 @@ impl SessionStore {
     }
 
     /// Append a tool result.
+    ///
+    /// Defaults to `fold: FoldState::Truncated` because tool outputs are usually long
+    /// (a websearch dump can be thousands of characters) and would push
+    /// every other transcript block off the screen. Users can expand
+    /// individual results when they need full detail.
     pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool) {
         self.messages.update(|msgs| msgs.push(TranscriptBlock::ToolResult {
-            id: id.into(), name: name.into(), result: result.into(), is_error, folded: false,
+            id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Truncated,
         }));
     }
 
-    /// Append a stage update.
-    pub fn push_stage(&self, id: &str, name: &str, status: &str) {
+    /// Append a stage update with optional JSON metadata.
+    pub fn push_stage(&self, id: &str, name: &str, status: &str, metadata: Option<String>) {
         self.messages.update(|msgs| msgs.push(TranscriptBlock::StageUpdate {
-            id: id.into(), name: name.into(), status: status.into(),
+            id: id.into(), name: name.into(), status: status.into(), metadata,
         }));
     }
 
@@ -141,28 +174,59 @@ impl SessionStore {
         }));
     }
 
+    /// Push or update a todo list block.  Deduplicates by `block_id`:
+    /// replaces the last TodoList with the same id, otherwise appends.
+    pub fn push_todo_list(
+        &self,
+        block_id: &str,
+        items: Vec<crate::store::types::TodoItem>,
+        summary: Option<crate::store::types::TodoSummary>,
+    ) {
+        self.messages.update(|msgs| {
+            // Replace existing TodoList with same id, or append
+            if let Some(TranscriptBlock::TodoList { id, .. }) = msgs.last() {
+                if id == block_id {
+                    if let Some(TranscriptBlock::TodoList { items: ref mut old, .. }) = msgs.last_mut() {
+                        *old = items;
+                        return;
+                    }
+                }
+            }
+            msgs.push(TranscriptBlock::TodoList {
+                id: block_id.into(),
+                items,
+                fold: FoldState::Truncated,
+                summary,
+            });
+        });
+    }
+
     // ── 消息折叠 ──
 
     pub fn toggle_fold(&self, block_idx: usize) {
-        self.messages.update(|msgs| {
-            if let Some(block) = msgs.get_mut(block_idx) {
-                match block {
-                    TranscriptBlock::UserPrompt { ref mut folded, .. }
-                    | TranscriptBlock::Thinking { ref mut folded, .. }
-                    | TranscriptBlock::ToolResult { ref mut folded, .. } => *folded = !*folded,
-                    _ => {}
-                }
+        // Cycle through FoldState: Folded → Truncated → Expanded → Folded.
+        let mut new_msgs: Vec<TranscriptBlock> = self.messages.get();
+        if let Some(block) = new_msgs.get_mut(block_idx) {
+            match block {
+                TranscriptBlock::UserPrompt { ref mut fold, .. }
+                | TranscriptBlock::Thinking { ref mut fold, .. }
+                | TranscriptBlock::ToolResult { ref mut fold, .. }
+                | TranscriptBlock::TodoList { ref mut fold, .. } => *fold = fold.next(),
+                _ => {}
             }
-        });
+        }
+        self.messages.set(new_msgs);
     }
 
     // ── 水：遥测更新（EventBus → Signals）──
 
-    pub fn set_token_usage(&self, input: u64, output: u64,
-                           cache_read: u64, cache_miss: u64, cache_write: u64) {
+    pub fn set_token_usage(&self, input: u64, output: u64, reasoning: u64,
+                           cache_read: u64, cache_miss: u64, cache_write: u64,
+                           context_tokens: u64, total_cost: f64) {
         self.token_usage.set(TokenUsage {
-            input, output, total: input + output,
+            input, output, reasoning, total: input + output + reasoning,
             cache_read, cache_miss, cache_write,
+            context_tokens, total_cost,
         });
     }
 
@@ -229,12 +293,160 @@ impl SessionStore {
         self.session_id.get()
     }
 
-    // ── Scroll (mouse support) ──
+    // ── Scroll: anchored to the latest by default (offset = 0). ──
+    //
+    // Larger offset shifts the visible window UP into older messages,
+    // so `scroll_up` (mouse wheel up / PageUp) increases offset, and
+    // `scroll_down` decreases it. Newly arrived messages auto-pin to
+    // the bottom only when offset is 0 — once the user scrolled up to
+    // read history, incoming events should not yank them back to the
+    // bottom mid-read. The renderer caps offset at total transcript
+    // height so we don't slide past the start.
+
     pub fn scroll_up(&self) {
-        // Future: adjust transcript scroll offset Signal
+        self.scroll_offset.update(|o| *o = o.saturating_add(3));
     }
+
     pub fn scroll_down(&self) {
-        // Future: adjust transcript scroll offset Signal
+        self.scroll_offset.update(|o| *o = o.saturating_sub(3));
+    }
+
+    pub fn scroll_page_up(&self, page: u16) {
+        self.scroll_offset.update(|o| *o = o.saturating_add(page));
+    }
+
+    pub fn scroll_page_down(&self, page: u16) {
+        self.scroll_offset.update(|o| *o = o.saturating_sub(page));
+    }
+
+    pub fn scroll_to_bottom(&self) {
+        self.scroll_offset.set(0);
+    }
+
+    // ── Transcript cursor & fold ──
+    //
+    // The cursor is what `Space` / `Enter` operate on inside the
+    // transcript. Moving the cursor with j/k auto-scrolls so the
+    // cursor row stays in view (mirroring how vim handles long files).
+
+    /// Move cursor to the previous foldable block, wrapping at the top.
+    /// "Foldable" today means UserPrompt / Thinking / ToolResult — the
+    /// only blocks whose `toggle_fold` actually flips state. Cursor
+    /// skips assistant text and tool-call rows since fold is a no-op
+    /// for those.
+    pub fn cursor_prev_foldable(&self) {
+        let msgs = self.messages.get();
+        let mut idx = self.transcript_cursor.get().unwrap_or(msgs.len());
+        loop {
+            if idx == 0 { idx = msgs.len(); }
+            if idx == 0 { return; }
+            idx -= 1;
+            if Self::is_foldable(&msgs[idx]) { break; }
+        }
+        self.transcript_cursor.set(Some(idx));
+    }
+
+    pub fn cursor_next_foldable(&self) {
+        let msgs = self.messages.get();
+        if msgs.is_empty() { return; }
+        let mut idx = self.transcript_cursor.get().map(|i| i + 1).unwrap_or(0);
+        let start = idx;
+        loop {
+            if idx >= msgs.len() { idx = 0; }
+            if Self::is_foldable(&msgs[idx]) {
+                self.transcript_cursor.set(Some(idx));
+                return;
+            }
+            idx += 1;
+            // Loop guard: if we walked the whole list back to the start.
+            if idx == start { return; }
+        }
+    }
+
+    fn is_foldable(block: &TranscriptBlock) -> bool {
+        matches!(
+            block,
+            TranscriptBlock::UserPrompt { .. }
+            | TranscriptBlock::Thinking { .. }
+            | TranscriptBlock::ToolResult { .. }
+        )
+    }
+
+    /// Top row (from the beginning of the content) where the block
+    /// under the cursor lives. Each block occupies its `height()` rows
+    /// plus a 1-row gap (matching the `vstack().gap(1)` the renderer
+    /// uses). Returns 0 if no cursor is set.
+    pub fn cursor_top_row(&self) -> u16 {
+        let Some(cursor) = self.transcript_cursor.get() else { return 0 };
+        let msgs = self.messages.get();
+        msgs.iter()
+            .take(cursor)
+            .map(|b| b.height().saturating_add(1))
+            .sum()
+    }
+
+    /// Total content height (Σ block heights + gaps + trailing newline).
+    /// Matches the `total_h` formula in `RootView::render` so the
+    /// cursor math and the renderer math agree.
+    pub fn total_transcript_height(&self) -> u16 {
+        let msgs = self.messages.get();
+        msgs.iter()
+            .map(|b| b.height().saturating_add(1))
+            .sum::<u16>()
+            .saturating_add(1)
+    }
+
+    /// Adjust `scroll_offset` so the cursor block sits inside the
+    /// visible viewport. No-op if the cursor is already in view.
+    ///
+    /// `viewport_h` is the height of the transcript area in rows.
+    /// The store's `scroll_offset` counts "rows back from the
+    /// bottom" — 0 = pinned to the newest message, growing = earlier
+    /// content. We compute where the cursor's top row is in the
+    /// renderer's coordinate space (`scroll_top = max_offset - offset`)
+    /// and shift the offset so the cursor lands somewhere in the
+    /// upper third of the viewport (mirroring how vim's `zz` recenter
+    /// works after a jump).
+    pub fn ensure_cursor_visible(&self, viewport_h: u16) {
+        let Some(cursor) = self.transcript_cursor.get() else { return };
+        if cursor == 0 { return; } // first block always visible at scroll_top=0
+        let total = self.total_transcript_height();
+        if total <= viewport_h { return; } // everything fits, nothing to scroll
+        let max_offset = total.saturating_sub(viewport_h);
+        let user_offset = self.scroll_offset.get().min(max_offset);
+        let scroll_top = max_offset.saturating_sub(user_offset);
+        let cursor_top = self.cursor_top_row();
+        let cursor_bottom = cursor_top.saturating_add(self.messages.get()[cursor].height());
+        // Pad so the cursor doesn't sit on the very top or bottom edge.
+        let pad: u16 = 2;
+        let view_top = scroll_top;
+        let view_bottom = scroll_top.saturating_add(viewport_h);
+        if cursor_top >= view_top.saturating_add(pad) && cursor_bottom + pad <= view_bottom {
+            return; // already in view
+        }
+        // Target: place the cursor's TOP at scroll_top + pad.
+        // Convert to user_offset = max_offset - scroll_top.
+        let new_scroll_top = cursor_top.saturating_sub(pad);
+        let new_user_offset = max_offset.saturating_sub(new_scroll_top);
+        self.scroll_offset.set(new_user_offset);
+    }
+
+    /// Toggle fold on the block under the cursor (or the latest
+    /// foldable block when no cursor is set yet — matches the user's
+    /// "I just want to expand the last result" mental model).
+    pub fn toggle_fold_at_cursor(&self) {
+        let mut idx = self.transcript_cursor.get();
+        if idx.is_none() {
+            // Find the most recent foldable block.
+            let msgs = self.messages.get();
+            for i in (0..msgs.len()).rev() {
+                if Self::is_foldable(&msgs[i]) { idx = Some(i); break; }
+            }
+        }
+        if let Some(i) = idx {
+            self.toggle_fold(i);
+            self.transcript_cursor.set(Some(i));
+        }
     }
 }
 
@@ -295,14 +507,22 @@ mod tests {
     fn toggle_fold() {
         let s = SessionStore::new();
         s.push_user_message("u1", "long content");
+        // Default is Truncated → toggle to Expanded
         s.toggle_fold(0);
         match &s.messages.get()[0] {
-            TranscriptBlock::UserPrompt { folded, .. } => assert!(*folded),
+            TranscriptBlock::UserPrompt { fold, .. } => assert_eq!(*fold, FoldState::Expanded),
             _ => panic!(),
         }
+        // Expanded → toggle to Folded
         s.toggle_fold(0);
         match &s.messages.get()[0] {
-            TranscriptBlock::UserPrompt { folded, .. } => assert!(!*folded),
+            TranscriptBlock::UserPrompt { fold, .. } => assert_eq!(*fold, FoldState::Folded),
+            _ => panic!(),
+        }
+        // Folded → toggle to Truncated
+        s.toggle_fold(0);
+        match &s.messages.get()[0] {
+            TranscriptBlock::UserPrompt { fold, .. } => assert_eq!(*fold, FoldState::Truncated),
             _ => panic!(),
         }
     }
@@ -310,7 +530,7 @@ mod tests {
     #[test]
     fn token_usage_update() {
         let s = SessionStore::new();
-        s.set_token_usage(100, 50, 10, 5, 3);
+        s.set_token_usage(100, 50, 20, 10, 5, 3, 2000, 0.015);
         let usage = s.token_usage.get();
         assert_eq!(usage.input, 100);
         assert_eq!(usage.output, 50);

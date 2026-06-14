@@ -14,10 +14,22 @@ pub mod unix;
 pub mod http_sse;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use agendao_server_core::frontend_events::FrontendEvent;
+
+/// Spawn event source using a pre-created LocalServerState (local-direct mode).
+#[cfg(feature = "local-server")]
+pub fn spawn_local_event_source(
+    tx: UnboundedSender<FrontendEvent>,
+    state: Arc<agendao_server_local::LocalServerState>,
+    handle: &tokio::runtime::Handle,
+    session_filter: watch::Receiver<Option<String>>,
+) -> Option<JoinHandle<()>> {
+    local::spawn_source_from_state(tx, state, handle, session_filter)
+}
 
 /// Spawn the appropriate event source based on config.
 ///
