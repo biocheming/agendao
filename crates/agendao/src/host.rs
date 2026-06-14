@@ -6,27 +6,18 @@ use std::time::Duration;
 
 use agendao_launcher as launcher;
 use agendao_server::ServerRuntimeOptions;
-use agendao_tui::AppLaunchConfig;
 use agendao_tui_revue::{self, AppConfig as RevueAppConfig};
 
 #[derive(Clone, Debug)]
 pub struct TuiCommandRequest {
     pub project: Option<std::path::PathBuf>,
     pub model: Option<String>,
-    pub continue_last: bool,
     pub session: Option<String>,
     pub fork: bool,
     pub prompt: Option<String>,
     pub agent: Option<String>,
-    pub port: u16,
-    pub hostname: String,
-    pub mdns: bool,
-    pub mdns_domain: String,
-    pub cors: Vec<String>,
     pub attach_url: Option<String>,
-    pub password: Option<String>,
     pub unix_socket_path: Option<String>,
-    pub revue: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -191,163 +182,53 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     let TuiCommandRequest {
         project,
         model,
-        continue_last,
         session,
         fork,
         prompt,
         agent,
-        port,
-        hostname,
-        mdns,
-        mdns_domain,
-        cors,
         attach_url,
-        password,
         unix_socket_path,
-        revue,
     } = request;
 
-    if fork && !continue_last && session.is_none() {
-        anyhow::bail!("--fork requires --continue or --session");
+    if fork && session.is_none() {
+        anyhow::bail!("--fork requires --session");
     }
 
     let working_dir = project.clone();
-    let server_password = password.or_else(current_server_password);
     let use_http = attach_url.is_some();
     let use_socket = !use_http && unix_socket_path.is_some();
     let use_direct = !use_http && !use_socket;
 
-    if revue {
-        // Pre-create local server state in the OUTER async runtime (same as old TUI).
-        // This ensures server's internal tasks (projector, recheck loop) run on the
-        // outer runtime, matching the old TUI's proven architecture.
-        let local_server = if use_direct {
-            match create_local_server_state(working_dir.clone()).await {
-                Ok(state) => Some(state),
-                Err(e) => {
-                    eprintln!("Warning: failed to create local server for revue TUI: {}", e);
-                    None
-                }
+    let local_server = if use_direct {
+        match create_local_server_state(working_dir.clone()).await {
+            Ok(state) => Some(state),
+            Err(e) => {
+                eprintln!("Warning: failed to create local server: {}", e);
+                None
             }
-        } else {
-            None
-        };
-
-        let cfg = RevueAppConfig {
-            working_dir: working_dir.clone(),
-            model: model.clone(),
-            agent_name: agent.clone(),
-            session_id: session.clone(),
-            initial_prompt: prompt.clone(),
-            base_url: attach_url.clone(),
-            unix_socket_path: unix_socket_path.clone(),
-            local_direct: use_direct && local_server.is_some(),
-            local_server,
-        };
-        let mode = if use_direct { "Direct" } else if use_socket { "Unix socket" } else { "HTTP" };
-        eprintln!("Starting TUI Revue in {} mode", mode);
-        let run_result = tokio::task::spawn_blocking(move || {
-            agendao_tui_revue::run_app_with_config(cfg)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("agendao-tui-revue task failed to join: {}", error))?;
-        return run_result;
-    }
-
-    if use_direct {
-        eprintln!("Starting TUI in Direct (in-process) mode");
-        let local_server = create_local_server_state(working_dir.clone()).await?;
-        let selected_session =
-            resolve_requested_session_local(&local_server, continue_last, session, fork).await?;
-        let run_result = tokio::task::spawn_blocking(move || {
-            agendao_tui::run_tui_with_config(AppLaunchConfig {
-                base_url: None,
-                server_password: None,
-                model,
-                initial_prompt: prompt,
-                agent_name: agent,
-                session_id: selected_session,
-                working_dir,
-                unix_socket_path: None,
-                local_direct: true,
-                local_server: Some(local_server),
-            })
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("agendao-tui task failed to join: {}", error))?;
-        return run_result;
-    }
-
-    let mut server_task = None;
-    let base_url = if let Some(url) = attach_url {
-        url
-    } else {
-        let client_host = if mdns && hostname == "127.0.0.1" {
-            "127.0.0.1".to_string()
-        } else {
-            hostname.clone()
-        };
-        let bind_port = if port == 0 { 3000 } else { port };
-        let server_url = format!("http://{}:{}", client_host, bind_port);
-        if let Some(socket_path) = unix_socket_path.as_deref() {
-            eprintln!(
-                "Starting local server for TUI at {} with Unix socket {}",
-                server_url, socket_path
-            );
-        } else {
-            eprintln!("Starting local server for TUI at {}", server_url);
         }
-        server_task = Some(tokio::spawn(agendao_server::run_server_runtime(
-            ServerRuntimeOptions {
-                port: bind_port,
-                hostname,
-                cwd: working_dir.clone(),
-                web_dist: None,
-                embedded_web_assets: Some(launcher::embedded_web_asset),
-                mdns,
-                mdns_domain,
-                cors,
-                unix_socket_path: unix_socket_path.clone(),
-            },
-        )));
-        launcher::wait_for_server_ready(&server_url, Duration::from_secs(90), None).await?;
-        server_url
+    } else {
+        None
     };
 
-    let selected_session = resolve_requested_session(
-        &base_url,
-        server_password.clone(),
-        continue_last,
-        session,
-        fork,
-        unix_socket_path.as_deref(),
-    )
-    .await?;
-    // agendao-tui creates and drives its own Tokio runtime internally.
-    // Run it on a blocking thread so we do not try to nest runtimes inside
-    // the product shell's async runtime.
+    let cfg = RevueAppConfig {
+        working_dir: working_dir.clone(),
+        model: model.clone(),
+        agent_name: agent.clone(),
+        session_id: session.clone(),
+        initial_prompt: prompt.clone(),
+        base_url: attach_url.clone(),
+        unix_socket_path: unix_socket_path.clone(),
+        local_direct: use_direct && local_server.is_some(),
+        local_server,
+    };
+    let mode = if use_direct { "Direct" } else if use_socket { "Unix socket" } else { "HTTP" };
+    eprintln!("Starting agendao TUI in {} mode", mode);
     let run_result = tokio::task::spawn_blocking(move || {
-        agendao_tui::run_tui_with_config(AppLaunchConfig {
-            base_url: Some(base_url),
-            server_password,
-            model,
-            initial_prompt: prompt,
-            agent_name: agent,
-            session_id: selected_session,
-            working_dir,
-            unix_socket_path,
-            local_direct: false,
-            local_server: None,
-        })
+        agendao_tui_revue::run_app_with_config(cfg)
     })
     .await
-    .map_err(|error| anyhow::anyhow!("agendao-tui task failed to join: {}", error))?;
-
-    if let Some(server_task) = server_task {
-        server_task.abort();
-        let _ = server_task.await;
-    }
-
+    .map_err(|error| anyhow::anyhow!("agendao TUI task failed to join: {}", error))?;
     run_result
 }
 
@@ -369,96 +250,6 @@ async fn create_local_server_state(
     Ok(state)
 }
 
-async fn resolve_requested_session_local(
-    state: &Arc<agendao_server::ServerState>,
-    continue_last: bool,
-    session: Option<String>,
-    fork: bool,
-) -> anyhow::Result<Option<String>> {
-    let selected = if let Some(session_id) = session {
-        Some(session_id)
-    } else if continue_last {
-        agendao_server::local_list_sessions(Arc::clone(state), None, Some(100))
-            .await?
-            .into_iter()
-            .find(|s| s.parent_id.is_none())
-            .map(|s| s.id)
-    } else {
-        None
-    };
-
-    if !fork {
-        return Ok(selected);
-    }
-
-    let Some(session_id) = selected else {
-        anyhow::bail!(
-            "No session is available to fork. Use --session <id> or --continue with an existing session."
-        );
-    };
-
-    let forked = agendao_server::local_fork_session(Arc::clone(state), &session_id, None).await?;
-    eprintln!("Forked session {} -> {}", session_id, forked.id);
-    Ok(Some(forked.id))
-}
-
-async fn resolve_requested_session(
-    base_url: &str,
-    server_password: Option<String>,
-    continue_last: bool,
-    session: Option<String>,
-    fork: bool,
-    unix_socket_path: Option<&str>,
-) -> anyhow::Result<Option<String>> {
-    let transport = match unix_socket_path {
-        Some(socket_path) => {
-            let selector = agendao_client::transport::TransportSelector::new(
-                Some(socket_path.to_string()),
-                base_url.to_string(),
-                server_password.clone(),
-            );
-            Some(selector.select_unix_required().await?)
-        }
-        None => None,
-    };
-
-    let api_client =
-        agendao_client::AsyncApiClient::new_with_password(base_url.to_string(), server_password);
-    let selected = if let Some(session_id) = session {
-        Some(session_id)
-    } else if continue_last {
-        let sessions = if let Some(ref t) = transport {
-            t.list_sessions().await?
-        } else {
-            vec![]
-        };
-        let sessions = if sessions.is_empty() {
-            api_client.list_sessions(None, Some(100)).await?
-        } else {
-            sessions
-        };
-        sessions
-            .into_iter()
-            .find(|s| s.parent_id.is_none())
-            .map(|s| s.id)
-    } else {
-        None
-    };
-
-    if !fork {
-        return Ok(selected);
-    }
-
-    let Some(session_id) = selected else {
-        anyhow::bail!(
-            "No session is available to fork. Use --session <id> or --continue with an existing session."
-        );
-    };
-
-    let forked = api_client.fork_session(&session_id, None).await?;
-    eprintln!("Forked session {} -> {}", session_id, forked.id);
-    Ok(Some(forked.id))
-}
 
 fn current_server_password() -> Option<String> {
     std::env::var("AGENDAO_SERVER_PASSWORD")
