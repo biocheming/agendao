@@ -32,6 +32,7 @@ pub struct AppStore {
     pub available_agents: Signal<Vec<AgentInfo>>,
     pub selected_model: Signal<Option<String>>,
     pub selected_agent: Signal<Option<String>>,
+    pub selected_mode: Signal<Option<String>>,
 
     // 土：可用会话列表（SessionList dialog 消费）
     pub session_list: Signal<Vec<SessionListItem>>,
@@ -54,6 +55,7 @@ impl AppStore {
             available_agents: signal(Vec::new()),
             selected_model: signal(None),
             selected_agent: signal(None),
+            selected_mode: signal(None),
             session_list: signal(Vec::new()),
             toasts: signal(Vec::new()),
         }
@@ -64,7 +66,17 @@ impl AppStore {
     pub fn request_exit(&self) { self.exiting.set(true); }
 
     pub fn push_toast(&self, text: &str, variant: ToastMsgVariant) {
-        self.toasts.update(|t| t.push(ToastMsg { text: text.into(), variant }));
+        // Auto-expire toasts after 4 seconds of wall clock so the prompt
+        // area doesn't stay obscured by a "Switched to model" banner
+        // forever. The render loop checks `expires_at <= now()` and
+        // skips expired entries; a separate housekeeping pass garbage-
+        // collects them so the Vec doesn't grow unbounded.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let expires_at = now_ms.saturating_add(4_000);
+        self.toasts.update(|t| t.push(ToastMsg { text: text.into(), variant, expires_at }));
     }
 }
 

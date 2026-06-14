@@ -26,6 +26,37 @@ fn event_session_id(event: &FrontendEvent) -> Option<&str> {
     }
 }
 
+/// Spawn event source from a pre-created LocalServerState.
+pub fn spawn_source_from_state(
+    tx: UnboundedSender<FrontendEvent>,
+    state: Arc<agendao_server_local::LocalServerState>,
+    handle: &tokio::runtime::Handle,
+    session_filter: watch::Receiver<Option<String>>,
+) -> Option<JoinHandle<()>> {
+    let jh = handle.spawn(async move {
+        let cancel = CancellationToken::new();
+        let mut rx = agendao_server_local::spawn_direct_event_bus(
+            Arc::clone(&state), cancel.clone(),
+        );
+        let mut filter_rx = session_filter;
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    let Some(fe) = event else { break };
+                    let Some(sid) = event_session_id(&fe) else { continue };
+                    if filter_rx.borrow().as_deref() == Some(sid) {
+                        if tx.send(fe).is_err() { break; }
+                    }
+                }
+                changed = filter_rx.changed() => {
+                    if changed.is_err() { cancel.cancel(); break; }
+                }
+            }
+        }
+    });
+    Some(jh)
+}
+
 /// Spawn a background task that forwards local-direct events to `tx`.
 ///
 /// Mirrors old TUI's spawn_tui_direct_event_bridge():

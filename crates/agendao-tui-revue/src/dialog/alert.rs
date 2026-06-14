@@ -1,7 +1,9 @@
-//! 金 — Alert dialog using Revue Border + vstack + Text widgets.
+//! 金 — Alert dialog.
 
 use revue::prelude::*;
 use revue::event::Key;
+use crate::theme::colors;
+use crate::dialog::backdrop;
 
 pub struct AlertDialog {
     pub title: String,
@@ -33,27 +35,17 @@ impl AlertDialog {
 
         let mut content = vstack().gap(1);
         for line in self.message.lines() {
-            content = content.child(Text::new(line.to_string()).fg(Color::rgb(169, 177, 214)));
+            content = content.child(Text::new(line).fg(colors::FG_SECONDARY));
         }
-        content = content.child(Text::new("Press Enter/Esc/Space to dismiss").fg(Color::rgb(86, 95, 137)));
 
-        let dialog = Border::rounded()
-            .title(self.title.clone())
-            .fg(Color::rgb(247, 118, 142))
-            .child(content);
-
-        let w = (ctx.area.width / 2).max(40).min(ctx.area.width - 4);
-        let h = (self.message.lines().count() as u16 + 5).min(ctx.area.height - 4);
-        let x = (ctx.area.width - w) / 2;
-        let y = (ctx.area.height - h) / 2;
-
-        // Backdrop via Layers
-        let backdrop = revue::widget::layers()
-            .child(dialog);
-
-        // Render centered
-        let pos = revue::widget::positioned(backdrop)
-            .x(x as i16).y(y as i16).width(w).height(h);
-        pos.render(ctx);
+        backdrop::render_dialog(
+            &self.title,
+            colors::ACCENT_RED,
+            content,
+            "Enter/Esc/Space to dismiss",
+            ctx,
+            (ctx.area.width / 2).max(40),
+            self.message.lines().count() as u16 + 5,
+        );
     }
 }

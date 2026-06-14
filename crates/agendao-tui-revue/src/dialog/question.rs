@@ -1,9 +1,9 @@
 //! 金 — Question dialog: agent asks user a question.
-//!
-//! Mirrors old TUI: QuestionOption(id, label, desc), single/multi-select.
 
 use revue::prelude::*;
 use revue::event::Key;
+use crate::theme::colors;
+use crate::dialog::backdrop;
 
 #[derive(Clone)]
 pub struct QuestionOption {
@@ -39,6 +39,11 @@ impl QuestionDialog {
 
     pub fn pending_count(&self) -> usize { self.requests.len() }
 
+    /// Close the dialog without clearing pending requests.
+    pub fn close(&mut self) {
+        self.visible = false;
+    }
+
     pub fn handle_key(&mut self, key: &Key) -> Option<Vec<usize>> {
         if !self.visible || self.requests.is_empty() { return None; }
         let req = &self.requests[0];
@@ -70,31 +75,36 @@ impl QuestionDialog {
     pub fn render(&self, ctx: &mut RenderContext) {
         if !self.visible { return; }
         let Some(req) = self.requests.first() else { return; };
-        let queue_hint = if self.requests.len() > 1 { format!(" ({} more)", self.requests.len() - 1) } else { String::new() };
+        let queue_hint = if self.requests.len() > 1 {
+            format!(" ({} more)", self.requests.len() - 1)
+        } else { String::new() };
 
         let is_multi = self.toggled.iter().filter(|&&t| t).count() > 0 || req.options.len() > 1;
-        let hint = if is_multi { "Space: toggle | Enter: confirm" } else { "↑↓: choose | Enter: select" };
+        let hint = if is_multi { "Space: toggle  Enter: confirm" } else { "↑↓: choose  Enter: select" };
 
         let mut content = vstack().gap(1)
-            .child(Text::new(format!("{} {}", req.text, queue_hint)).bold().class("DialogBody"))
-            .child(Text::new(hint).fg(Color::rgb(86, 95, 137)));
+            .child(Text::new(format!("{}{}", req.text, queue_hint)).bold().fg(colors::FG_PRIMARY))
+            .child(Text::new(hint).fg(colors::FG_MUTED));
 
         for (i, opt) in req.options.iter().enumerate() {
             let marker = if is_multi {
                 if self.toggled.get(i).copied().unwrap_or(false) { "☑" } else { "☐" }
             } else if i == self.selected { "▶" } else { " " };
-            let color = if i == self.selected { Color::rgb(125, 207, 255) } else { Color::rgb(169, 177, 214) };
-            let label = if opt.description.is_empty() { opt.label.clone() } else { format!("{} — {}", opt.label, opt.description) };
+            let color = if i == self.selected { colors::ACCENT_CYAN } else { colors::FG_SECONDARY };
+            let label = if opt.description.is_empty() {
+                opt.label.clone()
+            } else {
+                format!("{} — {}", opt.label, opt.description)
+            };
             content = content.child(Text::new(format!("{} {}", marker, label)).fg(color));
         }
-        content = content.child(Text::new("Esc: skip").fg(Color::rgb(86, 95, 137)));
 
-        let dialog = Border::rounded().title(" Question ").fg(Color::rgb(125, 207, 255)).child(content);
-
-        let w = 54u16.min(ctx.area.width - 4);
-        let h = (req.options.len() as u16 + 5).min(ctx.area.height - 4);
-        let x = (ctx.area.width - w) / 2;
-        let y = (ctx.area.height - h) / 2;
-        revue::widget::positioned(dialog).x(x as i16).y(y as i16).width(w).height(h).render(ctx);
+        backdrop::render_dialog(
+            "Question",
+            colors::ACCENT_CYAN,
+            content,
+            "Esc: skip",
+            ctx, 54, req.options.len() as u16 + 5,
+        );
     }
 }

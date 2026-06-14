@@ -1,7 +1,9 @@
-//! 金 — Help dialog using Revue Border + vstack + Text widgets.
+//! 金 — Help dialog with keybindings.
 
 use revue::prelude::*;
 use revue::event::Key;
+use crate::theme::colors;
+use crate::dialog::backdrop;
 
 pub struct HelpDialog {
     pub visible: bool,
@@ -28,33 +30,30 @@ impl HelpDialog {
             ("Esc/q", "Quit"),
             ("h", "Home screen"),
             ("?", "Toggle help"),
-            ("Up/Down", "Prompt history"),
+            ("↑/↓", "Prompt history"),
             ("Tab", "Autocomplete"),
+            ("Ctrl+B", "Toggle sidebar"),
+            ("Ctrl+P", "Command palette"),
+            ("/models", "Switch model"),
+            ("/sessions", "Browse sessions"),
             ("Ctrl+C", "Force quit"),
         ];
 
-        let mut content = vstack().gap(1);
+        let mut content = vstack().gap(0);
         for (key, desc) in bindings {
             content = content.child(
                 hstack().gap(2)
-                    .child(Text::new(format!("{:>10}", key)).fg(Color::rgb(125, 207, 255)))
-                    .child(Text::new(*desc).fg(Color::rgb(169, 177, 214)))
+                    .child(Text::new(format!("{:>10}", key)).fg(colors::ACCENT_CYAN))
+                    .child(Text::new(*desc).fg(colors::FG_SECONDARY))
             );
         }
-        content = content.child(Text::new("Press Esc/q/h/? to close").fg(Color::rgb(86, 95, 137)));
 
-        let dialog = Border::rounded()
-            .title(" Help — Keybindings ")
-            .fg(Color::rgb(137, 180, 250))
-            .child(content);
-
-        let w = 54u16.min(ctx.area.width - 4);
-        let h = (bindings.len() as u16 + 4).min(ctx.area.height - 4);
-        let x = (ctx.area.width - w) / 2;
-        let y = (ctx.area.height - h) / 2;
-
-        let pos = revue::widget::positioned(dialog)
-            .x(x as i16).y(y as i16).width(w).height(h);
-        pos.render(ctx);
+        backdrop::render_dialog(
+            "Help — Keybindings",
+            colors::ACCENT_BLUE,
+            content,
+            "Esc/q/h/? to close",
+            ctx, 54, bindings.len() as u16 + 4,
+        );
     }
 }

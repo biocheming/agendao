@@ -5,4 +5,4 @@ pub mod prompt_bar; // legacy
 
 pub use prompt_input::{PromptAction, PromptInput};
 pub use context_strip::ContextStrip;
-pub use slash_popup::{SlashPopup, SlashAction};
+pub use slash_popup::SlashPopup;
