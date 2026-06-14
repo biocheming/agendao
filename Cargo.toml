@@ -47,9 +47,7 @@ members = [
     "crates/agendao-command",
     "crates/agendao-plugin",
     "crates/agendao-orchestrator",
-    "crates/agendao-tui-core",
     "crates/agendao-tui-revue",
-    "crates/agendao-tui",
 ]
 
 [workspace.package]

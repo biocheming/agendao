@@ -94,9 +94,6 @@ struct TuiArgs {
     /// Use the standard local Unix socket path instead of Direct mode.
     #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
     socket: bool,
-    /// Use the new Revue-based TUI frontend.
-    #[arg(long, default_value_t = false)]
-    revue: bool,
 }
 
 #[derive(Args)]
@@ -273,43 +270,19 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
         Some(ProductCommand::Tui(args)) => {
             let unix_socket_path = resolve_socket_path(args.socket)?;
             run_tui(TuiCommandRequest {
-                project: args.project,
-                model: args.model,
-                continue_last: args.continue_last,
-                session: args.session,
-                fork: args.fork,
-                prompt: args.prompt,
-                agent: args.agent,
-                port: args.port,
-                hostname: args.hostname,
-                mdns: args.mdns,
-                mdns_domain: args.mdns_domain,
-                cors: args.cors,
-                attach_url: args.attach_url,
-                password: None,
-                unix_socket_path,
-                revue: args.revue,
-            })
-            .await?;
+                project: args.project, model: args.model,
+                session: args.session, fork: args.fork,
+                prompt: args.prompt, agent: args.agent,
+                attach_url: args.attach_url, unix_socket_path,
+            }).await?;
         }
         Some(ProductCommand::Attach(args)) => {
             run_tui(TuiCommandRequest {
-                project: args.dir,
-                model: None,
-                continue_last: false,
-                session: args.session,
-                fork: false,
-                prompt: None,
-                agent: None,
-                port: 0,
-                hostname: "127.0.0.1".to_string(),
-                mdns: false,
-                mdns_domain: "agendao.local".to_string(),
-                cors: vec![],
+                project: args.dir, model: None,
+                session: args.session, fork: false,
+                prompt: None, agent: None,
                 attach_url: Some(args.url),
-                password: args.password,
                 unix_socket_path: resolve_socket_path(args.socket)?,
-                revue: false,
             })
             .await?;
         }
@@ -466,22 +439,8 @@ mod tests {
 
 fn default_tui_request() -> TuiCommandRequest {
     TuiCommandRequest {
-        project: None,
-        model: None,
-        continue_last: false,
-        session: None,
-        fork: false,
-        prompt: None,
-        agent: None,
-        port: 0,
-        hostname: "127.0.0.1".to_string(),
-        mdns: false,
-        mdns_domain: "agendao.local".to_string(),
-        cors: vec![],
-        attach_url: None,
-        password: None,
-        unix_socket_path: None,
-        revue: false,
+        project: None, model: None, session: None, fork: false,
+        prompt: None, agent: None, attach_url: None, unix_socket_path: None,
     }
 }
 
