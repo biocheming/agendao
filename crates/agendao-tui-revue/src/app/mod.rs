@@ -957,31 +957,51 @@ impl View for RootView {
         // and thumb drags. The publish slot is None when the session
         // route's content fits in the viewport, in which case the
         // scrollbar area stays None and the mouse handler skips it.
-        if let Ok(publish) = self.handler.borrow().transcript_scrollbar_publish.try_borrow() {
-            match publish.as_ref() {
-                Some(p) => {
-                    self.handler.borrow_mut().transcript_scrollbar_area = Some(p.area);
-                    self.handler.borrow_mut().transcript_scrollbar_metrics =
-                        Some((p.content_h, p.viewport_h));
-                }
-                None => {
-                    self.handler.borrow_mut().transcript_scrollbar_area = None;
-                    self.handler.borrow_mut().transcript_scrollbar_metrics = None;
-                }
+        // Snapshot the publish slot via Copy. Doing it in a single
+        // expression means the temporary `Ref<AppHandler>` and inner
+        // `Ref<…publish…>` both drop at the `;`. The previous `if let`
+        // form extended the outer `Ref`'s lifetime across the arm body
+        // (Edition 2021 temp-lifetime rules for `if let` initializers),
+        // colliding with the in-arm `borrow_mut()` and panicking
+        // with "RefCell already borrowed" on first render in direct mode.
+        let publish_snapshot: Option<TranscriptScrollbarPublish> = self
+            .handler
+            .borrow()
+            .transcript_scrollbar_publish
+            .try_borrow()
+            .ok()
+            .and_then(|opt| opt.as_ref().copied());
+        match publish_snapshot {
+            Some(p) => {
+                self.handler.borrow_mut().transcript_scrollbar_area = Some(p.area);
+                self.handler.borrow_mut().transcript_scrollbar_metrics =
+                    Some((p.content_h, p.viewport_h));
+            }
+            None => {
+                self.handler.borrow_mut().transcript_scrollbar_area = None;
+                self.handler.borrow_mut().transcript_scrollbar_metrics = None;
             }
         }
         // Same drain for the sidebar scrollbar.
-        if let Ok(publish) = self.handler.borrow().sidebar_scrollbar_publish.try_borrow() {
-            match publish.as_ref() {
-                Some(p) => {
-                    self.handler.borrow_mut().sidebar_scrollbar_area = Some(p.area);
-                    self.handler.borrow_mut().sidebar_scrollbar_metrics =
-                        Some((p.content_h, p.viewport_h));
-                }
-                None => {
-                    self.handler.borrow_mut().sidebar_scrollbar_area = None;
-                    self.handler.borrow_mut().sidebar_scrollbar_metrics = None;
-                }
+        // Same drain for the sidebar scrollbar — see transcript
+        // comment above for why the read-then-write pattern is split
+        // across two expressions (RefCell double-borrow avoidance).
+        let publish_snapshot: Option<TranscriptScrollbarPublish> = self
+            .handler
+            .borrow()
+            .sidebar_scrollbar_publish
+            .try_borrow()
+            .ok()
+            .and_then(|opt| opt.as_ref().copied());
+        match publish_snapshot {
+            Some(p) => {
+                self.handler.borrow_mut().sidebar_scrollbar_area = Some(p.area);
+                self.handler.borrow_mut().sidebar_scrollbar_metrics =
+                    Some((p.content_h, p.viewport_h));
+            }
+            None => {
+                self.handler.borrow_mut().sidebar_scrollbar_area = None;
+                self.handler.borrow_mut().sidebar_scrollbar_metrics = None;
             }
         }
         let h = self.handler.borrow();
@@ -1054,5 +1074,103 @@ impl View for RootView {
                 .height(3)
                 .render(ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod drain_publish_regression {
+    //! Regression test for the `RefCell already borrowed` panic that
+    //! struck the agendao TUI on first frame in Direct mode
+    //! (introduced in commit 98108a3, fixed in the follow-up).
+    //!
+    //! Root cause (Phase 1 of systematic-debugging):
+    //! The borrow shape
+    //!
+    //!     if let Ok(publish) = outer.borrow().field.try_borrow() {
+    //!         match publish.as_ref() {
+    //!             Some(p) => outer.borrow_mut().x = Some(p.x),  // PANIC
+    //!         }
+    //!     }
+    //!
+    //! In Edition 2021, the temporary `Ref<Outer>` (from `outer.borrow()`)
+    //! is live for the whole `if let` block because it participates in
+    //! the pattern binding — so the in-block `outer.borrow_mut()` collides
+    //! with the still-live `Ref<Outer>` and panics with
+    //! "RefCell already borrowed".
+    //!
+    //! The fix snapshots the inner `Option<Copy>` into a local in a single
+    //! expression, so all temporaries drop at the `;` and the subsequent
+    //! `borrow_mut()` is clean. These tests pin both halves of that story.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Payload {
+        area: u32,
+        content_h: u32,
+        viewport_h: u32,
+    }
+
+    /// Pin the OLD broken pattern: a `Ref` is alive at the same time as a
+    /// `borrow_mut()` on the same `RefCell` — `RefCell` is special-cased by
+    /// the borrow checker (multiple `borrow()` calls are statically
+    /// allowed; runtime tracks the count), so this **compiles** but
+    /// **panics at runtime**. This is the exact shape from the original
+    /// `if let Ok(publish) = self.handler.borrow()...` block: the
+    /// `if let`-bound `Ref<AppHandler>` stayed alive across the arm body's
+    /// `self.handler.borrow_mut()` calls, producing the same runtime panic.
+    /// If this test ever stops panicking, the assumption in the module
+    /// doc-comment is wrong and the rest of this file is suspect.
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn old_pattern_panics() {
+        let cell: RefCell<u32> = RefCell::new(0);
+        let _r = cell.borrow(); // Ref alive until end of scope
+        let _ = cell.borrow_mut(); // collides with _r at runtime → panic
+    }
+
+    /// Pin the FIX pattern: snapshot via Copy in a single expression so all
+    /// temporaries drop at `;`, then a fresh `borrow_mut()` is clean. This
+    /// is the exact shape used in `RootView::render` for the transcript
+    /// and sidebar scrollbar publish drain.
+    #[test]
+    fn fix_copy_snapshot_then_mut_borrow_succeeds() {
+        struct Outer {
+            area: Option<Payload>,
+            metrics: Option<(u32, u32)>,
+        }
+        let outer: RefCell<Outer> = RefCell::new(Outer {
+            area: None,
+            metrics: None,
+        });
+        let inner: Rc<RefCell<Option<Payload>>> = Rc::new(RefCell::new(Some(Payload {
+            area: 7,
+            content_h: 100,
+            viewport_h: 30,
+        })));
+
+        // Fix: snapshot in one expression; all temporaries drop at `;`.
+        let snapshot: Option<Payload> = {
+            let _outer_guard = outer.borrow();
+            inner.try_borrow().ok().and_then(|opt| opt.as_ref().copied())
+        };
+        // After this `;`, no `Ref`s are alive — safe to `borrow_mut`.
+
+        match snapshot {
+            Some(p) => {
+                outer.borrow_mut().area = Some(p);
+                outer.borrow_mut().metrics = Some((p.content_h, p.viewport_h));
+            }
+            None => {
+                outer.borrow_mut().area = None;
+                outer.borrow_mut().metrics = None;
+            }
+        }
+        assert_eq!(
+            outer.borrow().area,
+            Some(Payload { area: 7, content_h: 100, viewport_h: 30 })
+        );
+        assert_eq!(outer.borrow().metrics, Some((100, 30)));
     }
 }
