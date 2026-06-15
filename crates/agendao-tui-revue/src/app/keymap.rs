@@ -228,6 +228,62 @@ impl AppHandler {
                         false
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // ── Transcript scrollbar click ──
+                        // Hit-test before anything else: if the click
+                        // landed on the scrollbar (▲/▼/thumb/track),
+                        // resolve it here and skip the rest of the
+                        // click handlers (which would otherwise try
+                        // to fold blocks, focus the prompt, etc.).
+                        if let Some((sb_area, (content_h, viewport_h))) = self
+                            .transcript_scrollbar_area
+                            .zip(self.transcript_scrollbar_metrics)
+                        {
+                            // Convert the store's "rows back from
+                            // bottom" semantics to "rows from top"
+                            // (= ScrollbarOverlay's offset) for the
+                            // hit-test. Without this, the overlay
+                            // would think the thumb is at the top
+                            // when the user is actually at the
+                            // bottom.
+                            let max_offset = content_h.saturating_sub(viewport_h);
+                            let user_offset = self.active_session.scroll_offset.get().min(max_offset);
+                            let scroll_top = max_offset.saturating_sub(user_offset);
+                            let overlay = crate::widget::ScrollbarOverlay::new(
+                                (0, 0),
+                                sb_area,
+                                content_h,
+                                viewport_h,
+                                scroll_top,
+                            );
+                            if let Some(hit) = overlay.hit_test(m.x, m.y) {
+                                match hit {
+                                    crate::widget::ScrollbarHit::ArrowUp => {
+                                        self.active_session.scroll_offset.set(max_offset);
+                                        self.layout_dirty = true;
+                                        return true;
+                                    }
+                                    crate::widget::ScrollbarHit::ArrowDown => {
+                                        self.active_session.scroll_offset.set(0);
+                                        self.layout_dirty = true;
+                                        return true;
+                                    }
+                                    crate::widget::ScrollbarHit::PageUp => {
+                                        self.active_session.scroll_page_up(viewport_h);
+                                        self.layout_dirty = true;
+                                        return true;
+                                    }
+                                    crate::widget::ScrollbarHit::PageDown => {
+                                        self.active_session.scroll_page_down(viewport_h);
+                                        self.layout_dirty = true;
+                                        return true;
+                                    }
+                                    crate::widget::ScrollbarHit::BeginDrag(drag) => {
+                                        self.transcript_scrollbar_drag = Some(drag);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
                         // ── Permission dialog click ──
                         if matches!(self.panel, Panel::Permission) {
                             if let Some((id, reply)) = self.permission_dialog.handle_click(m.x, m.y) {
@@ -299,10 +355,38 @@ impl AppHandler {
                         // Right-click — future: context menu
                         true
                     }
-                    MouseEventKind::Up(_) | MouseEventKind::Drag(_) | MouseEventKind::Move => {
-                        // Ignored for now — future: text selection, drag-scroll
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        // Active thumb drag on the transcript scrollbar.
+                        // Translate the y delta into a new offset and
+                        // store it (in "rows back from bottom" form).
+                        if let (Some(drag), Some((sb_area, (content_h, viewport_h)))) = (
+                            self.transcript_scrollbar_drag,
+                            self.transcript_scrollbar_area.zip(self.transcript_scrollbar_metrics),
+                        ) {
+                            let overlay = crate::widget::ScrollbarOverlay::new(
+                                (0, 0),
+                                sb_area,
+                                content_h,
+                                viewport_h,
+                                0,
+                            );
+                            let new_top = overlay.drag_to_offset(drag, m.y);
+                            let max_offset = content_h.saturating_sub(viewport_h);
+                            let user_offset = max_offset.saturating_sub(new_top);
+                            self.active_session.scroll_offset.set(user_offset);
+                            self.layout_dirty = true;
+                            return true;
+                        }
                         false
                     }
+                    MouseEventKind::Up(_) => {
+                        // Release any active drag.
+                        if self.transcript_scrollbar_drag.take().is_some() {
+                            return true;
+                        }
+                        false
+                    }
+                    MouseEventKind::Move => false,
                     _ => false,
                 }
             }
