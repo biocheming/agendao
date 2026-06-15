@@ -4,7 +4,6 @@ pub mod config;
 pub mod dialog;
 pub mod input;
 pub mod markdown;
-pub mod output;
 pub mod screen;
 pub mod store;
 pub mod telemetry;
