@@ -21,7 +21,10 @@ impl SessionSidebar {
     pub fn new() -> Self { Self { visible: false, width: 30 } }
     pub fn toggle(&mut self) { self.visible = !self.visible; }
 
-    /// Build the full sidebar widget tree.
+    /// Build the full sidebar widget tree and report its natural
+    /// content height (the sum of all panel heights, including
+    /// inter-panel gaps). Callers use the height to decide whether a
+    /// scrollbar is needed and to feed it into `widget::ScrollView`.
     pub fn build(
         token: &TokenUsage,
         cache: &CacheStats,
@@ -30,7 +33,7 @@ impl SessionSidebar {
         trees: &SidebarTrees,
         mcp: &McpLspInfo,
         tools: &[ActiveTool],
-    ) -> revue::widget::Stack {
+    ) -> (revue::widget::Stack, u16) {
         // Each panel's height = border (2) + content rows. Compute once
         // and use child_sized so vstack stops squeezing dead air between
         // panels by stretching every Border to fill its share of height.
@@ -50,14 +53,20 @@ impl SessionSidebar {
             .child_sized(Self::panel("🔧 Tools", Self::tools_panel(tools)), tools_h)
             .child_sized(Self::panel("🌐 MCP/LSP", Self::mcp_panel(mcp)), mcp_h);
 
+        // Inter-panel gap rows (vstack().gap(1) adds 1 row between
+        // each child). We have 5 internal gaps between 6 base panels.
+        let mut total_h = token_h + cache_h + price_h + meter_h + tools_h + mcp_h + 5;
+
         if !trees.session_nodes.is_empty() {
             let tree_rows = trees.session_nodes.iter().map(|n| 1 + n.children.len() as u16).sum::<u16>().min(30);
+            let panel_h = 2 + tree_rows;
             sidebar = sidebar.child_sized(
                 Self::panel("🌳 Sessions", Self::tree_panel(&trees.session_nodes)),
-                2 + tree_rows,
+                panel_h,
             );
+            total_h += panel_h + 1; // +1 for the gap above this panel
         }
-        sidebar
+        (sidebar, total_h)
     }
 
     /// Wrap content in a Border panel. Title gets a leading and trailing

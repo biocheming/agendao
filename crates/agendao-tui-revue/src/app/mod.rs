@@ -219,6 +219,19 @@ pub(crate) struct AppHandler {
     /// is released. Lives on `AppHandler` so the borrow for the
     /// handler's other fields can coexist with the publish clone.
     pub(crate) transcript_scrollbar_publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
+    /// Absolute screen rect of the sidebar scrollbar column,
+    /// captured every frame and consumed by the mouse handler.
+    pub(crate) sidebar_scrollbar_area: Option<Rect>,
+    /// Metrics paired with `sidebar_scrollbar_area`.
+    pub(crate) sidebar_scrollbar_metrics: Option<(u16, u16)>,
+    /// Active drag on the sidebar scrollbar, if any.
+    pub(crate) sidebar_scrollbar_drag: Option<crate::widget::ScrollbarDrag>,
+    /// Per-frame publish slot for the sidebar scrollbar.
+    pub(crate) sidebar_scrollbar_publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
+    /// Sidebar scroll offset, in "rows from top". The sidebar is
+    /// reset to 0 when first shown and never auto-resets on data
+    /// change — users explicitly drag/click to scroll.
+    pub(crate) sidebar_scroll_offset: u16,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -358,6 +371,11 @@ impl AppHandler {
             transcript_scrollbar_metrics: None,
             transcript_scrollbar_drag: None,
             transcript_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
+            sidebar_scrollbar_area: None,
+            sidebar_scrollbar_metrics: None,
+            sidebar_scrollbar_drag: None,
+            sidebar_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
+            sidebar_scroll_offset: 0,
         }
     }
 }
@@ -451,6 +469,70 @@ impl View for ScrollableTranscript {
             self.content_h,
             area.height,
             self.scroll_top,
+        );
+        overlay.render(ctx);
+
+        // Publish for the next event tick.
+        if let Ok(mut slot) = self.publish.try_borrow_mut() {
+            *slot = Some(TranscriptScrollbarPublish {
+                area: scrollbar_area_abs,
+                content_h: self.content_h,
+                viewport_h: area.height,
+            });
+        }
+    }
+}
+
+struct ScrollableSidebar {
+    content: Stack,
+    content_h: u16,
+    /// Sidebar's scroll offset (rows from top, 0 = top). Plain u16
+    /// instead of a Signal because the value is set in the same
+    /// `RootView::render` pass that builds us — no need for
+    /// reactivity within a single frame.
+    scroll_top: u16,
+    publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
+}
+
+impl View for ScrollableSidebar {
+    fn render(&self, ctx: &mut RenderContext) {
+        use revue::layout::Rect;
+        let area = ctx.area;
+        if area.width < 2 || area.height == 0 { return; }
+
+        // Reserve the rightmost column for the scrollbar overlay.
+        let content_width = area.width.saturating_sub(1);
+        let content_area = Rect::new(0, 0, content_width, self.content_h);
+        let mut content_buf = revue::render::Buffer::new(content_width, self.content_h);
+        let mut content_ctx = RenderContext::new(&mut content_buf, content_area);
+        self.content.render(&mut content_ctx);
+
+        // Paste the visible window [scroll_top .. scroll_top+viewport]
+        // into ctx. Same approach as ScrollableTranscript but offset
+        // comes from a local field rather than inside a ScrollView.
+        let viewport = area.height;
+        let max_offset = self.content_h.saturating_sub(viewport);
+        let row_start = self.scroll_top.min(max_offset);
+        for y in 0..viewport {
+            let src_y = row_start + y;
+            if src_y >= self.content_h { break; }
+            for x in 0..area.width {
+                if let Some(cell) = content_buf.get(x, src_y) {
+                    ctx.set(x, y, *cell);
+                }
+            }
+        }
+
+        // Overlay ▲/▼/thumb on the reserved rightmost column.
+        let sb_x_abs = ctx.area.x.saturating_add(area.x).saturating_add(area.width.saturating_sub(1));
+        let sb_y_abs = ctx.area.y.saturating_add(area.y);
+        let scrollbar_area_abs = Rect::new(sb_x_abs, sb_y_abs, 1, area.height);
+        let overlay = crate::widget::ScrollbarOverlay::new(
+            (ctx.area.x, ctx.area.y),
+            area,
+            self.content_h,
+            area.height,
+            row_start,
         );
         overlay.render(ctx);
 
@@ -664,9 +746,15 @@ impl View for RootView {
                     let trees = h.active_session.sidebar_trees.get();
                     let mcp = h.active_session.mcp_lsp.get();
                     let tools = h.active_session.active_tools.get();
-                    let sidebar = crate::telemetry::SessionSidebar::build(
+                    let (sidebar_content, sidebar_content_h) = crate::telemetry::SessionSidebar::build(
                         &token, &cache, &price, ctx_pct, &trees, &mcp, &tools,
                     );
+                    let sidebar = ScrollableSidebar {
+                        content: sidebar_content,
+                        content_h: sidebar_content_h,
+                        scroll_top: h.sidebar_scroll_offset,
+                        publish: h.sidebar_scrollbar_publish.clone(),
+                    };
                     main_area = main_area.child_sized(sidebar, 32);
                 }
 
@@ -845,6 +933,20 @@ impl View for RootView {
                 None => {
                     self.handler.borrow_mut().transcript_scrollbar_area = None;
                     self.handler.borrow_mut().transcript_scrollbar_metrics = None;
+                }
+            }
+        }
+        // Same drain for the sidebar scrollbar.
+        if let Ok(publish) = self.handler.borrow().sidebar_scrollbar_publish.try_borrow() {
+            match publish.as_ref() {
+                Some(p) => {
+                    self.handler.borrow_mut().sidebar_scrollbar_area = Some(p.area);
+                    self.handler.borrow_mut().sidebar_scrollbar_metrics =
+                        Some((p.content_h, p.viewport_h));
+                }
+                None => {
+                    self.handler.borrow_mut().sidebar_scrollbar_area = None;
+                    self.handler.borrow_mut().sidebar_scrollbar_metrics = None;
                 }
             }
         }
