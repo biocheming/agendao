@@ -312,6 +312,53 @@ impl AppHandler {
                         // Click on prompt area → focus input.
                         // Click elsewhere → unfocus.
                         if matches!(self.store.route.get(), Route::Session { .. }) {
+                            // ── Sidebar scrollbar click (before the
+                            // transcript fold handler, so clicking
+                            // the scrollbar never falls into the
+                            // transcript row-walk). ──
+                            if let Some((sb_area, (content_h, viewport_h))) = self
+                                .sidebar_scrollbar_area
+                                .zip(self.sidebar_scrollbar_metrics)
+                            {
+                                let overlay = crate::widget::ScrollbarOverlay::new(
+                                    (0, 0),
+                                    sb_area,
+                                    content_h,
+                                    viewport_h,
+                                    self.sidebar_scroll_offset,
+                                );
+                                if let Some(hit) = overlay.hit_test(m.x, m.y) {
+                                    let max_offset = content_h.saturating_sub(viewport_h);
+                                    match hit {
+                                        crate::widget::ScrollbarHit::ArrowUp => {
+                                            self.sidebar_scroll_offset = 0;
+                                            self.layout_dirty = true;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::ArrowDown => {
+                                            self.sidebar_scroll_offset = max_offset;
+                                            self.layout_dirty = true;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::PageUp => {
+                                            self.sidebar_scroll_offset =
+                                                self.sidebar_scroll_offset.saturating_sub(viewport_h);
+                                            self.layout_dirty = true;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::PageDown => {
+                                            self.sidebar_scroll_offset = (self.sidebar_scroll_offset + viewport_h).min(max_offset);
+                                            self.layout_dirty = true;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::BeginDrag(drag) => {
+                                            self.sidebar_scrollbar_drag = Some(drag);
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+
                             let ty = m.y;
                             let transcript_y = self.transcript_area_y;
                             let transcript_h = self.transcript_viewport_h;
@@ -377,11 +424,34 @@ impl AppHandler {
                             self.layout_dirty = true;
                             return true;
                         }
+                        // Active thumb drag on the sidebar scrollbar.
+                        // Sidebar offset is rows-from-top, not rows-
+                        // from-bottom, so the drag translates 1:1.
+                        if let (Some(drag), Some((sb_area, (content_h, viewport_h)))) = (
+                            self.sidebar_scrollbar_drag,
+                            self.sidebar_scrollbar_area.zip(self.sidebar_scrollbar_metrics),
+                        ) {
+                            let overlay = crate::widget::ScrollbarOverlay::new(
+                                (0, 0),
+                                sb_area,
+                                content_h,
+                                viewport_h,
+                                0,
+                            );
+                            let new_top = overlay.drag_to_offset(drag, m.y);
+                            let max_offset = content_h.saturating_sub(viewport_h);
+                            self.sidebar_scroll_offset = new_top.min(max_offset);
+                            self.layout_dirty = true;
+                            return true;
+                        }
                         false
                     }
                     MouseEventKind::Up(_) => {
-                        // Release any active drag.
+                        // Release any active drag (transcript or sidebar).
                         if self.transcript_scrollbar_drag.take().is_some() {
+                            return true;
+                        }
+                        if self.sidebar_scrollbar_drag.take().is_some() {
                             return true;
                         }
                         false
