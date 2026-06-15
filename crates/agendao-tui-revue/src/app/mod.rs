@@ -14,6 +14,34 @@ use revue::prelude::*;
 use tokio::sync::watch;
 use std::cell::RefCell;
 
+/// Global publish slot for the SessionList dialog's interactive
+/// scrollbar. The dialog writes here every frame; the mouse
+/// handler reads it on the next event tick. Lives at module scope
+/// (not on `AppHandler`) because the dialog's `render(&self, ctx)`
+/// is invoked from a borrowed `&self` deep in the layout tree —
+/// there's no `AppHandler` handle in scope at that point.
+///
+/// We use `std::sync::Mutex` instead of `RefCell` because the
+/// slot must be `Sync` to live in a `OnceLock` static. The lock is
+/// only ever taken on the render or event thread, so contention is
+/// not a concern in practice.
+///
+/// The other list dialogs (ModelSelect, AgentSelect, Help) are
+/// less common and haven't been wired to the global publish; their
+/// mouse interactions go through other paths.
+pub static SESSION_LIST_SCROLLBAR_PUBLISH: std::sync::OnceLock<
+    std::sync::Mutex<Option<crate::dialog::backdrop::ListDialogScrollbarArea>>,
+> = std::sync::OnceLock::new();
+
+/// Lazy initialiser for the publish slot — same pattern as
+/// `std::sync::OnceLock::get_or_init`. We use this so the cell is
+/// created on first access; no need for a static initializer that
+/// can't run at const time.
+pub fn session_list_scrollbar_slot(
+) -> &'static std::sync::Mutex<Option<crate::dialog::backdrop::ListDialogScrollbarArea>> {
+    SESSION_LIST_SCROLLBAR_PUBLISH.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 use crate::bridge::api::ApiBridge;
 use crate::config::AppConfig;
 use crate::dialog::{
@@ -232,6 +260,11 @@ pub(crate) struct AppHandler {
     /// reset to 0 when first shown and never auto-resets on data
     /// change — users explicitly drag/click to scroll.
     pub(crate) sidebar_scroll_offset: u16,
+    /// Active drag on the session-list dialog's scrollbar. The
+    /// dialog uses its own `selected: usize` as the cursor; the
+    /// drag state is just a remembered y origin so Drag events
+    /// can map cursor-y → new selected index.
+    pub(crate) session_list_scrollbar_drag: Option<crate::widget::ScrollbarDrag>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -376,6 +409,7 @@ impl AppHandler {
             sidebar_scrollbar_drag: None,
             sidebar_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
             sidebar_scroll_offset: 0,
+            session_list_scrollbar_drag: None,
         }
     }
 }
