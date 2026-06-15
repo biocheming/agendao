@@ -196,6 +196,29 @@ pub(crate) struct AppHandler {
     /// Y-coordinate of the transcript area on screen (after header+divider).
     /// Used by mouse click handler to map click_y to transcript row.
     pub(crate) transcript_area_y: u16,
+
+    /// Absolute screen rect of the transcript scrollbar column,
+    /// captured every frame by `RootView::render` and consumed by the
+    /// mouse handler to hit-test arrow clicks and thumb drags. The
+    /// Rect is the scrollbar's *full* span (▲ + track + ▼), one column
+    /// wide. `None` when not on the session route or content fits in
+    /// the viewport.
+    pub(crate) transcript_scrollbar_area: Option<Rect>,
+    /// Metrics paired with `transcript_scrollbar_area`: the
+    /// total content rows and viewport rows the scrollbar was drawn
+    /// against. Together they form the `ScrollbarOverlay` view-model
+    /// for hit-testing without re-walking the transcript.
+    pub(crate) transcript_scrollbar_metrics: Option<(u16, u16)>,
+    /// Active drag on the transcript scrollbar, if any. Set on
+    /// `BeginDrag`, mutated on every `Drag` event, cleared on `Up`.
+    pub(crate) transcript_scrollbar_drag: Option<crate::widget::ScrollbarDrag>,
+    /// Per-frame slot the `ScrollableTranscript` writes into during
+    /// `render`. `RootView::render` drains it into
+    /// `transcript_scrollbar_area` / `transcript_scrollbar_metrics`
+    /// after `layout.render(ctx)` returns and the immutable borrow
+    /// is released. Lives on `AppHandler` so the borrow for the
+    /// handler's other fields can coexist with the publish clone.
+    pub(crate) transcript_scrollbar_publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -331,6 +354,10 @@ impl AppHandler {
             layout_dirty: false,
             transcript_viewport_h: 30, // overwritten on first render
             transcript_area_y: 2,      // after header + divider
+            transcript_scrollbar_area: None,
+            transcript_scrollbar_metrics: None,
+            transcript_scrollbar_drag: None,
+            transcript_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -358,13 +385,38 @@ struct RootView {
 /// no indication that there's more above. The ScrollView call here
 /// is the same one revue's example_widgets.rs uses for log views.
 struct ScrollableTranscript {
-    sv: revue::prelude::ScrollView,
+    /// Refined ScrollView from the agendao widget base. Drops in
+    /// cleanly for what was a raw `revue::ScrollView`; the only added
+    /// responsibility for the caller is the `publish` callback below,
+    /// which the mouse handler reads to hit-test scrollbar clicks.
+    sv: crate::widget::ScrollView,
     content: Stack,
     content_h: u16,
     /// Captured for telemetry / debugging. The actual scroll position
     /// lives inside `sv` via its `scroll_offset` builder.
     #[allow(dead_code)]
     scroll_top: u16,
+    /// Sink the widget writes its absolute screen rect + metrics into
+    /// during `render`. `RootView::render` drains it into
+    /// `AppHandler.transcript_scrollbar_*` after the immutable borrow
+    /// is released. `Rc<RefCell<…>>` because `View::render` only gets
+    /// `&self` and we have no other writable channel back to the
+    /// handler.
+    publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
+}
+
+/// Per-frame publish from [`ScrollableTranscript`] back to the handler:
+/// the scrollbar's absolute screen geometry (1 column wide, full
+/// transcript height) and the metrics needed to build a `Scrollbar`
+/// view-model on the event side.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TranscriptScrollbarPublish {
+    /// Absolute screen rect of the scrollbar column.
+    area: Rect,
+    /// Total content rows.
+    content_h: u16,
+    /// Visible window rows.
+    viewport_h: u16,
 }
 
 impl View for ScrollableTranscript {
@@ -384,8 +436,32 @@ impl View for ScrollableTranscript {
 
         // ScrollView takes the visible window starting at scroll_top
         // and paints it into ctx (alongside its scrollbar).
-        let _ = self.scroll_top; // captured by self.sv.scroll_offset
         self.sv.render_content(ctx, &content_buf);
+
+        // Now overlay agendao's interactive scrollbar (▲ ▼ thumb) on
+        // top of the simple `│/█` that `revue::ScrollView` just
+        // painted. Compute the absolute scrollbar rect from the
+        // ctx-relative `area` and `ctx.area.xy`.
+        let sb_x_abs = ctx.area.x.saturating_add(area.x).saturating_add(area.width.saturating_sub(1));
+        let sb_y_abs = ctx.area.y.saturating_add(area.y);
+        let scrollbar_area_abs = Rect::new(sb_x_abs, sb_y_abs, 1, area.height);
+        let overlay = crate::widget::ScrollbarOverlay::new(
+            (ctx.area.x, ctx.area.y),
+            area,
+            self.content_h,
+            area.height,
+            self.scroll_top,
+        );
+        overlay.render(ctx);
+
+        // Publish for the next event tick.
+        if let Ok(mut slot) = self.publish.try_borrow_mut() {
+            *slot = Some(TranscriptScrollbarPublish {
+                area: scrollbar_area_abs,
+                content_h: self.content_h,
+                viewport_h: area.height,
+            });
+        }
     }
 }
 
@@ -562,8 +638,8 @@ impl View for RootView {
                         );
                     }
 
-                    let sv = revue::widget::scroll_view()
-                        .content_height(total_h)
+                    let sv = crate::widget::scroll_view()
+                        .with_content_height(total_h)
                         .scroll_offset(scroll_top)
                         .show_scrollbar(true);
 
@@ -573,6 +649,7 @@ impl View for RootView {
                             content: transcript,
                             content_h: total_h,
                             scroll_top,
+                            publish: h.transcript_scrollbar_publish.clone(),
                         },
                         1.0,
                     );
@@ -753,6 +830,24 @@ impl View for RootView {
         // Transcript area starts at y=2 (after header row + divider row).
         // Used by mouse click handler to map click_y → transcript row.
         self.handler.borrow_mut().transcript_area_y = 2;
+        // Drain the transcript scrollbar's per-frame publish into the
+        // handler so the next mouse event can hit-test arrow clicks
+        // and thumb drags. The publish slot is None when the session
+        // route's content fits in the viewport, in which case the
+        // scrollbar area stays None and the mouse handler skips it.
+        if let Ok(publish) = self.handler.borrow().transcript_scrollbar_publish.try_borrow() {
+            match publish.as_ref() {
+                Some(p) => {
+                    self.handler.borrow_mut().transcript_scrollbar_area = Some(p.area);
+                    self.handler.borrow_mut().transcript_scrollbar_metrics =
+                        Some((p.content_h, p.viewport_h));
+                }
+                None => {
+                    self.handler.borrow_mut().transcript_scrollbar_area = None;
+                    self.handler.borrow_mut().transcript_scrollbar_metrics = None;
+                }
+            }
+        }
         let h = self.handler.borrow();
         let prompt_y = ctx.area.y + ctx.area.height.saturating_sub(5);
         match h.panel {
