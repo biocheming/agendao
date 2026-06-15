@@ -110,10 +110,14 @@ pub enum TranscriptBlock {
 }
 
 impl TranscriptBlock {
-    /// Number of terminal rows this block occupies when rendered.
-    /// Mirrors `transcript_block_height` in `screen/session.rs` so the
-    /// store layer can compute layout (e.g. auto-scroll to keep the
-    /// cursor block in view) without depending on the screen layer.
+    /// Rough row estimate for **auto-scroll math only** (e.g. keeping the
+    /// cursor block in view). NOT a mirror of screen-layer height — the
+    /// screen layer's `layout_block` is the precise truth used for render
+    /// layout; this is a deliberately coarse approximation (e.g.
+    /// AssistantMsg uses raw line count, not markdown line count) because
+    /// scroll only needs "is cursor in viewport", where a row or two of
+    /// difference is irrelevant. Kept in the store layer because store
+    /// cannot depend upward on screen.
     pub fn height(&self) -> u16 {
         const FOLD_PREVIEW_LINES: usize = 3;
         match self {

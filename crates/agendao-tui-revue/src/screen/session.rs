@@ -11,19 +11,14 @@ use crate::theme::colors;
 
 const FOLD_PREVIEW_LINES: usize = 3;
 
-/// Estimate the natural rendered height (in rows) of a single transcript
-/// block. Callers that build a transcript inside a vstack must pair each
-/// `render_block(block)` with `child_sized(_, transcript_block_height(block))`
-/// — without explicit sizing, vstack distributes the available area equally
-/// across all blocks and a single message gobbles the whole pane.
 /// Color of the `▌` left-bar for one block, by role.
 ///
 /// The TranscriptFeed renders every block with a 1-column-wide `▌` on
 /// the left edge so the eye can scan a long scroll and pick out role
 /// boundaries without reading the chip text. The mapping here is the
 /// single source of truth — both the cursor bar and the static role
-/// bar in [`render_block`] consume this helper so old (historical) and
-/// new (cursor-fold) blocks look identical.
+/// bar in the transcript vstack consume this helper so old (historical)
+/// and new (cursor-fold) blocks look identical.
 ///
 /// Conventions (per mockup E "glass tactile" direction):
 ///   - USER   = E_TEAL         (deep cyan, distinct from FG_SECONDARY)
@@ -435,97 +430,6 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
 }
 
 /// Truncate text to first N lines.
-/// One slice of an assistant message body.
-///
-/// We split the raw text on GFM-style markdown tables (a header row
-/// followed by a `| --- | --- |` separator) so the host can route
-/// each segment to the right widget: `Markdown` for prose/headings/
-/// lists/code, and `Table` for tabular data. revue's markdown widget
-/// recognizes table tags via pulldown_cmark but currently doesn't
-/// emit the accumulated cells back to the rendered line list, so
-/// tables left inline collapse into stray pipe characters.
-pub enum AssistantSegment {
-    Markdown(String),
-    Table { headers: Vec<String>, rows: Vec<Vec<String>> },
-}
-
-/// Walk `content` line by line and collect a flat list of segments.
-///
-/// A table starts at a line that, together with the following line,
-/// forms `| col1 | col2 |` followed by `| --- | --- |`. Subsequent
-/// `| ... |` rows belong to the same table; the first non-`|` line
-/// terminates it. Anything outside table fences becomes a Markdown
-/// segment containing the original line text (so heading prefixes
-/// like `##`, lists, code fences etc. still parse correctly).
-pub fn split_assistant_segments(content: &str) -> Vec<AssistantSegment> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut segments: Vec<AssistantSegment> = Vec::new();
-    let mut md_buf = String::new();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        // Detect table start: header `| ... |` then sep `|---|---|`.
-        if is_table_header_row(line) && i + 1 < lines.len() && is_table_separator_row(lines[i + 1]) {
-            // Flush any pending markdown
-            if !md_buf.is_empty() {
-                segments.push(AssistantSegment::Markdown(std::mem::take(&mut md_buf)));
-            }
-            let headers = parse_table_row(line);
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            i += 2; // skip header + separator
-            while i < lines.len() && is_table_row(lines[i]) {
-                rows.push(parse_table_row(lines[i]));
-                i += 1;
-            }
-            segments.push(AssistantSegment::Table { headers, rows });
-            continue;
-        }
-        // Otherwise accumulate into markdown buffer
-        if !md_buf.is_empty() { md_buf.push('\n'); }
-        md_buf.push_str(line);
-        i += 1;
-    }
-
-    if !md_buf.is_empty() {
-        segments.push(AssistantSegment::Markdown(md_buf));
-    }
-    segments
-}
-
-/// `| col | col |` — a row that starts and ends with a pipe.
-fn is_table_row(line: &str) -> bool {
-    let t = line.trim();
-    t.starts_with('|') && t.ends_with('|') && t.len() >= 3
-}
-
-/// Same as `is_table_row` but additionally requires at least 2 cells.
-fn is_table_header_row(line: &str) -> bool {
-    if !is_table_row(line) { return false; }
-    parse_table_row(line).len() >= 2
-}
-
-/// `|---|:---:|---:|` — separator row. Each cell is `:?-+:?` after trim.
-fn is_table_separator_row(line: &str) -> bool {
-    let t = line.trim();
-    if !t.starts_with('|') || !t.ends_with('|') { return false; }
-    let cells = parse_table_row(line);
-    if cells.is_empty() { return false; }
-    cells.iter().all(|c| {
-        let s = c.trim().trim_start_matches(':').trim_end_matches(':');
-        !s.is_empty() && s.chars().all(|ch| ch == '-')
-    })
-}
-
-fn parse_table_row(line: &str) -> Vec<String> {
-    let t = line.trim();
-    // Strip leading/trailing pipes, split on `|`.
-    let inner = t.strip_prefix('|').unwrap_or(t);
-    let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner.split('|').map(|c| c.trim().to_string()).collect()
-}
-
-/// Truncate text to first N lines.
 fn truncate_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().take(n).collect();
     let total = text.lines().count();
@@ -536,7 +440,6 @@ fn truncate_lines(text: &str, n: usize) -> String {
     }
 }
 
-// ── Transcript builder ─────────────────────────────────
 
 #[cfg(test)]
 mod layout_tests {
