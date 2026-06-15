@@ -10,7 +10,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
-    build_connect_provider_request, build_session_list_params, http_error, server_url,
+    build_connect_provider_request, build_session_list_params_with_directory, http_error, server_url,
     FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
@@ -124,8 +124,19 @@ impl BlockingApiClient {
         search: Option<&str>,
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<SessionListItem>> {
+        self.list_sessions_in_directory(None, search, limit)
+    }
+
+    /// List sessions scoped to an exact directory match.
+    /// Pass `directory` as `None` for unfiltered, or canonical path string.
+    pub fn list_sessions_in_directory(
+        &self,
+        directory: Option<&str>,
+        search: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<SessionListItem>> {
         let url = server_url(&self.base_url, "/session");
-        let params = build_session_list_params(search, limit);
+        let params = build_session_list_params_with_directory(directory, search, limit);
         let request = if params.is_empty() {
             self.client.get(&url)
         } else {

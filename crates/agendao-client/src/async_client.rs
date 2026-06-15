@@ -7,7 +7,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
-    build_connect_provider_request, build_session_list_params, http_error, server_url,
+    build_connect_provider_request, build_session_list_params_with_directory, http_error, server_url,
     FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
@@ -119,8 +119,20 @@ impl AsyncApiClient {
         search: Option<&str>,
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<SessionListItem>> {
+        self.list_sessions_in_directory(None, search, limit).await
+    }
+
+    /// List sessions filtered by exact directory match (canonical path).
+    /// Pass `directory` = `None` to retrieve all sessions, or `Some(path)`
+    /// to scope the result to sessions created in that directory.
+    pub async fn list_sessions_in_directory(
+        &self,
+        directory: Option<&str>,
+        search: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<SessionListItem>> {
         let url = server_url(&self.base_url, "/session");
-        let params = build_session_list_params(search, limit);
+        let params = build_session_list_params_with_directory(directory, search, limit);
         let req = if params.is_empty() {
             self.client.get(&url)
         } else {

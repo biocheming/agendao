@@ -50,13 +50,14 @@ pub async fn local_get_session(
 
 pub async fn local_list_sessions(
     state: Arc<ServerState>,
+    directory: Option<String>,
     search: Option<String>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<agendao_api::SessionListItem>> {
     let Json(response) = super::session_crud::list_sessions(
         State(state),
         Query(ListSessionsQuery {
-            directory: None,
+            directory,
             roots: None,
             start: None,
             search,

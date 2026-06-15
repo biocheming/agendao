@@ -82,7 +82,21 @@ pub async fn local_list_sessions(
     search: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<SessionListItem>> {
-    agendao_server::local_list_sessions(state, search, limit).await
+    local_list_sessions_in_directory(state, None, search, limit).await
+}
+
+/// List sessions filtered by exact directory match (canonical path).
+///
+/// `directory = None` returns all sessions across the workspace,
+/// matching legacy behaviour. `directory = Some(path)` scopes the
+/// result to sessions whose `record().directory == path`.
+pub async fn local_list_sessions_in_directory(
+    state: Arc<LocalServerState>,
+    directory: Option<String>,
+    search: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<SessionListItem>> {
+    agendao_server::local_list_sessions(state, directory, search, limit).await
 }
 
 pub async fn local_get_session_status(

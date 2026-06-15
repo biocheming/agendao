@@ -58,10 +58,37 @@ impl ApiBridge {
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
-        if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_sessions(Arc::clone(ls), None, None));
-        }
-        self.block_on(self.client.list_sessions(None, None))
+        self.list_sessions_in_directory(None)
+    }
+
+    /// List sessions filtered by exact directory match (canonical path).
+    ///
+    /// 木 → 土 边界：UI 把当前 cwd（store.working_dir，已 canonicalize）传进来，
+    /// 命中 session_record.directory（同样在创建时 canonicalize）。
+    ///
+    /// Sorted descending by `time.updated` so the most-recently-touched
+    /// session lands at the top — UI never has to re-sort.
+    pub fn list_sessions_in_directory(
+        &self,
+        directory: Option<String>,
+    ) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
+        let mut items = if let Some(ref ls) = self.local {
+            self.block_on(agendao_server_local::local_list_sessions_in_directory(
+                Arc::clone(ls),
+                directory.clone(),
+                None,
+                None,
+            ))?
+        } else {
+            self.block_on(self.client.list_sessions_in_directory(
+                directory.as_deref(),
+                None,
+                None,
+            ))?
+        };
+        // Most recent first; ties keep insertion order via sort_by (stable).
+        sort_sessions_recent_first(&mut items);
+        Ok(items)
     }
 
     pub fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
@@ -280,4 +307,58 @@ impl ApiBridge {
     pub fn base_url(&self) -> &str { self.client.base_url() }
     pub fn handle(&self) -> &tokio::runtime::Handle { &self.handle }
     pub fn raw_client(&self) -> &AsyncApiClient { &self.client }
+}
+
+/// Sort sessions descending by `time.updated` (most recent first).
+///
+/// Stable to preserve server-provided ordering for ties. Public so other
+/// adapter layers can apply the same convention without re-implementing it.
+pub fn sort_sessions_recent_first(items: &mut [agendao_client::SessionListItem]) {
+    items.sort_by(|a, b| b.time.updated.cmp(&a.time.updated));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agendao_types::SessionTime;
+
+    fn make_item(id: &str, updated: i64) -> agendao_client::SessionListItem {
+        agendao_client::SessionListItem {
+            id: id.to_string(),
+            slug: id.to_string(),
+            project_id: "p".to_string(),
+            directory: "/d".to_string(),
+            parent_id: None,
+            title: id.to_string(),
+            version: "v".to_string(),
+            time: SessionTime { created: 0, updated, compacting: None, archived: None },
+            summary: None,
+            hints: None,
+            pending_command_invocation: None,
+        }
+    }
+
+    #[test]
+    fn sort_descending_by_updated() {
+        let mut items = vec![
+            make_item("a", 100),
+            make_item("b", 300),
+            make_item("c", 200),
+        ];
+        sort_sessions_recent_first(&mut items);
+        let order: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(order, vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn sort_is_stable_for_ties() {
+        let mut items = vec![
+            make_item("first", 100),
+            make_item("second", 100),
+            make_item("third", 100),
+        ];
+        sort_sessions_recent_first(&mut items);
+        let order: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(order, vec!["first", "second", "third"]);
+    }
 }

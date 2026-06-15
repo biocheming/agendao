@@ -295,8 +295,10 @@ impl AppHandler {
                 Err(e) => tracing::error!(%e, "init: list_execution_modes FAILED"),
             }
 
-            // 5. 会话列表
-            match api.list_sessions() {
+            // 5. 会话列表（按 cwd 过滤，与 /sessions 对话框语义一致）
+            let cwd = s.working_dir.get();
+            let cwd_filter = if cwd.is_empty() { None } else { Some(cwd) };
+            match api.list_sessions_in_directory(cwd_filter) {
                 Ok(sessions) => {
                     tracing::info!(count = sessions.len(), "init: sessions loaded");
                     s.session_list.set(sessions.into_iter().map(|s| SessionListItem {

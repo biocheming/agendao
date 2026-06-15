@@ -74,7 +74,7 @@ pub(super) async fn local_list_sessions(
     search: Option<String>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
-    agendao_server::local_list_sessions(state, search, limit).await
+    agendao_server::local_list_sessions(state, None, search, limit).await
 }
 
 #[cfg(feature = "local-server")]
