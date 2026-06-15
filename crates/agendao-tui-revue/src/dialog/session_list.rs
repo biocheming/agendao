@@ -181,6 +181,14 @@ impl SessionListDialog {
                 ctx, 80, 18,
             );
 
+            // Publish scrollbar geometry for the mouse handler.
+            // Only SessionList publishes right now (the other list
+            // dialogs use the simple render_list_dialog without a
+            // publish channel). Extend if/when those need it.
+            if let Ok(mut slot) = crate::app::session_list_scrollbar_slot().lock() {
+                *slot = layout.scrollbar;
+            }
+
             // Selected-row tooltip — only when the row's display would
             // overflow `inner_w` (i.e. the user can't actually read the
             // full title in the list). The popover floats just below the

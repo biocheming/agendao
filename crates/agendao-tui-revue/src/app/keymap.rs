@@ -228,6 +228,72 @@ impl AppHandler {
                         false
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // ── Session list dialog scrollbar click ──
+                        // Hit-test before the sidebar / transcript
+                        // branches so clicking on the dialog's
+                        // own scrollbar moves the dialog cursor
+                        // rather than toggling a transcript fold
+                        // or scrolling the sidebar. Only the
+                        // SessionList dialog publishes its
+                        // scrollbar geometry right now (see
+                        // `app::session_list_scrollbar_slot`).
+                        if let Some(sb) = crate::app::session_list_scrollbar_slot().lock().ok().and_then(|g| *g) {
+                            let overlay = crate::widget::ScrollbarOverlay::new(
+                                (0, 0),
+                                sb.area,
+                                sb.item_count,
+                                sb.visible_rows,
+                                // We don't have the in-window
+                                // selected index here, but the
+                                // hit-test is mostly insensitive to
+                                // offset: arrow rows and thumb
+                                // position are computed from the
+                                // *ratio* of offset/max_offset, and
+                                // the default 0 lands at the top of
+                                // the track (which is close enough
+                                // to "where the user is" for a 1-tick
+                                // approximation; the cursor re-paints
+                                // immediately after on next frame).
+                                0,
+                            );
+                            if let Some(hit) = overlay.hit_test(m.x, m.y) {
+                                if matches!(self.panel, Panel::SessionList) {
+                                    match hit {
+                                        crate::widget::ScrollbarHit::ArrowUp => {
+                                            self.session_list.selected = 0;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::ArrowDown => {
+                                            self.session_list.selected = sb.item_count.saturating_sub(1) as usize;
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::PageUp => {
+                                            self.session_list.selected = self.session_list.selected.saturating_sub(sb.visible_rows as usize);
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::PageDown => {
+                                            self.session_list.selected =
+                                                (self.session_list.selected + sb.visible_rows as usize)
+                                                    .min(sb.item_count.saturating_sub(1) as usize);
+                                            return true;
+                                        }
+                                        crate::widget::ScrollbarHit::BeginDrag(drag) => {
+                                            // The session list dialog
+                                            // doesn't have a "drag"
+                                            // surface of its own (it's
+                                            // a flat list). Treat the
+                                            // drag as "click to scroll":
+                                            // on the next Drag event
+                                            // we update `selected`
+                                            // based on the cursor's
+                                            // current y.
+                                            self.session_list_scrollbar_drag = Some(drag);
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // ── Transcript scrollbar click ──
                         // Hit-test before anything else: if the click
                         // landed on the scrollbar (▲/▼/thumb/track),
@@ -444,14 +510,52 @@ impl AppHandler {
                             self.layout_dirty = true;
                             return true;
                         }
+                        // Active thumb drag on the SessionList dialog
+                        // scrollbar. Drag the cursor to a new selected
+                        // index proportional to the cursor's y in the
+                        // track, translating via the same algorithm
+                        // the other scrollbars use.
+                        if let (Some(drag), Some(sb)) = (
+                            self.session_list_scrollbar_drag,
+                            crate::app::session_list_scrollbar_slot().lock().ok().and_then(|g| *g),
+                        ) {
+                            if matches!(self.panel, Panel::SessionList) {
+                                let overlay = crate::widget::ScrollbarOverlay::new(
+                                    (0, 0),
+                                    sb.area,
+                                    sb.item_count,
+                                    sb.visible_rows,
+                                    0,
+                                );
+                                let new_in_window = overlay.drag_to_offset(drag, m.y);
+                                // Clamp to [0, max_offset] and add
+                                // back to `start` (which the dialog
+                                // itself chooses from the new
+                                // selected on next render). The
+                                // math here intentionally ignores
+                                // `start` because we're setting a
+                                // *raw* item index, not a window
+                                // position — the dialog's own
+                                // start-window algorithm will then
+                                // place it sensibly.
+                                let target = (new_in_window as usize).min(sb.item_count.saturating_sub(1) as usize);
+                                self.session_list.selected = target;
+                                self.layout_dirty = true;
+                                return true;
+                            }
+                        }
                         false
                     }
                     MouseEventKind::Up(_) => {
-                        // Release any active drag (transcript or sidebar).
+                        // Release any active drag (transcript,
+                        // sidebar, or session-list dialog).
                         if self.transcript_scrollbar_drag.take().is_some() {
                             return true;
                         }
                         if self.sidebar_scrollbar_drag.take().is_some() {
+                            return true;
+                        }
+                        if self.session_list_scrollbar_drag.take().is_some() {
                             return true;
                         }
                         false

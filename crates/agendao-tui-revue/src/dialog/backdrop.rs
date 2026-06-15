@@ -80,6 +80,28 @@ pub struct ListDialogLayout {
     /// row prefix/suffix decorations). Use this to decide whether
     /// the selected row's text is being truncated.
     pub inner_w: u16,
+    /// Geometry of the agendao interactive scrollbar overlay rendered
+    /// along the dialog's right edge. `None` when the list fits in
+    /// the viewport (no scroll needed). Item count + visible rows
+    /// are reported in *items* (not pixels) so callers translate
+    /// hits to the right `selected` index, not to byte offsets.
+    pub scrollbar: Option<ListDialogScrollbarArea>,
+}
+
+/// Geometry of the interactive scrollbar overlay drawn on a list
+/// dialog. Coordinates are absolute screen positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListDialogScrollbarArea {
+    /// Absolute screen rect of the scrollbar column (1 cell wide).
+    pub area: Rect,
+    /// Total number of items in the list.
+    pub item_count: u16,
+    /// Number of items visible in the viewport at once.
+    pub visible_rows: u16,
+    /// Maximum value of `selected.saturating_sub(start)` once the
+    /// viewport is at the bottom — i.e. the largest
+    /// `selected_in_window` value the thumb can reach.
+    pub max_offset: u16,
 }
 
 /// Render a list-style dialog with selection highlighting and scrolling.
@@ -280,6 +302,41 @@ pub fn render_list_dialog_with_layout(
         .height(h)
         .render(ctx);
 
+    // Overlay agendao's interactive scrollbar on the dialog's right edge
+    // when the list is taller than the viewport. The bar lives inside
+    // the dialog border (column `w - 2` from the dialog's left) and
+    // spans `rows` rows (the visible list height, excluding the footer
+    // hint). Arrow buttons at top/bottom + draggable thumb are layered
+    // on the same column; mouse events route through the published
+    // layout below.
+    let list_overlay = if total > rows {
+        let sb_x = ctx.area.x.saturating_add(x).saturating_add(w.saturating_sub(2));
+        let sb_y = ctx.area.y.saturating_add(y).saturating_add(1); // skip top border
+        let sb_h = rows as u16;
+        let sb_area = Rect::new(sb_x, sb_y, 1, sb_h);
+        let max_offset_in_items = total.saturating_sub(rows);
+        let selected_in_window = (selected.saturating_sub(start)) as u16;
+        let overlay = crate::widget::ScrollbarOverlay::new(
+            (ctx.area.x, ctx.area.y),
+            sb_area,
+            // content_h here = total item count (not pixels). thumb
+            // sizing math works the same way — viewport_h is the number
+            // of items visible, content_h is the total.
+            total as u16,
+            rows as u16,
+            selected_in_window,
+        );
+        overlay.render(ctx);
+        Some(ListDialogScrollbarArea {
+            area: sb_area,
+            item_count: total as u16,
+            visible_rows: rows as u16,
+            max_offset: max_offset_in_items as u16,
+        })
+    } else {
+        None
+    };
+
     // Compute selected row's absolute Y on the screen so a caller can
     // anchor a popover next to it. Only Row items get a meaningful y;
     // headers don't.
@@ -299,5 +356,6 @@ pub fn render_list_dialog_with_layout(
         dialog_h: h,
         selected_row_y,
         inner_w: inner_w as u16,
+        scrollbar: list_overlay,
     }
 }
