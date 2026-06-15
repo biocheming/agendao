@@ -52,7 +52,7 @@ use crate::dialog::{
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
 };
 use crate::input::{PromptInput, SlashPopup};
-use crate::screen::{HomeLayout, render_block as render_msg_block, transcript_block_height, block_accent};
+use crate::screen::{HomeLayout, layout_block, block_accent};
 use crate::store::app_store::{AppStore, Route};
 use crate::telemetry::event_bus::EventBus;
 use crate::store::session_store::SessionStore;
@@ -706,7 +706,7 @@ impl View for RootView {
                     // doesn't get yanked back to the latest mid-read.
                     let available = ctx.area.height.saturating_sub(9);
                     let total_h: u16 = msgs.iter()
-                        .map(|b| transcript_block_height(b).saturating_add(1))
+                        .map(|b| layout_block(b).height.saturating_add(1))
                         .sum::<u16>()
                         .saturating_add(1);
 
@@ -720,7 +720,7 @@ impl View for RootView {
 
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     for (i, block) in msgs.iter().enumerate() {
-                        let block_h = transcript_block_height(block);
+                        let blk = layout_block(block);
                         // Wrap each block in a 2-col hstack:
                         //   col 0: `▌` for User/Assistant blocks (the
                         //          main conversation voices), space for
@@ -743,8 +743,8 @@ impl View for RootView {
                         };
                         let rendered = hstack().gap(0)
                             .child_sized(bar, 1)
-                            .child_flex(render_msg_block(block), 1.0);
-                        transcript = transcript.child_sized(rendered, block_h);
+                            .child_flex(blk.view, 1.0);
+                        transcript = transcript.child_sized(rendered, blk.height);
                     }
                     let status = h.active_session.run_status.get();
                     if matches!(status, RunStatus::Sending) {
