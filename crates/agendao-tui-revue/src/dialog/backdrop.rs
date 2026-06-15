@@ -61,6 +61,27 @@ pub enum ListItem {
     Row { display: String, muted: bool },
 }
 
+/// Layout of a list dialog after it has been rendered, returned by
+/// [`render_list_dialog_with_layout`] so callers can place a tooltip /
+/// popover anchored to the selected row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListDialogLayout {
+    /// Absolute screen coordinates of the dialog's outer rectangle
+    /// (inclusive of border).
+    pub dialog_x: u16,
+    pub dialog_y: u16,
+    pub dialog_w: u16,
+    pub dialog_h: u16,
+    /// Y coordinate of the row currently containing the cursor, or
+    /// `None` if the selected index points at a header / empty list.
+    /// In absolute screen coordinates.
+    pub selected_row_y: Option<u16>,
+    /// Inner usable width inside the dialog border (excluding the
+    /// row prefix/suffix decorations). Use this to decide whether
+    /// the selected row's text is being truncated.
+    pub inner_w: u16,
+}
+
 /// Render a list-style dialog with selection highlighting and scrolling.
 ///
 /// Key visual contract (mirrors `revue::OptionList` rendering):
@@ -80,6 +101,25 @@ pub fn render_list_dialog(
     max_w: u16,
     visible_rows: usize,
 ) {
+    let _ = render_list_dialog_with_layout(
+        title, border_color, items, selected, footer_hint, ctx, max_w, visible_rows,
+    );
+}
+
+/// Same as [`render_list_dialog`] but also returns the layout of the
+/// rendered dialog. Callers that want to overlay a tooltip / popover
+/// anchored to the selected row use this variant; the regular
+/// [`render_list_dialog`] is unchanged for callers that don't.
+pub fn render_list_dialog_with_layout(
+    title: &str,
+    border_color: Color,
+    items: &[ListItem],
+    selected: usize,
+    footer_hint: &str,
+    ctx: &mut RenderContext,
+    max_w: u16,
+    visible_rows: usize,
+) -> ListDialogLayout {
     let area = ctx.area;
     let total = items.len();
 
@@ -239,4 +279,25 @@ pub fn render_list_dialog(
         .width(w)
         .height(h)
         .render(ctx);
+
+    // Compute selected row's absolute Y on the screen so a caller can
+    // anchor a popover next to it. Only Row items get a meaningful y;
+    // headers don't.
+    let selected_row_y = if selected >= start && selected < end
+        && matches!(items.get(selected), Some(ListItem::Row { .. }))
+    {
+        let row_offset = (selected - start) as u16;
+        Some(ctx.area.y.saturating_add(y + 1 + row_offset))
+    } else {
+        None
+    };
+
+    ListDialogLayout {
+        dialog_x: ctx.area.x.saturating_add(x),
+        dialog_y: ctx.area.y.saturating_add(y),
+        dialog_w: w,
+        dialog_h: h,
+        selected_row_y,
+        inner_w: inner_w as u16,
+    }
 }

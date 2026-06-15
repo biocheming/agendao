@@ -741,9 +741,15 @@ impl AppHandler {
                 self.session_list.open();
                 self.session_list.loading = true;
                 self.panel = Panel::SessionList;
-                // Fetch sessions from API (non-blocking would need async; for now sync)
+                // Scope to cwd: working_dir has been canonicalized upstream
+                // (workspace_key == fs::canonicalize), matching the same
+                // normalization used when sessions were created. So an exact
+                // string equality on the server side is safe.
+                let cwd = self.store.working_dir.get();
+                let cwd_filter = if cwd.is_empty() { None } else { Some(cwd.clone()) };
+                self.session_list.set_directory_scope(cwd.clone());
                 if let Some(ref api) = self.api {
-                    match api.list_sessions() {
+                    match api.list_sessions_in_directory(cwd_filter) {
                         Ok(sessions) => {
                             let entries: Vec<crate::dialog::SessionEntry> = sessions.into_iter().map(|s| {
                                 crate::dialog::SessionEntry {
