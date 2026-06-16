@@ -250,7 +250,7 @@ impl ModelSelectDialog {
             format!("Select Model — query: {}", self.query)
         };
 
-        backdrop::render_list_dialog(
+        backdrop::render_list_dialog_bottom(
             &title,
             colors::ACCENT_CYAN,
             &items,

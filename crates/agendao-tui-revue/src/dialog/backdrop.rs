@@ -42,6 +42,22 @@ fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16)
     );
 }
 
+/// Where a dialog/list anchors on screen.
+///
+/// Two strategies share one rendering core (唯一成形语法 — 金律):
+///   - [`DialogAnchor::Centered`] — float in the middle (original behaviour:
+///     rename, confirm, alert, provider, stash, export, fork, help).
+///   - [`DialogAnchor::Bottom`] — pin just above the input box, left-aligned
+///     full-width. Mirrors the slash-popup bottom anchor: the prompt occupies
+///     the bottom 5 rows (`prompt_y = area.y + height - 5`), so the panel sits
+///     at `y = (height-5) - h`. Used by the command-picker panels
+///     (/models, /sessions, /agents) so they read as "sitting on the input box"
+///     rather than "floating in the middle of the screen".
+enum DialogAnchor {
+    Centered,
+    Bottom,
+}
+
 /// Render a centered modal dialog with a custom content stack.
 pub fn render_dialog(
     title: &str,
@@ -52,13 +68,73 @@ pub fn render_dialog(
     max_w: u16,
     max_h: u16,
 ) {
-    let area = ctx.area;
-    let w = max_w.min(area.width.saturating_sub(4));
-    let h = max_h.min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(w)) / 2;
-    let y = (area.height.saturating_sub(h)) / 2;
+    let _ = render_positioned_dialog(
+        DialogAnchor::Centered, title, border_color, content, footer_hint,
+        ctx, max_w, max_h,
+    );
+}
 
-    paint_modal_backdrop(ctx, x, y, w, h);
+/// Same as [`render_dialog`] but pinned above the input box, left-aligned
+/// full-width — for a command picker's empty/loading/error state
+/// (/sessions loading…). Keeps the panel at the same anchor as its list so
+/// loading→loaded doesn't make the box jump from centre to bottom.
+pub fn render_dialog_bottom(
+    title: &str,
+    border_color: Color,
+    content: Stack,
+    footer_hint: &str,
+    ctx: &mut RenderContext,
+    max_w: u16,
+    max_h: u16,
+) {
+    let _ = render_positioned_dialog(
+        DialogAnchor::Bottom, title, border_color, content, footer_hint,
+        ctx, max_w, max_h,
+    );
+}
+
+/// Core: render a single-content dialog at `anchor`. Split out so the Centered
+/// and Bottom wrappers share one border/title/positioned pipeline. Geometry
+/// differs only by `anchor`.
+fn render_positioned_dialog(
+    anchor: DialogAnchor,
+    title: &str,
+    border_color: Color,
+    content: Stack,
+    footer_hint: &str,
+    ctx: &mut RenderContext,
+    max_w: u16,
+    max_h: u16,
+) {
+    let area = ctx.area;
+    let (w, h, x, y) = match anchor {
+        DialogAnchor::Centered => {
+            let w = max_w.min(area.width.saturating_sub(4));
+            let h = max_h.min(area.height.saturating_sub(4));
+            let x = (area.width.saturating_sub(w)) / 2;
+            let y = (area.height.saturating_sub(h)) / 2;
+            (w, h, x, y)
+        }
+        DialogAnchor::Bottom => {
+            // 占满宽(左右各留 2 列,与输入框/slash 对齐);高度留 6 行
+            // (5 行 prompt + 1 行 margin),避免空状态框压住输入框本体。
+            let w = area.width.saturating_sub(4);
+            let h = max_h.min(area.height.saturating_sub(6));
+            let x = 2u16;
+            let y = area.height.saturating_sub(5).saturating_sub(h);
+            (w, h, x, y)
+        }
+    };
+
+    // 贴底模式实色填全宽(col 0 起),而非仅框区(col 2+)。Home/会话屏下层按钮框
+    // (Tip/Environment 等)左边框在 col 0,贴底框宽达 width-4 与之水平重叠;若只填
+    // 框区,col 0-1 会透出下层边框,与列表左边框交错(实色不透字契约)。居中框在
+    // 屏幕中央,与 col 0 的按钮框不重叠,填框区即可。
+    let (fill_x, fill_w) = match anchor {
+        DialogAnchor::Centered => (x, w),
+        DialogAnchor::Bottom => (0u16, area.width),
+    };
+    paint_modal_backdrop(ctx, fill_x, y, fill_w, h);
 
     let dialog = Border::rounded()
         .title(format!(" {} ", title))
@@ -88,7 +164,7 @@ pub enum ListItem {
 }
 
 /// Layout of a list dialog after it has been rendered, returned by
-/// [`render_list_dialog_with_layout`] so callers can place a tooltip /
+/// [`render_list_dialog_bottom_with_layout`] so callers can place a tooltip /
 /// popover anchored to the selected row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListDialogLayout {
@@ -130,7 +206,10 @@ pub struct ListDialogScrollbarArea {
     pub max_offset: u16,
 }
 
-/// Render a list-style dialog with selection highlighting and scrolling.
+/// Render a list-style dialog (centred) with selection highlighting and
+/// scrolling. Used by non-picker lists (provider manager, prompt stash) that
+/// still want the centred modal. Picker panels (/models, /sessions, /agents)
+/// use [`render_list_dialog_bottom`] instead.
 ///
 /// Key visual contract (mirrors `revue::OptionList` rendering):
 ///   - selected row gets a `▸ ` prefix, others get `  `
@@ -149,16 +228,59 @@ pub fn render_list_dialog(
     max_w: u16,
     visible_rows: usize,
 ) {
-    let _ = render_list_dialog_with_layout(
-        title, border_color, items, selected, footer_hint, ctx, max_w, visible_rows,
+    let _ = render_positioned_list(
+        DialogAnchor::Centered, title, border_color, items, selected,
+        footer_hint, ctx, max_w, visible_rows,
     );
 }
 
-/// Same as [`render_list_dialog`] but also returns the layout of the
-/// rendered dialog. Callers that want to overlay a tooltip / popover
-/// anchored to the selected row use this variant; the regular
-/// [`render_list_dialog`] is unchanged for callers that don't.
-pub fn render_list_dialog_with_layout(
+/// Same as [`render_list_dialog`] but pinned above the input box, left-aligned
+/// full-width — the command-picker anchor (/models, /sessions, /agents). Reads
+/// as "sitting on the input box" rather than "floating in the middle". The
+/// list, sliding viewport, scrollbar and selection contract are identical to
+/// the centred variant — only the anchor differs.
+pub fn render_list_dialog_bottom(
+    title: &str,
+    border_color: Color,
+    items: &[ListItem],
+    selected: usize,
+    footer_hint: &str,
+    ctx: &mut RenderContext,
+    max_w: u16,
+    visible_rows: usize,
+) {
+    let _ = render_positioned_list(
+        DialogAnchor::Bottom, title, border_color, items, selected,
+        footer_hint, ctx, max_w, visible_rows,
+    );
+}
+
+/// Same as [`render_list_dialog_bottom`] but also returns the layout of the
+/// rendered dialog. Callers that want to overlay a tooltip / popover anchored
+/// to the selected row, or publish the scrollbar geometry for mouse handling,
+/// use this variant (/sessions).
+pub fn render_list_dialog_bottom_with_layout(
+    title: &str,
+    border_color: Color,
+    items: &[ListItem],
+    selected: usize,
+    footer_hint: &str,
+    ctx: &mut RenderContext,
+    max_w: u16,
+    visible_rows: usize,
+) -> ListDialogLayout {
+    render_positioned_list(
+        DialogAnchor::Bottom, title, border_color, items, selected,
+        footer_hint, ctx, max_w, visible_rows,
+    )
+}
+
+/// Core list renderer: the sliding viewport, selection contract, scrollbar
+/// overlay and tooltip-anchor layout all live here. Only the geometry (w/h/x/y)
+/// depends on `anchor`; everything below is shared so the centred and
+/// bottom-anchored pickers look identical except for position.
+fn render_positioned_list(
+    anchor: DialogAnchor,
     title: &str,
     border_color: Color,
     items: &[ListItem],
@@ -175,12 +297,30 @@ pub fn render_list_dialog_with_layout(
     // list is shorter than `visible_rows`, otherwise cap at visible_rows.
     // Total dialog height = top border (1) + N list rows + footer hint (1) + bottom border (1).
     let rows = visible_rows.min(total.max(1));
-    let h = (rows as u16 + 3).min(area.height.saturating_sub(4));
-    let w = max_w.min(area.width.saturating_sub(4));
-    let x = (area.width.saturating_sub(w)) / 2;
-    let y = (area.height.saturating_sub(h)) / 2;
+    let (w, h, x, y) = match anchor {
+        DialogAnchor::Centered => {
+            let w = max_w.min(area.width.saturating_sub(4));
+            let h = (rows as u16 + 3).min(area.height.saturating_sub(4));
+            let x = (area.width.saturating_sub(w)) / 2;
+            let y = (area.height.saturating_sub(h)) / 2;
+            (w, h, x, y)
+        }
+        DialogAnchor::Bottom => {
+            // 占满宽(左右各留 2 列,与输入框/slash 对齐);高度上限留 6 行
+            // (5 行 prompt + 1 行 margin),贴在输入框正上方。
+            let w = area.width.saturating_sub(4);
+            let h = (rows as u16 + 3).min(area.height.saturating_sub(6));
+            let x = 2u16;
+            let y = area.height.saturating_sub(5).saturating_sub(h);
+            (w, h, x, y)
+        }
+    };
 
-    paint_modal_backdrop(ctx, x, y, w, h);
+    let (fill_x, fill_w) = match anchor {
+        DialogAnchor::Centered => (x, w),
+        DialogAnchor::Bottom => (0u16, area.width),
+    };
+    paint_modal_backdrop(ctx, fill_x, y, fill_w, h);
 
     // Sliding viewport. The host's `selected` index counts ALL items
     // (Header rows included), so the viewport math operates on the same

@@ -54,7 +54,7 @@ impl AgentSelectDialog {
                 muted: false,
             }
         }).collect();
-        backdrop::render_list_dialog(
+        backdrop::render_list_dialog_bottom(
             "Select Agent",
             colors::ACCENT_PURPLE,
             &items,
