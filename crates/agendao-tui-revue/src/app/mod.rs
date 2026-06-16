@@ -1017,7 +1017,7 @@ impl View for RootView {
             Panel::Slash => {
                 let popup = h.slash_popup.render_popup();
                 let pw = 50u16.min(ctx.area.width.saturating_sub(4));
-                let ph = (h.slash_popup.filtered_count().min(8) as u16 + 3).min(ctx.area.height.saturating_sub(6));
+                let ph = (h.slash_popup.filtered_count().min(8) as u16 + 4).min(ctx.area.height.saturating_sub(6));
                 let px = (ctx.area.width.saturating_sub(pw)) / 2;
                 let py = prompt_y.saturating_sub(ph).max(1);
                 revue::widget::positioned(popup).x(px as i16).y(py as i16).width(pw).height(ph).render(ctx);
