@@ -712,7 +712,7 @@ impl View for RootView {
                     // doesn't get yanked back to the latest mid-read.
                     let available = ctx.area.height.saturating_sub(9);
                     let total_h: u16 = msgs.iter()
-                        .map(|b| layout_block(b).height.saturating_add(1))
+                        .map(|b| layout_block(b, 0).height.saturating_add(1))
                         .sum::<u16>()
                         .saturating_add(1);
 
@@ -726,7 +726,7 @@ impl View for RootView {
 
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     for (i, block) in msgs.iter().enumerate() {
-                        let blk = layout_block(block);
+                        let blk = layout_block(block, h.spinner_tick);
                         // Wrap each block in a 2-col hstack:
                         //   col 0: `▌` for User/Assistant blocks (the
                         //          main conversation voices), space for

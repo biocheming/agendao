@@ -58,7 +58,7 @@ pub struct BlockLayout {
     pub view: revue::widget::Stack,
 }
 
-pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
+pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
     match block {
         // ── User Prompt ──
         // height 随行累加。修正：原 transcript_block_height 在 Truncated
@@ -192,32 +192,42 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
         // ── Tool Call ──
         // 修正：原 height 对带参返回 2，但 view 只有 1 行 → 统一 1 行。
         TranscriptBlock::ToolCall { name, params, phase, .. } => {
-            let (icon, status_color) = crate::widget::status_icon::status_icon(
-                crate::widget::status_icon::Status::Tool(*phase)
-            );
+            use crate::widget::blink::blink_visible;
+            // claudecode 风格：⏺ 状态点。执行中 dimColor + 600ms 闪烁；
+            // Done success 绿稳定（失败着色在 ToolResult 块）。
+            let (dot, dot_color) = match phase {
+                ToolPhase::Starting | ToolPhase::Running => {
+                    let shown = if blink_visible(tick) { "⏺" } else { " " };
+                    (shown, colors::FG_MUTED)
+                }
+                ToolPhase::Done => ("⏺", colors::E_TEAL),
+            };
             let name_display = if name.len() > 20 {
                 format!("{}…", &name.chars().take(17).collect::<String>())
             } else {
                 name.clone()
             };
-            let preview = if params.is_empty() {
+            // 参数改 (params) 括号（claudecode 风格），去 `⚒ tool` 标签
+            let params_disp = if params.is_empty() {
                 String::new()
             } else if params.len() > 40 {
-                format!(" · {}…", &params.chars().take(37).collect::<String>())
+                format!("({}…)", &params.chars().take(37).collect::<String>())
             } else {
-                format!(" · {}", params)
+                format!("({})", params)
             };
             BlockLayout {
                 height: 1,
                 view: vstack().child(
                     hstack().gap(0)
-                        .child_sized(Text::new(format!(" {} ", icon)).fg(status_color), 3)
-                        .child_sized(Text::new("⚒ tool").bold().fg(colors::E_AMBER), 7)
+                        .child_sized(Text::new(format!(" {} ", dot)).fg(dot_color), 3)
                         .child_sized(
-                            Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY),
-                            name_display.chars().count() as u16 + 4,
+                            Text::new(name_display.clone()).bold().fg(colors::FG_PRIMARY),
+                            name_display.chars().count() as u16,
                         )
-                        .child_flex(Text::new(preview).fg(colors::FG_MUTED), 1.0),
+                        .child_flex(
+                            Text::new(format!(" {}", params_disp)).fg(colors::FG_MUTED),
+                            1.0,
+                        ),
                 ),
             }
         }
@@ -446,7 +456,7 @@ mod layout_tests {
     use super::*;
     use crate::store::types::{FoldState, TodoItem, TodoStatus, ToolPhase};
 
-    fn blk(b: TranscriptBlock) -> BlockLayout { layout_block(&b) }
+    fn blk(b: TranscriptBlock) -> BlockLayout { layout_block(&b, 0) }
 
     #[test]
     fn user_prompt_folded_is_one_row() {
