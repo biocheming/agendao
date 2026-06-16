@@ -18,6 +18,8 @@
 //! - [`role_chip`] — message block 角色标签 (role → chip 文本 + 语义色) 单点。
 //! - [`blink`] — 600ms 周期闪烁原语（claudecode useBlink），驱动工具状态点。
 //! - [`message_response`] — claudecode `⎿` 缩进视觉语法（tool 子消息前缀）。
+//! - [`list_dialog`] — 泛型选择列表状态机 `ListDialogState<T>`：收口各
+//!   dialog 重复的 Up/Down/Enter/Esc 导航 + 输入归一 `key_name`（土/木律单点）。
 
 pub mod scrollbar;
 pub mod scroll_view;
@@ -26,6 +28,7 @@ pub mod spinner;
 pub mod role_chip;
 pub mod blink;
 pub mod message_response;
+pub mod list_dialog;
 
 pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
