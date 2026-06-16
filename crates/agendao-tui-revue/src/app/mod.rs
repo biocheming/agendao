@@ -510,14 +510,29 @@ impl View for ScrollableTranscript {
 
         // Now overlay agendao's interactive scrollbar (▲ ▼ thumb) on
         // top of the simple `│/█` that `revue::ScrollView` just
-        // painted. Compute the absolute scrollbar rect from the
-        // ctx-relative `area` and `ctx.area.xy`.
-        let sb_x_abs = ctx.area.x.saturating_add(area.x).saturating_add(area.width.saturating_sub(1));
-        let sb_y_abs = ctx.area.y.saturating_add(area.y);
-        let scrollbar_area_abs = Rect::new(sb_x_abs, sb_y_abs, 1, area.height);
+        // painted. `area` == `ctx.area` and is ABSOLUTE screen coords —
+        // revue accumulates child offsets via `ctx.sub_area`, so each
+        // nested view's `ctx.area` is its real on-screen rect. The
+        // scrollbar sits on the last column of `area`, top row to
+        // bottom row: ▲ at `area.y` (transcript top), ▼ at
+        // `area.y + height - 1` (transcript bottom).
+        //
+        // ScrollbarOverlay expects `content_area` RELATIVE to
+        // `ctx_root_xy`; passing absolute `area` there double-counts
+        // `area.y` (= header + divider = 2 rows) and shifts the whole
+        // bar down — ▲ landed 2 rows below the top, ▼ fell off the
+        // bottom into the prompt border. Anchor `content_area` at the
+        // origin to cancel the double-add (x is unaffected only
+        // because transcript's `area.x == 0`).
+        let scrollbar_area_abs = Rect::new(
+            area.x.saturating_add(area.width).saturating_sub(1),
+            area.y,
+            1,
+            area.height,
+        );
         let overlay = crate::widget::ScrollbarOverlay::new(
             (ctx.area.x, ctx.area.y),
-            area,
+            Rect::new(0, 0, area.width, area.height),
             self.content_h,
             area.height,
             self.scroll_top,
@@ -575,13 +590,20 @@ impl View for ScrollableSidebar {
             }
         }
 
-        // Overlay ▲/▼/thumb on the reserved rightmost column.
-        let sb_x_abs = ctx.area.x.saturating_add(area.x).saturating_add(area.width.saturating_sub(1));
-        let sb_y_abs = ctx.area.y.saturating_add(area.y);
-        let scrollbar_area_abs = Rect::new(sb_x_abs, sb_y_abs, 1, area.height);
+        // Overlay ▲/▼/thumb on the reserved rightmost column. `area` is
+        // ABSOLUTE (== ctx.area); pass an origin-anchored rect to
+        // ScrollbarOverlay so it doesn't double-count `area.y`. Same
+        // coordinate-system fix as ScrollableTranscript::render above —
+        // see that block for the full rationale.
+        let scrollbar_area_abs = Rect::new(
+            area.x.saturating_add(area.width).saturating_sub(1),
+            area.y,
+            1,
+            area.height,
+        );
         let overlay = crate::widget::ScrollbarOverlay::new(
             (ctx.area.x, ctx.area.y),
-            area,
+            Rect::new(0, 0, area.width, area.height),
             self.content_h,
             area.height,
             row_start,
