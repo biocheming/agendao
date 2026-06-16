@@ -138,15 +138,18 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
         }
 
         // ── Thinking / Reasoning ──
+        // ✻ 与 Spinner Claude 字形同族（·✢✳✶✻✽）。Folded 收起给摘要行；
+        // 展开态符号后直接接推理首行（紧凑，去 bold THINKING 单独 header），
+        // 续行缩进 3 对齐 ` ✻ ` 之后。
         TranscriptBlock::Thinking { content, fold, duration_ms, .. } => {
             use crate::store::types::FoldState;
             let wc = content.split_whitespace().count();
             match fold {
                 FoldState::Folded => {
                     let summary = if *duration_ms > 0 {
-                        format!(" 💭 thinking · {} words · {}ms", wc, duration_ms)
+                        format!(" ✻ thinking · {} words · {}ms", wc, duration_ms)
                     } else {
-                        format!(" 💭 thinking · {} words", wc)
+                        format!(" ✻ thinking · {} words", wc)
                     };
                     BlockLayout {
                         height: 1,
@@ -155,32 +158,40 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                         ),
                     }
                 }
-                FoldState::Truncated => {
-                    let head = Text::new(" 💭 THINKING ").bold().fg(colors::E_AMBER);
-                    let mut body = vstack().gap(0).child_sized(head, 1);
-                    let mut height = 1u16;
+                FoldState::Truncated | FoldState::Expanded => {
                     let total = content.lines().count();
-                    for line in content.lines().take(FOLD_PREVIEW_LINES) {
-                        body = body.child_sized(Text::new(line).fg(colors::FG_MUTED).italic(), 1);
-                        height += 1;
-                    }
-                    if total > FOLD_PREVIEW_LINES {
+                    let limit = if matches!(fold, FoldState::Truncated) {
+                        FOLD_PREVIEW_LINES.min(total)
+                    } else {
+                        total
+                    };
+                    let mut body = vstack().gap(0);
+                    let mut height = 0u16;
+                    if total == 0 {
                         body = body.child_sized(
-                            Text::new(format!("… +{} more lines", total - FOLD_PREVIEW_LINES))
-                                .fg(colors::FG_MUTED).italic(),
-                            1,
+                            Text::new(" ✻ …").fg(colors::FG_MUTED).italic(), 1,
                         );
-                        height += 1;
-                    }
-                    BlockLayout { height, view: vstack().child(body.class("ThinkingBlock")) }
-                }
-                FoldState::Expanded => {
-                    let head = Text::new(" 💭 THINKING ").bold().fg(colors::E_AMBER);
-                    let mut body = vstack().gap(0).child_sized(head, 1);
-                    let mut height = 1u16;
-                    for line in content.lines() {
-                        body = body.child_sized(Text::new(line).fg(colors::FG_MUTED).italic(), 1);
-                        height += 1;
+                        height = 1;
+                    } else {
+                        for (i, line) in content.lines().take(limit).enumerate() {
+                            let text = if i == 0 {
+                                format!(" ✻ {}", line)
+                            } else {
+                                format!("   {}", line)
+                            };
+                            body = body.child_sized(
+                                Text::new(text).fg(colors::FG_MUTED).italic(), 1,
+                            );
+                            height += 1;
+                        }
+                        if total > limit {
+                            body = body.child_sized(
+                                Text::new(format!("   … +{} more lines", total - limit))
+                                    .fg(colors::FG_MUTED).italic(),
+                                1,
+                            );
+                            height += 1;
+                        }
                     }
                     BlockLayout { height, view: vstack().child(body.class("ThinkingBlock")) }
                 }
