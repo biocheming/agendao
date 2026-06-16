@@ -1682,9 +1682,9 @@ mod tests {
     #[test]
     fn generate_session_title_ignores_system_reminder_text() {
         let title = generate_session_title(
-            "Fix the reratui migration flow\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nUse latest reratui.\n</system-reminder>",
+            "Fix the session renderer migration flow\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nUse latest renderer.\n</system-reminder>",
         );
 
-        assert_eq!(title, "Fix the reratui migration flow");
+        assert_eq!(title, "Fix the session renderer migration flow");
     }
 }
