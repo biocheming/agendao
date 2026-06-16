@@ -6,6 +6,7 @@
 use agendao_command::{CommandRegistry, UiActionId, UiCommandSpec};
 use revue::prelude::*;
 use revue::event::Key;
+use crate::theme::colors;
 
 /// Simple fuzzy match: check if all chars of `query` appear in `target` in order.
 pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
@@ -172,10 +173,21 @@ impl SlashPopup {
         self.selected = 0;
     }
 
-    /// Render popup above the prompt via Revue Border + vstack.
+    /// Render popup (claudecode FuzzyPicker 风格：❯ pointer + 文字色 + hint)。
     pub fn render_popup(&self) -> impl View {
         let mut stack = vstack();
-        if !self.visible || self.filtered.is_empty() {
+        if !self.visible {
+            return stack;
+        }
+
+        // 空状态：占满预留高度避免 popup 塌缩（claudecode Box height=visibleCount）
+        if self.filtered.is_empty() {
+            stack = stack.child(
+                Border::rounded()
+                    .title(format!(" /{} (0 results) ", self.query))
+                    .fg(colors::FG_MUTED)
+                    .child(Text::new("  No results ").fg(colors::FG_MUTED)),
+            );
             return stack;
         }
 
@@ -187,13 +199,13 @@ impl SlashPopup {
             let cmd = &self.all_commands[cmd_idx];
             let is_selected = row_idx == self.selected;
 
-            // Show category separator when category changes
+            // 分类分隔
             let cat = cmd.category.label();
             if last_category.map(|c| c != cat).unwrap_or(true) {
                 if last_category.is_some() {
                     list = list.child(Text::new(""));
                 }
-                list = list.child(Text::new(&format!(" {}:", cat)).fg(Color::rgb(137, 180, 250)));
+                list = list.child(Text::new(&format!(" {}:", cat)).fg(colors::ACCENT_BLUE));
                 last_category = Some(cat);
             }
 
@@ -201,28 +213,33 @@ impl SlashPopup {
                 .map(|s| s.name)
                 .unwrap_or(cmd.title);
 
-            let marker = if is_selected { "▶" } else { " " };
+            // claudecode 风格：❯ pointer + 文字色，无整行背景
+            let pointer = if is_selected { "❯ " } else { "  " };
             let keybind_str = cmd.keybind.map(|k| format!(" ({})", k)).unwrap_or_default();
-            let desc = format!("{} /{}{}  {}", marker, slash_name, keybind_str, cmd.description);
+            let desc = format!("{} /{}{}  {}", pointer, slash_name, keybind_str, cmd.description);
 
-            let mut text = Text::new(&desc);
-            if is_selected {
-                text = text.fg(Color::rgb(125, 207, 255)).bg(Color::rgb(40, 42, 54));
+            let text = if is_selected {
+                Text::new(&desc).fg(colors::ACCENT_CYAN)
             } else {
-                text = text.fg(Color::rgb(169, 177, 214));
-            }
+                Text::new(&desc).fg(colors::FG_SECONDARY)
+            };
             list = list.child(text);
         }
 
         if self.filtered.len() > max_visible {
             list = list.child(Text::new(
                 format!("  ... and {} more", self.filtered.len() - max_visible)
-            ).fg(Color::rgb(100, 100, 120)));
+            ).fg(colors::FG_MUTED));
         }
+
+        // 底部 hint（claudecode Byline 风格）
+        list = list.child(
+            Text::new(" ↑/↓ navigate · Enter select · Esc cancel ").fg(colors::FG_MUTED),
+        );
 
         let border = Border::rounded()
             .title(format!(" /{} ({} results) ", self.query, self.filtered.len()))
-            .fg(Color::rgb(125, 207, 255))
+            .fg(colors::ACCENT_CYAN)
             .child(list);
 
         stack = stack.child(border);
