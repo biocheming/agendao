@@ -848,7 +848,7 @@ impl View for RootView {
         // ── Prompt bar ──
         let spinner = if is_running {
             format!("{} ", crate::widget::spinner::frame(
-                crate::widget::spinner::platform_default(),
+                crate::widget::spinner::SpinnerGlyph::Claude,
                 h.spinner_tick / 3,
             ))
         } else { String::new() };
