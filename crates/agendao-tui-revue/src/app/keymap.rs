@@ -433,7 +433,7 @@ impl AppHandler {
                                 // Compute which row in content space was clicked.
                                 let msgs = self.active_session.messages.get();
                                 let total_h: u16 = msgs.iter()
-                                    .map(|b| crate::screen::layout_block(b).height.saturating_add(1))
+                                    .map(|b| crate::screen::layout_block(b, 0).height.saturating_add(1))
                                     .sum::<u16>()
                                     .saturating_add(1);
                                 let max_offset = total_h.saturating_sub(transcript_h);
@@ -444,7 +444,7 @@ impl AppHandler {
                                 let mut acc: u16 = 0;
                                 let mut clicked_idx = None;
                                 for (i, block) in msgs.iter().enumerate() {
-                                    let bh = crate::screen::layout_block(block).height;
+                                    let bh = crate::screen::layout_block(block, 0).height;
                                     // Each block occupies bh rows + 1 row gap (except last)
                                     let block_end = acc + bh;
                                     if row_in_content < block_end {

@@ -16,12 +16,14 @@
 //!   sidebar 的口径分裂（金律：输出成形语法单点）。
 //! - [`spinner`] — 可插拔 glyph 集（Braille/Dots）+ 平台感知，替代硬编码帧。
 //! - [`role_chip`] — message block 角色标签 (role → chip 文本 + 语义色) 单点。
+//! - [`blink`] — 600ms 周期闪烁原语（claudecode useBlink），驱动工具状态点。
 
 pub mod scrollbar;
 pub mod scroll_view;
 pub mod status_icon;
 pub mod spinner;
 pub mod role_chip;
+pub mod blink;
 
 pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
