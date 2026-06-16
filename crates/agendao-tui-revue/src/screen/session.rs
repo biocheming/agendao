@@ -119,13 +119,11 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
         }
 
         // ── Assistant Message ──
-        // RevueMarkdown 构造一次，height 与 view 共享（原 render 与 height 各造一遍）。
+        // claudecode 风格：● 圆点（text 色）+ markdown，无 chip 标签。
+        // RevueMarkdown 构造一次，height 与 view 共享。
         TranscriptBlock::AssistantMsg { content, .. } => {
             let mut stack = vstack().gap(0)
-                .child_sized(
-                    Text::new(" ASSISTANT ").bold().fg(colors::FG_PRIMARY).bg(colors::SURFACE_RAISED),
-                    1,
-                );
+                .child_sized(Text::new(" ● ").fg(colors::FG_PRIMARY), 3);
             let height = if content.is_empty() {
                 stack = stack.child_sized(Text::new("  …").fg(colors::FG_MUTED), 1);
                 2
@@ -255,7 +253,7 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                     height: 1,
                     view: vstack().child(
                         hstack().gap(0)
-                            .child_sized(Text::new(" ▸ ").fg(colors::FG_MUTED), 3)
+                            .child_sized(crate::widget::message_response::indented_prefix(), 5)
                             .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
                             .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
                             .child_flex(
@@ -271,7 +269,7 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                     let limit = FOLD_PREVIEW_LINES.min(total_lines);
                     let mut stack = vstack().gap(0).child_sized(
                         hstack().gap(0)
-                            .child_sized(Text::new(" ▾ ").fg(colors::FG_MUTED), 3)
+                            .child_sized(crate::widget::message_response::indented_prefix(), 5)
                             .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
                             .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
                             .child_flex(Text::new(""), 1.0)
@@ -298,7 +296,7 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                     let view_lines = total_lines.min(20);
                     let mut stack = vstack().gap(0).child_sized(
                         hstack().gap(0)
-                            .child_sized(Text::new(" ▾ ").fg(colors::FG_MUTED), 3)
+                            .child_sized(crate::widget::message_response::indented_prefix(), 5)
                             .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
                             .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
                             .child_flex(Text::new(""), 1.0)
