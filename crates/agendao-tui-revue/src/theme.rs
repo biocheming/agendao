@@ -32,6 +32,20 @@ pub mod colors {
 
     pub const BG_HIGHLIGHT: Color = SURFACE_SELECTED; // alias — selected row uses the cyan-tinted glass surface from the mockup, not the previous saturated blue. Cyan signals "your current pick" consistently with user-bubble tint.
 
+    // ── Modal overlay (dialog backdrop) ──
+    //
+    // A near-black wash laid over the whole screen so a modal "rises"
+    // out of a dimmed background — the Claude Code / Codex modal effect.
+    // The yin/yang read: dimmed screen (阴, attention collapsed) behind a
+    // brighter modal surface (阳, decision demanded).
+    //
+    // Terminals can't render alpha (see note above), so this is black
+    // pre-composited onto BG_PRIMARY (#1a1b26) at ~α0.72:
+    //   out = bg*(1-α) + black*α = 26*0.28≈7, 27*0.28≈8, 38*0.28≈11
+    // The dialog's inner area is then painted BG_SURFACE (lighter), so
+    // the modal reads as two tiers rather than flat darkness.
+    pub const BG_OVERLAY: Color = Color::rgb(7, 8, 11);
+
     // Subtle borders (also pre-composited from rgba)
     pub const BORDER_FAINT: Color = Color::rgb(35, 36, 44); // rgba(255,255,255,0.06)
     pub const BORDER_USER: Color = Color::rgb(38, 50, 56); // rgba(60,184,162,0.15) — user bubble border

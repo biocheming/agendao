@@ -16,7 +16,36 @@
 //!     setter we can switch back.
 
 use revue::prelude::*;
+use revue::runtime::render::Cell;
 use crate::theme::colors;
+
+/// Paint the two-tier modal backdrop used by every dialog.
+///
+/// 1. A near-black wash (`BG_OVERLAY`) over the *whole* screen — 阴:
+///    collapse the user's attention onto the modal, dim out the transcript
+///    / status bar / prompt behind it. Without this the modal floats at
+///    the same visual tier as the background (the slash-popup transparency
+///    bug, same root cause) and the user can't tell "the system is waiting
+///    on my decision" from "background text".
+/// 2. `BG_SURFACE` over the dialog rect itself — 阳: the modal's own
+///    stage, lighter than the wash so the decision content rises above it.
+///
+/// Must run *before* the positioned dialog renders, so the border + text
+/// draw on top. `x`/`y` are relative to `ctx.area` (same space as
+/// `positioned`); `Buffer::fill` is absolute — so we add `ctx.area.{x,y}`
+/// when filling. Mixing the two fills the wrong rect and the modal leaks
+/// the transcript through (learned from the slash_popup fix).
+fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16) {
+    let area = ctx.area;
+    ctx.buffer.fill(
+        area.x, area.y, area.width, area.height,
+        Cell::new(' ').bg(colors::BG_OVERLAY),
+    );
+    ctx.buffer.fill(
+        area.x.saturating_add(x), area.y.saturating_add(y), w, h,
+        Cell::new(' ').bg(colors::BG_SURFACE),
+    );
+}
 
 /// Render a centered modal dialog with a custom content stack.
 pub fn render_dialog(
@@ -33,6 +62,8 @@ pub fn render_dialog(
     let h = max_h.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
+
+    paint_modal_backdrop(ctx, x, y, w, h);
 
     let dialog = Border::rounded()
         .title(format!(" {} ", title))
@@ -154,6 +185,8 @@ pub fn render_list_dialog_with_layout(
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
 
+    paint_modal_backdrop(ctx, x, y, w, h);
+
     // Sliding viewport. The host's `selected` index counts ALL items
     // (Header rows included), so the viewport math operates on the same
     // coordinate space — no need to translate "Row index" vs "item index".
@@ -211,38 +244,33 @@ pub fn render_list_dialog_with_layout(
                 );
             }
             ListItem::Row { display, muted } => {
-                // Mockup E selected row contract:
-                //   - left bar: 2px solid teal `▌` (we use 1 char wide
-                //     because TUI cells are 1-cell minimum)
-                //   - bg: pre-composited cyan-tinted glass surface
-                //   - fg: white (FG_PRIMARY) bold
-                //   - right marker: ` ✓ ` in solid teal
-                // Muted rows get a leading `○` glyph instead of `▌`.
-                //
-                // Non-selected rows use plain 2-space prefix to keep
-                // the column alignment with the selected row.
+                // Unified ❯ pointer (aligned with Claude Code/Codex and
+                // with our own slash_popup). Muted rows get no glyph —
+                // their disabled state reads from the dim FG_MUTED color,
+                // not from a special prefix. Non-selected rows use a
+                // 2-space prefix to keep the column aligned with ❯.
+                // (Previously this row used ▌ + ✓, and muted used ○ —
+                // three different marks; now one across the whole app.)
                 let (prefix, suffix) = if is_sel {
-                    ("▌ ", " ✓ ")
-                } else if *muted {
-                    ("○ ", "   ")
+                    ("❯ ", "")
                 } else {
-                    ("  ", "   ")
+                    ("  ", "")
                 };
 
-                // Build the unstyled row text (without prefix/suffix
-                // styling) so we can size the bg fill correctly.
+                // Build the unstyled row text (prefix + display) so we
+                // can size the bg fill correctly.
                 let line = format!("{}{}", prefix, display);
 
-                // Pad selected/muted rows to fill inner width using
-                // display columns (UAX#11). Suffix `" ✓ "` is 3 cells.
+                // Pad the selected row to fill inner width (display
+                // columns, UAX#11) so the highlight bg spans the whole
+                // row instead of just the text cells. suffix is now
+                // empty — there's no right-edge marker (❯ + bold bg is
+                // the selection signal, per Claude Code/Codex).
                 let padded = {
                     use unicode_width::UnicodeWidthStr;
                     let used = UnicodeWidthStr::width(line.as_str())
                         + UnicodeWidthStr::width(suffix);
                     if is_sel && used < inner_w {
-                        // Insert spaces between display and `✓` so the
-                        // checkmark sits at the right edge, like the
-                        // mockup `::after { margin-left: auto }` rule.
                         format!("{}{}{}", line, " ".repeat(inner_w - used), suffix)
                     } else {
                         format!("{}{}", line, suffix)
