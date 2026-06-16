@@ -600,7 +600,12 @@ pub(super) async fn create_session(
         },
     )
     .await?;
-    persist_sessions_if_enabled(&state).await;
+    // 增量持久化：只 flush 新建的这一个 session，避免全量 sync（create 慢根因
+    // ——全量 clone+flush 全部 sessions 实测 ≈1.4s）。create 不删除 session，
+    // stale 清理在此冗余；其他 session 未变更，重复 flush 冗余。
+    if let Err(err) = state.sync_session_to_storage(&session).await {
+        tracing::error!("failed to sync new session to storage: {}", err);
+    }
     Ok(Json(session_to_info(&session)))
 }
 
