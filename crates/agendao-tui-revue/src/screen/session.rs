@@ -122,19 +122,25 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
         // claudecode 风格：● 圆点（text 色）+ markdown，无 chip 标签。
         // RevueMarkdown 构造一次，height 与 view 共享。
         TranscriptBlock::AssistantMsg { content, .. } => {
-            let mut stack = vstack().gap(0)
-                .child_sized(Text::new(" ● ").fg(colors::FG_PRIMARY), 3);
-            let height = if content.is_empty() {
-                stack = stack.child_sized(Text::new("  …").fg(colors::FG_MUTED), 1);
-                2
+            // ● 左侧标记列（3 列）与 markdown 首行同行——对应 UserPrompt
+            // （▾ You 首行）/ Thinking（✻ 首行）的"符号+首行"紧凑形态。旧版用
+            // vstack.child_sized(_, 3)，在 Column 里 3 是 height，让 ● 占 3 行
+            // （既漂移 height 公式，又造成 ● 后空行）；改 hstack 让 ● 与 md 同行，
+            // md 续行天然缩进 3 列对齐 ● 之后。
+            if content.is_empty() {
+                let row = hstack().gap(0)
+                    .child_sized(Text::new(" ● ").fg(colors::FG_PRIMARY), 3)
+                    .child_sized(Text::new("…").fg(colors::FG_MUTED), 1);
+                BlockLayout { height: 1, view: vstack().gap(0).child(row) }
             } else {
                 let mut md = crate::markdown::RevueMarkdown::new();
                 md.set_content(content);
                 let lines = md.line_count().max(1) as u16;
-                stack = stack.child(md.as_stack());
-                1 + lines
-            };
-            BlockLayout { height, view: stack }
+                let row = hstack().gap(0)
+                    .child_sized(Text::new(" ● ").fg(colors::FG_PRIMARY), 3)
+                    .child_flex(md.as_stack(), 1.0);
+                BlockLayout { height: lines, view: vstack().gap(0).child(row) }
+            }
         }
 
         // ── Thinking / Reasoning ──
@@ -531,9 +537,10 @@ mod layout_tests {
     }
 
     #[test]
-    fn assistant_msg_empty_is_two_rows() {
+    fn assistant_msg_empty_is_one_row() {
         let b = TranscriptBlock::AssistantMsg { id: "a".into(), content: String::new() };
-        assert_eq!(blk(b).height, 2);
+        // ● 与 … 同行（hstack，单行）；修复旧版 ● 占 3 行的 height↔view 漂移。
+        assert_eq!(blk(b).height, 1);
     }
 
     #[test]
