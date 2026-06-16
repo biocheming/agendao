@@ -140,11 +140,11 @@ impl SessionListDialog {
         if self.loading {
             let title = format!("Sessions{}", scope_suffix);
             let content = vstack().child(Text::new("Loading sessions...").fg(colors::FG_MUTED));
-            backdrop::render_dialog(&title, colors::ACCENT_CYAN, content,
+            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, content,
                 "Loading...", ctx, 70, 5);
         } else if let Some(ref err) = self.error {
             let content = vstack().child(Text::new(&format!("Error: {}", err)).fg(colors::ACCENT_RED));
-            backdrop::render_dialog("Sessions", colors::ACCENT_RED, content,
+            backdrop::render_dialog_bottom("Sessions", colors::ACCENT_RED, content,
                 "Esc: close", ctx, 70, 5);
         } else if self.sessions.is_empty() {
             // 空状态：极简一行，scope 信息靠 title 的 "in <name>" 表达。
@@ -155,7 +155,7 @@ impl SessionListDialog {
                 "本目录下暂无会话，按 Esc 返回，按 Enter 开启新会话。"
             };
             let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED));
-            backdrop::render_dialog(&title, colors::ACCENT_CYAN, body,
+            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, body,
                 "Esc: close", ctx, 70, 5);
         } else {
             let filtered = self.filtered_indices();
@@ -172,7 +172,7 @@ impl SessionListDialog {
             } else {
                 format!("Sessions{} — query: {}", scope_suffix, self.query)
             };
-            let layout = backdrop::render_list_dialog_with_layout(
+            let layout = backdrop::render_list_dialog_bottom_with_layout(
                 &title,
                 colors::ACCENT_CYAN,
                 &items,
@@ -183,7 +183,7 @@ impl SessionListDialog {
 
             // Publish scrollbar geometry for the mouse handler.
             // Only SessionList publishes right now (the other list
-            // dialogs use the simple render_list_dialog without a
+            // dialogs use the simple render_list_dialog_bottom without a
             // publish channel). Extend if/when those need it.
             if let Ok(mut slot) = crate::app::session_list_scrollbar_slot().lock() {
                 *slot = layout.scrollbar;
