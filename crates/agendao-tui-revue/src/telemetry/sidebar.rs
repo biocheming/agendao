@@ -138,14 +138,12 @@ impl SessionSidebar {
         if tools.is_empty() {
             s = s.child_sized(Text::new("(idle)").class("SidebarText"), 1);
         } else {
-            s = s.child_sized(Text::new(format!("▶ {}  ◉ {}  ● {}", starting, running, done))
+            s = s.child_sized(Text::new(format!("◌ {}  ◐ {}  ● {}", starting, running, done))
                 .fg(colors::ACCENT_BLUE), 1);
             for t in tools.iter().take(8) {
-                let icon = match t.phase {
-                    ToolPhase::Starting => "○",
-                    ToolPhase::Running => "◉",
-                    ToolPhase::Done => "●",
-                };
+                let (icon, _) = crate::widget::status_icon::status_icon(
+                    crate::widget::status_icon::Status::Tool(t.phase)
+                );
                 s = s.child_sized(Text::new(format!("  {} {}", icon, t.name)).class("SidebarText"), 1);
             }
         }

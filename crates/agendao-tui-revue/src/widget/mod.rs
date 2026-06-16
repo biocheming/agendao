@@ -11,9 +11,13 @@
 //! - [`scroll_view::ScrollView`] — 细化版 `revue::ScrollView`，兼容
 //!   上游同名 builder，叠加箭头 / 拖拽 / 翻页点击，所有 ScrollView
 //!   使用者切换到本类型即获得增强。
+//! - [`status_icon::status_icon`] — 状态图标+颜色的单一权威
+//!   (ToolPhase / TodoStatus / StageState / Result)，消除 session 与
+//!   sidebar 的口径分裂（金律：输出成形语法单点）。
 
 pub mod scrollbar;
 pub mod scroll_view;
+pub mod status_icon;
 
 pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
