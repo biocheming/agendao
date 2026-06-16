@@ -1,23 +1,14 @@
 //! 金 — Permission dialog: Allow/Deny tool execution.
+//!
+//! 内联形态(Claude Code/Codex 风格):pending permission 不再浮出居中
+//! modal,而是作为 transcript 流末尾的一个顶格块渲染(像 ToolCall)。
+//! 状态所有权(土)不变 —— 仍是 `PermissionDialog` 持有 pending 队列;
+//! 只是把成形(金)从「浮动 modal」改成「内联 BlockLayout」。
 
-use std::cell::Cell;
 use revue::prelude::*;
 use revue::event::Key;
 use crate::theme::colors;
-use crate::dialog::backdrop;
-
-/// A clickable region in the permission dialog.
-/// Updated on every render, consumed on mouse click.
-#[derive(Clone, Debug)]
-struct ClickTarget {
-    /// Absolute row on screen (set during render).
-    row: u16,
-    /// Column range [start, end] inclusive.
-    col_start: u16,
-    col_end: u16,
-    /// Which option index this target maps to (lifetime index, or n for deny).
-    option_index: usize,
-}
+use crate::screen::BlockLayout;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PermissionType {
@@ -80,11 +71,6 @@ pub struct PermissionDialog {
     pub visible: bool,
     requests: Vec<PermissionRequest>,
     selected_lifetime: usize,
-    /// Click targets recalculated each render. Cell allows interior
-    /// mutation during render (which takes &self).
-    click_targets: Cell<Vec<ClickTarget>>,
-    /// Dialog position from last render, for hit-testing mouse clicks.
-    dialog_origin: Cell<(u16, u16)>,
 }
 
 impl PermissionDialog {
@@ -93,8 +79,6 @@ impl PermissionDialog {
             visible: false,
             requests: Vec::new(),
             selected_lifetime: 0,
-            click_targets: Cell::new(Vec::new()),
-            dialog_origin: Cell::new((0, 0)),
         }
     }
 
@@ -123,33 +107,6 @@ impl PermissionDialog {
     }
 
     pub fn pending_count(&self) -> usize { self.requests.len() }
-
-    /// Handle a mouse click at absolute screen coordinates (col, row).
-    /// Returns the permission id + reply if a clickable option was hit.
-    pub fn handle_click(&self, col: u16, row: u16) -> Option<(String, PermissionReply)> {
-        if !self.visible || self.requests.is_empty() { return None; }
-        let req = &self.requests[0];
-        let n = req.supported_lifetimes.len();
-        let targets = self.click_targets.take();
-        let hit = targets.iter().find(|t| {
-            row == t.row && col >= t.col_start && col <= t.col_end
-        });
-        let result = hit.and_then(|t| {
-            if t.option_index >= n {
-                Some((req.id.clone(), PermissionReply::Deny))
-            } else {
-                match req.supported_lifetimes.get(t.option_index) {
-                    Some(PermissionLifetime::Once) => Some((req.id.clone(), PermissionReply::AllowOnce)),
-                    Some(PermissionLifetime::Turn) => Some((req.id.clone(), PermissionReply::AllowTurn)),
-                    Some(PermissionLifetime::Session) => Some((req.id.clone(), PermissionReply::AllowSession)),
-                    None => Some((req.id.clone(), PermissionReply::Deny)),
-                }
-            }
-        });
-        // Restore targets for next event (render will overwrite anyway)
-        self.click_targets.set(targets);
-        result
-    }
 
     /// Handle a key. On allow/deny, return both the request id and the
     /// reply so the caller can route it back to the correct pending
@@ -237,91 +194,80 @@ impl PermissionDialog {
         Some((id, reply))
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
-        if !self.visible { return; }
-        let Some(req) = self.requests.first() else { return; };
+    /// 内联成形:把 pending permission 渲染成 transcript 流末尾的一个顶格
+    /// 块(`⏺ tool (label)` header + detail + ❯ allow/deny 选项),而非
+    /// 居中浮层。
+    ///
+    /// 返回 `None` 当不可见。鼠标 hit-test 故意省略:内联块的屏幕位置随
+    /// transcript 滚动而变,键盘是唯一可靠输入(土克水:编排可约束回流,
+    /// 但内联位置不固定时鼠标语义不可靠)。
+    ///
+    /// 视觉风格(用户定调 2026-06-16):顶格 dot 式,像 ToolCall 块 ——
+    /// permission 是流末尾的独立待决策块,语义中性,不暗示附属某 tool_call
+    /// (agendao 的 permission 是 server 推的独立事件,无 tool_call 锚点)。
+    pub fn render_inline(&self) -> Option<BlockLayout> {
+        if !self.visible { return None; }
+        let req = self.requests.first()?;
 
         // ── Queue position indicator ──
         let queue_hint = if self.requests.len() > 1 {
             format!(" ({}/{})", 1, self.requests.len())
         } else { String::new() };
 
-        // ── Header: icon + type label + tool name ──
-        let header_text = format!(
-            "{} {} — {}{}",
-            req.perm_type.icon(),
-            req.tool,
-            req.perm_type.label(),
-            queue_hint,
-        );
+        // ── Risk → header color (dangerous reads red, else amber) ──
+        let header_color = if req.risk_tags.iter().any(|t| t.contains("dangerous") || t.contains("destructive")) {
+            colors::ACCENT_RED
+        } else {
+            colors::E_AMBER
+        };
+
+        // ── Header: ⏺ tool (label) — top-level, like a ToolCall block ──
         let mut content = vstack().gap(0)
             .child_sized(
-                Text::new(header_text).bold().fg(colors::ACCENT_YELLOW),
+                Text::new(format!(" ⏺ {} ({}){}", req.tool, req.perm_type.label(), queue_hint))
+                    .bold()
+                    .fg(header_color),
                 1,
-            )
-            .child_sized(Text::new(""), 1);
+            );
+        let mut height: u16 = 1;
 
-        // ── Message (up to 2 lines) ──
+        // ── Message (indent 3) ──
         if !req.message.is_empty() {
             content = content.child_sized(
-                Text::new(&req.message).fg(colors::FG_SECONDARY),
-                2,
+                Text::new(format!("   {}", req.message)).fg(colors::FG_SECONDARY),
+                1,
             );
+            height += 1;
         }
 
-        // ── Detail field rows ──
-        let mut field_rows: u16 = 0;
-        if let Some(class) = req.class_label() {
-            content = content.child_sized(
-                hstack().gap(0)
-                    .child_sized(Text::new(" Class:  ").fg(colors::FG_MUTED), 9)
-                    .child_flex(Text::new(class).fg(colors::FG_PRIMARY), 1.0),
-                1,
-            );
-            field_rows += 1;
-        }
-        if let Some(ref scope) = req.scope_label {
-            content = content.child_sized(
-                hstack().gap(0)
-                    .child_sized(Text::new(" Scope:  ").fg(colors::FG_MUTED), 9)
-                    .child_flex(Text::new(scope).fg(colors::FG_PRIMARY), 1.0),
-                1,
-            );
-            field_rows += 1;
-        }
-        if !req.risk_tags.is_empty() {
-            let tags = req.risk_tags.join(", ");
-            content = content.child_sized(
-                hstack().gap(0)
-                    .child_sized(Text::new(" Risk:   ").fg(colors::FG_MUTED), 9)
-                    .child_flex(Text::new(tags).fg(colors::ACCENT_RED), 1.0),
-                1,
-            );
-            field_rows += 1;
-        }
+        // ── Resource: command / path / url (indent 3, muted italic) ──
         if !req.resource.is_empty() {
-            // Show the resource (command, path, URL) in muted italic
-            let resource_preview = if req.resource.len() > 80 {
-                format!("{}…", &req.resource.chars().take(77).collect::<String>())
+            let resource_preview = if req.resource.len() > 76 {
+                format!("{}…", &req.resource.chars().take(73).collect::<String>())
             } else {
                 req.resource.clone()
             };
             content = content.child_sized(
-                hstack().gap(0)
-                    .child_sized(Text::new(" Cmd:    ").fg(colors::FG_MUTED), 9)
-                    .child_flex(Text::new(resource_preview).fg(colors::FG_SECONDARY).italic(), 1.0),
+                Text::new(format!("   {}", resource_preview)).fg(colors::FG_MUTED).italic(),
                 1,
             );
-            field_rows += 1;
+            height += 1;
         }
 
-        // Spacer before action options
-        content = content.child_sized(Text::new(""), 1);
+        // ── Risk tags (if any) ──
+        if !req.risk_tags.is_empty() {
+            content = content.child_sized(
+                Text::new(format!("   ⚠ {}", req.risk_tags.join(", "))).fg(colors::ACCENT_RED),
+                1,
+            );
+            height += 1;
+        }
 
-        // ── Lifetime options ──
-        // ❯ pointer (Claude Code/Codex style). Digit quick-keys still
-        // work (1/2/3 allow, 0 deny — see handle_key) but are no longer
-        // shown as a prefix; selection reads from ❯ + color, not "1.".
+        // ── Spacer ──
+        content = content.child_sized(Text::new(""), 1);
+        height += 1;
+
+        // ── Lifetime options (❯ pointer, Claude Code/Codex style) ──
         let lifetimes = &req.supported_lifetimes;
         for (i, lt) in lifetimes.iter().enumerate() {
             let marker = if i == self.selected_lifetime { "❯ " } else { "  " };
@@ -335,73 +281,27 @@ impl PermissionDialog {
                 Text::new(format!("{}{}", marker, desc)).fg(color),
                 1,
             );
+            height += 1;
         }
 
         // ── Deny option ──
-        let deny_idx = lifetimes.len();
-        let deny_selected = self.selected_lifetime == deny_idx;
+        let deny_selected = self.selected_lifetime == lifetimes.len();
         let deny_marker = if deny_selected { "❯ " } else { "  " };
         let deny_color = if deny_selected { colors::ACCENT_RED } else { colors::FG_SECONDARY };
         content = content.child_sized(
             Text::new(format!("{}Deny", deny_marker)).fg(deny_color),
             1,
         );
+        height += 1;
 
-        // ── Compute total height ──
-        // The backdrop's vstack has gap(1) between content and footer.
-        // Total dialog height = top border(1) + content rows + gap(1) + footer(1) + bottom border(1)
-        //                     = content_rows + 4
-        let msg_rows: u16 = if req.message.is_empty() { 0 } else { 2 };
-        let content_rows: u16 = 1 /* header */ + 1 /* spacer */ + msg_rows + field_rows
-            + 1 /* spacer */ + lifetimes.len() as u16 + 1 /* deny */;
-        let h = content_rows + 4;
-
-        // ── Risk-based border color ──
-        let border_color = if req.risk_tags.iter().any(|t| t.contains("dangerous") || t.contains("destructive")) {
-            colors::ACCENT_RED
-        } else if req.permission_class.as_deref() == Some("external_access") {
-            colors::E_AMBER
-        } else {
-            colors::ACCENT_YELLOW
-        };
-
-        // ── Record click targets for mouse support ──
-        let area = ctx.area;
-        let w: u16 = 64.min(area.width.saturating_sub(4));
-        let dialog_h: u16 = h.min(area.height.saturating_sub(4));
-        let dialog_x = (area.width.saturating_sub(w)) / 2;
-        let dialog_y = (area.height.saturating_sub(dialog_h)) / 2;
-        // Content starts after top border (1 row)
-        let content_y = dialog_y + 1;
-        // Options start offset within content: header(1) + spacer(1) + msg + fields + spacer(1)
-        let options_start = content_y + 1 + 1 + msg_rows + field_rows + 1;
-        let inner_w = w.saturating_sub(2); // minus left+right border
-        let mut targets = Vec::new();
-        for (i, _) in lifetimes.iter().enumerate() {
-            targets.push(ClickTarget {
-                row: options_start + i as u16,
-                col_start: dialog_x + 1,
-                col_end: dialog_x + 1 + inner_w,
-                option_index: i,
-            });
-        }
-        // Deny option
-        targets.push(ClickTarget {
-            row: options_start + lifetimes.len() as u16,
-            col_start: dialog_x + 1,
-            col_end: dialog_x + 1 + inner_w,
-            option_index: lifetimes.len(),
-        });
-        self.click_targets.set(targets);
-        self.dialog_origin.set((dialog_x, dialog_y));
-
-        backdrop::render_dialog(
-            "Permission Required",
-            border_color,
-            content,
-            "↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny",
-            ctx, 64, h,
+        // ── Hint ──
+        content = content.child_sized(
+            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny").fg(colors::FG_MUTED),
+            1,
         );
+        height += 1;
+
+        Some(BlockLayout { height, view: content })
     }
 }
 

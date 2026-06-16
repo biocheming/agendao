@@ -19,28 +19,23 @@ use revue::prelude::*;
 use revue::runtime::render::Cell;
 use crate::theme::colors;
 
-/// Paint the two-tier modal backdrop used by every dialog.
+/// Paint the modal's dialog rect as an opaque `BG_SURFACE` stage.
 ///
-/// 1. A near-black wash (`BG_OVERLAY`) over the *whole* screen — 阴:
-///    collapse the user's attention onto the modal, dim out the transcript
-///    / status bar / prompt behind it. Without this the modal floats at
-///    the same visual tier as the background (the slash-popup transparency
-///    bug, same root cause) and the user can't tell "the system is waiting
-///    on my decision" from "background text".
-/// 2. `BG_SURFACE` over the dialog rect itself — 阳: the modal's own
-///    stage, lighter than the wash so the decision content rises above it.
+/// `positioned` overlays don't clear their own background, and terminals
+/// can't render alpha — so without an explicit fill the dialog leaks the
+/// transcript behind it (the slash-popup transparency bug, same root
+/// cause). We paint only the dialog rect so the decision content sits on
+/// a solid, slightly-raised surface.
 ///
-/// Must run *before* the positioned dialog renders, so the border + text
-/// draw on top. `x`/`y` are relative to `ctx.area` (same space as
-/// `positioned`); `Buffer::fill` is absolute — so we add `ctx.area.{x,y}`
-/// when filling. Mixing the two fills the wrong rect and the modal leaks
-/// the transcript through (learned from the slash_popup fix).
+/// We deliberately do NOT dim the rest of the screen. AgenDao's
+/// permission/question are inline in the transcript flow (Claude
+/// Code/Codex style), and the remaining modals (/models, /sessions, …)
+/// float as a bright box over a *visible* transcript — not under a black
+/// wash. Must run *before* the positioned dialog renders, so the border
+/// + text draw on top. `x`/`y` are relative to `ctx.area`;
+/// `Buffer::fill` is absolute, so we add `ctx.area.{x,y}` when filling.
 fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16) {
     let area = ctx.area;
-    ctx.buffer.fill(
-        area.x, area.y, area.width, area.height,
-        Cell::new(' ').bg(colors::BG_OVERLAY),
-    );
     ctx.buffer.fill(
         area.x.saturating_add(x), area.y.saturating_add(y), w, h,
         Cell::new(' ').bg(colors::BG_SURFACE),

@@ -118,7 +118,6 @@ impl AppHandler {
                                 resource,
                             };
                             self.permission_dialog.add_request(req);
-                            self.panel = Panel::Permission;
                             changed = true;
                         }
                         FrontendEvent::QuestionUpsert { question, .. } => {
@@ -149,7 +148,6 @@ impl AppHandler {
                                 options: opts,
                             };
                             self.question_dialog.ask(qr);
-                            self.panel = Panel::Question;
                             changed = true;
                         }
                         FrontendEvent::PermissionRemoved { permission_id, .. } => {
@@ -368,29 +366,6 @@ impl AppHandler {
                                         return true;
                                     }
                                 }
-                            }
-                        }
-                        // ── Permission dialog click ──
-                        if matches!(self.panel, Panel::Permission) {
-                            if let Some((id, reply)) = self.permission_dialog.handle_click(m.x, m.y) {
-                                if let Some(ref api) = self.api {
-                                    let reply_str = match reply {
-                                        PermissionReply::AllowOnce => "once",
-                                        PermissionReply::AllowTurn => "turn",
-                                        PermissionReply::AllowSession => "session",
-                                        PermissionReply::Deny => "reject",
-                                    };
-                                    if let Err(e) = api.reply_permission(&id, reply_str, None) {
-                                        self.store.push_toast(
-                                            &format!("permission reply failed: {}", e),
-                                            crate::store::types::ToastMsgVariant::Error,
-                                        );
-                                    }
-                                }
-                                if !self.permission_dialog.visible {
-                                    self.panel = Panel::None;
-                                }
-                                return true;
                             }
                         }
 
@@ -672,58 +647,6 @@ impl AppHandler {
                 if !self.rename_dialog.is_open() { self.panel = Panel::None; }
                 return true;
             }
-            Panel::Question => {
-                if let Some(selected) = self.question_dialog.handle_key(key) {
-                    if let Some(ref api) = self.api {
-                        let id = "";
-                        let answers: Vec<Vec<String>> = selected.iter().map(|&i| vec![format!("{}", i)]).collect();
-                        let _ = api.reply_question(id, answers);
-                    }
-                    self.panel = Panel::None;
-                }
-                if !self.question_dialog.visible { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Permission => {
-                if let Some((id, reply)) = self.permission_dialog.handle_key(key) {
-                    // Send the permission reply to the API. The dialog now
-                    // returns the originating request id alongside the
-                    // reply — without it the server can't match the
-                    // response to a pending permission and the prompt
-                    // loop blocks forever.
-                    if let Some(ref api) = self.api {
-                        // Server expects bare lifetime tokens
-                        // (`once`/`turn`/`session`/`always`/`reject`),
-                        // NOT the `allow_*` aliases. Sending `allow_once`
-                        // produces "Invalid permission reply: allow_once"
-                        // and aborts the prompt loop with `cancelled
-                        // before model call`.
-                        let reply_str = match reply {
-                            PermissionReply::AllowOnce => "once",
-                            PermissionReply::AllowTurn => "turn",
-                            PermissionReply::AllowSession => "session",
-                            PermissionReply::Deny => "reject",
-                        };
-                        if let Err(e) = api.reply_permission(&id, reply_str, None) {
-                            self.store.push_toast(
-                                &format!("permission reply failed: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
-                        }
-                    }
-                    // Only collapse the panel when the dialog actually
-                    // dismissed itself. Multiple permission requests can
-                    // be queued — each Enter peels off one and keeps the
-                    // dialog open for the next. Hard-coding `panel = None`
-                    // here would dismiss the overlay even though more
-                    // requests are still pending.
-                    if !self.permission_dialog.visible {
-                        self.panel = Panel::None;
-                    }
-                }
-                if !self.permission_dialog.visible { self.panel = Panel::None; }
-                return true;
-            }
             Panel::SessionList => {
                 if let Some(entry) = self.session_list.handle_key(key) {
                     // User selected a session — navigate to it
@@ -747,7 +670,46 @@ impl AppHandler {
                 if !self.alert.visible { self.panel = Panel::None; }
                 return true;
             }
-            Panel::None => {}
+            Panel::None => {
+                // 内联 permission/question（Claude Code/Codex 风格）：visible
+                // 时独占键。↑↓ 切选项；transcript 滚动走 PageUp/Down 不冲突，
+                // 故无需处理键冲突。
+                if self.permission_dialog.visible {
+                    if let Some((id, reply)) = self.permission_dialog.handle_key(key) {
+                        // 发送 permission 回复。dialog 返回原始 request id +
+                        // reply —— 缺 id 则 server 无法匹配 pending permission，
+                        // prompt loop 永久阻塞。
+                        if let Some(ref api) = self.api {
+                            // Server 期望 bare lifetime token
+                            // (`once`/`turn`/`session`/`always`/`reject`)，
+                            // 不是 `allow_*` 别名。
+                            let reply_str = match reply {
+                                PermissionReply::AllowOnce => "once",
+                                PermissionReply::AllowTurn => "turn",
+                                PermissionReply::AllowSession => "session",
+                                PermissionReply::Deny => "reject",
+                            };
+                            if let Err(e) = api.reply_permission(&id, reply_str, None) {
+                                self.store.push_toast(
+                                    &format!("permission reply failed: {}", e),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                            }
+                        }
+                    }
+                    return true;
+                }
+                if self.question_dialog.visible {
+                    if let Some(selected) = self.question_dialog.handle_key(key) {
+                        if let Some(ref api) = self.api {
+                            let id = "";
+                            let answers: Vec<Vec<String>> = selected.iter().map(|&i| vec![format!("{}", i)]).collect();
+                            let _ = api.reply_question(id, answers);
+                        }
+                    }
+                    return true;
+                }
+            }
         }
 
         // ── Transcript scrolling + cursor (PageUp/PageDown, Tab, Space) ──
