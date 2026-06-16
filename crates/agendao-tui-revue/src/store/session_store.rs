@@ -107,6 +107,17 @@ impl SessionStore {
         }));
     }
 
+    /// 回收一条乐观 push 的 user message（发送失败时由 `Event::Tick` drain 调用）。
+    ///
+    /// 按 id 精确匹配；未命中（已被事件流覆盖等）则 no-op，幂等。与
+    /// `push_user_message` 对称，闭合"push 即承诺 remove"的生命周期 —— 不留
+    /// 一条"幽灵 user prompt"误导用户以为已发送。
+    pub fn remove_user_message(&self, id: &str) {
+        self.messages.update(|msgs| {
+            msgs.retain(|b| !matches!(b, TranscriptBlock::UserPrompt { id: bid, .. } if bid == id));
+        });
+    }
+
     /// Append or stream-append an assistant message.
     pub fn push_assistant_delta(&self, block_id: &str, text: &str) {
         self.messages.update(|msgs| {

@@ -152,6 +152,47 @@ impl ApiBridge {
         ))
     }
 
+    /// Async 版 `send_prompt_with` —— dispatch 的后台 task 调用。
+    ///
+    /// 直接驱动底层 async client / `local_prompt`，不经 `block_on`，因此不会
+    /// 阻塞 revue 主事件循环（这是"按 Enter 后画面冻死"的根因）。现有 30+
+    /// 同步方法（`block_on` 包装）保持不变，供 session_list / startup 等同步
+    /// 调用点继续使用。
+    pub async fn send_prompt_with_async(
+        &self,
+        session_id: &str,
+        content: String,
+        agent: Option<String>,
+        scheduler_profile: Option<String>,
+        model: Option<String>,
+        variant: Option<String>,
+    ) -> anyhow::Result<PromptResponse> {
+        if let Some(ref ls) = self.local {
+            use agendao_client::PromptRequest;
+            let req = PromptRequest {
+                message: Some(content),
+                parts: None,
+                agent,
+                scheduler_profile,
+                model,
+                variant,
+                ingress_source: None,
+                idempotency_key: None,
+                source_origin: None,
+                source_surface: None,
+                command: None,
+                arguments: None,
+            };
+            return agendao_server_local::local_prompt(Arc::clone(ls), session_id, req).await;
+        }
+        let c = Arc::clone(&self.client);
+        c.send_prompt(
+            session_id, content,
+            None, agent, scheduler_profile, model, variant, None, None, None, None, None,
+        )
+        .await
+    }
+
     // ── Models & Providers ──
 
     pub fn get_all_providers(&self) -> anyhow::Result<agendao_client::FullProviderListResponse> {

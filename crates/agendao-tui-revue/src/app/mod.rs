@@ -8,6 +8,7 @@
 //! and its fields are at least `pub(crate)`-visible.
 
 mod keymap;
+mod dispatch_outcome;
 
 use anyhow::Context;
 use revue::prelude::*;
@@ -136,7 +137,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     }
 
     let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
-    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx));
+    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new()));
     let view = RootView { store, api, active_session, handler };
 
     app.run(view, move |event, view, app| {
@@ -221,6 +222,9 @@ pub(crate) struct AppHandler {
     pub(crate) interrupt_time: std::time::Instant,
     pub(crate) event_bus: EventBus,
     pub(crate) sf_tx: watch::Sender<Option<String>>,
+    /// 本地发送回执 channel（与 `event_bus` 严格分离）。dispatch 的后台 task
+    /// 经 `sender()` 投递 Sent/Failed，`Event::Tick` 非阻塞 drain 回收。
+    pub(crate) dispatch_outcomes: dispatch_outcome::DispatchOutcomes,
     /// Set by event handlers whose state change might alter widget
     /// heights (fold toggle, message push, scroll, etc.). The run loop
     /// reads this after `handle()` and calls `request_layout_rebuild()`
@@ -288,7 +292,7 @@ pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
 pub(crate) const HOME_SHELL_PLACEHOLDERS: &[&str] = &["ls -la", "git status", "pwd"];
 
 impl AppHandler {
-    fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>) -> Self {
+    fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>, outcomes: dispatch_outcome::DispatchOutcomes) -> Self {
         let prompt = PromptInput::new().with_persistence().with_placeholders(HOME_PROMPT_PLACEHOLDERS, HOME_SHELL_PLACEHOLDERS);
         let mut model_select = ModelSelectDialog::new();
         let mut agent_select = AgentSelectDialog::new();
@@ -410,7 +414,7 @@ impl AppHandler {
             interrupt_pending: false,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
-            active_session: ss, event_bus: eb, sf_tx: sf,
+            active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes,
             layout_dirty: false,
             transcript_viewport_h: 30, // overwritten on first render
             transcript_area_y: 2,      // after header + divider

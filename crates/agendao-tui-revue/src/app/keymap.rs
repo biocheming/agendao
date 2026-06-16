@@ -13,6 +13,7 @@ use revue::event::{Event, Key};
 use agendao_command::{CommandRegistry, UiActionId};
 
 use crate::app::{AppHandler, Panel};
+use crate::app::dispatch_outcome;
 use crate::dialog::{
     PermissionReply, PermissionRequest, PermissionLifetime,
     QuestionOption, QuestionRequest,
@@ -51,6 +52,46 @@ impl AppHandler {
                 let toasts_changed = self.store.toasts.get().len() != prev_toast_count;
                 let events = self.event_bus.drain();
                 let mut changed = toasts_changed;
+
+                // ── 水：drain 本地发送回执（dispatch 后台 task 投递）──
+                // 与服务端 FrontendEvent 严格分离（见 dispatch_outcome.rs）。
+                let outcomes = self.dispatch_outcomes.drain();
+                for oc in &outcomes {
+                    // 仅处理当前 active_session（单 active 模型；用户切走后的
+                    // 陈旧回执忽略，防误改当前会话状态）。
+                    let cur_sid = self.active_session.session_id.get();
+                    if cur_sid.as_deref() != Some(oc.session_id()) {
+                        continue;
+                    }
+                    match oc {
+                        dispatch_outcome::DispatchOutcome::Sent { status, .. } => {
+                            if status == "queued" || status == "awaiting_user" {
+                                self.active_session.run_status.set(RunStatus::Running);
+                            }
+                            // status 其他值：等服务端 FrontendEvent 经 event_bus
+                            // 驱动状态机，此处不抢。
+                            self.title_refresh_pending = true;
+                            changed = true;
+                        }
+                        dispatch_outcome::DispatchOutcome::Failed { user_msg_id, error, .. } => {
+                            // 回收乐观消息（生命周期对称：push ↔ remove），不留
+                            // "幽灵 user prompt"误导用户以为已发送。
+                            self.active_session.remove_user_message(user_msg_id);
+                            self.active_session.push_notice(
+                                &format!("err-{}", ts_now()),
+                                &format!("Failed to send: {}", error),
+                            );
+                            self.active_session
+                                .run_status
+                                .set(RunStatus::Error(error.clone()));
+                            self.store.push_toast(
+                                &format!("Send failed: {}", error),
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
+                            changed = true;
+                        }
+                    }
+                }
                 for fe in &events {
                     use agendao_server_core::frontend_events::FrontendEvent;
                     match fe {
@@ -1077,6 +1118,7 @@ impl AppHandler {
         self.active_session.push_user_message(&mid, &text);
         if let Some(ref api) = self.api {
             self.active_session.run_status.set(RunStatus::Sending);
+            self.layout_dirty = true;
             // Pull the user's current selections from the store so the
             // backend uses the model/agent picked in the dialog instead of
             // the workspace default. `selected_mode` is execution mode
@@ -1086,26 +1128,36 @@ impl AppHandler {
             // we wire up actual scheduler profile UI.
             let model = self.store.selected_model.get();
             let agent = self.store.selected_agent.get();
-            match api.send_prompt_with(&sid, text, agent, None, model, None) {
-                Ok(r) => {
-                    // The actual response arrives via FrontendEvent stream
-                    if r.status == "queued" || r.status == "awaiting_user" {
-                        self.active_session.run_status.set(RunStatus::Running);
-                    } else {
-                        // Sent synchronously; status will be updated by events
-                    }
-                    // 标记：一轮结束后（Idle）刷新 title——服务端可能已用 LLM
-                    // 生成新 title（ensure_default_session_title），无事件回流。
-                    self.title_refresh_pending = true;
-                }
-                Err(e) => {
-                    self.active_session.push_notice(
-                        &format!("err-{}", ts_now()),
-                        &format!("Failed to send: {}", e),
-                    );
-                    self.active_session.run_status.set(RunStatus::Error(format!("{}", e)));
-                }
-            }
+
+            // ── 火：spawn send_prompt_with 到后台，主线程立即返回 ──
+            // 关键修复：原在按键同步回调里 block_on 等网络往返（local_prompt
+            // 触发 LLM 调度），冻死 revue 事件循环，乐观 push_user_message 的
+            // 渲染帧出不来（"按 Enter 很久没反应"）。spawn 后主线程立刻返回，
+            // 乐观消息瞬间上屏；回执经 dispatch_outcomes channel 在 Event::Tick
+            // drain 回收（Sent→Running / Failed→回滚）。
+            let api_c = api.clone();
+            let tx = self.dispatch_outcomes.sender();
+            let sid_c = sid.clone();
+            let mid_c = mid.clone();
+            let text_c = text.clone();
+            api.handle().spawn(async move {
+                let r = api_c
+                    .send_prompt_with_async(&sid_c, text_c, agent, None, model, None)
+                    .await;
+                let _ = match r {
+                    Ok(resp) => tx.send(dispatch_outcome::DispatchOutcome::Sent {
+                        session_id: sid_c,
+                        status: resp.status,
+                    }),
+                    Err(e) => tx.send(dispatch_outcome::DispatchOutcome::Failed {
+                        session_id: sid_c,
+                        user_msg_id: mid_c,
+                        error: format!("{e}"),
+                    }),
+                };
+            });
+            // title_refresh_pending 改由 Tick drain 的 Sent 分支置位（确认服务端
+            // 接收后才请求刷新，比发送前盲置更准）。
         } else {
             // Echo mode (no API) — respond immediately
             self.active_session.push_assistant_delta(&format!("echo-{}", ts_now()), &format!("[echo] {}", text));
