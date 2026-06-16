@@ -5,7 +5,7 @@
 
 // ── Transcript blocks (金：TranscriptFeed 唯一消费者) ──
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TodoStatus { Pending, InProgress, Completed, Cancelled }
 
 #[derive(Clone, Debug)]
@@ -192,7 +192,7 @@ impl TranscriptBlock {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolPhase {
     Starting,
     Running,

@@ -185,11 +185,9 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
         // ── Tool Call ──
         // 修正：原 height 对带参返回 2，但 view 只有 1 行 → 统一 1 行。
         TranscriptBlock::ToolCall { name, params, phase, .. } => {
-            let (icon, status_color) = match phase {
-                ToolPhase::Starting => ("◌", colors::ACCENT_BLUE),
-                ToolPhase::Running  => ("◐", colors::E_AMBER),
-                ToolPhase::Done     => ("●", colors::E_TEAL),
-            };
+            let (icon, status_color) = crate::widget::status_icon::status_icon(
+                crate::widget::status_icon::Status::Tool(*phase)
+            );
             let name_display = if name.len() > 20 {
                 format!("{}…", &name.chars().take(17).collect::<String>())
             } else {
@@ -222,7 +220,13 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
             use crate::store::types::FoldState;
             let total_lines = result.lines().count();
             let total_bytes = result.len();
-            let (icon, accent) = if *is_error { ("✕", colors::ACCENT_RED) } else { ("✓", colors::E_TEAL) };
+            let (icon, accent) = crate::widget::status_icon::status_icon(
+                if *is_error {
+                    crate::widget::status_icon::Status::ResultError
+                } else {
+                    crate::widget::status_icon::Status::ResultOk
+                }
+            );
             let name_display = if name.len() > 20 {
                 format!("{}…", &name.chars().take(17).collect::<String>())
             } else {
@@ -330,12 +334,9 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
                 FoldState::Truncated => {
                     let limit = FOLD_PREVIEW_LINES.min(items.len());
                     for item in items.iter().take(limit) {
-                        let (icon, color) = match item.status {
-                            TodoStatus::Completed => ("✔", colors::ACCENT_GREEN),
-                            TodoStatus::InProgress => ("◼", colors::E_AMBER),
-                            TodoStatus::Cancelled => ("✕", colors::FG_MUTED),
-                            TodoStatus::Pending => ("◻", colors::FG_MUTED),
-                        };
+                        let (icon, color) = crate::widget::status_icon::status_icon(
+                            crate::widget::status_icon::Status::Todo(item.status)
+                        );
                         s = s.child_sized(Text::new(format!("  {} {}", icon, item.content)).fg(color), 1);
                         height += 1;
                     }
@@ -350,12 +351,9 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
                 }
                 FoldState::Expanded => {
                     for item in items.iter() {
-                        let (icon, color) = match item.status {
-                            TodoStatus::Completed => ("✔", colors::ACCENT_GREEN),
-                            TodoStatus::InProgress => ("◼", colors::E_AMBER),
-                            TodoStatus::Cancelled => ("✕", colors::FG_MUTED),
-                            TodoStatus::Pending => ("◻", colors::FG_MUTED),
-                        };
+                        let (icon, color) = crate::widget::status_icon::status_icon(
+                            crate::widget::status_icon::Status::Todo(item.status)
+                        );
                         s = s.child_sized(Text::new(format!("  {} {}", icon, item.content)).fg(color), 1);
                         height += 1;
                     }
@@ -373,14 +371,9 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
         // ── Stage Update ──
         // height = border(2) + status(1) + metadata 行数。
         TranscriptBlock::StageUpdate { name, status, metadata, .. } => {
-            let (status_icon, status_color) = match status.as_str() {
-                "Running" | "running"     => ("▶", colors::ACCENT_CYAN),
-                "Done" | "done"           => ("✓", colors::ACCENT_GREEN),
-                "Waiting" | "waiting"     => ("⏳", colors::ACCENT_YELLOW),
-                "Cancelled" | "cancelled" | "Cancelling" => ("✕", colors::FG_MUTED),
-                "Blocked" | "blocked"     => ("⊘", colors::ACCENT_RED),
-                "Retrying" | "retrying"   => ("↻", colors::ACCENT_YELLOW),
-                _                          => ("●", colors::FG_MUTED),
+            let (status_icon, status_color) = {
+                use crate::widget::status_icon as si;
+                si::status_icon(si::Status::Stage(si::stage_state(status)))
             };
             let mut body = vstack().gap(0);
             body = body.child(
