@@ -214,7 +214,7 @@ fn first_user_message_text_uses_first_real_user_message() {
 fn first_user_message_text_strips_system_reminder_content() {
     let mut session = Session::new("project", ".");
     session.add_user_message(
-            "Refactor the session renderer\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nUse reratui.\n</system-reminder>",
+            "Refactor the session renderer\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nUse latest renderer.\n</system-reminder>",
         );
 
     assert_eq!(
