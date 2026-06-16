@@ -52,11 +52,11 @@ use crate::dialog::{
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
 };
 use crate::input::{PromptInput, SlashPopup};
-use crate::screen::{HomeLayout, layout_block};
+use crate::screen::{HomeLayout, layout_block, layout_block_ctx};
 use crate::store::app_store::{AppStore, Route};
 use crate::telemetry::event_bus::EventBus;
 use crate::store::session_store::SessionStore;
-use crate::store::types::{RunStatus, SessionListItem, ToolPhase};
+use crate::store::types::{RunStatus, SessionListItem, ToolPhase, TranscriptBlock};
 use crate::theme::colors;
 use crate::transport;
 
@@ -216,6 +216,10 @@ pub(crate) struct AppHandler {
     pub(crate) active_session: SessionStore,
     pub(crate) spinner_tick: u64,
     pub(crate) interrupt_pending: bool,
+    /// 发 prompt 后置位；一轮结束（Idle）时由 Tick 分支消费一次——拉取服务端
+    /// LLM 生成的 title 同步到 active_session.title，然后清除。闭合新建 session
+    /// 首轮 title 无事件回流的缺口（header 不再恒显 "New Session"）。
+    pub(crate) title_refresh_pending: bool,
     pub(crate) interrupt_time: std::time::Instant,
     pub(crate) event_bus: EventBus,
     pub(crate) sf_tx: watch::Sender<Option<String>>,
@@ -406,6 +410,7 @@ impl AppHandler {
             panel: Panel::None,
             spinner_tick: 0,
             interrupt_pending: false,
+            title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
             active_session: ss, event_bus: eb, sf_tx: sf,
             layout_dirty: false,
@@ -730,8 +735,16 @@ impl View for RootView {
                     let scroll_top = max_offset.saturating_sub(user_offset);
 
                     let cursor_idx = h.active_session.transcript_cursor.get();
+                    // turn 级思考延续标记：UserPrompt 起一个新 turn，其后首个
+                    // Thinking 用 ✻，同 turn 内被 text/tool 夹断的后续 Thinking
+                    // 用 ┆ 续接符（避免 reasoning 流被拆成一串重复 ✻ 独立块）。
+                    let mut turn_has_thinking = false;
                     for (i, block) in msgs.iter().enumerate() {
-                        let blk = layout_block(block, h.spinner_tick);
+                        let thinking_continuation = matches!(
+                            block,
+                            TranscriptBlock::Thinking { .. }
+                        ) && turn_has_thinking;
+                        let blk = layout_block_ctx(block, h.spinner_tick, thinking_continuation);
                         // 紧凑重排（spec 2026-06-16）：非 cursor 块顶格无 bar，
                         // cursor 选中块左侧显 ▌BORDER_SEL 焦点条（cursor 时才占 1 列，
                         // 内容随之右移 1 列，属局部焦点效果）。
@@ -744,6 +757,11 @@ impl View for RootView {
                             blk.view
                         };
                         transcript = transcript.child_sized(rendered, blk.height);
+                        match block {
+                            TranscriptBlock::UserPrompt { .. } => turn_has_thinking = false,
+                            TranscriptBlock::Thinking { .. } => turn_has_thinking = true,
+                            _ => {}
+                        }
                     }
                     let status = h.active_session.run_status.get();
                     if matches!(status, RunStatus::Sending) {
@@ -1009,11 +1027,22 @@ impl View for RootView {
         match h.panel {
             Panel::Slash => {
                 let popup = h.slash_popup.render_popup();
-                let pw = 50u16.min(ctx.area.width.saturating_sub(4));
+                // 左对齐占满宽(与输入框对齐),左右各留 2 列。不再居中固定 50——
+                // 居中会让补全脱离输入框本体,窄屏还截断描述(金克木:框不得压输入)。
+                // px 是相对 ctx.area 的偏移(positioned.x 语义),故 px=2 即左对齐。
+                let pw = ctx.area.width.saturating_sub(4);
                 let ph = (h.slash_popup.filtered_count().min(8) as u16 + 4).min(ctx.area.height.saturating_sub(6));
-                let px = (ctx.area.width.saturating_sub(pw)) / 2;
-                let py = prompt_y.saturating_sub(ph).max(1);
-                revue::widget::positioned(popup).x(px as i16).y(py as i16).width(pw).height(ph).render(ctx);
+                let px = 2u16;
+                // prompt_y 是绝对坐标(含 ctx.area.y)。positioned.x/.y 是相对 ctx.area,
+                // Buffer::fill 是绝对 —— 口径必须分清,否则 fill 填错位、popup 区域没被
+                // 实色覆盖,下层 transcript 透字。故 fill 用绝对,positioned 用相对。
+                let py_abs = prompt_y.saturating_sub(ph).max(1);
+                let py_rel = py_abs.saturating_sub(ctx.area.y);
+                // positioned 浮层不清背景,先实色预填挡住下层 transcript(实色不透字)。
+                // fill 用绝对坐标填满整行宽(从 ctx.area.x 起 width 列);popup 内容仍
+                // px=2 缩进与输入框对齐。padding 区(左右各 2 列)也要实色,否则边缘透字。
+                h.slash_popup.fill_background(ctx.buffer, ctx.area.x, py_abs, ctx.area.width, ph);
+                revue::widget::positioned(popup).x(px as i16).y(py_rel as i16).width(pw).height(ph).render(ctx);
             }
             Panel::ModelSelect => h.model_select.render(ctx),
             Panel::AgentSelect => h.agent_select.render(ctx),
