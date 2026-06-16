@@ -64,10 +64,15 @@ pub fn run_app() -> anyhow::Result<()> { run_app_with_config(AppConfig::default(
 
 pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
     // 主题收口（阴面唯一注册点）：颜色真值权威在 styles/base.css 的 :root
-    // 变量；此处 Theme 仅驱动运行时 variant。OSC11 探测（ds/osc11，后续
-    // Task）会覆盖此默认。先 dark。
+    // 变量；此处 Theme 仅驱动运行时 variant。OSC11 终端背景探测（ds/osc11）
+    // 决定 dark/light variant：detect_bg 保守返回 None → fallback dark。
     crate::ds::theme::register_agendao_themes();
-    revue::style::set_theme(crate::ds::theme::tokyo_night_dark());
+    let theme = match crate::ds::osc11::detect_bg() {
+        Some((r, g, b)) if crate::ds::osc11::is_light_bg(r, g, b)
+            => crate::ds::theme::tokyo_night_light(),
+        _ => crate::ds::theme::tokyo_night_dark(),
+    };
+    revue::style::set_theme(theme);
 
     let store = AppStore::new();
     if let Some(ref dir) = config.working_dir { store.working_dir.set(dir.display().to_string()); }

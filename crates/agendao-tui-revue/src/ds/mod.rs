@@ -10,3 +10,4 @@ pub mod theme;
 pub mod color;
 pub mod text;
 pub mod primitives;
+pub mod osc11;
