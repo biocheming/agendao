@@ -17,6 +17,13 @@
     --accent-orange: #ffb86c;
     --border-color: #3b4261;
     --border-focus: #7dcfff;
+
+    /* ── design-system 语义强调色（E 系列）── */
+    /* 这两个是 Mockup E 的"设计强调色"，比 accent-cyan/yellow 更沉，
+       用于角色标签（用户木 / 工具火）。其余 ds 语义色复用上方 accent-*/fg-* 变量，
+       避免十六进制重复。Rust 侧 resolve_color() 是 CSS 未命中时的 fallback。 */
+    --ds-wood: #3cb8a2;   /* E_TEAL — 木：用户输入 */
+    --ds-fire: #f0a852;   /* E_AMBER — 火：工具执行 */
 }
 
 /* ── App Shell ── */
@@ -197,4 +204,30 @@ App {
 .SelectedRow {
     background: var(--bg-highlight);
     color: var(--accent-cyan);
+}
+
+/* ────────────────────────────────────────────────────────────
+   design-system 语义 class（Task 3-4）
+   ────────────────────────────────────────────────────────────
+   五行 + 状态语义色。颜色真值权威在此（:root 变量）；
+   Rust ds::color::resolve_color() 是同名 fallback。
+   新增语义色 = 改 :root + resolve_color 两处（仍单一契约）。 */
+.ds-wood   { color: var(--ds-wood); }
+.ds-fire   { color: var(--ds-fire); }
+.ds-earth  { color: var(--fg-secondary); }
+.ds-metal  { color: var(--fg-primary); }
+.ds-water  { color: var(--accent-purple); }
+.ds-ok     { color: var(--accent-green); }
+.ds-warn   { color: var(--accent-yellow); }
+.ds-error  { color: var(--accent-red); }
+.ds-info   { color: var(--accent-cyan); }
+.ds-muted  { color: var(--fg-muted); }
+.ds-accent { color: var(--accent-cyan); }
+
+/* ds 复合控件 */
+.ds-badge {
+    color: var(--fg-secondary);
+}
+.ds-divider {
+    color: var(--border-color);
 }
