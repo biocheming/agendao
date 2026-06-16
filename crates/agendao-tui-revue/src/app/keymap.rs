@@ -930,6 +930,9 @@ impl AppHandler {
                 if self.help.visible { self.panel = Panel::Help; }
             }
             UiActionId::NewSession => {
+                // 重置 active_session 到新会话初始态:清空当前 session 的消息/状态,
+                // 否则 navigate(Home) 后输入消息会追加到旧 session 残留(数据错位)。
+                self.active_session.reset_for_new_session();
                 self.store.navigate(Route::Home);
                 self.store.push_toast("New session created", crate::store::types::ToastMsgVariant::Success);
             }
@@ -1091,6 +1094,9 @@ impl AppHandler {
         let sid = match route {
             Route::Home => {
                 if let Some(ref api) = self.api {
+                    // 创建新 session 前先重置(防御):即使经非 /new 路径进 Home,
+                    // 也确保新会话不携带旧 session 的 messages/状态。
+                    self.active_session.reset_for_new_session();
                     match api.create_session(None, None) {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);

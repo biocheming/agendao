@@ -78,6 +78,26 @@ impl SessionStore {
         }
     }
 
+    /// 重置到新会话初始态:清空当前 session 的消息/状态/遥测/工具,保留
+    /// working_dir(创建新 session 需要)与 mcp_lsp/sidebar_trees(环境信息)。
+    /// 用于 /new 和 dispatch 在 Home 路由创建新 session——若不重置,
+    /// push_user_message 会追加到上一个 session 残留的 messages 上,
+    /// 造成"新 session 接着旧 session 显示"的数据错位(土:状态唯一所有权,
+    /// 新会话不能携带旧会话状态)。
+    pub fn reset_for_new_session(&self) {
+        self.session_id.set(None);
+        self.title.set(String::from("New Session"));
+        self.run_status.set(RunStatus::Idle);
+        self.messages.update(|m| m.clear());
+        self.scroll_offset.set(0);
+        self.transcript_cursor.set(None);
+        self.token_usage.set(TokenUsage::default());
+        self.cache_stats.set(CacheStats::default());
+        self.pricing.set(Pricing::default());
+        self.context_pct.set(0);
+        self.active_tools.update(|t| t.clear());
+    }
+
     // ── 消息追加（金：EventBus → messages）──
 
     /// Append a user message block.
@@ -467,6 +487,27 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// reset_for_new_session 必须清空对话运行态(messages/session_id/title/scroll/cursor),
+    /// 否则 /new 或 dispatch 创建新 session 时携带旧 session 残留——
+    /// "新 session 接着旧 session 显示"的数据错位 bug 正是漏了这一步。
+    #[test]
+    fn reset_for_new_session_clears_conversation_state() {
+        let s = SessionStore::new();
+        s.set_session_id("old-session");
+        s.push_user_message("m1", "残留的旧消息");
+        s.title.set("Old Title".into());
+        s.scroll_offset.set(5);
+        s.transcript_cursor.set(Some(2));
+
+        s.reset_for_new_session();
+
+        assert_eq!(s.get_session_id(), None, "session_id 必须清空");
+        assert!(s.messages.get().is_empty(), "messages 必须清空");
+        assert_eq!(s.title.get(), "New Session".to_string(), "title 回到初始");
+        assert_eq!(s.scroll_offset.get(), 0, "scroll_offset 归零");
+        assert_eq!(s.transcript_cursor.get(), None, "cursor 清空");
+    }
 
     #[test]
     fn new_store_is_idle_empty() {
