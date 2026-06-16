@@ -141,9 +141,23 @@ impl SessionStore {
     /// every other transcript block off the screen. Users can expand
     /// individual results when they need full detail.
     pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::ToolResult {
-            id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Truncated,
-        }));
+        self.messages.update(|msgs| {
+            let block = TranscriptBlock::ToolResult {
+                id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Truncated,
+            };
+            // 插到对应 ToolCall 之后（同 tool_call_id），让调用与结果紧邻配对显示，
+            // 而非 append 末尾——避免 LLM 并行发起多个 tool 时调用与结果割裂
+            // （先一串 call、很久后一串 result）。找不到对应 ToolCall（事件乱序
+            // 等异常）时 fallback append 末尾，保证结果不丢。ToolCall 与 ToolResult
+            // 同 id 共存不冲突：fold/phase 查找均按 block 类型过滤。
+            let pos = msgs.iter().rposition(|b| {
+                matches!(b, TranscriptBlock::ToolCall { id: bid, .. } if bid == id)
+            });
+            match pos {
+                Some(i) => msgs.insert(i + 1, block),
+                None => msgs.push(block),
+            }
+        });
     }
 
     /// Append a stage update with optional JSON metadata.
@@ -501,6 +515,43 @@ mod tests {
         s.upsert_tool_call("t1", "bash", "ls", ToolPhase::Running);
         s.upsert_tool_call("t1", "bash", "ls", ToolPhase::Done);
         assert_eq!(s.messages.get().len(), 1); // same tool, no new block
+    }
+
+    #[test]
+    fn tool_result_inserts_right_after_its_call() {
+        // 并行 5 个 read：5 个 ToolCall 先入列，done 后每个 ToolResult 应紧跟
+        // 各自的 ToolCall（配对相邻），而非全 append 末尾造成调用与结果割裂。
+        let s = SessionStore::new();
+        for i in 1..=5 {
+            s.upsert_tool_call(&format!("t{i}"), "read", &format!("f{i}"), ToolPhase::Starting);
+        }
+        for i in 1..=5 {
+            s.upsert_tool_call(&format!("t{i}"), "read", "", ToolPhase::Done);
+            s.push_tool_result(&format!("t{i}"), "read", &format!("out{i}"), false);
+        }
+        let msgs = s.messages.get();
+        assert_eq!(msgs.len(), 10);
+        // 期望顺序：TC1, TR1, TC2, TR2, …, TC5, TR5
+        for i in 0..5 {
+            match (&msgs[i * 2], &msgs[i * 2 + 1]) {
+                (TranscriptBlock::ToolCall { id: cid, .. },
+                 TranscriptBlock::ToolResult { id: rid, result, .. }) => {
+                    assert_eq!(cid, rid, "pair {} id mismatch", i);
+                    assert_eq!(result, &format!("out{}", i + 1));
+                }
+                other => panic!("expected (ToolCall, ToolResult) at pair {i}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tool_result_without_call_appends() {
+        // 找不到对应 ToolCall（事件乱序）时 fallback append 末尾，不丢结果。
+        let s = SessionStore::new();
+        s.push_tool_result("orphan", "read", "out", false);
+        let msgs = s.messages.get();
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(msgs[0], TranscriptBlock::ToolResult { .. }));
     }
 
     #[test]
