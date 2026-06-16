@@ -52,11 +52,11 @@ use crate::dialog::{
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
 };
 use crate::input::{PromptInput, SlashPopup};
-use crate::screen::{HomeLayout, layout_block, block_accent};
+use crate::screen::{HomeLayout, layout_block};
 use crate::store::app_store::{AppStore, Route};
 use crate::telemetry::event_bus::EventBus;
 use crate::store::session_store::SessionStore;
-use crate::store::types::{RunStatus, SessionListItem, ToolPhase, TranscriptBlock};
+use crate::store::types::{RunStatus, SessionListItem, ToolPhase};
 use crate::theme::colors;
 use crate::transport;
 
@@ -698,7 +698,7 @@ impl View for RootView {
                 // pushes the final assistant answer off the bottom of
                 // the screen.
                 let mut main_area = hstack().gap(0);
-                let mut transcript = vstack().gap(1);
+                let mut transcript = vstack().gap(0);
 
                 if msgs.is_empty() {
                     transcript = transcript.child(
@@ -717,7 +717,7 @@ impl View for RootView {
                     // doesn't get yanked back to the latest mid-read.
                     let available = ctx.area.height.saturating_sub(9);
                     let total_h: u16 = msgs.iter()
-                        .map(|b| layout_block(b, 0).height.saturating_add(1))
+                        .map(|b| layout_block(b, 0).height)
                         .sum::<u16>()
                         .saturating_add(1);
 
@@ -732,29 +732,17 @@ impl View for RootView {
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     for (i, block) in msgs.iter().enumerate() {
                         let blk = layout_block(block, h.spinner_tick);
-                        // Wrap each block in a 2-col hstack:
-                        //   col 0: `▌` for User/Assistant blocks (the
-                        //          main conversation voices), space for
-                        //          everything else (tool chips, thinking,
-                        //          system notices). Cursor overrides to
-                        //          BORDER_SEL so the focus ring is
-                        //          unambiguous.
-                        //   col 1: rendered block content.
+                        // 紧凑重排（spec 2026-06-16）：非 cursor 块顶格无 bar，
+                        // cursor 选中块左侧显 ▌BORDER_SEL 焦点条（cursor 时才占 1 列，
+                        // 内容随之右移 1 列，属局部焦点效果）。
                         let is_cursor = Some(i) == cursor_idx;
-                        let show_bar = matches!(block,
-                            TranscriptBlock::UserPrompt { .. }
-                            | TranscriptBlock::AssistantMsg { .. }
-                        );
-                        let bar = if !show_bar {
-                            Text::new(" ")
-                        } else if is_cursor {
-                            Text::new("▌").fg(colors::BORDER_SEL).bold()
+                        let rendered = if is_cursor {
+                            hstack().gap(0)
+                                .child_sized(Text::new("▌").fg(colors::BORDER_SEL).bold(), 1)
+                                .child_flex(blk.view, 1.0)
                         } else {
-                            Text::new("▌").fg(block_accent(block))
+                            blk.view
                         };
-                        let rendered = hstack().gap(0)
-                            .child_sized(bar, 1)
-                            .child_flex(blk.view, 1.0);
                         transcript = transcript.child_sized(rendered, blk.height);
                     }
                     let status = h.active_session.run_status.get();

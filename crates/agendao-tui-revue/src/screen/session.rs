@@ -234,7 +234,6 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
         TranscriptBlock::ToolResult { name, result, is_error, fold, .. } => {
             use crate::store::types::FoldState;
             let total_lines = result.lines().count();
-            let total_bytes = result.len();
             let (icon, accent) = crate::widget::status_icon::status_icon(
                 if *is_error {
                     crate::widget::status_icon::Status::ResultError
@@ -257,7 +256,7 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                             .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
                             .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
                             .child_flex(
-                                Text::new(format!(" · {} lines · {} chars", total_lines, total_bytes))
+                                Text::new(format!(" · {} lines", total_lines))
                                     .fg(colors::FG_MUTED),
                                 1.0,
                             )
