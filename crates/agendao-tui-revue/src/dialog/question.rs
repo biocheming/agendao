@@ -1,9 +1,12 @@
 //! 金 — Question dialog: agent asks user a question.
+//!
+//! 内联形态:pending question 作为 transcript 流末尾的顶格块渲染
+//! (`? {text}` header + ❯/☑ 选项),而非居中浮层。状态所有权不变。
 
 use revue::prelude::*;
 use revue::event::Key;
 use crate::theme::colors;
-use crate::dialog::backdrop;
+use crate::screen::BlockLayout;
 
 #[derive(Clone)]
 pub struct QuestionOption {
@@ -72,39 +75,57 @@ impl QuestionDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
-        if !self.visible { return; }
-        let Some(req) = self.requests.first() else { return; };
+    /// 内联成形:pending question 渲染成 transcript 流末尾顶格块
+    /// (`? {text}` header + ❯ 单选 / ☑ 多选 选项)。无 modal 边框。
+    /// 鼠标 hit-test 省略(同 permission:内联位置随滚动变)。
+    pub fn render_inline(&self) -> Option<BlockLayout> {
+        if !self.visible { return None; }
+        let req = self.requests.first()?;
+
         let queue_hint = if self.requests.len() > 1 {
-            format!(" ({} more)", self.requests.len() - 1)
+            format!(" ({}/{})", 1, self.requests.len())
         } else { String::new() };
 
         let is_multi = self.toggled.iter().filter(|&&t| t).count() > 0 || req.options.len() > 1;
-        let hint = if is_multi { "Space: toggle  Enter: confirm" } else { "↑↓: choose  Enter: select" };
+        let hint = if is_multi { "Space toggle · Enter confirm · Esc skip" } else { "↑↓ choose · Enter select · Esc skip" };
 
-        let mut content = vstack().gap(1)
-            .child(Text::new(format!("{}{}", req.text, queue_hint)).bold().fg(colors::FG_PRIMARY))
-            .child(Text::new(hint).fg(colors::FG_MUTED));
+        let mut content = vstack().gap(0)
+            .child_sized(
+                Text::new(format!(" ? {}{}", req.text, queue_hint))
+                    .bold()
+                    .fg(colors::ACCENT_CYAN),
+                1,
+            );
+        let mut height: u16 = 1;
 
         for (i, opt) in req.options.iter().enumerate() {
             let marker = if is_multi {
-                if self.toggled.get(i).copied().unwrap_or(false) { "☑" } else { "☐" }
-            } else if i == self.selected { "❯" } else { " " };
-            let color = if i == self.selected { colors::ACCENT_CYAN } else { colors::FG_SECONDARY };
+                if self.toggled.get(i).copied().unwrap_or(false) { "☑ " } else { "☐ " }
+            } else if i == self.selected { "❯ " } else { "  " };
+            let color = if (i == self.selected && !is_multi)
+                || (is_multi && self.toggled.get(i).copied().unwrap_or(false)) {
+                colors::ACCENT_CYAN
+            } else {
+                colors::FG_SECONDARY
+            };
             let label = if opt.description.is_empty() {
                 opt.label.clone()
             } else {
                 format!("{} — {}", opt.label, opt.description)
             };
-            content = content.child(Text::new(format!("{} {}", marker, label)).fg(color));
+            content = content.child_sized(
+                Text::new(format!("{}{}", marker, label)).fg(color),
+                1,
+            );
+            height += 1;
         }
 
-        backdrop::render_dialog(
-            "Question",
-            colors::ACCENT_CYAN,
-            content,
-            "Esc: skip",
-            ctx, 54, req.options.len() as u16 + 5,
+        content = content.child_sized(
+            Text::new(format!(" {}", hint)).fg(colors::FG_MUTED),
+            1,
         );
+        height += 1;
+
+        Some(BlockLayout { height, view: content })
     }
 }

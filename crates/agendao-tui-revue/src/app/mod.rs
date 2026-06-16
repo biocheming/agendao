@@ -179,8 +179,6 @@ pub(crate) enum Panel {
     Stash,
     #[allow(dead_code)] Confirm,
     Help,
-    Permission,
-    Question,
     #[allow(dead_code)] Alert,
 }
 
@@ -726,14 +724,6 @@ impl View for RootView {
                         .sum::<u16>()
                         .saturating_add(1);
 
-                    // Clamp scroll offset: 0 = bottom-pinned, max = total - viewport.
-                    let max_offset = total_h.saturating_sub(available);
-                    let user_offset = h.active_session.scroll_offset.get().min(max_offset);
-                    // ScrollView counts offset from the TOP, but our
-                    // store treats it as "rows back from bottom" so the
-                    // latest message stays visible by default. Convert.
-                    let scroll_top = max_offset.saturating_sub(user_offset);
-
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     // turn 级思考延续标记：UserPrompt 起一个新 turn，其后首个
                     // Thinking 用 ✻，同 turn 内被 text/tool 夹断的后续 Thinking
@@ -764,12 +754,42 @@ impl View for RootView {
                         }
                     }
                     let status = h.active_session.run_status.get();
+                    let mut extra_h: u16 = 0;
+                    // 内联 permission/question（Claude Code/Codex 风格）：
+                    // transcript 流末尾顶格块，不浮不黑。
+                    if h.permission_dialog.visible {
+                        if let Some(blk) = h.permission_dialog.render_inline() {
+                            transcript = transcript.child_sized(blk.view, blk.height);
+                            extra_h = extra_h.saturating_add(blk.height);
+                        }
+                    }
+                    if h.question_dialog.visible {
+                        if let Some(blk) = h.question_dialog.render_inline() {
+                            transcript = transcript.child_sized(blk.view, blk.height);
+                            extra_h = extra_h.saturating_add(blk.height);
+                        }
+                    }
                     if matches!(status, RunStatus::Sending) {
                         transcript = transcript.child_sized(
                             Text::new(" ⏳ Sending...").fg(colors::ACCENT_YELLOW),
                             1,
                         );
+                        extra_h = extra_h.saturating_add(1);
                     }
+                    // 把内联块计入 scroll 视口高度，并在 permission/question
+                    // pending 时强制钉底（阴：收束注意力到待决策项）。
+                    let total_h = total_h.saturating_add(extra_h);
+                    let max_offset = total_h.saturating_sub(available);
+                    let pinned = h.permission_dialog.visible || h.question_dialog.visible;
+                    let user_offset = if pinned {
+                        0
+                    } else {
+                        h.active_session.scroll_offset.get().min(max_offset)
+                    };
+                    // ScrollView counts offset from the TOP, but our store
+                    // treats it as "rows back from bottom" so the latest
+                    // message stays visible by default. Convert.
+                    let scroll_top = max_offset.saturating_sub(user_offset);
 
                     let sv = crate::widget::scroll_view()
                         .with_content_height(total_h)
@@ -894,8 +914,6 @@ impl View for RootView {
             Panel::Stash => "stash",
             Panel::Rename => "rename",
             Panel::Confirm => "confirm",
-            Panel::Permission => "perm",
-            Panel::Question => "question",
             Panel::Help => "help",
             Panel::Alert => "alert",
             Panel::None => route.as_str(),
@@ -1050,8 +1068,6 @@ impl View for RootView {
             Panel::Stash => h.stash_dialog.render(ctx),
             Panel::Rename => h.rename_dialog.render(ctx),
             Panel::Confirm => h.confirm_dialog.render(ctx),
-            Panel::Permission => h.permission_dialog.render(ctx),
-            Panel::Question => h.question_dialog.render(ctx),
             Panel::Help => h.help.render(ctx),
             _ => {}
         }
