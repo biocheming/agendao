@@ -59,6 +59,18 @@ pub struct BlockLayout {
 }
 
 pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
+    layout_block_ctx(block, tick, false)
+}
+
+/// 带上下文的成形版本。`thinking_continuation`：当前 Thinking 是否属于同一
+/// turn 内已出现过的思考的延续（被中间的 text/tool 夹断）——若是，用 ` ┆ `
+/// 续接符代替 ` ✻ `，避免 reasoning model 的「思考→工具→再思考」流被拆成
+/// 一串重复的 ✻ 独立块。土（编排层 turn 上下文）生金（成形符号）。
+pub(crate) fn layout_block_ctx(
+    block: &TranscriptBlock,
+    tick: u64,
+    thinking_continuation: bool,
+) -> BlockLayout {
     match block {
         // ── User Prompt ──
         // height 随行累加。修正：原 transcript_block_height 在 Truncated
@@ -150,12 +162,15 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
         TranscriptBlock::Thinking { content, fold, duration_ms, .. } => {
             use crate::store::types::FoldState;
             let wc = content.split_whitespace().count();
+            // 同一 turn 内首个 Thinking 用 ✻，被 text/tool 夹断的后续片段用 ┆
+            // 续接符——视觉上表明是同一段思考的延续，而非一串重复独立块。
+            let marker = if thinking_continuation { " ┆ " } else { " ✻ " };
             match fold {
                 FoldState::Folded => {
                     let summary = if *duration_ms > 0 {
-                        format!(" ✻ thinking · {} words · {}ms", wc, duration_ms)
+                        format!("{}thinking · {} words · {}ms", marker, wc, duration_ms)
                     } else {
-                        format!(" ✻ thinking · {} words", wc)
+                        format!("{}thinking · {} words", marker, wc)
                     };
                     BlockLayout {
                         height: 1,
@@ -175,13 +190,13 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
                     let mut height = 0u16;
                     if total == 0 {
                         body = body.child_sized(
-                            Text::new(" ✻ …").fg(colors::FG_MUTED).italic(), 1,
+                            Text::new(format!("{}…", marker)).fg(colors::FG_MUTED).italic(), 1,
                         );
                         height = 1;
                     } else {
                         for (i, line) in content.lines().take(limit).enumerate() {
                             let text = if i == 0 {
-                                format!(" ✻ {}", line)
+                                format!("{}{}", marker, line)
                             } else {
                                 format!("   {}", line)
                             };
@@ -471,6 +486,28 @@ mod layout_tests {
     use crate::store::types::{FoldState, TodoItem, TodoStatus, ToolPhase};
 
     fn blk(b: TranscriptBlock) -> BlockLayout { layout_block(&b, 0) }
+
+    #[test]
+    fn thinking_continuation_marker_preserves_height() {
+        // 续接符（✻ → ┆）只改前缀符号，不改 block 高度。关键不变量：
+        // total_h 用 layout_block（continuation=false）求和，主渲染循环用
+        // layout_block_ctx（continuation 随 turn 变化），两者 height 必须一致，
+        // 否则 scrollbar 命中映射与滚动 viewport 会错位。
+        let mk = |fold: FoldState| TranscriptBlock::Thinking {
+            id: "m1".into(),
+            content: "思考第一行\n思考第二行".into(),
+            fold,
+            duration_ms: 0,
+        };
+        for fold in [FoldState::Folded, FoldState::Truncated, FoldState::Expanded] {
+            let b = mk(fold.clone());
+            assert_eq!(
+                layout_block_ctx(&b, 0, false).height,
+                layout_block_ctx(&b, 0, true).height,
+                "continuation marker must not change height for {fold:?}",
+            );
+        }
+    }
 
     #[test]
     fn user_prompt_folded_is_one_row() {

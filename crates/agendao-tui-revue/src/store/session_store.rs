@@ -554,6 +554,69 @@ mod tests {
         assert!(matches!(msgs[0], TranscriptBlock::ToolResult { .. }));
     }
 
+    /// 统计 messages 中 Thinking block 的数量。
+    fn count_thinking(msgs: &[TranscriptBlock]) -> usize {
+        msgs.iter()
+            .filter(|b| matches!(b, TranscriptBlock::Thinking { .. }))
+            .count()
+    }
+
+    #[test]
+    fn thinking_accumulates_consecutive_same_id() {
+        // 同 id 的连续 reasoning delta 应累积成单个 Thinking block
+        // —— push_thinking 的 last_mut + bid==id merge 正是为此而设计。
+        let s = SessionStore::new();
+        s.push_thinking("m1", "step 1 ");
+        s.push_thinking("m1", "step 2 ");
+        s.push_thinking("m1", "step 3");
+        let msgs = s.messages.get();
+        assert_eq!(count_thinking(&msgs), 1, "consecutive same-id reasoning must merge into one Thinking");
+        match &msgs[0] {
+            TranscriptBlock::Thinking { content, .. } => assert_eq!(content, "step 1 step 2 step 3"),
+            _ => panic!("expected Thinking"),
+        }
+    }
+
+    #[test]
+    fn reasoning_after_assistant_keeps_separate_thinking() {
+        // 有意设计（保留分段）：reasoning 与 assistant text 在同一 message 内
+        // 交替（reasoning → text → reasoning，同 id）时，push_thinking 只检查
+        // last_mut，中间插入 AssistantMsg 后下一次 reasoning 新建独立 Thinking——
+        // 保留「哪段思考夹在哪段输出之间」的时序对应。视觉上的连续感由渲染层
+        // 的 ┆ 续接符（layout_block_ctx）处理，数据层不合并。
+        let s = SessionStore::new();
+        s.push_thinking("m1", "先思考");
+        s.push_assistant_delta("m1", "先输出一部分");
+        s.push_thinking("m1", "再继续思考");
+        let msgs = s.messages.get();
+        assert_eq!(count_thinking(&msgs), 2,
+            "interleaved assistant delta keeps reasoning as 2 separate Thinking blocks");
+    }
+
+    #[test]
+    fn reasoning_after_tool_keeps_separate_thinking() {
+        // 有意设计（保留分段）：reasoning → tool → reasoning（同 id）也因 last_mut
+        // 是 ToolCall 而保持独立 Thinking——保留思考与工具的时序对应。reasoning
+        // model（思考→工具→再思考）频繁触发，渲染层用 ┆ 续接符表明连续。
+        let s = SessionStore::new();
+        s.push_thinking("m1", "思考阶段一");
+        s.upsert_tool_call("t1", "read", "f.txt", ToolPhase::Done);
+        s.push_thinking("m1", "思考阶段二");
+        let msgs = s.messages.get();
+        assert_eq!(count_thinking(&msgs), 2,
+            "interleaved tool call keeps reasoning as 2 separate Thinking blocks");
+    }
+
+    #[test]
+    fn thinking_different_id_creates_separate() {
+        // 不同 id 的 reasoning 天然是独立 Thinking（多 message / 多 reasoning 周期）。
+        let s = SessionStore::new();
+        s.push_thinking("m1", "第一轮思考");
+        s.push_thinking("m2", "第二轮思考");
+        let msgs = s.messages.get();
+        assert_eq!(count_thinking(&msgs), 2, "different-id reasoning yields separate Thinking blocks");
+    }
+
     #[test]
     fn toggle_fold() {
         let s = SessionStore::new();

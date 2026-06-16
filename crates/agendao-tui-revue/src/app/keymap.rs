@@ -192,6 +192,26 @@ impl AppHandler {
                     }
                 }
 
+                // ── 消费 title_refresh_pending：一轮结束后刷新一次 title ──
+                // dispatch 发 prompt 时置位；Idle 时从权威 get_session 拉取服务端
+                // LLM 生成的 title，同步到 header 用的 active_session.title，然后清除。
+                // 只在标记位时查一次，避免 Idle 常态下持续轮询数据库。
+                if self.title_refresh_pending
+                    && matches!(self.active_session.run_status.get(), RunStatus::Idle)
+                {
+                    self.title_refresh_pending = false;
+                    if let Some(ref api) = self.api {
+                        if let Some(ref sid) = self.active_session.session_id.get() {
+                            if let Ok(info) = api.get_session(sid) {
+                                if self.active_session.title.get() != info.title {
+                                    self.active_session.title.set(info.title);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 changed || matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) || self.interrupt_pending
             }
             Event::Key(key) => {
@@ -1106,6 +1126,9 @@ impl AppHandler {
                     } else {
                         // Sent synchronously; status will be updated by events
                     }
+                    // 标记：一轮结束后（Idle）刷新 title——服务端可能已用 LLM
+                    // 生成新 title（ensure_default_session_title），无事件回流。
+                    self.title_refresh_pending = true;
                 }
                 Err(e) => {
                     self.active_session.push_notice(
@@ -1173,6 +1196,13 @@ pub(crate) fn eager_load_session_messages(
     use crate::store::types::ToolPhase;
     let Some(api) = api else { return };
     active_session.messages.update(|m| m.clear());
+    // 同步 session title 到 header 用的 active_session.title。此前该 Signal 只在
+    // 手动 rename 时更新，加载/切换 session 后恒显初始值 "New Session"——服务端
+    // 已用 LLM 生成真实 title 入库（ensure_default_session_title），但无回流通道，
+    // 这里从权威（get_session）拉取同步，闭合状态所有权（阴面唯一真相 → 阳面渲染）。
+    if let Ok(info) = api.get_session(session_id) {
+        active_session.title.set(info.title);
+    }
     match api.get_messages(session_id) {
         Ok(msgs) => {
             for msg in msgs {
