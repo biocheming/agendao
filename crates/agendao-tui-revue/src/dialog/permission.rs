@@ -319,17 +319,20 @@ impl PermissionDialog {
         content = content.child_sized(Text::new(""), 1);
 
         // ── Lifetime options ──
+        // ❯ pointer (Claude Code/Codex style). Digit quick-keys still
+        // work (1/2/3 allow, 0 deny — see handle_key) but are no longer
+        // shown as a prefix; selection reads from ❯ + color, not "1.".
         let lifetimes = &req.supported_lifetimes;
         for (i, lt) in lifetimes.iter().enumerate() {
-            let marker = if i == self.selected_lifetime { "▶" } else { " " };
-            let (key, desc) = match lt {
-                PermissionLifetime::Once => ("1", "Allow this request only"),
-                PermissionLifetime::Turn => ("2", "Allow for this turn"),
-                PermissionLifetime::Session => ("3", "Allow for this session"),
+            let marker = if i == self.selected_lifetime { "❯ " } else { "  " };
+            let desc = match lt {
+                PermissionLifetime::Once => "Allow this request only",
+                PermissionLifetime::Turn => "Allow for this turn",
+                PermissionLifetime::Session => "Allow for this session",
             };
             let color = if i == self.selected_lifetime { colors::ACCENT_CYAN } else { colors::FG_SECONDARY };
             content = content.child_sized(
-                Text::new(format!("{} {}. {}", marker, key, desc)).fg(color),
+                Text::new(format!("{}{}", marker, desc)).fg(color),
                 1,
             );
         }
@@ -337,10 +340,10 @@ impl PermissionDialog {
         // ── Deny option ──
         let deny_idx = lifetimes.len();
         let deny_selected = self.selected_lifetime == deny_idx;
-        let deny_marker = if deny_selected { "▶" } else { " " };
+        let deny_marker = if deny_selected { "❯ " } else { "  " };
         let deny_color = if deny_selected { colors::ACCENT_RED } else { colors::FG_SECONDARY };
         content = content.child_sized(
-            Text::new(format!("{} 0. Deny", deny_marker)).fg(deny_color),
+            Text::new(format!("{}Deny", deny_marker)).fg(deny_color),
             1,
         );
 
@@ -396,7 +399,7 @@ impl PermissionDialog {
             "Permission Required",
             border_color,
             content,
-            "↑↓ navigate  Enter/y: allow  n/Esc: deny",
+            "↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny",
             ctx, 64, h,
         );
     }

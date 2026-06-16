@@ -89,7 +89,7 @@ impl QuestionDialog {
         for (i, opt) in req.options.iter().enumerate() {
             let marker = if is_multi {
                 if self.toggled.get(i).copied().unwrap_or(false) { "☑" } else { "☐" }
-            } else if i == self.selected { "▶" } else { " " };
+            } else if i == self.selected { "❯" } else { " " };
             let color = if i == self.selected { colors::ACCENT_CYAN } else { colors::FG_SECONDARY };
             let label = if opt.description.is_empty() {
                 opt.label.clone()
