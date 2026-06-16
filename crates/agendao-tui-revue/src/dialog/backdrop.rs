@@ -34,11 +34,11 @@ use crate::theme::colors;
 /// wash. Must run *before* the positioned dialog renders, so the border
 /// + text draw on top. `x`/`y` are relative to `ctx.area`;
 /// `Buffer::fill` is absolute, so we add `ctx.area.{x,y}` when filling.
-fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16) {
+fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16, bg: Color) {
     let area = ctx.area;
     ctx.buffer.fill(
         area.x.saturating_add(x), area.y.saturating_add(y), w, h,
-        Cell::new(' ').bg(colors::BG_SURFACE),
+        Cell::new(' ').bg(bg),
     );
 }
 
@@ -130,11 +130,11 @@ fn render_positioned_dialog(
     // (Tip/Environment 等)左边框在 col 0,贴底框宽达 width-4 与之水平重叠;若只填
     // 框区,col 0-1 会透出下层边框,与列表左边框交错(实色不透字契约)。居中框在
     // 屏幕中央,与 col 0 的按钮框不重叠,填框区即可。
-    let (fill_x, fill_w) = match anchor {
-        DialogAnchor::Centered => (x, w),
-        DialogAnchor::Bottom => (0u16, area.width),
+    let (fill_x, fill_w, fill_bg) = match anchor {
+        DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
+        DialogAnchor::Bottom => (0u16, area.width, colors::BG_PRIMARY),
     };
-    paint_modal_backdrop(ctx, fill_x, y, fill_w, h);
+    paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
     let dialog = Border::rounded()
         .title(format!(" {} ", title))
@@ -306,21 +306,21 @@ fn render_positioned_list(
             (w, h, x, y)
         }
         DialogAnchor::Bottom => {
-            // 占满宽(左右各留 2 列,与输入框/slash 对齐);高度上限留 6 行
-            // (5 行 prompt + 1 行 margin),贴在输入框正上方。
+            // 占满宽(左右各留 2 列,与输入框/slash 对齐)。无框高度 = 标题(1)
+            // + rows + hint(1) = rows+2;上限留 6 行(5 行 prompt + 1 行 margin)。
             let w = area.width.saturating_sub(4);
-            let h = (rows as u16 + 3).min(area.height.saturating_sub(6));
+            let h = (rows as u16 + 2).min(area.height.saturating_sub(6));
             let x = 2u16;
             let y = area.height.saturating_sub(5).saturating_sub(h);
             (w, h, x, y)
         }
     };
 
-    let (fill_x, fill_w) = match anchor {
-        DialogAnchor::Centered => (x, w),
-        DialogAnchor::Bottom => (0u16, area.width),
+    let (fill_x, fill_w, fill_bg) = match anchor {
+        DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
+        DialogAnchor::Bottom => (0u16, area.width, colors::BG_PRIMARY),
     };
-    paint_modal_backdrop(ctx, fill_x, y, fill_w, h);
+    paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
     // Sliding viewport. The host's `selected` index counts ALL items
     // (Header rows included), so the viewport math operates on the same
@@ -355,9 +355,12 @@ fn render_positioned_list(
     };
     let end = (start + rows).min(total);
 
-    // Inner width = dialog width minus the rounded border (2 cells)
-    // minus 1 trailing column of breathing room before the right edge.
-    let inner_w = w.saturating_sub(3) as usize;
+    // Inner width for selected-row padding. Centered: minus rounded border (2)
+    // + 1 trailing breathing column. Bottom (无框): full width — no border.
+    let inner_w = match anchor {
+        DialogAnchor::Centered => w.saturating_sub(3) as usize,
+        DialogAnchor::Bottom => w as usize,
+    };
 
     let mut list_content = vstack().gap(0);
     for (i, item) in items[start..end].iter().enumerate() {
@@ -371,12 +374,12 @@ fn render_positioned_list(
                 // distinct from the selected-row marker `▌` (left bar).
                 let stripped = label.strip_prefix("▸ ").unwrap_or(label.as_str());
                 let upper = stripped.to_uppercase();
-                list_content = list_content.child_sized(
-                    Text::new(format!(" ▸ {}", upper))
-                        .bold()
-                        .fg(colors::E_AMBER),
-                    1,
-                );
+                let mut hdr = Text::new(format!(" ▸ {}", upper)).bold().fg(colors::E_AMBER);
+                // 无框贴底时补终端色 bg,否则文字格发黑/透字。
+                if matches!(anchor, DialogAnchor::Bottom) {
+                    hdr = hdr.bg(colors::BG_PRIMARY);
+                }
+                list_content = list_content.child_sized(hdr, 1);
             }
             ListItem::Row { display, muted } => {
                 // Unified ❯ pointer (aligned with Claude Code/Codex and
@@ -425,6 +428,9 @@ fn render_positioned_list(
                 let mut row = Text::new(padded).fg(color);
                 if is_sel {
                     row = row.bg(colors::SURFACE_SELECTED).bold();
+                } else if matches!(anchor, DialogAnchor::Bottom) {
+                    // 无框贴底:非选中行补终端色 bg,否则文字格发黑/透字。
+                    row = row.bg(colors::BG_PRIMARY);
                 }
                 list_content = list_content.child_sized(row, 1);
             }
@@ -438,32 +444,59 @@ fn render_positioned_list(
         format!(" {} ", title)
     };
 
-    let dialog = Border::rounded()
-        .title(title_with_pos)
-        .fg(border_color)
-        .child(
-            // Inner vstack: list flexes to take all remaining height,
-            // footer hint pinned to its single row. Without explicit
-            // sizing the dialog vstack defaults to Auto and splits the
-            // height EQUALLY between list and hint — that's why a 22-row
-            // dialog only painted 10 list rows and left 8 rows of dead
-            // air below the visible items.
-            vstack().gap(0)
-                .child_flex(list_content, 1.0)
-                .child_sized(
-                    Text::new(footer_hint)
-                        .fg(colors::FG_MUTED)
-                        .align(Alignment::Center),
-                    1,
-                )
-        );
+    if matches!(anchor, DialogAnchor::Bottom) {
+        // 无框贴底:标题行 + 列表 + hint,整片 BG_PRIMARY 融入终端(不浮出亮框),
+        // 仅选中行 SURFACE_SELECTED 高亮。对齐 codex/claude code 的轻量命令面板。
+        // 标题行(1)替代了原 top border,故滚动条 sb_y=y+1、tooltip y+1+row_offset
+        // 偏移与 Centered 一致,无需调整。
+        let view = vstack().gap(0)
+            .child_sized(
+                Text::new(title_with_pos)
+                    .fg(border_color)
+                    .bg(colors::BG_PRIMARY)
+                    .bold(),
+                1,
+            )
+            .child_flex(list_content, 1.0)
+            .child_sized(
+                Text::new(footer_hint)
+                    .fg(colors::FG_MUTED)
+                    .bg(colors::BG_PRIMARY)
+                    .align(Alignment::Center),
+                1,
+            );
+        revue::widget::positioned(view)
+            .x(x as i16)
+            .y(y as i16)
+            .width(w)
+            .height(h)
+            .render(ctx);
+    } else {
+        let dialog = Border::rounded()
+            .title(title_with_pos)
+            .fg(border_color)
+            .child(
+                // Inner vstack: list flexes to take all remaining height,
+                // footer hint pinned to its single row. Without explicit
+                // sizing the dialog vstack defaults to Auto and splits the
+                // height EQUALLY between list and hint.
+                vstack().gap(0)
+                    .child_flex(list_content, 1.0)
+                    .child_sized(
+                        Text::new(footer_hint)
+                            .fg(colors::FG_MUTED)
+                            .align(Alignment::Center),
+                        1,
+                    )
+            );
 
-    revue::widget::positioned(dialog)
-        .x(x as i16)
-        .y(y as i16)
-        .width(w)
-        .height(h)
-        .render(ctx);
+        revue::widget::positioned(dialog)
+            .x(x as i16)
+            .y(y as i16)
+            .width(w)
+            .height(h)
+            .render(ctx);
+    }
 
     // Overlay agendao's interactive scrollbar on the dialog's right edge
     // when the list is taller than the viewport. The bar lives inside
