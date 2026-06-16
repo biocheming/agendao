@@ -846,10 +846,11 @@ impl View for RootView {
         };
 
         // ── Prompt bar ──
-        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let spinner = if is_running {
-            let frame = (h.spinner_tick as usize / 3) % spinner_frames.len();
-            format!("{} ", spinner_frames[frame])
+            format!("{} ", crate::widget::spinner::frame(
+                crate::widget::spinner::platform_default(),
+                h.spinner_tick / 3,
+            ))
         } else { String::new() };
         let hint = if h.interrupt_pending {
             " ⚠ Press Esc again to interrupt".to_string()

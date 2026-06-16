@@ -83,7 +83,14 @@ pub fn layout_block(block: &TranscriptBlock) -> BlockLayout {
                     hstack().gap(0)
                         .child_sized(Text::new(format!(" {} ", arrow)).fg(colors::FG_MUTED), 3)
                         .child_sized(
-                            Text::new(" YOU ").bold().fg(colors::E_TEAL).bg(colors::SURFACE_USER),
+                            {
+                                let (chip, sem) = crate::widget::role_chip::role_chip(
+                                    crate::widget::role_chip::Role::User,
+                                );
+                                Text::new(format!(" {} ", chip)).bold()
+                                    .fg(crate::ds::color::resolve_color(sem))
+                                    .bg(colors::SURFACE_USER)
+                            },
                             5,
                         )
                         .child_flex(
