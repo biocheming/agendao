@@ -698,6 +698,40 @@ impl ServerState {
 
         Ok(())
     }
+
+    /// 增量持久化：只 flush 指定的单个 session（`create_session` 专用）。
+    ///
+    /// `sync_sessions_to_storage` 是全量同步——clone + 序列化 + DB upsert +
+    /// telemetry/memory ingest **全部** sessions。sessions 数量大时它是
+    /// `create_session` 的主要耗时（实测 121 sessions ≈ 1.4s，几乎全部花在
+    /// 重复 flush 未变更的 session 上）。create 只新增一个 session、不删除
+    /// 任何 session，因此 stale 清理与其他 session 的重复 flush 都是冗余：
+    /// 这里只持久化新 session，create 降到亚毫秒级。其他变更点（messages /
+    /// prompt / fork）仍在各自路径调全量 `sync_sessions_to_storage`，互不影响。
+    pub async fn sync_session_to_storage(
+        &self,
+        session: &agendao_session::Session,
+    ) -> anyhow::Result<()> {
+        let Some(session_repo) = &self.session_repo else {
+            return Ok(());
+        };
+        let stored_session: agendao_types::Session =
+            serde_json::from_value(serde_json::to_value(session)?)?;
+        let mut persisted_session = stored_session.clone();
+        let stored_messages = std::mem::take(&mut persisted_session.messages);
+        session_repo
+            .flush_with_messages(&persisted_session, &stored_messages)
+            .await?;
+        self.runtime_memory.ingest_session_record(&stored_session).await?;
+        let stage_summaries = self
+            .runtime_telemetry
+            .list_stage_summaries(&stored_session.id)
+            .await;
+        self.runtime_memory
+            .ingest_stage_summaries(&stored_session.id, &stage_summaries)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Convert agendao_config::ProviderConfig map to bootstrap ConfigProvider map.
