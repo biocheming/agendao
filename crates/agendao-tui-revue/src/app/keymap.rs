@@ -659,6 +659,14 @@ impl AppHandler {
                     self.layout_dirty = true;
                     return true;
                 }
+                // 'e' = edit & resend（对齐 web "Revise & resend" 按钮一步触发）。
+                // 双重守卫：prompt 空（对齐 Space 先例，避免打字中途误触发）+
+                // cursor 在 UserPrompt（否则 'e' 落到 prompt 输入字符）。
+                Key::Char('e') if self.prompt.text().is_empty()
+                    && self.active_session.cursor_user_prompt().is_some() => {
+                    self.execute_slash_action(UiActionId::RevisePrompt);
+                    return true;
+                }
                 _ => {}
             }
         }
@@ -771,6 +779,16 @@ impl AppHandler {
         self.help.dismiss();
         self.alert.dismiss();
         self.panel = Panel::None;
+    }
+
+    /// 切到 fork 后的新会话：reset + set_session_id + sf_tx + load + navigate。
+    /// /revise（message 级 fork）调完后再 set_text 回填；/fork（整会话 fork）不回填。
+    pub(crate) fn switch_to_forked_session(&mut self, info: &agendao_client::SessionInfo) {
+        self.active_session.reset_for_new_session();
+        self.active_session.set_session_id(&info.id);
+        self.sf_tx.send_replace(Some(info.id.clone()));
+        self.load_session_messages(&info.id);
+        self.store.navigate(Route::Session { session_id: info.id.clone() });
     }
 
     pub(crate) fn execute_slash_action(&mut self, action_id: UiActionId) {
@@ -1100,13 +1118,8 @@ impl AppHandler {
                 let Some(ref api) = self.api else { return; };
                 match api.fork_session(&sid, Some(&prompt_id)) {
                     Ok(info) => {
-                        // 切到 fork 后的新会话；reset_for_new_session 清旧 messages，
-                        // load_session_messages 灌新——避免"新 session 接旧 session 显示"。
-                        self.active_session.reset_for_new_session();
-                        self.active_session.set_session_id(&info.id);
-                        self.sf_tx.send_replace(Some(info.id.clone()));
-                        self.load_session_messages(&info.id);
-                        self.store.navigate(Route::Session { session_id: info.id });
+                        // 切到 fork 后的新会话（reset+set_session_id+sf_tx+load+navigate）。
+                        self.switch_to_forked_session(&info);
                         // 回填输入框（木）——用户编辑后 Enter 发新 prompt。
                         self.prompt.set_text(&content);
                         self.store.push_toast(

@@ -337,9 +337,13 @@ impl AppHandler {
                 if let Some((sid, mid)) = self.fork_dialog.handle_key(key) {
                     if let Some(ref api) = self.api {
                         match api.fork_session(&sid, mid.as_deref()) {
-                            Ok(info) => self.store.push_toast(
-                                &format!("Forked → {}", info.title),
-                                crate::store::types::ToastMsgVariant::Success),
+                            Ok(info) => {
+                                // 切到 fork 后的新会话（对齐 /revise；整会话 fork 不回填输入框）。
+                                self.switch_to_forked_session(&info);
+                                self.store.push_toast(
+                                    &format!("Forked → {}", info.title),
+                                    crate::store::types::ToastMsgVariant::Success);
+                            }
                             Err(e) => self.store.push_toast(
                                 &format!("Fork failed: {}", e),
                                 crate::store::types::ToastMsgVariant::Error),
