@@ -960,12 +960,16 @@ impl AppHandler {
                                     entries.push(RecoveryEntry {
                                         label: format!("action: {}", a.label),
                                         detail: a.description,
+                                        action_kind: Some(a.kind),
+                                        target_id: a.target_id,
                                     });
                                 }
                                 for c in proto.checkpoints {
                                     entries.push(RecoveryEntry {
                                         label: format!("checkpoint: [{}] {}", c.status, c.label),
                                         detail: c.summary.unwrap_or_else(|| c.kind),
+                                        action_kind: None,
+                                        target_id: None,
                                     });
                                 }
                                 if entries.is_empty() {

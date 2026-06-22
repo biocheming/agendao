@@ -350,10 +350,48 @@ impl ApiBridge {
         self.block_on(self.client.get_session_recovery(session_id))
     }
 
-    /// /task：全局 agent 任务注册表（非 per-session）。读视图——cancel_task
-    /// 需 confirm + DELETE，留后续。
+    /// /task：全局 agent 任务注册表（非 per-session）。
     pub fn list_tasks(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
         self.block_on(self.client.list_tasks())
+    }
+
+    /// /skill/proposal/{id}/status POST：approve（"accepted"）/reject（"rejected"）。
+    /// 直接执行类——dialog 保持打开，Ok 后由调用方 remove_by_id 回流（水生木）。
+    /// 局限：无 local-direct 短路（与 list_skill_proposals 等读路径一致），
+    /// local-direct 模式走 dummy client 会失败，留后续工程。
+    pub fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<agendao_client::SkillEvolutionProposal> {
+        self.block_on(self.client.update_skill_proposal_status(id, status))
+    }
+
+    /// /mcp/{name}/connect POST：连接 MCP server。直接执行类——Ok 后重拉
+    /// get_mcp_status 回流（status 字段变化非移除，重拉是唯一权威）。
+    pub fn connect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        self.block_on(self.client.connect_mcp(name))
+    }
+
+    /// /mcp/{name}/disconnect POST：断开 MCP server。直接执行类——Ok 后重拉回流。
+    pub fn disconnect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        self.block_on(self.client.disconnect_mcp(name))
+    }
+
+    /// /session/{id}/recovery/execute POST：执行 recovery action。confirm 类——
+    /// 经 PendingConfirm::ExecuteRecovery 路由（panel_dispatch），不在 list dialog 直接调。
+    pub fn execute_session_recovery(
+        &self,
+        session_id: &str,
+        action: agendao_client::RecoveryActionKind,
+        target_id: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.block_on(self.client.execute_session_recovery(session_id, action, target_id))
+    }
+
+    /// /task/{id} DELETE：取消运行中 task。confirm 类——经 PendingConfirm::CancelTask 路由。
+    pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
+        self.block_on(self.client.cancel_task(task_id))
     }
 
     pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<agendao_client::SessionInfo> {

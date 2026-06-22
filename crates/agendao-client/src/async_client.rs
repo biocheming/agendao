@@ -796,6 +796,16 @@ impl AsyncApiClient {
         Self::json_ok(resp, "list tasks").await
     }
 
+    /// `/task/{id}` DELETE：取消运行中 task。返回 `{"cancelled": id}`。
+    /// confirm 类写操作——经 PendingConfirm::CancelTask 路由（panel_dispatch）。
+    pub async fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
+        self.delete_json(
+            &format!("/task/{}", task_id),
+            &format!("cancel task `{}`", task_id),
+        )
+        .await
+    }
+
     pub async fn get_skill_detail(
         &self,
         query: &SkillDetailQuery,

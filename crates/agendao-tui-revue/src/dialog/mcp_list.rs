@@ -1,7 +1,9 @@
-//! 金 — MCP server status list dialog（Part 2, B 层第二批）。
+//! 金 — MCP server status list dialog。
 //!
-//! 与 `/skills` 同范式。读视图 first slice（道纪第十条）：列表权威已成，
-//! 写端（connect/disconnect/restart MCP 需独立 dialog + API）留后续。
+//! 与 `/skills` 同范式。写操作闭环（B 层第三批）：c=connect / d=disconnect
+//! 直接执行（前置 status 校验——已 connected 不重复 connect，未 connected
+//! 不 disconnect），Ok 后重拉 get_mcp_status 回流（status 字段变化非移除，
+//! 重拉是唯一权威——水生木）。dialog 保持打开支持批量。Enter=View 关闭。
 
 use revue::prelude::*;
 use revue::event::Key;
@@ -14,6 +16,13 @@ pub struct McpEntry {
     pub status: String,
     pub tools: usize,
     pub resources: usize,
+}
+
+/// 列表按键动作（per-dialog action enum）。
+pub enum McpAction {
+    Connect(McpEntry),
+    Disconnect(McpEntry),
+    View(McpEntry),
 }
 
 pub struct McpListDialog {
@@ -36,23 +45,27 @@ impl McpListDialog {
     pub fn close(&mut self) { self.visible = false; }
     pub fn is_open(&self) -> bool { self.visible }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<McpEntry> {
+    /// c=connect / d=disconnect（保持 dialog 打开，支持批量）/ Enter=view（关闭）。
+    pub fn handle_key(&mut self, key: &Key) -> Option<McpAction> {
         if !self.visible { return None; }
         if self.entries.is_empty() {
             if matches!(key, Key::Escape) { self.close(); }
             return None;
         }
         let len = self.entries.len();
+        let pick = || self.entries.get(self.selected).cloned();
         match key {
             Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
             Key::Down  => { self.selected = (self.selected + 1) % len; None }
             Key::Home  => { self.selected = 0; None }
             Key::End   => { self.selected = len - 1; None }
             Key::Enter => {
-                let pick = self.entries.get(self.selected).cloned();
+                let pick = pick();
                 self.close();
-                pick
+                pick.map(McpAction::View)
             }
+            Key::Char('c') => pick().map(McpAction::Connect),
+            Key::Char('d') => pick().map(McpAction::Disconnect),
             Key::Escape => { self.close(); None }
             _ => None,
         }
@@ -87,7 +100,7 @@ impl McpListDialog {
             colors::ACCENT_CYAN,
             &items,
             self.selected,
-            "↑↓ navigate  Enter: select (read-only)  Esc: close",
+            "↑↓ navigate  c: connect  d: disconnect  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

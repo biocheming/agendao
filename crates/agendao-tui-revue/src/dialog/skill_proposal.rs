@@ -1,12 +1,13 @@
-//! 金 — Skill evolution proposal list dialog（Part 1, B 层第二批）。
+//! 金 — Skill evolution proposal list dialog。
 //!
-//! 与 `/skills` 同范式（B 层第一批建立的内联列表标准）：keymap dispatch
-//! 时 list_skill_proposals + open，handle_key 给 Outcome（Option<entry>），
+//! 与 `/skills` 同范式（B 层第一批内联列表标准）：keymap dispatch 时
+//! list_skill_proposals + open，handle_key 给 `Option<SkillProposalAction>`，
 //! render 用 PromptGeom + render_list_dialog_bottom 走 A1 几何。
 //!
-//! 读视图 first slice（道纪第十条）：列表权威已成（金的成形），写端
-//! （approve/reject proposal 需 update_skill_proposal_status + confirm）
-//! 留 B 层第三批——比把假"已批准"toast 抹上诚实得多。
+//! 写操作闭环（B 层第三批）：a=approve / r=reject 直接执行
+//! update_skill_proposal_status + remove_by_id 回流（水生木）；dialog 保持
+//! 打开支持批量。Enter=View 关闭。approve/reject 走 "accepted"/"rejected"
+//! （ProposalStatus 枚举值，server `/skill/proposal/{id}/status` 接受）。
 
 use revue::prelude::*;
 use revue::event::Key;
@@ -19,6 +20,14 @@ pub struct SkillProposalEntry {
     pub title: String,
     pub status: String,
     pub kind: String,
+}
+
+/// 列表按键动作（per-dialog action enum，跟 ProviderAction/ExportAction 先例）。
+/// 变体携 entry（Clone 小 struct）——handler 拿到 id（API）/title（toast）全部信息。
+pub enum SkillProposalAction {
+    Approve(SkillProposalEntry),
+    Reject(SkillProposalEntry),
+    View(SkillProposalEntry),
 }
 
 pub struct SkillProposalDialog {
@@ -41,24 +50,39 @@ impl SkillProposalDialog {
     pub fn close(&mut self) { self.visible = false; }
     pub fn is_open(&self) -> bool { self.visible }
 
-    /// Enter → 返回选中 entry；其他键不消费但仍 visible。
-    pub fn handle_key(&mut self, key: &Key) -> Option<SkillProposalEntry> {
+    /// approve/reject 后移除已处理条目（列表 pending-filtered，状态变更后
+    /// 条目离开 pending 列表——悲观移除，与 API Ok 同步）。entries 私有，
+    /// handler 无法直接过滤，故经此方法（土律：唯一所有权）。
+    pub fn remove_by_id(&mut self, id: &str) {
+        if let Some(idx) = self.proposals.iter().position(|p| p.id == id) {
+            self.proposals.remove(idx);
+            if self.selected >= self.proposals.len() {
+                self.selected = self.proposals.len().saturating_sub(1);
+            }
+        }
+    }
+
+    /// a=approve / r=reject（保持 dialog 打开，支持批量）/ Enter=view（关闭）。
+    pub fn handle_key(&mut self, key: &Key) -> Option<SkillProposalAction> {
         if !self.visible { return None; }
         if self.proposals.is_empty() {
             if matches!(key, Key::Escape) { self.close(); }
             return None;
         }
         let len = self.proposals.len();
+        let pick = || self.proposals.get(self.selected).cloned();
         match key {
             Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
             Key::Down  => { self.selected = (self.selected + 1) % len; None }
             Key::Home  => { self.selected = 0; None }
             Key::End   => { self.selected = len - 1; None }
             Key::Enter => {
-                let pick = self.proposals.get(self.selected).cloned();
+                let pick = pick();
                 self.close();
-                pick
+                pick.map(SkillProposalAction::View)
             }
+            Key::Char('a') => pick().map(SkillProposalAction::Approve),
+            Key::Char('r') => pick().map(SkillProposalAction::Reject),
             Key::Escape => { self.close(); None }
             _ => None,
         }
@@ -93,7 +117,7 @@ impl SkillProposalDialog {
             colors::ACCENT_PURPLE,
             &items,
             self.selected,
-            "↑↓ navigate  Enter: select (read-only)  Esc: close",
+            "↑↓ navigate  a: approve  r: reject  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

@@ -99,9 +99,32 @@ impl AppHandler {
                                 self.active_session.reset_for_new_session();
                                 self.store.navigate_home();
                             }
-                            // PendingConfirm 当前单变体，Some(DeleteSession) 已穷尽
-                            // 所有 Some；None 收尾。未来新增变体会让此 match 变非
-                            // 穷尽 → 编译报错 → 强制补臂（不静默吞错）。
+                            Some(PendingConfirm::CancelTask(task_id)) => {
+                                if let Some(ref api) = self.api {
+                                    match api.cancel_task(&task_id) {
+                                        Ok(_) => self.store.push_toast(
+                                            &format!("Task cancelled: {}", task_id),
+                                            crate::store::types::ToastMsgVariant::Success),
+                                        Err(e) => self.store.push_toast(
+                                            &format!("Cancel failed: {}", e),
+                                            crate::store::types::ToastMsgVariant::Error),
+                                    }
+                                }
+                            }
+                            Some(PendingConfirm::ExecuteRecovery { session_id, action, target_id }) => {
+                                if let Some(ref api) = self.api {
+                                    match api.execute_session_recovery(&session_id, action, target_id) {
+                                        Ok(_) => self.store.push_toast(
+                                            "Recovery action executed",
+                                            crate::store::types::ToastMsgVariant::Success),
+                                        Err(e) => self.store.push_toast(
+                                            &format!("Recovery failed: {}", e),
+                                            crate::store::types::ToastMsgVariant::Error),
+                                    }
+                                }
+                            }
+                            // PendingConfirm 多变体已穷尽 Some；None 收尾。
+                            // 新增变体会让此 match 变非穷尽 → 编译报错 → 强制补臂。
                             None => {}
                         }
                     } else {
@@ -179,53 +202,127 @@ impl AppHandler {
                 return true;
             }
             Panel::SkillProposal => {
-                if let Some(entry) = self.skill_proposal.handle_key(key) {
-                    // 读视图 first slice：approve/reject 需 update_skill_proposal_status
-                    // + confirm，留 B 层第三批。诚实标注，不伪"已批准"。
-                    self.store.push_toast(
-                        &format!("Proposal selected (read-only): [{}] {}", entry.status, entry.title),
-                        crate::store::types::ToastMsgVariant::Info,
-                    );
-                    self.panel = Panel::None;
+                if let Some(action) = self.skill_proposal.handle_key(key) {
+                    match action {
+                        crate::dialog::SkillProposalAction::Approve(e) => {
+                            self.execute_proposal_status(&e, "accepted");
+                        }
+                        crate::dialog::SkillProposalAction::Reject(e) => {
+                            self.execute_proposal_status(&e, "rejected");
+                        }
+                        crate::dialog::SkillProposalAction::View(e) => {
+                            self.store.push_toast(
+                                &format!("[{}] {} — {}", e.status, e.title, e.kind),
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
+                            self.panel = Panel::None;
+                        }
+                    }
                     return true;
                 }
                 if !self.skill_proposal.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::McpList => {
-                if let Some(entry) = self.mcp_list.handle_key(key) {
-                    // 读视图：connect/disconnect/restart 需独立 dialog + API，留后续。
-                    self.store.push_toast(
-                        &format!("MCP selected (read-only): [{}] {}", entry.status, entry.name),
-                        crate::store::types::ToastMsgVariant::Info,
-                    );
-                    self.panel = Panel::None;
+                if let Some(action) = self.mcp_list.handle_key(key) {
+                    match action {
+                        crate::dialog::McpAction::Connect(e) => {
+                            // 前置校验：已 connected 不重复 connect（避免 no-op round-trip）。
+                            if e.status == "connected" {
+                                self.store.push_toast(
+                                    "Already connected",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.execute_mcp_toggle(&e, true);
+                            }
+                        }
+                        crate::dialog::McpAction::Disconnect(e) => {
+                            // 前置校验：未 connected 无 disconnect 语义。
+                            if e.status != "connected" {
+                                self.store.push_toast(
+                                    "Not connected",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.execute_mcp_toggle(&e, false);
+                            }
+                        }
+                        crate::dialog::McpAction::View(e) => {
+                            self.store.push_toast(
+                                &format!("[{}] {} · tools:{} res:{}", e.status, e.name, e.tools, e.resources),
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
+                            self.panel = Panel::None;
+                        }
+                    }
                     return true;
                 }
                 if !self.mcp_list.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::Recovery => {
-                if let Some(entry) = self.recovery_list.handle_key(key) {
-                    // 读视图：execute recovery action 需 confirm + execute_session_recovery，留后续。
-                    self.store.push_toast(
-                        &format!("Recovery entry selected (read-only): {}", entry.label),
-                        crate::store::types::ToastMsgVariant::Info,
-                    );
-                    self.panel = Panel::None;
+                if let Some(action) = self.recovery_list.handle_key(key) {
+                    match action {
+                        crate::dialog::RecoveryAction::Execute { label, action_kind, target_id } => {
+                            // session_id 从 active_session 取（dialog 不持有；modal 不变量
+                            // 保证 open→confirm 期间不变）。None→toast 不伪执行（道纪第十条）。
+                            if let Some(sid) = self.active_session.get_session_id() {
+                                self.confirm_dialog.ask(
+                                    "Execute Recovery",
+                                    &format!("Execute {} — proceed?", label),
+                                    "Execute",
+                                );
+                                self.pending_confirm = Some(PendingConfirm::ExecuteRecovery {
+                                    session_id: sid,
+                                    action: action_kind,
+                                    target_id,
+                                });
+                                self.recovery_list.close();
+                                self.panel = Panel::Confirm;
+                            } else {
+                                self.store.push_toast(
+                                    "No active session",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            }
+                        }
+                        crate::dialog::RecoveryAction::View(e) => {
+                            self.store.push_toast(
+                                &format!("{} — {}", e.label, e.detail),
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
+                            self.panel = Panel::None;
+                        }
+                    }
                     return true;
                 }
                 if !self.recovery_list.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::TaskList => {
-                if let Some(entry) = self.task_list.handle_key(key) {
-                    // 读视图：cancel_task 需 confirm + DELETE，留后续。
-                    self.store.push_toast(
-                        &format!("Task selected (read-only): [{}] {} ({})", entry.status, entry.agent_name, entry.id),
-                        crate::store::types::ToastMsgVariant::Info,
-                    );
-                    self.panel = Panel::None;
+                if let Some(action) = self.task_list.handle_key(key) {
+                    match action {
+                        crate::dialog::TaskAction::Cancel(e) => {
+                            // confirm 类：关 list → 开 ConfirmDialog → 确认后 Panel::None。
+                            // cancel 影响运行中任务，需二次确认（道纪第九条：写入即承诺回收）。
+                            self.confirm_dialog.ask(
+                                "Cancel Task",
+                                &format!("Cancel task {} ({})?", e.id, e.agent_name),
+                                "Cancel",
+                            );
+                            self.pending_confirm = Some(PendingConfirm::CancelTask(e.id));
+                            self.task_list.close();
+                            self.panel = Panel::Confirm;
+                        }
+                        crate::dialog::TaskAction::View(e) => {
+                            self.store.push_toast(
+                                &format!("[{}] {} ({})", e.status, e.agent_name, e.id),
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
+                            self.panel = Panel::None;
+                        }
+                    }
                     return true;
                 }
                 if !self.task_list.is_open() { self.panel = Panel::None; }
@@ -373,5 +470,83 @@ impl AppHandler {
             }
         }
         false
+    }
+
+    /// approve/reject proposal 共用：调 update_skill_proposal_status，
+    /// Ok → remove_by_id 回流 + toast Success；Err → toast Error + 列表不变
+    /// （悲观执行，无需回滚）。dialog 保持打开支持批量（水生木闭环）。
+    fn execute_proposal_status(
+        &mut self,
+        entry: &crate::dialog::SkillProposalEntry,
+        status: &str,
+    ) {
+        if let Some(ref api) = self.api {
+            match api.update_skill_proposal_status(&entry.id, status) {
+                Ok(_) => {
+                    self.skill_proposal.remove_by_id(&entry.id);
+                    self.store.push_toast(
+                        &format!("Proposal {}: {}", status, entry.title),
+                        crate::store::types::ToastMsgVariant::Success,
+                    );
+                }
+                Err(e) => self.store.push_toast(
+                    &format!("{} failed: {}", status, e),
+                    crate::store::types::ToastMsgVariant::Error,
+                ),
+            }
+        }
+    }
+
+    /// connect(true)/disconnect(false) MCP 共用：调 API，Ok → 重拉
+    /// get_mcp_status + set_entries 回流（status 变化非移除，重拉是唯一权威）
+    /// + toast Success；Err → toast Error + 列表不变。dialog 保持打开（批量）。
+    fn execute_mcp_toggle(&mut self, entry: &crate::dialog::McpEntry, connect: bool) {
+        if let Some(ref api) = self.api {
+            let result = if connect {
+                api.connect_mcp(&entry.name)
+            } else {
+                api.disconnect_mcp(&entry.name)
+            };
+            match result {
+                Ok(_) => {
+                    self.reload_mcp_status();
+                    self.store.push_toast(
+                        &format!("MCP {}: {}",
+                            if connect { "connected" } else { "disconnected" }, entry.name),
+                        crate::store::types::ToastMsgVariant::Success,
+                    );
+                }
+                Err(e) => self.store.push_toast(
+                    &format!("{} failed: {}",
+                        if connect { "Connect" } else { "Disconnect" }, e),
+                    crate::store::types::ToastMsgVariant::Error,
+                ),
+            }
+        }
+    }
+
+    /// 重拉 MCP 状态 + set_entries 回流。写操作后 status 字段变化，重拉是
+    /// 唯一权威（非乐观移除）。失败 toast Warning（写已生效，列表可能 stale）。
+    fn reload_mcp_status(&mut self) {
+        if let Some(ref api) = self.api {
+            match api.get_mcp_status() {
+                Ok(servers) => {
+                    let entries: Vec<crate::dialog::McpEntry> = servers
+                        .into_iter()
+                        .map(|s| crate::dialog::McpEntry {
+                            name: s.name,
+                            status: s.status,
+                            tools: s.tools,
+                            resources: s.resources,
+                        })
+                        .collect();
+                    self.mcp_list.set_entries(entries);
+                }
+                Err(e) => self.store.push_toast(
+                    &format!("Reload MCP list failed: {}", e),
+                    crate::store::types::ToastMsgVariant::Warning,
+                ),
+            }
+        }
     }
 }

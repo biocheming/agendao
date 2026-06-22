@@ -213,6 +213,14 @@ pub(crate) enum Panel {
 #[derive(Clone, Debug)]
 pub(crate) enum PendingConfirm {
     DeleteSession(String),
+    CancelTask(String),
+    /// execute_session_recovery 需 session_id + action + target_id。session_id
+    /// 在 panel_dispatch 处理 Execute 时从 active_session 取（dialog 不持有）。
+    ExecuteRecovery {
+        session_id: String,
+        action: agendao_client::RecoveryActionKind,
+        target_id: Option<String>,
+    },
 }
 
 /// Application state + event handler.

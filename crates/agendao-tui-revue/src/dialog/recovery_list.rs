@@ -1,12 +1,15 @@
-//! 金 — Session recovery list dialog（Part 3, B 层第二批）。
+//! 金 — Session recovery list dialog。
 //!
 //! per-session 视图（需 active session_id）。把 `SessionRecoveryProtocol`
-//! 的 actions + checkpoints 映射成行。读视图 first slice（道纪第十条）：
-//! 列表权威已成，写端（execute recovery action 需 confirm +
-//! execute_session_recovery）留 B 层第三批。
+//! 的 actions + checkpoints 映射成行。写操作闭环（B 层第三批）：
+//! x=execute 走 confirm 类（execute 影响执行流，需二次确认）——仅 action
+//! 行可执行（checkpoint 无 action_kind，'x' 返回 None）。Enter=View 关闭。
+//! session_id 不在 dialog 持有，panel_dispatch 处理 Execute 时从
+//! active_session 取（modal 不变量保证 open→confirm 期间不变）。
 
 use revue::prelude::*;
 use revue::event::Key;
+use agendao_client::RecoveryActionKind;
 use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
 
@@ -14,6 +17,20 @@ use crate::dialog::backdrop::{self, ListItem};
 pub struct RecoveryEntry {
     pub label: String,
     pub detail: String,
+    /// action 行给 Some（可 execute）；checkpoint 行给 None（'x' 无反应）。
+    pub action_kind: Option<RecoveryActionKind>,
+    pub target_id: Option<String>,
+}
+
+/// 列表按键动作。Execute 携 label（confirm message 友好显示）+ action_kind +
+/// target_id（API 参数）。confirm 类——panel_dispatch 关 list + 开 ConfirmDialog。
+pub enum RecoveryAction {
+    Execute {
+        label: String,
+        action_kind: RecoveryActionKind,
+        target_id: Option<String>,
+    },
+    View(RecoveryEntry),
 }
 
 pub struct RecoveryListDialog {
@@ -36,7 +53,9 @@ impl RecoveryListDialog {
     pub fn close(&mut self) { self.visible = false; }
     pub fn is_open(&self) -> bool { self.visible }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<RecoveryEntry> {
+    /// x=execute（仅 action_kind.is_some()，不 close——panel_dispatch 关+开 confirm）
+    /// / Enter=view（关闭）。
+    pub fn handle_key(&mut self, key: &Key) -> Option<RecoveryAction> {
         if !self.visible { return None; }
         if self.entries.is_empty() {
             if matches!(key, Key::Escape) { self.close(); }
@@ -51,8 +70,17 @@ impl RecoveryListDialog {
             Key::Enter => {
                 let pick = self.entries.get(self.selected).cloned();
                 self.close();
-                pick
+                pick.map(RecoveryAction::View)
             }
+            // checkpoint（action_kind=None）按 x 无反应——不伪执行（道纪第十条）。
+            // RecoveryActionKind 非 Copy，clone Option 后 map move。
+            Key::Char('x') => self.entries.get(self.selected).and_then(|e| {
+                e.action_kind.clone().map(|k| RecoveryAction::Execute {
+                    label: e.label.clone(),
+                    action_kind: k,
+                    target_id: e.target_id.clone(),
+                })
+            }),
             Key::Escape => { self.close(); None }
             _ => None,
         }
@@ -77,8 +105,9 @@ impl RecoveryListDialog {
         }
         let items: Vec<ListItem> = self.entries.iter().enumerate().take(16).map(|(i, e)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
+            let exec_hint = if e.action_kind.is_some() { " [x: exec]" } else { "" };
             ListItem::Row {
-                display: format!("{}{} — {}", marker, e.label, e.detail),
+                display: format!("{}{} — {}{}", marker, e.label, e.detail, exec_hint),
                 muted: false,
             }
         }).collect();
@@ -87,7 +116,7 @@ impl RecoveryListDialog {
             colors::ACCENT_YELLOW,
             &items,
             self.selected,
-            "↑↓ navigate  Enter: select (read-only)  Esc: close",
+            "↑↓ navigate  x: execute (actions only)  Enter: view  Esc: close",
             ctx, geom, 16,
         );
     }

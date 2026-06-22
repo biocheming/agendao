@@ -1,7 +1,10 @@
-//! 金 — Global agent task list dialog（Part 4, B 层第二批）。
+//! 金 — Global agent task list dialog。
 //!
-//! `/task` 全局注册表（非 per-session）。读视图 first slice（道纪第十条）：
-//! 列表权威已成，写端（cancel_task 需 confirm + DELETE）留 B 层第三批。
+//! `/task` 全局注册表（非 per-session）。写操作闭环（B 层第三批）：
+//! c=cancel 走 confirm 类——关 list → 开 ConfirmDialog → 确认后 Panel::None
+//! （cancel 影响运行中任务，需二次确认）。下次 OpenTasks 重拉回流。
+//! 无 remove_by_id：cancel 后 dialog 已 close，就地移除无 runtime read path
+//! （道纪第十条——避免伪权威）。Enter=View 关闭。
 
 use revue::prelude::*;
 use revue::event::Key;
@@ -15,6 +18,12 @@ pub struct TaskEntry {
     pub status: String,
     pub step: Option<u32>,
     pub max_steps: Option<u32>,
+}
+
+/// 列表按键动作（per-dialog action enum）。cancel 走 confirm 类。
+pub enum TaskAction {
+    Cancel(TaskEntry),
+    View(TaskEntry),
 }
 
 pub struct TaskListDialog {
@@ -37,23 +46,26 @@ impl TaskListDialog {
     pub fn close(&mut self) { self.visible = false; }
     pub fn is_open(&self) -> bool { self.visible }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<TaskEntry> {
+    /// c=cancel（不 close——panel_dispatch 关 list + 开 confirm）/ Enter=view（关闭）。
+    pub fn handle_key(&mut self, key: &Key) -> Option<TaskAction> {
         if !self.visible { return None; }
         if self.entries.is_empty() {
             if matches!(key, Key::Escape) { self.close(); }
             return None;
         }
         let len = self.entries.len();
+        let pick = || self.entries.get(self.selected).cloned();
         match key {
             Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
             Key::Down  => { self.selected = (self.selected + 1) % len; None }
             Key::Home  => { self.selected = 0; None }
             Key::End   => { self.selected = len - 1; None }
             Key::Enter => {
-                let pick = self.entries.get(self.selected).cloned();
+                let pick = pick();
                 self.close();
-                pick
+                pick.map(TaskAction::View)
             }
+            Key::Char('c') => pick().map(TaskAction::Cancel),
             Key::Escape => { self.close(); None }
             _ => None,
         }
@@ -93,7 +105,7 @@ impl TaskListDialog {
             colors::ACCENT_GREEN,
             &items,
             self.selected,
-            "↑↓ navigate  Enter: select (read-only)  Esc: close",
+            "↑↓ navigate  c: cancel  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

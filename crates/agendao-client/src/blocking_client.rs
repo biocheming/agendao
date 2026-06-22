@@ -31,7 +31,7 @@ use crate::{
     SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
     SessionListItem, SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
     SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
-    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
+    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse, SkillEvolutionProposal,
     SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
     SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
     SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
@@ -642,6 +642,31 @@ impl BlockingApiClient {
     /// `/task`：全局 agent 任务注册表（非 per-session）。读视图。
     pub fn list_tasks(&self) -> anyhow::Result<Vec<TaskSummaryInfo>> {
         self.get_json("/task/", "list tasks")
+    }
+
+    /// `/skill/proposal/{id}/status` POST：approve（"accepted"）/reject（"rejected"）。
+    /// parity with async client（bridge 用 async，此处仅补全 public API）。
+    pub fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<SkillEvolutionProposal> {
+        let body = serde_json::json!({ "status": status });
+        self.post_json(
+            &format!("/skill/proposal/{}/status", id),
+            "update skill proposal status",
+            &body,
+        )
+    }
+
+    /// `/task/{id}` DELETE：取消运行中 task。返回 `{"cancelled": id}`。
+    /// parity with async client。
+    pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
+        let response = self.delete_expect_success(
+            &format!("/task/{}", task_id),
+            &format!("cancel task `{}`", task_id),
+        )?;
+        Ok(response.json::<serde_json::Value>()?)
     }
 
     pub fn get_skill_detail(
