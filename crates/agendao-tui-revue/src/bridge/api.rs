@@ -301,6 +301,61 @@ impl ApiBridge {
         self.block_on(self.client.share_session(session_id))
     }
 
+    /// /unshare：撤销分享链接。与 `share_session` 同范式，仅走 HTTP
+    /// （local-direct 暂不短路；与 share 一致）。
+    pub fn unshare_session(&self, session_id: &str) -> anyhow::Result<bool> {
+        self.block_on(self.client.unshare_session(session_id))
+    }
+
+    /// /compact：触发会话压缩。focus=None 时 server 用默认压缩策略；
+    /// 本 bridge 暂不收 focus 参数，独立 dialog 出来后再扩签名。
+    pub fn compact_session(
+        &self,
+        session_id: &str,
+        focus: Option<&str>,
+    ) -> anyhow::Result<agendao_client::CompactResponse> {
+        self.block_on(self.client.compact_session(session_id, focus))
+    }
+
+    /// /skill/catalog：列出可用 skills（read-only 视图）。
+    pub fn list_skills(
+        &self,
+        query: Option<&agendao_client::SkillCatalogQuery>,
+    ) -> anyhow::Result<Vec<agendao_client::SkillCatalogEntry>> {
+        self.block_on(self.client.list_skills(query))
+    }
+
+    /// /skill/proposal：列出自演化提案。status 传 "pending" 看待处理项；
+    /// 传 "all" 或空看全部（server 端会 fallback）。读视图 first slice——
+    /// approve/reject 需 update_skill_proposal_status，留 B 层第三批。
+    pub fn list_skill_proposals(
+        &self,
+        status: &str,
+    ) -> anyhow::Result<Vec<agendao_client::SkillEvolutionProposal>> {
+        self.block_on(self.client.list_skill_proposals(status))
+    }
+
+    /// /mcp：列出所有 MCP 服务器状态（全局）。读视图——connect/disconnect
+    /// 需独立 dialog + API，留后续。
+    pub fn get_mcp_status(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
+        self.block_on(self.client.get_mcp_status())
+    }
+
+    /// /session/{id}/recovery：per-session 恢复协议（actions + checkpoints）。
+    /// 读视图——execute recovery 需 confirm + execute_session_recovery，留后续。
+    pub fn get_session_recovery(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<agendao_client::SessionRecoveryProtocol> {
+        self.block_on(self.client.get_session_recovery(session_id))
+    }
+
+    /// /task：全局 agent 任务注册表（非 per-session）。读视图——cancel_task
+    /// 需 confirm + DELETE，留后续。
+    pub fn list_tasks(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
+        self.block_on(self.client.list_tasks())
+    }
+
     pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<agendao_client::SessionInfo> {
         self.block_on(self.client.update_session_title(session_id, title))
     }

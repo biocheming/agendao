@@ -813,6 +813,7 @@ dependencies = [
  "agendao-state",
  "agendao-types",
  "anyhow",
+ "base64",
  "dirs",
  "futures",
  "ratatui",

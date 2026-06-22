@@ -21,6 +21,33 @@ pub fn tokyo_night_light() -> Theme {
         .build()
 }
 
+/// variant → theme 映射（agendao 仅注册 dark/light 两套主题；HighContrast
+/// 无对应主题，fallback dark，避免 set_theme 指向未注册主题）。
+pub fn theme_for(v: ThemeVariant) -> Theme {
+    match v {
+        ThemeVariant::Dark | ThemeVariant::HighContrast => tokyo_night_dark(),
+        ThemeVariant::Light => tokyo_night_light(),
+    }
+}
+
+/// 翻转 variant（agendao 在 dark/light 间切；HighContrast → Dark）。
+/// 唯一翻转入口——ToggleAppearance 经此调，不在 keymap 自判（土律归一）。
+pub fn toggle_variant(v: ThemeVariant) -> ThemeVariant {
+    match v {
+        ThemeVariant::Dark => ThemeVariant::Light,
+        _ => ThemeVariant::Dark,
+    }
+}
+
+/// variant → 显示标签（toast 文案用，单一口径）。
+pub fn variant_label(v: ThemeVariant) -> &'static str {
+    match v {
+        ThemeVariant::Dark => "dark",
+        ThemeVariant::Light => "light",
+        ThemeVariant::HighContrast => "high-contrast",
+    }
+}
+
 /// 注册 agendao 的 dark/light 主题到 revue 全局 `ThemeManager`。
 ///
 /// 幂等：重复调用安全（HashMap 覆盖）。这是 agendao 主题的唯一注册点

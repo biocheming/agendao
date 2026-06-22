@@ -4,6 +4,7 @@
 //! session list, and a map of active SessionStores.
 
 use revue::prelude::*;
+use revue::style::ThemeVariant;
 use crate::store::types::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +40,24 @@ pub struct AppStore {
 
     // 土：Toast 队列（ToastLayer 消费）
     pub toasts: Signal<Vec<ToastMsg>>,
+
+    // 金：Session header dir 全路径 tooltip（点击触发，render overlay 消费）
+    pub dir_tooltip: Signal<Option<DirTooltip>>,
+
+    // 木→金：UI 偏好 toggle（单一所有权，默认值对齐当前硬编码行为；
+    // 渲染端读 signal 决定是否画 header/tips/thinking/scrollbar + 密度）。
+    // 注意：timestamps 未在此列——TUI 当前根本不渲染 timestamp（TranscriptBlock
+    // 各变体无 timestamp 字段），加一个无消费端的 signal 即「有阴无阳」伪权威
+    // （道纪第十条）。待 timestamp 渲染落地后再加。
+    pub show_thinking: Signal<bool>,
+    pub show_scrollbar: Signal<bool>,
+    pub show_header: Signal<bool>,
+    pub show_tips: Signal<bool>,
+    /// true=紧凑间距（块间 0 行间隔）；false=舒适（当前默认，块间 1 行）。
+    pub compact_density: Signal<bool>,
+    /// 当前主题 variant（阴面记账）。启动时由 OSC11 检测初值；
+    /// ToggleAppearance 经 `ds::theme::toggle_variant` 翻转 + `set_theme` 同步渲染。
+    pub theme_variant: Signal<ThemeVariant>,
 }
 
 impl AppStore {
@@ -58,6 +77,13 @@ impl AppStore {
             selected_mode: signal(None),
             session_list: signal(Vec::new()),
             toasts: signal(Vec::new()),
+            dir_tooltip: signal(None),
+            show_thinking: signal(true),
+            show_scrollbar: signal(true),
+            show_header: signal(true),
+            show_tips: signal(true),
+            compact_density: signal(false),
+            theme_variant: signal(ThemeVariant::Dark),
         }
     }
 

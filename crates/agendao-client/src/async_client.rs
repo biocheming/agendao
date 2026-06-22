@@ -41,7 +41,8 @@ use crate::{
     SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
     SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
     SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
-    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, TaskSummaryInfo,
+    UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -786,6 +787,13 @@ impl AsyncApiClient {
             None => self.client.get(&url).send().await?,
         };
         Self::json_ok(resp, "list skills").await
+    }
+
+    /// `/task`：全局 agent 任务注册表（非 per-session）。读视图。
+    pub async fn list_tasks(&self) -> anyhow::Result<Vec<TaskSummaryInfo>> {
+        let url = server_url(&self.base_url, "/task/");
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, "list tasks").await
     }
 
     pub async fn get_skill_detail(

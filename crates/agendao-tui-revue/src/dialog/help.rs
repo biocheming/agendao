@@ -22,7 +22,7 @@ impl HelpDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 
         let bindings: &[(&str, &str)] = &[
@@ -48,12 +48,12 @@ impl HelpDialog {
             );
         }
 
-        backdrop::render_dialog(
+        backdrop::render_dialog_bottom(
             "Help — Keybindings",
             colors::ACCENT_BLUE,
             content,
             "Esc/q/h/? to close",
-            ctx, 54, bindings.len() as u16 + 4,
+            ctx, geom, bindings.len() as u16 + 4,
         );
     }
 }

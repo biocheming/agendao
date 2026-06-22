@@ -1210,6 +1210,21 @@ pub struct ApiTodoItem {
     pub priority: String,
 }
 
+/// 全局 agent 任务注册表摘要（`/task` 端点）。与 server `task.rs` 的
+/// `TaskSummary` 同形——提升为 public 让 client/server 共享，避免 client
+/// 自定义类型漂移（道纪土律：单一类型权威）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskSummaryInfo {
+    pub id: String,
+    pub agent_name: String,
+    pub status: String,
+    pub step: Option<u32>,
+    pub max_steps: Option<u32>,
+    pub prompt: String,
+    pub started_at: i64,
+    pub elapsed_seconds: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDiffEntry {
     pub path: String,

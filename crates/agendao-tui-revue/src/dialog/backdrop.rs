@@ -28,8 +28,8 @@ use crate::theme::colors;
 /// a solid, slightly-raised surface.
 ///
 /// We deliberately do NOT dim the rest of the screen. AgenDao's
-/// permission/question are inline in the transcript flow (Claude
-/// Code/Codex style), and the remaining modals (/models, /sessions, …)
+/// permission/question are inline in the transcript flow (terminal
+/// inline-CLI style), and the remaining modals (/models, /sessions, …)
 /// float as a bright box over a *visible* transcript — not under a black
 /// wash. Must run *before* the positioned dialog renders, so the border
 /// + text draw on top. `x`/`y` are relative to `ctx.area`;
@@ -42,17 +42,53 @@ fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16,
     );
 }
 
+/// 当前路由输入框的屏幕几何（绝对坐标）。所有 `/` 弹框（SlashPopup 补全框 +
+/// Bottom 锚点对话框）的宽/x/垂直位置都从此派生——唯一真相（土律），避免补全框
+/// 与对话框两处各自算居中/宽度而漂移。由 `app::prompt_geometry` 按 route 计算。
+#[derive(Clone, Copy, Debug)]
+pub struct PromptGeom {
+    /// 输入框左边沿绝对 x。
+    pub x: u16,
+    /// 输入框上沿绝对 y（弹框贴其上方）。
+    pub y_top: u16,
+    /// 输入框宽度（弹框同宽）。
+    pub w: u16,
+}
+
+/// 按 display width (UAX#11) 截断字符串到 `max_w`,超出末尾加 `…`。Home 窄输入框
+/// (64 宽)下 SlashPopup 命令名/描述与 Bottom 列表行(/sessions 长 session 标题)共用
+/// ——revue positioned 按 width 硬裁会切 CJK 半个字,故主动按 display width 截断。
+/// 唯一截断实现(水律:消灭第二处实现)。
+pub(crate) fn truncate_to_width(s: &str, max_w: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if UnicodeWidthStr::width(s) <= max_w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw + 1 > max_w {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
 /// Where a dialog/list anchors on screen.
 ///
 /// Two strategies share one rendering core (唯一成形语法 — 金律):
 ///   - [`DialogAnchor::Centered`] — float in the middle (original behaviour:
 ///     rename, confirm, alert, provider, stash, export, fork, help).
-///   - [`DialogAnchor::Bottom`] — pin just above the input box, left-aligned
-///     full-width. Mirrors the slash-popup bottom anchor: the prompt occupies
-///     the bottom 5 rows (`prompt_y = area.y + height - 5`), so the panel sits
-///     at `y = (height-5) - h`. Used by the command-picker panels
-///     (/models, /sessions, /agents) so they read as "sitting on the input box"
-///     rather than "floating in the middle of the screen".
+///   - [`DialogAnchor::Bottom`] — follow the input box geometry (PromptGeom):
+///     width = input box width, x aligned to the input box, pinned just above
+///     it. Same geometry authority the slash-popup completion box uses, so
+///     every `/`-triggered panel (completion + /models, /sessions, /agents,
+///     /help, /rename, /stash) reads identically and sits on the input box
+///     rather than floating mid-screen.
 enum DialogAnchor {
     Centered,
     Bottom,
@@ -70,26 +106,28 @@ pub fn render_dialog(
 ) {
     let _ = render_positioned_dialog(
         DialogAnchor::Centered, title, border_color, content, footer_hint,
-        ctx, max_w, max_h,
+        ctx, max_w, max_h, None,
     );
 }
 
-/// Same as [`render_dialog`] but pinned above the input box, left-aligned
-/// full-width — for a command picker's empty/loading/error state
-/// (/sessions loading…). Keeps the panel at the same anchor as its list so
-/// loading→loaded doesn't make the box jump from centre to bottom.
+/// Frameless dialog following the input box geometry — width = input box width,
+/// x aligned to the input box, pinned just above it. 与 [`render_list_dialog_bottom`]
+/// 同一种成形语法（标题行 + content + hint，无框，`BG_PRIMARY` 底）。所有 /命令
+/// 单步对话框（/help /rename /confirm /stash）与 picker 的空/loading/error 态
+/// 都走这里——几何唯一权威 `PromptGeom`（土律），与 SlashPopup 补全框同构。
 pub fn render_dialog_bottom(
     title: &str,
     border_color: Color,
     content: Stack,
     footer_hint: &str,
     ctx: &mut RenderContext,
-    max_w: u16,
+    geom: PromptGeom,
     max_h: u16,
 ) {
+    // Bottom 几何由 geom 决定；max_w 在 Bottom 路径忽略，传 geom.w 占位。
     let _ = render_positioned_dialog(
         DialogAnchor::Bottom, title, border_color, content, footer_hint,
-        ctx, max_w, max_h,
+        ctx, geom.w, max_h, Some(geom),
     );
 }
 
@@ -105,6 +143,7 @@ fn render_positioned_dialog(
     ctx: &mut RenderContext,
     max_w: u16,
     max_h: u16,
+    geom: Option<PromptGeom>,
 ) {
     let area = ctx.area;
     let (w, h, x, y) = match anchor {
@@ -116,45 +155,77 @@ fn render_positioned_dialog(
             (w, h, x, y)
         }
         DialogAnchor::Bottom => {
-            // 占满宽(左右各留 2 列,与输入框/slash 对齐);高度留 6 行
-            // (5 行 prompt + 1 行 margin),避免空状态框压住输入框本体。
-            let w = area.width.saturating_sub(4);
-            let h = max_h.min(area.height.saturating_sub(6));
-            let x = 2u16;
-            let y = area.height.saturating_sub(5).saturating_sub(h);
+            // 跟随输入框几何（prompt_geometry 唯一权威，土律）：宽=输入框宽、
+            // x 对齐输入框、紧贴输入框正上方。max_w 在 Bottom 路径忽略（用 geom.w）。
+            let g = geom.expect("Bottom anchor requires prompt geometry");
+            let w = g.w;
+            let h = max_h.min(g.y_top.saturating_sub(area.y).saturating_sub(1));
+            let x = g.x.saturating_sub(area.x);
+            let y = g.y_top.saturating_sub(area.y).saturating_sub(h);
             (w, h, x, y)
         }
     };
 
-    // 贴底模式实色填全宽(col 0 起),而非仅框区(col 2+)。Home/会话屏下层按钮框
-    // (Tip/Environment 等)左边框在 col 0,贴底框宽达 width-4 与之水平重叠;若只填
-    // 框区,col 0-1 会透出下层边框,与列表左边框交错(实色不透字契约)。居中框在
-    // 屏幕中央,与 col 0 的按钮框不重叠,填框区即可。
+    // 实色填对话框矩形（实色不透字契约：positioned 浮层不清背景）。Bottom 现在
+    // 跟随输入框宽，只填框区即可——对话框缩到输入框宽后不再与 Home col 0 按钮框
+    // 水平重叠，无需全屏填遮底。居中框填框区（BG_SURFACE）。
     let (fill_x, fill_w, fill_bg) = match anchor {
         DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
-        DialogAnchor::Bottom => (0u16, area.width, colors::BG_PRIMARY),
+        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY),
     };
     paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
-    let dialog = Border::rounded()
-        .title(format!(" {} ", title))
-        .fg(border_color)
-        .child(
-            vstack().gap(1)
-                .child(content)
-                .child(
+    // Bottom 锚点无框（标题行 + content + hint，整片 BG_PRIMARY 融入终端），
+    // 与 render_positioned_list 的 Bottom 分支同构——金律：Bottom 锚点只有
+    // 一种成形语法。Centered 才套 Border::rounded（留给 alert/provider 等非
+    // /命令对话框）。此前 Bottom 也套圆角框，导致 /sessions 的 loading 态
+    // (render_dialog_bottom) 与加载完 (render_list_dialog_bottom) 框型不一致。
+    match anchor {
+        DialogAnchor::Bottom => {
+            let view = vstack().gap(0)
+                .child_sized(
+                    Text::new(format!(" {} ", title))
+                        .fg(border_color)
+                        .bg(colors::BG_PRIMARY)
+                        .bold(),
+                    1,
+                )
+                .child_flex(content, 1.0)
+                .child_sized(
                     Text::new(footer_hint)
                         .fg(colors::FG_MUTED)
-                        .align(Alignment::Center)
-                )
-        );
-
-    revue::widget::positioned(dialog)
-        .x(x as i16)
-        .y(y as i16)
-        .width(w)
-        .height(h)
-        .render(ctx);
+                        .bg(colors::BG_PRIMARY)
+                        .align(Alignment::Center),
+                    1,
+                );
+            revue::widget::positioned(view)
+                .x(x as i16)
+                .y(y as i16)
+                .width(w)
+                .height(h)
+                .render(ctx);
+        }
+        DialogAnchor::Centered => {
+            let dialog = Border::rounded()
+                .title(format!(" {} ", title))
+                .fg(border_color)
+                .child(
+                    vstack().gap(1)
+                        .child(content)
+                        .child(
+                            Text::new(footer_hint)
+                                .fg(colors::FG_MUTED)
+                                .align(Alignment::Center)
+                        )
+                );
+            revue::widget::positioned(dialog)
+                .x(x as i16)
+                .y(y as i16)
+                .width(w)
+                .height(h)
+                .render(ctx);
+        }
+    }
 }
 
 /// A single item in a list dialog.
@@ -230,15 +301,16 @@ pub fn render_list_dialog(
 ) {
     let _ = render_positioned_list(
         DialogAnchor::Centered, title, border_color, items, selected,
-        footer_hint, ctx, max_w, visible_rows,
+        footer_hint, ctx, max_w, visible_rows, None,
     );
 }
 
-/// Same as [`render_list_dialog`] but pinned above the input box, left-aligned
-/// full-width — the command-picker anchor (/models, /sessions, /agents). Reads
-/// as "sitting on the input box" rather than "floating in the middle". The
-/// list, sliding viewport, scrollbar and selection contract are identical to
-/// the centred variant — only the anchor differs.
+/// Same as [`render_list_dialog`] but following the input box geometry —
+/// width = input box width, x aligned to the input box, pinned just above it
+/// (the command-picker anchor: /models, /sessions, /agents). Reads as "sitting
+/// on the input box" rather than "floating in the middle". The list, sliding
+/// viewport, scrollbar and selection contract are identical to the centred
+/// variant — only the geometry source differs (PromptGeom, 土律).
 pub fn render_list_dialog_bottom(
     title: &str,
     border_color: Color,
@@ -246,12 +318,12 @@ pub fn render_list_dialog_bottom(
     selected: usize,
     footer_hint: &str,
     ctx: &mut RenderContext,
-    max_w: u16,
+    geom: PromptGeom,
     visible_rows: usize,
 ) {
     let _ = render_positioned_list(
         DialogAnchor::Bottom, title, border_color, items, selected,
-        footer_hint, ctx, max_w, visible_rows,
+        footer_hint, ctx, geom.w, visible_rows, Some(geom),
     );
 }
 
@@ -266,12 +338,12 @@ pub fn render_list_dialog_bottom_with_layout(
     selected: usize,
     footer_hint: &str,
     ctx: &mut RenderContext,
-    max_w: u16,
+    geom: PromptGeom,
     visible_rows: usize,
 ) -> ListDialogLayout {
     render_positioned_list(
         DialogAnchor::Bottom, title, border_color, items, selected,
-        footer_hint, ctx, max_w, visible_rows,
+        footer_hint, ctx, geom.w, visible_rows, Some(geom),
     )
 }
 
@@ -289,6 +361,7 @@ fn render_positioned_list(
     ctx: &mut RenderContext,
     max_w: u16,
     visible_rows: usize,
+    geom: Option<PromptGeom>,
 ) -> ListDialogLayout {
     let area = ctx.area;
     let total = items.len();
@@ -306,19 +379,23 @@ fn render_positioned_list(
             (w, h, x, y)
         }
         DialogAnchor::Bottom => {
-            // 占满宽(左右各留 2 列,与输入框/slash 对齐)。无框高度 = 标题(1)
-            // + rows + hint(1) = rows+2;上限留 6 行(5 行 prompt + 1 行 margin)。
-            let w = area.width.saturating_sub(4);
-            let h = (rows as u16 + 2).min(area.height.saturating_sub(6));
-            let x = 2u16;
-            let y = area.height.saturating_sub(5).saturating_sub(h);
+            // 跟随输入框几何(土律:几何唯一真相):宽 = input 框宽,x 对齐 input 框,
+            // 贴 input 框正上方。无框高度 = 标题(1) + rows + hint(1) = rows+2,
+            // 上限不超过 input 框上方的可用空间。
+            let g = geom.expect("Bottom anchor requires prompt geometry");
+            let w = g.w;
+            let h = (rows as u16 + 2).min(g.y_top.saturating_sub(area.y).saturating_sub(1));
+            let x = g.x.saturating_sub(area.x);
+            let y = g.y_top.saturating_sub(area.y).saturating_sub(h);
             (w, h, x, y)
         }
     };
 
+    // 弹窗已缩到 input 框宽,不再与 Home col 0 按钮框水平重叠,实色底只填弹窗矩形
+    // 本身(宽 w、x 起),无需全屏宽遮底。
     let (fill_x, fill_w, fill_bg) = match anchor {
         DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
-        DialogAnchor::Bottom => (0u16, area.width, colors::BG_PRIMARY),
+        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY),
     };
     paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
@@ -382,8 +459,8 @@ fn render_positioned_list(
                 list_content = list_content.child_sized(hdr, 1);
             }
             ListItem::Row { display, muted } => {
-                // Unified ❯ pointer (aligned with Claude Code/Codex and
-                // with our own slash_popup). Muted rows get no glyph —
+                // Unified ❯ pointer (aligned with our own slash_popup).
+                // Muted rows get no glyph —
                 // their disabled state reads from the dim FG_MUTED color,
                 // not from a special prefix. Non-selected rows use a
                 // 2-space prefix to keep the column aligned with ❯.
@@ -396,14 +473,17 @@ fn render_positioned_list(
                 };
 
                 // Build the unstyled row text (prefix + display) so we
-                // can size the bg fill correctly.
+                // can size the bg fill correctly. 按 inner_w 截断(留 …),
+                // 否则 Home 64 宽下长 session 标题溢出 positioned 宽、
+                // 裁半个 CJK——Bottom 几何已缩到输入框宽,内容必须自持。
                 let line = format!("{}{}", prefix, display);
+                let line = truncate_to_width(&line, inner_w);
 
                 // Pad the selected row to fill inner width (display
                 // columns, UAX#11) so the highlight bg spans the whole
                 // row instead of just the text cells. suffix is now
                 // empty — there's no right-edge marker (❯ + bold bg is
-                // the selection signal, per Claude Code/Codex).
+                // the selection signal).
                 let padded = {
                     use unicode_width::UnicodeWidthStr;
                     let used = UnicodeWidthStr::width(line.as_str())
@@ -446,7 +526,7 @@ fn render_positioned_list(
 
     if matches!(anchor, DialogAnchor::Bottom) {
         // 无框贴底:标题行 + 列表 + hint,整片 BG_PRIMARY 融入终端(不浮出亮框),
-        // 仅选中行 SURFACE_SELECTED 高亮。对齐 codex/claude code 的轻量命令面板。
+        // 仅选中行 SURFACE_SELECTED 高亮，对齐轻量命令面板风格。
         // 标题行(1)替代了原 top border,故滚动条 sb_y=y+1、tooltip y+1+row_offset
         // 偏移与 Centered 一致,无需调整。
         let view = vstack().gap(0)
@@ -553,5 +633,68 @@ fn render_positioned_list(
         selected_row_y,
         inner_w: inner_w as u16,
         scrollbar: list_overlay,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 回归保护：Bottom 锚点的单内容对话框必须真无框（四角无 ╭╮╰╯），
+    //! 且整片 BG_PRIMARY 实色。此前 render_dialog_bottom 内部仍套
+    //! Border::rounded，导致 /sessions 的 loading 态（走它）与加载完
+    //! （render_list_dialog_bottom）框型不一致——金律违例。本测试钉住无框成形。
+
+    use super::*;
+
+    #[test]
+    fn render_dialog_bottom_is_frameless() {
+        let mut buf = Buffer::new(60, 20);
+        let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
+        let content = vstack().child(Text::new("body line").fg(colors::FG_SECONDARY));
+        // 输入框几何(模拟底部 prompt):宽 40、x=2、上沿 y_top=15。
+        let geom = PromptGeom { x: 2, y_top: 15, w: 40 };
+        render_dialog_bottom("Title", colors::ACCENT_CYAN, content, "hint", &mut ctx, geom, 6);
+
+        // Bottom 几何跟随 geom:w=40, h=min(6, 15-0-1)=6, x=2, y=15-0-6=9
+        // → 框区 [2,41]×[9,14],四角必须无 ╭╮╰╯(无框成形,金律)。
+        for (x, y) in [(2, 9), (41, 9), (2, 14), (41, 14)] {
+            let ch = buf.get(x, y).map(|c| c.symbol).unwrap_or(' ');
+            assert!(
+                !matches!(ch, '╭' | '╮' | '╰' | '╯' | '─' | '│'),
+                "frameless violation: corner ({},{}) = {:?}",
+                x,
+                y,
+                ch
+            );
+        }
+        // 标题行 (y=9) 在框宽 [2,41] 内实色 BG_PRIMARY(paint_modal_backdrop 预填框矩形)。
+        assert_eq!(
+            buf.get(20, 9).and_then(|c| c.bg),
+            Some(colors::BG_PRIMARY),
+            "title row must sit on solid BG_PRIMARY"
+        );
+        // 框外不再全宽遮底:右沿 41 之外(x=50)应透出下层,非 BG_PRIMARY。
+        // 守住本轮核心改动——fill 从全屏宽收缩到输入框宽(土律:几何唯一真相)。
+        assert_ne!(
+            buf.get(50, 9).and_then(|c| c.bg),
+            Some(colors::BG_PRIMARY),
+            "fill must follow dialog width, not full screen"
+        );
+    }
+
+    #[test]
+    fn render_dialog_centered_still_has_border() {
+        // 对照组：Centered 锚点仍带圆角框（本次无框化不动它）。
+        let mut buf = Buffer::new(60, 20);
+        let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
+        let content = vstack().child(Text::new("body").fg(colors::FG_SECONDARY));
+        render_dialog("Title", colors::ACCENT_CYAN, content, "hint", &mut ctx, 40, 6);
+
+        // Centered 几何：w=40, h=6, x=10, y=7 → 左上角 (10,7) 必须是边框字符
+        let corner = buf.get(10, 7).map(|c| c.symbol).unwrap_or(' ');
+        assert!(
+            matches!(corner, '╭' | '╮' | '╰' | '╯' | '─' | '│'),
+            "Centered must keep its border: (10,7) = {:?}",
+            corner
+        );
     }
 }

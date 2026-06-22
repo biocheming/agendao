@@ -1,13 +1,14 @@
 //! 金 — Unified dialog layer authority.
 
 pub mod backdrop;
-pub mod dialog_stack;
 pub mod alert;
 pub mod help;
 pub mod permission;
 pub mod question;
 pub mod agent_select;
+pub mod clipboard;
 pub mod confirm;
+pub mod mode_select;
 pub mod model_select;
 pub mod prompt_stash;
 pub mod provider;
@@ -15,18 +16,28 @@ pub mod session_export;
 pub mod session_fork;
 pub mod session_list;
 pub mod session_rename;
+pub mod skill_list;
+pub mod skill_proposal;
+pub mod mcp_list;
+pub mod recovery_list;
+pub mod task_list;
 
 pub use confirm::ConfirmDialog;
-pub use dialog_stack::{DialogKind, DialogStack};
 pub use alert::AlertDialog;
 pub use help::HelpDialog;
 pub use permission::{PermissionDialog, PermissionReply, PermissionRequest, PermissionType, PermissionLifetime};
 pub use question::{QuestionDialog, QuestionRequest, QuestionOption};
 pub use agent_select::{AgentSelectDialog, AgentEntry};
 pub use prompt_stash::{StashDialog, StashEntry};
+pub use mode_select::{ModeSelectDialog, ModeEntry};
 pub use model_select::{ModelSelectDialog, ModelEntry, ModelDialogOutcome, ProviderGroup};
-pub use provider::{ProviderDialog, ProviderInfo as ProviderInfoDlg};
+pub use provider::{ProviderDialog, ProviderAction, ProviderInfo as ProviderInfoDlg};
 pub use session_export::{ExportAction, SessionExportDialog};
 pub use session_fork::SessionForkDialog;
 pub use session_list::{SessionListDialog, SessionEntry};
 pub use session_rename::SessionRenameDialog;
+pub use skill_list::{SkillListDialog, SkillEntry};
+pub use skill_proposal::{SkillProposalDialog, SkillProposalEntry};
+pub use mcp_list::{McpListDialog, McpEntry};
+pub use recovery_list::{RecoveryListDialog, RecoveryEntry};
+pub use task_list::{TaskListDialog, TaskEntry};

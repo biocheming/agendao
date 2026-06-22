@@ -1,7 +1,7 @@
 //! Spinner — 可插拔 glyph 集 + 平台感知。
 //!
 //! 替代 app/mod.rs:843 附近的硬编码 10 帧 braille。提供 Braille/Dots 两套：
-//! Linux 默认用 Dots（claudecode 风格的 `·✢✳✶✻✽`），其它平台用 Braille。
+//! Linux 默认用 Dots（`·✢✳✶✻✽` 点阵风格），其它平台用 Braille。
 //! 调用方负责降速（如 `tick/3`）与 running 判定；本模块只管帧序列。
 
 use revue::prelude::Color;
@@ -10,7 +10,7 @@ use revue::prelude::Color;
 pub enum SpinnerGlyph {
     Braille, // ⠋⠙⠹...（10 帧）
     Dots,    // ·✢✳✶✻✽（6 帧）
-    Claude,  // ·✢✳✶✻✽ 正放+倒放（10 帧来回，claudecode 风格）
+    Claude,  // ·✢✳✶✻✽ 正放+倒放（10 帧来回，点阵往返风格）
 }
 
 impl SpinnerGlyph {
@@ -18,7 +18,7 @@ impl SpinnerGlyph {
         match self {
             Self::Braille => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
             Self::Dots    => &["·", "✢", "✳", "✶", "✻", "✽"],
-            // 正放 + 倒放构成完整往返周期（claudecode SpinnerGlyph）
+            // 正放 + 倒放构成完整往返周期（SpinnerGlyph 往返点阵）
             Self::Claude  => &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"],
         }
     }
@@ -35,7 +35,7 @@ pub fn frame(glyph: SpinnerGlyph, tick: u64) -> &'static str {
     frames[(tick as usize) % frames.len()]
 }
 
-/// stall 时颜色向红插值：3 秒无新输出后转红（claudecode interpolateColor 简化）。
+/// stall 时颜色向红插值：3 秒无新输出后转红（interpolateColor 简化）。
 /// secs_since_last 是距上次输出的秒数；<3 返回 base，>=3 返回 ACCENT_RED。
 pub fn stall_color(base: Color, secs_since_last: u64) -> Color {
     use crate::theme::colors;
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn claude_frames_bounce() {
-        // Claude 来回帧：正放 6 + 倒放 4 = 10。中心 ✽ 为峰值，两侧对称。
+        // 点阵来回帧：正放 6 + 倒放 4 = 10。中心 ✽ 为峰值，两侧对称。
         let f = SpinnerGlyph::Claude.frames();
         assert_eq!(f.len(), 10);
         assert_eq!(f[0], "·");      // 起点

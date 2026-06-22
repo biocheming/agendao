@@ -1,10 +1,15 @@
 //! 金 — Agent selection dialog.
+//!
+//! 内联 Up/Down/Enter/Esc 导航（不再走 ListDialogState 抽象层）：
+//! 单用户的"抽象"不是抽象——ModelSelect/SessionList 各有 FlatRow/
+//! filtered_indices 的领域形态，根本接不进 `items: Vec<T>` 契约。
+//! 把 8 行 match 留在领域内，导航语义即金律自身：每个 dialog 的
+//! `Outcome` 是真正的成形权威。
 
 use revue::prelude::*;
 use revue::event::Key;
 use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
-use crate::widget::list_dialog::{ListAction, ListDialogState, key_name};
 
 #[derive(Clone)]
 pub struct AgentEntry {
@@ -13,18 +18,18 @@ pub struct AgentEntry {
 
 pub struct AgentSelectDialog {
     pub visible: bool,
-    /// 选择导航 + 输入归一到 [`ListDialogState`]（土/木律单点），
-    /// 取代原先散落的 `agents` + `selected` + 手写 Up/Down 钳位边界。
-    list: ListDialogState<AgentEntry>,
+    agents: Vec<AgentEntry>,
+    selected: usize,
 }
 
 impl AgentSelectDialog {
     pub fn new() -> Self {
-        Self { visible: false, list: ListDialogState::new(vec![]) }
+        Self { visible: false, agents: Vec::new(), selected: 0 }
     }
 
     pub fn set_agents(&mut self, agents: Vec<AgentEntry>) {
-        self.list = ListDialogState::new(agents);
+        self.agents = agents;
+        self.selected = 0;
     }
 
     pub fn open(&mut self) { self.visible = true; }
@@ -32,23 +37,30 @@ impl AgentSelectDialog {
 
     pub fn handle_key(&mut self, key: &Key) -> Option<AgentEntry> {
         if !self.visible { return None; }
-        // 导航/确认/取消语义全交状态机；本 dialog 只负责把
-        // ListAction 映射回 AgentEntry（领域成形，金律）。
-        match self.list.handle(&key_name(key)) {
-            ListAction::Confirm(i) => {
-                let a = self.list.items.get(i).cloned();
+        if self.agents.is_empty() {
+            if matches!(key, Key::Escape) { self.close(); }
+            return None;
+        }
+        let len = self.agents.len();
+        match key {
+            Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
+            Key::Down  => { self.selected = (self.selected + 1) % len; None }
+            Key::Home  => { self.selected = 0; None }
+            Key::End   => { self.selected = len - 1; None }
+            Key::Enter => {
+                let pick = self.agents.get(self.selected).cloned();
                 self.close();
-                a
+                pick
             }
-            ListAction::Cancel => { self.close(); None }
-            ListAction::None => None,
+            Key::Escape => { self.close(); None }
+            _ => None,
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
-        let items: Vec<ListItem> = self.list.items.iter().enumerate().take(12).map(|(i, a)| {
-            let marker = if i == self.list.selected { "▶ " } else { "  " };
+        let items: Vec<ListItem> = self.agents.iter().enumerate().take(12).map(|(i, a)| {
+            let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {
                 display: format!("{}{} — {}", marker, a.display, a.description),
                 muted: false,
@@ -58,9 +70,9 @@ impl AgentSelectDialog {
             "Select Agent",
             colors::ACCENT_PURPLE,
             &items,
-            self.list.selected,
+            self.selected,
             "↑↓ navigate  Enter: select  Esc: close",
-            ctx, 56, 12,
+            ctx, geom, 12,
         );
     }
 }

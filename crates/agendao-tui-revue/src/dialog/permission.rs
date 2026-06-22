@@ -1,6 +1,6 @@
 //! 金 — Permission dialog: Allow/Deny tool execution.
 //!
-//! 内联形态(Claude Code/Codex 风格):pending permission 不再浮出居中
+//! 内联形态(终端内联 CLI 风格):pending permission 不再浮出居中
 //! modal,而是作为 transcript 流末尾的一个顶格块渲染(像 ToolCall)。
 //! 状态所有权(土)不变 —— 仍是 `PermissionDialog` 持有 pending 队列;
 //! 只是把成形(金)从「浮动 modal」改成「内联 BlockLayout」。
@@ -267,7 +267,7 @@ impl PermissionDialog {
         content = content.child_sized(Text::new(""), 1);
         height += 1;
 
-        // ── Lifetime options (❯ pointer, Claude Code/Codex style) ──
+        // ── Lifetime options (❯ pointer, inline CLI style) ──
         let lifetimes = &req.supported_lifetimes;
         for (i, lt) in lifetimes.iter().enumerate() {
             let marker = if i == self.selected_lifetime { "❯ " } else { "  " };

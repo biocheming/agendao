@@ -15,20 +15,20 @@
 //!   (ToolPhase / TodoStatus / StageState / Result)，消除 session 与
 //!   sidebar 的口径分裂（金律：输出成形语法单点）。
 //! - [`spinner`] — 可插拔 glyph 集（Braille/Dots）+ 平台感知，替代硬编码帧。
-//! - [`role_chip`] — message block 角色标签 (role → chip 文本 + 语义色) 单点。
-//! - [`blink`] — 600ms 周期闪烁原语（claudecode useBlink），驱动工具状态点。
-//! - [`message_response`] — claudecode `⎿` 缩进视觉语法（tool 子消息前缀）。
-//! - [`list_dialog`] — 泛型选择列表状态机 `ListDialogState<T>`：收口各
-//!   dialog 重复的 Up/Down/Enter/Esc 导航 + 输入归一 `key_name`（土/木律单点）。
+//! - [`blink`] — 600ms 周期闪烁原语（useBlink 风格），驱动工具状态点。
+//! - [`bg_stack`] — 带整块背景的 Stack 包装（render 时 `fill_bg` 铺底），
+//!   让 message block 获得同色系明度层次（revue Stack 不自带背景 fill）。
+//! - [`vline`] — 垂直分隔线（`VLine`）：与 `bg_stack` 对偶，1 列宽整高填 `│`，
+//!   只动 `cell.symbol`+`fg` 保留 bg；作 sidebar↔主区纯黑合一边界。
 
 pub mod scrollbar;
 pub mod scroll_view;
 pub mod status_icon;
 pub mod spinner;
-pub mod role_chip;
 pub mod blink;
-pub mod message_response;
-pub mod list_dialog;
+pub mod bg_stack;
+pub mod vline;
 
 pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
+pub use vline::VLine;

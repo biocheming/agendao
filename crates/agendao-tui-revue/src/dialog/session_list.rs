@@ -122,7 +122,7 @@ impl SessionListDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 
         // Compose dialog title: include directory scope (basename) so the
@@ -141,11 +141,11 @@ impl SessionListDialog {
             let title = format!("Sessions{}", scope_suffix);
             let content = vstack().child(Text::new("Loading sessions...").fg(colors::FG_MUTED));
             backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, content,
-                "Loading...", ctx, 70, 5);
+                "Loading...", ctx, geom, 5);
         } else if let Some(ref err) = self.error {
             let content = vstack().child(Text::new(&format!("Error: {}", err)).fg(colors::ACCENT_RED));
             backdrop::render_dialog_bottom("Sessions", colors::ACCENT_RED, content,
-                "Esc: close", ctx, 70, 5);
+                "Esc: close", ctx, geom, 5);
         } else if self.sessions.is_empty() {
             // 空状态：极简一行，scope 信息靠 title 的 "in <name>" 表达。
             let title = format!("Sessions{}", scope_suffix);
@@ -156,7 +156,7 @@ impl SessionListDialog {
             };
             let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED));
             backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, body,
-                "Esc: close", ctx, 70, 5);
+                "Esc: close", ctx, geom, 5);
         } else {
             let filtered = self.filtered_indices();
             let items: Vec<ListItem> = filtered.iter().map(|&i| {
@@ -178,7 +178,7 @@ impl SessionListDialog {
                 &items,
                 self.selected,
                 "type to filter  ↑↓ navigate  Enter: open  Esc: close",
-                ctx, 80, 18,
+                ctx, geom, 18,
             );
 
             // Publish scrollbar geometry for the mouse handler.

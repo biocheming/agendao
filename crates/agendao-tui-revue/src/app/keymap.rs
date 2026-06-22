@@ -12,12 +12,13 @@ use revue::event::{Event, Key};
 
 use agendao_command::{CommandRegistry, UiActionId};
 
-use crate::app::{AppHandler, Panel};
+use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::app::dispatch_outcome;
 use crate::dialog::{
-    PermissionReply, PermissionRequest, PermissionLifetime,
+    PermissionRequest, PermissionLifetime,
     QuestionOption, QuestionRequest,
     StashEntry,
+    SkillEntry, SkillProposalEntry, McpEntry, RecoveryEntry, TaskEntry,
 };
 use crate::input::{PromptAction, SlashPopup};
 use crate::store::app_store::Route;
@@ -414,83 +415,96 @@ impl AppHandler {
                         // Click on prompt area → focus input.
                         // Click elsewhere → unfocus.
                         if matches!(self.store.route.get(), Route::Session { .. }) {
-                            // ── Sidebar scrollbar click (before the
-                            // transcript fold handler, so clicking
-                            // the scrollbar never falls into the
-                            // transcript row-walk). ──
-                            if let Some((sb_area, (content_h, viewport_h))) = self
-                                .sidebar_scrollbar_area
-                                .zip(self.sidebar_scrollbar_metrics)
+                            // ── Sidebar tab 点击切换（替代旧 scrollbar 命中）。
+                            // 符号行 / 下划线行（y == tab_y 或 tab_y+1）点击 → active = m.x / 4
+                            // （每 tab = `| 符号 ` 4 列，符号 i 在列 4i+2）。点击 active 不重渲。──
+                            if self.sidebar_visible && m.x < crate::app::SIDEBAR_WIDTH
+                                && (m.y == self.sidebar_tab_y || m.y == self.sidebar_tab_y + 1)
                             {
-                                let overlay = crate::widget::ScrollbarOverlay::new(
-                                    (0, 0),
-                                    sb_area,
-                                    content_h,
-                                    viewport_h,
-                                    self.sidebar_scroll_offset,
-                                );
-                                if let Some(hit) = overlay.hit_test(m.x, m.y) {
-                                    let max_offset = content_h.saturating_sub(viewport_h);
-                                    match hit {
-                                        crate::widget::ScrollbarHit::ArrowUp => {
-                                            self.sidebar_scroll_offset = 0;
-                                            self.layout_dirty = true;
-                                            return true;
-                                        }
-                                        crate::widget::ScrollbarHit::ArrowDown => {
-                                            self.sidebar_scroll_offset = max_offset;
-                                            self.layout_dirty = true;
-                                            return true;
-                                        }
-                                        crate::widget::ScrollbarHit::PageUp => {
-                                            self.sidebar_scroll_offset =
-                                                self.sidebar_scroll_offset.saturating_sub(viewport_h);
-                                            self.layout_dirty = true;
-                                            return true;
-                                        }
-                                        crate::widget::ScrollbarHit::PageDown => {
-                                            self.sidebar_scroll_offset = (self.sidebar_scroll_offset + viewport_h).min(max_offset);
-                                            self.layout_dirty = true;
-                                            return true;
-                                        }
-                                        crate::widget::ScrollbarHit::BeginDrag(drag) => {
-                                            self.sidebar_scrollbar_drag = Some(drag);
-                                            return true;
-                                        }
-                                    }
+                                let new_tab = ((m.x / 4) as usize)
+                                    .min(crate::telemetry::sidebar::SIDEBAR_TAB_COUNT - 1);
+                                if new_tab != self.sidebar_active_tab {
+                                    self.sidebar_active_tab = new_tab;
+                                    self.layout_dirty = true;
+                                    return true;
                                 }
+                            }
+
+                            // ── Session header dir 点击：toggle 全路径 tooltip（click-to-reveal，无 motion tracking）。
+                            // 命中 dir 文本区 → 切换（None→显 working_dir 全路径 / Some→关）；
+                            // y==header_y 但点在 dir 外 → 关闭。dir_w=0（非 Session 路由）跳过。
+                            // dir 在 header 行（y==header_y=1），落在 transcript 区（y≥3）外，不与 fold 命中冲突。
+                            if m.y == self.header_y && self.header_dir_w > 0 {
+                                let hit = m.x >= self.header_dir_x
+                                    && m.x < self.header_dir_x + self.header_dir_w;
+                                if hit {
+                                    let next = if self.store.dir_tooltip.get().is_some() {
+                                        None
+                                    } else {
+                                        Some(crate::store::types::DirTooltip {
+                                            path: self.store.working_dir.get(),
+                                            x: self.header_dir_x,
+                                            y: self.header_y + 1, // dir 下方 1 行（header 单行，下方唯一空间）
+                                        })
+                                    };
+                                    self.store.dir_tooltip.set(next);
+                                } else if self.store.dir_tooltip.get().is_some() {
+                                    // 点 header 非 dir 区（title/badge）→ 收起 tooltip。
+                                    self.store.dir_tooltip.set(None);
+                                }
+                                self.layout_dirty = true;
+                                return true;
                             }
 
                             let ty = m.y;
                             let transcript_y = self.transcript_area_y;
                             let transcript_h = self.transcript_viewport_h;
-                            if ty >= transcript_y && ty < transcript_y + transcript_h {
+                            // 排除左侧 sidebar 列：sidebar 显示时其区域点击不应被
+                            // transcript 命中消费（阴阳边界——sidebar 区归 sidebar）。即便
+                            // sidebar 内容当前无点击行为，也须先排除，避免越权 toggle
+                            // transcript fold / 切 cursor（sidebar 默认显示后必需，否则
+                            // 点 sidebar 行会误触 transcript）。纯黑合一后 SIDEBAR_WIDTH 列是
+                            // VLine 竖线（独立 1 列），命中边界收紧为 m.x > sidebar_w——跳过
+                            // sidebar 含竖线列；sidebar 不显示时 sidebar_w=0，m.x>0 仍覆盖整宽
+                            //（列 0 是 transcript 左气口，无 fold 命中，无害）。
+                            let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+                            if ty >= transcript_y && ty < transcript_y + transcript_h && m.x > sidebar_w {
                                 // Click is inside transcript area.
                                 // Compute which row in content space was clicked.
                                 let msgs = self.active_session.messages.get();
-                                let total_h: u16 = msgs.iter()
-                                    .map(|b| crate::screen::layout_block(b, 0).height.saturating_add(1))
-                                    .sum::<u16>()
-                                    .saturating_add(1);
+                                // total_h 与渲染同口径（聚合）——原逐块 layout_block 算高
+                                // 与聚合渲染错位，是「连续结果区域点不准」的根因：
+                                // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
+                                // 屏幕位置对不上，点第 2 行命中第 5 块。
+                                let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get());
                                 let max_offset = total_h.saturating_sub(transcript_h);
                                 let user_offset = self.active_session.scroll_offset.get().min(max_offset);
                                 let scroll_top = max_offset.saturating_sub(user_offset);
                                 let row_in_content = ty.saturating_sub(transcript_y) + scroll_top;
-                                // Walk through blocks to find which one was clicked.
+                                // 视觉单元遍历（与渲染/total_h 同源）：unit.height 量高，
+                                // 命中时 row_owners[rel_row] 把屏幕 y 映射到块——整行命中，
+                                // 装饰行 None 不 toggle。聚合/单块统一，不认块类型（金律：
+                                // 命中触点 1，新增聚合种类零改动）。
+                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get());
                                 let mut acc: u16 = 0;
                                 let mut clicked_idx = None;
-                                for (i, block) in msgs.iter().enumerate() {
-                                    let bh = crate::screen::layout_block(block, 0).height;
-                                    // Each block occupies bh rows + 1 row gap (except last)
-                                    let block_end = acc + bh;
+                                for unit in &units {
+                                    let block_end = acc + unit.height;
                                     if row_in_content < block_end {
-                                        clicked_idx = Some(i);
+                                        let rel_row = row_in_content.saturating_sub(acc) as usize;
+                                        clicked_idx = unit.row_owners.get(rel_row)
+                                            .copied()
+                                            .flatten()
+                                            .map(|offset| unit.base_index + offset);
                                         break;
                                     }
                                     acc = block_end + 1; // +1 for gap between blocks
                                 }
                                 if let Some(idx) = clicked_idx {
-                                    self.active_session.toggle_fold(idx);
+                                    // 复用 cursor+toggle 闭环：组折叠时命中段首/ℹ/more 均
+                                    // 展开整组，组展开时切该块详情（与 Space 行为一致）。
+                                    self.active_session.transcript_cursor.set(Some(idx));
+                                    self.active_session.toggle_fold_at_cursor();
                                     self.layout_dirty = true;
                                     return true;
                                 }
@@ -523,26 +537,6 @@ impl AppHandler {
                             let max_offset = content_h.saturating_sub(viewport_h);
                             let user_offset = max_offset.saturating_sub(new_top);
                             self.active_session.scroll_offset.set(user_offset);
-                            self.layout_dirty = true;
-                            return true;
-                        }
-                        // Active thumb drag on the sidebar scrollbar.
-                        // Sidebar offset is rows-from-top, not rows-
-                        // from-bottom, so the drag translates 1:1.
-                        if let (Some(drag), Some((sb_area, (content_h, viewport_h)))) = (
-                            self.sidebar_scrollbar_drag,
-                            self.sidebar_scrollbar_area.zip(self.sidebar_scrollbar_metrics),
-                        ) {
-                            let overlay = crate::widget::ScrollbarOverlay::new(
-                                (0, 0),
-                                sb_area,
-                                content_h,
-                                viewport_h,
-                                0,
-                            );
-                            let new_top = overlay.drag_to_offset(drag, m.y);
-                            let max_offset = content_h.saturating_sub(viewport_h);
-                            self.sidebar_scroll_offset = new_top.min(max_offset);
                             self.layout_dirty = true;
                             return true;
                         }
@@ -588,9 +582,6 @@ impl AppHandler {
                         if self.transcript_scrollbar_drag.take().is_some() {
                             return true;
                         }
-                        if self.sidebar_scrollbar_drag.take().is_some() {
-                            return true;
-                        }
                         if self.session_list_scrollbar_drag.take().is_some() {
                             return true;
                         }
@@ -606,151 +597,9 @@ impl AppHandler {
     }
 
     fn handle_key(&mut self, key: &Key) -> bool {
-        // ── Panel/Overlay routing: each panel gets exclusive key access ──
-        match &self.panel {
-            Panel::Slash => {
-                match self.slash_popup.handle_key(key) {
-                    Some(action_id) => {
-                        self.execute_slash_action(action_id);
-                    }
-                    None => {
-                        if !self.slash_popup.is_open() { self.panel = Panel::None; }
-                    }
-                }
-                return true;
-            }
-            Panel::ModelSelect => {
-                match self.model_select.handle_key(key) {
-                    crate::dialog::ModelDialogOutcome::Selected(selected) => {
-                        // Server resolves models via `provider_id/model_id`
-                        // (parse_model_string in agendao-provider). Storing only
-                        // the bare model_id makes server_send_prompt fail with
-                        // "Model not found: <id>" because the same model_id
-                        // can exist in multiple aggregator providers.
-                        let qualified = format!("{}/{}", selected.provider, selected.model_id);
-                        self.store.selected_model.set(Some(qualified.clone()));
-                        let msg = format!("Model: {} ({})", selected.display, qualified);
-                        self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
-                        self.panel = Panel::None;
-                    }
-                    crate::dialog::ModelDialogOutcome::Notice(reason) => {
-                        // Surface the reason ("Provider X not connected", etc.)
-                        // so the user sees why Enter didn't close the dialog.
-                        // Without this, the previous silent return left the
-                        // dialog "stuck open" with no clue.
-                        self.store.push_toast(&reason, crate::store::types::ToastMsgVariant::Warning);
-                    }
-                    crate::dialog::ModelDialogOutcome::None => {}
-                }
-                if !self.model_select.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::AgentSelect => {
-                if let Some(selected) = self.agent_select.handle_key(key) {
-                    self.store.selected_agent.set(Some(selected.name.clone()));
-                    let msg = format!("Switched to agent: {}", selected.display);
-                    self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
-                    self.panel = Panel::None;
-                }
-                if !self.agent_select.visible { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Confirm => {
-                if let Some(confirmed) = self.confirm_dialog.handle_key(key) {
-                    if confirmed {
-                        // Confirmed action — stored as confirm_dialog's title
-                    }
-                    self.panel = Panel::None;
-                }
-                if !self.confirm_dialog.visible { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Stash => {
-                if let Some(_text) = self.stash_dialog.handle_key(key) {
-                    // Restore selected stash entry to prompt
-                    // (in future: set prompt text directly)
-                    self.store.push_toast("Stash entry selected", crate::store::types::ToastMsgVariant::Info);
-                    self.panel = Panel::None;
-                    return true;
-                }
-                if !self.stash_dialog.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Rename => {
-                if let Some((sid, new_title)) = self.rename_dialog.handle_key(key) {
-                    if let Some(ref api) = self.api {
-                        let _ = api.update_session_title(&sid, &new_title);
-                    }
-                    self.active_session.title.set(new_title);
-                    self.panel = Panel::None;
-                    return true;
-                }
-                if !self.rename_dialog.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::SessionList => {
-                if let Some(entry) = self.session_list.handle_key(key) {
-                    // User selected a session — navigate to it
-                    self.active_session.set_session_id(&entry.id);
-                    self.sf_tx.send_replace(Some(entry.id.clone()));
-                    self.load_session_messages(&entry.id);
-                    self.store.navigate(Route::Session { session_id: entry.id });
-                    self.panel = Panel::None;
-                    return true;
-                }
-                if !self.session_list.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Help => {
-                self.help.handle_key(key);
-                if !self.help.visible { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Alert => {
-                self.alert.handle_key(key);
-                if !self.alert.visible { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::None => {
-                // 内联 permission/question（Claude Code/Codex 风格）：visible
-                // 时独占键。↑↓ 切选项；transcript 滚动走 PageUp/Down 不冲突，
-                // 故无需处理键冲突。
-                if self.permission_dialog.visible {
-                    if let Some((id, reply)) = self.permission_dialog.handle_key(key) {
-                        // 发送 permission 回复。dialog 返回原始 request id +
-                        // reply —— 缺 id 则 server 无法匹配 pending permission，
-                        // prompt loop 永久阻塞。
-                        if let Some(ref api) = self.api {
-                            // Server 期望 bare lifetime token
-                            // (`once`/`turn`/`session`/`always`/`reject`)，
-                            // 不是 `allow_*` 别名。
-                            let reply_str = match reply {
-                                PermissionReply::AllowOnce => "once",
-                                PermissionReply::AllowTurn => "turn",
-                                PermissionReply::AllowSession => "session",
-                                PermissionReply::Deny => "reject",
-                            };
-                            if let Err(e) = api.reply_permission(&id, reply_str, None) {
-                                self.store.push_toast(
-                                    &format!("permission reply failed: {}", e),
-                                    crate::store::types::ToastMsgVariant::Error,
-                                );
-                            }
-                        }
-                    }
-                    return true;
-                }
-                if self.question_dialog.visible {
-                    if let Some(selected) = self.question_dialog.handle_key(key) {
-                        if let Some(ref api) = self.api {
-                            let id = "";
-                            let answers: Vec<Vec<String>> = selected.iter().map(|&i| vec![format!("{}", i)]).collect();
-                            let _ = api.reply_question(id, answers);
-                        }
-                    }
-                    return true;
-                }
-            }
+        // ── Panel/Overlay routing: delegated to route_panel_key (panel_dispatch.rs) ──
+        if self.route_panel_key(key) {
+            return true;
         }
 
         // ── Transcript scrolling + cursor (PageUp/PageDown, Tab, Space) ──
@@ -847,7 +696,7 @@ impl AppHandler {
         // ── Global keys ──
         match key {
             Key::Char('q') => { self.store.request_exit(); true }
-            Key::Char('h') => { self.store.navigate(Route::Home); true }
+            Key::Char('h') => { self.store.navigate(Route::Home); self.prompt.focus(); true }
             Key::Char('?') => { self.toggle_help(); true }
             Key::Escape => {
                 // 1. Close dialogs first
@@ -937,6 +786,7 @@ impl AppHandler {
                 // 否则 navigate(Home) 后输入消息会追加到旧 session 残留(数据错位)。
                 self.active_session.reset_for_new_session();
                 self.store.navigate(Route::Home);
+                self.prompt.focus();
                 self.store.push_toast("New session created", crate::store::types::ToastMsgVariant::Success);
             }
             UiActionId::AbortExecution => {
@@ -983,6 +833,8 @@ impl AppHandler {
                             .unwrap_or(0),
                     };
                     self.stash_entries.push(entry);
+                    // 水律：push 后立即落盘，下一轮/下次启动可复用。
+                    crate::dialog::prompt_stash::save_stash(&self.stash_entries);
                     self.prompt.clear();
                     self.store.push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
                 }
@@ -998,15 +850,209 @@ impl AppHandler {
                 self.agent_select.open();
                 self.panel = Panel::AgentSelect;
             }
+            UiActionId::OpenSkills => {
+                // 读视图 first slice（道纪第十条）：列表权威已成，挂载需
+                // manage_skill + scoping 独立工程，故只 toast 不伪成功。
+                if let Some(ref api) = self.api {
+                    match api.list_skills(None) {
+                        Ok(skills) => {
+                            let entries: Vec<SkillEntry> = skills.into_iter()
+                                .map(|s| SkillEntry {
+                                    name: s.name,
+                                    description: s.description,
+                                    location: s.location,
+                                })
+                                .collect();
+                            if entries.is_empty() {
+                                self.store.push_toast(
+                                    "No skills available",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.skill_list.set_skills(entries);
+                                self.skill_list.open();
+                                self.panel = Panel::SkillList;
+                            }
+                        }
+                        Err(e) => {
+                            self.store.push_toast(
+                                &format!("Failed to load skills: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
+                        }
+                    }
+                }
+            }
+            UiActionId::OpenSkillProposals => {
+                // 读视图 first slice：approve/reject 需 update_skill_proposal_status
+                // + confirm，留 B 层第三批（道纪第十条：不伪"已批准"）。
+                if let Some(ref api) = self.api {
+                    match api.list_skill_proposals("pending") {
+                        Ok(proposals) => {
+                            let entries: Vec<SkillProposalEntry> = proposals.into_iter()
+                                .map(|p| SkillProposalEntry {
+                                    id: p.id,
+                                    title: p.title,
+                                    status: format!("{:?}", p.status).to_lowercase(),
+                                    kind: format!("{:?}", p.proposal_kind).to_lowercase(),
+                                })
+                                .collect();
+                            if entries.is_empty() {
+                                self.store.push_toast(
+                                    "No pending proposals",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.skill_proposal.set_proposals(entries);
+                                self.skill_proposal.open();
+                                self.panel = Panel::SkillProposal;
+                            }
+                        }
+                        Err(e) => {
+                            self.store.push_toast(
+                                &format!("Failed to load proposals: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
+                        }
+                    }
+                }
+            }
+            UiActionId::OpenMcpList => {
+                if let Some(ref api) = self.api {
+                    match api.get_mcp_status() {
+                        Ok(mcps) => {
+                            let entries: Vec<McpEntry> = mcps.into_iter()
+                                .map(|m| McpEntry {
+                                    name: m.name,
+                                    status: m.status,
+                                    tools: m.tools,
+                                    resources: m.resources,
+                                })
+                                .collect();
+                            if entries.is_empty() {
+                                self.store.push_toast(
+                                    "No MCP servers configured",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.mcp_list.set_entries(entries);
+                                self.mcp_list.open();
+                                self.panel = Panel::McpList;
+                            }
+                        }
+                        Err(e) => {
+                            self.store.push_toast(
+                                &format!("Failed to load MCP status: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
+                        }
+                    }
+                }
+            }
+            UiActionId::OpenRecoveryList => {
+                // per-session：需 active session_id。
+                if let Some(sid) = self.active_session.get_session_id() {
+                    if let Some(ref api) = self.api {
+                        match api.get_session_recovery(&sid) {
+                            Ok(proto) => {
+                                let mut entries: Vec<RecoveryEntry> = Vec::new();
+                                for a in proto.actions {
+                                    entries.push(RecoveryEntry {
+                                        label: format!("action: {}", a.label),
+                                        detail: a.description,
+                                    });
+                                }
+                                for c in proto.checkpoints {
+                                    entries.push(RecoveryEntry {
+                                        label: format!("checkpoint: [{}] {}", c.status, c.label),
+                                        detail: c.summary.unwrap_or_else(|| c.kind),
+                                    });
+                                }
+                                if entries.is_empty() {
+                                    self.store.push_toast(
+                                        "No recovery actions or checkpoints",
+                                        crate::store::types::ToastMsgVariant::Warning,
+                                    );
+                                } else {
+                                    self.recovery_list.set_entries(entries);
+                                    self.recovery_list.open();
+                                    self.panel = Panel::Recovery;
+                                }
+                            }
+                            Err(e) => {
+                                self.store.push_toast(
+                                    &format!("Failed to load recovery: {}", e),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    self.store.push_toast(
+                        "Open a session first",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                }
+            }
+            UiActionId::ListTasks => {
+                if let Some(ref api) = self.api {
+                    match api.list_tasks() {
+                        Ok(tasks) => {
+                            let entries: Vec<TaskEntry> = tasks.into_iter()
+                                .map(|t| TaskEntry {
+                                    id: t.id,
+                                    agent_name: t.agent_name,
+                                    status: t.status,
+                                    step: t.step,
+                                    max_steps: t.max_steps,
+                                })
+                                .collect();
+                            if entries.is_empty() {
+                                self.store.push_toast(
+                                    "No active agent tasks",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.task_list.set_entries(entries);
+                                self.task_list.open();
+                                self.panel = Panel::TaskList;
+                            }
+                        }
+                        Err(e) => {
+                            self.store.push_toast(
+                                &format!("Failed to load tasks: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
+                        }
+                    }
+                }
+            }
             UiActionId::OpenModeList => {
                 if let Some(ref api) = self.api {
                     match api.list_execution_modes() {
                         Ok(modes) => {
-                            let names: Vec<&str> = modes.iter().map(|m| m.name.as_str()).collect();
-                            self.store.push_toast(
-                                &format!("Modes: {}", names.join(", ")),
-                                crate::store::types::ToastMsgVariant::Info,
-                            );
+                            // 映射成 ModeEntry：携 kind 而不只是 name，dispatch
+                            // 处才能按 kind 分流到 agent / scheduler_profile 槽
+                            // （对齐 web `App.tsx:836`）。
+                            let entries: Vec<crate::dialog::ModeEntry> = modes
+                                .into_iter()
+                                .filter(|m| !m.hidden.unwrap_or(false))
+                                .map(|m| crate::dialog::ModeEntry {
+                                    kind: m.kind,
+                                    id: m.id,
+                                    display: m.name,
+                                    description: m.description,
+                                })
+                                .collect();
+                            if entries.is_empty() {
+                                self.store.push_toast(
+                                    "No execution modes available",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                self.mode_select.open_with(entries);
+                                self.panel = Panel::ModeSelect;
+                            }
                         }
                         Err(e) => {
                             self.store.push_toast(&format!("Failed to load modes: {}", e), crate::store::types::ToastMsgVariant::Error);
@@ -1019,6 +1065,173 @@ impl AppHandler {
                     let title = self.active_session.title.get();
                     self.rename_dialog.open(&sid, &title);
                     self.panel = Panel::Rename;
+                }
+            }
+            UiActionId::ForkSession => {
+                if let Some(sid) = self.active_session.get_session_id() {
+                    // 整会话 fork（message_id=None）；message 级 fork 需 cursor
+                    // 选中消息（B 层 edit&resend），本轮不做。
+                    self.fork_dialog.open(&sid, None);
+                    self.panel = Panel::Fork;
+                }
+            }
+            UiActionId::RevisePrompt => {
+                // Part 6: web `editAndResendMessage` 的 TUI 对位。
+                // 木→火→水→木闭环：光标选 UserPrompt（火）→ fork+回填（水）
+                // → 输入框带原文等用户改（木）→ 用户 Enter 发送（火）。
+                let Some((prompt_id, content)) = self.active_session.cursor_user_prompt() else {
+                    self.store.push_toast(
+                        "No user prompt under cursor — use Tab/j/k to select one",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                };
+                let Some(sid) = self.active_session.get_session_id() else {
+                    self.store.push_toast(
+                        "No active session to fork from",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                };
+                let Some(ref api) = self.api else { return; };
+                match api.fork_session(&sid, Some(&prompt_id)) {
+                    Ok(info) => {
+                        // 切到 fork 后的新会话；reset_for_new_session 清旧 messages，
+                        // load_session_messages 灌新——避免"新 session 接旧 session 显示"。
+                        self.active_session.reset_for_new_session();
+                        self.active_session.set_session_id(&info.id);
+                        self.sf_tx.send_replace(Some(info.id.clone()));
+                        self.load_session_messages(&info.id);
+                        self.store.navigate(Route::Session { session_id: info.id });
+                        // 回填输入框（木）——用户编辑后 Enter 发新 prompt。
+                        self.prompt.set_text(&content);
+                        self.store.push_toast(
+                            "Forked — edit prompt and Enter to resend",
+                            crate::store::types::ToastMsgVariant::Success,
+                        );
+                    }
+                    Err(e) => self.store.push_toast(
+                        &format!("Revise failed: {}", e),
+                        crate::store::types::ToastMsgVariant::Error,
+                    ),
+                }
+            }
+            UiActionId::ExportSession => {
+                if let Some(sid) = self.active_session.get_session_id() {
+                    // 土律：transcript→text 走唯一序列化权威
+                    // (session_store::transcript_to_text)，与 /copy 共用。
+                    let text = self.active_session.transcript_to_text();
+                    self.export_dialog.open(&sid, &text);
+                    self.panel = Panel::Export;
+                }
+            }
+            UiActionId::ShareSession => {
+                // Part 4: /share 不再走 export dialog 二次确认，直接 API。
+                // 与 web 的「点 share → toast URL」行为一致。
+                if let Some(sid) = self.active_session.get_session_id() {
+                    if let Some(ref api) = self.api {
+                        match api.share_session(&sid) {
+                            Ok(resp) => self.store.push_toast(
+                                &format!("Shared: {}", resp.url),
+                                crate::store::types::ToastMsgVariant::Success,
+                            ),
+                            Err(e) => self.store.push_toast(
+                                &format!("Share failed: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            ),
+                        }
+                    }
+                }
+            }
+            UiActionId::UnshareSession => {
+                // Part 5
+                if let Some(sid) = self.active_session.get_session_id() {
+                    if let Some(ref api) = self.api {
+                        match api.unshare_session(&sid) {
+                            Ok(true) => self.store.push_toast(
+                                "Session unshared",
+                                crate::store::types::ToastMsgVariant::Success,
+                            ),
+                            Ok(false) => self.store.push_toast(
+                                "Session was not shared",
+                                crate::store::types::ToastMsgVariant::Warning,
+                            ),
+                            Err(e) => self.store.push_toast(
+                                &format!("Unshare failed: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            ),
+                        }
+                    }
+                }
+            }
+            UiActionId::CopySession => {
+                // Part 2: 与 /export 复用同一序列化（土律），但不开 dialog——
+                // 直接 OSC52 写终端剪贴板（A4 helper）。
+                let text = self.active_session.transcript_to_text();
+                match crate::dialog::clipboard::copy(&text) {
+                    Ok(()) => self.store.push_toast(
+                        "Transcript copied to clipboard",
+                        crate::store::types::ToastMsgVariant::Success,
+                    ),
+                    Err(e) => self.store.push_toast(
+                        &format!("Clipboard write failed: {}", e),
+                        crate::store::types::ToastMsgVariant::Error,
+                    ),
+                }
+            }
+            UiActionId::CompactSession => {
+                // Part 3: 暂不收 focus（需独立 dialog），先 None。
+                if let Some(sid) = self.active_session.get_session_id() {
+                    if let Some(ref api) = self.api {
+                        match api.compact_session(&sid, None) {
+                            Ok(_) => self.store.push_toast(
+                                "Compaction triggered",
+                                crate::store::types::ToastMsgVariant::Success,
+                            ),
+                            Err(e) => self.store.push_toast(
+                                &format!("Compact failed: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            ),
+                        }
+                    }
+                }
+            }
+            UiActionId::ConnectProvider => {
+                self.provider_dialog.open();
+                self.panel = Panel::Provider;
+                // 枚举 providers：复用启动期 get_all_providers 口径，映射为
+                // {id, name, connected}（connected 由 resp.connected 集合判定）。
+                if let Some(ref api) = self.api {
+                    match api.get_all_providers() {
+                        Ok(resp) => {
+                            let connected: std::collections::HashSet<String> =
+                                resp.connected.iter().cloned().collect();
+                            let infos: Vec<crate::dialog::ProviderInfoDlg> = resp.all.into_iter()
+                                .map(|p| crate::dialog::ProviderInfoDlg {
+                                    id: p.id.clone(),
+                                    name: p.name.clone(),
+                                    connected: connected.contains(&p.id),
+                                })
+                                .collect();
+                            self.provider_dialog.set_providers(infos);
+                        }
+                        Err(e) => self.store.push_toast(
+                            &format!("Failed to load providers: {}", e),
+                            crate::store::types::ToastMsgVariant::Error),
+                    }
+                }
+            }
+            UiActionId::DeleteSession => {
+                if let Some(sid) = self.active_session.get_session_id() {
+                    let title = self.active_session.title.get();
+                    self.confirm_dialog.ask(
+                        "Delete Session",
+                        &format!("Delete \"{}\"? This cannot be undone.", title),
+                        "Delete");
+                    // 判别器携带「确认什么」——Confirm 只回 bool，靠它路由
+                    // 到 delete_session（土律：单一 Confirm 变体服务所有确认）。
+                    self.pending_confirm = Some(PendingConfirm::DeleteSession(sid));
+                    self.panel = Panel::Confirm;
                 }
             }
             UiActionId::OpenSessionList => {
@@ -1055,8 +1268,129 @@ impl AppHandler {
             UiActionId::ToggleSidebar => {
                 self.store.push_toast("Sidebar toggled", crate::store::types::ToastMsgVariant::Info);
             }
+            UiActionId::ToggleThinking => {
+                let next = !self.store.show_thinking.get();
+                self.store.show_thinking.set(next);
+                self.store.push_toast(
+                    &format!("Thinking blocks: {}", if next { "shown" } else { "hidden" }),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleScrollbar => {
+                let next = !self.store.show_scrollbar.get();
+                self.store.show_scrollbar.set(next);
+                self.store.push_toast(
+                    &format!("Scrollbar: {}", if next { "shown" } else { "hidden" }),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleHeader => {
+                // 隐藏时 render 端 header 块整段跳过 + dir_hit=None + transcript_area_y
+                // 从 3 降 1（app/mod.rs 几何同口径），header_y 从 1 降 0（dir 点击不命中）。
+                let next = !self.store.show_header.get();
+                self.store.show_header.set(next);
+                self.store.push_toast(
+                    &format!("Header: {}", if next { "shown" } else { "hidden" }),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleTips => {
+                // 隐藏时 hint 行内容置空（几何不变，保 PromptGeom y_top 同口径）。
+                let next = !self.store.show_tips.get();
+                self.store.show_tips.set(next);
+                self.store.push_toast(
+                    &format!("Tips: {}", if next { "shown" } else { "hidden" }),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleDensity => {
+                // 紧凑模式：块间 0 间隔。transcript_total_height 同口径 gap=0，
+                // 渲染端跳过 child_sized("",1)——阴阳同口径（金律）。
+                let next = !self.store.compact_density.get();
+                self.store.compact_density.set(next);
+                self.store.push_toast(
+                    &format!("Density: {}", if next { "compact" } else { "comfortable" }),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleTimestamps => {
+                // 道纪第十条：TUI 当前不渲染 timestamp（TranscriptBlock 无时间字段），
+                // 翻转一个无消费端的 signal 即伪权威。诚实标注缺口而非伪成功。
+                self.store.push_toast(
+                    "Timestamps: TUI does not render them yet (no time field on blocks)",
+                    crate::store::types::ToastMsgVariant::Warning,
+                );
+            }
+            UiActionId::ToggleAppearance => {
+                // 运行时主题切换：翻转 variant（ds::theme 唯一翻转入口）→
+                // set_theme(theme_for) 同步 revue 渲染 → toast。阴阳同口径：
+                // store.theme_variant 记账，revue ThemeManager 渲染，两者经此同步。
+                let next = crate::ds::theme::toggle_variant(self.store.theme_variant.get());
+                self.store.theme_variant.set(next);
+                revue::style::set_theme(crate::ds::theme::theme_for(next));
+                self.store.push_toast(
+                    &format!("Theme: {}", crate::ds::theme::variant_label(next)),
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            // 道纪第十条：伪权威诚实标注。这些 action 的 spec 已注册（slash
+            // 可触发），但 server 端无对应 API（grep 全无端点）——落到通用
+            // "coming soon" 兜底会掩盖「server 根本没这个能力」的真相。这里
+            // 显式分流，让用户看到权威缺口而非伪期待。server 补齐后再开路由。
+            UiActionId::Undo
+            | UiActionId::Redo
+            | UiActionId::Timeline
+            | UiActionId::NavigateParentSession
+            | UiActionId::VoiceInput => {
+                self.store.push_toast(
+                    &format!("{:?}: not supported by server yet", action_id),
+                    crate::store::types::ToastMsgVariant::Warning,
+                );
+            }
             UiActionId::OpenThemeList => {
-                self.store.push_toast("Theme list coming soon", crate::store::types::ToastMsgVariant::Info);
+                // /themes (Ctrl+T)：ToggleAppearance 已通（Ctrl+P palette 翻转 dark/light），
+                // 但多主题选择器待续。诚实标注指向可用入口，不伪"coming soon"空话。
+                self.store.push_toast(
+                    "Toggle dark/light via Ctrl+P → Toggle appearance; full theme picker coming soon",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::OpenPresetList => {
+                // 道纪第十条：preset 数据就是 /mode 端点扁平化，无独立权威。
+                // 诚实标注 + 复用 /mode 路径，不伪"独立 preset 列表"。
+                self.store.push_toast(
+                    "Presets are part of /mode — opening mode list",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+                self.execute_slash_action(UiActionId::OpenModeList);
+            }
+            UiActionId::ToggleToolDetails => {
+                // 已有 per-block fold（Space 键 toggle），无全局 toggle 权威。
+                self.store.push_toast(
+                    "Use Space on a tool block to fold/unfold",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleCommandPalette => {
+                // slash_popup 已是命令面板（/ 或 Ctrl+P），无独立 toggle。
+                self.store.push_toast(
+                    "Use Ctrl+P or type / to open the command palette",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::ToggleSemanticHighlight => {
+                // TUI 用 NoopTheme，无代码语法高亮能力。
+                self.store.push_toast(
+                    "Code highlighting not available in TUI yet",
+                    crate::store::types::ToastMsgVariant::Warning,
+                );
+            }
+            UiActionId::ToggleMcp => {
+                // MCP 状态权威在 sidebar tab（Ctrl+B 开 sidebar 后切 tab）。
+                self.store.push_toast(
+                    "MCP status lives in sidebar tab (Ctrl+B)",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
             }
             _ => {
                 self.store.push_toast(
@@ -1120,14 +1454,21 @@ impl AppHandler {
             self.active_session.run_status.set(RunStatus::Sending);
             self.layout_dirty = true;
             // Pull the user's current selections from the store so the
-            // backend uses the model/agent picked in the dialog instead of
-            // the workspace default. `selected_mode` is execution mode
-            // (build/plan), NOT a scheduler profile — passing it into the
-            // profile slot makes the server reject the request as "profile
-            // could not be resolved: build". Leave profile as None until
-            // we wire up actual scheduler profile UI.
+            // backend uses the model/agent/mode picked in the dialogs
+            // instead of the workspace default.
+            //
+            // `selected_mode` 契约为 `"kind:id"` 复合字符串（对齐 web
+            // `App.tsx:836`：`selectedMode.split(":", 2)` → 分流到
+            // agent / scheduler_profile 两个槽）。agent kind 复合时优先级
+            // 高于 selected_agent，避免 mode 与 agent 双权威打架。
             let model = self.store.selected_model.get();
-            let agent = self.store.selected_agent.get();
+            let mode = self.store.selected_mode.get();
+            let (agent, scheduler_profile) = match mode.as_deref().and_then(|s| s.split_once(':')) {
+                Some(("agent", id))   => (Some(id.to_string()), None),
+                Some(("preset", id))  => (None, Some(id.to_string())),
+                Some(("profile", id)) => (None, Some(id.to_string())),
+                _ => (self.store.selected_agent.get(), None),
+            };
 
             // ── 火：spawn send_prompt_with 到后台，主线程立即返回 ──
             // 关键修复：原在按键同步回调里 block_on 等网络往返（local_prompt
@@ -1142,7 +1483,7 @@ impl AppHandler {
             let text_c = text.clone();
             api.handle().spawn(async move {
                 let r = api_c
-                    .send_prompt_with_async(&sid_c, text_c, agent, None, model, None)
+                    .send_prompt_with_async(&sid_c, text_c, agent, scheduler_profile, model, None)
                     .await;
                 let _ = match r {
                     Ok(resp) => tx.send(dispatch_outcome::DispatchOutcome::Sent {

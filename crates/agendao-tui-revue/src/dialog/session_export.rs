@@ -42,7 +42,7 @@ impl SessionExportDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
         let msg_count = self.messages_text.lines().count();
         let mut content = vstack().gap(1)
@@ -57,12 +57,12 @@ impl SessionExportDialog {
                 .child(Text::new("s: share as link").fg(colors::ACCENT_CYAN));
         }
 
-        backdrop::render_dialog(
+        backdrop::render_dialog_bottom(
             "Export Session",
             colors::ACCENT_CYAN,
             content,
             "Esc: close",
-            ctx, 44, 8,
+            ctx, geom, 8,
         );
     }
 }

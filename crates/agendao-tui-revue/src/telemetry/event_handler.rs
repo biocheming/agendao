@@ -247,7 +247,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                     detail_lines.push(format!(" ▶ {}", act));
                 }
                 if let Some(ref f) = stage.focus {
-                    detail_lines.push(format!(" 📎 focus: {}", f));
+                    detail_lines.push(format!(" ▸ focus: {}", f));
                 }
 
                 // Retry info

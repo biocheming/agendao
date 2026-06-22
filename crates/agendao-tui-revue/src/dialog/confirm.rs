@@ -44,12 +44,12 @@ impl ConfirmDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
         let content = vstack().child(
             Text::new(&self.message).fg(colors::FG_SECONDARY)
         );
         let hint = format!("y/Enter: {}  n/Esc: cancel", self.confirm_label);
-        backdrop::render_dialog(&self.title, colors::ACCENT_YELLOW, content, &hint, ctx, 48, 5);
+        backdrop::render_dialog_bottom(&self.title, colors::ACCENT_YELLOW, content, &hint, ctx, geom, 5);
     }
 }

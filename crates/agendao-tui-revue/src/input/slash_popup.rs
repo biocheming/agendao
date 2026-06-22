@@ -8,6 +8,8 @@ use revue::prelude::*;
 use revue::event::Key;
 use revue::runtime::render::Cell;
 use crate::theme::colors;
+// 截断唯一实现见 backdrop(水律:消灭第二处),Home 窄输入框下防止 positioned 裁半个 CJK。
+use crate::dialog::backdrop::truncate_to_width;
 
 /// Simple fuzzy match: check if all chars of `query` appear in `target` in order.
 pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
@@ -179,7 +181,7 @@ impl SlashPopup {
     /// 默认 bg=None(Cell::new),边框线要么实色要么发黑;用户要"border 不要背景",
     /// 故去框,靠实色面板与下层 BG_PRIMARY 区分。每行 Text 再 .bg(BG_SURFACE) 补文字格
     /// (revue 的 Text 渲染 ctx.set 也是覆盖写,不补 bg 则文字格发黑/透字)。
-    pub fn render_popup(&self) -> impl View {
+    pub fn render_popup(&self, w: u16) -> impl View {
         let mut stack = vstack();
         if !self.visible {
             return stack;
@@ -223,6 +225,8 @@ impl SlashPopup {
             let pointer = if is_selected { "❯ " } else { "  " };
             let keybind_str = cmd.keybind.map(|k| format!(" ({})", k)).unwrap_or_default();
             let desc = format!("{} /{}{}  {}", pointer, slash_name, keybind_str, cmd.description);
+            // 窄宽（Home 64）截断 + …，留 1 列右边距，避免 positioned 裁半个 CJK。
+            let desc = truncate_to_width(&desc, w.saturating_sub(1).max(8) as usize);
 
             let text = if is_selected {
                 Text::new(&desc).fg(colors::ACCENT_CYAN).bg(colors::BG_SURFACE)
@@ -285,7 +289,7 @@ mod tests {
     fn render_popup_keeps_solid_after_fill() {
         let mut popup = SlashPopup::new();
         popup.open();
-        let view = popup.render_popup();
+        let view = popup.render_popup(60);
         let mut buf = Buffer::new(60, 20);
         popup.fill_background(&mut buf, 0, 0, 60, 20);
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
@@ -311,7 +315,7 @@ mod tests {
         popup.query = "zzz_no_match".to_string();
         popup.refresh_filter();
         assert_eq!(popup.filtered_count(), 0);
-        let view = popup.render_popup();
+        let view = popup.render_popup(60);
         let mut buf = Buffer::new(60, 6);
         popup.fill_background(&mut buf, 0, 0, 60, 6);
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 6));

@@ -186,11 +186,22 @@ impl PromptInput {
     }
 
     pub fn text(&self) -> String { self.input.text().to_string() }
+
+    /// Replace the input text wholesale (e.g. restoring a stashed draft).
+    /// 喂回输入框权威 —— 水生木闭环（stash 恢复项回灌下一轮输入）。
+    pub fn set_text(&mut self, text: &str) {
+        self.input.set_value(text);
+    }
     pub fn clear(&mut self) {
         self.input.clear();
         self.focused = false;
     }
     pub fn is_focused(&self) -> bool { self.focused }
+
+    /// Focus the input — shows the block cursor. Used when entering a route
+    /// that is "ready to type" (e.g. Home), so the cursor is visible on entry
+    /// rather than only after the first keystroke/click.
+    pub fn focus(&mut self) { self.focused = true; }
 
     /// Handle a mouse click at (x, y). The prompt bar occupies the bottom ~5 lines.
     /// Returns true if the click was on the prompt area.

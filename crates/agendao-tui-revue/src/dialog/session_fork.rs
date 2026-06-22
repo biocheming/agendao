@@ -39,18 +39,18 @@ impl SessionForkDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
         let content = vstack().child(
             Text::new(&format!("Fork from: {}", self.message_id.as_deref().unwrap_or("(latest)")))
                 .fg(colors::FG_SECONDARY)
         );
-        backdrop::render_dialog(
+        backdrop::render_dialog_bottom(
             "Fork Session",
             colors::ACCENT_PURPLE,
             content,
             "Enter: fork  Esc: cancel",
-            ctx, 50, 5,
+            ctx, geom, 5,
         );
     }
 }

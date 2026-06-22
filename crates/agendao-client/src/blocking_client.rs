@@ -44,7 +44,7 @@ use crate::{
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
     SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
     SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    UpdateSessionRequest,
+    TaskSummaryInfo, UpdateSessionRequest,
 };
 
 pub struct BlockingApiClient {
@@ -637,6 +637,11 @@ impl BlockingApiClient {
             None => self.client.get(&url).send()?,
         };
         Self::json_ok(response, "list skills")
+    }
+
+    /// `/task`：全局 agent 任务注册表（非 per-session）。读视图。
+    pub fn list_tasks(&self) -> anyhow::Result<Vec<TaskSummaryInfo>> {
+        self.get_json("/task/", "list tasks")
     }
 
     pub fn get_skill_detail(

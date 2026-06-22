@@ -1,6 +1,6 @@
 //! resolve_color 单点：语义色 → 具体颜色。
 //!
-//! 吸取 claudecode 教训（ThemedBox/ThemedText/color.ts 三处重复 resolveColor），
+//! 吸取前项目教训（ThemedBox/ThemedText/color.ts 三处重复 resolveColor），
 //! agendao 第一天就收成单一函数。颜色真值来自 styles/base.css 的 :root 变量；
 //! 此处返回 Rust Color 供那些无法走 CSS class 的场景（如动态生成的 Text）使用。
 //! **优先用 DsText 挂 class，resolve_color 仅作 fallback。**
@@ -32,11 +32,11 @@ pub enum Semantic {
 /// "角色→色"的语义判断只允许经过这里。
 pub fn resolve_color(s: Semantic) -> Color {
     match s {
-        Semantic::Wood   => colors::E_TEAL,        // 用户
-        Semantic::Fire   => colors::E_AMBER,       // 工具
-        Semantic::Earth  => colors::FG_SECONDARY,  // 系统
-        Semantic::Metal  => colors::FG_PRIMARY,    // 助手
-        Semantic::Water  => colors::ACCENT_PURPLE, // think/遥测
+        Semantic::Wood   => colors::E_TEAL,        // 用户（主强调）
+        Semantic::Fire   => colors::E_AMBER,       // 工具（次强调）
+        Semantic::Earth  => colors::FG_MUTED,      // 系统（次要角色，降级）
+        Semantic::Metal  => colors::FG_PRIMARY,    // 助手（主文字色）
+        Semantic::Water  => colors::FG_MUTED,      // think/遥测（次要角色，降级）
         Semantic::Ok     => colors::STATUS_OK,
         Semantic::Warn   => colors::STATUS_WARN,
         Semantic::Error  => colors::STATUS_ERROR,

@@ -47,33 +47,48 @@ impl QuestionDialog {
         self.visible = false;
     }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<Vec<usize>> {
-        if !self.visible || self.requests.is_empty() { return None; }
-        let req = &self.requests[0];
-        let n = req.options.len();
-        match key {
-            Key::Up => { self.selected = self.selected.saturating_sub(1); None }
-            Key::Down => { self.selected = (self.selected + 1).min(n.saturating_sub(1)); None }
-            Key::Char(' ') => {
-                if let Some(t) = self.toggled.get_mut(self.selected) { *t = !*t; }
-                None
-            }
-            Key::Enter => {
-                let result: Vec<usize> = self.toggled.iter().enumerate()
-                    .filter(|(_, &t)| t).map(|(i, _)| i).collect();
-                let result = if result.is_empty() { vec![self.selected] } else { result };
-                self.requests.remove(0);
-                if self.requests.is_empty() { self.visible = false; }
-                else if let Some(next) = self.requests.first() {
-                    self.toggled = vec![false; next.options.len().max(1)];
-                    self.selected = 0;
-                }
-                Some(result)
-            }
-            Key::Escape => { self.requests.remove(0); if self.requests.is_empty() { self.visible = false; } None }
-            _ => None,
-        }
-    }
+    /// 返回 (question_id, answer_labels)。answer 用 option.label 而非 index——
+     /// 与 web `InteractionOverlays.tsx:132` 同契约,server `answer_question`
+     /// 期望 `Vec<Vec<String>>` 为答案值数组(每个外层项对应一道题、内层为该题
+     /// 选中的多个值);本对话框一次只承载一题,故返回单层 `Vec<String>`,由
+     /// 调用方按 server 契约外包一层。
+     ///
+     /// 修复了此前 panel_dispatch 用空 id + 索引字符串发送、server 永远匹配
+     /// 不上的 bug(道纪第十条「有阴无阳」:展示有了,回流断了)。
+     pub fn handle_key(&mut self, key: &Key) -> Option<(String, Vec<String>)> {
+         if !self.visible || self.requests.is_empty() { return None; }
+         let req = &self.requests[0];
+         let n = req.options.len();
+         match key {
+             Key::Up => { self.selected = self.selected.saturating_sub(1); None }
+             Key::Down => { self.selected = (self.selected + 1).min(n.saturating_sub(1)); None }
+             Key::Char(' ') => {
+                 if let Some(t) = self.toggled.get_mut(self.selected) { *t = !*t; }
+                 None
+             }
+             Key::Enter => {
+                 // 收集选中 indices;空选回退到当前 selected(单选语义)。
+                 let chosen: Vec<usize> = self.toggled.iter().enumerate()
+                     .filter(|(_, &t)| t).map(|(i, _)| i).collect();
+                 let chosen = if chosen.is_empty() { vec![self.selected] } else { chosen };
+                 // 在 remove(0) 之前先把 id + labels 取出——之后 requests.first()
+                 // 已是下一题,无法回查当前题的 options。
+                 let qid = req.id.clone();
+                 let labels: Vec<String> = chosen.iter()
+                     .filter_map(|&i| req.options.get(i).map(|o| o.label.clone()))
+                     .collect();
+                 self.requests.remove(0);
+                 if self.requests.is_empty() { self.visible = false; }
+                 else if let Some(next) = self.requests.first() {
+                     self.toggled = vec![false; next.options.len().max(1)];
+                     self.selected = 0;
+                 }
+                 Some((qid, labels))
+             }
+             Key::Escape => { self.requests.remove(0); if self.requests.is_empty() { self.visible = false; } None }
+             _ => None,
+         }
+     }
 
     /// 内联成形:pending question 渲染成 transcript 流末尾顶格块
     /// (`? {text}` header + ❯ 单选 / ☑ 多选 选项)。无 modal 边框。

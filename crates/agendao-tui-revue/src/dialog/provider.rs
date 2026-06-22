@@ -105,7 +105,7 @@ impl ProviderDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 
         if self.edit_mode != EditMode::None {
@@ -117,13 +117,13 @@ impl ProviderDialog {
             let content = vstack().gap(1)
                 .child(Text::new(hint).fg(colors::FG_MUTED))
                 .child(Border::rounded().fg(colors::BORDER).child(self.edit_input.clone()));
-            backdrop::render_dialog("Provider Manager", colors::ACCENT_CYAN, content,
-                "Enter: confirm  Esc: cancel", ctx, 54, 6);
+            backdrop::render_dialog_bottom("Provider Manager", colors::ACCENT_CYAN, content,
+                "Enter: confirm  Esc: cancel", ctx, geom, 6);
         } else {
             if self.providers.is_empty() {
                 let content = vstack().child(Text::new("No providers configured.").fg(colors::FG_MUTED));
-                backdrop::render_dialog("Provider Manager", colors::ACCENT_CYAN, content,
-                    "Esc: close", ctx, 54, 5);
+                backdrop::render_dialog_bottom("Provider Manager", colors::ACCENT_CYAN, content,
+                    "Esc: close", ctx, geom, 5);
                 return;
             }
             let items: Vec<ListItem> = self.providers.iter().enumerate().take(12).map(|(i, p)| {
@@ -134,13 +134,13 @@ impl ProviderDialog {
                     muted: !p.connected,
                 }
             }).collect();
-            backdrop::render_list_dialog(
+            backdrop::render_list_dialog_bottom(
                 "Provider Manager",
                 colors::ACCENT_CYAN,
                 &items,
                 self.selected,
                 "Enter: set key  r: custom  Esc: close",
-                ctx, 54, 12,
+                ctx, geom, 12,
             );
         }
     }

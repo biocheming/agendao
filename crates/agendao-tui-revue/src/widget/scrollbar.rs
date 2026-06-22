@@ -104,14 +104,16 @@ impl Scrollbar {
             }
             return;
         }
-        let track_color = Some(colors::FG_MUTED);
         let thumb_color = Some(colors::ACCENT_CYAN);
         let arrow_color = Some(colors::FG_PRIMARY);
         self.put(ctx, self.arrow_up_y(), '▲', arrow_color, None);
         self.put(ctx, self.arrow_down_y(), '▼', arrow_color, None);
+        // track 字符交给 revue::ScrollView（其内置 `│/█`）。这里只画 agendao 细化的
+        // thumb + 箭头——不再叠 `▏` track，避免与 revue `│` 重叠成"双线脚手架"
+        // （用户截图证实：叠两套 track 后，滑动块左侧的线连续出现，右侧应有的
+        // track 被叠错位）。`track_top/track_bot` 保留给 thumb 范围裁剪。
         let track_top = self.track_y();
         let track_bot = track_top + self.track_height();
-        for y in track_top..track_bot { self.put(ctx, y, '│', track_color, None); }
         let thumb_top = self.thumb_top_y();
         let thumb_bot = thumb_top + self.thumb_height();
         for y in thumb_top..thumb_bot.min(track_bot) { self.put_bold(ctx, y, '█', thumb_color, None); }

@@ -340,6 +340,15 @@ pub enum ToastMsgVariant {
     Warning,
 }
 
+/// 金：Session header dir 点击弹出的全路径 tooltip（click-to-reveal，无 motion tracking）。
+/// path=working_dir 全路径；x/y=toast 左上角屏幕坐标（点击时算好存入，render 只读）。
+#[derive(Clone, Debug)]
+pub struct DirTooltip {
+    pub path: String,
+    pub x: u16,
+    pub y: u16,
+}
+
 // ── 模型/Agent 信息 ──
 
 #[derive(Clone, Debug)]

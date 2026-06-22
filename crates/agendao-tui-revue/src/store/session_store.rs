@@ -167,14 +167,16 @@ impl SessionStore {
 
     /// Append a tool result.
     ///
-    /// Defaults to `fold: FoldState::Truncated` because tool outputs are usually long
-    /// (a websearch dump can be thousands of characters) and would push
-    /// every other transcript block off the screen. Users can expand
-    /// individual results when they need full detail.
+    /// Defaults to `fold: FoldState::Folded`（单行 chip）：tool outputs 通常很长
+    /// （一次 websearch dump 可达数千字符），默认展开会霸屏。Truncated（3 行
+    /// 预览）仍挤占空间，故默认折叠成单行 chip（显示 name · N lines · 状态），
+    /// 用户按 Space 展开看详情。兑现「工具是背景动作、默认不霸屏」
+    /// （kimi/方案1/现代 AI TUI 共识）——原注释承诺「避免挤出屏幕」，但
+    /// Truncated 并未真正兑现，Folded 才是。
     pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool) {
         self.messages.update(|msgs| {
             let block = TranscriptBlock::ToolResult {
-                id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Truncated,
+                id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Folded,
             };
             // 插到对应 ToolCall 之后（同 tool_call_id），让调用与结果紧邻配对显示，
             // 而非 append 末尾——避免 LLM 并行发起多个 tool 时调用与结果割裂
@@ -476,21 +478,108 @@ impl SessionStore {
         self.scroll_offset.set(new_user_offset);
     }
 
+    /// 给定块索引 `i`，若它在连续 ToolResult 组内，返回 `(组首索引, 组长度)`。
+    /// 用于「单井聚合」：判断 cursor 是否落在工具结果组内，从而决定 Space 是
+    /// 切该块自己的 fold 还是展开整组。组折叠阈值与 `layout_tool_result_group`
+    /// 的 `TOOL_GROUP_PREVIEW` 共享，避免渲染与交互漂移（金律：阈值单点）。
+    fn tool_group_head(msgs: &[TranscriptBlock], i: usize) -> Option<(usize, usize)> {
+        let b = msgs.get(i)?;
+        if !matches!(b, TranscriptBlock::ToolResult { .. }) {
+            return None;
+        }
+        let mut head = i;
+        while head > 0 && matches!(msgs[head - 1], TranscriptBlock::ToolResult { .. }) {
+            head -= 1;
+        }
+        let mut len = 0;
+        let mut j = head;
+        while j < msgs.len() && matches!(msgs[j], TranscriptBlock::ToolResult { .. }) {
+            len += 1;
+            j += 1;
+        }
+        Some((head, len))
+    }
+
     /// Toggle fold on the block under the cursor (or the latest
     /// foldable block when no cursor is set yet — matches the user's
     /// "I just want to expand the last result" mental model).
     pub fn toggle_fold_at_cursor(&self) {
+        let msgs = self.messages.get();
         let mut idx = self.transcript_cursor.get();
         if idx.is_none() {
             // Find the most recent foldable block.
-            let msgs = self.messages.get();
             for i in (0..msgs.len()).rev() {
                 if Self::is_foldable(&msgs[i]) { idx = Some(i); break; }
             }
         }
-        if let Some(i) = idx {
-            self.toggle_fold(i);
-            self.transcript_cursor.set(Some(i));
+        let Some(i) = idx else { return; };
+        // 单井聚合：cursor 落在折叠的 ToolResult 组内（段首 fold=Folded 且项数 >
+        // TOOL_GROUP_PREVIEW）时，Space 展开整组（切段首 fold）——让「[+N more]」
+        // 行也能点开。组未折叠（项数 ≤ 阈值，或段首已 Expanded）则切 cursor 块自己
+        // 的 fold（段首块的 fold 即组开关：展开态下 Space 折叠组）。
+        let expand_group_head = Self::tool_group_head(&msgs, i).and_then(|(head, len)| {
+            use crate::screen::session::TOOL_GROUP_PREVIEW;
+            let collapsed = len > TOOL_GROUP_PREVIEW && matches!(
+                &msgs[head],
+                TranscriptBlock::ToolResult { fold: FoldState::Folded, .. }
+            );
+            if collapsed { Some(head) } else { None }
+        });
+        drop(msgs);
+        let target = expand_group_head.unwrap_or(i);
+        self.toggle_fold(target);
+        self.transcript_cursor.set(Some(i));
+    }
+
+    /// 土律：transcript → 纯文本的**唯一**序列化权威。
+    ///
+    /// 既给 `/copy`（OSC52 直发）也给 `/export`（dialog c/s 共用）用，
+    /// 避免两处各自实现"User: " / "Assistant: " / "Tool: name(params)" /
+    /// "Result [name]: " 的格式漂移（金的成形语法在这里**只能有一份**）。
+    ///
+    /// 未支持 block（Thinking、StatusEvent 等）跳过——与
+    /// keymap.rs:902-922 原内联版同义，作为重构基线保留行为不变。
+    pub fn transcript_to_text(&self) -> String {
+        let msgs = self.messages.get();
+        let mut text = String::new();
+        for b in msgs.iter() {
+            match b {
+                TranscriptBlock::UserPrompt { content, .. } => {
+                    text.push_str("User: ");
+                    text.push_str(content);
+                    text.push('\n');
+                }
+                TranscriptBlock::AssistantMsg { content, .. } => {
+                    text.push_str("Assistant: ");
+                    text.push_str(content);
+                    text.push('\n');
+                }
+                TranscriptBlock::ToolCall { name, params, .. } => {
+                    text.push_str(&format!("Tool: {}({})\n", name, params));
+                }
+                TranscriptBlock::ToolResult { name, result, .. } => {
+                    text.push_str(&format!("Result [{}]: {}\n", name, result));
+                }
+                _ => {}
+            }
+        }
+        text
+    }
+
+    /// 取光标当前 block 若是 UserPrompt 则返回 `(id, content)`；否则 `None`。
+    ///
+    /// 给 `/revise` Edit & Resend 用：keymap 先调本方法拿 (id, content)，
+    /// 再做 fork+set_text。光标不在 UserPrompt 上时返回 None，调用方负责
+    /// toast 提示——避免无声失败（道纪第十条：唯一查询权威）。
+    pub fn cursor_user_prompt(&self) -> Option<(String, String)> {
+        let cursor = self.transcript_cursor.get()?;
+        let msgs = self.messages.get();
+        let block = msgs.get(cursor)?;
+        match block {
+            TranscriptBlock::UserPrompt { id, content, .. } => {
+                Some((id.clone(), content.clone()))
+            }
+            _ => None,
         }
     }
 }
@@ -720,5 +809,53 @@ mod tests {
         let s = SessionStore::new();
         s.set_context_pct(150);
         assert_eq!(s.context_pct.get(), 100);
+    }
+
+    /// `transcript_to_text` 是 export/copy 共用的唯一序列化权威——
+    /// User / Assistant / Tool / Result 四种 block 都要正确序列化，
+    /// 顺序与 messages 一致；未支持 block（如 Thinking）跳过不产生空行。
+    #[test]
+    fn transcript_to_text_serializes_all_supported_blocks_in_order() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "hello");
+        s.push_assistant_delta("a1", "hi there");
+        s.upsert_tool_call("t1", "read", "{\"path\":\"f\"}", ToolPhase::Starting);
+        s.push_tool_result("t1", "read", "ok", false);
+
+        let text = s.transcript_to_text();
+        assert!(text.contains("User: hello\n"));
+        assert!(text.contains("Assistant: hi there\n"));
+        assert!(text.contains("Tool: read({\"path\":\"f\"})\n"));
+        assert!(text.contains("Result [read]: ok\n"));
+        // 顺序锚：User 行先于 Assistant 行先于 Tool 行。
+        let u = text.find("User:").unwrap();
+        let a = text.find("Assistant:").unwrap();
+        let t = text.find("Tool:").unwrap();
+        assert!(u < a && a < t);
+    }
+
+    /// 光标落在 UserPrompt 上时返回 `(id, content)`，
+    /// 落在其他 block（如 ToolResult）或无 cursor 时返回 None。
+    /// 这是 `/revise` 的关键前置——None 让调用方 toast，不静默失败。
+    #[test]
+    fn cursor_user_prompt_hits_only_user_blocks() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "edit me");
+        s.push_tool_result("t1", "read", "out", false);
+
+        // 无 cursor → None
+        assert_eq!(s.cursor_user_prompt(), None);
+
+        // cursor 在 UserPrompt → Some
+        s.transcript_cursor.set(Some(0));
+        assert_eq!(s.cursor_user_prompt(), Some(("u1".into(), "edit me".into())));
+
+        // cursor 在 ToolResult → None（光标范围里有这个 block 但不是 UserPrompt）
+        s.transcript_cursor.set(Some(1));
+        assert_eq!(s.cursor_user_prompt(), None);
+
+        // cursor 超界 → None
+        s.transcript_cursor.set(Some(99));
+        assert_eq!(s.cursor_user_prompt(), None);
     }
 }

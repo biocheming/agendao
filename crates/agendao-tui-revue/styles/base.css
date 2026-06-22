@@ -59,16 +59,6 @@ App {
     color: var(--accent-cyan);
 }
 
-.ThinkingBlock {
-    color: var(--fg-muted);
-    background: rgba(240, 168, 82, 0.08);
-}
-
-.TodoBlock {
-    color: var(--fg-muted);
-    background: rgba(187, 154, 247, 0.06);
-}
-
 .ToolCall {
     color: var(--accent-yellow);
 }

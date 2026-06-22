@@ -4,23 +4,12 @@ use std::sync::Arc;
 
 use crate::{ApiError, Result, ServerState};
 use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
-
-#[derive(Debug, Serialize)]
-struct TaskSummary {
-    id: String,
-    agent_name: String,
-    status: String,
-    step: Option<u32>,
-    max_steps: Option<u32>,
-    prompt: String,
-    started_at: i64,
-    elapsed_seconds: i64,
-}
+use agendao_api::TaskSummaryInfo;
 
 #[derive(Debug, Serialize)]
 struct TaskDetail {
     #[serde(flatten)]
-    summary: TaskSummary,
+    summary: TaskSummaryInfo,
     finished_at: Option<i64>,
     output_tail: Vec<String>,
 }
@@ -49,13 +38,13 @@ pub(crate) fn task_routes() -> Router<Arc<ServerState>> {
         .route("/{id}", get(get_task).delete(cancel_task))
 }
 
-async fn list_tasks() -> Json<Vec<TaskSummary>> {
+async fn list_tasks() -> Json<Vec<TaskSummaryInfo>> {
     let tasks = global_task_registry().list();
     let now = chrono::Utc::now().timestamp();
     Json(
         tasks
             .into_iter()
-            .map(|t| TaskSummary {
+            .map(|t| TaskSummaryInfo {
                 id: t.id,
                 agent_name: t.agent_name,
                 status: status_str(&t.status),
@@ -75,7 +64,7 @@ async fn get_task(Path(id): Path<String>) -> Result<Json<TaskDetail>> {
         .ok_or_else(|| ApiError::NotFound(format!("Task \"{}\" not found", id)))?;
     let now = chrono::Utc::now().timestamp();
     Ok(Json(TaskDetail {
-        summary: TaskSummary {
+        summary: TaskSummaryInfo {
             id: task.id,
             agent_name: task.agent_name,
             status: status_str(&task.status),

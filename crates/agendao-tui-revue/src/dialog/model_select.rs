@@ -222,7 +222,7 @@ impl ModelSelectDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 
         // Build all items (no truncation — backdrop scrolls). Without query
@@ -257,7 +257,7 @@ impl ModelSelectDialog {
             self.selected,
             "type to filter  ↑↓ navigate  Tab: variant  Enter: select  Esc: close",
             ctx,
-            64,
+            geom,
             18,
         );
     }

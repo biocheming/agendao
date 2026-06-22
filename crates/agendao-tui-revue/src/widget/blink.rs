@@ -1,4 +1,4 @@
-//! Blink 原语：600ms 周期闪烁（圆↔空格），仿 claudecode useBlink(BLINK_INTERVAL_MS=600)。
+//! Blink 原语：600ms 周期闪烁（圆↔空格），useBlink(BLINK_INTERVAL_MS=600) 风格。
 //!
 //! tick 是单调递增帧计数（与 app 层 spinner_tick 同源，未经 `/3` 降速）；
 //! @50ms/帧时 12 帧 = 600ms。驱动 ToolCall 执行中的 `⏺` 闪烁。
