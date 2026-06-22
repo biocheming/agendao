@@ -1,15 +1,17 @@
 //! Application entry point, event loop, and root view — 火 (execution authority)
 //! + 金 (output shaping).
 //!
-//! The keymap and slash-action dispatchers live in [`keymap`] so this file
-//! can stay focused on wiring (App construction, run loop, RootView render).
-//! Both files share the same `AppHandler` struct via split `impl` blocks —
-//! Rust allows the impl to live in any sibling module as long as the type
-//! and its fields are at least `pub(crate)`-visible.
+//! The keymap and slash-action dispatchers live in [`keymap`] / [`slash_action`]
+//! / [`panel_dispatch`] so this file can stay focused on wiring (App
+//! construction, run loop, RootView render). All four files share the same
+//! `AppHandler` struct via split `impl` blocks — Rust allows the impl to live
+//! in any sibling module as long as the type and its fields are at least
+//! `pub(crate)`-visible.
 
 mod keymap;
 mod dispatch_outcome;
 mod panel_dispatch;
+mod slash_action;
 
 use anyhow::Context;
 use revue::prelude::*;
