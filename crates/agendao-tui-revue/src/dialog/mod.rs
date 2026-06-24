@@ -34,7 +34,7 @@ pub use model_select::{ModelSelectDialog, ModelEntry, ModelDialogOutcome, Provid
 pub use provider::{ProviderDialog, ProviderAction, ProviderInfo as ProviderInfoDlg};
 pub use session_export::{ExportAction, SessionExportDialog};
 pub use session_fork::SessionForkDialog;
-pub use session_list::{SessionListDialog, SessionEntry};
+pub use session_list::{SessionListDialog, SessionEntry, SessionListAction};
 pub use session_rename::SessionRenameDialog;
 pub use skill_list::{SkillListDialog, SkillEntry};
 pub use skill_proposal::{SkillProposalDialog, SkillProposalEntry, SkillProposalAction};

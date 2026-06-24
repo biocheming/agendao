@@ -13,6 +13,14 @@ pub struct SessionEntry {
     pub status_hint: String,
 }
 
+/// SessionListDialog::handle_key 返回值——Open 单选 vs DeleteBatch 批量删,
+/// panel_dispatch 按变体分流(土律:同 dialog 多动作时用 enum 而非多函数)。
+#[derive(Clone, Debug)]
+pub enum SessionListAction {
+    Open(SessionEntry),
+    DeleteBatch(Vec<String>),
+}
+
 pub struct SessionListDialog {
     pub visible: bool,
     pub sessions: Vec<SessionEntry>,
@@ -27,6 +35,10 @@ pub struct SessionListDialog {
     /// glance whether they're seeing all sessions or a directory scope.
     /// Empty string means "no scope set".
     pub directory_scope: String,
+    /// 批量删除标记：与 `sessions` 同长度索引,true = 当前项已被 'x' 勾选。
+    /// 'D' (Shift-d) 收集所有 true 项交给 panel_dispatch 走 Confirm 批量删除。
+    /// set_sessions/close 时清空,保证不跨次悬空(道纪第九条:写入即承诺回收)。
+    marked: Vec<bool>,
 }
 
 impl SessionListDialog {
@@ -39,10 +51,16 @@ impl SessionListDialog {
             error: None,
             query: String::new(),
             directory_scope: String::new(),
+            marked: vec![],
         }
     }
 
-    pub fn open(&mut self) { self.visible = true; self.selected = 0; self.query.clear(); }
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.selected = 0;
+        self.query.clear();
+        self.marked.clear();
+    }
 
     pub fn close(&mut self) {
         self.visible = false;
@@ -51,6 +69,7 @@ impl SessionListDialog {
         self.loading = false;
         self.query.clear();
         self.directory_scope.clear();
+        self.marked.clear();
     }
 
     pub fn is_open(&self) -> bool { self.visible }
@@ -63,10 +82,13 @@ impl SessionListDialog {
     }
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionEntry>) {
+        let n = sessions.len();
         self.sessions = sessions;
         self.loading = false;
         self.error = None;
         self.selected = 0;
+        // 重置标记位:set_sessions 是新一轮 fetch 的成形,旧标记不应跨次悬空。
+        self.marked = vec![false; n];
     }
 
     pub fn set_error(&mut self, err: String) {
@@ -87,7 +109,11 @@ impl SessionListDialog {
             .collect()
     }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<SessionEntry> {
+    /// handle_key 返回三态:
+    /// - `Some(SessionListAction::Open(entry))` — Enter 单选打开会话
+    /// - `Some(SessionListAction::DeleteBatch(ids))` — 'D' 触发批量删除(非空 marked)
+    /// - `None` — 其它按键(导航/输入/标记 toggle/关闭)
+    pub fn handle_key(&mut self, key: &Key) -> Option<SessionListAction> {
         if !self.visible { return None; }
         match key {
             Key::Up => {
@@ -105,20 +131,68 @@ impl SessionListDialog {
                     .and_then(|&i| self.sessions.get(i))
                     .cloned();
                 self.close();
-                s
+                s.map(SessionListAction::Open)
             }
             Key::Escape => { self.close(); None }
             Key::Backspace => {
                 if self.query.pop().is_some() { self.selected = 0; }
                 None
             }
+            // 'x' = 批量选择标记,作用于当前 cursor 项(filtered_indices 索引映射)。
+            // 与单选的 query 输入区分:query 只收 graphic 字符,'x' 落到此 arm 前
+            // 必须先于 graphic arm 匹配——故放在 graphic arm 之上(match 顺序优先)。
+            Key::Char('x') => {
+                if let Some(&abs) = self.filtered_indices().get(self.selected) {
+                    if let Some(m) = self.marked.get_mut(abs) { *m = !*m; }
+                }
+                None
+            }
+            // 'D' (Shift-d) = 批量删除已标记项。无标记时静默无操作
+            // (panel_dispatch 收到 None 不做事;若想 toast 让用户知道未标记,
+            //  在 panel_dispatch 侧加一次提示——这里保持 dialog 纯查询)。
+            Key::Char('D') => {
+                let ids: Vec<String> = self.marked.iter().enumerate()
+                    .filter(|(_, &m)| m)
+                    .filter_map(|(i, _)| self.sessions.get(i).map(|s| s.id.clone()))
+                    .collect();
+                if ids.is_empty() {
+                    None
+                } else {
+                    Some(SessionListAction::DeleteBatch(ids))
+                }
+            }
             // Allow alphanumeric + space + dash/underscore/dot for filtering
+            // ('x'/'D' 已在前面 arm 拦截,不会落到此处搜索)
             Key::Char(c) if c.is_ascii_graphic() || *c == ' ' => {
                 self.query.push(*c);
                 self.selected = 0;
                 None
             }
             _ => None,
+        }
+    }
+
+    /// 返回当前已标记的会话条目个数(给渲染层显示「N marked」hint 用)。
+    pub fn marked_count(&self) -> usize {
+        self.marked.iter().filter(|&&m| m).count()
+    }
+
+    /// 已标记后,SessionList 删除批量回填:删除成功的 ids 从内部状态摘除,
+    /// 避免接下来仍能选中已删条目。panel_dispatch 在 delete_session 成功后调用。
+    pub fn forget_sessions(&mut self, deleted_ids: &[String]) {
+        let deleted: std::collections::HashSet<&String> = deleted_ids.iter().collect();
+        // 同步剔除 sessions + marked,保持索引对齐(土律:同长度数组单一权威)
+        let pairs: Vec<(SessionEntry, bool)> = std::mem::take(&mut self.sessions)
+            .into_iter()
+            .zip(std::mem::take(&mut self.marked))
+            .filter(|(s, _)| !deleted.contains(&s.id))
+            .collect();
+        let (sessions, marked): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        self.sessions = sessions;
+        self.marked = marked;
+        let filtered_len = self.filtered_indices().len();
+        if self.selected >= filtered_len {
+            self.selected = filtered_len.saturating_sub(1);
         }
     }
 
@@ -162,22 +236,39 @@ impl SessionListDialog {
             let items: Vec<ListItem> = filtered.iter().map(|&i| {
                 let s = &self.sessions[i];
                 let status = if s.status_hint.is_empty() { String::new() } else { format!(" [{}]", s.status_hint) };
+                // 标记位前缀:已 'x' 标记的项前面打 `[*]`(2列宽),未标记空白对齐。
+                // 复用现有 ListItem::Row(display 单字段),前缀直接拼进 display
+                // ——比给 backdrop 加 marked 形参侵入小(金律:成形点单一)。
+                let mark = if self.marked.get(i).copied().unwrap_or(false) {
+                    "[*] "
+                } else {
+                    "    "
+                };
                 ListItem::Row {
-                    display: format!("{}{}", s.title, status),
+                    display: format!("{}{}{}", mark, s.title, status),
                     muted: false,
                 }
             }).collect();
+            let marked_n = self.marked_count();
+            let marked_hint = if marked_n > 0 {
+                format!(" — {} marked", marked_n)
+            } else { String::new() };
             let title = if self.query.is_empty() {
-                format!("Sessions{}", scope_suffix)
+                format!("Sessions{}{}", scope_suffix, marked_hint)
             } else {
-                format!("Sessions{} — query: {}", scope_suffix, self.query)
+                format!("Sessions{} — query: {}{}", scope_suffix, self.query, marked_hint)
+            };
+            let footer = if marked_n > 0 {
+                "type filter  ↑↓ nav  Enter open  x mark  D delete marked  Esc close"
+            } else {
+                "type filter  ↑↓ nav  Enter open  x mark  Esc close"
             };
             let layout = backdrop::render_list_dialog_bottom_with_layout(
                 &title,
                 colors::ACCENT_CYAN,
                 &items,
                 self.selected,
-                "type to filter  ↑↓ navigate  Enter: open  Esc: close",
+                footer,
                 ctx, geom, 18,
             );
 

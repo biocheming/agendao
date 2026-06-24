@@ -123,6 +123,42 @@ impl AppHandler {
                                     }
                                 }
                             }
+                            Some(PendingConfirm::DeleteSessionsBatch(ids)) => {
+                                // 批量删:逐个调 delete_session,累积 ok/fail 计数,
+                                // 单次 toast 汇报结果。中途失败不阻塞剩余项(尽量删除)。
+                                // 成功项从 session_list 摘除——下次回到 list 看到刷新态。
+                                let mut ok_ids: Vec<String> = Vec::new();
+                                let mut fail = 0;
+                                if let Some(ref api) = self.api {
+                                    for id in &ids {
+                                        match api.delete_session(id) {
+                                            Ok(true) => ok_ids.push(id.clone()),
+                                            Ok(false) | Err(_) => fail += 1,
+                                        }
+                                    }
+                                }
+                                let ok_n = ok_ids.len();
+                                self.session_list.forget_sessions(&ok_ids);
+                                // 若当前会话也在删除列表里,重置 transcript + 回 Home
+                                // (避免幽灵会话——同单删 arm 语义)。
+                                if let Some(cur) = self.active_session.get_session_id() {
+                                    if ok_ids.iter().any(|i| i == &cur) {
+                                        self.active_session.reset_for_new_session();
+                                        self.store.navigate_home();
+                                    }
+                                }
+                                let (variant, msg) = if fail == 0 {
+                                    (crate::store::types::ToastMsgVariant::Success,
+                                     format!("Deleted {} session(s)", ok_n))
+                                } else if ok_n == 0 {
+                                    (crate::store::types::ToastMsgVariant::Error,
+                                     format!("Failed to delete {} session(s)", fail))
+                                } else {
+                                    (crate::store::types::ToastMsgVariant::Warning,
+                                     format!("Deleted {}, failed {}", ok_n, fail))
+                                };
+                                self.store.push_toast(&msg, variant);
+                            }
                             // PendingConfirm 多变体已穷尽 Some；None 收尾。
                             // 新增变体会让此 match 变非穷尽 → 编译报错 → 强制补臂。
                             None => {}
@@ -169,13 +205,28 @@ impl AppHandler {
                 return true;
             }
             Panel::SessionList => {
-                if let Some(entry) = self.session_list.handle_key(key) {
-                    // User selected a session — navigate to it
-                    self.active_session.set_session_id(&entry.id);
-                    self.sf_tx.send_replace(Some(entry.id.clone()));
-                    self.load_session_messages(&entry.id);
-                    self.store.navigate(Route::Session { session_id: entry.id });
-                    self.panel = Panel::None;
+                if let Some(action) = self.session_list.handle_key(key) {
+                    match action {
+                        crate::dialog::SessionListAction::Open(entry) => {
+                            // User selected a session — navigate to it
+                            self.active_session.set_session_id(&entry.id);
+                            self.sf_tx.send_replace(Some(entry.id.clone()));
+                            self.load_session_messages(&entry.id);
+                            self.store.navigate(Route::Session { session_id: entry.id });
+                            self.panel = Panel::None;
+                        }
+                        crate::dialog::SessionListAction::DeleteBatch(ids) => {
+                            // 'D' 触发批量删除:走 Confirm 同栈,与单删共享成形。
+                            // dialog 不关闭——批量删完成后回到 list,用户能继续操作。
+                            self.confirm_dialog.ask(
+                                "Delete Sessions",
+                                &format!("Delete {} session(s)? This cannot be undone.", ids.len()),
+                                "Delete",
+                            );
+                            self.pending_confirm = Some(PendingConfirm::DeleteSessionsBatch(ids));
+                            self.panel = Panel::Confirm;
+                        }
+                    }
                     return true;
                 }
                 if !self.session_list.is_open() { self.panel = Panel::None; }

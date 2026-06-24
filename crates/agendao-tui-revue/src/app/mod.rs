@@ -223,6 +223,9 @@ pub(crate) enum PendingConfirm {
         action: agendao_client::RecoveryActionKind,
         target_id: Option<String>,
     },
+    /// 批量删除会话（SessionList dialog 'x' 标记 + 'D' 触发）。
+    /// 与 DeleteSession(单个) 共享 Confirm dialog 同栈,删一组 session id。
+    DeleteSessionsBatch(Vec<String>),
 }
 
 /// Application state + event handler.
