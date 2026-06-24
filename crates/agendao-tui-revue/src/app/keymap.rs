@@ -665,6 +665,32 @@ impl AppHandler {
                     self.execute_slash_action(UiActionId::RevisePrompt);
                     return true;
                 }
+                // 'c' = copy cursor 当前 block 内容（对齐 web 消息卡"复制"图标
+                // 一步触发）。双重守卫：prompt 空（避免打字中途误触发）+ cursor
+                // 命中（否则 'c' 落到 prompt 输入字符）。走 cursor_block_to_text
+                // 复用 transcript_to_text 成形契约，再 OSC52 一次性写终端剪贴板
+                // ——与 /copy slash（全 transcript）职责分离：slash → 显式全量,
+                // 'c' → cursor 单块。无支持的 block 时 toast 提示，避免无声失败。
+                Key::Char('c') if self.prompt.text().is_empty()
+                    && self.active_session.transcript_cursor.get().is_some() => {
+                    match self.active_session.cursor_block_to_text() {
+                        Some(text) => match crate::dialog::clipboard::copy(&text) {
+                            Ok(()) => self.store.push_toast(
+                                "Block copied to clipboard",
+                                crate::store::types::ToastMsgVariant::Success,
+                            ),
+                            Err(e) => self.store.push_toast(
+                                &format!("Clipboard write failed: {}", e),
+                                crate::store::types::ToastMsgVariant::Error,
+                            ),
+                        },
+                        None => self.store.push_toast(
+                            "Nothing to copy at cursor",
+                            crate::store::types::ToastMsgVariant::Warning,
+                        ),
+                    }
+                    return true;
+                }
                 _ => {}
             }
         }

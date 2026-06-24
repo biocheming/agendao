@@ -582,6 +582,38 @@ impl SessionStore {
             _ => None,
         }
     }
+
+    /// 取光标当前 block 的文本表示，用于 'c' 单块复制（OSC52 → 终端剪贴板）。
+    ///
+    /// 复用 `transcript_to_text` 的成形契约（User: / Assistant: / Tool: / Result:
+    /// 前缀），额外支持 Thinking（cursor 在思考块时用户主动按 'c' 复制是合理
+    /// 意图；不污染全 transcript 默认序列化）。不支持的 block（SkillActivated
+    /// / TodoList / StageUpdate / CompactionHint / SystemNotice / ImageRef）
+    /// 返回 None，调用方负责 toast 提示「Nothing to copy at cursor」——避免
+    /// 无声失败（道纪第十条：唯一查询权威）。
+    pub fn cursor_block_to_text(&self) -> Option<String> {
+        let cursor = self.transcript_cursor.get()?;
+        let msgs = self.messages.get();
+        let block = msgs.get(cursor)?;
+        match block {
+            TranscriptBlock::UserPrompt { content, .. } => {
+                Some(format!("User: {}", content))
+            }
+            TranscriptBlock::AssistantMsg { content, .. } => {
+                Some(format!("Assistant: {}", content))
+            }
+            TranscriptBlock::ToolCall { name, params, .. } => {
+                Some(format!("Tool: {}({})", name, params))
+            }
+            TranscriptBlock::ToolResult { name, result, .. } => {
+                Some(format!("Result [{}]: {}", name, result))
+            }
+            TranscriptBlock::Thinking { content, .. } => {
+                Some(format!("Thinking: {}", content))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -857,5 +889,49 @@ mod tests {
         // cursor 超界 → None
         s.transcript_cursor.set(Some(99));
         assert_eq!(s.cursor_user_prompt(), None);
+    }
+
+    /// cursor_block_to_text 服务于 'c' 单块复制（OSC52）：复用
+    /// transcript_to_text 的成形前缀（User: / Assistant: / Tool: / Result:），
+    /// 额外支持 Thinking。不支持的 block 返回 None，让调用方 toast 提示。
+    #[test]
+    fn cursor_block_to_text_serializes_supported_blocks() {
+        use crate::store::types::ToolPhase;
+        let s = SessionStore::new();
+        s.push_user_message("u1", "hello");
+        s.push_assistant_delta("a1", "world");
+        s.upsert_tool_call("t1", "Read", "{\"path\":\"x\"}", ToolPhase::Done);
+        s.push_thinking("th1", "ponder");
+        s.push_skill("sk1", "auto");
+
+        // 无 cursor → None
+        assert_eq!(s.cursor_block_to_text(), None);
+
+        // UserPrompt
+        s.transcript_cursor.set(Some(0));
+        assert_eq!(s.cursor_block_to_text().as_deref(), Some("User: hello"));
+
+        // AssistantMsg
+        s.transcript_cursor.set(Some(1));
+        assert_eq!(s.cursor_block_to_text().as_deref(), Some("Assistant: world"));
+
+        // ToolCall
+        s.transcript_cursor.set(Some(2));
+        assert_eq!(
+            s.cursor_block_to_text().as_deref(),
+            Some("Tool: Read({\"path\":\"x\"})"),
+        );
+
+        // Thinking（额外支持，transcript_to_text 不复制但单块复制支持）
+        s.transcript_cursor.set(Some(3));
+        assert_eq!(s.cursor_block_to_text().as_deref(), Some("Thinking: ponder"));
+
+        // SkillActivated → 不支持的 block 返回 None
+        s.transcript_cursor.set(Some(4));
+        assert_eq!(s.cursor_block_to_text(), None);
+
+        // cursor 超界 → None
+        s.transcript_cursor.set(Some(99));
+        assert_eq!(s.cursor_block_to_text(), None);
     }
 }
