@@ -1006,6 +1006,30 @@ impl AppHandler {
         }
     }
 
+    /// Keybindings 分类 body 键路由:只读参考的滚动(阴面记账 scroll signal)。
+    /// 数据源唯一 = `dialog::help::KEYBINDINGS`;此处只推 scroll,渲染层据此开窗。
+    /// scroll clamp 到 `[0, total-1]`(渲染层再 clamp 视窗尾),不依赖 pane 高度。
+    fn handle_keybindings_body_key(&mut self, key: &Key) -> bool {
+        let total = crate::dialog::help::KEYBINDINGS.len();
+        let max_scroll = total.saturating_sub(1);
+        const PAGE: usize = 10;
+        let cur = self.store.settings_keybindings_scroll.get();
+        let next = match key {
+            Key::Up => cur.saturating_sub(1),
+            Key::Down => (cur + 1).min(max_scroll),
+            Key::PageUp => cur.saturating_sub(PAGE),
+            Key::PageDown => (cur + PAGE).min(max_scroll),
+            Key::Home => 0,
+            Key::End => max_scroll,
+            _ => return false,
+        };
+        if next != cur {
+            self.store.settings_keybindings_scroll.set(next);
+            self.layout_dirty = true;
+        }
+        true
+    }
+
     /// Settings 全屏页键路由(火→土:键事件 → AppStore signals)。
     ///
     /// 阳面键 = 阴面写哪个 signal,完全镜像 SettingsFocusPane 三栏:
@@ -1058,6 +1082,7 @@ impl AppHandler {
         {
             return match category {
                 SettingsCategory::General => self.handle_general_body_key(key),
+                SettingsCategory::Keybindings => self.handle_keybindings_body_key(key),
                 // About / 占位分类:body 无交互,消费导航键避免穿透到 provider 逻辑;
                 // Esc 已在上面排除,继续冒泡给外层 → navigate_home。
                 _ => matches!(key, Key::Up | Key::Down | Key::Enter | Key::Char(' ')),

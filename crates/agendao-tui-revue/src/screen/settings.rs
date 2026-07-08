@@ -70,6 +70,15 @@ impl SettingsScreen {
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
+            SettingsCategory::Keybindings => {
+                let body_focused = focus != SettingsFocusPane::Categories;
+                let scroll = store.settings_keybindings_scroll.get();
+                let body = build_keybindings_pane(body_focused, scroll, pane_height);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
             SettingsCategory::About => {
                 hstack().gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
@@ -286,6 +295,71 @@ fn build_about_pane() -> revue::widget::Stack {
     }
     s.child_flex(Text::new(""), 1.0)
         .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new(""), 1)
+}
+
+// ── Keybindings 分类 body ──
+
+/// Keybindings body 的可见数据行数(整屏高 - 顶呼吸1 - 标题1 - 标题后空1 -
+/// 底 hint1 - 底呼吸1 = 5)。keymap 滚动 clamp 与 screen 渲染同用此口径
+/// (金律·成形语法唯一),避免"滚到看不见的行"。
+pub fn keybindings_visible_rows(pane_height: u16) -> usize {
+    pane_height.saturating_sub(5).max(1) as usize
+}
+
+/// Keybindings body:只读快捷键参考,数据源唯一 = `dialog::help::KEYBINDINGS`。
+/// `scroll` = 首个可见 entry 下标(视窗起点),超长时 ↑/↓/PgUp/PgDn 滚动。
+fn build_keybindings_pane(
+    focused: bool,
+    scroll: usize,
+    pane_height: u16,
+) -> revue::widget::Stack {
+    use crate::dialog::help::{HelpEntry, KEYBINDINGS};
+
+    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(Text::new("  ⌨ Keybindings").fg(title_color).bold(), 1)
+        .child_sized(Text::new(""), 1);
+
+    let total = KEYBINDINGS.len();
+    let visible = keybindings_visible_rows(pane_height);
+    let start = scroll.min(total.saturating_sub(1));
+    let end = (start + visible).min(total);
+    for entry in &KEYBINDINGS[start..end] {
+        let row = match entry {
+            HelpEntry::Section(title) => hstack().gap(0)
+                .child_flex(Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE), 1.0),
+            HelpEntry::Binding(key, desc) => {
+                let key_str = format!("  {:>12}", key);
+                let key_w = key_str.chars().count() as u16;
+                hstack().gap(2)
+                    .child_sized(Text::new(key_str).fg(colors::ACCENT_CYAN), key_w)
+                    .child_flex(Text::new((*desc).to_string()).fg(colors::FG_SECONDARY), 1.0)
+            }
+        };
+        s = s.child_sized(row, 1);
+    }
+
+    let more = total.saturating_sub(end);
+    let hint = if focused {
+        if more > 0 {
+            format!("  ↑/↓/PgUp/PgDn: Scroll  (+{} below)   Tab: Categories", more)
+        } else {
+            "  ↑/↓: Scroll   Tab: Categories   Esc: Back".to_string()
+        }
+    } else {
+        "  Tab/Enter: Enter Keybindings   Esc: Back".to_string()
+    };
+    let hint_color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let hint_w = hint.chars().count() as u16;
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(
+            hstack().gap(0)
+                .child_sized(Text::new(hint).fg(hint_color), hint_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
         .child_sized(Text::new(""), 1)
 }
 
@@ -913,6 +987,26 @@ mod tests {
         assert!(merged.contains("General"), "General title missing:\n{}", merged);
         assert!(merged.contains("Show thinking blocks"), "toggle row missing:\n{}", merged);
         assert!(merged.contains("Theme"), "Theme row missing:\n{}", merged);
+    }
+
+    /// Keybindings 分类:body 渲染快捷键参考(数据源 = help::KEYBINDINGS),不 panic。
+    #[test]
+    fn render_keybindings_category_shows_bindings() {
+        use crate::store::types::SettingsCategory;
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::Keybindings);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("Keybindings"), "title missing:\n{}", merged);
+        assert!(merged.contains("Send prompt"), "binding missing:\n{}", merged);
     }
 
     /// About 分类:body 渲染版本号,不 panic。

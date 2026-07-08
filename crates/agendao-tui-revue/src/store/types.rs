@@ -379,10 +379,13 @@ impl SettingsCategory {
         }
     }
 
-    /// 当前是否有具体实现(灰显判据)。已落地:General / ModelSettings / About;
-    /// 其余仍占位(土律·第十条:不假装做了未做的功能)。
+    /// 当前是否有具体实现(灰显判据)。已落地:General / ModelSettings /
+    /// Keybindings / About;其余仍占位(土律·第十条:不假装做了未做的功能)。
     pub fn is_implemented(self) -> bool {
-        matches!(self, Self::General | Self::ModelSettings | Self::About)
+        matches!(
+            self,
+            Self::General | Self::ModelSettings | Self::Keybindings | Self::About
+        )
     }
 }
 

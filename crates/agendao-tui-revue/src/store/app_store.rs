@@ -86,6 +86,9 @@ pub struct AppStore {
     /// keymap 写(↑/↓ 移动、Enter/Space 触发对应 toggle),screen 读(高亮当前行)。
     /// 与 toggle 值本身无关——值真相在各 `show_*`/`theme_variant` signal(单点权威)。
     pub settings_general_selected: Signal<usize>,
+    /// Keybindings 分类 body 的滚动偏移(首个可见 entry 下标)。
+    /// keymap 写(↑/↓/PgUp/PgDn),screen 读(视窗起点)。只读参考,无选中态。
+    pub settings_keybindings_scroll: Signal<usize>,
 }
 
 impl AppStore {
@@ -117,6 +120,7 @@ impl AppStore {
             settings_category: signal(SettingsCategory::ModelSettings),
             settings_focus_pane: signal(SettingsFocusPane::Providers),
             settings_general_selected: signal(0),
+            settings_keybindings_scroll: signal(0),
         }
     }
 
@@ -201,9 +205,9 @@ mod tests {
     fn settings_category_implementation_flags() {
         assert!(SettingsCategory::General.is_implemented());
         assert!(SettingsCategory::ModelSettings.is_implemented());
+        assert!(SettingsCategory::Keybindings.is_implemented());
         assert!(SettingsCategory::About.is_implemented());
         assert!(!SettingsCategory::PromptLibrary.is_implemented());
         assert!(!SettingsCategory::KnowledgeBase.is_implemented());
-        assert!(!SettingsCategory::Keybindings.is_implemented());
     }
 }
