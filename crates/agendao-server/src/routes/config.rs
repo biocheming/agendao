@@ -247,7 +247,7 @@ async fn delete_provider_config(
 /// GET 单个 model 的 raw `ModelConfig`,用于 TUI Edit 模式 prefill。
 /// 没有就 404——TUI 端 keymap 必须收到诚实信号(不假装空白),避免 PUT 半空覆写
 /// 丢字段(土律·第十条 可观测性权利)。
-async fn get_provider_model_config(
+pub(crate) async fn get_provider_model_config(
     State(state): State<Arc<ServerState>>,
     Path((key, model_key)): Path<(String, String)>,
 ) -> Result<Json<ModelConfig>> {
@@ -268,7 +268,7 @@ async fn get_provider_model_config(
     Ok(Json(model))
 }
 
-async fn put_provider_model_config(
+pub(crate) async fn put_provider_model_config(
     State(state): State<Arc<ServerState>>,
     Path((key, model_key)): Path<(String, String)>,
     Json(model): Json<ModelConfig>,
@@ -292,7 +292,7 @@ async fn put_provider_model_config(
     finalize_config_change(&state, updated).await
 }
 
-async fn delete_provider_model_config(
+pub(crate) async fn delete_provider_model_config(
     State(state): State<Arc<ServerState>>,
     Path((key, model_key)): Path<(String, String)>,
 ) -> Result<Json<AppConfig>> {

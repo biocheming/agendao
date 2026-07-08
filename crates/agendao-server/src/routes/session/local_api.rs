@@ -481,6 +481,89 @@ pub async fn local_connect_provider(
     }
 }
 
+/// PUT `/provider/{id}` 的 local-direct 短路:改 name/base_url/protocol(不动 auth)。
+/// TUI Settings in-place 编辑在 local-direct 模式(默认)下的唯一写通路。
+pub async fn local_update_provider(
+    state: Arc<ServerState>,
+    provider_id: &str,
+    name: Option<String>,
+    base_url: Option<String>,
+    protocol: Option<String>,
+) -> anyhow::Result<bool> {
+    let Json(updated) = super::super::provider::update_provider(
+        State(state),
+        Path(provider_id.to_string()),
+        Json(super::super::provider::UpdateProviderRequest {
+            name,
+            base_url,
+            protocol,
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(updated)
+}
+
+/// DELETE `/provider/{id}` 的 local-direct 短路:config + auth 双删。
+pub async fn local_delete_provider(
+    state: Arc<ServerState>,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let Json(deleted) =
+        super::super::provider::delete_provider(State(state), Path(provider_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(deleted)
+}
+
+/// GET `/config/provider/{id}/models/{key}` 的 local-direct 短路:
+/// TUI model Edit prefill 的读通路(不存在 = 诚实 404 转 Err)。
+pub async fn local_get_provider_model_config(
+    state: Arc<ServerState>,
+    provider_id: &str,
+    model_key: &str,
+) -> anyhow::Result<agendao_config::ModelConfig> {
+    let Json(model) = super::super::config::get_provider_model_config(
+        State(state),
+        Path((provider_id.to_string(), model_key.to_string())),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(model)
+}
+
+/// PUT `/config/provider/{id}/models/{key}` 的 local-direct 短路。
+pub async fn local_put_provider_model_config(
+    state: Arc<ServerState>,
+    provider_id: &str,
+    model_key: &str,
+    model: agendao_config::ModelConfig,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::put_provider_model_config(
+        State(state),
+        Path((provider_id.to_string(), model_key.to_string())),
+        Json(model),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(config)
+}
+
+/// DELETE `/config/provider/{id}/models/{key}` 的 local-direct 短路。
+pub async fn local_delete_provider_model_config(
+    state: Arc<ServerState>,
+    provider_id: &str,
+    model_key: &str,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::delete_provider_model_config(
+        State(state),
+        Path((provider_id.to_string(), model_key.to_string())),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(config)
+}
+
 pub async fn local_list_agents(
     state: Arc<ServerState>,
 ) -> anyhow::Result<Vec<agendao_api::AgentInfo>> {

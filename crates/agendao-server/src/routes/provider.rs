@@ -1701,7 +1701,7 @@ pub struct UpdateProviderRequest {
     pub protocol: Option<String>,
 }
 
-async fn update_provider(
+pub(crate) async fn update_provider(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateProviderRequest>,
@@ -1756,7 +1756,7 @@ async fn update_provider(
     Ok(Json(true))
 }
 
-async fn delete_provider(
+pub(crate) async fn delete_provider(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<bool>> {

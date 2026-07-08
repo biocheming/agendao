@@ -243,14 +243,24 @@ impl ApiBridge {
         self.block_on(self.client.set_auth(provider_id, api_key))
     }
 
+    /// POST `/provider/register`(server 端与 connect_provider 同一 handler),
+    /// local-direct 直接短路到 `local_connect_provider`。
     pub fn register_custom_provider(&self, provider_id: &str, base_url: &str, protocol: &str, api_key: &str) -> anyhow::Result<()> {
+        if let Some(ref ls) = self.local {
+            use agendao_client::ConnectProviderRequest;
+            let req = ConnectProviderRequest {
+                provider_id: provider_id.to_string(),
+                api_key: api_key.to_string(),
+                base_url: Some(base_url.to_string()),
+                protocol: Some(protocol.to_string()),
+            };
+            return self.block_on(agendao_server_local::local_connect_provider(Arc::clone(ls), req));
+        }
         self.block_on(self.client.register_custom_provider(provider_id, base_url, protocol, api_key))
     }
 
     /// PUT `/provider/{id}`:改 ProviderConfig 的 name/base_url/protocol(不动 api_key)。
     /// api_key 改走 `connect_provider`,两步分离 → TUI Edit dialog 可"只改名字"。
-    /// **local 模式** 当前无 `local_update_provider` wrapper,会回退到 http(可能不可用)
-    /// — Settings TUI 写权威主要走 http server 进程,local 模式后续按需补 wrapper。
     pub fn update_provider(
         &self,
         provider_id: &str,
@@ -258,11 +268,26 @@ impl ApiBridge {
         base_url: Option<&str>,
         protocol: Option<&str>,
     ) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_update_provider(
+                Arc::clone(ls),
+                provider_id,
+                name.map(str::to_string),
+                base_url.map(str::to_string),
+                protocol.map(str::to_string),
+            ));
+        }
         self.block_on(self.client.update_provider(provider_id, name, base_url, protocol))
     }
 
     /// DELETE `/provider/{id}`:删 ProviderConfig + AuthManager 条目(土律·第四条单点权威)。
     pub fn delete_provider(&self, provider_id: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_delete_provider(
+                Arc::clone(ls),
+                provider_id,
+            ));
+        }
         self.block_on(self.client.delete_provider(provider_id))
     }
 
@@ -275,6 +300,13 @@ impl ApiBridge {
         provider_id: &str,
         model_key: &str,
     ) -> anyhow::Result<agendao_config::ModelConfig> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_get_provider_model_config(
+                Arc::clone(ls),
+                provider_id,
+                model_key,
+            ));
+        }
         self.block_on(self.client.get_provider_model_config(provider_id, model_key))
     }
 
@@ -286,6 +318,14 @@ impl ApiBridge {
         model_key: &str,
         model: &agendao_config::ModelConfig,
     ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_put_provider_model_config(
+                Arc::clone(ls),
+                provider_id,
+                model_key,
+                model.clone(),
+            ));
+        }
         self.block_on(self.client.put_provider_model_config(provider_id, model_key, model))
     }
 
@@ -295,6 +335,13 @@ impl ApiBridge {
         provider_id: &str,
         model_key: &str,
     ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_delete_provider_model_config(
+                Arc::clone(ls),
+                provider_id,
+                model_key,
+            ));
+        }
         self.block_on(self.client.delete_provider_model_config(provider_id, model_key))
     }
 

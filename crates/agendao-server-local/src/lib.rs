@@ -123,6 +123,48 @@ pub async fn local_get_provider_descriptor(
     agendao_server::local_get_provider_descriptor(state, provider_id).await
 }
 
+pub async fn local_update_provider(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+    name: Option<String>,
+    base_url: Option<String>,
+    protocol: Option<String>,
+) -> Result<bool> {
+    agendao_server::local_update_provider(state, provider_id, name, base_url, protocol).await
+}
+
+pub async fn local_delete_provider(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+) -> Result<bool> {
+    agendao_server::local_delete_provider(state, provider_id).await
+}
+
+pub async fn local_get_provider_model_config(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+    model_key: &str,
+) -> Result<agendao_config::ModelConfig> {
+    agendao_server::local_get_provider_model_config(state, provider_id, model_key).await
+}
+
+pub async fn local_put_provider_model_config(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+    model_key: &str,
+    model: agendao_config::ModelConfig,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_put_provider_model_config(state, provider_id, model_key, model).await
+}
+
+pub async fn local_delete_provider_model_config(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+    model_key: &str,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_delete_provider_model_config(state, provider_id, model_key).await
+}
+
 pub async fn local_list_questions(state: Arc<LocalServerState>) -> Result<Vec<QuestionInfo>> {
     agendao_server::local_list_questions(state).await
 }
