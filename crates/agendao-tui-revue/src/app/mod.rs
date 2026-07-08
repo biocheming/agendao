@@ -152,6 +152,8 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
 
     let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
     let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new()));
+    // 初始化 sidebar session 导航树(从 session_list + cwd 构建 NavigateSession 节点)。
+    handler.borrow_mut().refresh_sidebar_session_tree();
     // 初始 Home 路由聚焦 prompt——一进去就有块光标，可直接打字（Session 路由保持原 focus 行为）。
     if matches!(store.route.get(), Route::Home) {
         handler.borrow_mut().prompt.focus();
@@ -351,6 +353,9 @@ pub(crate) struct AppHandler {
     pub(crate) sidebar_active_tab: usize,
     /// Sidebar tab 符号行的绝对屏幕 y（render 后发布），供鼠标点击命中切 tab。
     pub(crate) sidebar_tab_y: u16,
+    /// Sidebar session tree 各 NavigateSession 行的 (绝对 y, session_id)（render 后发布），
+    /// 供鼠标左键点击命中打开会话。空 = 无 sidebar / 无会话（点击不命中）。
+    pub(crate) sidebar_nav_hits: Vec<crate::telemetry::sidebar::SidebarNavHit>,
     /// 终端总高（render 后发布）。sidebar 底部用户栏在 y = terminal_h - 1（sidebar
     /// 是全高左列、user_bar 是其最后一个 `child_sized(...,1)`），用此值定位 ⚙ 命中行。
     /// 同步发布与 sidebar_tab_y 同构（土律：可观测性单点）。
@@ -529,9 +534,12 @@ impl AppHandler {
             match api.list_sessions_in_directory(cwd_filter) {
                 Ok(sessions) => {
                     tracing::info!(count = sessions.len(), "init: sessions loaded");
-                    s.session_list.set(sessions.into_iter().map(|s| SessionListItem {
-                        id: s.id, title: s.title, run_status: None,
-                    }).collect());
+                    s.session_list.set(
+                        sessions
+                            .iter()
+                            .map(crate::telemetry::session_tree::map_api_session_item)
+                            .collect(),
+                    );
                 }
                 Err(e) => tracing::error!(%e, "init: list_sessions FAILED"),
             }
@@ -577,6 +585,7 @@ impl AppHandler {
             transcript_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
             sidebar_active_tab: 0,
             sidebar_tab_y: 0,
+            sidebar_nav_hits: Vec::new(),
             terminal_h: 0,
             header_y: 1, // 顶端空行后（Session 路由固定；Home 不渲染 header）
             header_dir_x: 0,
@@ -740,6 +749,9 @@ impl View for RootView {
         // active_session 是默认空 SessionStore（detail 全 0/默认、Session Tree "(no sessions)"），
         // 视觉保留 sidebar。内容树存 sidebar_opt，page 层 match 外包成全高左列。
         let mut sidebar_opt: Option<(revue::widget::Stack, u16)> = None;
+        // Session tree 可点击导航命中快照(阳面命中口径);build 内算好绝对 y,
+        // publish 段发布到 handler 供 keymap click hit-test(与 sidebar_tab_y 同构)。
+        let mut sidebar_nav_hits: Vec<crate::telemetry::sidebar::SidebarNavHit> = Vec::new();
         if h.sidebar_visible {
             let token = h.active_session.token_usage.get();
             let cache = h.active_session.cache_stats.get();
@@ -748,10 +760,13 @@ impl View for RootView {
             let trees = h.active_session.sidebar_trees.get();
             let mcp = h.active_session.mcp_lsp.get();
             let tools = h.active_session.active_tools.get();
-            let (content, tab_y) = crate::telemetry::SessionSidebar::build(
+            let active_sid = h.active_session.get_session_id();
+            let (content, tab_y, nav_hits) = crate::telemetry::SessionSidebar::build(
                 &token, &cache, &price, ctx_pct, &trees, &mcp, &tools, h.sidebar_active_tab,
+                active_sid.as_deref(),
             );
             sidebar_opt = Some((content, tab_y));
+            sidebar_nav_hits = nav_hits;
         }
         // Session header dir 点击命中区快照（None=非 Session 路由）。Session 分支算好后填，
         // publish 段（match 外）发布到 handler 供 keymap click 命中（与 sidebar_tab_y_snapshot 同构）。
@@ -1273,6 +1288,9 @@ impl View for RootView {
         // Sidebar tab 符号行绝对 y（sidebar 在 page 顶 y=0，tab_y 已是相对内容顶 = 绝对）。
         // 无 sidebar（Home / Ctrl+B 关）→ 0，点击命中不触发（y=0 落在 logo 区不切 tab）。
         self.handler.borrow_mut().sidebar_tab_y = sidebar_tab_y_snapshot;
+        // Session tree 可点击导航命中发布（阴面记账 → keymap click 读）。无 sidebar
+        // 或无会话时为空 Vec，点击不命中（水生木：会话树能回到"打开会话"输入动作）。
+        self.handler.borrow_mut().sidebar_nav_hits = sidebar_nav_hits;
         // 终端总高：sidebar 底部用户栏 ⚙ 命中在 y = terminal_h - 1（sidebar 全高左列，
         // user_bar 是其最后一个 child_sized(...,1)）。同 sidebar_tab_y 模式发布。
         self.handler.borrow_mut().terminal_h = ctx.area.height;

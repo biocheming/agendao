@@ -2,29 +2,8 @@
 
 use agendao_server_core::frontend_events::FrontendEvent;
 use agendao_client::SessionRunStatusKind;
-use agendao_client::{ExecutionStatus, SessionExecutionNode};
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
-
-/// Convert a SessionExecutionNode hierarchy into our TreeNode.
-fn node_from_topology(node: &SessionExecutionNode) -> TreeNode {
-    let label = node.label.as_deref().unwrap_or(&node.id);
-    let status_str = match node.status {
-        ExecutionStatus::Running => " ▶",
-        ExecutionStatus::Done => " ✓",
-        ExecutionStatus::Waiting => " ⏳",
-        ExecutionStatus::Cancelling => " ✕",
-        ExecutionStatus::Retry => " ↻",
-    };
-    let children: Vec<TreeNode> = node.children.iter().map(node_from_topology).collect();
-    TreeNode {
-        label: format!("{}{}", label, status_str),
-        depth: 0,
-        expanded: true,
-        children,
-        intent: None,
-    }
-}
 
 pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Option<String> {
     match event {
@@ -214,13 +193,13 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                     u.context_tokens, u.total_cost,
                 );
             }
-            // Build session tree from execution topology
-            if let Some(ref topo) = topology {
-                let nodes: Vec<crate::store::types::TreeNode> = topo.roots.iter().map(|root| {
-                    node_from_topology(root)
-                }).collect();
-                session.sidebar_trees.update(|t| t.session_nodes = nodes);
-            }
+            // Build execution topology for future telemetry display.
+            // **Do not** write into `session_nodes` — that field is the
+            // session *navigation* tree (parent_id fork tree from
+            // `reload_session_list`), not runtime agent/stage topology.
+            // Overwriting it here was the root cause of sidebar clicks
+            // having no NavigateSession intent (土律·第十条·可观测性).
+            let _topology = topology;
             // Compute context meter % from compaction summary
             if let Some(ref cs) = context_compaction_summary {
                 if let (Some(live), Some(limit)) = (cs.live_context_tokens, cs.limit_tokens) {

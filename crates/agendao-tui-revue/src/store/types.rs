@@ -330,6 +330,12 @@ pub struct SessionListItem {
     pub id: String,
     pub title: String,
     pub run_status: Option<String>,
+    /// Fork 父会话 id;`None` = 根会话。sidebar 导航树组树用(对齐 web parent_id)。
+    pub parent_id: Option<String>,
+    /// 会话所属工作目录(canonical);与 `AppStore.working_dir` 过滤对齐。
+    pub directory: String,
+    /// `time.updated` 毫秒时间戳;根/子节点排序用(最近优先)。
+    pub updated: i64,
 }
 
 // ── Settings screen 状态(土：AppStore 唯一所有权) ──

@@ -38,6 +38,7 @@ impl AppHandler {
         self.sf_tx.send_replace(Some(info.id.clone()));
         self.load_session_messages(&info.id);
         self.store.navigate(Route::Session { session_id: info.id.clone() });
+        self.reload_session_list();
     }
 
     pub(crate) fn execute_slash_action(&mut self, action_id: UiActionId) {
@@ -499,31 +500,24 @@ impl AppHandler {
                 self.session_list.open();
                 self.session_list.loading = true;
                 self.panel = Panel::SessionList;
-                // Scope to cwd: working_dir has been canonicalized upstream
-                // (workspace_key == fs::canonicalize), matching the same
-                // normalization used when sessions were created. So an exact
-                // string equality on the server side is safe.
                 let cwd = self.store.working_dir.get();
-                let cwd_filter = if cwd.is_empty() { None } else { Some(cwd.clone()) };
                 self.session_list.set_directory_scope(cwd.clone());
-                if let Some(ref api) = self.api {
-                    match api.list_sessions_in_directory(cwd_filter) {
-                        Ok(sessions) => {
-                            let entries: Vec<crate::dialog::SessionEntry> = sessions.into_iter().map(|s| {
-                                crate::dialog::SessionEntry {
-                                    id: s.id,
-                                    title: s.title,
-                                    status_hint: String::new(),
-                                }
-                            }).collect();
-                            self.session_list.set_sessions(entries);
-                        }
-                        Err(e) => {
-                            self.session_list.set_error(format!("{}", e));
-                        }
-                    }
+                self.reload_session_list();
+                let entries: Vec<crate::dialog::SessionEntry> = self
+                    .store
+                    .session_list
+                    .get()
+                    .into_iter()
+                    .map(|s| crate::dialog::SessionEntry {
+                        id: s.id,
+                        title: s.title,
+                        status_hint: String::new(),
+                    })
+                    .collect();
+                if entries.is_empty() {
+                    self.session_list.set_error("No sessions in this directory".into());
                 } else {
-                    self.session_list.set_error("No API connection".into());
+                    self.session_list.set_sessions(entries);
                 }
             }
             UiActionId::ToggleSidebar => {

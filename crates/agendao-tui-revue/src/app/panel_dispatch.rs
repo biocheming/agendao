@@ -8,7 +8,6 @@
 use revue::event::Key;
 use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::dialog::PermissionReply;
-use crate::store::app_store::Route;
 
 impl AppHandler {
     /// Panel/Overlay 按键分发。返回 true=已消费；false=贯穿（仅 Panel::None）。
@@ -94,6 +93,7 @@ impl AppHandler {
                                             crate::store::types::ToastMsgVariant::Error),
                                     }
                                 }
+                                self.reload_session_list();
                                 // 退出已删会话路由：重置 transcript + 回 Home，
                                 // 避免停在幽灵会话上（金：交付成形不残留失效态）。
                                 self.active_session.reset_for_new_session();
@@ -139,6 +139,7 @@ impl AppHandler {
                                 }
                                 let ok_n = ok_ids.len();
                                 self.session_list.forget_sessions(&ok_ids);
+                                self.reload_session_list();
                                 // 若当前会话也在删除列表里,重置 transcript + 回 Home
                                 // (避免幽灵会话——同单删 arm 语义)。
                                 if let Some(cur) = self.active_session.get_session_id() {
@@ -214,12 +215,9 @@ impl AppHandler {
                 if let Some(action) = self.session_list.handle_key(key) {
                     match action {
                         crate::dialog::SessionListAction::Open(entry) => {
-                            // User selected a session — navigate to it
-                            self.active_session.set_session_id(&entry.id);
-                            self.sf_tx.send_replace(Some(entry.id.clone()));
-                            self.load_session_messages(&entry.id);
-                            self.store.navigate(Route::Session { session_id: entry.id });
-                            self.panel = Panel::None;
+                            // 复用单点 open_session 权威(reset + set + sf_tx + load +
+                            // navigate + panel=None),与 sidebar tree 点击同一路径。
+                            self.open_session(&entry.id);
                         }
                         crate::dialog::SessionListAction::DeleteBatch(ids) => {
                             // 'D' 触发批量删除:走 Confirm 同栈,与单删共享成形。

@@ -409,16 +409,12 @@ impl AppHandler {
                             }
                         }
 
-                        // Click on transcript → toggle fold of the clicked block.
-                        // Click on prompt area → focus input.
-                        // Click elsewhere → unfocus.
-                        if matches!(self.store.route.get(), Route::Session { .. }) {
-                            // ── Sidebar tab 点击切换（替代旧 scrollbar 命中）。
-                            // 符号行 / 下划线行（y == tab_y 或 tab_y+1）点击 → active = m.x / 4
-                            // （每 tab = `| 符号 ` 4 列，符号 i 在列 4i+2）。点击 active 不重渲。──
-                            if self.sidebar_visible && m.x < crate::app::SIDEBAR_WIDTH
-                                && (m.y == self.sidebar_tab_y || m.y == self.sidebar_tab_y + 1)
-                            {
+                        // ── Sidebar interactions (Home / Session / Settings 均可用) ──
+                        // Tab 切换、session tree 导航、⚙ Settings 入口不应被
+                        // Route::Session 门控——Home 上也要能点树打开会话(水生木)。
+                        if self.sidebar_visible && m.x < crate::app::SIDEBAR_WIDTH {
+                            // Tab 符号行 / 下划线行 → 切 telemetry tab
+                            if m.y == self.sidebar_tab_y || m.y == self.sidebar_tab_y + 1 {
                                 let new_tab = ((m.x / 4) as usize)
                                     .min(crate::telemetry::sidebar::SIDEBAR_TAB_COUNT - 1);
                                 if new_tab != self.sidebar_active_tab {
@@ -427,25 +423,34 @@ impl AppHandler {
                                     return true;
                                 }
                             }
-
-                            // ── Sidebar 底部用户栏 ⚙ 点击 → OpenSettings。
-                            // 几何（土律：可观测性单点）：user_bar 在 sidebar 全高左列最底行
-                            // (y == terminal_h - 1)，⚙ 在右侧 SIDEBAR_GEAR_X_FROM_END 列内
-                            // ([W-3, W))——含尾随空格的宽容命中区。terminal_h=0 表示未发布
-                            // 渲染过（启动首帧），跳过。复用 UiActionId::OpenSettings,
-                            // 与 `/settings` slash 同一编排入口（金律：执行点唯一）。
-                            if self.sidebar_visible && self.terminal_h > 0
+                            // Session tree 行 → open_session(命中 y 来自 render 发布的 nav_hits)
+                            if let Some(sid) = self
+                                .sidebar_nav_hits
+                                .iter()
+                                .find(|hit| hit.y == m.y)
+                                .map(|hit| hit.session_id.clone())
+                            {
+                                self.open_session(&sid);
+                                self.layout_dirty = true;
+                                return true;
+                            }
+                            // 底部 ⚙ → OpenSettings
+                            if self.terminal_h > 0
                                 && m.y + 1 == self.terminal_h
                                 && m.x + crate::telemetry::sidebar::SIDEBAR_GEAR_X_FROM_END
                                     >= crate::app::SIDEBAR_WIDTH
-                                && m.x < crate::app::SIDEBAR_WIDTH
                             {
                                 self.execute_slash_action(UiActionId::OpenSettings);
                                 self.layout_dirty = true;
                                 return true;
                             }
+                        }
 
-                            // ── Session header dir 点击：toggle 全路径 tooltip（click-to-reveal，无 motion tracking）。
+                        // Click on transcript → toggle fold of the clicked block.
+                        // Click on prompt area → focus input.
+                        // Click elsewhere → unfocus.
+                        if matches!(self.store.route.get(), Route::Session { .. }) {
+                            // ── Session header dir 点击：toggle 全路径 tooltip ──
                             // 命中 dir 文本区 → 切换（None→显 working_dir 全路径 / Some→关）；
                             // y==header_y 但点在 dir 外 → 关闭。dir_w=0（非 Session 路由）跳过。
                             // dir 在 header 行（y==header_y=1），落在 transcript 区（y≥3）外，不与 fold 命中冲突。
@@ -879,6 +884,7 @@ impl AppHandler {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);
                             self.store.navigate(Route::Session { session_id: info.id.clone() });
+                            self.reload_session_list();
                             info.id
                         }
                         Err(e) => { self.active_session.run_status.set(RunStatus::Error(format!("{}", e))); return; }
@@ -957,6 +963,57 @@ impl AppHandler {
     /// `--session`/`AGENDAO_TUI_SESSION` path share one implementation.
     pub(crate) fn load_session_messages(&self, session_id: &str) {
         eager_load_session_messages(&self.active_session, self.api.as_ref(), session_id);
+    }
+
+    /// 打开一个已存在的会话(土律·第四条·单点权威)。SessionList 的 Enter、
+    /// sidebar session tree 点击、以及未来任何"切到某会话"入口都复用此路径:
+    /// reset(清旧会话 messages/scroll/telemetry 残留) → set id → 更新事件过滤
+    /// (sf_tx,让 transport 只转发该 session 的 FrontendEvent) → 加载历史消息 →
+    /// navigate → 关任何 panel。避免多入口各自拼一套"打开会话"逻辑而漂移。
+    pub(crate) fn open_session(&mut self, session_id: &str) {
+        self.active_session.reset_for_new_session();
+        self.active_session.set_session_id(session_id);
+        self.sf_tx.send_replace(Some(session_id.to_string()));
+        self.load_session_messages(session_id);
+        self.store
+            .navigate(Route::Session { session_id: session_id.to_string() });
+        self.panel = Panel::None;
+    }
+
+    /// 从 API 拉取当前 cwd 下的会话列表,回灌 `AppStore.session_list`,并
+    /// 重建 sidebar 导航树(水→木:回流数据滋养下一轮导航输入)。
+    pub(crate) fn reload_session_list(&mut self) {
+        let Some(api) = self.api.as_ref() else { return };
+        let cwd = self.store.working_dir.get();
+        let cwd_filter = if cwd.is_empty() { None } else { Some(cwd.clone()) };
+        match api.list_sessions_in_directory(cwd_filter) {
+            Ok(sessions) => {
+                let items: Vec<crate::store::types::SessionListItem> = sessions
+                    .iter()
+                    .map(crate::telemetry::session_tree::map_api_session_item)
+                    .collect();
+                self.store.session_list.set(items);
+                self.refresh_sidebar_session_tree();
+            }
+            Err(e) => {
+                self.store.push_toast(
+                    &format!("Failed to refresh session list: {}", e),
+                    crate::store::types::ToastMsgVariant::Error,
+                );
+            }
+        }
+    }
+
+    /// 从 `AppStore.session_list` 重建 sidebar session 导航树(单点权威)。
+    /// 每个节点带 `NavigateSession(id)` intent,供鼠标点击 → `open_session`。
+    pub(crate) fn refresh_sidebar_session_tree(&mut self) {
+        let sessions = self.store.session_list.get();
+        let cwd = self.store.working_dir.get();
+        let nodes = crate::telemetry::build_session_nav_tree(&sessions, &cwd);
+        self.active_session.sidebar_trees.update(|t| {
+            t.session_nodes = nodes;
+        });
+        self.layout_dirty = true;
     }
 
     pub(crate) fn dispatch_shell(&mut self, _cmd: String) {}

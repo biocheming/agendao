@@ -27,8 +27,28 @@ pub const SIDEBAR_TAB_COUNT: usize = 6;
 /// 触此处 + render 顺序，避免命中漂移。
 pub const SIDEBAR_GEAR_X_FROM_END: u16 = 3;
 
+/// Sidebar session tree 的一个可点击导航命中(阳面命中口径)。
+/// `y` = 该行绝对屏幕 y(sidebar 顶 y=0);`session_id` = 点击后要打开的会话。
+/// build 渲染时算好并随返回值发布,keymap click 据此 hit-test(水生木:
+/// 会话树不再只上色,而是能回到"打开会话"这一输入动作)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarNavHit {
+    pub y: u16,
+    pub session_id: String,
+}
+
+/// 展平后的一行(渲染 + 命中同源:label/color 给渲染,intent 给命中)。
+struct FlatRow {
+    label: String,
+    color: Color,
+    intent: Option<TreeIntent>,
+}
+
 impl SessionSidebar {
-    /// 构建 sidebar 内容树。返回 (Stack, tab_y)：tab_y = 符号行绝对 y（sidebar 顶 y=0），供点击命中。
+    /// 构建 sidebar 内容树。返回 `(Stack, tab_y, nav_hits)`:
+    ///   - `tab_y` = tab 符号行绝对 y(点击切 tab 命中)
+    ///   - `nav_hits` = session tree 里 NavigateSession 行的 (绝对 y, session_id)
+    ///     列表(点击打开会话命中)。渲染与命中同源(金律·成形语法唯一)。
     pub fn build(
         token: &TokenUsage,
         cache: &CacheStats,
@@ -38,12 +58,20 @@ impl SessionSidebar {
         mcp: &McpLspInfo,
         tools: &[ActiveTool],
         active_tab: usize,
-    ) -> (revue::widget::Stack, u16) {
+        active_session_id: Option<&str>,
+    ) -> (revue::widget::Stack, u16, Vec<SidebarNavHit>) {
         let (logo_view, logo_h) = Self::logo();
         let (tab_view, tab_h) = Self::tab_bar(active_tab);
         let (detail_view, detail_h) = Self::detail(active_tab, token, cache, price, ctx_pct, mcp, tools);
         let session_header = Text::new("▣ Session Tree").fg(colors::FG_SECONDARY).bold();
-        let graph = Self::session_graph(trees);
+
+        // Session graph 起始绝对 y(固定高度累加):
+        //   顶空(2) + logo(logo_h) + 空(1) + 分隔(1) + 空(1) + tab(tab_h) + detail(detail_h)
+        //   + 空(1) + 分隔(1) + 空(1) + header(1) + 分隔(1)
+        // = 2 + logo_h + 3 + tab_h + detail_h + 5。logo_h=4/tab_h=2 → 16 + detail_h。
+        let graph_start_y = 2 + logo_h + 3 + tab_h + detail_h + 5;
+        let (graph, nav_hits) = Self::session_graph(trees, graph_start_y, active_session_id);
+
         // gap(0) + 显式空行 child：每处间距独立可控（土律：编排单点）。
         // 紧贴（0 行）：轨道↔详情、Session Tree↔分隔、分隔↔graph；其余 1 行。
         let sidebar = vstack().gap(0)
@@ -63,7 +91,7 @@ impl SessionSidebar {
             .child_sized(Self::user_bar(), 1);          // 底部用户栏（将来功能占位）
         // tab 符号行 y = 顶端(2) + logo(4) + 空(1) + divider(1) + 空(1) = 9。
         let tab_y = 2 + logo_h + 1 + 1 + 1;
-        (sidebar, tab_y)
+        (sidebar, tab_y, nav_hits)
     }
 
     /// 水平分隔线：⎻ × (SIDEBAR_WIDTH-1) FG_TRACE + 右留 1 列（呼吸感，不顶右边）。
@@ -204,12 +232,38 @@ impl SessionSidebar {
     // ── Session Tree（底部常驻，独立于 tab）──
 
     /// session graph：有会话 → 展平树（最多 30 项）；无 → (no sessions) 提示。
-    fn session_graph(trees: &SidebarTrees) -> revue::widget::Stack {
-        if trees.session_nodes.is_empty() {
-            vstack().child_sized(Text::new(" (no sessions)").fg(colors::FG_TRACE), 1)
-        } else {
-            Self::tree_panel(&trees.session_nodes)
+    /// `graph_start_y` = 该 graph 首行绝对 y,用于把每个 NavigateSession 行换算成
+    /// 点击命中 y。返回 (Stack, nav_hits)——渲染与命中同一份展平结果(金律)。
+    fn session_graph(
+        trees: &SidebarTrees,
+        graph_start_y: u16,
+        active_session_id: Option<&str>,
+    ) -> (revue::widget::Stack, Vec<SidebarNavHit>) {
+        let mut flat: Vec<FlatRow> = Vec::new();
+        if !trees.session_nodes.is_empty() {
+            Self::flatten_nodes(&trees.session_nodes, &mut flat, active_session_id);
         }
+        flat.truncate(30);
+
+        if flat.is_empty() {
+            let s = vstack().gap(0)
+                .child_sized(Text::new(" (no sessions)").fg(colors::FG_TRACE), 1);
+            return (s, Vec::new());
+        }
+
+        // gap(0):行连续,命中 y = graph_start_y + i 才成立(金律·成形语法唯一)。
+        let mut s = vstack().gap(0);
+        let mut hits = Vec::new();
+        for (i, row) in flat.iter().enumerate() {
+            s = s.child_sized(Text::new(row.label.as_str()).fg(row.color), 1);
+            if let Some(TreeIntent::NavigateSession(id)) = &row.intent {
+                hits.push(SidebarNavHit {
+                    y: graph_start_y + i as u16,
+                    session_id: id.clone(),
+                });
+            }
+        }
+        (s, hits)
     }
 
     // ── 底部用户栏（将来功能占位）──
@@ -230,33 +284,31 @@ impl SessionSidebar {
             .child_sized(Text::new("⚙  ").fg(colors::FG_SECONDARY), 3)
     }
 
-    /// Render tree nodes flat (max 30 items, indent via "  ".repeat(depth)).
-    fn tree_panel(nodes: &[SidebarNode]) -> revue::widget::Stack {
-        let mut lines: Vec<(String, Color)> = Vec::new();
-        Self::flatten_nodes(nodes, &mut lines);
-        let mut s = vstack();
-        for (label, color) in lines.iter().take(30) {
-            s = s.child_sized(Text::new(label.as_str()).fg(*color), 1);
-        }
-        s
-    }
-
-    fn flatten_nodes(nodes: &[SidebarNode], lines: &mut Vec<(String, Color)>) {
+    /// 展平树节点为 FlatRow(label + color + intent),深度用缩进表达,最多 30 项。
+    /// 渲染与点击命中共用此结果——单点权威,不会出现"看得见但点不中"的错位。
+    fn flatten_nodes(
+        nodes: &[SidebarNode],
+        rows: &mut Vec<FlatRow>,
+        active_session_id: Option<&str>,
+    ) {
         for n in nodes {
-            if lines.len() >= 30 { break; }
+            if rows.len() >= 30 { break; }
             let indent = "  ".repeat((n.depth as usize).min(6));
             let icon = if !n.children.is_empty() {
                 if n.expanded { "▼ " } else { "▶ " }
             } else { "  " };
             let label = format!("{}{}{}", indent, icon, n.label);
             let color = match &n.intent {
+                Some(TreeIntent::NavigateSession(id)) if active_session_id == Some(id.as_str()) => {
+                    colors::E_AMBER
+                }
                 Some(TreeIntent::NavigateSession(_)) => colors::ACCENT_CYAN,
                 Some(TreeIntent::OpenFile(_)) => colors::ACCENT_GREEN,
                 None => colors::FG_SECONDARY,
             };
-            lines.push((label, color));
+            rows.push(FlatRow { label, color, intent: n.intent.clone() });
             if n.expanded {
-                Self::flatten_nodes(&n.children, lines);
+                Self::flatten_nodes(&n.children, rows, active_session_id);
             }
         }
     }
@@ -310,6 +362,56 @@ impl SessionSidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Session tree 点击命中:NavigateSession 节点应产出 (绝对 y, session_id),
+    /// 且 y 与渲染行一致(graph_start_y + 展平索引)。detail_h 随 active_tab 变,
+    /// 命中 y 也随之偏移——验证 y 计算跟随 detail 高度(金律·成形同源)。
+    #[test]
+    fn session_tree_nav_hits_map_rows_to_session_ids() {
+        let trees = SidebarTrees {
+            session_nodes: vec![
+                SidebarNode {
+                    label: "root".into(),
+                    depth: 0,
+                    expanded: true,
+                    children: vec![SidebarNode {
+                        label: "child".into(),
+                        depth: 1,
+                        expanded: false,
+                        children: vec![],
+                        intent: Some(TreeIntent::NavigateSession("sess-child".into())),
+                    }],
+                    intent: Some(TreeIntent::NavigateSession("sess-root".into())),
+                },
+            ],
+            workspace_nodes: vec![],
+        };
+        let token = TokenUsage::default();
+        let cache = CacheStats::default();
+        let price = Pricing::default();
+        let mcp = McpLspInfo::default();
+        // active_tab=0 → detail_h=4 → graph_start_y = 16 + 4 = 20。
+        let (_stack, _tab_y, hits) =
+            SessionSidebar::build(&token, &cache, &price, 0, &trees, &mcp, &[], 0, None);
+        assert_eq!(hits.len(), 2, "both nodes carry NavigateSession intent");
+        assert_eq!(hits[0].session_id, "sess-root");
+        assert_eq!(hits[0].y, 20, "root row at graph_start_y");
+        assert_eq!(hits[1].session_id, "sess-child");
+        assert_eq!(hits[1].y, 21, "child row one line below");
+    }
+
+    /// 无会话时无命中(空 Vec),点击不触发导航。
+    #[test]
+    fn session_tree_no_hits_when_empty() {
+        let trees = SidebarTrees::default();
+        let token = TokenUsage::default();
+        let cache = CacheStats::default();
+        let price = Pricing::default();
+        let mcp = McpLspInfo::default();
+        let (_stack, _tab_y, hits) =
+            SessionSidebar::build(&token, &cache, &price, 0, &trees, &mcp, &[], 0, None);
+        assert!(hits.is_empty());
+    }
 
     /// 对照：无空行 child——A@y0，B@y2（A:1 + gap:1）。
     #[test]
