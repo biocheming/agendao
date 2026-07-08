@@ -156,6 +156,13 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     if matches!(store.route.get(), Route::Home) {
         handler.borrow_mut().prompt.focus();
     }
+    // AGENDAO_TUI_PROMPT / config.initial_prompt:预填输入框(不自动发送,
+    // 用户 Enter 确认——发送语义仍由唯一 dispatch 收口,木律·单一输入权威)。
+    if let Some(ref p) = config.initial_prompt {
+        let mut h = handler.borrow_mut();
+        h.prompt.set_text(p);
+        h.prompt.focus();
+    }
     let view = RootView { store, api, active_session, handler };
 
     app.run(view, move |event, view, app| {
