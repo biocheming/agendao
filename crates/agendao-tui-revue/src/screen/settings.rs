@@ -46,56 +46,267 @@ impl SettingsScreen {
     ) -> revue::widget::Stack {
         let category = store.settings_category.get();
         let focus = store.settings_focus_pane.get();
-        let providers = store.providers.get();
-        let connected = store.providers_connected.get();
-        let selected = store.settings_selected_provider.get();
-
-        // edit_state.active = true 时 Settings 的 keymap focus 概念被覆盖:
-        //   - Edit:focus 强制按 Details(编辑发生在 Details pane);Providers 栏依旧
-        //     显示 selected highlight,但视觉权重让位给 Details 的高亮边框
-        //   - Add:虚拟追加一行 "(new provider)";selected 强制指向这行,Details
-        //     从 edit_state 字段取空白可填值
-        let editing_active = edit_state.is_some_and(|s| s.active);
-        let is_add = edit_state.is_some_and(|s| s.is_add());
-
-        // selected_idx:Edit 模式照常查 providers;Add 模式落在虚拟追加行
-        // (providers.len()——0-based 下标正好等于追加位置)。
-        let selected_idx = if is_add {
-            Some(providers.len())
-        } else {
-            selected
-                .as_deref()
-                .and_then(|id| providers.iter().position(|p| p.id == id))
-        };
-
-        let selected_model = store.settings_selected_model.get();
-
         let cat_pane = build_categories_pane(category, focus == SettingsFocusPane::Categories);
-        let prov_pane = build_providers_pane(
-            &providers,
-            &connected,
-            selected.as_deref(),
-            focus == SettingsFocusPane::Providers,
-            pane_height,
-            selected_idx,
-            is_add,
-        );
-        let detail_pane = build_details_pane(
-            &providers,
-            &connected,
-            selected.as_deref(),
-            focus == SettingsFocusPane::Details || editing_active,
-            selected_model.as_deref(),
-            edit_state,
-        );
 
-        hstack().gap(0)
-            .child_sized(cat_pane, CATEGORIES_W)
-            .child_sized(vline(), VLINE_W)
-            .child_sized(prov_pane, PROVIDERS_W)
-            .child_sized(vline(), VLINE_W)
-            .child_flex(detail_pane, 1.0)
+        // 分类分派(土律·唯一编排):Categories 栏恒在左;右侧 body 按分类切换成形语法。
+        //   - ModelSettings:三栏(Providers 28 + Details flex),provider/model CRUD
+        //   - General:两栏,body = UI 偏好 toggle 列表
+        //   - About:两栏,body = 只读版本/信息
+        //   - 其余占位分类:两栏,body = "coming soon"(诚实标注,土律·第十条)
+        match category {
+            SettingsCategory::ModelSettings => {
+                let body = build_model_settings_body(store, pane_height, edit_state, focus);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
+            SettingsCategory::General => {
+                let body_focused = focus != SettingsFocusPane::Categories;
+                let selected = store.settings_general_selected.get();
+                let body = build_general_pane(store, body_focused, selected);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
+            SettingsCategory::About => {
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(build_about_pane(), 1.0)
+            }
+            other => {
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(build_coming_soon_pane(other), 1.0)
+            }
+        }
     }
+}
+
+/// Model Settings body:两栏(Providers 28 | Details flex)。从 `build()` 抽出,
+/// 保持原三栏语义不变——外层再拼上 Categories 栏即成完整三栏。
+fn build_model_settings_body(
+    store: &AppStore,
+    pane_height: u16,
+    edit_state: Option<&SettingsEditState>,
+    focus: SettingsFocusPane,
+) -> revue::widget::Stack {
+    let providers = store.providers.get();
+    let connected = store.providers_connected.get();
+    let selected = store.settings_selected_provider.get();
+
+    let editing_active = edit_state.is_some_and(|s| s.active);
+    let is_add = edit_state.is_some_and(|s| s.is_add());
+
+    let selected_idx = if is_add {
+        Some(providers.len())
+    } else {
+        selected
+            .as_deref()
+            .and_then(|id| providers.iter().position(|p| p.id == id))
+    };
+
+    let selected_model = store.settings_selected_model.get();
+
+    let prov_pane = build_providers_pane(
+        &providers,
+        &connected,
+        selected.as_deref(),
+        focus == SettingsFocusPane::Providers,
+        pane_height,
+        selected_idx,
+        is_add,
+    );
+    let detail_pane = build_details_pane(
+        &providers,
+        &connected,
+        selected.as_deref(),
+        focus == SettingsFocusPane::Details || editing_active,
+        selected_model.as_deref(),
+        edit_state,
+    );
+
+    hstack().gap(0)
+        .child_sized(prov_pane, PROVIDERS_W)
+        .child_sized(vline(), VLINE_W)
+        .child_flex(detail_pane, 1.0)
+}
+
+// ── General 分类 body ──
+
+/// General body:UI 偏好 toggle 列表。每行读对应 signal 显示当前值(阴阳同源:
+/// 与 `execute_slash_action` 的 toggle 写路径读写同一 signal)。`focused` = body
+/// 在焦点(非 Categories 栏);`selected` = 当前高亮行(`GeneralRow::ALL` 下标)。
+fn build_general_pane(
+    store: &AppStore,
+    focused: bool,
+    selected: usize,
+) -> revue::widget::Stack {
+    use crate::store::types::GeneralRow;
+
+    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(Text::new("  ☯ General").fg(title_color).bold(), 1)
+        .child_sized(Text::new(""), 1);
+
+    // Working dir 只读展示(改 cwd 是更大范围,暂只读)。
+    let wd = store.working_dir.get();
+    let wd_line = format!("  Working dir: {}", wd);
+    let wd_w = wd_line.chars().count() as u16;
+    s = s
+        .child_sized(
+            hstack().gap(0)
+                .child_sized(Text::new(wd_line).fg(colors::FG_TRACE), wd_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1);
+
+    let sel = selected.min(GeneralRow::ALL.len() - 1);
+    for (i, row) in GeneralRow::ALL.iter().copied().enumerate() {
+        let is_sel = focused && i == sel;
+        let value = general_row_value(store, row);
+        s = s.child_sized(general_toggle_row(row, &value, is_sel), 1);
+        s = s.child_sized(general_row_desc(row, is_sel), 1);
+    }
+
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(general_footer_hint(focused), 1)
+        .child_sized(Text::new(""), 1)
+}
+
+/// 读某行当前值的显示文案(bool → On/Off;Theme → variant label)。单点权威:
+/// 值真相全在 store signal,这里只做展示映射。
+fn general_row_value(store: &AppStore, row: crate::store::types::GeneralRow) -> String {
+    use crate::store::types::GeneralRow;
+    match row {
+        GeneralRow::ShowThinking => on_off(store.show_thinking.get()),
+        GeneralRow::ShowScrollbar => on_off(store.show_scrollbar.get()),
+        GeneralRow::ShowHeader => on_off(store.show_header.get()),
+        GeneralRow::ShowTips => on_off(store.show_tips.get()),
+        GeneralRow::CompactDensity => on_off(store.compact_density.get()),
+        GeneralRow::Theme => {
+            crate::ds::theme::variant_label(store.theme_variant.get()).to_string()
+        }
+    }
+}
+
+fn on_off(v: bool) -> String {
+    if v { "On".to_string() } else { "Off".to_string() }
+}
+
+/// 单个 toggle 行:`{marker} {label} ........ [{value}]`。
+/// selected 行 ▸ + E_TEAL,value pill 用 On=ACCENT_GREEN / Off=FG_MUTED。
+fn general_toggle_row(
+    row: crate::store::types::GeneralRow,
+    value: &str,
+    selected: bool,
+) -> revue::widget::Stack {
+    let (marker, label_color) = if selected {
+        ("▸", colors::E_TEAL)
+    } else {
+        (" ", colors::FG_PRIMARY)
+    };
+    let label = format!("  {} {}", marker, row.label());
+    let label_w = label.chars().count() as u16;
+    // On 用绿色,dark/light 等非布尔值用青色,Off 用暗色。
+    let value_color = match value {
+        "On" => colors::ACCENT_GREEN,
+        "Off" => colors::FG_MUTED,
+        _ => colors::E_TEAL,
+    };
+    let pill = format!("[ {} ]", value);
+    let pill_w = pill.chars().count() as u16;
+    hstack().gap(0)
+        .child_sized(Text::new(label).fg(label_color), label_w)
+        .child_flex(Text::new(""), 1.0)
+        .child_sized(Text::new(pill).fg(value_color), pill_w)
+        .child_sized(Text::new("  "), 2)
+}
+
+fn general_row_desc(
+    row: crate::store::types::GeneralRow,
+    selected: bool,
+) -> revue::widget::Stack {
+    let color = if selected { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let line = format!("      {}", row.description());
+    let w = line.chars().count() as u16;
+    hstack().gap(0)
+        .child_sized(Text::new(line).fg(color), w)
+        .child_flex(Text::new(""), 1.0)
+}
+
+fn general_footer_hint(focused: bool) -> revue::widget::Stack {
+    let color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let line = if focused {
+        "  ↑/↓: Row   Enter/Space: Toggle   Tab: Categories   Esc: Back"
+    } else {
+        "  Tab/Enter: Enter General   Esc: Back"
+    };
+    let w = line.chars().count() as u16;
+    hstack().gap(0)
+        .child_sized(Text::new(line).fg(color), w)
+        .child_flex(Text::new(""), 1.0)
+}
+
+// ── About 分类 body ──
+
+fn build_about_pane() -> revue::widget::Stack {
+    let version = env!("CARGO_PKG_VERSION");
+    let title = format!("  ℹ AgenDao TUI  v{}", version);
+    let title_w = title.chars().count() as u16;
+    let lines: [(&str, Color); 5] = [
+        ("  道纪 — Canon of Flow and Governance", colors::FG_SECONDARY),
+        ("  A terminal UI for the AgenDao agent runtime.", colors::FG_PRIMARY),
+        ("", colors::FG_PRIMARY),
+        ("  Press Ctrl+P or / for the command palette.", colors::FG_TRACE),
+        ("  Press ? for keyboard shortcuts.", colors::FG_TRACE),
+    ];
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            hstack().gap(0)
+                .child_sized(Text::new(title).fg(colors::E_TEAL).bold(), title_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1);
+    for (line, color) in lines {
+        let w = line.chars().count().max(1) as u16;
+        s = s.child_sized(
+            hstack().gap(0)
+                .child_sized(Text::new(line).fg(color), w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        );
+    }
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new(""), 1)
+}
+
+// ── 占位分类 body ──
+
+fn build_coming_soon_pane(cat: SettingsCategory) -> revue::widget::Stack {
+    let title = format!("  {} {}", cat.icon(), cat.label());
+    let title_w = title.chars().count() as u16;
+    vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            hstack().gap(0)
+                .child_sized(Text::new(title).fg(colors::FG_SECONDARY).bold(), title_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(Text::new("  Coming soon.").fg(colors::FG_TRACE).italic(), 1)
+        .child_flex(Text::new(""), 1.0)
+        .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new(""), 1)
 }
 
 // ── 公共小件 ──
@@ -679,6 +890,48 @@ mod tests {
         (0..width)
             .filter_map(|x| buf.get(x, y).map(|c| c.symbol))
             .collect()
+    }
+
+    /// General 分类:body 渲染 6 个 toggle 行 + 当前值,不 panic。
+    #[test]
+    fn render_general_category_shows_toggles() {
+        use crate::store::types::SettingsCategory;
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::General);
+        store.show_thinking.set(true);
+        store.compact_density.set(false);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("General"), "General title missing:\n{}", merged);
+        assert!(merged.contains("Show thinking blocks"), "toggle row missing:\n{}", merged);
+        assert!(merged.contains("Theme"), "Theme row missing:\n{}", merged);
+    }
+
+    /// About 分类:body 渲染版本号,不 panic。
+    #[test]
+    fn render_about_category_shows_version() {
+        use crate::store::types::SettingsCategory;
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::About);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("AgenDao TUI"), "About title missing:\n{}", merged);
     }
 
     #[test]

@@ -965,6 +965,47 @@ impl AppHandler {
         else { self.help.toggle(); self.panel = Panel::Help; }
     }
 
+    /// General 分类 body 键路由(木律·唯一输入权威)。
+    ///
+    /// ↑/↓ 移动选中行(`settings_general_selected`);Enter/Space/←/→ 触发当前行的
+    /// toggle。**关键**:toggle 不新增写路径,而是复用 `execute_slash_action` 的既有
+    /// `Toggle*` 权威(土律·第四条·单点权威 + 木克土:输入变体复用同一权威)。
+    /// 这样 slash 命令与 Settings 行对同一偏好读写同源,不会出现两份"真相"。
+    ///
+    /// 返回 true = 消费。Esc 已由上层排除(冒泡 → navigate_home)。
+    fn handle_general_body_key(&mut self, key: &Key) -> bool {
+        use agendao_command::UiActionId;
+        use crate::store::types::GeneralRow;
+        let n = GeneralRow::ALL.len();
+        match key {
+            Key::Up | Key::Down => {
+                let dir: i32 = if matches!(key, Key::Up) { -1 } else { 1 };
+                let cur = self.store.settings_general_selected.get().min(n - 1);
+                let nxt = (((cur as i32 + dir) % n as i32) + n as i32) % n as i32;
+                self.store.settings_general_selected.set(nxt as usize);
+                self.layout_dirty = true;
+                true
+            }
+            Key::Enter | Key::Char(' ') | Key::Left | Key::Right => {
+                let row = GeneralRow::ALL[self.store.settings_general_selected.get().min(n - 1)];
+                let action = match row {
+                    GeneralRow::ShowThinking => UiActionId::ToggleThinking,
+                    GeneralRow::ShowScrollbar => UiActionId::ToggleScrollbar,
+                    GeneralRow::ShowHeader => UiActionId::ToggleHeader,
+                    GeneralRow::ShowTips => UiActionId::ToggleTips,
+                    GeneralRow::CompactDensity => UiActionId::ToggleDensity,
+                    GeneralRow::Theme => UiActionId::ToggleAppearance,
+                };
+                // 复用单点 toggle 权威。execute_slash_action 会顺带 panel=None +
+                // prompt.clear()——在 Settings 路由下无副作用(prompt 不渲染、panel 已 None)。
+                self.execute_slash_action(action);
+                self.layout_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Settings 全屏页键路由(火→土:键事件 → AppStore signals)。
     ///
     /// 阳面键 = 阴面写哪个 signal,完全镜像 SettingsFocusPane 三栏:
@@ -1005,10 +1046,37 @@ impl AppHandler {
                 }
             }
         }
+        let category = self.store.settings_category.get();
+        let focus = self.store.settings_focus_pane.get();
+
+        // ── 非 ModelSettings 分类的 body 路由(木律·唯一输入权威)──
+        // 这些分类只有两区(Categories | body);focus 落在 body(非 Categories)时,
+        // 除 Tab/Esc 外的键交给分类专属 body 处理器。ModelSettings 保持三栏原逻辑。
+        if category != SettingsCategory::ModelSettings
+            && focus != SettingsFocusPane::Categories
+            && !matches!(key, Key::Tab | Key::Escape)
+        {
+            return match category {
+                SettingsCategory::General => self.handle_general_body_key(key),
+                // About / 占位分类:body 无交互,消费导航键避免穿透到 provider 逻辑;
+                // Esc 已在上面排除,继续冒泡给外层 → navigate_home。
+                _ => matches!(key, Key::Up | Key::Down | Key::Enter | Key::Char(' ')),
+            };
+        }
+
         match key {
             Key::Tab => {
                 let cur = self.store.settings_focus_pane.get();
-                self.store.settings_focus_pane.set(cur.next());
+                // ModelSettings 三栏循环;其余分类两区循环(Categories ⇄ Details)。
+                let next = if category == SettingsCategory::ModelSettings {
+                    cur.next()
+                } else {
+                    match cur {
+                        SettingsFocusPane::Categories => SettingsFocusPane::Details,
+                        _ => SettingsFocusPane::Categories,
+                    }
+                };
+                self.store.settings_focus_pane.set(next);
                 self.layout_dirty = true;
                 true
             }
@@ -1074,7 +1142,16 @@ impl AppHandler {
                 let focus = self.store.settings_focus_pane.get();
                 if matches!(focus, SettingsFocusPane::Categories) {
                     let cat = self.store.settings_category.get();
-                    if !cat.is_implemented() {
+                    if cat.is_implemented() {
+                        // 潜入 body:ModelSettings → Providers 栏;其余 → Details(单区 body)。
+                        let body = if cat == SettingsCategory::ModelSettings {
+                            SettingsFocusPane::Providers
+                        } else {
+                            SettingsFocusPane::Details
+                        };
+                        self.store.settings_focus_pane.set(body);
+                        self.layout_dirty = true;
+                    } else {
                         self.store.push_toast(
                             &format!("{} — coming soon", cat.label()),
                             ToastMsgVariant::Info,

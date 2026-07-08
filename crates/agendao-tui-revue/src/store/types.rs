@@ -379,9 +379,60 @@ impl SettingsCategory {
         }
     }
 
-    /// 当前是否有具体实现(只有 ModelSettings 有,其余灰显)。
+    /// 当前是否有具体实现(灰显判据)。已落地:General / ModelSettings / About;
+    /// 其余仍占位(土律·第十条:不假装做了未做的功能)。
     pub fn is_implemented(self) -> bool {
-        matches!(self, Self::ModelSettings)
+        matches!(self, Self::General | Self::ModelSettings | Self::About)
+    }
+}
+
+/// General 分类的可交互行(木律·唯一输入权威)。每行对应一个已有 UI 偏好
+/// signal;keymap 的 body 处理器把行动作**复用**到 `execute_slash_action` 的
+/// 既有 toggle 权威(`ToggleThinking`/`ToggleAppearance`/...),不新增第二写路径
+/// (土律·第四条·单点权威 + 木克土:输入变体复用同一权威)。
+///
+/// 渲染端(`screen::settings`)读同一批 signal 显示当前值,与 toggle 写入同源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeneralRow {
+    ShowThinking,
+    ShowScrollbar,
+    ShowHeader,
+    ShowTips,
+    CompactDensity,
+    Theme,
+}
+
+impl GeneralRow {
+    pub const ALL: [Self; 6] = [
+        Self::ShowThinking,
+        Self::ShowScrollbar,
+        Self::ShowHeader,
+        Self::ShowTips,
+        Self::CompactDensity,
+        Self::Theme,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ShowThinking => "Show thinking blocks",
+            Self::ShowScrollbar => "Show scrollbar",
+            Self::ShowHeader => "Show session header",
+            Self::ShowTips => "Show input tips",
+            Self::CompactDensity => "Compact density",
+            Self::Theme => "Theme",
+        }
+    }
+
+    /// 一行说明(渲染在 label 右侧或下方,帮助新用户理解每项作用)。
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ShowThinking => "Reasoning/thinking segments in the transcript",
+            Self::ShowScrollbar => "Scrollbar rail on the transcript",
+            Self::ShowHeader => "Title/dir header row above the transcript",
+            Self::ShowTips => "Hint line above the prompt input",
+            Self::CompactDensity => "Remove blank lines between transcript blocks",
+            Self::Theme => "Dark / light appearance",
+        }
     }
 }
 

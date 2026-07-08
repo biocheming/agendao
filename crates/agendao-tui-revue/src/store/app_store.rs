@@ -78,10 +78,14 @@ pub struct AppStore {
     /// Details 栏内当前选中 model_key;`None` = 当前 provider 无 models 或未进入 Details 焦点。
     /// 由 `handle_settings_key` 在 Details focused 时 ↑/↓ 切换,m/e/d 操作以此为目标。
     pub settings_selected_model: Signal<Option<String>>,
-    /// 左栏选中分类;`Model Settings` 是当前唯一有实现的项。
+    /// 左栏选中分类;已落地 General / ModelSettings / About。
     pub settings_category: Signal<SettingsCategory>,
     /// Tab 切换当前焦点栏;影响 ↑/↓ 行为(选 category / 选 provider / 滚 Details)。
     pub settings_focus_pane: Signal<SettingsFocusPane>,
+    /// General 分类 body 内当前选中行下标(`GeneralRow::ALL` 索引)。
+    /// keymap 写(↑/↓ 移动、Enter/Space 触发对应 toggle),screen 读(高亮当前行)。
+    /// 与 toggle 值本身无关——值真相在各 `show_*`/`theme_variant` signal(单点权威)。
+    pub settings_general_selected: Signal<usize>,
 }
 
 impl AppStore {
@@ -112,6 +116,7 @@ impl AppStore {
             settings_selected_model: signal(None),
             settings_category: signal(SettingsCategory::ModelSettings),
             settings_focus_pane: signal(SettingsFocusPane::Providers),
+            settings_general_selected: signal(0),
         }
     }
 
@@ -191,14 +196,14 @@ mod tests {
         assert_eq!(p, SettingsFocusPane::Categories);
     }
 
-    /// 只有 ModelSettings 标 implemented;其余五项灰显占位(土律·第十条)。
+    /// 已落地 General / ModelSettings / About;其余三项灰显占位(土律·第十条)。
     #[test]
     fn settings_category_implementation_flags() {
+        assert!(SettingsCategory::General.is_implemented());
         assert!(SettingsCategory::ModelSettings.is_implemented());
-        assert!(!SettingsCategory::General.is_implemented());
+        assert!(SettingsCategory::About.is_implemented());
         assert!(!SettingsCategory::PromptLibrary.is_implemented());
         assert!(!SettingsCategory::KnowledgeBase.is_implemented());
         assert!(!SettingsCategory::Keybindings.is_implemented());
-        assert!(!SettingsCategory::About.is_implemented());
     }
 }
