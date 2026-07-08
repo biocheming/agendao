@@ -1,10 +1,11 @@
 //! 金 — Provider Model Add/Edit Dialog.
 //!
 //! 字段:id / name / context_window / max_output_tokens(四字段 form);
-//! 高级字段(cost/reasoning/temperature)走 prefill,UI 不动——保留 server
-//! 原 ModelConfig 副本,submit 时合并回去(避免 PUT 半空 ModelConfig 覆写丢字段,
-//! 土律·第十条·可观测性 + 完整性)。Prefill 由 AppHandler 在 open_edit 前
-//! 先 GET 原 ModelConfig 拿到。
+//! 高级字段(cost/reasoning/temperature)走 prefill,UI 不动——`set_prefill`
+//! 保留 server 原 ModelConfig 副本,submit 时随 Submission 带出、由
+//! `submit_model_edit` 合并回去(避免 PUT 半空 ModelConfig 覆写丢字段,
+//! 土律·第十条·可观测性 + 完整性)。Prefill 由 AppHandler 在 open_edit 后
+//! 先 GET 原 ModelConfig 再 `set_prefill` 存入。
 //!
 //! 上游(Part 5)调:
 //! - `dialog.handle_key(&key)` → `Some(Action::Submit(...))` 时,AppHandler
@@ -67,6 +68,10 @@ pub struct ModelEditSubmission {
     pub name: String,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    /// Edit 模式的原 server ModelConfig 全量副本(`set_prefill` 存入)。
+    /// submit_model_edit 以此为基底合并 form 字段——server PUT 是整体覆写,
+    /// 没有它 cost/reasoning/temperature 等高级字段会被半空 config 抹掉。
+    pub prefill: Option<agendao_config::ModelConfig>,
 }
 
 pub struct ModelEditDialog {
@@ -79,6 +84,9 @@ pub struct ModelEditDialog {
     context_input: revue::widget::Input,
     max_output_input: revue::widget::Input,
     focus: ModelEditField,
+    /// 原 ModelConfig 全量副本,open_edit 后由 AppHandler GET 到再 `set_prefill`;
+    /// close() 时清除(道纪·第九条·配对销毁)。
+    prefill: Option<agendao_config::ModelConfig>,
 }
 
 impl ModelEditDialog {
@@ -94,6 +102,7 @@ impl ModelEditDialog {
             max_output_input: revue::widget::Input::new()
                 .placeholder("e.g. 16384 (optional)"),
             focus: ModelEditField::Id,
+            prefill: None,
         }
     }
 
@@ -107,6 +116,7 @@ impl ModelEditDialog {
         self.max_output_input = revue::widget::Input::new()
             .placeholder("e.g. 16384 (optional)");
         self.focus = ModelEditField::Id;
+        self.prefill = None;
         self.visible = true;
     }
 
@@ -137,20 +147,24 @@ impl ModelEditDialog {
             .placeholder("e.g. 128000")
             .value(ctx_str);
         // max_output 字段在 ProviderModelInfo 不直接暴露;Edit prefill 留空,
-        // AppHandler 拿到原 ModelConfig 后回填(土律·第十条·完整 prefill)。
+        // AppHandler 拿到原 ModelConfig 后经 `set_prefill` 回填(土律·第十条·完整 prefill)。
         self.max_output_input = revue::widget::Input::new()
             .placeholder("e.g. 16384 (optional)");
         self.focus = ModelEditField::Id;
+        self.prefill = None;
         self.visible = true;
     }
 
-    /// 给定 max_output_tokens 预填值(从 AppHandler 拉的 raw ModelConfig.limit.output)。
-    /// 在 open_edit 之后立刻调用,补全 ProviderModelInfo 不暴露的字段。
-    pub fn set_max_output_prefill(&mut self, value: Option<u64>) {
-        let s = value.map(|n| n.to_string()).unwrap_or_default();
+    /// 存入 GET 到的原 ModelConfig 全量副本(Edit 模式,open_edit 之后立刻调用)。
+    /// 双重作用:补全 ProviderModelInfo 不暴露的 max_output 输入框预填;
+    /// submit 时随 `ModelEditSubmission.prefill` 带出,作为 PUT 合并基底。
+    pub fn set_prefill(&mut self, cfg: agendao_config::ModelConfig) {
+        let max_output = cfg.limit.as_ref().and_then(|l| l.output);
+        let s = max_output.map(|n| n.to_string()).unwrap_or_default();
         self.max_output_input = revue::widget::Input::new()
             .placeholder("e.g. 16384 (optional)")
             .value(s);
+        self.prefill = Some(cfg);
     }
 
     pub fn close(&mut self) {
@@ -161,6 +175,7 @@ impl ModelEditDialog {
         self.max_output_input.clear();
         self.provider_id.clear();
         self.origin_model_key.clear();
+        self.prefill = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -196,6 +211,7 @@ impl ModelEditDialog {
                     name: if name.is_empty() { id.clone() } else { name },
                     context_window,
                     max_output_tokens,
+                    prefill: self.prefill.take(),
                 };
                 self.close();
                 Some(ModelEditAction::Submit(submission))
@@ -448,12 +464,57 @@ mod tests {
         assert_eq!(s.max_output_tokens, None);
     }
 
+    fn sample_prefill() -> agendao_config::ModelConfig {
+        use agendao_config::{ModelConfig, ModelLimitConfig};
+        ModelConfig {
+            name: Some("GPT-4o".into()),
+            model: Some("gpt-4o".into()),
+            reasoning: Some(true),
+            temperature: Some(true),
+            limit: Some(ModelLimitConfig {
+                context: Some(128_000),
+                input: Some(100_000),
+                output: Some(16_384),
+            }),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn set_max_output_prefill_after_edit() {
+    fn set_prefill_after_edit_fills_max_output() {
         let mut d = ModelEditDialog::new();
         d.open_edit("openai", &sample_model());
         assert_eq!(d.max_output_input.text(), "");
-        d.set_max_output_prefill(Some(16_384));
+        d.set_prefill(sample_prefill());
         assert_eq!(d.max_output_input.text(), "16384");
+    }
+
+    #[test]
+    fn submit_carries_prefill_through() {
+        let mut d = ModelEditDialog::new();
+        d.open_edit("openai", &sample_model());
+        d.set_prefill(sample_prefill());
+        let Some(ModelEditAction::Submit(s)) = d.handle_key(&Key::Enter) else {
+            panic!("expected Submit");
+        };
+        let prefill = s.prefill.expect("prefill should ride along on submit");
+        assert_eq!(prefill.reasoning, Some(true));
+        assert_eq!(prefill.limit.as_ref().and_then(|l| l.input), Some(100_000));
+        // close() 后 dialog 内不再驻留 prefill(配对销毁)。
+        assert!(d.prefill.is_none());
+    }
+
+    #[test]
+    fn add_mode_has_no_prefill() {
+        let mut d = ModelEditDialog::new();
+        d.set_prefill(sample_prefill());
+        d.open_add("openai");
+        for c in "m".chars() {
+            d.handle_key(&Key::Char(c));
+        }
+        let Some(ModelEditAction::Submit(s)) = d.handle_key(&Key::Enter) else {
+            panic!("expected Submit");
+        };
+        assert!(s.prefill.is_none());
     }
 }

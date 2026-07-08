@@ -109,30 +109,29 @@ impl AppHandler {
 
     /// 处理 Model 添加/编辑 form dialog 的 submit 载荷。
     /// 走 `put_provider_model_config`(server PUT /config/provider/{id}/models/{key})。
-    /// **Edit prefill 完整 ModelConfig**:server 端 PUT 是整体覆写,半空 ModelConfig
-    /// 会丢字段(cost/reasoning/temperature 等)。Add 模式构造最小有效 ModelConfig,
-    /// Edit 模式由 keymap 在打开 dialog 前先 GET 全字段后,submit 时合并回 4 个 form 字段。
+    /// server 端 PUT 是整体覆写,半空 ModelConfig 会丢字段(cost/reasoning/
+    /// temperature 等)。Add 模式构造最小有效 ModelConfig;Edit 模式以
+    /// `s.prefill`(open_edit 时 GET 到的原 ModelConfig 全量副本)为基底,
+    /// 只覆盖 form 4 字段,其余字段原样保留(土律·第十条·避免半空覆写)。
     pub(crate) fn submit_model_edit(&mut self, s: ModelEditSubmission) {
         let Some(api) = self.api.as_ref() else {
             self.store.push_toast("No API bridge", ToastMsgVariant::Error);
             return;
         };
-        // 构造一个最小 ModelConfig。Add 模式 = 全新,无 prefill;Edit 模式由
-        // keymap 在打开前缓存了原 ModelConfig,这里合并 form 字段后写回(土律·
-        // 第十条·避免半空覆写)。但 prefill 缓存的状态机现版本未引入,Edit 时
-        // 也走"以 form 4 字段为准、其他字段空"的语义——AppHandler 下个 part
-        // 引入 prefill 缓存后,此处接 self.model_edit_prefill 合并。
         use agendao_config::{ModelConfig, ModelLimitConfig};
-        let model = ModelConfig {
-            name: Some(s.name.clone()),
-            model: Some(s.model_key.clone()),
-            limit: Some(ModelLimitConfig {
-                context: s.context_window,
-                input: None,
-                output: s.max_output_tokens,
-            }),
-            ..Default::default()
-        };
+        // Edit 带 prefill 时以原 config 为基底;Add(或 GET 失败无 prefill,
+        // 已在打开时 toast 告知)从 Default 起。
+        let mut model = s.prefill.clone().unwrap_or_default();
+        model.name = Some(s.name.clone());
+        model.model = Some(s.model_key.clone());
+        // limit 只覆盖 form 暴露的 context/output;input 保留 prefill 原值。
+        let prev_input = model.limit.as_ref().and_then(|l| l.input);
+        model.limit = Some(ModelLimitConfig {
+            context: s.context_window,
+            input: prev_input,
+            output: s.max_output_tokens,
+        });
+        let model: ModelConfig = model;
         match api.put_provider_model_config(&s.provider_id, &s.model_key, &model) {
             Ok(_) => {
                 self.refresh_providers_into_store();

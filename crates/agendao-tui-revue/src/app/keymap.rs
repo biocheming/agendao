@@ -1167,13 +1167,11 @@ impl AppHandler {
                             None
                         };
                         self.model_edit_dialog.open_edit(&provider_id, model_info);
-                        // 拿到 raw ModelConfig.limit.output 后补 max_output_tokens prefill
-                        // (土律·第十条·完整 prefill):ProviderModelInfo 不暴露 output 字段,
-                        // 没有 GET 步骤 max_output 输入框会空,Submit 时会清零原 server 值。
+                        // 存入 raw ModelConfig 全量副本(土律·第十条·完整 prefill):
+                        // 补 max_output 输入框预填,且 submit 时作为 PUT 合并基底,
+                        // 保住 cost/reasoning/temperature 等 form 不暴露的字段。
                         if let Some(cfg) = prefill {
-                            self.model_edit_dialog.set_max_output_prefill(
-                                cfg.limit.as_ref().and_then(|l| l.output),
-                            );
+                            self.model_edit_dialog.set_prefill(cfg);
                         }
                         self.panel = crate::app::Panel::ModelEdit;
                         true
