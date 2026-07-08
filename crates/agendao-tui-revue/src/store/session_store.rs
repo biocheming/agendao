@@ -32,9 +32,6 @@ pub struct SessionStore {
     /// the cursor block to indicate focus.
     pub transcript_cursor: Signal<Option<usize>>,
 
-    // ── 金：对话栈（DialogLayer 唯一消费者）──
-    pub dialog_stack: Signal<Vec<DialogKind>>,
-
     // ── 水：遥测（Sidebar 各面板独立消费）──
     pub token_usage: Signal<TokenUsage>,
     pub cache_stats: Signal<CacheStats>,
@@ -46,11 +43,9 @@ pub struct SessionStore {
     // ── 火：运行时 ──
     pub active_tools: Signal<Vec<ActiveTool>>,
 
-    // ── 木：输入（ComposerPanel 唯一权威）──
-    pub prompt_text: Signal<String>,
-    pub prompt_mode: Signal<PromptMode>,
+    // ── 木：输入附面（文本/history 的唯一权威是 `input::PromptInput`；
+    //    此处只承载待发附件，由 keymap 写入、RootView 附件条渲染消费）──
     pub attachments: Signal<Vec<Attachment>>,
-    pub history_idx: Signal<Option<usize>>,
 }
 
 impl SessionStore {
@@ -63,7 +58,6 @@ impl SessionStore {
             messages: signal(Vec::new()),
             scroll_offset: signal(0),
             transcript_cursor: signal(None),
-            dialog_stack: signal(Vec::new()),
             token_usage: signal(TokenUsage::default()),
             cache_stats: signal(CacheStats::default()),
             pricing: signal(Pricing::default()),
@@ -71,10 +65,7 @@ impl SessionStore {
             sidebar_trees: signal(SidebarTrees::default()),
             mcp_lsp: signal(McpLspInfo::default()),
             active_tools: signal(Vec::new()),
-            prompt_text: signal(String::new()),
-            prompt_mode: signal(PromptMode::Normal),
             attachments: signal(Vec::new()),
-            history_idx: signal(None),
         }
     }
 
@@ -306,21 +297,7 @@ impl SessionStore {
         self.active_tools.update(|tools| tools.retain(|t| t.id != id));
     }
 
-    // ── 木：输入 ──
-
-    pub fn set_prompt_text(&self, text: &str) {
-        self.prompt_text.set(text.to_string());
-    }
-
-    pub fn clear_prompt(&self) {
-        self.prompt_text.set(String::new());
-        self.attachments.set(Vec::new());
-        self.prompt_mode.set(PromptMode::Normal);
-    }
-
-    pub fn set_prompt_mode(&self, mode: PromptMode) {
-        self.prompt_mode.set(mode);
-    }
+    // ── 木：输入附面（附件）──
 
     pub fn add_attachment(&self, attachment: Attachment) {
         self.attachments.update(|a| a.push(attachment));
@@ -825,15 +802,12 @@ mod tests {
     }
 
     #[test]
-    fn clear_prompt_resets_input_state() {
+    fn attachments_add_and_clear() {
         let s = SessionStore::new();
-        s.set_prompt_text("hello");
         s.add_attachment(Attachment { name: "f".into(), kind: AttachmentKind::File { path: "p".into(), lines: 10 } });
-        s.set_prompt_mode(PromptMode::Shell);
-        s.clear_prompt();
-        assert!(s.prompt_text.get().is_empty());
+        assert_eq!(s.attachments.get().len(), 1);
+        s.clear_attachments();
         assert!(s.attachments.get().is_empty());
-        assert_eq!(s.prompt_mode.get(), PromptMode::Normal);
     }
 
     #[test]

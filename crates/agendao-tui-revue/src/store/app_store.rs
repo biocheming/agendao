@@ -1,7 +1,7 @@
 //! 土 — Global orchestration authority.
 //!
-//! AppStore holds cross-session state: routing, available models/agents,
-//! session list, and a map of active SessionStores.
+//! AppStore holds cross-session state: routing, model/agent/mode selection,
+//! session list, UI toggles, and Settings page state.
 
 use std::collections::HashSet;
 
@@ -35,9 +35,8 @@ pub struct AppStore {
     pub exiting: Signal<bool>,
     pub working_dir: Signal<String>,
 
-    // 土：可用模型/Agent（ModelSelect/AgentSelect dialog 消费）
-    pub available_models: Signal<Vec<ModelInfo>>,
-    pub available_agents: Signal<Vec<AgentInfo>>,
+    // 土：当前选中 model/agent/mode（dispatch 发 prompt 时带上；
+    // 可选项列表的活真相在各 Select dialog 内部，不在此处重复持有）
     pub selected_model: Signal<Option<String>>,
     pub selected_agent: Signal<Option<String>>,
     pub selected_mode: Signal<Option<String>>,
@@ -95,8 +94,6 @@ impl AppStore {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
             ),
-            available_models: signal(Vec::new()),
-            available_agents: signal(Vec::new()),
             selected_model: signal(None),
             selected_agent: signal(None),
             selected_mode: signal(None),
@@ -147,7 +144,7 @@ mod tests {
         let s = AppStore::new();
         assert_eq!(s.route.get(), Route::Home);
         assert!(!s.exiting.get());
-        assert!(s.available_models.get().is_empty());
+        assert!(s.session_list.get().is_empty());
     }
 
     #[test]

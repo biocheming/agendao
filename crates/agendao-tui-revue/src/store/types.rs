@@ -280,13 +280,6 @@ pub struct ActiveTool {
 
 // ── 木：输入类型 ──
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum PromptMode {
-    Normal,
-    Shell,
-    Slash(String), // slash query text
-}
-
 #[derive(Clone, Debug)]
 pub struct Attachment {
     pub name: String,
@@ -297,23 +290,6 @@ pub struct Attachment {
 pub enum AttachmentKind {
     File { path: String, lines: usize },
     Image { mime: String, width: u32, height: u32 },
-}
-
-// ── 金：Dialog 类型 ──
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DialogKind {
-    Alert,
-    Help,
-    ModelSelect,
-    AgentSelect,
-    SessionList,
-    Permission,
-    Question,
-    SlashPopup,
-    ThemeList,
-    ProviderManager,
-    Timeline,
 }
 
 // ── 金：Toast ──
@@ -347,23 +323,6 @@ pub struct DirTooltip {
     pub path: String,
     pub x: u16,
     pub y: u16,
-}
-
-// ── 模型/Agent 信息 ──
-
-#[derive(Clone, Debug)]
-pub struct ModelInfo {
-    pub provider: String,
-    pub model_id: String,
-    pub display_name: String,
-    pub variants: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct AgentInfo {
-    pub name: String,
-    pub display_name: String,
-    pub description: String,
 }
 
 #[derive(Clone, Debug)]
