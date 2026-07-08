@@ -2,7 +2,7 @@
 //! refresh providers signal。
 //!
 //! 道纪闭环(土律·第四条·单点权威 + 道纪·第七条·相生):
-//!   1. 木:`ProviderEditDialog` / `ModelEditDialog` 收口 form 输入(api_key 含)
+//!   1. 木:`SettingsEditState`(in-place) / `ModelEditDialog` 收口 form 输入(api_key 含)
 //!   2. 火:`submit_provider_edit` / `submit_model_edit` 调 client.api 写入
 //!   3. 土:server `ConfigStore.replace_with` + `AuthManager.set` 唯一落盘
 //!   4. 金:写后立即 `refresh_providers_into_store` 回灌 store.providers
@@ -12,8 +12,27 @@
 //! 持有明文,提交后 `dialog.close()` → `Input.clear()` 抹除(道纪·第九条·配对销毁)。
 
 use crate::app::AppHandler;
-use crate::dialog::{ProviderEditMode, ProviderEditSubmission, ModelEditMode, ModelEditSubmission};
+use crate::dialog::{ModelEditMode, ModelEditSubmission};
 use crate::store::types::ToastMsgVariant;
+
+/// Provider 写入模式:Add = 注册新 provider,Edit = 改既有 provider。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderEditMode {
+    Add,
+    Edit,
+}
+
+/// Provider 写入载荷(木 → 火 的唯一提交契约)。由 in-place Settings 编辑态
+/// (`SettingsEditState`)组装,经 `submit_provider_edit` 写入 client → server。
+pub struct ProviderEditSubmission {
+    pub mode: ProviderEditMode,
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub protocol: String,
+    /// Edit 模式留空 = 不重置 auth;Add 模式必填。
+    pub api_key: String,
+}
 
 impl AppHandler {
     /// 拉服务端 provider 全集回灌 `store.providers` + `store.providers_connected`。
@@ -194,7 +213,7 @@ impl AppHandler {
     /// 包装成 `ProviderEditSubmission`,复用既有 `submit_provider_edit` 写入通路,
     /// 完成后 `settings_edit.close()`(道纪·第九条·配对销毁:api_key 明文抹除)。
     ///
-    /// 字段校验语义同 dialog/provider_edit.rs:Add 模式 name/base_url/api_key 必填,
+    /// 字段校验语义:Add 模式 name/base_url/api_key 必填,
     /// Edit 模式 base_url 必填(name 不可改,api_key 留空 = 不重置 auth)。
     /// 校验未过时静默不写,toast 提示(让用户继续填,不 close)。
     /// 这里**校验失败保留编辑态**,与 dialog 语义略不同——in-place 形态下用户视野
@@ -233,8 +252,7 @@ impl AppHandler {
             }
         }
 
-        // 3) Add 模式 id slug(同 dialog/provider_edit.rs:211 唯一权威逻辑):
-        //    lowercase + 空格→`-`;Edit 模式直接用 origin_id。
+        // 3) Add 模式 id slug:lowercase + 空格→`-`;Edit 模式直接用 origin_id。
         let id = match mode {
             SettingsEditMode::Add => name
                 .to_lowercase()

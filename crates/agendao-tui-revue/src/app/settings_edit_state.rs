@@ -76,9 +76,10 @@ pub enum SettingsEditAction {
     Pass,
 }
 
-/// 与 server `CONNECT_PROTOCOL_OPTIONS`(provider.rs:576)同源副本。
-/// **唯一权威**:dialog/provider_edit.rs 同名 const 在 dialog deprecated 后会消失,
-/// 此处变成全局 protocol 列表的 in-process 权威。
+/// 与 server `CONNECT_PROTOCOL_OPTIONS`(provider.rs)同源副本。
+/// **TUI 进程内唯一权威**:所有 protocol 选项展示/循环都读这里。
+/// server 端才是跨端真相(`/provider/connect/schema` 可拉取);TUI 静态副本
+/// 只为省一次启动 API 调用,新增协议时两处需同步。
 pub const PROTOCOL_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
     ("openrouter", "OpenRouter"),

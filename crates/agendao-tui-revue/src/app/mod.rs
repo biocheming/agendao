@@ -58,7 +58,7 @@ use crate::dialog::{
     PermissionDialog, QuestionDialog,
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
     SessionForkDialog, SessionExportDialog,
-    ProviderEditDialog, ModelEditDialog,
+    ModelEditDialog,
 };
 use crate::input::{PromptInput, SlashPopup};
 use crate::dialog::backdrop::PromptGeom;
@@ -206,12 +206,6 @@ pub(crate) enum Panel {
     McpList,
     Recovery,
     TaskList,
-    /// (deprecated)历史 a / e → 弹 provider 添加/编辑 form dialog 的 panel 值。
-    /// Part 7 起 in-place 编辑取代,无构造端;match arm 仍在 dispatch/render 路径
-    /// 作为编译器穷举校验保留(亦便于未来回退)。可与 `provider_edit_dialog` 字段
-    /// 一并清理。
-    #[allow(dead_code)]
-    ProviderEdit,
     /// Settings Details 内 m / e → 弹 model 添加/编辑 form dialog。
     ModelEdit,
     #[allow(dead_code)] Alert,
@@ -283,12 +277,6 @@ pub(crate) struct AppHandler {
     pub(crate) mcp_list: McpListDialog,
     pub(crate) recovery_list: RecoveryListDialog,
     pub(crate) task_list: TaskListDialog,
-    /// Provider 添加/编辑 dialog(deprecated:Part 7 已被 `settings_edit` in-place
-    /// 编辑路径取代)。保留结构以便未来需要回退到模态对话框形态;字段当前**无写入触发面**
-    /// (a/e 键不再 set Panel::ProviderEdit),仅留 render/dispatch 接口供历史参考。
-    /// 删除迁移完成后请连同 ProviderEditDialog 一并清理。
-    #[allow(dead_code)]
-    pub(crate) provider_edit_dialog: ProviderEditDialog,
     /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
     /// 走 client.put_provider_model_config / delete_provider_model_config 唯一写路径。
     pub(crate) model_edit_dialog: ModelEditDialog,
@@ -565,7 +553,6 @@ impl AppHandler {
             mcp_list: McpListDialog::new(),
             recovery_list: RecoveryListDialog::new(),
             task_list: TaskListDialog::new(),
-            provider_edit_dialog: ProviderEditDialog::new(),
             model_edit_dialog: ModelEditDialog::new(),
             settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
@@ -1178,7 +1165,6 @@ impl View for RootView {
             Panel::McpList => "mcps",
             Panel::Recovery => "recovery",
             Panel::TaskList => "tasks",
-            Panel::ProviderEdit => "providerEdit",
             Panel::ModelEdit => "modelEdit",
             Panel::Alert => "alert",
             Panel::None => route.as_str(),
@@ -1358,7 +1344,6 @@ impl View for RootView {
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
-            Panel::ProviderEdit => h.provider_edit_dialog.render(ctx),
             Panel::ModelEdit => h.model_edit_dialog.render(ctx),
             _ => {}
         }

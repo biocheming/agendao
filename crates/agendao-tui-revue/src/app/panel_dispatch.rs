@@ -390,23 +390,6 @@ impl AppHandler {
                 if !self.alert.visible { self.panel = Panel::None; }
                 return true;
             }
-            Panel::ProviderEdit => {
-                // dialog handle_key 返回 Submit/Cancel:Submit 走 client 写入 +
-                // refresh,Cancel 仅关闭(均已在 dialog.close() 中 clear inputs
-                // 含 api_key,api_key 不驻留 — 道纪·第九条·配对销毁)。
-                if let Some(action) = self.provider_edit_dialog.handle_key(key) {
-                    match action {
-                        crate::dialog::ProviderEditAction::Submit(s) => {
-                            self.submit_provider_edit(s);
-                        }
-                        crate::dialog::ProviderEditAction::Cancel => {}
-                    }
-                    self.panel = Panel::None;
-                    return true;
-                }
-                if !self.provider_edit_dialog.is_open() { self.panel = Panel::None; }
-                return true;
-            }
             Panel::ModelEdit => {
                 if let Some(action) = self.model_edit_dialog.handle_key(key) {
                     match action {

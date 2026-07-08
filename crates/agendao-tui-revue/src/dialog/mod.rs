@@ -20,7 +20,6 @@ pub mod skill_proposal;
 pub mod mcp_list;
 pub mod recovery_list;
 pub mod task_list;
-pub mod provider_edit;
 pub mod model_edit;
 
 pub use confirm::ConfirmDialog;
@@ -41,5 +40,4 @@ pub use skill_proposal::{SkillProposalDialog, SkillProposalEntry, SkillProposalA
 pub use mcp_list::{McpListDialog, McpEntry, McpAction};
 pub use recovery_list::{RecoveryListDialog, RecoveryEntry, RecoveryAction};
 pub use task_list::{TaskListDialog, TaskEntry, TaskAction};
-pub use provider_edit::{ProviderEditDialog, ProviderEditAction, ProviderEditSubmission, ProviderEditMode};
 pub use model_edit::{ModelEditDialog, ModelEditAction, ModelEditSubmission, ModelEditMode};
