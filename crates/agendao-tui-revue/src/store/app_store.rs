@@ -3,6 +3,8 @@
 //! AppStore holds cross-session state: routing, available models/agents,
 //! session list, and a map of active SessionStores.
 
+use std::collections::HashSet;
+
 use revue::prelude::*;
 use revue::style::ThemeVariant;
 use crate::store::types::*;
@@ -11,6 +13,10 @@ use crate::store::types::*;
 pub enum Route {
     Home,
     Session { session_id: String },
+    /// Settings 全屏页面(三栏:分类 | Providers | Details)。
+    /// 进入由 `UiActionId::OpenSettings`(⚙ click / `/settings`)唯一触发;
+    /// Esc → `navigate_home()` 收口。
+    Settings,
 }
 
 impl Route {
@@ -18,6 +24,7 @@ impl Route {
         match self {
             Route::Home => "home",
             Route::Session { .. } => "session",
+            Route::Settings => "settings",
         }
     }
 }
@@ -58,6 +65,24 @@ pub struct AppStore {
     /// 当前主题 variant（阴面记账）。启动时由 OSC11 检测初值；
     /// ToggleAppearance 经 `ds::theme::toggle_variant` 翻转 + `set_theme` 同步渲染。
     pub theme_variant: Signal<ThemeVariant>,
+
+    // 土：Settings 页面状态(`OpenSettings` 进入时 navigate + load 写入;
+    // SettingsScreen 唯一只读消费)。
+    /// 完整 provider 列表(含 base_url + models),来自 server `/provider` 端点。
+    /// 阴面记账(土律):写一次,读多次;Settings 关闭后**不清空**,下次再开秒显。
+    pub providers: Signal<Vec<agendao_client::ProviderInfo>>,
+    /// 已连接 provider id 集合(server `/provider` 响应的 `connected` 字段)。
+    /// 用于 Providers 栏 ● connected dot 和 Details 栏 "Enabled" pill。
+    pub providers_connected: Signal<HashSet<String>>,
+    /// 当前 Details 栏展示哪个 provider;`None` = providers 为空。
+    pub settings_selected_provider: Signal<Option<String>>,
+    /// Details 栏内当前选中 model_key;`None` = 当前 provider 无 models 或未进入 Details 焦点。
+    /// 由 `handle_settings_key` 在 Details focused 时 ↑/↓ 切换,m/e/d 操作以此为目标。
+    pub settings_selected_model: Signal<Option<String>>,
+    /// 左栏选中分类;`Model Settings` 是当前唯一有实现的项。
+    pub settings_category: Signal<SettingsCategory>,
+    /// Tab 切换当前焦点栏;影响 ↑/↓ 行为(选 category / 选 provider / 滚 Details)。
+    pub settings_focus_pane: Signal<SettingsFocusPane>,
 }
 
 impl AppStore {
@@ -84,11 +109,18 @@ impl AppStore {
             show_tips: signal(true),
             compact_density: signal(false),
             theme_variant: signal(ThemeVariant::Dark),
+            providers: signal(Vec::new()),
+            providers_connected: signal(HashSet::new()),
+            settings_selected_provider: signal(None),
+            settings_selected_model: signal(None),
+            settings_category: signal(SettingsCategory::ModelSettings),
+            settings_focus_pane: signal(SettingsFocusPane::Providers),
         }
     }
 
     pub fn navigate(&self, route: Route) { self.route.set(route); }
     pub fn navigate_home(&self) { self.navigate(Route::Home); }
+    pub fn navigate_settings(&self) { self.navigate(Route::Settings); }
     pub fn request_exit(&self) { self.exiting.set(true); }
 
     pub fn push_toast(&self, text: &str, variant: ToastMsgVariant) {
@@ -132,5 +164,44 @@ mod tests {
         let s = AppStore::new();
         s.push_toast("done", ToastMsgVariant::Success);
         assert_eq!(s.toasts.get().len(), 1);
+    }
+
+    /// Settings 路由进出 + 默认 signals 初值符合"未拉取 providers"基线。
+    #[test]
+    fn settings_route_and_defaults() {
+        let s = AppStore::new();
+        s.navigate_settings();
+        assert_eq!(s.route.get(), Route::Settings);
+        assert_eq!(s.route.get().as_str(), "settings");
+        assert!(s.providers.get().is_empty());
+        assert!(s.providers_connected.get().is_empty());
+        assert!(s.settings_selected_provider.get().is_none());
+        assert_eq!(s.settings_category.get(), SettingsCategory::ModelSettings);
+        assert_eq!(s.settings_focus_pane.get(), SettingsFocusPane::Providers);
+        s.navigate_home();
+        assert_eq!(s.route.get(), Route::Home);
+    }
+
+    /// SettingsFocusPane::next 循环正确(Categories→Providers→Details→Categories)。
+    #[test]
+    fn settings_focus_pane_cycle() {
+        let p = SettingsFocusPane::Categories;
+        let p = p.next();
+        assert_eq!(p, SettingsFocusPane::Providers);
+        let p = p.next();
+        assert_eq!(p, SettingsFocusPane::Details);
+        let p = p.next();
+        assert_eq!(p, SettingsFocusPane::Categories);
+    }
+
+    /// 只有 ModelSettings 标 implemented;其余五项灰显占位(土律·第十条)。
+    #[test]
+    fn settings_category_implementation_flags() {
+        assert!(SettingsCategory::ModelSettings.is_implemented());
+        assert!(!SettingsCategory::General.is_implemented());
+        assert!(!SettingsCategory::PromptLibrary.is_implemented());
+        assert!(!SettingsCategory::KnowledgeBase.is_implemented());
+        assert!(!SettingsCategory::Keybindings.is_implemented());
+        assert!(!SettingsCategory::About.is_implemented());
     }
 }

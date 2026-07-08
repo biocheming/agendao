@@ -114,7 +114,8 @@ impl StashDialog {
             return;
         }
 
-        let items: Vec<ListItem> = self.entries.iter().enumerate().take(10).map(|(i, entry)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, entry)| {
             let preview: String = entry.text.chars().take(60).collect();
             let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {

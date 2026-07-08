@@ -463,29 +463,24 @@ impl AppHandler {
                 }
             }
             UiActionId::ConnectProvider => {
-                self.provider_dialog.open();
-                self.panel = Panel::Provider;
-                // 枚举 providers：复用启动期 get_all_providers 口径，映射为
-                // {id, name, connected}（connected 由 resp.connected 集合判定）。
-                if let Some(ref api) = self.api {
-                    match api.get_all_providers() {
-                        Ok(resp) => {
-                            let connected: std::collections::HashSet<String> =
-                                resp.connected.iter().cloned().collect();
-                            let infos: Vec<crate::dialog::ProviderInfoDlg> = resp.all.into_iter()
-                                .map(|p| crate::dialog::ProviderInfoDlg {
-                                    id: p.id.clone(),
-                                    name: p.name.clone(),
-                                    connected: connected.contains(&p.id),
-                                })
-                                .collect();
-                            self.provider_dialog.set_providers(infos);
-                        }
-                        Err(e) => self.store.push_toast(
-                            &format!("Failed to load providers: {}", e),
-                            crate::store::types::ToastMsgVariant::Error),
-                    }
-                }
+                // TUI 路径已迁至全屏 Settings 页(`OpenSettings`),`ConnectProvider`
+                // 仅 CLI 互动模式仍消费(agendao-command-runtime)。TUI 这里诚实标注:
+                // 触发即提示用户走新入口,避免悄无声响地什么都不发生(土律·第十条)。
+                self.store.push_toast(
+                    "Provider settings moved to /settings",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+            UiActionId::OpenSettings => {
+                // 阳面唯一入口:⚙ click / `/settings` slash 都走这里。
+                // 步骤(土律·第七条·木生火生土):
+                //   1) navigate → Route::Settings(金面立即切到 SettingsScreen)
+                //   2) `refresh_providers_into_store` 拉 providers + connected
+                //      回灌 store(单点权威 — 与 submit_provider_edit 共用同一抽函数)
+                // 拉取失败诚实 toast,Route 已切换不回滚(空态 Details 栏会显示
+                // "Select a provider",符合可观测性权利)。
+                self.store.navigate_settings();
+                self.refresh_providers_into_store();
             }
             UiActionId::DeleteSession => {
                 if let Some(sid) = self.active_session.get_session_id() {

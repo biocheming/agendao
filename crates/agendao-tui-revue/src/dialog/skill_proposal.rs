@@ -22,7 +22,7 @@ pub struct SkillProposalEntry {
     pub kind: String,
 }
 
-/// 列表按键动作（per-dialog action enum，跟 ProviderAction/ExportAction 先例）。
+/// 列表按键动作（per-dialog action enum，跟 ExportAction 先例）。
 /// 变体携 entry（Clone 小 struct）——handler 拿到 id（API）/title（toast）全部信息。
 pub enum SkillProposalAction {
     Approve(SkillProposalEntry),
@@ -105,7 +105,8 @@ impl SkillProposalDialog {
             );
             return;
         }
-        let items: Vec<ListItem> = self.proposals.iter().enumerate().take(12).map(|(i, p)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.proposals.iter().enumerate().map(|(i, p)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {
                 display: format!("{}[{}] {} — {}", marker, p.status, p.title, p.kind),

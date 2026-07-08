@@ -26,6 +26,10 @@ pub enum UiActionId {
     OpenPresetList,
     OpenMcpList,
     ConnectProvider,
+    /// 打开 Settings 全屏页面(三栏:分类 | Providers | Details)。
+    /// 阳面唯一入口:⚙ 鼠标点击 + `/settings` slash;TUI-only(CLI/REST 不消费)。
+    /// 阴面收口:`AppStore.providers` signal + `Route::Settings`(土律·单一权威)。
+    OpenSettings,
     OpenThemeList,
     ShowStatus,
     ShowHelp,
@@ -444,6 +448,19 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
                 name: "/connect",
                 aliases: &[],
                 suggested: false,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::OpenSettings,
+            title: "Settings",
+            description: "Open settings screen",
+            category: UiCommandCategory::ModelAgent,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/settings",
+                aliases: &[],
+                suggested: true,
             }),
         },
         UiCommandSpec {

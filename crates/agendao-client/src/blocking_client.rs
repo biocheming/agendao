@@ -10,8 +10,9 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
-    build_connect_provider_request, build_session_list_params_with_directory, http_error, server_url,
-    FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
+    build_connect_provider_request, build_session_list_params_with_directory,
+    build_update_provider_request, http_error, server_url, FormatterStatusResponse,
+    LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
     AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
@@ -515,6 +516,22 @@ impl BlockingApiClient {
         self.patch_json("/config", "patch config", patch)
     }
 
+    /// GET 单个 model 的 raw `ModelConfig`,用于 TUI Edit 模式 prefill(见 async_client 同名方法注释)。
+    pub fn get_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<ModelConfig> {
+        self.get_json(
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+            &format!("get provider model config `{provider_id}/{model_key}`"),
+        )
+    }
+
     pub fn put_provider_model_config(
         &self,
         provider_id: &str,
@@ -617,6 +634,31 @@ impl BlockingApiClient {
             &format!("connect provider `{}`", request.provider_id),
             Some(request),
         )
+    }
+
+    /// PUT `/provider/{id}`:改 ProviderConfig 的 name/base_url/protocol(不动 api_key)。
+    /// api_key 改走 `connect_provider`,两步分离 → TUI Edit dialog 可"只改名字"。
+    pub fn update_provider(
+        &self,
+        provider_id: &str,
+        name: Option<&str>,
+        base_url: Option<&str>,
+        protocol: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.put_json(
+            &format!("/provider/{}", urlencoding::encode(provider_id)),
+            &format!("update provider `{provider_id}`"),
+            &build_update_provider_request(name, base_url, protocol),
+        )
+    }
+
+    /// DELETE `/provider/{id}`:删 ProviderConfig + AuthManager 条目(土律·第四条单点权威)。
+    pub fn delete_provider(&self, provider_id: &str) -> anyhow::Result<bool> {
+        let response = self.delete_expect_success(
+            &format!("/provider/{}", urlencoding::encode(provider_id)),
+            &format!("delete provider `{provider_id}`"),
+        )?;
+        Self::json_ok(response, &format!("delete provider `{provider_id}`"))
     }
 
     pub fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {

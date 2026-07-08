@@ -20,6 +20,13 @@ pub struct SessionSidebar;
 /// Tab 数（= 符号数）——active_tab 上界。⏣/♺/☪/⚒/⚔/✎（Sessions 独立，不计入）。
 pub const SIDEBAR_TAB_COUNT: usize = 6;
 
+/// 底部用户栏 ⚙ 按钮命中列范围（含尾随空格，相对 sidebar 左边）：
+/// `| ⛾  | ⚙  ` 从右起紧贴 sidebar 右边 11 列；⚙ + 两空格 = [W-3, W)。
+/// 命中宽容包尾随空格——指点反应更稳，不挤占其它按钮区。
+/// 几何单点（土律：可观测性）：keymap 通过此常量算绝对 x，sidebar 几何改动只
+/// 触此处 + render 顺序，避免命中漂移。
+pub const SIDEBAR_GEAR_X_FROM_END: u16 = 3;
+
 impl SessionSidebar {
     /// 构建 sidebar 内容树。返回 (Stack, tab_y)：tab_y = 符号行绝对 y（sidebar 顶 y=0），供点击命中。
     pub fn build(

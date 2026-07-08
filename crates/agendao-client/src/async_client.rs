@@ -7,8 +7,9 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
-    build_connect_provider_request, build_session_list_params_with_directory, http_error, server_url,
-    FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
+    build_connect_provider_request, build_session_list_params_with_directory,
+    build_update_provider_request, http_error, server_url, FormatterStatusResponse,
+    LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
     AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
@@ -689,6 +690,31 @@ impl AsyncApiClient {
         Self::json_ok(resp, "refresh provider catalogue").await
     }
 
+    /// GET 单个 model 的 raw `ModelConfig`。
+    /// **Edit prefill 唯一来源**:server 端 PUT 是整体覆写,半空 ModelConfig
+    /// 会丢字段(cost/reasoning/temperature/...),所以编辑前必须先 GET 原值,
+    /// 再把 form 的 4 字段(name/model_key/context/output)合并回来重发(土律·第十条)。
+    pub async fn get_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<ModelConfig> {
+        let url = server_url(
+            &self.base_url,
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+        );
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(
+            resp,
+            &format!("get provider model config `{provider_id}/{model_key}`"),
+        )
+        .await
+    }
+
     pub async fn put_provider_model_config(
         &self,
         provider_id: &str,
@@ -765,6 +791,39 @@ impl AsyncApiClient {
         let resp = self.client.post(&url).json(&body).send().await?;
         Self::expect_success(resp, &format!("connect provider `{}`", provider_id)).await?;
         Ok(())
+    }
+
+    /// PUT `/provider/{id}`:改 name/base_url/protocol(api_key 走 connect_provider)。
+    /// server 端唯一落盘点 `ConfigStore.replace_with` + `rebuild_providers` +
+    /// `broadcast_config_updated`(土律·第四条单点权威)。
+    /// **不发** api_key——api_key 永不下发原则(写入也分离:此 helper 改元数据,
+    /// `connect_provider` 改 auth);两步分离让 TUI Edit dialog 可以"只改 name"
+    /// 不重置 api_key,符合用户感知模型。
+    pub async fn update_provider(
+        &self,
+        provider_id: &str,
+        name: Option<&str>,
+        base_url: Option<&str>,
+        protocol: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let url = server_url(
+            &self.base_url,
+            &format!("/provider/{}", urlencoding::encode(provider_id)),
+        );
+        let body = build_update_provider_request(name, base_url, protocol);
+        let resp = self.client.put(&url).json(&body).send().await?;
+        Self::json_ok(resp, &format!("update provider `{}`", provider_id)).await
+    }
+
+    /// DELETE `/provider/{id}`:删 ProviderConfig + AuthManager 条目。
+    /// server 端 `ConfigStore.replace_with`(删 provider entry)+ `AuthManager.remove`
+    /// (清 auth.json 0o600 中的 api_key)同步执行(土律·第四条 + 道纪·第九条·配对销毁)。
+    pub async fn delete_provider(&self, provider_id: &str) -> anyhow::Result<bool> {
+        self.delete_json(
+            &format!("/provider/{}", urlencoding::encode(provider_id)),
+            &format!("delete provider `{}`", provider_id),
+        )
+        .await
     }
 
     pub async fn list_execution_modes(&self) -> anyhow::Result<Vec<ExecutionModeInfo>> {

@@ -59,7 +59,8 @@ impl AgentSelectDialog {
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
-        let items: Vec<ListItem> = self.agents.iter().enumerate().take(12).map(|(i, a)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.agents.iter().enumerate().map(|(i, a)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {
                 display: format!("{}{} — {}", marker, a.display, a.description),

@@ -428,6 +428,23 @@ impl AppHandler {
                                 }
                             }
 
+                            // ── Sidebar 底部用户栏 ⚙ 点击 → OpenSettings。
+                            // 几何（土律：可观测性单点）：user_bar 在 sidebar 全高左列最底行
+                            // (y == terminal_h - 1)，⚙ 在右侧 SIDEBAR_GEAR_X_FROM_END 列内
+                            // ([W-3, W))——含尾随空格的宽容命中区。terminal_h=0 表示未发布
+                            // 渲染过（启动首帧），跳过。复用 UiActionId::OpenSettings,
+                            // 与 `/settings` slash 同一编排入口（金律：执行点唯一）。
+                            if self.sidebar_visible && self.terminal_h > 0
+                                && m.y + 1 == self.terminal_h
+                                && m.x + crate::telemetry::sidebar::SIDEBAR_GEAR_X_FROM_END
+                                    >= crate::app::SIDEBAR_WIDTH
+                                && m.x < crate::app::SIDEBAR_WIDTH
+                            {
+                                self.execute_slash_action(UiActionId::OpenSettings);
+                                self.layout_dirty = true;
+                                return true;
+                            }
+
                             // ── Session header dir 点击：toggle 全路径 tooltip（click-to-reveal，无 motion tracking）。
                             // 命中 dir 文本区 → 切换（None→显 working_dir 全路径 / Some→关）；
                             // y==header_y 但点在 dir 外 → 关闭。dir_w=0（非 Session 路由）跳过。
@@ -482,8 +499,10 @@ impl AppHandler {
                                 // 视觉单元遍历（与渲染/total_h 同源）：unit.height 量高，
                                 // 命中时 row_owners[rel_row] 把屏幕 y 映射到块——整行命中，
                                 // 装饰行 None 不 toggle。聚合/单块统一，不认块类型（金律：
-                                // 命中触点 1，新增聚合种类零改动）。
-                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get());
+                                // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
+                                // row_owners 真实（否则点 ToolResult 子项错块），显式 None
+                                // 全量布局。
+                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None);
                                 let mut acc: u16 = 0;
                                 let mut clicked_idx = None;
                                 for unit in &units {
@@ -695,6 +714,18 @@ impl AppHandler {
             }
         }
 
+        // ── Settings screen routing (土→金:focused_pane 单点决定 ↑/↓ 行为) ──
+        //
+        // 介于 Session 滚动与 prompt input 之间。Settings 路由不渲染 prompt bar,
+        // 但 PromptInput 仍会消费字符键(否则 Tab/↑/↓ 会被吞)。这里在交还 prompt
+        // 之前先吃掉 Tab/Up/Down/Enter,Settings 才能交互(土律·第十条:
+        // 阳面 ⚙ 进、Tab/↑/↓/Enter 调,阴面 store signals 收口)。
+        if matches!(self.store.route.get(), Route::Settings) {
+            if self.handle_settings_key(key) {
+                return true;
+            }
+        }
+
         // ── Normal prompt input ──
         let consumed = match self.prompt.handle_key(key) {
             PromptAction::Submit(text) => {
@@ -736,7 +767,13 @@ impl AppHandler {
                     self.close_all_panels();
                     return true;
                 }
-                // 2. Double-tap Esc to interrupt running session
+                // 2. Settings 全屏页 → 退回 Home(土律·阴阳对称:OpenSettings 进,
+                //    Esc 出;由 AppStore 单点权威 `navigate_home` 收口)。
+                if matches!(self.store.route.get(), Route::Settings) {
+                    self.store.navigate_home();
+                    return true;
+                }
+                // 3. Double-tap Esc to interrupt running session
                 let status = self.active_session.run_status.get();
                 if matches!(status, RunStatus::Running | RunStatus::Sending) {
                     if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() < 5 {
@@ -849,6 +886,8 @@ impl AppHandler {
                 } else { "echo".to_string() }
             }
             Route::Session { session_id } => session_id,
+            // Settings 不发 prompt(输入在 Settings 应该走不到 dispatch,但 match 必须穷尽)。
+            Route::Settings => return,
         };
         // Tell the transport to forward events for this session
         self.sf_tx.send_replace(Some(sid.clone()));
@@ -924,6 +963,285 @@ impl AppHandler {
     pub(crate) fn toggle_help(&mut self) {
         if self.help.visible { self.help.dismiss(); self.panel = Panel::None; }
         else { self.help.toggle(); self.panel = Panel::Help; }
+    }
+
+    /// Settings 全屏页键路由(火→土:键事件 → AppStore signals)。
+    ///
+    /// 阳面键 = 阴面写哪个 signal,完全镜像 SettingsFocusPane 三栏:
+    ///   - `Tab`        → settings_focus_pane.next()(Categories→Providers→Details→…)
+    ///   - `↑/↓`        → 按 focused 栏分别滚 settings_category / settings_selected_provider
+    ///                    (Details 栏暂无 selection 概念,不响应;Model 行编辑是 Part 7+ 的非目标)
+    ///   - `Enter`      → Categories 栏:灰显项 toast"Coming soon";Providers 栏:no-op
+    ///                    (selected 已是 ↑/↓ 实时所选,Enter 只是 sticky 确认语义)
+    ///
+    /// 返回 true = 消费,false = 让位 prompt/全局键(目前 false 仅当 key 非 Tab/↑/↓/Enter)。
+    pub(crate) fn handle_settings_key(&mut self, key: &Key) -> bool {
+        use crate::store::types::{SettingsCategory, SettingsFocusPane, ToastMsgVariant};
+        // ── editing in-place 优先(土律·第四条 单点权威)──
+        // settings_edit.active 时把全部键交给 SettingsEditState.handle_key 收口;
+        // Tab/Shift-Tab 切字段、Enter Submit、Esc Cancel、Protocol ←/→、其他派发当前 Input。
+        // 编辑期间外层不接管任何键(包括 a/e/d/m 等)避免双重消费。
+        if self.settings_edit.active {
+            use crate::app::settings_edit_state::SettingsEditAction;
+            match self.settings_edit.handle_key(key) {
+                SettingsEditAction::Consumed => {
+                    self.layout_dirty = true;
+                    return true;
+                }
+                SettingsEditAction::Submit => {
+                    self.submit_settings_edit();
+                    // submit_settings_edit 内部 close() + refresh_providers_into_store
+                    return true;
+                }
+                SettingsEditAction::Cancel => {
+                    self.settings_edit.close();
+                    self.layout_dirty = true;
+                    return true;
+                }
+                SettingsEditAction::Pass => {
+                    // 既未消费也未 submit/cancel(目前 active=false 才会到这,逻辑上不可达);
+                    // 兜底为 false 让上层兜底(例如 Ctrl-C 退出)。
+                    return false;
+                }
+            }
+        }
+        match key {
+            Key::Tab => {
+                let cur = self.store.settings_focus_pane.get();
+                self.store.settings_focus_pane.set(cur.next());
+                self.layout_dirty = true;
+                true
+            }
+            Key::Up | Key::Down => {
+                let focus = self.store.settings_focus_pane.get();
+                let dir: i32 = if matches!(key, Key::Up) { -1 } else { 1 };
+                match focus {
+                    SettingsFocusPane::Categories => {
+                        let cur = self.store.settings_category.get();
+                        let idx = SettingsCategory::ALL.iter().position(|&c| c == cur).unwrap_or(0);
+                        let n = SettingsCategory::ALL.len() as i32;
+                        let nxt = (((idx as i32 + dir) % n) + n) % n;
+                        self.store.settings_category.set(SettingsCategory::ALL[nxt as usize]);
+                    }
+                    SettingsFocusPane::Providers => {
+                        let providers = self.store.providers.get();
+                        if providers.is_empty() { return true; }
+                        let cur = self.store.settings_selected_provider.get();
+                        let idx = cur.as_ref()
+                            .and_then(|id| providers.iter().position(|p| &p.id == id))
+                            .unwrap_or(0);
+                        let n = providers.len() as i32;
+                        let nxt = (((idx as i32 + dir) % n) + n) % n;
+                        let new_id = providers[nxt as usize].id.clone();
+                        // provider 切换 → 清 selected_model:model_key 是 provider-scoped,
+                        // 同名 key 在不同 provider 是不同记录,跨 provider 残留会让
+                        // Details 渲染指向不存在条目(土律·第四条 单点权威 + 第九条·配对销毁)。
+                        if cur.as_deref() != Some(new_id.as_str()) {
+                            self.store.settings_selected_model.set(None);
+                        }
+                        self.store.settings_selected_provider.set(Some(new_id));
+                    }
+                    SettingsFocusPane::Details => {
+                        // Details ↑/↓ 切当前 provider 的 models 列表;空列表/无 provider 选中 → 不动。
+                        // 首次进入(selected_model = None)按方向键 → 自动落到 models[0]
+                        // (lazy auto-select,符合道纪·第十条·诚实状态:None 表示 "尚未浏览",
+                        // 第一次方向键即开始浏览)。
+                        let providers = self.store.providers.get();
+                        let sel_provider_id = self.store.settings_selected_provider.get();
+                        let Some(provider) = sel_provider_id
+                            .as_ref()
+                            .and_then(|id| providers.iter().find(|p| &p.id == id))
+                        else { return true; };
+                        if provider.models.is_empty() { return true; }
+                        let model_keys: Vec<&str> =
+                            provider.models.iter().map(|m| m.id.as_str()).collect();
+                        let cur = self.store.settings_selected_model.get();
+                        let new_key = match cur.as_deref().and_then(|k| model_keys.iter().position(|x| *x == k)) {
+                            None => model_keys[0].to_string(),
+                            Some(idx) => {
+                                let n = model_keys.len() as i32;
+                                let nxt = (((idx as i32 + dir) % n) + n) % n;
+                                model_keys[nxt as usize].to_string()
+                            }
+                        };
+                        self.store.settings_selected_model.set(Some(new_key));
+                    }
+                }
+                self.layout_dirty = true;
+                true
+            }
+            Key::Enter => {
+                let focus = self.store.settings_focus_pane.get();
+                if matches!(focus, SettingsFocusPane::Categories) {
+                    let cat = self.store.settings_category.get();
+                    if !cat.is_implemented() {
+                        self.store.push_toast(
+                            &format!("{} — coming soon", cat.label()),
+                            ToastMsgVariant::Info,
+                        );
+                    }
+                }
+                true
+            }
+            // Provider CRUD(木律·唯一入口):Providers focused 时 a/e/d。
+            // a/e:in-place 编辑,焦点切到 Details 让用户原地填字段(金律·唯一成形权威 —
+            //      Details pane 同时是只读 view 与编辑 form,无 modal dialog 第二窗口)。
+            // d:Confirm 二次确认后删(走 ConfirmDialog,逻辑不变)。
+            // 道纪·第九条·配对销毁:enter_* 配 close(submit/cancel/Tab 切离三路),
+            // api_key Input 在 close 中 clear()(明文不驻留)。
+            Key::Char('a') => {
+                if matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Providers) {
+                    self.settings_edit.enter_add();
+                    // Add 草稿对应的虚拟"(new provider)"行在 Providers pane 末尾,
+                    // selected_provider 留 None 即可(Details 完全从 settings_edit 读字段)。
+                    self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                    self.layout_dirty = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            // `m` 仅在 Details focused 时响应:新增当前 provider 的 model。
+            // 设计上 `a`/`m` 分离避免双义:`a` 唯一对 provider,`m` 唯一对 model,
+            // 焦点切换时 hint 也直接对应(金律·成形权威)。
+            Key::Char('m') => {
+                if !matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Details) {
+                    return false;
+                }
+                let sel_provider_id = self.store.settings_selected_provider.get();
+                let Some(provider_id) = sel_provider_id else { return true; };
+                self.model_edit_dialog.open_add(&provider_id);
+                self.panel = crate::app::Panel::ModelEdit;
+                true
+            }
+            Key::Char('e') => {
+                let focus = self.store.settings_focus_pane.get();
+                match focus {
+                    SettingsFocusPane::Providers => {
+                        let providers = self.store.providers.get();
+                        let sel_id = self.store.settings_selected_provider.get();
+                        let Some(sel) = sel_id
+                            .as_ref()
+                            .and_then(|id| providers.iter().find(|p| &p.id == id))
+                        else {
+                            return true;
+                        };
+                        // in-place 编辑:把字段交给 Details pane,焦点切 Details。
+                        self.settings_edit.enter_edit(sel);
+                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.layout_dirty = true;
+                        true
+                    }
+                    SettingsFocusPane::Details => {
+                        // Edit model:先 GET raw ModelConfig 做 prefill(土律·第十条),
+                        // 否则 PUT 半空覆写会丢 cost/reasoning/temperature 等高级字段。
+                        let providers = self.store.providers.get();
+                        let sel_provider_id = self.store.settings_selected_provider.get();
+                        let sel_model_key = self.store.settings_selected_model.get();
+                        let (Some(provider_id), Some(model_key)) =
+                            (sel_provider_id, sel_model_key)
+                        else { return true; };
+                        let Some(provider) =
+                            providers.iter().find(|p| p.id == provider_id)
+                        else { return true; };
+                        let Some(model_info) =
+                            provider.models.iter().find(|m| m.id == model_key)
+                        else { return true; };
+                        // 先尝试 GET raw config(可能不存在 = 配置文件未声明此 model,
+                        // 仅插件目录有 = 半空 fallback,诚实告知)。
+                        let prefill = if let Some(api) = self.api.as_ref() {
+                            match api.get_provider_model_config(&provider_id, &model_key) {
+                                Ok(cfg) => Some(cfg),
+                                Err(e) => {
+                                    self.store.push_toast(
+                                        &format!(
+                                            "Editing without full prefill: {} (cost/reasoning fields will reset on save)",
+                                            e
+                                        ),
+                                        ToastMsgVariant::Info,
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        self.model_edit_dialog.open_edit(&provider_id, model_info);
+                        // 拿到 raw ModelConfig.limit.output 后补 max_output_tokens prefill
+                        // (土律·第十条·完整 prefill):ProviderModelInfo 不暴露 output 字段,
+                        // 没有 GET 步骤 max_output 输入框会空,Submit 时会清零原 server 值。
+                        if let Some(cfg) = prefill {
+                            self.model_edit_dialog.set_max_output_prefill(
+                                cfg.limit.as_ref().and_then(|l| l.output),
+                            );
+                        }
+                        self.panel = crate::app::Panel::ModelEdit;
+                        true
+                    }
+                    SettingsFocusPane::Categories => false,
+                }
+            }
+            Key::Char('d') => {
+                let focus = self.store.settings_focus_pane.get();
+                match focus {
+                    SettingsFocusPane::Providers => {
+                        let providers = self.store.providers.get();
+                        let sel_id = self.store.settings_selected_provider.get();
+                        let Some(sel) = sel_id
+                            .as_ref()
+                            .and_then(|id| providers.iter().find(|p| &p.id == id))
+                        else {
+                            return true;
+                        };
+                        self.confirm_dialog.ask(
+                            "Delete Provider",
+                            &format!(
+                                "Delete provider \"{}\"? This removes the config entry and stored API key.",
+                                sel.name,
+                            ),
+                            "Delete",
+                        );
+                        self.pending_confirm = Some(
+                            crate::app::PendingConfirm::DeleteProvider(sel.id.clone()),
+                        );
+                        self.panel = crate::app::Panel::Confirm;
+                        true
+                    }
+                    SettingsFocusPane::Details => {
+                        let providers = self.store.providers.get();
+                        let sel_provider_id = self.store.settings_selected_provider.get();
+                        let sel_model_key = self.store.settings_selected_model.get();
+                        let (Some(provider_id), Some(model_key)) =
+                            (sel_provider_id, sel_model_key)
+                        else { return true; };
+                        let model_name = providers
+                            .iter()
+                            .find(|p| p.id == provider_id)
+                            .and_then(|p| p.models.iter().find(|m| m.id == model_key))
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| model_key.clone());
+                        self.confirm_dialog.ask(
+                            "Delete Model",
+                            &format!(
+                                "Delete model \"{}\" from provider \"{}\"? This removes the config entry.",
+                                model_name, provider_id,
+                            ),
+                            "Delete",
+                        );
+                        self.pending_confirm = Some(
+                            crate::app::PendingConfirm::DeleteProviderModel {
+                                provider_id,
+                                model_key,
+                            },
+                        );
+                        self.panel = crate::app::Panel::Confirm;
+                        true
+                    }
+                    SettingsFocusPane::Categories => false,
+                }
+            }
+            _ => false,
+        }
     }
 }
 

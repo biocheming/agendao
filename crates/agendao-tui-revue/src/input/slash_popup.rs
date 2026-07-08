@@ -9,7 +9,7 @@ use revue::event::Key;
 use revue::runtime::render::Cell;
 use crate::theme::colors;
 // 截断唯一实现见 backdrop(水律:消灭第二处),Home 窄输入框下防止 positioned 裁半个 CJK。
-use crate::dialog::backdrop::truncate_to_width;
+use crate::dialog::backdrop::{list_viewport_window, truncate_to_width};
 
 /// Simple fuzzy match: check if all chars of `query` appear in `target` in order.
 pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
@@ -196,14 +196,22 @@ impl SlashPopup {
         }
 
         // 与 app/mod.rs 的 ph = filtered_count.min(8) + 4 高度预算对齐,
-        // 超出 8 项由 "... and N more" 折叠,避免内容高度超过浮层被裁剪。
-        let max_visible = 8usize.min(self.filtered.len());
+        // 数据行至多 8 条,但靠 sliding viewport 滚动(窗口随 selected 跟随),
+        // 而不是死 .take(8)——后者会让选到第 9 项以后视野不跟随(金律违例:
+        // 截断了真实选择的输入)。窗口计算收归 backdrop::list_viewport_window
+        // 唯一权威(成形语法单点)。
+        let max_visible = 8usize;
+        let total = self.filtered.len();
+        let (start, end) = list_viewport_window(total, self.selected, max_visible);
+        let rows = end - start;
+
         let mut list = vstack().gap(0);
         let mut last_category: Option<&str> = None;
 
-        for (row_idx, &cmd_idx) in self.filtered.iter().enumerate().take(max_visible) {
+        for (rel_idx, &cmd_idx) in self.filtered[start..end].iter().enumerate() {
+            let abs_idx = start + rel_idx;
             let cmd = &self.all_commands[cmd_idx];
-            let is_selected = row_idx == self.selected;
+            let is_selected = abs_idx == self.selected;
 
             // 分类分隔
             let cat = cmd.category.label();
@@ -236,16 +244,18 @@ impl SlashPopup {
             list = list.child(text);
         }
 
-        if self.filtered.len() > max_visible {
-            list = list.child(
-                Text::new(format!("  ... and {} more", self.filtered.len() - max_visible))
-                    .fg(colors::FG_MUTED).bg(colors::BG_SURFACE),
-            );
-        }
+        // 位置指示:滚动模式下显示「selected/total」,让用户感知"我在 47/100 处"
+        // (backdrop dialog 把这放标题里;这里无框无标题,放底部 hint 旁)。
+        // 列表 ≤ 窗口时不必显示,留出干净视觉。
+        let position_hint = if total > rows {
+            format!(" {}/{}", self.selected + 1, total)
+        } else {
+            String::new()
+        };
 
         // 底部 hint
         list = list.child(
-            Text::new(" ↑/↓ navigate · Enter select · Esc cancel ")
+            Text::new(format!(" ↑/↓ navigate · Enter select · Esc cancel{}", position_hint))
                 .fg(colors::FG_MUTED).bg(colors::BG_SURFACE),
         );
 

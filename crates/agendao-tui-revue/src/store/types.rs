@@ -372,3 +372,74 @@ pub struct SessionListItem {
     pub title: String,
     pub run_status: Option<String>,
 }
+
+// ── Settings screen 状态(土：AppStore 唯一所有权) ──
+
+/// Settings 左栏分类。仅 `ModelSettings` 当前有实现;其余五项灰显占位,
+/// 点击 → "Coming soon" toast(土律·第十条:不假装做了未做的功能)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsCategory {
+    General,
+    ModelSettings,
+    PromptLibrary,
+    KnowledgeBase,
+    Keybindings,
+    About,
+}
+
+impl SettingsCategory {
+    /// 6 分类的渲染顺序(对照 HTML 稿)。
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::ModelSettings,
+        Self::PromptLibrary,
+        Self::KnowledgeBase,
+        Self::Keybindings,
+        Self::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::ModelSettings => "Model Settings",
+            Self::PromptLibrary => "Prompt Library",
+            Self::KnowledgeBase => "Knowledge Base",
+            Self::Keybindings => "Keybindings",
+            Self::About => "About",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::General => "☯",
+            Self::ModelSettings => "⚒",
+            Self::PromptLibrary => "⌗",
+            Self::KnowledgeBase => "⛃",
+            Self::Keybindings => "⌨",
+            Self::About => "ℹ",
+        }
+    }
+
+    /// 当前是否有具体实现(只有 ModelSettings 有,其余灰显)。
+    pub fn is_implemented(self) -> bool {
+        matches!(self, Self::ModelSettings)
+    }
+}
+
+/// Settings 三栏当前焦点(Tab 循环切换;影响 ↑/↓ 行为)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsFocusPane {
+    Categories,
+    Providers,
+    Details,
+}
+
+impl SettingsFocusPane {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Categories => Self::Providers,
+            Self::Providers => Self::Details,
+            Self::Details => Self::Categories,
+        }
+    }
+}

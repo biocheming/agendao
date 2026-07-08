@@ -345,92 +345,228 @@ pub(crate) fn layout_thinking_group(
     GroupLayout { height, view: stack, row_owners }
 }
 
+/// 视图层窗口范围（scroll_top + viewport_h 都是行单位，绝对坐标对齐全量布局原点）。
+/// `build_render_units` 接 `Option<ViewportRange>`：`None` = 全量真布局（供
+/// mouse 命中、tests）；`Some` = viewport 外不构造 view（占位）、只填高度元数据，
+/// 把每帧 markdown parse 的代价从 O(N) 压到 O(viewport)。
+pub struct ViewportRange {
+    pub scroll_top: u16,
+    pub viewport_h: u16,
+}
+
+/// 单元元数据（纯量）：聚合决策 + 高度 + glyph/accent/bg + 是否聚合组。
+/// `build_render_units` 与 `transcript_total_height` 都消费——聚合决策与高度
+/// 口径单点（金律：触点 1）。`detect_unit_at` 不构造 view、不持 `Stack`，故可
+/// 在不需要 view 的路径（全量高度统计 / viewport 外占位 unit）零代价复用。
+struct UnitSpan {
+    /// 跨多少个块。
+    span: usize,
+    height: u16,
+    glyph: &'static str,
+    glyph_w: u16,
+    accent: Color,
+    bg: Option<Color>,
+    is_well: bool,
+    /// 是否聚合组（ToolResult 组 / Thinking 组）——构造 view 时分流。
+    is_group: bool,
+    /// 单块 Thinking 续接判定（在同 turn 内被夹断）——传给 layout_block_ctx。
+    thinking_continuation: bool,
+}
+
+/// 检测 i 起点的视觉单元：聚合还是单块、高度多少、glyph/accent/bg 各是什么。
+/// 纯量——不构造 view（聚合分支会调 layout_*_group 但只用其 height，丢 view）。
+/// height==0 表示该 i 处不产 unit（show_thinking=false 下的单块 Thinking），
+/// 调用方应跳过 push 但仍按 span 推进。
+fn detect_unit_at(
+    msgs: &[TranscriptBlock],
+    i: usize,
+    tick: u64,
+    show_thinking: bool,
+    turn_has_thinking: bool,
+) -> UnitSpan {
+    let head = &msgs[i];
+    let (glyph, glyph_w) = block_glyph(head);
+    let accent = block_accent(head);
+    let bg = block_bg(head);
+
+    // 聚合决策：ToolResult 组优先，再 Thinking 组，否则单块。与原 build_render_units
+    // 的判定逻辑完全同源——这里只算 height/span，view 在调用方按需构造。
+    if let Some(end) = tool_result_run(msgs, i).filter(|&e| e - i >= 2) {
+        let g = layout_tool_result_group(&msgs[i..end], i, None);
+        return UnitSpan {
+            span: end - i,
+            height: g.height,
+            glyph, glyph_w, accent, bg,
+            is_well: true,
+            is_group: true,
+            thinking_continuation: false,
+        };
+    }
+    if show_thinking {
+        if let Some(end) = thinking_run(msgs, i).filter(|&e| e - i >= 2) {
+            let g = layout_thinking_group(&msgs[i..end], i, None);
+            return UnitSpan {
+                span: end - i,
+                height: g.height,
+                glyph, glyph_w, accent, bg,
+                is_well: true,
+                is_group: true,
+                thinking_continuation: false,
+            };
+        }
+    }
+
+    // 单块路径。show_thinking=false 下的单块 Thinking → height=0、span=1（跳过 push）。
+    if !show_thinking && matches!(head, TranscriptBlock::Thinking { .. }) {
+        return UnitSpan {
+            span: 1,
+            height: 0,
+            glyph, glyph_w, accent, bg,
+            is_well: false,
+            is_group: false,
+            thinking_continuation: false,
+        };
+    }
+
+    let thinking_continuation =
+        matches!(head, TranscriptBlock::Thinking { .. }) && turn_has_thinking;
+    let bl = layout_block_ctx(head, tick, thinking_continuation);
+    UnitSpan {
+        span: 1,
+        height: bl.height,
+        glyph, glyph_w, accent, bg,
+        is_well: matches!(head, TranscriptBlock::ToolResult { .. }),
+        is_group: false,
+        thinking_continuation,
+    }
+}
+
 /// 把 msgs 折成视觉单元序列——聚合决策单点（金律：触点 1）。连续 ToolResult /
 /// 连续 Thinking 各自聚合成井，其余逐块。包装属性（glyph/accent/bg/is_well）统一
 /// 填入 unit；渲染循环、鼠标命中、total_h 都消费此序列，不认块类型。新增聚合种类：
 /// 在此加一段 `*_run` 检测 + 一个 `layout_*_group`，余处不动。
+///
+/// `viewport=None`（老语义）：全量真布局——所有 unit 都有真 view + 真 row_owners。
+/// 供鼠标命中（必须真 row_owners 才能映射 y→块）、tests 用。
+///
+/// `viewport=Some(r)`：viewport 外的 unit 用占位 view（空 vstack）+ `vec![Some(0); h]`
+/// row_owners——绝不 paint 也不命中（viewport 外用户点不到），但高度 / glyph /
+/// accent / bg 真实，scrollbar / scroll_top / cursor 计算照旧正确。
+/// SAFETY_PAD 上下各多 layout 8 行，容许 1~2 行抖动不重布局。
 pub(crate) fn build_render_units(
     msgs: &[TranscriptBlock],
     cursor_idx: Option<usize>,
     tick: u64,
     show_thinking: bool,
+    viewport: Option<ViewportRange>,
 ) -> Vec<RenderUnit> {
+    /// viewport 上下 padding（行）：抗 1-2 行抖动 + 吸收调用方先于内联 dialog
+    /// 估算 scroll_top 的小幅偏差（permission/question 内联块在 build 之后才追加，
+    /// 致 viewport 起点可能下移 5~10 行；16 行余量覆盖之）。
+    const SAFETY_PAD: u16 = 16;
+
     let mut units = Vec::new();
     let mut i = 0usize;
+    let mut acc_top: u16 = 0;
     // turn 级思考状态机：UserPrompt 起新 turn（重置），Thinking 置位。单块 Thinking
     // 据此定续接符（✻ 首个 / ┆ 同 turn 内被夹断的后续）——与原渲染循环逐块维护一致。
-    // 聚合井（◇）不看此位；只有未聚合的单块 Thinking 走 layout_block_ctx 用它。
     let mut turn_has_thinking = false;
+
     while i < msgs.len() {
-        // 聚合决策：ToolResult 组优先，再 Thinking 组，否则单块。
-        let (group, next): (Option<GroupLayout>, usize) =
-            if let Some(end) = tool_result_run(msgs, i).filter(|&e| e - i >= 2) {
-                (Some(layout_tool_result_group(&msgs[i..end], i, cursor_idx)), end)
-            } else if show_thinking {
-                if let Some(end) = thinking_run(msgs, i).filter(|&e| e - i >= 2) {
-                    (Some(layout_thinking_group(&msgs[i..end], i, cursor_idx)), end)
-                } else {
-                    (None, i + 1)
-                }
-            } else {
-                (None, i + 1)
-            };
-        let head = &msgs[i];
-        let (glyph, glyph_w) = block_glyph(head);
-        let thinking_continuation =
-            matches!(head, TranscriptBlock::Thinking { .. }) && turn_has_thinking;
-        if let Some(g) = group {
-            units.push(RenderUnit {
-                base_index: i,
-                block_span: next - i,
-                height: g.height,
-                content: g.view,
-                row_owners: g.row_owners,
-                glyph,
-                glyph_w,
-                accent: block_accent(head),
-                bg: block_bg(head),
-                is_well: true,
-            });
-        } else {
-            // show_thinking=false：单块 Thinking 不 push（0 高度，transcript 收紧）。
-            // 聚合井已在 group 决策里跳过；turn 状态机仍在下方 match 推进。
-            if !show_thinking && matches!(head, TranscriptBlock::Thinking { .. }) {
-                // skip
-            } else {
-                let bl = layout_block_ctx(head, tick, thinking_continuation);
-                units.push(RenderUnit {
-                    base_index: i,
-                    block_span: 1,
-                    height: bl.height,
-                    content: bl.view,
-                    row_owners: vec![Some(0); bl.height as usize],
-                    glyph,
-                    glyph_w,
-                    accent: block_accent(head),
-                    bg: block_bg(head),
-                    is_well: matches!(head, TranscriptBlock::ToolResult { .. }),
-                });
-            }
-        }
-        match head {
+        let span = detect_unit_at(msgs, i, tick, show_thinking, turn_has_thinking);
+
+        // 推进 turn 状态（无视后续是否 push）——与原循环同序。
+        match &msgs[i] {
             TranscriptBlock::UserPrompt { .. } => turn_has_thinking = false,
             TranscriptBlock::Thinking { .. } => turn_has_thinking = true,
             _ => {}
         }
-        i = next;
+
+        // 0 高度（show_thinking=false 单块 Thinking）：仅推进 i，不 push、不累加 acc_top。
+        if span.height == 0 {
+            i += span.span;
+            continue;
+        }
+
+        let unit_top = acc_top;
+        let unit_bottom = acc_top.saturating_add(span.height);
+
+        // 是否落在 viewport 窗口内（含 SAFETY_PAD）。None → 永远内，即全量布局。
+        let inside = match &viewport {
+            None => true,
+            Some(v) => {
+                let view_top = v.scroll_top.saturating_sub(SAFETY_PAD);
+                let view_bottom = v.scroll_top
+                    .saturating_add(v.viewport_h)
+                    .saturating_add(SAFETY_PAD);
+                unit_bottom > view_top && unit_top < view_bottom
+            }
+        };
+
+        let (content, row_owners) = if inside {
+            // 真布局：重新走聚合/单块分支构造 view + row_owners。
+            if span.is_group {
+                let end = i + span.span;
+                let g = if matches!(&msgs[i], TranscriptBlock::ToolResult { .. }) {
+                    layout_tool_result_group(&msgs[i..end], i, cursor_idx)
+                } else {
+                    layout_thinking_group(&msgs[i..end], i, cursor_idx)
+                };
+                (g.view, g.row_owners)
+            } else {
+                let bl = layout_block_ctx(&msgs[i], tick, span.thinking_continuation);
+                let h = bl.height as usize;
+                (bl.view, vec![Some(0); h])
+            }
+        } else {
+            // 占位：空 stack（viewport 外不会被 paint），row_owners 全 Some(0) 维持
+            // 命中契约（.len()==height）；此 unit 不在 viewport 内，用户也点不到。
+            let placeholder = vstack().gap(0);
+            (placeholder, vec![Some(0); span.height as usize])
+        };
+
+        units.push(RenderUnit {
+            base_index: i,
+            block_span: span.span,
+            height: span.height,
+            content,
+            row_owners,
+            glyph: span.glyph,
+            glyph_w: span.glyph_w,
+            accent: span.accent,
+            bg: span.bg,
+            is_well: span.is_well,
+        });
+
+        acc_top = unit_bottom;
+        i += span.span;
     }
     units
 }
 
-/// 聚合总高（与渲染同口径）。复用 `build_render_units`——高度口径单点（金律）。
-/// cursor/tick 不影响高度，故传 `None`/0。show_thinking 与渲染同口径，否则高度错位。
+/// 聚合总高（与渲染同口径）。走纯量路径 `detect_unit_at`——零 view 构造。
+/// show_thinking 与渲染同口径，否则高度错位。
 /// compact_density 与渲染块间空行同口径：紧凑模式块间 0 间隔，gap 也为 0，
 /// 否则 total_h 比实际渲染高 → max_offset 偏大 → 点击/scroll 漂移。
 pub(crate) fn transcript_total_height(msgs: &[TranscriptBlock], show_thinking: bool, compact_density: bool) -> u16 {
-    let units = build_render_units(msgs, None, 0, show_thinking);
-    let total: u16 = units.iter().map(|u| u.height).sum();
-    let gap = if compact_density { 0 } else { units.len() as u16 };
+    let mut total: u16 = 0;
+    let mut count: u16 = 0;
+    let mut turn_has_thinking = false;
+    let mut i = 0usize;
+    while i < msgs.len() {
+        let span = detect_unit_at(msgs, i, 0, show_thinking, turn_has_thinking);
+        match &msgs[i] {
+            TranscriptBlock::UserPrompt { .. } => turn_has_thinking = false,
+            TranscriptBlock::Thinking { .. } => turn_has_thinking = true,
+            _ => {}
+        }
+        if span.height > 0 {
+            total = total.saturating_add(span.height);
+            count = count.saturating_add(1);
+        }
+        i += span.span;
+    }
+    let gap = if compact_density { 0 } else { count };
     total.saturating_add(gap).saturating_add(1)
 }
 
@@ -1021,5 +1157,87 @@ mod layout_tests {
         assert_eq!(blk(compact).height, 1);
         assert_eq!(blk(notice).height, 1);
         assert_eq!(blk(img).height, 1);
+    }
+
+    // ── 视图层窗口化（render-side viewport windowing）─────────────────────
+    //
+    // 高度口径单点（detect_unit_at）。viewport=None 与 viewport=Some(...) 必产同形
+    // unit 序列、同 height、同 row_owners.len()；唯一差异是 content（窗口外占位）。
+    // total_height 走纯量路径，必须等于 Σ unit.height + count + 1。
+
+    fn make_mixed_msgs() -> Vec<TranscriptBlock> {
+        let mut v = Vec::new();
+        // 多 turn 混合块：User / Assistant / ToolCall / ToolResult 组 / Thinking
+        for turn in 0..5 {
+            v.push(TranscriptBlock::UserPrompt {
+                id: format!("u{}", turn),
+                content: format!("question turn {}", turn),
+                fold: FoldState::Expanded,
+            });
+            v.push(TranscriptBlock::AssistantMsg {
+                id: format!("a{}", turn),
+                content: format!("# header turn {}\nbody line 1\nbody line 2", turn),
+            });
+            v.push(TranscriptBlock::ToolCall {
+                id: format!("c{}_1", turn),
+                name: "read".into(),
+                params: "{}".into(),
+                phase: ToolPhase::Done,
+            });
+            // 连续 ToolResult → 触发聚合井
+            v.push(TranscriptBlock::ToolResult {
+                id: format!("r{}_1", turn), name: "read".into(), result: "x".into(),
+                is_error: false, fold: FoldState::Folded,
+            });
+            v.push(TranscriptBlock::ToolResult {
+                id: format!("r{}_2", turn), name: "read".into(), result: "y".into(),
+                is_error: false, fold: FoldState::Folded,
+            });
+        }
+        v
+    }
+
+    #[test]
+    fn viewport_window_matches_full_layout_heights() {
+        let msgs = make_mixed_msgs();
+        let full = build_render_units(&msgs, None, 0, true, None);
+        let windowed = build_render_units(
+            &msgs, None, 0, true,
+            Some(ViewportRange { scroll_top: 30, viewport_h: 20 }),
+        );
+
+        assert_eq!(full.len(), windowed.len(), "viewport 切换不应改变 unit 数");
+        for (idx, (f, w)) in full.iter().zip(windowed.iter()).enumerate() {
+            assert_eq!(f.height, w.height,
+                "unit {} height 必须同口径（idx full={}, win={})", idx, f.height, w.height);
+            assert_eq!(f.row_owners.len(), w.row_owners.len(),
+                "unit {} row_owners.len() 必须 == height（命中契约）", idx);
+            assert_eq!(f.row_owners.len(), f.height as usize,
+                "unit {} row_owners.len() == height 自检", idx);
+            assert_eq!(f.base_index, w.base_index, "unit {} base_index 漂移", idx);
+            assert_eq!(f.block_span, w.block_span, "unit {} block_span 漂移", idx);
+            assert_eq!(f.glyph, w.glyph, "unit {} glyph 漂移", idx);
+            assert_eq!(f.is_well, w.is_well, "unit {} is_well 漂移", idx);
+        }
+        let total_full: u32 = full.iter().map(|u| u.height as u32).sum();
+        let total_window: u32 = windowed.iter().map(|u| u.height as u32).sum();
+        assert_eq!(total_full, total_window, "viewport 窗口必须保持总高一致");
+    }
+
+    #[test]
+    fn total_height_matches_sum_of_units() {
+        let msgs = make_mixed_msgs();
+        // transcript_total_height 现走纯量 detect_unit_at —— 必须与全量 build_render_units
+        // 的 Σ height + count + 1 等同（compact_density=false 下每 unit 后 1 行 gap）。
+        let total = transcript_total_height(&msgs, true, false);
+        let units = build_render_units(&msgs, None, 0, true, None);
+        let sum_h: u16 = units.iter().filter(|u| u.height > 0)
+            .map(|u| u.height).sum();
+        let count = units.iter().filter(|u| u.height > 0).count() as u16;
+        assert_eq!(total, sum_h.saturating_add(count).saturating_add(1));
+
+        // compact_density=true 下无块间空行 gap 应为 0
+        let total_compact = transcript_total_height(&msgs, true, true);
+        assert_eq!(total_compact, sum_h.saturating_add(1));
     }
 }

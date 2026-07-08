@@ -161,6 +161,12 @@ impl AppHandler {
                             }
                             // PendingConfirm 多变体已穷尽 Some；None 收尾。
                             // 新增变体会让此 match 变非穷尽 → 编译报错 → 强制补臂。
+                            Some(PendingConfirm::DeleteProvider(id)) => {
+                                self.delete_provider_action(&id);
+                            }
+                            Some(PendingConfirm::DeleteProviderModel { provider_id, model_key }) => {
+                                self.delete_provider_model_action(&provider_id, &model_key);
+                            }
                             None => {}
                         }
                     } else {
@@ -384,6 +390,37 @@ impl AppHandler {
                 if !self.alert.visible { self.panel = Panel::None; }
                 return true;
             }
+            Panel::ProviderEdit => {
+                // dialog handle_key 返回 Submit/Cancel:Submit 走 client 写入 +
+                // refresh,Cancel 仅关闭(均已在 dialog.close() 中 clear inputs
+                // 含 api_key,api_key 不驻留 — 道纪·第九条·配对销毁)。
+                if let Some(action) = self.provider_edit_dialog.handle_key(key) {
+                    match action {
+                        crate::dialog::ProviderEditAction::Submit(s) => {
+                            self.submit_provider_edit(s);
+                        }
+                        crate::dialog::ProviderEditAction::Cancel => {}
+                    }
+                    self.panel = Panel::None;
+                    return true;
+                }
+                if !self.provider_edit_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
+            Panel::ModelEdit => {
+                if let Some(action) = self.model_edit_dialog.handle_key(key) {
+                    match action {
+                        crate::dialog::ModelEditAction::Submit(s) => {
+                            self.submit_model_edit(s);
+                        }
+                        crate::dialog::ModelEditAction::Cancel => {}
+                    }
+                    self.panel = Panel::None;
+                    return true;
+                }
+                if !self.model_edit_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
             Panel::Fork => {
                 if let Some((sid, mid)) = self.fork_dialog.handle_key(key) {
                     if let Some(ref api) = self.api {
@@ -436,44 +473,6 @@ impl AppHandler {
                     return true;
                 }
                 if !self.export_dialog.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::Provider => {
-                if let Some(action) = self.provider_dialog.handle_key(key) {
-                    match action {
-                        crate::dialog::ProviderAction::Toggle(_pid) => {
-                            // bridge 无 disconnect API —— 诚实 toast，不伪成功（避有阳无阴）。
-                            self.store.push_toast(
-                                "Disconnect not supported in TUI yet",
-                                crate::store::types::ToastMsgVariant::Warning);
-                        }
-                        crate::dialog::ProviderAction::SetAuth(pid, key) => {
-                            // dialog 的 ApiKey 流程语义是「连接 provider」，故调
-                            // connect_provider（带 key），而非仅 set_auth。
-                            if let Some(ref api) = self.api {
-                                match api.connect_provider(&pid, &key, None, None) {
-                                    Ok(_) => self.store.push_toast(
-                                        &format!("Connected: {}", pid),
-                                        crate::store::types::ToastMsgVariant::Success),
-                                    Err(e) => self.store.push_toast(
-                                        &format!("Connect failed: {}", e),
-                                        crate::store::types::ToastMsgVariant::Error),
-                                }
-                            }
-                            self.provider_dialog.close();
-                            self.panel = Panel::None;
-                        }
-                        crate::dialog::ProviderAction::RegisterCustom(_pid, _url) => {
-                            // register_custom_provider 需 id/protocol/api_key，dialog 仅收
-                            // url —— 诚实标注缺口，不伪注册。
-                            self.store.push_toast(
-                                "Custom registration needs id/protocol/key (not yet collected)",
-                                crate::store::types::ToastMsgVariant::Warning);
-                        }
-                    }
-                    return true;
-                }
-                if !self.provider_dialog.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::None => {

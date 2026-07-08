@@ -12,6 +12,8 @@ mod keymap;
 mod dispatch_outcome;
 mod panel_dispatch;
 mod slash_action;
+mod provider_actions;
+pub(crate) mod settings_edit_state;
 
 use anyhow::Context;
 use revue::prelude::*;
@@ -55,7 +57,8 @@ use crate::dialog::{
     SkillProposalDialog, McpListDialog, RecoveryListDialog, TaskListDialog,
     PermissionDialog, QuestionDialog,
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
-    SessionForkDialog, SessionExportDialog, ProviderDialog,
+    SessionForkDialog, SessionExportDialog,
+    ProviderEditDialog, ModelEditDialog,
 };
 use crate::input::{PromptInput, SlashPopup};
 use crate::dialog::backdrop::PromptGeom;
@@ -196,7 +199,6 @@ pub(crate) enum Panel {
     Stash,
     Fork,
     Export,
-    Provider,
     Confirm,
     Help,
     SkillList,
@@ -204,6 +206,14 @@ pub(crate) enum Panel {
     McpList,
     Recovery,
     TaskList,
+    /// (deprecated)历史 a / e → 弹 provider 添加/编辑 form dialog 的 panel 值。
+    /// Part 7 起 in-place 编辑取代,无构造端;match arm 仍在 dispatch/render 路径
+    /// 作为编译器穷举校验保留(亦便于未来回退)。可与 `provider_edit_dialog` 字段
+    /// 一并清理。
+    #[allow(dead_code)]
+    ProviderEdit,
+    /// Settings Details 内 m / e → 弹 model 添加/编辑 form dialog。
+    ModelEdit,
     #[allow(dead_code)] Alert,
 }
 
@@ -226,6 +236,11 @@ pub(crate) enum PendingConfirm {
     /// 批量删除会话（SessionList dialog 'x' 标记 + 'D' 触发）。
     /// 与 DeleteSession(单个) 共享 Confirm dialog 同栈,删一组 session id。
     DeleteSessionsBatch(Vec<String>),
+    /// Settings Providers 栏 'd':确认后调 client.delete_provider(id)
+    /// → server config_store.replace_with + AuthManager.remove(土律·第四条单点权威)。
+    DeleteProvider(String),
+    /// Settings Details 内 model 'd':确认后调 client.delete_provider_model_config(provider, key)。
+    DeleteProviderModel { provider_id: String, model_key: String },
 }
 
 /// Application state + event handler.
@@ -256,7 +271,6 @@ pub(crate) struct AppHandler {
     pub(crate) stash_entries: Vec<StashEntry>,
     pub(crate) fork_dialog: SessionForkDialog,
     pub(crate) export_dialog: SessionExportDialog,
-    pub(crate) provider_dialog: ProviderDialog,
     pub(crate) confirm_dialog: ConfirmDialog,
     /// What a confirmed `Panel::Confirm` should execute. Set when opening the
     /// confirm dialog, consumed and cleared when the user answers (道纪第九条:
@@ -269,6 +283,21 @@ pub(crate) struct AppHandler {
     pub(crate) mcp_list: McpListDialog,
     pub(crate) recovery_list: RecoveryListDialog,
     pub(crate) task_list: TaskListDialog,
+    /// Provider 添加/编辑 dialog(deprecated:Part 7 已被 `settings_edit` in-place
+    /// 编辑路径取代)。保留结构以便未来需要回退到模态对话框形态;字段当前**无写入触发面**
+    /// (a/e 键不再 set Panel::ProviderEdit),仅留 render/dispatch 接口供历史参考。
+    /// 删除迁移完成后请连同 ProviderEditDialog 一并清理。
+    #[allow(dead_code)]
+    pub(crate) provider_edit_dialog: ProviderEditDialog,
+    /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
+    /// 走 client.put_provider_model_config / delete_provider_model_config 唯一写路径。
+    pub(crate) model_edit_dialog: ModelEditDialog,
+    /// Settings Details pane 的 *in-place* 编辑态(金律·唯一成形权威 — 同一 Details
+    /// 区段既是只读 view 又是编辑 form,无 modal dialog 第二窗口)。
+    /// `active=false` 时所有 Settings 渲染走只读旧路径,active=true 时 Providers/Details
+    /// pane 切到 editable form。Provider 字段(name/base_url/protocol/api_key)由此收口;
+    /// Model 字段仍在 ModelEditDialog(后续可同迁)。
+    pub(crate) settings_edit: settings_edit_state::SettingsEditState,
     pub(crate) panel: Panel,
     pub(crate) active_session: SessionStore,
     pub(crate) spinner_tick: u64,
@@ -327,6 +356,10 @@ pub(crate) struct AppHandler {
     pub(crate) sidebar_active_tab: usize,
     /// Sidebar tab 符号行的绝对屏幕 y（render 后发布），供鼠标点击命中切 tab。
     pub(crate) sidebar_tab_y: u16,
+    /// 终端总高（render 后发布）。sidebar 底部用户栏在 y = terminal_h - 1（sidebar
+    /// 是全高左列、user_bar 是其最后一个 `child_sized(...,1)`），用此值定位 ⚙ 命中行。
+    /// 同步发布与 sidebar_tab_y 同构（土律：可观测性单点）。
+    pub(crate) terminal_h: u16,
     // Session header dir 点击命中区（金：dir 全路径 tooltip 的阳面命中口径）。
     // header_y=dir 所在行（顶端空行后=1）；header_dir_x/w=dir 文本绝对列范围。
     // render 算好后 publish，keymap click handler 只读命中（土律：编排单点真相）。
@@ -394,6 +427,11 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool) -> PromptGe
                 y_top: area.y + area.height.saturating_sub(4),
                 w: main_w.saturating_sub(PAD),
             }
+        }
+        Route::Settings => {
+            // Settings 路由不画 prompt_bar(对话框输入不在 Settings 出现);
+            // 但 prompt_geometry 仍需返回合法 Rect 给 PromptOverlay 的 noop 渲染。
+            PromptGeom { x: main_x, y_top: area.y + area.height, w: 0 }
         }
     }
 }
@@ -519,7 +557,6 @@ impl AppHandler {
             stash_entries: crate::dialog::prompt_stash::load_stash(),
             fork_dialog: SessionForkDialog::new(),
             export_dialog: SessionExportDialog::new(),
-            provider_dialog: ProviderDialog::new(),
             confirm_dialog: ConfirmDialog::new(),
             pending_confirm: None,
             alert: AlertDialog::new(), help: HelpDialog::new(),
@@ -528,6 +565,9 @@ impl AppHandler {
             mcp_list: McpListDialog::new(),
             recovery_list: RecoveryListDialog::new(),
             task_list: TaskListDialog::new(),
+            provider_edit_dialog: ProviderEditDialog::new(),
+            model_edit_dialog: ModelEditDialog::new(),
+            settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
             spinner_tick: 0,
             interrupt_pending: false,
@@ -543,6 +583,7 @@ impl AppHandler {
             transcript_scrollbar_publish: std::rc::Rc::new(RefCell::new(None)),
             sidebar_active_tab: 0,
             sidebar_tab_y: 0,
+            terminal_h: 0,
             header_y: 1, // 顶端空行后（Session 路由固定；Home 不渲染 header）
             header_dir_x: 0,
             header_dir_w: 0,
@@ -887,7 +928,30 @@ impl View for RootView {
                     // 视觉单元序列：聚合决策单点（build_render_units）。连续 ToolResult /
                     // 连续 Thinking 各自成井，其余逐块。渲染只消费 unit（height/content/
                     // 包装属性），不认块类型——新增聚合种类不触此处（金律：渲染触点 1）。
-                    let units = build_render_units(&msgs, cursor_idx, h.spinner_tick, self.store.show_thinking.get());
+                    //
+                    // viewport 估算：内联 permission/question/Sending 块（extra_h）此刻
+                    // 尚未追加，但 SAFETY_PAD（16 行）已涵盖这点偏差——保守换简洁。
+                    // pinned 时 user_offset 强 0、scroll_top=max_offset（钉底），与下方
+                    // 真实 scroll_top 同口径；否则 user_offset 由 scroll_offset.get() 决定。
+                    let est_max_offset = total_h.saturating_sub(available);
+                    let est_pinned = h.permission_dialog.visible || h.question_dialog.visible;
+                    let est_user_offset = if est_pinned {
+                        0
+                    } else {
+                        h.active_session.scroll_offset.get().min(est_max_offset)
+                    };
+                    let est_scroll_top = est_max_offset.saturating_sub(est_user_offset);
+                    let viewport_range = crate::screen::ViewportRange {
+                        scroll_top: est_scroll_top,
+                        viewport_h: available,
+                    };
+                    let units = build_render_units(
+                        &msgs,
+                        cursor_idx,
+                        h.spinner_tick,
+                        self.store.show_thinking.get(),
+                        Some(viewport_range),
+                    );
                     for unit in units {
                         let is_cursor_unit = cursor_idx
                             .map(|c| c >= unit.base_index && c < unit.base_index + unit.block_span)
@@ -1009,6 +1073,18 @@ impl View for RootView {
                 // only three children.
                 content_stack = content_stack.child_flex(main_area, 1.0);
             }
+            Route::Settings => {
+                // 全屏 Settings(三栏:分类 22 | Providers 28 | Details flex);
+                // 单一权威:`AppStore.providers`/`settings_*` signals,SettingsScreen 只读消费。
+                // `ctx.area.height` 透传给 Providers 栏:滑窗算法据此推导可见行数,
+                // selected 超视野时跟随移动(金律·成形语法唯一,`list_viewport_window`)。
+                let settings = crate::screen::SettingsScreen::build(
+                    &self.store,
+                    ctx.area.height,
+                    Some(&h.settings_edit),
+                );
+                content_stack = content_stack.child_flex(settings, 1.0);
+            }
         }
 
         // ── Context strip: model / agent / mode ──
@@ -1095,7 +1171,6 @@ impl View for RootView {
             Panel::Rename => "rename",
             Panel::Fork => "fork",
             Panel::Export => "export",
-            Panel::Provider => "providers",
             Panel::Confirm => "confirm",
             Panel::Help => "help",
             Panel::SkillList => "skills",
@@ -1103,6 +1178,8 @@ impl View for RootView {
             Panel::McpList => "mcps",
             Panel::Recovery => "recovery",
             Panel::TaskList => "tasks",
+            Panel::ProviderEdit => "providerEdit",
+            Panel::ModelEdit => "modelEdit",
             Panel::Alert => "alert",
             Panel::None => route.as_str(),
         };
@@ -1168,6 +1245,11 @@ impl View for RootView {
                 .child_sized(gutter(attachment_strip), attachment_h)
                 .child_sized(gutter(prompt_bar), 4)   // hint (1) + bordered input (3)
                 .child_sized(gutter(status_bar), 1),
+            // Settings:仅 content_stack(SettingsScreen 全屏)+ 底部 status_bar;
+            // 不画 context/attachment/prompt_bar(Settings 不接受 prompt 输入)。
+            Route::Settings => vstack()
+                .child_flex(content_stack, 1.0)
+                .child_sized(gutter(status_bar), 1),
         };
         let layout = if let Some((sidebar_view, _)) = sidebar_opt {
             // 纯黑合一：sidebar 不再包 BgStack(BG_DEEP)——保持终端纯黑背景，与主窗口完全一致；
@@ -1198,6 +1280,9 @@ impl View for RootView {
         // Sidebar tab 符号行绝对 y（sidebar 在 page 顶 y=0，tab_y 已是相对内容顶 = 绝对）。
         // 无 sidebar（Home / Ctrl+B 关）→ 0，点击命中不触发（y=0 落在 logo 区不切 tab）。
         self.handler.borrow_mut().sidebar_tab_y = sidebar_tab_y_snapshot;
+        // 终端总高：sidebar 底部用户栏 ⚙ 命中在 y = terminal_h - 1（sidebar 全高左列，
+        // user_bar 是其最后一个 child_sized(...,1)）。同 sidebar_tab_y 模式发布。
+        self.handler.borrow_mut().terminal_h = ctx.area.height;
         // Session header dir 点击命中区 publish（None=非 Session 路由→dir_w=0 不命中）。
         let (dir_x_snap, dir_w_snap) = dir_hit.unwrap_or((0, 0));
         // header 隐藏时 header_y=0（dir 不在屏幕上，点击不命中）。
@@ -1266,7 +1351,6 @@ impl View for RootView {
             Panel::Rename => h.rename_dialog.render(ctx, geom),
             Panel::Fork => h.fork_dialog.render(ctx, geom),
             Panel::Export => h.export_dialog.render(ctx, geom),
-            Panel::Provider => h.provider_dialog.render(ctx, geom),
             Panel::Confirm => h.confirm_dialog.render(ctx, geom),
             Panel::Help => h.help.render(ctx, geom),
             Panel::SkillList => h.skill_list.render(ctx, geom),
@@ -1274,6 +1358,8 @@ impl View for RootView {
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
+            Panel::ProviderEdit => h.provider_edit_dialog.render(ctx),
+            Panel::ModelEdit => h.model_edit_dialog.render(ctx),
             _ => {}
         }
 

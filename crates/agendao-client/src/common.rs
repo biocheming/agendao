@@ -64,6 +64,33 @@ pub(crate) fn build_connect_provider_request(
     }
 }
 
+/// PUT `/provider/{id}` 请求体。字段名 / 形态与 server `UpdateProviderRequest`
+/// (provider.rs:1695)同源:`base_url` 与 `protocol` server 端强制成对(任一
+/// 为 `Some` 必须两者都 `Some`);`name` 独立可选。改字段时两边同步——
+/// 这是跨 crate 共享的 wire contract,土律·第四条单点权威要求未来收归到
+/// `agendao-api` crate,目前 server 端尚未抽离,先在 client 侧自维护一份。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct UpdateProviderWire {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) protocol: Option<String>,
+}
+
+pub(crate) fn build_update_provider_request(
+    name: Option<&str>,
+    base_url: Option<&str>,
+    protocol: Option<&str>,
+) -> UpdateProviderWire {
+    UpdateProviderWire {
+        name: name.map(str::to_string),
+        base_url: base_url.map(str::to_string),
+        protocol: protocol.map(str::to_string),
+    }
+}
+
 pub(crate) fn http_error(action: &str, status: reqwest::StatusCode, text: String) -> anyhow::Error {
     anyhow!("Failed to {}: {} - {}", action, status, text)
 }
@@ -103,6 +130,32 @@ mod tests {
                 ("search", "hello".to_string()),
                 ("limit", "50".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn update_provider_request_skips_none_fields() {
+        // 仅 name → JSON 不含 base_url / protocol(server 端可只改 name)。
+        let req = build_update_provider_request(Some("My OpenAI"), None, None);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json, serde_json::json!({"name": "My OpenAI"}));
+    }
+
+    #[test]
+    fn update_provider_request_serializes_all_fields() {
+        let req = build_update_provider_request(
+            Some("My OpenAI"),
+            Some("https://api.x.com/v1"),
+            Some("openai"),
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "name": "My OpenAI",
+                "base_url": "https://api.x.com/v1",
+                "protocol": "openai",
+            })
         );
     }
 }

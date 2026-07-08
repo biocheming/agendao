@@ -37,7 +37,9 @@ pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
         )
         .route(
             "/provider/{key}/models/{model_key}",
-            put(put_provider_model_config).delete(delete_provider_model_config),
+            get(get_provider_model_config)
+                .put(put_provider_model_config)
+                .delete(delete_provider_model_config),
         )
         .route(
             "/plugin/{key}",
@@ -103,6 +105,10 @@ pub(crate) async fn get_config_providers(
     let variant_lookup = crate::routes::provider::get_model_variant_lookup(state.as_ref()).await;
     let models = state.providers.read().await.list_models();
     let mut provider_names: HashMap<String, String> = HashMap::new();
+    let mut provider_base_urls: HashMap<String, String> = HashMap::new();
+    // protocol 映射(土律单点):此端点只读 config(无 catalog 兜底),所以
+    // 直接从 provider.npm 反推。`/provider` 端点有 catalog fallback,本端点没。
+    let mut provider_protocols: HashMap<String, String> = HashMap::new();
     let mut provider_model_map: HashMap<
         String,
         HashMap<String, crate::routes::provider::ModelInfo>,
@@ -127,6 +133,20 @@ pub(crate) async fn get_config_providers(
             provider_names
                 .entry(provider_id.clone())
                 .or_insert_with(|| provider.name.clone().unwrap_or_else(|| provider_id.clone()));
+            if let Some(base) = provider.base_url.as_ref().filter(|s| !s.is_empty()) {
+                provider_base_urls
+                    .entry(provider_id.clone())
+                    .or_insert_with(|| base.clone());
+            }
+            if let Some(proto) = provider
+                .npm
+                .as_deref()
+                .and_then(crate::routes::provider::npm_to_protocol)
+            {
+                provider_protocols
+                    .entry(provider_id.clone())
+                    .or_insert_with(|| proto.to_string());
+            }
             if let Some(models) = &provider.models {
                 for (configured_model_key, configured_model) in models {
                     let model_id = configured_model
@@ -173,11 +193,13 @@ pub(crate) async fn get_config_providers(
     let providers: Vec<crate::routes::provider::ProviderInfo> = provider_map
         .into_iter()
         .map(|(id, models)| crate::routes::provider::ProviderInfo {
-            id: id.clone(),
             name: provider_names
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| id.clone()),
+            base_url: provider_base_urls.get(&id).cloned(),
+            protocol: provider_protocols.get(&id).cloned(),
+            id: id.clone(),
             models,
         })
         .collect();
@@ -220,6 +242,30 @@ async fn delete_provider_config(
         })
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
     finalize_config_change(&state, updated).await
+}
+
+/// GET 单个 model 的 raw `ModelConfig`,用于 TUI Edit 模式 prefill。
+/// 没有就 404——TUI 端 keymap 必须收到诚实信号(不假装空白),避免 PUT 半空覆写
+/// 丢字段(土律·第十条 可观测性权利)。
+async fn get_provider_model_config(
+    State(state): State<Arc<ServerState>>,
+    Path((key, model_key)): Path<(String, String)>,
+) -> Result<Json<ModelConfig>> {
+    let config = state.config_store.config();
+    let model = config
+        .provider
+        .as_ref()
+        .and_then(|p| p.get(&key))
+        .and_then(|p| p.models.as_ref())
+        .and_then(|m| m.get(&model_key))
+        .cloned()
+        .ok_or_else(|| {
+            crate::ApiError::NotFound(format!(
+                "model `{}` not found in provider `{}`",
+                model_key, key
+            ))
+        })?;
+    Ok(Json(model))
 }
 
 async fn put_provider_model_config(

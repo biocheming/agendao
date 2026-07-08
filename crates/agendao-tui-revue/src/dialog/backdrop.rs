@@ -19,6 +19,35 @@ use revue::prelude::*;
 use revue::runtime::render::Cell;
 use crate::theme::colors;
 
+/// 列表 sliding viewport 唯一权威 — selected 出窗时自动滚动。
+///
+/// 输入:`total` 列表总长、`selected` 当前选中绝对索引、`rows` 视窗最多容纳行数。
+/// 返回:`[start, end)` 窗口区间——保证 `selected` 永远在区间内。
+///
+/// 算法语义(沿用大多数编辑器的「scroll just enough」):
+/// - 列表能整窗装下 → start=0
+/// - selected 在前 rows-1 位 → start=0(钉顶,看到头部标题)
+/// - selected 在尾巴(`selected+1 >= total`) → start=total-rows(钉底)
+/// - 一般情况 → selected 沉到底数第 2 行,留 1 行 lookahead
+///
+/// 唯一权威:`render_positioned_list` 和 `input::slash_popup::render_popup` 都
+/// 调这里,不再各自实现(金律·成形语法唯一)。任何修改 viewport 行为(如
+/// 改 lookahead 数、改钉顶/钉底语义)只动这一函数。
+pub fn list_viewport_window(total: usize, selected: usize, rows: usize) -> (usize, usize) {
+    let rows = rows.min(total.max(1));
+    let start = if total <= rows {
+        0
+    } else if selected + 1 >= total {
+        total.saturating_sub(rows)
+    } else if selected < rows.saturating_sub(1) {
+        0
+    } else {
+        selected + 2 - rows.min(selected + 2)
+    };
+    let end = (start + rows).min(total);
+    (start, end)
+}
+
 /// Paint the modal's dialog rect as an opaque `BG_SURFACE` stage.
 ///
 /// `positioned` overlays don't clear their own background, and terminals
@@ -403,34 +432,9 @@ fn render_positioned_list(
     // (Header rows included), so the viewport math operates on the same
     // coordinate space — no need to translate "Row index" vs "item index".
     //
-    // Algorithm: maintain a window [start, start+rows). When the cursor
-    // moves outside that window we shift start by exactly enough to
-    // bring `selected` back into view. This is the same behaviour vim
-    // and most editors use ("scroll just enough"), and unlike the
-    // previous `selected.saturating_sub(rows-2)` formula it correctly
-    // handles BOTH directions (up overflow, down overflow) AND large
-    // jumps from filter-induced cursor relocations.
-    //
-    // We compute `start` from selected directly each render — no state
-    // is kept across calls. That's safe because the host pushes a new
-    // `selected` every redraw, so the visible window always reflects
-    // the latest cursor position.
-    let start = if total <= rows {
-        0
-    } else if selected < rows.saturating_sub(1) {
-        // Cursor is in the first window; pin to top so the user sees
-        // the top headers. The `-1` keeps one row of context above.
-        0
-    } else if selected + 1 >= total {
-        // Cursor at the very end — anchor the window to the bottom.
-        total.saturating_sub(rows)
-    } else {
-        // General case: place selected so it sits two rows from the
-        // bottom of the viewport. That gives 1 row of look-ahead while
-        // still showing as much history as possible.
-        selected + 2 - rows.min(selected + 2)
-    };
-    let end = (start + rows).min(total);
+    // 窗口算法收归 [`list_viewport_window`] 唯一权威(金律·成形语法唯一);
+    // 任何关于「钉顶/钉底/lookahead」的调整都改那里一处。
+    let (start, end) = list_viewport_window(total, selected, rows);
 
     // Inner width for selected-row padding. Centered: minus rounded border (2)
     // + 1 trailing breathing column. Bottom (无框): full width — no border.
@@ -696,5 +700,56 @@ mod tests {
             "Centered must keep its border: (10,7) = {:?}",
             corner
         );
+    }
+
+    // ── list_viewport_window: sliding viewport 唯一权威的语义测试 ──
+    //
+    // 钉视野跟随选中的契约:无论 selected 在哪、列表多长,返回区间必须包含 selected,
+    // 且端点行为(钉顶/钉底)符合「scroll just enough」语义。
+
+    #[test]
+    fn viewport_fits_when_total_le_rows() {
+        // 列表整窗装下:无需滚动,窗口覆盖全列表。
+        assert_eq!(list_viewport_window(5, 0, 8), (0, 5));
+        assert_eq!(list_viewport_window(5, 4, 8), (0, 5));
+        assert_eq!(list_viewport_window(8, 7, 8), (0, 8));
+    }
+
+    #[test]
+    fn viewport_pins_top_when_selected_near_head() {
+        // selected 在前 rows-1 位:窗口钉顶(start=0),看到列表头。
+        assert_eq!(list_viewport_window(100, 0, 8), (0, 8));
+        assert_eq!(list_viewport_window(100, 5, 8), (0, 8));
+        assert_eq!(list_viewport_window(100, 6, 8), (0, 8)); // rows-1=7 边界
+    }
+
+    #[test]
+    fn viewport_pins_bottom_when_selected_at_end() {
+        // selected 在最后一项:窗口钉底(start=total-rows),看到列表尾。
+        assert_eq!(list_viewport_window(100, 99, 8), (92, 100));
+        assert_eq!(list_viewport_window(50, 49, 12), (38, 50));
+    }
+
+    #[test]
+    fn viewport_slides_so_selected_stays_visible() {
+        // 一般情况:selected 落在底数第 2 行,留 1 行 lookahead——
+        // 关键不变量:start <= selected < end,即 selected 永远可见。
+        for selected in 7..99 {
+            let (start, end) = list_viewport_window(100, selected, 8);
+            assert!(
+                start <= selected && selected < end,
+                "selected={} 不在 window [{},{}) 内",
+                selected, start, end
+            );
+            assert!(end - start == 8, "窗口宽必须恒为 rows=8");
+        }
+    }
+
+    #[test]
+    fn viewport_handles_zero_total() {
+        // 边界:空列表不 panic;窗口 (0,0)。
+        let (start, end) = list_viewport_window(0, 0, 8);
+        assert_eq!(start, 0);
+        assert_eq!(end, 0);
     }
 }

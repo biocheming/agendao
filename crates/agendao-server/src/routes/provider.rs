@@ -51,6 +51,17 @@ pub struct ProviderInfo {
     pub id: String,
     pub name: String,
     pub models: Vec<ModelInfo>,
+    /// Provider HTTP endpoint(从 config.provider[id].base_url 读)。
+    /// `None` = 配置未设(常见于 SDK-managed 或 models.dev catalog provider)。
+    /// 阴面记账(土律):server 唯一权威,TUI/web 只读消费。api_key 永不下发。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Provider 协议族(`openai` / `anthropic` / `google` / `bedrock` / …)。
+    /// 从 config.provider[id].npm 优先,catalog info.npm 兜底,再过 `npm_to_protocol`
+    /// 反推。`None` = catalog/config 都没记录 npm(诚实标注,不伪假成"openai")。
+    /// 与 base_url 配对决定 HTTP 实际打哪条契约;TUI Settings 展示给用户验证。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -589,7 +600,7 @@ fn protocol_to_npm(protocol: &str) -> Option<&'static str> {
     }
 }
 
-fn npm_to_protocol(npm: &str) -> Option<&'static str> {
+pub(crate) fn npm_to_protocol(npm: &str) -> Option<&'static str> {
     match npm {
         "@ai-sdk/openai-compatible" => Some("openai"),
         "@openrouter/ai-sdk-provider" => Some("openrouter"),
@@ -831,12 +842,26 @@ pub(crate) async fn list_providers(
 
     let mut provider_names: HashMap<String, String> = HashMap::new();
     let mut provider_models: HashMap<String, HashMap<String, ModelInfo>> = HashMap::new();
+    // base_url 映射:从 config.provider[id].base_url 读取(由 step 2 的同一循环填)。
+    // 阴面记账(土律):server 端唯一权威;Some=用户/catalog 显式配,None=SDK-managed。
+    let mut provider_base_urls: HashMap<String, String> = HashMap::new();
+    // protocol 映射:从 config.provider[id].npm + catalog info.npm 反推(`npm_to_protocol`)。
+    // 阴面同 base_url;configured 优先,catalog 兜底(由 step 1/2 两端各自填,
+    // `or_insert_with` 保证 config 先写后不被 catalog 覆盖)。
+    let mut provider_protocols: HashMap<String, String> = HashMap::new();
 
     // 1) models.dev full provider catalogue.
     for (provider_id, provider) in &models_data {
         provider_names
             .entry(provider_id.clone())
             .or_insert_with(|| provider_display_name(provider_id, &provider.name));
+        // protocol 从 catalog info.npm 反推填入(catalog 作为兜底,step 2 的
+        // config 端再覆盖优先级更高的);`or_insert_with` 保证幂等。
+        if let Some(proto) = provider.npm.as_deref().and_then(npm_to_protocol) {
+            provider_protocols
+                .entry(provider_id.clone())
+                .or_insert_with(|| proto.to_string());
+        }
         for model in provider.models.values() {
             let variants = variants_for_model(&variant_lookup, provider_id, &model.id);
             upsert_catalog_model_info(
@@ -860,6 +885,18 @@ pub(crate) async fn list_providers(
                         .map(|name| provider_display_name(provider_id, name))
                         .unwrap_or_else(|| provider_display_name(provider_id, provider_id))
                 });
+            // base_url 填入(土律单点):config 显式配的优先;catalog 来源不带 base_url。
+            if let Some(base) = provider.base_url.as_ref().filter(|s| !s.is_empty()) {
+                provider_base_urls
+                    .entry(provider_id.clone())
+                    .or_insert_with(|| base.clone());
+            }
+            // protocol 填入(土律单点·config override):用户/管理面显式配的 npm 优先,
+            // 用 `insert` 直接覆盖 step 1 的 catalog 兜底值——与 KnownProviderEntry
+            // 的 `configured.npm.or(info.npm)` 一致语义(provider.rs:1334)。
+            if let Some(proto) = provider.npm.as_deref().and_then(npm_to_protocol) {
+                provider_protocols.insert(provider_id.clone(), proto.to_string());
+            }
             if let Some(models) = &provider.models {
                 for (configured_model_id, configured) in models {
                     let model_id = configured
@@ -914,6 +951,8 @@ pub(crate) async fn list_providers(
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| id.clone()),
+                base_url: provider_base_urls.get(&id).cloned(),
+                protocol: provider_protocols.get(&id).cloned(),
                 id,
                 models,
             }

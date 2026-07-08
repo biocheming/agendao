@@ -78,7 +78,10 @@ impl ModeSelectDialog {
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
-        let items: Vec<ListItem> = self.entries.iter().enumerate().take(14).map(|(i, e)| {
+        // 注意:不要 .take(14) —— backdrop::render_positioned_list 已经实现 sliding
+        // viewport(selected 出窗自动滚动),先 take(14) 会让 backdrop 看不到超出条目,
+        // 导致 ↑/↓ 选到第 15 条时视野不跟随(金律违例:截断了唯一成形语法的输入)。
+        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, e)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             // kind 在前缀里短标注，便于用户一眼分清 agent / preset / profile。
             let kind_tag = match e.kind.as_str() {

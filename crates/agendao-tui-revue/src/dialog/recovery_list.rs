@@ -103,7 +103,8 @@ impl RecoveryListDialog {
             );
             return;
         }
-        let items: Vec<ListItem> = self.entries.iter().enumerate().take(16).map(|(i, e)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, e)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             let exec_hint = if e.action_kind.is_some() { " [x: exec]" } else { "" };
             ListItem::Row {

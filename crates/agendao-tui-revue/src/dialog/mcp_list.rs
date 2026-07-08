@@ -88,7 +88,8 @@ impl McpListDialog {
             );
             return;
         }
-        let items: Vec<ListItem> = self.entries.iter().enumerate().take(12).map(|(i, m)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, m)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {
                 display: format!("{}[{}] {} · tools:{} res:{}", marker, m.status, m.name, m.tools, m.resources),

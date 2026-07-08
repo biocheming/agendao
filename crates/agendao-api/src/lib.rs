@@ -1088,6 +1088,20 @@ pub struct ProviderInfo {
     pub id: String,
     pub name: String,
     pub models: Vec<ProviderModelInfo>,
+    /// Provider HTTP endpoint(用户 .agendao/providers.toml 或全局 catalog 配置)。
+    /// 阴面记账(土律):server 端唯一权威,TUI/web 只读消费;
+    /// `None` = 该 provider 未配 base_url(rare,通常意味是 SDK-managed)。
+    /// `#[serde(default)]` 向后兼容老 server 响应缺该字段的情况。
+    #[serde(default, alias = "baseUrl")]
+    pub base_url: Option<String>,
+    /// Provider 协议族(`openai` / `anthropic` / `google` / `bedrock` / …)。
+    /// 阴面记账(土律):server 端从 config.provider[id].npm 或 models.dev catalog
+    /// 反推(`npm_to_protocol`),TUI/web 只读消费用于 Settings 展示。
+    /// 与 base_url 一同决定 HTTP 实际打到哪条契约(openai-compatible /v1/chat/completions
+    /// vs anthropic-compatible /v1/messages)——这是金律·第五条「输出成形契约」的可观测面。
+    /// `None` = catalog 无 npm 记录(rare),fallback 不假装(土律·第十条)。
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

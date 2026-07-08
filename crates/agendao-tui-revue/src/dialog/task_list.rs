@@ -88,7 +88,8 @@ impl TaskListDialog {
             );
             return;
         }
-        let items: Vec<ListItem> = self.entries.iter().enumerate().take(12).map(|(i, t)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, t)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             let step_str = match (t.step, t.max_steps) {
                 (Some(s), Some(m)) => format!("{}/{}", s, m),

@@ -83,7 +83,8 @@ impl SkillListDialog {
             );
             return;
         }
-        let items: Vec<ListItem> = self.skills.iter().enumerate().take(12).map(|(i, s)| {
+        // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
+        let items: Vec<ListItem> = self.skills.iter().enumerate().map(|(i, s)| {
             let marker = if i == self.selected { "▶ " } else { "  " };
             ListItem::Row {
                 display: format!("{}{} — {}", marker, s.name, s.description),

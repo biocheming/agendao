@@ -247,6 +247,57 @@ impl ApiBridge {
         self.block_on(self.client.register_custom_provider(provider_id, base_url, protocol, api_key))
     }
 
+    /// PUT `/provider/{id}`:改 ProviderConfig 的 name/base_url/protocol(不动 api_key)。
+    /// api_key 改走 `connect_provider`,两步分离 → TUI Edit dialog 可"只改名字"。
+    /// **local 模式** 当前无 `local_update_provider` wrapper,会回退到 http(可能不可用)
+    /// — Settings TUI 写权威主要走 http server 进程,local 模式后续按需补 wrapper。
+    pub fn update_provider(
+        &self,
+        provider_id: &str,
+        name: Option<&str>,
+        base_url: Option<&str>,
+        protocol: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.block_on(self.client.update_provider(provider_id, name, base_url, protocol))
+    }
+
+    /// DELETE `/provider/{id}`:删 ProviderConfig + AuthManager 条目(土律·第四条单点权威)。
+    pub fn delete_provider(&self, provider_id: &str) -> anyhow::Result<bool> {
+        self.block_on(self.client.delete_provider(provider_id))
+    }
+
+    /// GET `/config/provider/{id}/models/{key}`:读 raw ModelConfig。
+    /// **Edit 模式必走**:server 端 PUT 是整体覆写,半空 ModelConfig 会丢字段
+    /// (cost/reasoning/temperature/...)。Edit 前先 GET 原值,合并 form 4 字段后回写
+    /// (土律·第十条 可观测性权利)。
+    pub fn get_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<agendao_config::ModelConfig> {
+        self.block_on(self.client.get_provider_model_config(provider_id, model_key))
+    }
+
+    /// PUT `/config/provider/{id}/models/{key}`:写 model config(整体覆写)。
+    /// Edit 模式需先 GET raw ModelConfig 合并(prefill)避免半空覆写丢字段。
+    pub fn put_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+        model: &agendao_config::ModelConfig,
+    ) -> anyhow::Result<agendao_config::Config> {
+        self.block_on(self.client.put_provider_model_config(provider_id, model_key, model))
+    }
+
+    /// DELETE `/config/provider/{id}/models/{key}`:删 model config 条目。
+    pub fn delete_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<agendao_config::Config> {
+        self.block_on(self.client.delete_provider_model_config(provider_id, model_key))
+    }
+
     pub fn get_workspace_context(&self) -> anyhow::Result<agendao_runtime_context::ResolvedWorkspaceContext> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server_local::local_get_workspace_context(Arc::clone(ls)));
