@@ -843,7 +843,6 @@ impl AppHandler {
         self.rename_dialog.close();
         self.confirm_dialog.close();
         self.help.dismiss();
-        self.alert.dismiss();
         self.panel = Panel::None;
     }
 

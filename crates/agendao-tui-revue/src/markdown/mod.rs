@@ -197,7 +197,7 @@ impl RevueMarkdown {
     pub fn as_stack(&self) -> revue::widget::Stack {
         let text = self.text.clone();
         let rows = self.est_rows;
-        let widget = MarkdownCellView { text, rows };
+        let widget = MarkdownCellView { text };
         revue::widget::vstack().child_sized(widget, rows)
     }
 }
@@ -208,8 +208,6 @@ use revue::widget::traits::{RenderContext as RevueRenderCtx, View};
 
 struct MarkdownCellView {
     text: String,
-    #[allow(dead_code)]
-    rows: u16,
 }
 
 impl View for MarkdownCellView {

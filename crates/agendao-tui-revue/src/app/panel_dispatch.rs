@@ -383,11 +383,6 @@ impl AppHandler {
                 if !self.task_list.is_open() { self.panel = Panel::None; }
                 return true;
             }
-            Panel::Alert => {
-                self.alert.handle_key(key);
-                if !self.alert.visible { self.panel = Panel::None; }
-                return true;
-            }
             Panel::ModelEdit => {
                 if let Some(action) = self.model_edit_dialog.handle_key(key) {
                     match action {

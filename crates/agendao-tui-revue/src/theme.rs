@@ -79,16 +79,6 @@ pub mod colors {
     pub const STATUS_INFO: Color = ACCENT_CYAN;
 }
 
-/// Helper: format a duration in human-readable form (e.g. "2.3s", "45ms").
-#[allow(dead_code)]
-pub fn fmt_duration_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{}ms", ms)
-    } else {
-        format!("{:.1}s", ms as f64 / 1000.0)
-    }
-}
-
 /// Helper: format token counts with K suffix (e.g. "1.2k", "456").
 pub fn fmt_tokens(n: u64) -> String {
     if n >= 1_000_000 {

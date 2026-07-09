@@ -1,7 +1,6 @@
 //! 金 — Unified dialog layer authority.
 
 pub mod backdrop;
-pub mod alert;
 pub mod help;
 pub mod permission;
 pub mod question;
@@ -23,7 +22,6 @@ pub mod task_list;
 pub mod model_edit;
 
 pub use confirm::ConfirmDialog;
-pub use alert::AlertDialog;
 pub use help::HelpDialog;
 pub use permission::{PermissionDialog, PermissionReply, PermissionRequest, PermissionType, PermissionLifetime};
 pub use question::{QuestionDialog, QuestionRequest, QuestionOption};

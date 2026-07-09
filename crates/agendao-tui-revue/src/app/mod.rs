@@ -53,7 +53,7 @@ use crate::bridge::api::ApiBridge;
 use crate::config::AppConfig;
 use crate::dialog::{
     AgentSelectDialog,
-    AlertDialog, HelpDialog,
+    HelpDialog,
     ModelSelectDialog, ModeSelectDialog, SessionListDialog, SkillListDialog,
     SkillProposalDialog, McpListDialog, RecoveryListDialog, TaskListDialog,
     PermissionDialog, QuestionDialog,
@@ -166,7 +166,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         h.prompt.set_text(p);
         h.prompt.focus();
     }
-    let view = RootView { store, api, active_session, handler };
+    let view = RootView { store, handler };
 
     app.run(view, move |event, view, app| {
         let mut h = view.handler.borrow_mut();
@@ -218,7 +218,6 @@ pub(crate) enum Panel {
     TaskList,
     /// Settings Details 内 m / e → 弹 model 添加/编辑 form dialog。
     ModelEdit,
-    #[allow(dead_code)] Alert,
 }
 
 /// Confirm-dialog outcome discriminator. `Panel::Confirm` only yields a bool;
@@ -280,7 +279,6 @@ pub(crate) struct AppHandler {
     /// confirm dialog, consumed and cleared when the user answers (道纪第九条:
     /// 写入即承诺回收 —— pending 不许悬空跨多轮)。
     pub(crate) pending_confirm: Option<PendingConfirm>,
-    pub(crate) alert: AlertDialog,
     pub(crate) help: HelpDialog,
     pub(crate) skill_list: SkillListDialog,
     pub(crate) skill_proposal: SkillProposalDialog,
@@ -563,7 +561,7 @@ impl AppHandler {
             export_dialog: SessionExportDialog::new(),
             confirm_dialog: ConfirmDialog::new(),
             pending_confirm: None,
-            alert: AlertDialog::new(), help: HelpDialog::new(),
+            help: HelpDialog::new(),
             skill_list: SkillListDialog::new(),
             skill_proposal: SkillProposalDialog::new(),
             mcp_list: McpListDialog::new(),
@@ -598,8 +596,6 @@ impl AppHandler {
 
 struct RootView {
     store: AppStore,
-    #[allow(dead_code)] api: Option<ApiBridge>,
-    #[allow(dead_code)] active_session: SessionStore,
     handler: RefCell<AppHandler>,
 }
 
@@ -626,9 +622,9 @@ struct ScrollableTranscript {
     sv: crate::widget::ScrollView,
     content: Stack,
     content_h: u16,
-    /// Captured for telemetry / debugging. The actual scroll position
-    /// lives inside `sv` via its `scroll_offset` builder.
-    #[allow(dead_code)]
+    /// Captured for the interactive scrollbar overlay (▲ ▼ thumb).
+    /// Same value as `sv.scroll_offset`; kept as a field so overlay
+    /// construction does not re-derive it from the store mid-render.
     scroll_top: u16,
     /// Sink the widget writes its absolute screen rect + metrics into
     /// during `render`. `RootView::render` drains it into
@@ -1189,7 +1185,6 @@ impl View for RootView {
             Panel::Recovery => "recovery",
             Panel::TaskList => "tasks",
             Panel::ModelEdit => "modelEdit",
-            Panel::Alert => "alert",
             Panel::None => route.as_str(),
         };
         let dir = self.store.working_dir.get();
