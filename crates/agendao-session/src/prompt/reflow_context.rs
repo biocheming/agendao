@@ -39,12 +39,11 @@
 //!
 //! ## Migration contract
 //!
-//! - **Phase 4 (this commit)**: Define view structures only.
-//! - **Phase 5**: Migrate session-side consumers to read from these views.
-//! - **Phase 6**: Migrate scheduler / diagnostics to shared naming.
-
-// Skeleton types are intentionally unused until Phase 5 cut-over.
-#![allow(dead_code)]
+//! - View structures are the single reflow explanation surface.
+//! - Session prompt and diagnostics consume `PromptReflowContext` for
+//!   memory / continuity naming.
+//! - Scheduler hydrate and diagnostics should share the same vocabulary
+//!   rather than inventing parallel field names.
 
 use agendao_types::{
     MemoryRetrievalPacket, RequestBoundaryHygieneActionKind, RequestBoundaryHygieneSummary,
@@ -215,44 +214,9 @@ impl PromptReflowContext {
         cache_evidence_status: Option<String>,
         request_boundary_hygiene: Option<RequestBoundaryHygieneSummary>,
     ) -> Self {
-        let memory = memory_prefetch.map(|packet| PromptReflowMemoryView {
-            is_snapshot: packet.snapshot,
-            query: packet.query.clone(),
-            item_count: packet.items.len(),
-            items: packet
-                .items
-                .iter()
-                .map(|item| PromptReflowMemoryItem {
-                    title: item.card.title.clone(),
-                    summary: item.card.summary.clone(),
-                    why_recalled: item.why_recalled.clone(),
-                    evidence_summary: item.evidence_summary.clone(),
-                    kind: format!("{:?}", item.card.kind),
-                    validation_status: format!("{:?}", item.card.validation_status),
-                    last_validated_at: item.card.last_validated_at,
-                    record_id: item.card.id.0.clone(),
-                })
-                .collect(),
-            hydrate_record_ids: packet
-                .items
-                .iter()
-                .map(|item| item.card.id.0.clone())
-                .collect(),
-        });
+        let memory = memory_prefetch.map(PromptReflowMemoryView::from_packet);
 
-        let continuity = continuity_packet.map(|packet| PromptReflowContinuityView {
-            eligible_message_count: packet.eligible_message_count,
-            exact_recent_tail_count: packet.exact_recent_tail_count,
-            omitted_older_turns: packet.omitted_older_turns,
-            hydrate_message_ids: packet.allowed_message_ids(),
-            hydrate_memory_record_ids: packet.allowed_memory_record_ids(),
-            has_continuation_dependency: !packet.continuation_dependencies.is_empty(),
-            compaction_summary: packet
-                .latest_compaction_summary
-                .as_ref()
-                .map(|summary| summary.summary.clone()),
-            recall_policy: packet.recall_policy.clone(),
-        });
+        let continuity = continuity_packet.map(PromptReflowContinuityView::from_packet);
 
         let diagnostics = PromptReflowDiagnosticsView {
             has_continuity_packet: continuity_packet.is_some(),
@@ -471,6 +435,8 @@ impl PromptReflowContext {
     pub(crate) fn render_summary(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
 
+        lines.push(format!("session: {}", self.session_id));
+
         if let Some(ref mem) = self.memory {
             lines.push(format!(
                 "memory: {} items recalled{}",
@@ -481,6 +447,15 @@ impl PromptReflowContext {
                     ""
                 },
             ));
+            if !mem.hydrate_record_ids.is_empty() {
+                lines.push(format!(
+                    "  hydrate_record_ids: {}",
+                    mem.hydrate_record_ids.join(", ")
+                ));
+            }
+            for item in &mem.items {
+                lines.push(format!("  item[{}]: {}", item.record_id, item.title));
+            }
         } else {
             lines.push("memory: none".to_string());
         }
@@ -498,11 +473,14 @@ impl PromptReflowContext {
                     ""
                 },
             ));
+            // Prefer the continuity explain surface when present so
+            // diagnostics share one continuity vocabulary.
+            lines.push(cont.explain());
         } else {
             lines.push("continuity: none".to_string());
         }
 
-        lines.push(format!("{}", self.diagnostics.explain()));
+        lines.push(self.diagnostics.explain());
 
         lines.join("\n")
     }
@@ -738,7 +716,10 @@ mod tests {
 
         let summary = ctx.render_summary();
 
+        assert!(summary.contains("session: ses-5"));
         assert!(summary.contains("memory: 2 items recalled"));
+        assert!(summary.contains("hydrate_record_ids: rec-1, rec-2"));
+        assert!(summary.contains("item[rec-1]:"));
         assert!(summary.contains("continuity: tail=3 omitted=5"));
         assert!(summary.contains("hydrate_msg_ids="));
         assert!(summary.contains("has_continuation_dep"));

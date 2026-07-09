@@ -21,11 +21,13 @@
 //!
 //! ## Migration contract
 //!
-//! - **Phase 3 (this commit)**: Define structures only. No call-site changes.
-//! - **Phase 5**: Migrate session-side consumers to read from these views.
-//! - **Phase 6**: Migrate preset call sites to return `PresetPromptExtension`
-//!   instead of raw `String`.
-//! - **Phase 7**: Delete legacy full-prompt assembly paths.
+//! - Structures are the single prompt-surface input/output contract.
+//! - Session prompt and loop lifecycle consume `PromptSurfaceInputs` /
+//!   `PromptSurfaceSections` on the hot path.
+//! - Preset call sites should return `PresetPromptExtension` rather than
+//!   a raw full-prompt string.
+//! - Legacy full-prompt assembly paths should be deleted once all
+//!   consumers read from these views.
 //!
 //! ## Cache boundary
 //!
@@ -44,9 +46,6 @@
 //! `PromptSurfaceInputs` is the sanctioned cross-crate mutation entry for
 //! request construction. Field-level reads stay crate-internal so
 //! `SessionPrompt` remains the sole surface assembler.
-
-// Skeleton types are intentionally unused until Phase 5 cut-over.
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -233,12 +232,6 @@ pub(crate) struct PromptSurfaceVolatilityFinding {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct PromptSurfaceVolatilityReport {
     pub(crate) findings: Vec<PromptSurfaceVolatilityFinding>,
-}
-
-impl PromptSurfaceVolatilityReport {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.findings.is_empty()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -757,6 +750,20 @@ impl PromptSurfaceInputs {
 }
 
 impl PromptSurfaceSections {
+    /// Diagnostics-facing layer split for the assembled system surface.
+    ///
+    /// Production cache fingerprints use the hashes; this summary keeps the
+    /// stable/dynamic split and preset identity on a real read path so the
+    /// section authority is not write-only.
+    pub(crate) fn system_layer_summary(&self) -> String {
+        format!(
+            "stable_prefix_chars={} dynamic_overlay_chars={} preset={}",
+            self.stable_system_prefix_text.chars().count(),
+            self.dynamic_system_overlay_text.chars().count(),
+            self.preset_identity.as_deref().unwrap_or("-"),
+        )
+    }
+
     pub(crate) fn describe_drift(&self, previous: &Self) -> Vec<PromptSurfaceDriftExplanation> {
         let mut changes = Vec::new();
 
@@ -766,7 +773,10 @@ impl PromptSurfaceSections {
             "stableSystemSurfaceHash",
             previous.stable_system_surface_hash != self.stable_system_surface_hash,
             SessionCacheSeverity::HighChange,
-            "stable system surface changed",
+            &format!(
+                "stable system surface changed ({})",
+                self.system_layer_summary()
+            ),
         );
         push_drift(
             &mut changes,

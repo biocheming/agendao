@@ -52,7 +52,9 @@ mod providers;
 mod remote;
 #[cfg(all(feature = "run-core", not(feature = "run-remote-stream")))]
 mod remote {
-    #[allow(dead_code)]
+    // Same constructor shape as the real remote module so `run.rs` can
+    // build options without a feature-gated field list. The stub only
+    // rejects attach after consuming the options so fields stay live.
     #[derive(Clone, Debug)]
     pub(super) struct RemoteAttachOptions {
         pub base_url: String,
@@ -73,8 +75,42 @@ mod remote {
     }
 
     pub(super) async fn run_non_interactive_attach(
-        _options: RemoteAttachOptions,
+        options: RemoteAttachOptions,
     ) -> anyhow::Result<()> {
+        let RemoteAttachOptions {
+            base_url,
+            input,
+            command,
+            continue_last,
+            session,
+            fork,
+            share,
+            model,
+            agent,
+            scheduler_profile,
+            variant,
+            format,
+            title,
+            directory,
+            show_thinking,
+        } = options;
+        let _ = (
+            base_url,
+            input,
+            command,
+            continue_last,
+            session,
+            fork,
+            share,
+            model,
+            agent,
+            scheduler_profile,
+            variant,
+            format,
+            title,
+            directory,
+            show_thinking,
+        );
         anyhow::bail!("remote streaming support requires the `run-remote-stream` CLI feature")
     }
 }
