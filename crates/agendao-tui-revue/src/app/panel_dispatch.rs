@@ -532,9 +532,8 @@ impl AppHandler {
         }
     }
 
-    /// connect(true)/disconnect(false) MCP 共用：调 API，Ok → 重拉
-    /// get_mcp_status + set_entries 回流（status 变化非移除，重拉是唯一权威）
-    /// + toast Success；Err → toast Error + 列表不变。dialog 保持打开（批量）。
+    /// connect(true)/disconnect(false) MCP 共用：调 API，Ok → refresh_mcp_into_store
+    /// 回流（Settings store + dialog 同源）+ toast Success；Err → toast Error。
     fn execute_mcp_toggle(&mut self, entry: &crate::dialog::McpEntry, connect: bool) {
         if let Some(ref api) = self.api {
             let result = if connect {
@@ -544,7 +543,7 @@ impl AppHandler {
             };
             match result {
                 Ok(_) => {
-                    self.reload_mcp_status();
+                    self.refresh_mcp_into_store();
                     self.store.push_toast(
                         &format!("MCP {}: {}",
                             if connect { "connected" } else { "disconnected" }, entry.name),
@@ -555,31 +554,6 @@ impl AppHandler {
                     &format!("{} failed: {}",
                         if connect { "Connect" } else { "Disconnect" }, e),
                     crate::store::types::ToastMsgVariant::Error,
-                ),
-            }
-        }
-    }
-
-    /// 重拉 MCP 状态 + set_entries 回流。写操作后 status 字段变化，重拉是
-    /// 唯一权威（非乐观移除）。失败 toast Warning（写已生效，列表可能 stale）。
-    fn reload_mcp_status(&mut self) {
-        if let Some(ref api) = self.api {
-            match api.get_mcp_status() {
-                Ok(servers) => {
-                    let entries: Vec<crate::dialog::McpEntry> = servers
-                        .into_iter()
-                        .map(|s| crate::dialog::McpEntry {
-                            name: s.name,
-                            status: s.status,
-                            tools: s.tools,
-                            resources: s.resources,
-                        })
-                        .collect();
-                    self.mcp_list.set_entries(entries);
-                }
-                Err(e) => self.store.push_toast(
-                    &format!("Reload MCP list failed: {}", e),
-                    crate::store::types::ToastMsgVariant::Warning,
                 ),
             }
         }

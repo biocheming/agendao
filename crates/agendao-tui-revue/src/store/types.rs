@@ -340,25 +340,25 @@ pub struct SessionListItem {
 
 // ── Settings screen 状态(土：AppStore 唯一所有权) ──
 
-/// Settings 左栏分类。仅 `ModelSettings` 当前有实现;其余五项灰显占位,
-/// 点击 → "Coming soon" toast(土律·第十条:不假装做了未做的功能)。
+/// Settings 左栏分类。已落地项见 [`Self::is_implemented`];无占位灰显项
+/// (土律·第十条:不假装做了未做的功能)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsCategory {
     General,
     ModelSettings,
-    PromptLibrary,
-    KnowledgeBase,
+    Skills,
+    McpServers,
     Keybindings,
     About,
 }
 
 impl SettingsCategory {
-    /// 6 分类的渲染顺序(对照 HTML 稿)。
+    /// 6 分类的渲染顺序。
     pub const ALL: [Self; 6] = [
         Self::General,
         Self::ModelSettings,
-        Self::PromptLibrary,
-        Self::KnowledgeBase,
+        Self::Skills,
+        Self::McpServers,
         Self::Keybindings,
         Self::About,
     ];
@@ -367,8 +367,8 @@ impl SettingsCategory {
         match self {
             Self::General => "General",
             Self::ModelSettings => "Model Settings",
-            Self::PromptLibrary => "Prompt Library",
-            Self::KnowledgeBase => "Knowledge Base",
+            Self::Skills => "Skills",
+            Self::McpServers => "MCP Servers",
             Self::Keybindings => "Keybindings",
             Self::About => "About",
         }
@@ -378,20 +378,64 @@ impl SettingsCategory {
         match self {
             Self::General => "☯",
             Self::ModelSettings => "⚒",
-            Self::PromptLibrary => "⌗",
-            Self::KnowledgeBase => "⛃",
+            Self::Skills => "✧",
+            Self::McpServers => "⚔",
             Self::Keybindings => "⌨",
             Self::About => "ℹ",
         }
     }
 
-    /// 当前是否有具体实现(灰显判据)。已落地:General / ModelSettings /
-    /// Keybindings / About;其余仍占位(土律·第十条:不假装做了未做的功能)。
+    /// 当前是否有具体实现。六项均已落地。
     pub fn is_implemented(self) -> bool {
-        matches!(
-            self,
-            Self::General | Self::ModelSettings | Self::Keybindings | Self::About
-        )
+        true
+    }
+}
+
+/// Settings→Skills 分类的列表行(catalog 或 pending proposal)。
+/// 单一枚举避免 catalog/proposal 双列表分裂成两套选中态(土律·第四条)。
+#[derive(Clone, Debug)]
+pub enum SettingsSkillRow {
+    Catalog {
+        name: String,
+        description: String,
+        location: String,
+        category: Option<String>,
+        writable: bool,
+    },
+    Proposal {
+        id: String,
+        title: String,
+        status: String,
+        kind: String,
+    },
+}
+
+impl SettingsSkillRow {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Catalog { name, .. } => name,
+            Self::Proposal { title, .. } => title,
+        }
+    }
+
+    pub fn is_proposal(&self) -> bool {
+        matches!(self, Self::Proposal { .. })
+    }
+}
+
+/// Settings→MCP 分类的一行(与 dialog::McpEntry 字段同构,store 侧权威副本)。
+#[derive(Clone, Debug)]
+pub struct SettingsMcpRow {
+    pub name: String,
+    pub status: String,
+    pub tools: usize,
+    pub resources: usize,
+    pub error: Option<String>,
+}
+
+impl SettingsMcpRow {
+    pub fn is_connected(&self) -> bool {
+        self.status == "connected"
     }
 }
 

@@ -1130,18 +1130,21 @@ impl AppHandler {
         let category = self.store.settings_category.get();
         let focus = self.store.settings_focus_pane.get();
 
-        // ── 非 ModelSettings 分类的 body 路由(木律·唯一输入权威)──
-        // 这些分类只有两区(Categories | body);focus 落在 body(非 Categories)时,
-        // 除 Tab/Esc 外的键交给分类专属 body 处理器。ModelSettings 保持三栏原逻辑。
-        if category != SettingsCategory::ModelSettings
-            && focus != SettingsFocusPane::Categories
+        // ── 非 ModelSettings / MCP / Skills 的简单 body 路由 ──
+        // General / Keybindings / About:两区(Categories | body)。
+        // MCP / Skills:三区(Categories | List=Providers | Details),走下方 match。
+        if !matches!(
+            category,
+            SettingsCategory::ModelSettings
+                | SettingsCategory::McpServers
+                | SettingsCategory::Skills
+        ) && focus != SettingsFocusPane::Categories
             && !matches!(key, Key::Tab | Key::Escape)
         {
             return match category {
                 SettingsCategory::General => self.handle_general_body_key(key),
                 SettingsCategory::Keybindings => self.handle_keybindings_body_key(key),
-                // About / 占位分类:body 无交互,消费导航键避免穿透到 provider 逻辑;
-                // Esc 已在上面排除,继续冒泡给外层 → navigate_home。
+                // About:body 无交互,消费导航键避免穿透。
                 _ => matches!(key, Key::Up | Key::Down | Key::Enter | Key::Char(' ')),
             };
         }
@@ -1149,8 +1152,14 @@ impl AppHandler {
         match key {
             Key::Tab => {
                 let cur = self.store.settings_focus_pane.get();
-                // ModelSettings 三栏循环;其余分类两区循环(Categories ⇄ Details)。
-                let next = if category == SettingsCategory::ModelSettings {
+                // 三栏循环:ModelSettings / MCP / Skills。
+                // 两区循环:General / Keybindings / About(Categories ⇄ Details)。
+                let next = if matches!(
+                    category,
+                    SettingsCategory::ModelSettings
+                        | SettingsCategory::McpServers
+                        | SettingsCategory::Skills
+                ) {
                     cur.next()
                 } else {
                     match cur {
@@ -1174,47 +1183,82 @@ impl AppHandler {
                         self.store.settings_category.set(SettingsCategory::ALL[nxt as usize]);
                     }
                     SettingsFocusPane::Providers => {
-                        let providers = self.store.providers.get();
-                        if providers.is_empty() { return true; }
-                        let cur = self.store.settings_selected_provider.get();
-                        let idx = cur.as_ref()
-                            .and_then(|id| providers.iter().position(|p| &p.id == id))
-                            .unwrap_or(0);
-                        let n = providers.len() as i32;
-                        let nxt = (((idx as i32 + dir) % n) + n) % n;
-                        let new_id = providers[nxt as usize].id.clone();
-                        // provider 切换 → 清 selected_model:model_key 是 provider-scoped,
-                        // 同名 key 在不同 provider 是不同记录,跨 provider 残留会让
-                        // Details 渲染指向不存在条目(土律·第四条 单点权威 + 第九条·配对销毁)。
-                        if cur.as_deref() != Some(new_id.as_str()) {
-                            self.store.settings_selected_model.set(None);
+                        match category {
+                            SettingsCategory::McpServers => {
+                                let n = self.store.settings_mcp.get().len() as i32;
+                                if n == 0 { return true; }
+                                let cur = self.store.settings_mcp_selected.get() as i32;
+                                let nxt = (((cur + dir) % n) + n) % n;
+                                self.store.settings_mcp_selected.set(nxt as usize);
+                            }
+                            SettingsCategory::Skills => {
+                                let n = self.store.settings_skills.get().len() as i32;
+                                if n == 0 { return true; }
+                                let cur = self.store.settings_skills_selected.get() as i32;
+                                let nxt = (((cur + dir) % n) + n) % n;
+                                self.store.settings_skills_selected.set(nxt as usize);
+                            }
+                            _ => {
+                                // ModelSettings providers list
+                                let providers = self.store.providers.get();
+                                if providers.is_empty() { return true; }
+                                let cur = self.store.settings_selected_provider.get();
+                                let idx = cur.as_ref()
+                                    .and_then(|id| providers.iter().position(|p| &p.id == id))
+                                    .unwrap_or(0);
+                                let n = providers.len() as i32;
+                                let nxt = (((idx as i32 + dir) % n) + n) % n;
+                                let new_id = providers[nxt as usize].id.clone();
+                                if cur.as_deref() != Some(new_id.as_str()) {
+                                    self.store.settings_selected_model.set(None);
+                                }
+                                self.store.settings_selected_provider.set(Some(new_id));
+                            }
                         }
-                        self.store.settings_selected_provider.set(Some(new_id));
                     }
                     SettingsFocusPane::Details => {
-                        // Details ↑/↓ 切当前 provider 的 models 列表;空列表/无 provider 选中 → 不动。
-                        // 首次进入(selected_model = None)按方向键 → 自动落到 models[0]
-                        // (lazy auto-select,符合道纪·第十条·诚实状态:None 表示 "尚未浏览",
-                        // 第一次方向键即开始浏览)。
-                        let providers = self.store.providers.get();
-                        let sel_provider_id = self.store.settings_selected_provider.get();
-                        let Some(provider) = sel_provider_id
-                            .as_ref()
-                            .and_then(|id| providers.iter().find(|p| &p.id == id))
-                        else { return true; };
-                        if provider.models.is_empty() { return true; }
-                        let model_keys: Vec<&str> =
-                            provider.models.iter().map(|m| m.id.as_str()).collect();
-                        let cur = self.store.settings_selected_model.get();
-                        let new_key = match cur.as_deref().and_then(|k| model_keys.iter().position(|x| *x == k)) {
-                            None => model_keys[0].to_string(),
-                            Some(idx) => {
-                                let n = model_keys.len() as i32;
-                                let nxt = (((idx as i32 + dir) % n) + n) % n;
-                                model_keys[nxt as usize].to_string()
+                        match category {
+                            SettingsCategory::McpServers | SettingsCategory::Skills => {
+                                // Details 无独立列表;↑/↓ 回落到 List 栏滚动同一选中。
+                                let n = if category == SettingsCategory::McpServers {
+                                    self.store.settings_mcp.get().len() as i32
+                                } else {
+                                    self.store.settings_skills.get().len() as i32
+                                };
+                                if n == 0 { return true; }
+                                if category == SettingsCategory::McpServers {
+                                    let cur = self.store.settings_mcp_selected.get() as i32;
+                                    let nxt = (((cur + dir) % n) + n) % n;
+                                    self.store.settings_mcp_selected.set(nxt as usize);
+                                } else {
+                                    let cur = self.store.settings_skills_selected.get() as i32;
+                                    let nxt = (((cur + dir) % n) + n) % n;
+                                    self.store.settings_skills_selected.set(nxt as usize);
+                                }
                             }
-                        };
-                        self.store.settings_selected_model.set(Some(new_key));
+                            _ => {
+                                // ModelSettings:Details ↑/↓ 切 models
+                                let providers = self.store.providers.get();
+                                let sel_provider_id = self.store.settings_selected_provider.get();
+                                let Some(provider) = sel_provider_id
+                                    .as_ref()
+                                    .and_then(|id| providers.iter().find(|p| &p.id == id))
+                                else { return true; };
+                                if provider.models.is_empty() { return true; }
+                                let model_keys: Vec<&str> =
+                                    provider.models.iter().map(|m| m.id.as_str()).collect();
+                                let cur = self.store.settings_selected_model.get();
+                                let new_key = match cur.as_deref().and_then(|k| model_keys.iter().position(|x| *x == k)) {
+                                    None => model_keys[0].to_string(),
+                                    Some(idx) => {
+                                        let n = model_keys.len() as i32;
+                                        let nxt = (((idx as i32 + dir) % n) + n) % n;
+                                        model_keys[nxt as usize].to_string()
+                                    }
+                                };
+                                self.store.settings_selected_model.set(Some(new_key));
+                            }
+                        }
                     }
                 }
                 self.layout_dirty = true;
@@ -1224,46 +1268,83 @@ impl AppHandler {
                 let focus = self.store.settings_focus_pane.get();
                 if matches!(focus, SettingsFocusPane::Categories) {
                     let cat = self.store.settings_category.get();
-                    if cat.is_implemented() {
-                        // 潜入 body:ModelSettings → Providers 栏;其余 → Details(单区 body)。
-                        let body = if cat == SettingsCategory::ModelSettings {
-                            SettingsFocusPane::Providers
-                        } else {
-                            SettingsFocusPane::Details
-                        };
-                        self.store.settings_focus_pane.set(body);
-                        self.layout_dirty = true;
+                    // 潜入 body:三栏分类 → List(Providers);两区分类 → Details。
+                    let body = if matches!(
+                        cat,
+                        SettingsCategory::ModelSettings
+                            | SettingsCategory::McpServers
+                            | SettingsCategory::Skills
+                    ) {
+                        SettingsFocusPane::Providers
                     } else {
-                        self.store.push_toast(
-                            &format!("{} — coming soon", cat.label()),
-                            ToastMsgVariant::Info,
-                        );
-                    }
+                        SettingsFocusPane::Details
+                    };
+                    self.store.settings_focus_pane.set(body);
+                    self.layout_dirty = true;
                 }
                 true
             }
-            // Provider CRUD(木律·唯一入口):Providers focused 时 a/e/d。
-            // a/e:in-place 编辑,焦点切到 Details 让用户原地填字段(金律·唯一成形权威 —
-            //      Details pane 同时是只读 view 与编辑 form,无 modal dialog 第二窗口)。
-            // d:Confirm 二次确认后删(走 ConfirmDialog,逻辑不变)。
-            // 道纪·第九条·配对销毁:enter_* 配 close(submit/cancel/Tab 切离三路),
-            // api_key Input 在 close 中 clear()(明文不驻留)。
+            // Provider CRUD / MCP connect / Skills approve(木律·唯一入口)。
             Key::Char('a') => {
-                if matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Providers) {
-                    self.settings_edit.enter_add();
-                    // Add 草稿对应的虚拟"(new provider)"行在 Providers pane 末尾,
-                    // selected_provider 留 None 即可(Details 完全从 settings_edit 读字段)。
-                    self.store.settings_focus_pane.set(SettingsFocusPane::Details);
-                    self.layout_dirty = true;
+                let focus = self.store.settings_focus_pane.get();
+                let cat = self.store.settings_category.get();
+                if !matches!(
+                    focus,
+                    SettingsFocusPane::Providers | SettingsFocusPane::Details
+                ) {
+                    return false;
+                }
+                match cat {
+                    SettingsCategory::ModelSettings
+                        if matches!(focus, SettingsFocusPane::Providers) =>
+                    {
+                        self.settings_edit.enter_add();
+                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.layout_dirty = true;
+                        true
+                    }
+                    SettingsCategory::Skills => {
+                        self.decide_settings_skill_proposal(true);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            Key::Char('r') => {
+                let focus = self.store.settings_focus_pane.get();
+                let cat = self.store.settings_category.get();
+                if cat == SettingsCategory::Skills
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    self.decide_settings_skill_proposal(false);
                     true
                 } else {
                     false
                 }
             }
-            // `m` 仅在 Details focused 时响应:新增当前 provider 的 model。
-            // 设计上 `a`/`m` 分离避免双义:`a` 唯一对 provider,`m` 唯一对 model,
-            // 焦点切换时 hint 也直接对应(金律·成形权威)。
+            Key::Char('c') => {
+                let focus = self.store.settings_focus_pane.get();
+                let cat = self.store.settings_category.get();
+                if cat == SettingsCategory::McpServers
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    self.toggle_settings_mcp(true);
+                    true
+                } else {
+                    false
+                }
+            }
+            // `m` 仅在 ModelSettings Details focused 时响应:新增当前 provider 的 model。
             Key::Char('m') => {
+                if self.store.settings_category.get() != SettingsCategory::ModelSettings {
+                    return false;
+                }
                 if !matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Details) {
                     return false;
                 }
@@ -1274,6 +1355,9 @@ impl AppHandler {
                 true
             }
             Key::Char('e') => {
+                if self.store.settings_category.get() != SettingsCategory::ModelSettings {
+                    return false;
+                }
                 let focus = self.store.settings_focus_pane.get();
                 match focus {
                     SettingsFocusPane::Providers => {
@@ -1285,15 +1369,12 @@ impl AppHandler {
                         else {
                             return true;
                         };
-                        // in-place 编辑:把字段交给 Details pane,焦点切 Details。
                         self.settings_edit.enter_edit(sel);
                         self.store.settings_focus_pane.set(SettingsFocusPane::Details);
                         self.layout_dirty = true;
                         true
                     }
                     SettingsFocusPane::Details => {
-                        // Edit model:先 GET raw ModelConfig 做 prefill(土律·第十条),
-                        // 否则 PUT 半空覆写会丢 cost/reasoning/temperature 等高级字段。
                         let providers = self.store.providers.get();
                         let sel_provider_id = self.store.settings_selected_provider.get();
                         let sel_model_key = self.store.settings_selected_model.get();
@@ -1306,8 +1387,6 @@ impl AppHandler {
                         let Some(model_info) =
                             provider.models.iter().find(|m| m.id == model_key)
                         else { return true; };
-                        // 先尝试 GET raw config(可能不存在 = 配置文件未声明此 model,
-                        // 仅插件目录有 = 半空 fallback,诚实告知)。
                         let prefill = if let Some(api) = self.api.as_ref() {
                             match api.get_provider_model_config(&provider_id, &model_key) {
                                 Ok(cfg) => Some(cfg),
@@ -1326,9 +1405,6 @@ impl AppHandler {
                             None
                         };
                         self.model_edit_dialog.open_edit(&provider_id, model_info);
-                        // 存入 raw ModelConfig 全量副本(土律·第十条·完整 prefill):
-                        // 补 max_output 输入框预填,且 submit 时作为 PUT 合并基底,
-                        // 保住 cost/reasoning/temperature 等 form 不暴露的字段。
                         if let Some(cfg) = prefill {
                             self.model_edit_dialog.set_prefill(cfg);
                         }
@@ -1340,6 +1416,19 @@ impl AppHandler {
             }
             Key::Char('d') => {
                 let focus = self.store.settings_focus_pane.get();
+                let cat = self.store.settings_category.get();
+                if cat == SettingsCategory::McpServers
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    self.toggle_settings_mcp(false);
+                    return true;
+                }
+                if cat != SettingsCategory::ModelSettings {
+                    return false;
+                }
                 match focus {
                     SettingsFocusPane::Providers => {
                         let providers = self.store.providers.get();

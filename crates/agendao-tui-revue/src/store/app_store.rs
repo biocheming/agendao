@@ -89,6 +89,14 @@ pub struct AppStore {
     /// Keybindings 分类 body 的滚动偏移(首个可见 entry 下标)。
     /// keymap 写(↑/↓/PgUp/PgDn),screen 读(视窗起点)。只读参考,无选中态。
     pub settings_keybindings_scroll: Signal<usize>,
+    /// Settings→MCP 分类:server 状态列表(来自 `/mcp`,单点权威)。
+    pub settings_mcp: Signal<Vec<SettingsMcpRow>>,
+    /// MCP 列表当前选中下标。
+    pub settings_mcp_selected: Signal<usize>,
+    /// Settings→Skills 分类:catalog + pending proposals 合并列表。
+    pub settings_skills: Signal<Vec<SettingsSkillRow>>,
+    /// Skills 列表当前选中下标。
+    pub settings_skills_selected: Signal<usize>,
 }
 
 impl AppStore {
@@ -121,6 +129,10 @@ impl AppStore {
             settings_focus_pane: signal(SettingsFocusPane::Providers),
             settings_general_selected: signal(0),
             settings_keybindings_scroll: signal(0),
+            settings_mcp: signal(Vec::new()),
+            settings_mcp_selected: signal(0),
+            settings_skills: signal(Vec::new()),
+            settings_skills_selected: signal(0),
         }
     }
 
@@ -200,14 +212,14 @@ mod tests {
         assert_eq!(p, SettingsFocusPane::Categories);
     }
 
-    /// 已落地 General / ModelSettings / About;其余三项灰显占位(土律·第十条)。
+    /// 六项分类均已落地(General / ModelSettings / Skills / MCP / Keybindings / About)。
     #[test]
     fn settings_category_implementation_flags() {
-        assert!(SettingsCategory::General.is_implemented());
-        assert!(SettingsCategory::ModelSettings.is_implemented());
-        assert!(SettingsCategory::Keybindings.is_implemented());
-        assert!(SettingsCategory::About.is_implemented());
-        assert!(!SettingsCategory::PromptLibrary.is_implemented());
-        assert!(!SettingsCategory::KnowledgeBase.is_implemented());
+        for cat in SettingsCategory::ALL {
+            assert!(cat.is_implemented(), "{:?} should be implemented", cat);
+        }
+        assert_eq!(SettingsCategory::ALL.len(), 6);
+        assert_eq!(SettingsCategory::Skills.label(), "Skills");
+        assert_eq!(SettingsCategory::McpServers.label(), "MCP Servers");
     }
 }

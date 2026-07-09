@@ -13,6 +13,7 @@ mod dispatch_outcome;
 mod panel_dispatch;
 mod slash_action;
 mod provider_actions;
+mod settings_catalog_actions;
 pub(crate) mod settings_edit_state;
 
 use anyhow::Context;

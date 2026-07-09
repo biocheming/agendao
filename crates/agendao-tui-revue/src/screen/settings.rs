@@ -79,17 +79,25 @@ impl SettingsScreen {
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
+            SettingsCategory::McpServers => {
+                let body = build_mcp_body(store, pane_height, focus);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
+            SettingsCategory::Skills => {
+                let body = build_skills_body(store, pane_height, focus);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
             SettingsCategory::About => {
                 hstack().gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(build_about_pane(), 1.0)
-            }
-            other => {
-                hstack().gap(0)
-                    .child_sized(cat_pane, CATEGORIES_W)
-                    .child_sized(vline(), VLINE_W)
-                    .child_flex(build_coming_soon_pane(other), 1.0)
             }
         }
     }
@@ -363,23 +371,363 @@ fn build_keybindings_pane(
         .child_sized(Text::new(""), 1)
 }
 
-// ── 占位分类 body ──
+// ── MCP Servers 分类 body ──
 
-fn build_coming_soon_pane(cat: SettingsCategory) -> revue::widget::Stack {
-    let title = format!("  {} {}", cat.icon(), cat.label());
-    let title_w = title.chars().count() as u16;
-    vstack().gap(0)
+const LIST_COL_W: u16 = 28;
+
+fn build_mcp_body(
+    store: &AppStore,
+    pane_height: u16,
+    focus: SettingsFocusPane,
+) -> revue::widget::Stack {
+    use crate::store::types::SettingsMcpRow;
+
+    let rows = store.settings_mcp.get();
+    let selected = store.settings_mcp_selected.get().min(rows.len().saturating_sub(1));
+    let list_focused = focus == SettingsFocusPane::Providers;
+    let detail_focused = focus == SettingsFocusPane::Details;
+
+    let list = build_named_list_pane(
+        "⚔ MCP Servers",
+        list_focused,
+        pane_height,
+        rows.len(),
+        selected,
+        |i| {
+            let r = &rows[i];
+            let marker = if i == selected { "▸" } else { "◇" };
+            let color = if i == selected {
+                colors::E_TEAL
+            } else {
+                colors::FG_PRIMARY
+            };
+            let dot = if r.is_connected() { "●" } else { "─" };
+            let dot_color = if r.is_connected() {
+                colors::ACCENT_GREEN
+            } else {
+                colors::FG_TRACE
+            };
+            let prefix = format!(" {} {}", marker, r.name);
+            let prefix_w = prefix.chars().count() as u16;
+            hstack().gap(0)
+                .child_sized(Text::new(prefix).fg(color), prefix_w)
+                .child_flex(Text::new(""), 1.0)
+                .child_sized(Text::new(dot).fg(dot_color), 1)
+                .child_sized(Text::new(" "), 1)
+        },
+        if list_focused {
+            "  ↑/↓  c: Connect  d: Disconnect  Tab: Detail"
+        } else {
+            "  Tab: Enter list"
+        },
+    );
+
+    let detail = if let Some(r) = rows.get(selected) {
+        build_mcp_detail(r, detail_focused)
+    } else {
+        build_empty_detail("No MCP servers configured", detail_focused)
+    };
+
+    hstack().gap(0)
+        .child_sized(list, LIST_COL_W)
+        .child_sized(vline(), VLINE_W)
+        .child_flex(detail, 1.0)
+}
+
+fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> revue::widget::Stack {
+    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let pill = if r.is_connected() { " Connected " } else { " Disconnected " };
+    let pill_color = if r.is_connected() {
+        colors::ACCENT_GREEN
+    } else {
+        colors::FG_MUTED
+    };
+    let header = format!("  ⚔ {}", r.name);
+    let header_w = header.chars().count() as u16;
+    let pill_w = pill.chars().count() as u16;
+    let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(0)
-                .child_sized(Text::new(title).fg(colors::FG_SECONDARY).bold(), title_w)
+            hstack().gap(1)
+                .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
                 .child_flex(Text::new(""), 1.0),
             1,
         )
         .child_sized(Text::new(""), 1)
-        .child_sized(Text::new("  Coming soon.").fg(colors::FG_TRACE).italic(), 1)
+        .child_sized(field_block("Status", &r.status, colors::FG_PRIMARY, ""), 3)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Tools", &r.tools.to_string(), colors::FG_PRIMARY, ""),
+            3,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Resources", &r.resources.to_string(), colors::FG_PRIMARY, ""),
+            3,
+        );
+    if let Some(ref err) = r.error {
+        s = s
+            .child_sized(Text::new(""), 1)
+            .child_sized(field_block("Error", err, colors::ACCENT_RED, ""), 3);
+    }
+    let hint = if focused {
+        "  c: Connect   d: Disconnect   Tab: List   Esc: Back"
+    } else {
+        "  Tab: Detail pane"
+    };
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(
+            Text::new(hint).fg(if focused {
+                colors::FG_SECONDARY
+            } else {
+                colors::FG_TRACE
+            }),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+}
+
+// ── Skills 分类 body ──
+
+fn build_skills_body(
+    store: &AppStore,
+    pane_height: u16,
+    focus: SettingsFocusPane,
+) -> revue::widget::Stack {
+    use crate::store::types::SettingsSkillRow;
+
+    let rows = store.settings_skills.get();
+    let selected = store
+        .settings_skills_selected
+        .get()
+        .min(rows.len().saturating_sub(1));
+    let list_focused = focus == SettingsFocusPane::Providers;
+    let detail_focused = focus == SettingsFocusPane::Details;
+
+    let list = build_named_list_pane(
+        "✧ Skills",
+        list_focused,
+        pane_height,
+        rows.len(),
+        selected,
+        |i| {
+            let r = &rows[i];
+            let marker = if i == selected { "▸" } else { " " };
+            let (tag, tag_color) = match r {
+                SettingsSkillRow::Proposal { .. } => ("[P]", colors::E_AMBER),
+                SettingsSkillRow::Catalog { .. } => ("[S]", colors::ACCENT_CYAN),
+            };
+            let name_color = if i == selected {
+                colors::E_TEAL
+            } else {
+                colors::FG_PRIMARY
+            };
+            let prefix = format!(" {} {} ", marker, tag);
+            let prefix_w = prefix.chars().count() as u16;
+            let name = r.label().to_string();
+            let name_w = name.chars().count() as u16;
+            hstack().gap(0)
+                .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
+                .child_sized(Text::new(name).fg(name_color), name_w)
+                .child_flex(Text::new(""), 1.0)
+        },
+        if list_focused {
+            "  ↑/↓  a: Approve  r: Reject  Tab: Detail"
+        } else {
+            "  Tab: Enter list"
+        },
+    );
+
+    let detail = if let Some(r) = rows.get(selected) {
+        build_skill_detail(r, detail_focused)
+    } else {
+        build_empty_detail("No skills or proposals", detail_focused)
+    };
+
+    hstack().gap(0)
+        .child_sized(list, LIST_COL_W)
+        .child_sized(vline(), VLINE_W)
+        .child_flex(detail, 1.0)
+}
+
+fn build_skill_detail(
+    r: &crate::store::types::SettingsSkillRow,
+    focused: bool,
+) -> revue::widget::Stack {
+    use crate::store::types::SettingsSkillRow;
+    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let mut s = vstack().gap(0).child_sized(Text::new(""), 1);
+    match r {
+        SettingsSkillRow::Catalog {
+            name,
+            description,
+            location,
+            category,
+            writable,
+        } => {
+            let header = format!("  ✧ {}", name);
+            let header_w = header.chars().count() as u16;
+            s = s
+                .child_sized(
+                    hstack().gap(0)
+                        .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                        .child_flex(Text::new(""), 1.0),
+                    1,
+                )
+                .child_sized(Text::new(""), 1)
+                .child_sized(
+                    field_block(
+                        "Description",
+                        if description.is_empty() {
+                            "(none)"
+                        } else {
+                            description
+                        },
+                        colors::FG_PRIMARY,
+                        "",
+                    ),
+                    3,
+                )
+                .child_sized(Text::new(""), 1)
+                .child_sized(field_block("Location", location, colors::FG_PRIMARY, ""), 3)
+                .child_sized(Text::new(""), 1)
+                .child_sized(
+                    field_block(
+                        "Category",
+                        category.as_deref().unwrap_or("(none)"),
+                        colors::FG_PRIMARY,
+                        "",
+                    ),
+                    3,
+                )
+                .child_sized(Text::new(""), 1)
+                .child_sized(
+                    field_block(
+                        "Writable",
+                        if *writable { "yes" } else { "no" },
+                        colors::FG_PRIMARY,
+                        "",
+                    ),
+                    3,
+                );
+            let hint = if focused {
+                "  Catalog entry (read-only)   Tab: List   Esc: Back"
+            } else {
+                "  Tab: Detail pane"
+            };
+            s.child_flex(Text::new(""), 1.0)
+                .child_sized(
+                    Text::new(hint).fg(if focused {
+                        colors::FG_SECONDARY
+                    } else {
+                        colors::FG_TRACE
+                    }),
+                    1,
+                )
+                .child_sized(Text::new(""), 1)
+        }
+        SettingsSkillRow::Proposal {
+            id,
+            title,
+            status,
+            kind,
+        } => {
+            let header = format!("  ✧ {}", title);
+            let header_w = header.chars().count() as u16;
+            s = s
+                .child_sized(
+                    hstack().gap(0)
+                        .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                        .child_flex(Text::new(""), 1.0)
+                        .child_sized(Text::new(" Proposal ").fg(colors::E_AMBER).bold(), 11),
+                    1,
+                )
+                .child_sized(Text::new(""), 1)
+                .child_sized(field_block("Status", status, colors::FG_PRIMARY, ""), 3)
+                .child_sized(Text::new(""), 1)
+                .child_sized(field_block("Kind", kind, colors::FG_PRIMARY, ""), 3)
+                .child_sized(Text::new(""), 1)
+                .child_sized(field_block("Id", id, colors::FG_MUTED, ""), 3);
+            let hint = if focused {
+                "  a: Approve   r: Reject   Tab: List   Esc: Back"
+            } else {
+                "  Tab: Detail pane"
+            };
+            s.child_flex(Text::new(""), 1.0)
+                .child_sized(
+                    Text::new(hint).fg(if focused {
+                        colors::FG_SECONDARY
+                    } else {
+                        colors::FG_TRACE
+                    }),
+                    1,
+                )
+                .child_sized(Text::new(""), 1)
+        }
+    }
+}
+
+fn build_empty_detail(msg: &str, focused: bool) -> revue::widget::Stack {
+    let color = if focused {
+        colors::FG_SECONDARY
+    } else {
+        colors::FG_MUTED
+    };
+    vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(Text::new(format!("  {}", msg)).fg(color), 1)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE), 1)
+}
+
+/// 通用左列表栏:标题 + 滑窗行 + footer。`row_builder(i)` 返回该行 Stack。
+fn build_named_list_pane<F>(
+    title: &str,
+    focused: bool,
+    pane_height: u16,
+    total: usize,
+    selected: usize,
+    mut row_builder: F,
+    footer: &str,
+) -> revue::widget::Stack
+where
+    F: FnMut(usize) -> revue::widget::Stack,
+{
+    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(Text::new(format!("  {}", title)).fg(title_color).bold(), 1)
+        .child_sized(Text::new(""), 1);
+
+    if total == 0 {
+        return s
+            .child_sized(Text::new("   (empty)").fg(colors::FG_TRACE), 1)
+            .child_flex(Text::new(""), 1.0)
+            .child_sized(Text::new(footer).fg(colors::FG_TRACE), 1)
+            .child_sized(Text::new(""), 1);
+    }
+
+    let visible_rows = pane_height.saturating_sub(5).max(1) as usize;
+    let (start, end) =
+        crate::dialog::backdrop::list_viewport_window(total, selected, visible_rows);
+    for i in start..end {
+        s = s.child_sized(row_builder(i), 1);
+    }
+    let pos = format!("{}/{}", selected + 1, total);
+    let pos_w = pos.chars().count() as u16;
+    let footer_color = if focused {
+        colors::FG_SECONDARY
+    } else {
+        colors::FG_TRACE
+    };
+    let footer_w = footer.chars().count() as u16;
+    let footer_row = hstack().gap(0)
+        .child_sized(Text::new(footer).fg(footer_color), footer_w)
+        .child_flex(Text::new(""), 1.0)
+        .child_sized(Text::new(pos).fg(colors::FG_TRACE), pos_w)
+        .child_sized(Text::new("  "), 2);
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(footer_row, 1)
         .child_sized(Text::new(""), 1)
 }
 
@@ -1007,6 +1355,60 @@ mod tests {
             .join("\n");
         assert!(merged.contains("Keybindings"), "title missing:\n{}", merged);
         assert!(merged.contains("Send prompt"), "binding missing:\n{}", merged);
+    }
+
+    /// MCP Servers 分类:空列表也能渲染,不 panic。
+    #[test]
+    fn render_mcp_category_empty() {
+        use crate::store::types::SettingsCategory;
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::McpServers);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("MCP"), "MCP title missing:\n{}", merged);
+    }
+
+    /// Skills 分类:带 catalog + proposal 行时渲染标签。
+    #[test]
+    fn render_skills_category_with_rows() {
+        use crate::store::types::{SettingsCategory, SettingsSkillRow};
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::Skills);
+        store.settings_skills.set(vec![
+            SettingsSkillRow::Proposal {
+                id: "p1".into(),
+                title: "Add trigger".into(),
+                status: "draft".into(),
+                kind: "PatchExistingSkill".into(),
+            },
+            SettingsSkillRow::Catalog {
+                name: "review".into(),
+                description: "Code review skill".into(),
+                location: "/skills/review".into(),
+                category: Some("dev".into()),
+                writable: false,
+            },
+        ]);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("Skills"), "title missing:\n{}", merged);
+        assert!(merged.contains("Add trigger") || merged.contains("[P]"), "proposal missing:\n{}", merged);
     }
 
     /// About 分类:body 渲染版本号,不 panic。

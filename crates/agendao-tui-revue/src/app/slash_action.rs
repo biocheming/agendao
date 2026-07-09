@@ -482,6 +482,8 @@ impl AppHandler {
                 // "Select a provider",符合可观测性权利)。
                 self.store.navigate_settings();
                 self.refresh_providers_into_store();
+                self.refresh_mcp_into_store();
+                self.refresh_skills_into_store();
             }
             UiActionId::DeleteSession => {
                 if let Some(sid) = self.active_session.get_session_id() {

@@ -55,6 +55,8 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("Enter", "Enter category / toggle row"),
         Binding("a/e/d", "Add/Edit/Delete provider (Model Settings)"),
         Binding("m", "Add model to provider"),
+        Binding("c/d", "Connect/Disconnect MCP server"),
+        Binding("a/r", "Approve/Reject skill proposal"),
 
         Section("─ Slash commands ─"),
         Binding("/help", "Open this help"),
