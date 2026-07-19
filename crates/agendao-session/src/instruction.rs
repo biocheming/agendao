@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+use agendao_util::agendao_home;
+
 pub const AGENTS_MD: &str = "AGENTS.md";
 pub const CONTEXT_MD: &str = "CONTEXT.md"; // deprecated
 pub const CURSOR_MD: &str = ".cursorrules";
@@ -65,14 +67,9 @@ fn agendao_config_dir_env() -> Option<String> {
 // Path helpers
 // ---------------------------------------------------------------------------
 
-/// Return the XDG config directory for agendao (e.g. `~/.config/agendao`).
-fn global_config_dir() -> Option<PathBuf> {
+/// Return the legacy XDG config directory for agendao (e.g. `~/.config/agendao`).
+fn legacy_xdg_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agendao"))
-}
-
-/// Return the legacy agendao home config directory (e.g. `~/.agendao`).
-fn legacy_home_config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|d| d.join(".agendao"))
 }
 
 /// Build the list of global instruction file paths to probe.
@@ -84,13 +81,11 @@ fn global_files() -> Vec<PathBuf> {
         files.push(PathBuf::from(&dir).join(AGENTS_MD));
     }
 
-    // ~/.config/agendao/AGENTS.md
-    if let Some(cfg) = global_config_dir() {
-        files.push(cfg.join(AGENTS_MD));
-    }
+    // ~/.agendao/AGENTS.md（权威位置）
+    files.push(agendao_home().join(AGENTS_MD));
 
-    // ~/.agendao/AGENTS.md
-    if let Some(cfg) = legacy_home_config_dir() {
+    // ~/.config/agendao/AGENTS.md（旧版遗留，兜底）
+    if let Some(cfg) = legacy_xdg_config_dir() {
         files.push(cfg.join(AGENTS_MD));
     }
 
@@ -426,6 +421,7 @@ impl InstructionLoader {
 
         // Expand ~/
         if expanded.starts_with("~/") {
+            // 展开用户配置里手写的 `~/`，要的是真实用户主目录，不经 agendao_home。
             if let Some(home) = dirs::home_dir() {
                 expanded = home.join(&expanded[2..]).to_string_lossy().to_string();
             }

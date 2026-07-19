@@ -5,15 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(super) fn get_global_config_paths() -> Vec<PathBuf> {
-    let config_dir = if cfg!(target_os = "macos") {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config"))
-    } else if cfg!(target_os = "windows") {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from("%APPDATA%"))
-    } else {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config"))
-    };
-
-    let agendao_dir = config_dir.join("agendao");
+    // 全局配置文件统一收在 agendao_home（~/.agendao,土律·单点权威）。
+    let agendao_dir = agendao_util::agendao_home();
     vec![
         agendao_dir.join("agendao.jsonc"),
         agendao_dir.join("agendao.json"),
@@ -191,6 +184,7 @@ pub(super) fn resolve_file_references(text: &str, base_dir: &Path) -> Result<Str
 
         // Resolve the file path
         let resolved = if let Some(stripped) = file_path_str.strip_prefix("~/") {
+            // 展开配置文本里用户手写的 `~/` 文件引用，要的是真实用户主目录，不经 agendao_home。
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("~"))
                 .join(stripped)

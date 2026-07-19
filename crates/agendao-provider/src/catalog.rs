@@ -310,17 +310,16 @@ pub fn default_model_catalog_authority() -> Arc<ModelCatalogAuthority> {
 }
 
 pub fn default_catalog_snapshot_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("agendao")
+    // models.dev 快照统一收在 agendao_home/cache/catalog（~/.agendao,土律·单点权威）。
+    agendao_util::agendao_home()
+        .join("cache")
         .join("catalog")
         .join("models.snapshot.json")
 }
 
 pub fn default_catalog_metadata_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("agendao")
+    agendao_util::agendao_home()
+        .join("cache")
         .join("catalog")
         .join("models.meta.json")
 }

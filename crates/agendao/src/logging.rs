@@ -1,8 +1,6 @@
 pub fn init_logging() {
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("agendao")
-        .join("log");
+    // 日志统一收在 agendao_home/log（~/.agendao，土律·单点权威）。
+    let log_dir = agendao_util::agendao_home().join("log");
     std::fs::create_dir_all(&log_dir).ok();
     let log_file = std::fs::OpenOptions::new()
         .create(true)

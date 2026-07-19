@@ -705,9 +705,15 @@ pub(super) async fn handle_debug_command(
             println!(
                 "  {:<12} {}",
                 "home",
+                // 调试面板展示真实用户主目录（与下方 agendao home 对照），保留 dirs::home_dir。
                 dirs::home_dir()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "<none>".to_string())
+            );
+            println!(
+                "  {:<12} {}",
+                "agendao",
+                agendao_util::agendao_home().display().to_string()
             );
             println!(
                 "  {:<12} {}",

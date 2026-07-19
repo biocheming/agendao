@@ -207,7 +207,7 @@ impl ConfigLoader {
 
     /// Loads all config sources synchronously (without remote wellknown).
     /// Merge order (TS parity):
-    /// 1. Global config (~/.config/agendao/agendao.json{,c})
+    /// 1. Global config (~/.agendao/agendao.json{,c}, AGENDAO_HOME 可覆盖)
     /// 2. Custom config (AGENDAO_CONFIG)
     /// 3. Project config (agendao json{,c})
     /// 4. .agendao directories (agents, commands, modes, config)

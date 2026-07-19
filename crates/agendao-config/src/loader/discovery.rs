@@ -1,4 +1,5 @@
 use crate::schema::{AgentConfig, AgentMode, CommandConfig};
+use agendao_util::agendao_home;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::env;
@@ -93,12 +94,10 @@ pub(super) fn collect_agendao_directories(project_dir: &Path) -> Vec<PathBuf> {
         directories.push(local_agendao_dir);
     }
 
-    // Home directory .agendao
-    if let Some(home) = dirs::home_dir() {
-        let home_agendao = home.join(".agendao");
-        if home_agendao.exists() && !directories.contains(&home_agendao) {
-            directories.push(home_agendao);
-        }
+    // 用户级 ~/.agendao 经唯一权威入口解析（尊重 AGENDAO_HOME 覆盖）。
+    let home_agendao = agendao_home();
+    if home_agendao.exists() && !directories.contains(&home_agendao) {
+        directories.push(home_agendao);
     }
 
     // AGENDAO_CONFIG_DIR overrides
@@ -182,6 +181,7 @@ pub(super) fn load_modes_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
 }
 
 pub(crate) fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {
+    // 展开用户配置里手写的 `~/`，要的是真实用户主目录，不经 agendao_home。
     if let Some(stripped) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(stripped);
@@ -202,15 +202,16 @@ pub fn collect_plugin_roots(
 ) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
+    // 旧版 XDG 遗留目录（低优先级，先到先得）
     if let Some(config_dir) = dirs::config_dir() {
         roots.push(config_dir.join("agendao/plugins"));
         roots.push(config_dir.join("agendao/plugin"));
     }
 
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".agendao/plugins"));
-        roots.push(home.join(".agendao/plugin"));
-    }
+    // 权威位置 ~/.agendao（尊重 AGENDAO_HOME 覆盖；后列优先）
+    let home = agendao_home();
+    roots.push(home.join("plugins"));
+    roots.push(home.join("plugin"));
 
     let start_dir = normalize_existing_path(project_dir);
     let stop_dir = detect_worktree_stop(&start_dir);
@@ -251,7 +252,7 @@ fn collect_plugins_in_dir(dir: &Path, plugins: &mut Vec<String>) {
                     }
                 }
             } else if path.is_dir() {
-                if path.file_name().map_or(false, |n| n == "web") {
+                if path.file_name().is_some_and(|n| n == "web") {
                     continue;
                 }
                 for entry_name in ["index.ts", "index.js", "index.mjs"] {

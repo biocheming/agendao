@@ -345,98 +345,6 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
     Ok(true)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn strings(args: Vec<&str>) -> Vec<OsString> {
-        args.into_iter().map(OsString::from).collect()
-    }
-
-    fn display_args(args: Vec<OsString>) -> Vec<String> {
-        args.into_iter()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn normalize_tui_shorthand_routes_session_to_tui() {
-        let normalized = normalize_tui_shorthand_args(strings(vec!["agendao", "-s", "ses_123"]));
-
-        assert_eq!(
-            display_args(normalized),
-            vec!["agendao", "tui", "-s", "ses_123"]
-        );
-    }
-
-    #[test]
-    fn normalize_tui_shorthand_leaves_cli_run_untouched() {
-        let normalized =
-            normalize_tui_shorthand_args(strings(vec!["agendao", "run", "-s", "ses_123"]));
-
-        assert_eq!(
-            display_args(normalized),
-            vec!["agendao", "run", "-s", "ses_123"]
-        );
-    }
-
-    #[test]
-    fn socket_flag_enables_default_socket_for_tui() {
-        let cli = ProductCli::parse_from(["agendao", "tui", "--socket"]);
-        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
-            panic!("expected tui command");
-        };
-
-        assert!(args.socket);
-        let socket_path = resolve_socket_path(args.socket);
-        #[cfg(unix)]
-        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
-        #[cfg(not(unix))]
-        assert!(socket_path.is_err());
-    }
-
-    #[test]
-    fn tui_accepts_local_with_socket_override() {
-        let cli = ProductCli::parse_from(["agendao", "tui", "--local", "--socket"]);
-        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
-            panic!("expected tui command");
-        };
-        assert!(args.local);
-        assert!(args.socket);
-    }
-
-    #[test]
-    fn socket_flag_enables_default_socket_for_attach() {
-        let cli =
-            ProductCli::parse_from(["agendao", "attach", "http://127.0.0.1:3000", "--socket"]);
-        let ProductCommand::Attach(args) = cli.command.expect("attach command") else {
-            panic!("expected attach command");
-        };
-
-        assert!(args.socket);
-        let socket_path = resolve_socket_path(args.socket);
-        #[cfg(unix)]
-        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
-        #[cfg(not(unix))]
-        assert!(socket_path.is_err());
-    }
-
-    #[test]
-    fn socket_flag_enables_default_socket_for_serve() {
-        let cli = ProductCli::parse_from(["agendao", "serve", "--socket"]);
-        let ProductCommand::Serve(args) = cli.command.expect("serve command") else {
-            panic!("expected serve command");
-        };
-
-        assert!(args.socket);
-        let socket_path = resolve_socket_path(args.socket);
-        #[cfg(unix)]
-        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
-        #[cfg(not(unix))]
-        assert!(socket_path.is_err());
-    }
-}
-
 fn default_tui_request() -> TuiCommandRequest {
     TuiCommandRequest {
         project: None, model: None, session: None, fork: false,
@@ -745,6 +653,13 @@ async fn handle_uninstall_command(
         }
     }
 
+    // 权威 home（~/.agendao，尊重 AGENDAO_HOME）；含配置与数据，任一 keep 标志都跳过。
+    targets.push(RemovalTarget {
+        label: "home".to_string(),
+        path: agendao_util::agendao_home(),
+    });
+
+    // 旧版 XDG 遗留目录（可能残留未迁移文件，如 models.json），一并清理。
     let data_dir = dirs::data_local_dir().map(|p| p.join("agendao"));
     let cache_dir = dirs::cache_dir().map(|p| p.join("agendao"));
     let config_dir = dirs::config_dir().map(|p| p.join("agendao"));
@@ -780,7 +695,10 @@ async fn handle_uninstall_command(
     }
 
     for target in targets.drain(..) {
-        if (target.label == "config" && keep_config) || (target.label == "data" && keep_data) {
+        let skip = (target.label == "home" && (keep_config || keep_data))
+            || (target.label == "config" && keep_config)
+            || (target.label == "data" && keep_data);
+        if skip {
             println!("Skipping {} ({})", target.label, target.path.display());
             continue;
         }
@@ -819,18 +737,99 @@ fn print_build_info() {
     println!("  Built at:   {}", built_at);
     println!();
 
-    let data = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agendao");
-    let cache = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agendao");
-    let config = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agendao");
-
     println!("Paths:");
-    println!("  Data:       {}", data.display());
-    println!("  Config:     {}", config.display());
-    println!("  Cache:      {}", cache.display());
+    println!("  Home:       {}", agendao_util::agendao_home().display());
+    println!("  (AGENDAO_HOME 环境变量可覆盖;配置、数据、日志、缓存统一收于此)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(args: Vec<&str>) -> Vec<OsString> {
+        args.into_iter().map(OsString::from).collect()
+    }
+
+    fn display_args(args: Vec<OsString>) -> Vec<String> {
+        args.into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn normalize_tui_shorthand_routes_session_to_tui() {
+        let normalized = normalize_tui_shorthand_args(strings(vec!["agendao", "-s", "ses_123"]));
+
+        assert_eq!(
+            display_args(normalized),
+            vec!["agendao", "tui", "-s", "ses_123"]
+        );
+    }
+
+    #[test]
+    fn normalize_tui_shorthand_leaves_cli_run_untouched() {
+        let normalized =
+            normalize_tui_shorthand_args(strings(vec!["agendao", "run", "-s", "ses_123"]));
+
+        assert_eq!(
+            display_args(normalized),
+            vec!["agendao", "run", "-s", "ses_123"]
+        );
+    }
+
+    #[test]
+    fn socket_flag_enables_default_socket_for_tui() {
+        let cli = ProductCli::parse_from(["agendao", "tui", "--socket"]);
+        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
+            panic!("expected tui command");
+        };
+
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
+    }
+
+    #[test]
+    fn tui_accepts_local_with_socket_override() {
+        let cli = ProductCli::parse_from(["agendao", "tui", "--local", "--socket"]);
+        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
+            panic!("expected tui command");
+        };
+        assert!(args.local);
+        assert!(args.socket);
+    }
+
+    #[test]
+    fn socket_flag_enables_default_socket_for_attach() {
+        let cli =
+            ProductCli::parse_from(["agendao", "attach", "http://127.0.0.1:3000", "--socket"]);
+        let ProductCommand::Attach(args) = cli.command.expect("attach command") else {
+            panic!("expected attach command");
+        };
+
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
+    }
+
+    #[test]
+    fn socket_flag_enables_default_socket_for_serve() {
+        let cli = ProductCli::parse_from(["agendao", "serve", "--socket"]);
+        let ProductCommand::Serve(args) = cli.command.expect("serve command") else {
+            panic!("expected serve command");
+        };
+
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/agendao.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
+    }
 }

@@ -3,6 +3,7 @@
 //! Mirrors the TypeScript `McpAuth` namespace – stores tokens, client info,
 //! code verifiers and OAuth state in a JSON file inside the user data directory.
 
+use agendao_util::agendao_home;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,10 +51,7 @@ pub struct AuthEntry {
 }
 /// Resolve the path to the auth JSON file.
 fn auth_file_path() -> PathBuf {
-    let data_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("agendao");
-    data_dir.join("mcp-auth.json")
+    agendao_home().join("mcp-auth.json")
 }
 
 /// Read the entire auth store from disk.
@@ -82,7 +80,16 @@ async fn write_all(data: &HashMap<String, AuthEntry>) -> Result<(), std::io::Err
         fs::create_dir_all(parent).await?;
     }
     let json = serde_json::to_string_pretty(data).map_err(std::io::Error::other)?;
-    fs::write(&path, json).await
+    fs::write(&path, json).await?;
+
+    // OAuth token 属敏感凭证,权限对齐 provider auth(0o600)。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -209,11 +209,8 @@ fn normalize_recent_models(recent: &[RecentModelEntry]) -> Vec<RecentModelEntry>
 }
 
 fn default_global_state_path() -> PathBuf {
-    dirs::state_dir()
-        .or_else(dirs::cache_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("agendao")
-        .join("global-state.json")
+    // 全局 UI 状态统一收在 agendao_home（~/.agendao/global-state.json,土律·单点权威）。
+    agendao_util::agendao_home().join("global-state.json")
 }
 
 async fn read_json_file<T>(path: &Path) -> Result<T>

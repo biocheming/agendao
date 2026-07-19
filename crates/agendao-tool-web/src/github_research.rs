@@ -2509,9 +2509,8 @@ fn local_repo_root(ctx: &ToolContext) -> PathBuf {
         .and_then(|value| value.as_str())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            dirs::cache_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("agendao")
+            agendao_util::agendao_home()
+                .join("cache")
                 .join("github_research")
         })
 }

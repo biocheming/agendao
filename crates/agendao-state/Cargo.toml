@@ -6,13 +6,14 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+agendao-util = { path = "../agendao-util" }
 agendao-config = { path = "../agendao-config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-tokio = { version = "1", features = ["fs", "sync"] }
+tokio = { workspace = true, features = ["fs", "sync"] }
 dirs = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

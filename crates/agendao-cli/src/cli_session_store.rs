@@ -7,6 +7,7 @@ use agendao_types::{
     Session, SessionArtifactBundle, SessionArtifactEntry, SessionArtifactImportEnvelope,
     SessionTelemetrySnapshot, SessionUsage,
 };
+use agendao_util::agendao_home;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionStatsReport {
@@ -41,10 +42,7 @@ struct SessionStatsUsageSummary {
 }
 
 pub(crate) fn local_database_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("agendao")
-        .join("agendao.db")
+    agendao_home().join("agendao.db")
 }
 
 pub(crate) async fn list_sessions(

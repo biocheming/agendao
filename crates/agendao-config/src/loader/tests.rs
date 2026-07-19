@@ -295,7 +295,7 @@ fn test_isolated_workspace_without_local_agendao_config_still_inherits_global_co
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let resolved = ConfigAuthority::resolve(&child).unwrap();
     let cfg = resolved.config;
@@ -328,7 +328,7 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let resolved = ConfigAuthority::resolve(&child).unwrap();
     let cfg = resolved.config;
@@ -1110,7 +1110,7 @@ fn test_load_global_supports_agendao_json() {
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let mut loader = ConfigLoader::new();
     loader.load_global().unwrap();
@@ -1137,7 +1137,7 @@ fn test_load_global_prefers_json_over_jsonc_when_both_exist() {
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let mut loader = ConfigLoader::new();
     loader.load_global().unwrap();
@@ -1164,7 +1164,7 @@ fn test_load_all_does_not_double_load_global_config_files() {
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let mut loader = ConfigLoader::new();
     let cfg = loader.load_all(&project).unwrap();
@@ -1197,7 +1197,7 @@ fn test_load_all_ignores_ancestor_dot_agendao_but_keeps_global_config() {
     )
     .unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let cfg = load_config(&child).unwrap();
     let providers = cfg.provider.expect("provider map");
@@ -1214,7 +1214,7 @@ fn test_update_global_config_preserves_existing_json_file() {
     let config_path = agendao_dir.join("agendao.json");
     fs::write(&config_path, r#"{ "theme": "dark" }"#).unwrap();
 
-    let _env = ScopedEnvVar::set("XDG_CONFIG_HOME", &config_home);
+    let _env = ScopedEnvVar::set("AGENDAO_HOME", config_home.join("agendao"));
 
     let patch = Config {
         model: Some("global-model".to_string()),

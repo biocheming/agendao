@@ -288,11 +288,8 @@ impl Database {
     }
 
     fn get_database_path() -> Result<PathBuf, DatabaseError> {
-        let data_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("agendao");
-
-        Ok(data_dir.join("agendao.db"))
+        // 用户级数据库统一收在 agendao_home（~/.agendao，土律·单点权威）。
+        Ok(agendao_util::agendao_home().join("agendao.db"))
     }
 }
 

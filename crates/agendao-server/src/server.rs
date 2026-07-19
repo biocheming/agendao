@@ -271,6 +271,11 @@ pub struct ServerState {
     /// Cancellation token for the background recheck/wake loop.
     /// Cancelled on ServerState drop.
     pub(crate) recheck_cancel: tokio_util::sync::CancellationToken,
+    /// 懒加载记账：启动 `load_sessions_from_storage` 只恢复元数据，被标记的
+    /// 会话消息体尚未入内存。`ensure_session_messages_hydrated` 在消息读/写
+    /// 闸门处按需回填并移出集合；flush 路径对仍 dehydrated 的会话只写 session
+    /// 行、绝不动 messages（防止空内存镜像删光库存消息）。
+    pub(crate) dehydrated_sessions: tokio::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl Drop for ServerState {
@@ -368,6 +373,7 @@ impl ServerState {
             category_registry: Arc::new(agendao_config::CategoryRegistry::empty()),
             todo_manager: agendao_session::TodoManager::new(),
             recheck_cancel: tokio_util::sync::CancellationToken::new(),
+            dehydrated_sessions: tokio::sync::RwLock::new(std::collections::HashSet::new()),
         }
     }
 
@@ -597,22 +603,56 @@ impl ServerState {
     }
 
     async fn load_sessions_from_storage(&self) -> anyhow::Result<()> {
-        let (Some(session_repo), Some(message_repo)) = (&self.session_repo, &self.message_repo)
-        else {
+        let Some(session_repo) = &self.session_repo else {
             return Ok(());
         };
 
+        // 懒加载（水律·回流按需）：启动只恢复元数据（标题/用量/时间戳均在
+        // sessions 行内），**不逐会话拉取消息体**。此前每个 session 一条
+        // N+1 SQL + 全量消息 JSON 三遍往返（from_str/to_value/from_value），
+        // 大库（>100MB 消息）下启动要花数秒。消息体由
+        // `ensure_session_messages_hydrated` 在打开/prompt/fork 时按需回填。
         let stored_sessions = session_repo.list(None, 100_000).await?;
         let mut manager = self.sessions.lock().await;
+        let mut dehydrated = self.dehydrated_sessions.write().await;
 
-        for mut stored in stored_sessions {
-            let stored_messages = message_repo.list_for_session(&stored.id).await?;
-            stored.messages = stored_messages;
+        for stored in stored_sessions {
             let session: agendao_session::Session =
-                serde_json::from_value(serde_json::to_value(stored)?)?;
+                serde_json::from_value(serde_json::to_value(&stored)?)?;
             manager.restore(session);
+            dehydrated.insert(stored.id);
         }
 
+        Ok(())
+    }
+
+    /// 懒水合闸门：首次访问某会话的消息体时从 storage 回填。
+    ///
+    /// 快路径零成本（不在 dehydrated 集合 → 直接返回）。回填仅在内存消息
+    /// 仍为空时进行——绝不覆盖运行中会话已入内存的新消息（配对防护：
+    /// 与 flush 路径的「dehydrated 只写行」守卫共同保证库存消息不被清）。
+    pub(crate) async fn ensure_session_messages_hydrated(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        if !self.dehydrated_sessions.read().await.contains(session_id) {
+            return Ok(());
+        }
+        let Some(message_repo) = &self.message_repo else {
+            return Ok(());
+        };
+        let messages = message_repo.list_for_session(session_id).await?;
+        let mut manager = self.sessions.lock().await;
+        if let Some(session) = manager.get_mut(session_id) {
+            if session.record().messages.is_empty() {
+                *session.messages_mut() = messages;
+            }
+        }
+        drop(manager);
+        self.dehydrated_sessions
+            .write()
+            .await
+            .remove(session_id);
         Ok(())
     }
 
@@ -636,6 +676,14 @@ impl ServerState {
             serde_json::from_value(serde_json::to_value(&session)?)?;
         let mut persisted = stored.clone();
         let messages = std::mem::take(&mut persisted.messages);
+
+        // 懒加载守卫：会话消息体未水合时，内存里的空消息列表不是真相——
+        // 只 upsert session 行（rename/用量等元数据变更照写），**绝不进入
+        // flush_with_messages 的 delete-stale 分支**（否则库存消息被清空）。
+        if self.dehydrated_sessions.read().await.contains(session_id) {
+            session_repo.upsert(&persisted).await?;
+            return Ok(());
+        }
 
         session_repo
             .flush_with_messages(&persisted, &messages)
@@ -680,6 +728,13 @@ impl ServerState {
                 serde_json::from_value(serde_json::to_value(&session)?)?;
             let mut persisted_session = stored_session.clone();
             let stored_messages = std::mem::take(&mut persisted_session.messages);
+
+            // 懒加载守卫：dehydrated 会话的内存消息为空——只写 session 行，
+            // 跳过 messages 的 upsert/delete-stale（防库存消息被空镜像清掉）。
+            if self.dehydrated_sessions.read().await.contains(&stored_session.id) {
+                session_repo.upsert(&persisted_session).await?;
+                continue;
+            }
 
             session_repo
                 .flush_with_messages(&persisted_session, &stored_messages)
@@ -845,11 +900,9 @@ fn auth_data_dir() -> PathBuf {
         }
     }
 
-    dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("agendao")
-        .join("data")
+    // 凭证统一收在 agendao_home 根（~/.agendao/auth.json,土律·单点权威）;
+    // AGENDAO_DATA_DIR 保留为向后兼容覆盖通道。
+    agendao_util::agendao_home()
 }
 
 async fn load_plugin_auth_store(
@@ -1556,6 +1609,34 @@ mod tests {
             .await
             .expect("sessions should reload from storage");
 
+        // 懒加载：restore 只回元数据，消息体 dehydrated。
+        {
+            let manager = reloaded.sessions.lock().await;
+            let session = manager
+                .get(&session_id)
+                .expect("session should exist after reload");
+            assert!(
+                session.messages.is_empty(),
+                "lazy restore must not hydrate messages eagerly"
+            );
+        }
+        assert!(reloaded
+            .dehydrated_sessions
+            .read()
+            .await
+            .contains(&session_id));
+
+        // 水合闸门：访问消息时按需回填，内容与时序与库存一致。
+        reloaded
+            .ensure_session_messages_hydrated(&session_id)
+            .await
+            .expect("hydration should succeed");
+        assert!(!reloaded
+            .dehydrated_sessions
+            .read()
+            .await
+            .contains(&session_id));
+
         let manager = reloaded.sessions.lock().await;
         let session = manager
             .get(&session_id)
@@ -1565,6 +1646,77 @@ mod tests {
         assert_eq!(session.messages[1].created_at, assistant_created_at);
         assert_eq!(session.messages[0].get_text(), "hello");
         assert_eq!(session.messages[1].get_text(), "world");
+    }
+
+    #[tokio::test]
+    async fn sync_preserves_messages_of_dehydrated_sessions() {
+        // 数据安全回归：dehydrated 会话经全量 sync 不得丢库存消息
+        // （flush 的 delete-stale 分支会把空内存镜像当成真相清库）。
+        let db = Database::in_memory()
+            .await
+            .expect("in-memory db should initialize");
+        let pool = db.pool().clone();
+
+        let state = state_with_repos(
+            SessionRepository::new(pool.clone()),
+            MessageRepository::new(pool.clone()),
+        );
+        let session_id = {
+            let mut manager = state.sessions.lock().await;
+            let mut session = manager.create("default", ".");
+            session.add_user_message("keep me");
+            let id = session.id.clone();
+            manager.update(session);
+            id
+        };
+        state
+            .sync_sessions_to_storage()
+            .await
+            .expect("initial sync should persist");
+
+        // 重新加载（dehydrated），随后全量 sync——模拟 rename 等只改元数据后的 flush。
+        let reloaded = state_with_repos(
+            SessionRepository::new(pool.clone()),
+            MessageRepository::new(pool.clone()),
+        );
+        reloaded
+            .load_sessions_from_storage()
+            .await
+            .expect("reload should succeed");
+        assert!(reloaded
+            .dehydrated_sessions
+            .read()
+            .await
+            .contains(&session_id));
+        reloaded
+            .sync_sessions_to_storage()
+            .await
+            .expect("sync with dehydrated session must succeed");
+
+        // 库存消息必须原样保留。
+        let message_repo = MessageRepository::new(pool);
+        let messages = message_repo
+            .list_for_session(&session_id)
+            .await
+            .expect("messages should be readable");
+        assert_eq!(messages.len(), 1, "dehydrated flush must not delete messages");
+        assert_eq!(messages[0].get_text(), "keep me");
+
+        // 水合后再 sync 则恢复完整 flush 语义（消息仍在）。
+        reloaded
+            .ensure_session_messages_hydrated(&session_id)
+            .await
+            .expect("hydration should succeed");
+        reloaded
+            .sync_sessions_to_storage()
+            .await
+            .expect("post-hydration sync should succeed");
+        let message_repo2 = reloaded.message_repo.as_ref().unwrap();
+        let messages = message_repo2
+            .list_for_session(&session_id)
+            .await
+            .expect("messages should be readable");
+        assert_eq!(messages.len(), 1);
     }
 
     #[tokio::test]
@@ -1581,7 +1733,7 @@ mod tests {
         {
             let mut manager = state.sessions.lock().await;
             let mut session = manager.create("default", ".");
-            session.add_user_message(&"x".repeat(16 * 1024));
+            session.add_user_message("x".repeat(16 * 1024));
             manager.update(session);
             let _ = manager.drain_events();
         }
