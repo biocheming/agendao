@@ -12,6 +12,12 @@ pub struct SessionExportDialog {
     pub copied: bool,
 }
 
+impl Default for SessionExportDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionExportDialog {
     pub fn new() -> Self {
         Self { visible: false, session_id: String::new(), messages_text: String::new(), copied: false }
@@ -46,20 +52,20 @@ impl SessionExportDialog {
         if !self.visible { return; }
         let msg_count = self.messages_text.lines().count();
         let mut content = vstack().gap(1)
-            .child(Text::new(&format!("{} messages in this session", msg_count))
-                .fg(colors::FG_MUTED));
+            .child(Text::new(format!("{} messages in this session", msg_count))
+                .fg(colors::FG_MUTED()));
 
         if self.copied {
-            content = content.child(Text::new("✓ Copied to clipboard!").fg(colors::ACCENT_GREEN));
+            content = content.child(Text::new("✓ Copied to clipboard!").fg(colors::ACCENT_GREEN()));
         } else {
             content = content
-                .child(Text::new("c: copy to clipboard").fg(colors::ACCENT_CYAN))
-                .child(Text::new("s: share as link").fg(colors::ACCENT_CYAN));
+                .child(Text::new("c: copy to clipboard").fg(colors::ACCENT_CYAN()))
+                .child(Text::new("s: share as link").fg(colors::ACCENT_CYAN()));
         }
 
         backdrop::render_dialog_bottom(
             "Export Session",
-            colors::ACCENT_CYAN,
+            colors::ACCENT_CYAN(),
             content,
             "Esc: close",
             ctx, geom, 8,

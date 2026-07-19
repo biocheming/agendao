@@ -16,8 +16,8 @@ pub struct StashEntry {
 
 /// Stash 持久化路径：与 prompt-history.json 同目录（data_dir/agendao）。
 fn default_stash_path() -> std::path::PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join("agendao").join("prompt-stash.json")
+    // Stash 持久化与 prompt-history 同家（agendao_home,土律·单点权威）。
+    agendao_util::agendao_home().join("prompt-stash.json")
 }
 
 /// 启动期载入 stash（文件缺失/损坏时返回空，不阻断启动）。
@@ -57,6 +57,12 @@ pub struct StashDialog {
     pub visible: bool,
     pub entries: Vec<StashEntry>,
     pub selected: usize,
+}
+
+impl Default for StashDialog {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StashDialog {
@@ -108,8 +114,8 @@ impl StashDialog {
         if !self.visible { return; }
 
         if self.entries.is_empty() {
-            let content = vstack().child(Text::new("(empty stash)").fg(colors::FG_MUTED));
-            backdrop::render_dialog_bottom("Prompt Stash", colors::ACCENT_PURPLE, content,
+            let content = vstack().child(Text::new("(empty stash)").fg(colors::FG_MUTED()));
+            backdrop::render_dialog_bottom("Prompt Stash", colors::ACCENT_PURPLE(), content,
                 "Esc: close", ctx, geom, 5);
             return;
         }
@@ -126,7 +132,7 @@ impl StashDialog {
 
         backdrop::render_list_dialog_bottom(
             "Prompt Stash",
-            colors::ACCENT_PURPLE,
+            colors::ACCENT_PURPLE(),
             &items,
             self.selected,
             "↑↓ navigate  Enter: restore  d: delete  Esc: close",

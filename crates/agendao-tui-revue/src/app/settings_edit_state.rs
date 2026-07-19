@@ -40,27 +40,19 @@ pub enum SettingsEditField {
 }
 
 impl SettingsEditField {
-    /// 字段循环,跳过不适用于当前 mode 的字段。
-    pub fn next(self, mode: SettingsEditMode) -> Self {
-        match (mode, self) {
-            (SettingsEditMode::Add, SettingsEditField::Name) => SettingsEditField::BaseUrl,
-            (SettingsEditMode::Add, SettingsEditField::BaseUrl) => SettingsEditField::Protocol,
-            (SettingsEditMode::Add, SettingsEditField::Protocol) => SettingsEditField::ApiKey,
-            (SettingsEditMode::Add, SettingsEditField::ApiKey) => SettingsEditField::Name,
-            (SettingsEditMode::Edit, SettingsEditField::BaseUrl) => SettingsEditField::Protocol,
-            (SettingsEditMode::Edit, SettingsEditField::Protocol) => SettingsEditField::ApiKey,
-            (SettingsEditMode::Edit, SettingsEditField::ApiKey) => SettingsEditField::BaseUrl,
-            (SettingsEditMode::Edit, SettingsEditField::Name) => SettingsEditField::BaseUrl,
+    /// 字段循环。Add/Edit 均为 4 字段(Name 在 Edit 可改名,id 不可改)。
+    pub fn next(self, _mode: SettingsEditMode) -> Self {
+        match self {
+            SettingsEditField::Name => SettingsEditField::BaseUrl,
+            SettingsEditField::BaseUrl => SettingsEditField::Protocol,
+            SettingsEditField::Protocol => SettingsEditField::ApiKey,
+            SettingsEditField::ApiKey => SettingsEditField::Name,
         }
     }
 
     pub fn prev(self, mode: SettingsEditMode) -> Self {
-        // 反向循环 = 正向 3 次(Add 4 字段)/ 2 次(Edit 3 字段);简单清晰避免重复 enum。
-        let steps = match mode {
-            SettingsEditMode::Add => 3,
-            SettingsEditMode::Edit => 2,
-        };
-        (0..steps).fold(self, |f, _| f.next(mode))
+        // 反向循环 = 正向 3 次(两模式均 4 字段);简单清晰避免重复 enum。
+        (0..3).fold(self, |f, _| f.next(mode))
     }
 }
 
@@ -144,12 +136,13 @@ impl SettingsEditState {
     }
 
     /// 进入 Edit 模式:prefill 当前 provider 字段(api_key 留空 = "不改保留原")。
+    /// name 可改(rename,server update_provider 已支持);id 不可改。
     pub fn enter_edit(&mut self, info: &agendao_client::ProviderInfo) {
         self.active = true;
         self.mode = SettingsEditMode::Edit;
         self.origin_provider_id = info.id.clone();
-        self.focus = SettingsEditField::BaseUrl;
-        // Edit 不允许改 name,但保留 buffer 一致(name_input 在 Edit 不渲染)。
+        self.focus = SettingsEditField::Name;
+        // name_input 在 Edit 渲染为可编辑 rename 字段(id 不可变,改名不改 id)。
         self.name_input = Input::new().value(info.name.clone());
         self.base_url_input = Input::new()
             .placeholder("https://api.openai.com/v1")
@@ -273,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_mode_cycles_three_fields_skipping_name() {
+    fn edit_mode_cycles_four_fields_including_name() {
         let mut s = SettingsEditState::new();
         let info = agendao_client::ProviderInfo {
             id: "openai".into(),
@@ -281,15 +274,18 @@ mod tests {
             models: vec![],
             base_url: Some("https://api.openai.com/v1".into()),
             protocol: Some("openai".into()),
+            disabled: false,
         };
         s.enter_edit(&info);
+        assert_eq!(s.focus, SettingsEditField::Name);
+        s.handle_key(&Key::Tab);
         assert_eq!(s.focus, SettingsEditField::BaseUrl);
         s.handle_key(&Key::Tab);
         assert_eq!(s.focus, SettingsEditField::Protocol);
         s.handle_key(&Key::Tab);
         assert_eq!(s.focus, SettingsEditField::ApiKey);
         s.handle_key(&Key::Tab);
-        assert_eq!(s.focus, SettingsEditField::BaseUrl, "Edit 3-field cycle skips Name");
+        assert_eq!(s.focus, SettingsEditField::Name, "Edit 4-field cycle returns to Name");
     }
 
     #[test]
@@ -339,6 +335,7 @@ mod tests {
             models: vec![],
             base_url: None,
             protocol: Some("anthropic".into()),
+            disabled: false,
         };
         s.enter_edit(&info);
         assert_eq!(s.protocol_key(), "anthropic");

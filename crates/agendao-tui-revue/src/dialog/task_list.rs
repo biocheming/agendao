@@ -32,6 +32,12 @@ pub struct TaskListDialog {
     selected: usize,
 }
 
+impl Default for TaskListDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskListDialog {
     pub fn new() -> Self {
         Self { visible: false, entries: Vec::new(), selected: 0 }
@@ -80,7 +86,7 @@ impl TaskListDialog {
             }];
             backdrop::render_list_dialog_bottom(
                 "Tasks",
-                colors::ACCENT_GREEN,
+                colors::ACCENT_GREEN(),
                 &items,
                 0,
                 "Esc: close",
@@ -103,7 +109,7 @@ impl TaskListDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Tasks",
-            colors::ACCENT_GREEN,
+            colors::ACCENT_GREEN(),
             &items,
             self.selected,
             "↑↓ navigate  c: cancel  Enter: view  Esc: close",

@@ -104,8 +104,8 @@ impl Scrollbar {
             }
             return;
         }
-        let thumb_color = Some(colors::ACCENT_CYAN);
-        let arrow_color = Some(colors::FG_PRIMARY);
+        let thumb_color = Some(colors::ACCENT_CYAN());
+        let arrow_color = Some(colors::FG_PRIMARY());
         self.put(ctx, self.arrow_up_y(), '▲', arrow_color, None);
         self.put(ctx, self.arrow_down_y(), '▼', arrow_color, None);
         // track 字符交给 revue::ScrollView（其内置 `│/█`）。这里只画 agendao 细化的

@@ -73,6 +73,12 @@ pub struct PermissionDialog {
     selected_lifetime: usize,
 }
 
+impl Default for PermissionDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PermissionDialog {
     pub fn new() -> Self {
         Self {
@@ -216,9 +222,9 @@ impl PermissionDialog {
 
         // ── Risk → header color (dangerous reads red, else amber) ──
         let header_color = if req.risk_tags.iter().any(|t| t.contains("dangerous") || t.contains("destructive")) {
-            colors::ACCENT_RED
+            colors::ACCENT_RED()
         } else {
-            colors::E_AMBER
+            colors::E_AMBER()
         };
 
         // ── Header: ⏺ tool (label) — top-level, like a ToolCall block ──
@@ -234,7 +240,7 @@ impl PermissionDialog {
         // ── Message (indent 3) ──
         if !req.message.is_empty() {
             content = content.child_sized(
-                Text::new(format!("   {}", req.message)).fg(colors::FG_SECONDARY),
+                Text::new(format!("   {}", req.message)).fg(colors::FG_SECONDARY()),
                 1,
             );
             height += 1;
@@ -248,7 +254,7 @@ impl PermissionDialog {
                 req.resource.clone()
             };
             content = content.child_sized(
-                Text::new(format!("   {}", resource_preview)).fg(colors::FG_MUTED).italic(),
+                Text::new(format!("   {}", resource_preview)).fg(colors::FG_MUTED()).italic(),
                 1,
             );
             height += 1;
@@ -257,7 +263,7 @@ impl PermissionDialog {
         // ── Risk tags (if any) ──
         if !req.risk_tags.is_empty() {
             content = content.child_sized(
-                Text::new(format!("   ⚠ {}", req.risk_tags.join(", "))).fg(colors::ACCENT_RED),
+                Text::new(format!("   ⚠ {}", req.risk_tags.join(", "))).fg(colors::ACCENT_RED()),
                 1,
             );
             height += 1;
@@ -276,7 +282,7 @@ impl PermissionDialog {
                 PermissionLifetime::Turn => "Allow for this turn",
                 PermissionLifetime::Session => "Allow for this session",
             };
-            let color = if i == self.selected_lifetime { colors::ACCENT_CYAN } else { colors::FG_SECONDARY };
+            let color = if i == self.selected_lifetime { colors::ACCENT_CYAN() } else { colors::FG_SECONDARY() };
             content = content.child_sized(
                 Text::new(format!("{}{}", marker, desc)).fg(color),
                 1,
@@ -287,7 +293,7 @@ impl PermissionDialog {
         // ── Deny option ──
         let deny_selected = self.selected_lifetime == lifetimes.len();
         let deny_marker = if deny_selected { "❯ " } else { "  " };
-        let deny_color = if deny_selected { colors::ACCENT_RED } else { colors::FG_SECONDARY };
+        let deny_color = if deny_selected { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
         content = content.child_sized(
             Text::new(format!("{}Deny", deny_marker)).fg(deny_color),
             1,
@@ -296,7 +302,7 @@ impl PermissionDialog {
 
         // ── Hint ──
         content = content.child_sized(
-            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny").fg(colors::FG_MUTED),
+            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny").fg(colors::FG_MUTED()),
             1,
         );
         height += 1;

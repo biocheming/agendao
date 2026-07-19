@@ -31,6 +31,12 @@ pub struct McpListDialog {
     selected: usize,
 }
 
+impl Default for McpListDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpListDialog {
     pub fn new() -> Self {
         Self { visible: false, entries: Vec::new(), selected: 0 }
@@ -80,7 +86,7 @@ impl McpListDialog {
             }];
             backdrop::render_list_dialog_bottom(
                 "MCP Servers",
-                colors::ACCENT_CYAN,
+                colors::ACCENT_CYAN(),
                 &items,
                 0,
                 "Esc: close",
@@ -98,7 +104,7 @@ impl McpListDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "MCP Servers",
-            colors::ACCENT_CYAN,
+            colors::ACCENT_CYAN(),
             &items,
             self.selected,
             "↑↓ navigate  c: connect  d: disconnect  Enter: view  Esc: close",

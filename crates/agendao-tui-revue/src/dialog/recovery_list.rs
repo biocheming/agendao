@@ -39,6 +39,12 @@ pub struct RecoveryListDialog {
     selected: usize,
 }
 
+impl Default for RecoveryListDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RecoveryListDialog {
     pub fn new() -> Self {
         Self { visible: false, entries: Vec::new(), selected: 0 }
@@ -95,7 +101,7 @@ impl RecoveryListDialog {
             }];
             backdrop::render_list_dialog_bottom(
                 "Recovery",
-                colors::ACCENT_YELLOW,
+                colors::ACCENT_YELLOW(),
                 &items,
                 0,
                 "Esc: close",
@@ -114,7 +120,7 @@ impl RecoveryListDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Recovery",
-            colors::ACCENT_YELLOW,
+            colors::ACCENT_YELLOW(),
             &items,
             self.selected,
             "↑↓ navigate  x: execute (actions only)  Enter: view  Esc: close",

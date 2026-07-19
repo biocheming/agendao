@@ -170,18 +170,24 @@ pub struct RevueMarkdown {
     est_rows: u16,
 }
 
+impl Default for RevueMarkdown {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RevueMarkdown {
     pub fn new() -> Self {
         Self { text: String::new(), est_rows: 0 }
     }
 
-    /// Store the markdown text. A rough line-count estimate is
-    /// pre-computed at a generous width so `line_count()` returns
-    /// something reasonable for layout without knowing the final width.
-    pub fn set_content(&mut self, markdown_text: &str) {
+    /// Store the markdown text. 行数估算在**实际内容宽**上进行——
+    /// 此前固定 100 cols 估算,窄于估算宽的实际渲染会把超出 est_rows
+    /// 的换行行裁掉（长单行文本,如 provider 错误 JSON,在窄终端被静默截断）。
+    pub fn set_content(&mut self, markdown_text: &str, width: u16) {
         self.text = markdown_text.to_string();
-        // Quick estimate at 100 cols — close enough for scroll layout.
-        let renderer = MarkdownRenderer::new(100);
+        // 用调用方给定的真实内容宽（transcript inner_w）估算,与渲染同口径。
+        let renderer = MarkdownRenderer::new(width.max(20) as usize);
         let blocks = renderer.parse(&self.text);
         let lines = renderer.render(&blocks, &NoopTheme);
         self.est_rows = lines.len() as u16;

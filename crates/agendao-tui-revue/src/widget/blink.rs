@@ -5,7 +5,7 @@
 
 /// 600ms 周期内是否"可见"（前半周可见，后半周空白）。
 pub fn blink_visible(tick: u64) -> bool {
-    (tick / 12) % 2 == 0
+    (tick / 12).is_multiple_of(2)
 }
 
 #[cfg(test)]

@@ -40,6 +40,12 @@ pub struct ModeSelectDialog {
     selected: usize,
 }
 
+impl Default for ModeSelectDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModeSelectDialog {
     pub fn new() -> Self {
         Self { visible: false, entries: Vec::new(), selected: 0 }
@@ -100,7 +106,7 @@ impl ModeSelectDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Select Mode",
-            colors::ACCENT_PURPLE,
+            colors::ACCENT_PURPLE(),
             &items,
             self.selected,
             "↑↓ navigate  Enter: select  Esc: close",

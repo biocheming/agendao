@@ -17,7 +17,7 @@ use revue::prelude::*;
 /// 整块背景包装：`render` 时先画 inner Stack 内容，再遍历 area 只补 `cell.bg`
 /// （保留 char/fg），让 message block 获得同色系明度背景层次。
 ///
-/// 用法：`BgStack::new(stack, colors::BG_SURFACE)`，由 `block_bg` 决定哪些
+/// 用法：`BgStack::new(stack, colors::BG_SURFACE())`，由 `block_bg` 决定哪些
 /// block 加背景、用哪一档明度。
 pub struct BgStack {
     inner: revue::widget::Stack,

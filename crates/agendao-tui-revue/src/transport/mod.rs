@@ -56,7 +56,7 @@ pub fn spawn_event_source(
     // 3. Local-direct
     #[cfg(feature = "local-server")]
     {
-        return local::spawn_event_source(tx, workspace_root, handle, session_filter);
+        local::spawn_event_source(tx, workspace_root, handle, session_filter)
     }
     #[cfg(not(feature = "local-server"))]
     {

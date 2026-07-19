@@ -52,25 +52,25 @@ pub fn stage_state(s: &str) -> StageState {
 pub fn status_icon(s: Status) -> (&'static str, Color) {
     match s {
         // ToolPhase — 统一 ◌ ◐ ●（修正 sidebar 曾用的 ○ ◉）
-        Status::Tool(ToolPhase::Starting) => ("◌", colors::ACCENT_BLUE),
-        Status::Tool(ToolPhase::Running)  => ("◐", colors::E_AMBER),
-        Status::Tool(ToolPhase::Done)     => ("●", colors::E_TEAL),
+        Status::Tool(ToolPhase::Starting) => ("◌", colors::ACCENT_BLUE()),
+        Status::Tool(ToolPhase::Running)  => ("◐", colors::E_AMBER()),
+        Status::Tool(ToolPhase::Done)     => ("●", colors::E_TEAL()),
         // Todo — ✔ ◼ ✕ ◻
-        Status::Todo(TodoStatus::Completed)   => ("✔", colors::ACCENT_GREEN),
-        Status::Todo(TodoStatus::InProgress)  => ("◼", colors::E_AMBER),
-        Status::Todo(TodoStatus::Cancelled)   => ("✕", colors::FG_MUTED),
-        Status::Todo(TodoStatus::Pending)     => ("◻", colors::FG_MUTED),
+        Status::Todo(TodoStatus::Completed)   => ("✔", colors::ACCENT_GREEN()),
+        Status::Todo(TodoStatus::InProgress)  => ("◼", colors::E_AMBER()),
+        Status::Todo(TodoStatus::Cancelled)   => ("✕", colors::FG_MUTED()),
+        Status::Todo(TodoStatus::Pending)     => ("◻", colors::FG_MUTED()),
         // Stage — ▶ ✓ ⏳ ✕ ⊘ ↻ ●（完整 7 态）
-        Status::Stage(StageState::Running)   => ("▶", colors::ACCENT_CYAN),
-        Status::Stage(StageState::Done)      => ("✓", colors::ACCENT_GREEN),
-        Status::Stage(StageState::Waiting)   => ("⏳", colors::ACCENT_YELLOW),
-        Status::Stage(StageState::Cancelled) => ("✕", colors::FG_MUTED),
-        Status::Stage(StageState::Blocked)   => ("⊘", colors::ACCENT_RED),
-        Status::Stage(StageState::Retrying)  => ("↻", colors::ACCENT_YELLOW),
-        Status::Stage(StageState::Idle)      => ("●", colors::FG_MUTED),
+        Status::Stage(StageState::Running)   => ("▶", colors::ACCENT_CYAN()),
+        Status::Stage(StageState::Done)      => ("✓", colors::ACCENT_GREEN()),
+        Status::Stage(StageState::Waiting)   => ("⏳", colors::ACCENT_YELLOW()),
+        Status::Stage(StageState::Cancelled) => ("✕", colors::FG_MUTED()),
+        Status::Stage(StageState::Blocked)   => ("⊘", colors::ACCENT_RED()),
+        Status::Stage(StageState::Retrying)  => ("↻", colors::ACCENT_YELLOW()),
+        Status::Stage(StageState::Idle)      => ("●", colors::FG_MUTED()),
         // Result
-        Status::ResultOk    => ("✓", colors::E_TEAL),
-        Status::ResultError => ("✕", colors::ACCENT_RED),
+        Status::ResultOk    => ("✓", colors::E_TEAL()),
+        Status::ResultError => ("✕", colors::ACCENT_RED()),
     }
 }
 

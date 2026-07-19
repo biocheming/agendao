@@ -34,9 +34,8 @@ pub fn spawn_unix_event_source(
                             Some(json) => {
                                 if let Ok(fe) = serde_json::from_value::<FrontendEvent>(json) {
                                     let sid = event_session_id_short(&fe);
-                                    if filter_rx.borrow().as_deref() == sid {
-                                        if tx.send(fe).is_err() { return; }
-                                    }
+                                    if filter_rx.borrow().as_deref() == sid
+                                        && tx.send(fe).is_err() { return; }
                                 }
                             }
                             None => break,

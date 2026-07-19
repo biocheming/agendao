@@ -387,7 +387,7 @@ impl AppHandler {
                 if let Some(action) = self.model_edit_dialog.handle_key(key) {
                     match action {
                         crate::dialog::ModelEditAction::Submit(s) => {
-                            self.submit_model_edit(s);
+                            self.submit_model_edit(*s);
                         }
                         crate::dialog::ModelEditAction::Cancel => {}
                     }

@@ -7,13 +7,14 @@ license.workspace = true
 description = "AgenDao TUI frontend built with Revue — Vue-style reactive terminal UI"
 
 [dependencies]
+agendao-util = { path = "../agendao-util" }
 revue = { path = "../../../revue", features = ["markdown"] }
 agendao-client = { path = "../agendao-client" }
 agendao-command = { path = "../agendao-command" }
 agendao-command-render = { path = "../agendao-command-render" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-types = { path = "../agendao-types" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tokio-util = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,7 +23,7 @@ base64 = "0.22"
 dirs = "6"
 unicode-width = "0.1"
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+reqwest = { workspace = true, features = ["json"] }
 reqwest-eventsource = "0.6"
 url = "2"
 tracing = "0.1"

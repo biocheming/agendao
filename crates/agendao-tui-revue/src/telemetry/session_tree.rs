@@ -29,9 +29,14 @@ pub fn map_api_session_item(s: &agendao_client::SessionListItem) -> SessionListI
 /// `directory == workspace_path` 的会话,按 fork 关系(parent_id)组树,
 /// 根节点与子节点均按 id 映射后递归展开。每个节点 intent =
 /// `NavigateSession(session_id)`。
+///
+/// `expanded_ids` = 展开态唯一权威(AppHandler 持有):默认**全部折叠**
+/// （只显示 root,sub session 不占视野）;命中集合的节点才展开——
+/// 此前硬编码 expanded:true 全展开,长 fork 链把 Session Tree 顶满。
 pub fn build_session_nav_tree(
     sessions: &[SessionListItem],
     workspace_path: &str,
+    expanded_ids: &std::collections::HashSet<String>,
 ) -> Vec<TreeNode> {
     if workspace_path.is_empty() {
         return Vec::new();
@@ -74,7 +79,7 @@ pub fn build_session_nav_tree(
 
     roots
         .into_iter()
-        .map(|s| visit(s, &child_map, 0))
+        .map(|s| visit(s, &child_map, 0, expanded_ids))
         .collect()
 }
 
@@ -82,6 +87,7 @@ fn visit(
     session: &SessionListItem,
     child_map: &std::collections::HashMap<&str, Vec<&SessionListItem>>,
     depth: u8,
+    expanded_ids: &std::collections::HashSet<String>,
 ) -> TreeNode {
     let mut children: Vec<&SessionListItem> =
         child_map.get(session.id.as_str()).cloned().unwrap_or_default();
@@ -89,10 +95,10 @@ fn visit(
     TreeNode {
         label: session.title.clone(),
         depth,
-        expanded: true,
+        expanded: expanded_ids.contains(&session.id),
         children: children
             .into_iter()
-            .map(|c| visit(c, child_map, depth.saturating_add(1)))
+            .map(|c| visit(c, child_map, depth.saturating_add(1), expanded_ids))
             .collect(),
         intent: Some(TreeIntent::NavigateSession(session.id.clone())),
     }
@@ -121,7 +127,7 @@ mod tests {
             item("fork1", "Fork one", Some("root"), dir, 100),
             item("other", "Other root", None, dir, 150),
         ];
-        let tree = build_session_nav_tree(&sessions, dir);
+        let tree = build_session_nav_tree(&sessions, dir, &Default::default());
         assert_eq!(tree.len(), 2, "two roots: root + other");
         assert_eq!(tree[0].label, "Root session");
         assert!(matches!(
@@ -142,7 +148,7 @@ mod tests {
             item("a", "A", None, "/proj", 100),
             item("b", "B", None, "/other", 100),
         ];
-        let tree = build_session_nav_tree(&sessions, "/proj");
+        let tree = build_session_nav_tree(&sessions, "/proj", &Default::default());
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree[0].intent,
@@ -152,6 +158,26 @@ mod tests {
 
     #[test]
     fn empty_when_no_sessions_in_workspace() {
-        assert!(build_session_nav_tree(&[], "/proj").is_empty());
+        assert!(build_session_nav_tree(&[], "/proj", &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn collapsed_by_default_and_expanded_ids_honored() {
+        let dir = "/proj";
+        let sessions = vec![
+            item("root", "Root session", None, dir, 200),
+            item("fork1", "Fork one", Some("root"), dir, 100),
+        ];
+        // 默认（空集合）：全部折叠——root 节点 expanded=false（子节点仍在树内,
+        // 由 flatten 按 expanded 决定是否渲染）。
+        let collapsed = build_session_nav_tree(&sessions, dir, &Default::default());
+        assert_eq!(collapsed.len(), 1);
+        assert!(!collapsed[0].expanded, "default must be collapsed");
+        assert_eq!(collapsed[0].children.len(), 1, "children kept in tree structure");
+        // 命中展开集合：仅该节点展开。
+        let ids: std::collections::HashSet<String> = ["root".to_string()].into_iter().collect();
+        let expanded = build_session_nav_tree(&sessions, dir, &ids);
+        assert!(expanded[0].expanded, "expanded_ids member must expand");
+        assert!(!expanded[0].children[0].expanded, "child stays collapsed");
     }
 }

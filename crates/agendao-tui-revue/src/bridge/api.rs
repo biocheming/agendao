@@ -359,6 +359,63 @@ impl ApiBridge {
         self.block_on(self.client.get_config())
     }
 
+    /// 异步 PATCH `/config`（fire-and-forget 持久化用，不阻塞事件循环）。
+    pub async fn patch_config_async(&self, patch: serde_json::Value) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_patch_config(Arc::clone(ls), patch).await;
+        }
+        self.client.patch_config(&patch).await
+    }
+
+    /// PATCH `/config`（双模式）：UI 偏好（如 theme）落盘通道。
+    pub fn patch_config(&self, patch: serde_json::Value) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_patch_config(Arc::clone(ls), patch));
+        }
+        self.block_on(self.client.patch_config(&patch))
+    }
+
+    /// PUT `/provider/{id}/disabled`（双模式）：enable/disable 切换。
+    pub fn set_provider_disabled(&self, provider_id: &str, disabled: bool) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_set_provider_disabled(
+                Arc::clone(ls),
+                provider_id,
+                disabled,
+            ));
+        }
+        self.block_on(self.client.set_provider_disabled(provider_id, disabled))
+    }
+
+    /// POST `/provider/{id}/test`（双模式）：测试连接（只读探测）。
+    pub fn test_provider_connection(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<agendao_client::TestProviderConnectionResponse> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_test_provider_connection(
+                Arc::clone(ls),
+                provider_id,
+            ));
+        }
+        self.block_on(self.client.test_provider_connection(provider_id))
+    }
+
+    /// GET `/session/{id}/runtime`（双模式）：运行时状态（含 usage——
+    /// 打开会话时给 token_usage/context 信息条播种,不等下一次投影）。
+    pub fn get_session_runtime(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<agendao_client::SessionRuntimeState> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_get_session_runtime(
+                Arc::clone(ls),
+                session_id,
+            ));
+        }
+        self.block_on(self.client.get_session_runtime(session_id))
+    }
+
     pub fn refresh_provider_catalog(&self) -> anyhow::Result<agendao_client::RefreshProviderCatalogResponse> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server_local::local_refresh_provider_catalog(Arc::clone(ls)));

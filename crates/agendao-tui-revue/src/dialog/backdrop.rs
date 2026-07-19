@@ -62,7 +62,7 @@ pub fn list_viewport_window(total: usize, selected: usize, rows: usize) -> (usiz
 /// float as a bright box over a *visible* transcript — not under a black
 /// wash. Must run *before* the positioned dialog renders, so the border
 /// + text draw on top. `x`/`y` are relative to `ctx.area`;
-/// `Buffer::fill` is absolute, so we add `ctx.area.{x,y}` when filling.
+///   `Buffer::fill` is absolute, so we add `ctx.area.{x,y}` when filling.
 fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16, bg: Color) {
     let area = ctx.area;
     ctx.buffer.fill(
@@ -132,11 +132,11 @@ pub fn render_dialog(
     ctx: &mut RenderContext,
     max_w: u16,
     max_h: u16,
-) {
-    let _ = render_positioned_dialog(
+) -> revue::prelude::Rect {
+    render_positioned_dialog(
         DialogAnchor::Centered, title, border_color, content, footer_hint,
         ctx, max_w, max_h, None,
-    );
+    )
 }
 
 /// Frameless dialog following the input box geometry — width = input box width,
@@ -152,17 +152,20 @@ pub fn render_dialog_bottom(
     ctx: &mut RenderContext,
     geom: PromptGeom,
     max_h: u16,
-) {
+) -> revue::prelude::Rect {
     // Bottom 几何由 geom 决定；max_w 在 Bottom 路径忽略，传 geom.w 占位。
-    let _ = render_positioned_dialog(
+    render_positioned_dialog(
         DialogAnchor::Bottom, title, border_color, content, footer_hint,
         ctx, geom.w, max_h, Some(geom),
-    );
+    )
 }
 
 /// Core: render a single-content dialog at `anchor`. Split out so the Centered
 /// and Bottom wrappers share one border/title/positioned pipeline. Geometry
 /// differs only by `anchor`.
+///
+/// 返回对话框外框的**绝对屏幕坐标** Rect（含边框），供调用方发布为鼠标
+/// 命中区（土律：几何唯一权威——命中不再各自重算居中公式）。
 fn render_positioned_dialog(
     anchor: DialogAnchor,
     title: &str,
@@ -173,7 +176,7 @@ fn render_positioned_dialog(
     max_w: u16,
     max_h: u16,
     geom: Option<PromptGeom>,
-) {
+) -> revue::prelude::Rect {
     let area = ctx.area;
     let (w, h, x, y) = match anchor {
         DialogAnchor::Centered => {
@@ -199,8 +202,8 @@ fn render_positioned_dialog(
     // 跟随输入框宽，只填框区即可——对话框缩到输入框宽后不再与 Home col 0 按钮框
     // 水平重叠，无需全屏填遮底。居中框填框区（BG_SURFACE）。
     let (fill_x, fill_w, fill_bg) = match anchor {
-        DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
-        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY),
+        DialogAnchor::Centered => (x, w, colors::BG_SURFACE()),
+        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY()),
     };
     paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
@@ -215,15 +218,15 @@ fn render_positioned_dialog(
                 .child_sized(
                     Text::new(format!(" {} ", title))
                         .fg(border_color)
-                        .bg(colors::BG_PRIMARY)
+                        .bg(colors::BG_PRIMARY())
                         .bold(),
                     1,
                 )
                 .child_flex(content, 1.0)
                 .child_sized(
                     Text::new(footer_hint)
-                        .fg(colors::FG_MUTED)
-                        .bg(colors::BG_PRIMARY)
+                        .fg(colors::FG_MUTED())
+                        .bg(colors::BG_PRIMARY())
                         .align(Alignment::Center),
                     1,
                 );
@@ -243,7 +246,7 @@ fn render_positioned_dialog(
                         .child(content)
                         .child(
                             Text::new(footer_hint)
-                                .fg(colors::FG_MUTED)
+                                .fg(colors::FG_MUTED())
                                 .align(Alignment::Center)
                         )
                 );
@@ -255,6 +258,8 @@ fn render_positioned_dialog(
                 .render(ctx);
         }
     }
+    // positioned 坐标相对 ctx.area 原点；鼠标命中用绝对屏幕坐标，此处换算后返回。
+    revue::prelude::Rect::new(area.x + x, area.y + y, w, h)
 }
 
 /// A single item in a list dialog.
@@ -329,8 +334,18 @@ pub fn render_list_dialog(
     visible_rows: usize,
 ) {
     let _ = render_positioned_list(
-        DialogAnchor::Centered, title, border_color, items, selected,
-        footer_hint, ctx, max_w, visible_rows, None,
+        title,
+        border_color,
+        items,
+        selected,
+        footer_hint,
+        ctx,
+        ListPlacement {
+            anchor: DialogAnchor::Centered,
+            max_w,
+            visible_rows,
+            geom: None,
+        },
     );
 }
 
@@ -351,8 +366,18 @@ pub fn render_list_dialog_bottom(
     visible_rows: usize,
 ) {
     let _ = render_positioned_list(
-        DialogAnchor::Bottom, title, border_color, items, selected,
-        footer_hint, ctx, geom.w, visible_rows, Some(geom),
+        title,
+        border_color,
+        items,
+        selected,
+        footer_hint,
+        ctx,
+        ListPlacement {
+            anchor: DialogAnchor::Bottom,
+            max_w: geom.w,
+            visible_rows,
+            geom: Some(geom),
+        },
     );
 }
 
@@ -371,9 +396,28 @@ pub fn render_list_dialog_bottom_with_layout(
     visible_rows: usize,
 ) -> ListDialogLayout {
     render_positioned_list(
-        DialogAnchor::Bottom, title, border_color, items, selected,
-        footer_hint, ctx, geom.w, visible_rows, Some(geom),
+        title,
+        border_color,
+        items,
+        selected,
+        footer_hint,
+        ctx,
+        ListPlacement {
+            anchor: DialogAnchor::Bottom,
+            max_w: geom.w,
+            visible_rows,
+            geom: Some(geom),
+        },
     )
+}
+
+/// Geometry for [`render_positioned_list`]: anchoring mode plus the sizing
+/// inputs that mode needs (max width, viewport rows, optional prompt geometry).
+struct ListPlacement {
+    anchor: DialogAnchor,
+    max_w: u16,
+    visible_rows: usize,
+    geom: Option<PromptGeom>,
 }
 
 /// Core list renderer: the sliding viewport, selection contract, scrollbar
@@ -381,17 +425,20 @@ pub fn render_list_dialog_bottom_with_layout(
 /// depends on `anchor`; everything below is shared so the centred and
 /// bottom-anchored pickers look identical except for position.
 fn render_positioned_list(
-    anchor: DialogAnchor,
     title: &str,
     border_color: Color,
     items: &[ListItem],
     selected: usize,
     footer_hint: &str,
     ctx: &mut RenderContext,
-    max_w: u16,
-    visible_rows: usize,
-    geom: Option<PromptGeom>,
+    placement: ListPlacement,
 ) -> ListDialogLayout {
+    let ListPlacement {
+        anchor,
+        max_w,
+        visible_rows,
+        geom,
+    } = placement;
     let area = ctx.area;
     let total = items.len();
 
@@ -423,8 +470,8 @@ fn render_positioned_list(
     // 弹窗已缩到 input 框宽,不再与 Home col 0 按钮框水平重叠,实色底只填弹窗矩形
     // 本身(宽 w、x 起),无需全屏宽遮底。
     let (fill_x, fill_w, fill_bg) = match anchor {
-        DialogAnchor::Centered => (x, w, colors::BG_SURFACE),
-        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY),
+        DialogAnchor::Centered => (x, w, colors::BG_SURFACE()),
+        DialogAnchor::Bottom => (x, w, colors::BG_PRIMARY()),
     };
     paint_modal_backdrop(ctx, fill_x, y, fill_w, h, fill_bg);
 
@@ -455,10 +502,10 @@ fn render_positioned_list(
                 // distinct from the selected-row marker `▌` (left bar).
                 let stripped = label.strip_prefix("▸ ").unwrap_or(label.as_str());
                 let upper = stripped.to_uppercase();
-                let mut hdr = Text::new(format!(" ▸ {}", upper)).bold().fg(colors::E_AMBER);
+                let mut hdr = Text::new(format!(" ▸ {}", upper)).bold().fg(colors::E_AMBER());
                 // 无框贴底时补终端色 bg,否则文字格发黑/透字。
                 if matches!(anchor, DialogAnchor::Bottom) {
-                    hdr = hdr.bg(colors::BG_PRIMARY);
+                    hdr = hdr.bg(colors::BG_PRIMARY());
                 }
                 list_content = list_content.child_sized(hdr, 1);
             }
@@ -503,18 +550,18 @@ fn render_positioned_list(
                 // cursor stays visible even on disconnected-provider
                 // rows. Mockup uses `color:#e4e3e0` (close to FG_PRIMARY).
                 let color = if is_sel {
-                    colors::FG_PRIMARY
+                    colors::FG_PRIMARY()
                 } else if *muted {
-                    colors::FG_MUTED
+                    colors::FG_MUTED()
                 } else {
-                    colors::FG_SECONDARY
+                    colors::FG_SECONDARY()
                 };
                 let mut row = Text::new(padded).fg(color);
                 if is_sel {
-                    row = row.bg(colors::SURFACE_SELECTED).bold();
+                    row = row.bg(colors::SURFACE_SELECTED()).bold();
                 } else if matches!(anchor, DialogAnchor::Bottom) {
                     // 无框贴底:非选中行补终端色 bg,否则文字格发黑/透字。
-                    row = row.bg(colors::BG_PRIMARY);
+                    row = row.bg(colors::BG_PRIMARY());
                 }
                 list_content = list_content.child_sized(row, 1);
             }
@@ -537,15 +584,15 @@ fn render_positioned_list(
             .child_sized(
                 Text::new(title_with_pos)
                     .fg(border_color)
-                    .bg(colors::BG_PRIMARY)
+                    .bg(colors::BG_PRIMARY())
                     .bold(),
                 1,
             )
             .child_flex(list_content, 1.0)
             .child_sized(
                 Text::new(footer_hint)
-                    .fg(colors::FG_MUTED)
-                    .bg(colors::BG_PRIMARY)
+                    .fg(colors::FG_MUTED())
+                    .bg(colors::BG_PRIMARY())
                     .align(Alignment::Center),
                 1,
             );
@@ -568,7 +615,7 @@ fn render_positioned_list(
                     .child_flex(list_content, 1.0)
                     .child_sized(
                         Text::new(footer_hint)
-                            .fg(colors::FG_MUTED)
+                            .fg(colors::FG_MUTED())
                             .align(Alignment::Center),
                         1,
                     )
@@ -653,10 +700,10 @@ mod tests {
     fn render_dialog_bottom_is_frameless() {
         let mut buf = Buffer::new(60, 20);
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
-        let content = vstack().child(Text::new("body line").fg(colors::FG_SECONDARY));
+        let content = vstack().child(Text::new("body line").fg(colors::FG_SECONDARY()));
         // 输入框几何(模拟底部 prompt):宽 40、x=2、上沿 y_top=15。
         let geom = PromptGeom { x: 2, y_top: 15, w: 40 };
-        render_dialog_bottom("Title", colors::ACCENT_CYAN, content, "hint", &mut ctx, geom, 6);
+        render_dialog_bottom("Title", colors::ACCENT_CYAN(), content, "hint", &mut ctx, geom, 6);
 
         // Bottom 几何跟随 geom:w=40, h=min(6, 15-0-1)=6, x=2, y=15-0-6=9
         // → 框区 [2,41]×[9,14],四角必须无 ╭╮╰╯(无框成形,金律)。
@@ -673,14 +720,14 @@ mod tests {
         // 标题行 (y=9) 在框宽 [2,41] 内实色 BG_PRIMARY(paint_modal_backdrop 预填框矩形)。
         assert_eq!(
             buf.get(20, 9).and_then(|c| c.bg),
-            Some(colors::BG_PRIMARY),
+            Some(colors::BG_PRIMARY()),
             "title row must sit on solid BG_PRIMARY"
         );
         // 框外不再全宽遮底:右沿 41 之外(x=50)应透出下层,非 BG_PRIMARY。
         // 守住本轮核心改动——fill 从全屏宽收缩到输入框宽(土律:几何唯一真相)。
         assert_ne!(
             buf.get(50, 9).and_then(|c| c.bg),
-            Some(colors::BG_PRIMARY),
+            Some(colors::BG_PRIMARY()),
             "fill must follow dialog width, not full screen"
         );
     }
@@ -690,8 +737,8 @@ mod tests {
         // 对照组：Centered 锚点仍带圆角框（本次无框化不动它）。
         let mut buf = Buffer::new(60, 20);
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
-        let content = vstack().child(Text::new("body").fg(colors::FG_SECONDARY));
-        render_dialog("Title", colors::ACCENT_CYAN, content, "hint", &mut ctx, 40, 6);
+        let content = vstack().child(Text::new("body").fg(colors::FG_SECONDARY()));
+        render_dialog("Title", colors::ACCENT_CYAN(), content, "hint", &mut ctx, 40, 6);
 
         // Centered 几何：w=40, h=6, x=10, y=7 → 左上角 (10,7) 必须是边框字符
         let corner = buf.get(10, 7).map(|c| c.symbol).unwrap_or(' ');

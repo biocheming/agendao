@@ -78,6 +78,12 @@ pub const KEYBINDINGS: &[HelpEntry] = {
     ]
 };
 
+impl Default for HelpDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HelpDialog {
     pub fn new() -> Self { Self { visible: false } }
     pub fn toggle(&mut self) { self.visible = !self.visible; }
@@ -100,19 +106,19 @@ impl HelpDialog {
         for entry in entries {
             content = match entry {
                 HelpEntry::Section(title) => content.child(
-                    Text::new(*title).fg(colors::ACCENT_BLUE),
+                    Text::new(*title).fg(colors::ACCENT_BLUE()),
                 ),
                 HelpEntry::Binding(key, desc) => content.child(
                     hstack().gap(2)
-                        .child(Text::new(format!("{:>12}", key)).fg(colors::ACCENT_CYAN))
-                        .child(Text::new(*desc).fg(colors::FG_SECONDARY)),
+                        .child(Text::new(format!("{:>12}", key)).fg(colors::ACCENT_CYAN()))
+                        .child(Text::new(*desc).fg(colors::FG_SECONDARY())),
                 ),
             };
         }
 
         backdrop::render_dialog_bottom(
             "Help — Keybindings",
-            colors::ACCENT_BLUE,
+            colors::ACCENT_BLUE(),
             content,
             "Esc/q/h/? to close",
             ctx, geom, entries.len() as u16 + 4,

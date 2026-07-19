@@ -11,6 +11,7 @@ pub enum SpinnerGlyph {
     Braille, // ⠋⠙⠹...（10 帧）
     Dots,    // ·✢✳✶✻✽（6 帧）
     Claude,  // ·✢✳✶✻✽ 正放+倒放（10 帧来回，点阵往返风格）
+    Wuxing,  // 木→火→土→金→水（5 帧相生流转，各相位取五行语义色）
 }
 
 impl SpinnerGlyph {
@@ -20,6 +21,9 @@ impl SpinnerGlyph {
             Self::Dots    => &["·", "✢", "✳", "✶", "✻", "✽"],
             // 正放 + 倒放构成完整往返周期（SpinnerGlyph 往返点阵）
             Self::Claude  => &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"],
+            // 相生序：木生火、火生土、土生金、金生水、水生木——
+            // 运行中的一回合就是一次完整的五行流转（土律·阴阳闭环）。
+            Self::Wuxing  => &["木", "火", "土", "金", "水"],
         }
     }
 }
@@ -35,11 +39,45 @@ pub fn frame(glyph: SpinnerGlyph, tick: u64) -> &'static str {
     frames[(tick as usize) % frames.len()]
 }
 
+/// 潮汐帧：▁▂▃▄▅▆▇█▇▆▅▄▃▂▁ 涨落循环（14 帧一次完整潮汐）。
+///
+/// 设计取舍（深川·流白）：形状动、色不动——单水位起伏传递"水·回流"语义,
+/// 单色雾灰克制不抢戏（宋式简淡）；不做整字 CJK 切换（全宽字符逐帧跳变
+/// 视觉上过重过闪,违背"状态指示应是小动作、连续感"）。
+pub fn tide_frame(tick: u64) -> &'static str {
+    const TIDE: [&str; 14] = [
+        "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+    ];
+    TIDE[(tick as usize) % TIDE.len()]
+}
+
+/// 潮汐配色：雾灰单点（与 hint 文字同色系,形状自成一体不依赖色相）。
+pub fn tide_color() -> Color {
+    crate::theme::colors::FG_MUTED()
+}
+
+/// 墨晕帧：·∘○◉●◉○∘·（8 帧一次晕开收拢）。
+///
+/// 墨滴入水,晕开再收——宋式「墨分五色」里最安静的一笔。运行时逐帧晕染,
+/// 静止时落定一点 ◉（见 [`INK_REST`]）。与潮汐同原则：形状动、色不动。
+pub fn ink_frame(tick: u64) -> &'static str {
+    const INK: [&str; 8] = ["·", "∘", "○", "◉", "●", "◉", "○", "∘"];
+    INK[(tick as usize) % INK.len()]
+}
+
+/// 静止时的墨点（不转动画也要有个安静的在场）。
+pub const INK_REST: &str = "◉";
+
+/// 墨韵配色：雾灰单点（同 hint 文字,简淡）。
+pub fn ink_color() -> Color {
+    crate::theme::colors::FG_MUTED()
+}
+
 /// stall 时颜色向红插值：3 秒无新输出后转红（interpolateColor 简化）。
 /// secs_since_last 是距上次输出的秒数；<3 返回 base，>=3 返回 ACCENT_RED。
 pub fn stall_color(base: Color, secs_since_last: u64) -> Color {
     use crate::theme::colors;
-    if secs_since_last < 3 { base } else { colors::ACCENT_RED }
+    if secs_since_last < 3 { base } else { colors::ACCENT_RED() }
 }
 
 #[cfg(test)]
@@ -68,11 +106,32 @@ mod tests {
     }
 
     #[test]
+    fn ink_blooms_and_contracts() {
+        // 8 帧墨晕：晕开（·→●）收拢（●→∘），首尾回环。
+        let frames: Vec<_> = (0..8).map(crate::widget::spinner::ink_frame).collect();
+        assert_eq!(frames[0], "·");
+        assert_eq!(frames[4], "●", "晕开顶点居中");
+        assert_eq!(frames[1], frames[7], "晕形首尾对称（∘ 回环）");
+        assert_eq!(crate::widget::spinner::ink_frame(8), crate::widget::spinner::ink_frame(0));
+        assert_eq!(crate::widget::spinner::INK_REST, "◉");
+    }
+
+    #[test]
+    fn tide_rises_and_falls() {
+        // 14 帧完整潮汐：先涨（▁→█）后落（█→▂），首尾不接同帧重复。
+        let frames: Vec<_> = (0..14).map(crate::widget::spinner::tide_frame).collect();
+        assert_eq!(frames[0], "▁");
+        assert_eq!(frames[7], "█", "涨潮顶点居中");
+        assert_eq!(frames[1], frames[13], "潮形首尾对称（▂ 回环）");
+        assert_eq!(crate::widget::spinner::tide_frame(14), crate::widget::spinner::tide_frame(0));
+    }
+
+    #[test]
     fn stall_color_red_after_3s() {
         use crate::theme::colors;
-        assert_eq!(stall_color(colors::E_AMBER, 0), colors::E_AMBER);
-        assert_eq!(stall_color(colors::E_AMBER, 2), colors::E_AMBER);
-        assert_eq!(stall_color(colors::E_AMBER, 3), colors::ACCENT_RED);
+        assert_eq!(stall_color(colors::E_AMBER(), 0), colors::E_AMBER());
+        assert_eq!(stall_color(colors::E_AMBER(), 2), colors::E_AMBER());
+        assert_eq!(stall_color(colors::E_AMBER(), 3), colors::ACCENT_RED());
     }
 
     #[test]

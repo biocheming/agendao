@@ -41,6 +41,12 @@ pub struct SessionListDialog {
     marked: Vec<bool>,
 }
 
+impl Default for SessionListDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionListDialog {
     pub fn new() -> Self {
         Self {
@@ -213,12 +219,12 @@ impl SessionListDialog {
 
         if self.loading {
             let title = format!("Sessions{}", scope_suffix);
-            let content = vstack().child(Text::new("Loading sessions...").fg(colors::FG_MUTED));
-            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, content,
+            let content = vstack().child(Text::new("Loading sessions...").fg(colors::FG_MUTED()));
+            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN(), content,
                 "Loading...", ctx, geom, 5);
         } else if let Some(ref err) = self.error {
-            let content = vstack().child(Text::new(&format!("Error: {}", err)).fg(colors::ACCENT_RED));
-            backdrop::render_dialog_bottom("Sessions", colors::ACCENT_RED, content,
+            let content = vstack().child(Text::new(format!("Error: {}", err)).fg(colors::ACCENT_RED()));
+            backdrop::render_dialog_bottom("Sessions", colors::ACCENT_RED(), content,
                 "Esc: close", ctx, geom, 5);
         } else if self.sessions.is_empty() {
             // 空状态：极简一行，scope 信息靠 title 的 "in <name>" 表达。
@@ -228,8 +234,8 @@ impl SessionListDialog {
             } else {
                 "本目录下暂无会话，按 Esc 返回，按 Enter 开启新会话。"
             };
-            let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED));
-            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN, body,
+            let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED()));
+            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN(), body,
                 "Esc: close", ctx, geom, 5);
         } else {
             let filtered = self.filtered_indices();
@@ -265,7 +271,7 @@ impl SessionListDialog {
             };
             let layout = backdrop::render_list_dialog_bottom_with_layout(
                 &title,
-                colors::ACCENT_CYAN,
+                colors::ACCENT_CYAN(),
                 &items,
                 self.selected,
                 footer,
@@ -365,13 +371,13 @@ impl SessionListDialog {
         let mut body = vstack().gap(0);
         for line in &wrapped {
             body = body.child_sized(
-                Text::new(line.as_str()).fg(colors::FG_PRIMARY),
+                Text::new(line.as_str()).fg(colors::FG_PRIMARY()),
                 1,
             );
         }
         let pop = Border::rounded()
             .title(" full title ")
-            .fg(colors::ACCENT_CYAN)
+            .fg(colors::ACCENT_CYAN())
             .child(body);
 
         // Convert absolute screen coords back to ctx-relative (positioned

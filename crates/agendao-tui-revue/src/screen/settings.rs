@@ -25,9 +25,22 @@ use crate::store::types::{SettingsCategory, SettingsFocusPane};
 use crate::theme::colors;
 
 /// Settings 三栏布局常量(单点权威,改一处全跟随)。
-const CATEGORIES_W: u16 = 22;
-const PROVIDERS_W: u16 = 28;
-const VLINE_W: u16 = 1;
+/// pub(crate)：keymap 鼠标命中与渲染共用同一组几何（金律·渲染/命中同源）。
+pub(crate) const CATEGORIES_W: u16 = 22;
+pub(crate) const PROVIDERS_W: u16 = 28;
+pub(crate) const VLINE_W: u16 = 1;
+/// MCP/Skills 列表栏宽（build_named_list_pane 用）。
+pub(crate) const LIST_COL_W: u16 = 28;
+
+/// 所有 pane 统一骨架的数据首行 y（顶呼吸 1 + 标题 1 + 空 1）。
+pub(crate) const PANE_FIRST_ROW_Y: u16 = 3;
+/// General body 首个 toggle 行 y（数据首行 + working dir 1 + 空 1），行距 2（行+desc）。
+pub(crate) const GENERAL_FIRST_ROW_Y: u16 = 5;
+pub(crate) const GENERAL_ROW_STRIDE: u16 = 2;
+/// Details 编辑表单字段块 y（块高 3 + 块间空 1，Edit 模式从 BaseUrl 起）：
+/// Add 模式 Name@3 / BaseUrl@7 / Protocol@11 / ApiKey@15；Edit 模式顺移 -4。
+pub(crate) const EDIT_FIELD_BLOCK_Y: u16 = 3;
+pub(crate) const EDIT_FIELD_BLOCK_STRIDE: u16 = 4;
 
 /// Settings 全屏构建器;由 `app/mod.rs` 在 `Route::Settings` 分支调用 `build()`。
 pub struct SettingsScreen;
@@ -164,7 +177,7 @@ fn build_general_pane(
 ) -> revue::widget::Stack {
     use crate::store::types::GeneralRow;
 
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(Text::new("  ☯ General").fg(title_color).bold(), 1)
@@ -177,7 +190,7 @@ fn build_general_pane(
     s = s
         .child_sized(
             hstack().gap(0)
-                .child_sized(Text::new(wd_line).fg(colors::FG_TRACE), wd_w)
+                .child_sized(Text::new(wd_line).fg(colors::FG_TRACE()), wd_w)
                 .child_flex(Text::new(""), 1.0),
             1,
         )
@@ -196,7 +209,7 @@ fn build_general_pane(
         .child_sized(Text::new(""), 1)
 }
 
-/// 读某行当前值的显示文案(bool → On/Off;Theme → variant label)。单点权威:
+/// 读某行当前值的显示文案(bool → On/Off;Theme → 主题 label)。单点权威:
 /// 值真相全在 store signal,这里只做展示映射。
 fn general_row_value(store: &AppStore, row: crate::store::types::GeneralRow) -> String {
     use crate::store::types::GeneralRow;
@@ -206,9 +219,7 @@ fn general_row_value(store: &AppStore, row: crate::store::types::GeneralRow) -> 
         GeneralRow::ShowHeader => on_off(store.show_header.get()),
         GeneralRow::ShowTips => on_off(store.show_tips.get()),
         GeneralRow::CompactDensity => on_off(store.compact_density.get()),
-        GeneralRow::Theme => {
-            crate::ds::theme::variant_label(store.theme_variant.get()).to_string()
-        }
+        GeneralRow::Theme => store.theme_id.get().label().to_string()
     }
 }
 
@@ -224,17 +235,17 @@ fn general_toggle_row(
     selected: bool,
 ) -> revue::widget::Stack {
     let (marker, label_color) = if selected {
-        ("▸", colors::E_TEAL)
+        ("▸", colors::E_TEAL())
     } else {
-        (" ", colors::FG_PRIMARY)
+        (" ", colors::FG_PRIMARY())
     };
     let label = format!("  {} {}", marker, row.label());
     let label_w = label.chars().count() as u16;
     // On 用绿色,dark/light 等非布尔值用青色,Off 用暗色。
     let value_color = match value {
-        "On" => colors::ACCENT_GREEN,
-        "Off" => colors::FG_MUTED,
-        _ => colors::E_TEAL,
+        "On" => colors::ACCENT_GREEN(),
+        "Off" => colors::FG_MUTED(),
+        _ => colors::E_TEAL(),
     };
     let pill = format!("[ {} ]", value);
     let pill_w = pill.chars().count() as u16;
@@ -249,7 +260,7 @@ fn general_row_desc(
     row: crate::store::types::GeneralRow,
     selected: bool,
 ) -> revue::widget::Stack {
-    let color = if selected { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let color = if selected { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     let line = format!("      {}", row.description());
     let w = line.chars().count() as u16;
     hstack().gap(0)
@@ -258,7 +269,7 @@ fn general_row_desc(
 }
 
 fn general_footer_hint(focused: bool) -> revue::widget::Stack {
-    let color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     let line = if focused {
         "  ↑/↓: Row   Enter/Space: Toggle   Tab: Categories   Esc: Back"
     } else {
@@ -277,17 +288,17 @@ fn build_about_pane() -> revue::widget::Stack {
     let title = format!("  ℹ AgenDao TUI  v{}", version);
     let title_w = title.chars().count() as u16;
     let lines: [(&str, Color); 5] = [
-        ("  道纪 — Canon of Flow and Governance", colors::FG_SECONDARY),
-        ("  A terminal UI for the AgenDao agent runtime.", colors::FG_PRIMARY),
-        ("", colors::FG_PRIMARY),
-        ("  Press Ctrl+P or / for the command palette.", colors::FG_TRACE),
-        ("  Press ? for keyboard shortcuts.", colors::FG_TRACE),
+        ("  道纪 — Canon of Flow and Governance", colors::FG_SECONDARY()),
+        ("  A terminal UI for the AgenDao agent runtime.", colors::FG_PRIMARY()),
+        ("", colors::FG_PRIMARY()),
+        ("  Press Ctrl+P or / for the command palette.", colors::FG_TRACE()),
+        ("  Press ? for keyboard shortcuts.", colors::FG_TRACE()),
     ];
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
             hstack().gap(0)
-                .child_sized(Text::new(title).fg(colors::E_TEAL).bold(), title_w)
+                .child_sized(Text::new(title).fg(colors::E_TEAL()).bold(), title_w)
                 .child_flex(Text::new(""), 1.0),
             1,
         )
@@ -302,7 +313,7 @@ fn build_about_pane() -> revue::widget::Stack {
         );
     }
     s.child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new("  Esc: Back").fg(colors::FG_TRACE()), 1)
         .child_sized(Text::new(""), 1)
 }
 
@@ -324,7 +335,7 @@ fn build_keybindings_pane(
 ) -> revue::widget::Stack {
     use crate::dialog::help::{HelpEntry, KEYBINDINGS};
 
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(Text::new("  ⌨ Keybindings").fg(title_color).bold(), 1)
@@ -337,13 +348,13 @@ fn build_keybindings_pane(
     for entry in &KEYBINDINGS[start..end] {
         let row = match entry {
             HelpEntry::Section(title) => hstack().gap(0)
-                .child_flex(Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE), 1.0),
+                .child_flex(Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE()), 1.0),
             HelpEntry::Binding(key, desc) => {
                 let key_str = format!("  {:>12}", key);
                 let key_w = key_str.chars().count() as u16;
                 hstack().gap(2)
-                    .child_sized(Text::new(key_str).fg(colors::ACCENT_CYAN), key_w)
-                    .child_flex(Text::new((*desc).to_string()).fg(colors::FG_SECONDARY), 1.0)
+                    .child_sized(Text::new(key_str).fg(colors::ACCENT_CYAN()), key_w)
+                    .child_flex(Text::new((*desc).to_string()).fg(colors::FG_SECONDARY()), 1.0)
             }
         };
         s = s.child_sized(row, 1);
@@ -359,7 +370,7 @@ fn build_keybindings_pane(
     } else {
         "  Tab/Enter: Enter Keybindings   Esc: Back".to_string()
     };
-    let hint_color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let hint_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     let hint_w = hint.chars().count() as u16;
     s.child_flex(Text::new(""), 1.0)
         .child_sized(
@@ -373,15 +384,11 @@ fn build_keybindings_pane(
 
 // ── MCP Servers 分类 body ──
 
-const LIST_COL_W: u16 = 28;
-
 fn build_mcp_body(
     store: &AppStore,
     pane_height: u16,
     focus: SettingsFocusPane,
 ) -> revue::widget::Stack {
-    use crate::store::types::SettingsMcpRow;
-
     let rows = store.settings_mcp.get();
     let selected = store.settings_mcp_selected.get().min(rows.len().saturating_sub(1));
     let list_focused = focus == SettingsFocusPane::Providers;
@@ -397,15 +404,15 @@ fn build_mcp_body(
             let r = &rows[i];
             let marker = if i == selected { "▸" } else { "◇" };
             let color = if i == selected {
-                colors::E_TEAL
+                colors::E_TEAL()
             } else {
-                colors::FG_PRIMARY
+                colors::FG_PRIMARY()
             };
             let dot = if r.is_connected() { "●" } else { "─" };
             let dot_color = if r.is_connected() {
-                colors::ACCENT_GREEN
+                colors::ACCENT_GREEN()
             } else {
-                colors::FG_TRACE
+                colors::FG_TRACE()
             };
             let prefix = format!(" {} {}", marker, r.name);
             let prefix_w = prefix.chars().count() as u16;
@@ -435,12 +442,12 @@ fn build_mcp_body(
 }
 
 fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let pill = if r.is_connected() { " Connected " } else { " Disconnected " };
     let pill_color = if r.is_connected() {
-        colors::ACCENT_GREEN
+        colors::ACCENT_GREEN()
     } else {
-        colors::FG_MUTED
+        colors::FG_MUTED()
     };
     let header = format!("  ⚔ {}", r.name);
     let header_w = header.chars().count() as u16;
@@ -455,21 +462,21 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
             1,
         )
         .child_sized(Text::new(""), 1)
-        .child_sized(field_block("Status", &r.status, colors::FG_PRIMARY, ""), 3)
+        .child_sized(field_block("Status", &r.status, colors::FG_PRIMARY(), ""), 3)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            field_block("Tools", &r.tools.to_string(), colors::FG_PRIMARY, ""),
+            field_block("Tools", &r.tools.to_string(), colors::FG_PRIMARY(), ""),
             3,
         )
         .child_sized(Text::new(""), 1)
         .child_sized(
-            field_block("Resources", &r.resources.to_string(), colors::FG_PRIMARY, ""),
+            field_block("Resources", &r.resources.to_string(), colors::FG_PRIMARY(), ""),
             3,
         );
     if let Some(ref err) = r.error {
         s = s
             .child_sized(Text::new(""), 1)
-            .child_sized(field_block("Error", err, colors::ACCENT_RED, ""), 3);
+            .child_sized(field_block("Error", err, colors::ACCENT_RED(), ""), 3);
     }
     let hint = if focused {
         "  c: Connect   d: Disconnect   Tab: List   Esc: Back"
@@ -479,9 +486,9 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
     s.child_flex(Text::new(""), 1.0)
         .child_sized(
             Text::new(hint).fg(if focused {
-                colors::FG_SECONDARY
+                colors::FG_SECONDARY()
             } else {
-                colors::FG_TRACE
+                colors::FG_TRACE()
             }),
             1,
         )
@@ -515,13 +522,13 @@ fn build_skills_body(
             let r = &rows[i];
             let marker = if i == selected { "▸" } else { " " };
             let (tag, tag_color) = match r {
-                SettingsSkillRow::Proposal { .. } => ("[P]", colors::E_AMBER),
-                SettingsSkillRow::Catalog { .. } => ("[S]", colors::ACCENT_CYAN),
+                SettingsSkillRow::Proposal { .. } => ("[P]", colors::E_AMBER()),
+                SettingsSkillRow::Catalog { .. } => ("[S]", colors::ACCENT_CYAN()),
             };
             let name_color = if i == selected {
-                colors::E_TEAL
+                colors::E_TEAL()
             } else {
-                colors::FG_PRIMARY
+                colors::FG_PRIMARY()
             };
             let prefix = format!(" {} {} ", marker, tag);
             let prefix_w = prefix.chars().count() as u16;
@@ -556,7 +563,7 @@ fn build_skill_detail(
     focused: bool,
 ) -> revue::widget::Stack {
     use crate::store::types::SettingsSkillRow;
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0).child_sized(Text::new(""), 1);
     match r {
         SettingsSkillRow::Catalog {
@@ -584,19 +591,19 @@ fn build_skill_detail(
                         } else {
                             description
                         },
-                        colors::FG_PRIMARY,
+                        colors::FG_PRIMARY(),
                         "",
                     ),
                     3,
                 )
                 .child_sized(Text::new(""), 1)
-                .child_sized(field_block("Location", location, colors::FG_PRIMARY, ""), 3)
+                .child_sized(field_block("Location", location, colors::FG_PRIMARY(), ""), 3)
                 .child_sized(Text::new(""), 1)
                 .child_sized(
                     field_block(
                         "Category",
                         category.as_deref().unwrap_or("(none)"),
-                        colors::FG_PRIMARY,
+                        colors::FG_PRIMARY(),
                         "",
                     ),
                     3,
@@ -606,7 +613,7 @@ fn build_skill_detail(
                     field_block(
                         "Writable",
                         if *writable { "yes" } else { "no" },
-                        colors::FG_PRIMARY,
+                        colors::FG_PRIMARY(),
                         "",
                     ),
                     3,
@@ -619,9 +626,9 @@ fn build_skill_detail(
             s.child_flex(Text::new(""), 1.0)
                 .child_sized(
                     Text::new(hint).fg(if focused {
-                        colors::FG_SECONDARY
+                        colors::FG_SECONDARY()
                     } else {
-                        colors::FG_TRACE
+                        colors::FG_TRACE()
                     }),
                     1,
                 )
@@ -640,26 +647,24 @@ fn build_skill_detail(
                     hstack().gap(0)
                         .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                         .child_flex(Text::new(""), 1.0)
-                        .child_sized(Text::new(" Proposal ").fg(colors::E_AMBER).bold(), 11),
+                        .child_sized(Text::new(" Proposal ").fg(colors::E_AMBER()).bold(), 11),
                     1,
                 )
                 .child_sized(Text::new(""), 1)
-                .child_sized(field_block("Status", status, colors::FG_PRIMARY, ""), 3)
+                .child_sized(field_block("Status", status, colors::FG_PRIMARY(), ""), 3)
                 .child_sized(Text::new(""), 1)
-                .child_sized(field_block("Kind", kind, colors::FG_PRIMARY, ""), 3)
+                .child_sized(field_block("Kind", kind, colors::FG_PRIMARY(), ""), 3)
                 .child_sized(Text::new(""), 1)
-                .child_sized(field_block("Id", id, colors::FG_MUTED, ""), 3);
-            let hint = if focused {
-                "  a: Approve   r: Reject   Tab: List   Esc: Back"
-            } else {
-                "  Tab: Detail pane"
-            };
+                .child_sized(field_block("Id", id, colors::FG_MUTED(), ""), 3);
+            // Proposal 动作 hint 常显（不再仅 focused 时展示）：鼠标命中区
+            // 需要可见目标（金律·成形/命中同源）；颜色仍随 focus 分阶。
+            let hint = "  a: Approve   r: Reject   Tab: List   Esc: Back";
             s.child_flex(Text::new(""), 1.0)
                 .child_sized(
                     Text::new(hint).fg(if focused {
-                        colors::FG_SECONDARY
+                        colors::FG_SECONDARY()
                     } else {
-                        colors::FG_TRACE
+                        colors::FG_TRACE()
                     }),
                     1,
                 )
@@ -670,9 +675,9 @@ fn build_skill_detail(
 
 fn build_empty_detail(msg: &str, focused: bool) -> revue::widget::Stack {
     let color = if focused {
-        colors::FG_SECONDARY
+        colors::FG_SECONDARY()
     } else {
-        colors::FG_MUTED
+        colors::FG_MUTED()
     };
     vstack().gap(0)
         .child_sized(Text::new(""), 1)
@@ -693,7 +698,7 @@ fn build_named_list_pane<F>(
 where
     F: FnMut(usize) -> revue::widget::Stack,
 {
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(Text::new(format!("  {}", title)).fg(title_color).bold(), 1)
@@ -701,9 +706,9 @@ where
 
     if total == 0 {
         return s
-            .child_sized(Text::new("   (empty)").fg(colors::FG_TRACE), 1)
+            .child_sized(Text::new("   (empty)").fg(colors::FG_TRACE()), 1)
             .child_flex(Text::new(""), 1.0)
-            .child_sized(Text::new(footer).fg(colors::FG_TRACE), 1)
+            .child_sized(Text::new(footer).fg(colors::FG_TRACE()), 1)
             .child_sized(Text::new(""), 1);
     }
 
@@ -716,15 +721,15 @@ where
     let pos = format!("{}/{}", selected + 1, total);
     let pos_w = pos.chars().count() as u16;
     let footer_color = if focused {
-        colors::FG_SECONDARY
+        colors::FG_SECONDARY()
     } else {
-        colors::FG_TRACE
+        colors::FG_TRACE()
     };
     let footer_w = footer.chars().count() as u16;
     let footer_row = hstack().gap(0)
         .child_sized(Text::new(footer).fg(footer_color), footer_w)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(pos).fg(colors::FG_TRACE), pos_w)
+        .child_sized(Text::new(pos).fg(colors::FG_TRACE()), pos_w)
         .child_sized(Text::new("  "), 2);
     s.child_flex(Text::new(""), 1.0)
         .child_sized(footer_row, 1)
@@ -737,7 +742,7 @@ where
 /// 这里返回一个 vstack 填满即可。
 fn vline() -> revue::widget::Stack {
     vstack().gap(0).child_flex(
-        Text::new("│".repeat(64)).fg(colors::SIDEBAR_DIVIDER),
+        Text::new("│".repeat(64)).fg(colors::SIDEBAR_DIVIDER()),
         1.0,
     )
 }
@@ -747,7 +752,7 @@ fn vline() -> revue::widget::Stack {
 fn build_categories_pane(active: SettingsCategory, focused: bool) -> revue::widget::Stack {
     // 标题 + 6 项 + flex 空白 + 底部 Esc 提示。Pane 不画边框(列已用 VLine 划界),
     // 这样视觉重量集中在 active 行的高亮,与 HTML 稿一致。
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1) // 顶呼吸 1 行
         .child_sized(Text::new("  ⚙ Preferences").fg(title_color).bold(), 1)
@@ -758,7 +763,7 @@ fn build_categories_pane(active: SettingsCategory, focused: bool) -> revue::widg
     }
 
     s.child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new("  ← Esc: Exit").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new("  ← Esc: Exit").fg(colors::FG_TRACE()), 1)
         .child_sized(Text::new(""), 1)
 }
 
@@ -766,11 +771,11 @@ fn category_row(cat: SettingsCategory, is_active: bool) -> revue::widget::Stack 
     // 视觉权重:active = ▸ + E_TEAL,implemented(非 active)= FG_SECONDARY,
     // 灰显占位 = FG_TRACE(刚好看清,与 HTML 的 disabled 一致)。
     let (icon, color) = if is_active {
-        ("▸", colors::E_TEAL)
+        ("▸", colors::E_TEAL())
     } else if cat.is_implemented() {
-        (" ", colors::FG_SECONDARY)
+        (" ", colors::FG_SECONDARY())
     } else {
-        (" ", colors::FG_TRACE)
+        (" ", colors::FG_TRACE())
     };
     let line = format!(" {} {} {}", icon, cat.icon(), cat.label());
     let w = line.chars().count() as u16;
@@ -790,7 +795,7 @@ fn build_providers_pane(
     selected_idx: Option<usize>,
     is_add: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(Text::new("  ◆ Providers").fg(title_color).bold(), 1)
@@ -799,13 +804,13 @@ fn build_providers_pane(
     if providers.is_empty() && !is_add {
         // 空态:加载中或 server 无 provider 配置。
         s = s.child_sized(
-            Text::new("   (no providers)").fg(colors::FG_TRACE),
+            Text::new("   (no providers)").fg(colors::FG_TRACE()),
             1,
         );
         return s
             .child_flex(Text::new(""), 1.0)
             .child_sized(
-                Text::new("  + Add provider").fg(colors::FG_TRACE),
+                Text::new("  + Add provider").fg(colors::FG_TRACE()),
                 1,
             )
             .child_sized(Text::new(""), 1);
@@ -841,7 +846,7 @@ fn build_providers_pane(
         None => format!("-/{}", total),
     };
     let pos_w = pos.chars().count() as u16;
-    let add_color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let add_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     // Providers pane 通常窄(~24 列),hint 必须极简:`a/e/d` 三字母合订 +
     // 后边 `+ Add provider` 主入口文案。详细 hint("a: Add e: Edit d: Delete")
     // 由 Details pane footer_hint 承接(底部 1 行更宽,文字不挤),
@@ -852,7 +857,7 @@ fn build_providers_pane(
     let footer_row = hstack().gap(0)
         .child_sized(Text::new(add_text).fg(add_color), add_w)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(pos).fg(colors::FG_TRACE), pos_w)
+        .child_sized(Text::new(pos).fg(colors::FG_TRACE()), pos_w)
         .child_sized(Text::new("  "), 2);
 
     s.child_flex(Text::new(""), 1.0)
@@ -863,13 +868,13 @@ fn build_providers_pane(
 /// Add 模式下虚拟追加的"(new provider)"草稿行(永远 selected,标 highlight)。
 /// 不进入 store.providers——纯渲染层占位,close 后随 edit_state 一起消失。
 fn provider_row_draft(focused: bool) -> revue::widget::Stack {
-    let name_color = if focused { colors::E_AMBER } else { colors::FG_SECONDARY };
+    let name_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
     let prefix = " ▸ (new provider)";
     let prefix_w = prefix.chars().count() as u16;
     hstack().gap(0)
         .child_sized(Text::new(prefix).fg(name_color).italic(), prefix_w)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new("✎").fg(colors::E_AMBER), 1)
+        .child_sized(Text::new("✎").fg(colors::E_AMBER()), 1)
         .child_sized(Text::new(" "), 1)
 }
 
@@ -877,12 +882,12 @@ fn provider_row(name: &str, is_connected: bool, is_selected: bool) -> revue::wid
     // active provider 行(selected):▸ + E_TEAL;否则 ◇ + FG_SECONDARY。
     // 连接状态 dot:● ACCENT_GREEN(connected) / ─ FG_TRACE(disconnected)。
     let (marker, color) = if is_selected {
-        ("▸", colors::E_TEAL)
+        ("▸", colors::E_TEAL())
     } else {
-        ("◇", colors::FG_SECONDARY)
+        ("◇", colors::FG_SECONDARY())
     };
     let dot = if is_connected { "●" } else { "─" };
-    let dot_color = if is_connected { colors::ACCENT_GREEN } else { colors::FG_TRACE };
+    let dot_color = if is_connected { colors::ACCENT_GREEN() } else { colors::FG_TRACE() };
     let prefix = format!(" {} {}", marker, name);
     let prefix_w = prefix.chars().count() as u16;
     hstack().gap(0)
@@ -902,7 +907,7 @@ fn build_details_pane(
     selected_model: Option<&str>,
     edit_state: Option<&SettingsEditState>,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL } else { colors::FG_SECONDARY };
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let editing_active = edit_state.is_some_and(|s| s.active);
     let is_add = edit_state.is_some_and(|s| s.is_add());
 
@@ -920,40 +925,57 @@ fn build_details_pane(
     if provider_opt.is_none() && !is_add {
         return vstack().gap(0)
             .child_sized(Text::new(""), 1)
-            .child_sized(Text::new("  Select a provider").fg(colors::FG_MUTED), 1)
+            .child_sized(Text::new("  Select a provider").fg(colors::FG_MUTED()), 1)
             .child_flex(Text::new(""), 1.0);
     }
 
     // ── Header 行 ──
-    // 非 editing:◆ name + [Enabled] pill;Add:◆ (new provider) + [Drafting] pill;
-    // Edit:照常显示 provider.name(name 不可改)
+    // 非 editing:◆ name + 状态 pill（可点击 toggle disabled，见 keymap 命中）;
+    // Add:◆ (new provider) + [Drafting] pill;Edit:照常显示 provider.name
     let (header_label, pill, pill_color) = if is_add {
-        ("  ◆ (new provider)".to_string(), " Drafting ", colors::E_AMBER)
+        ("  ◆ (new provider)".to_string(), " Drafting ", colors::E_AMBER())
     } else {
         let p = provider_opt.expect("provider_opt is Some when !is_add");
         let is_connected = connected.contains(&p.id);
         let lbl = format!("  ◆ {}", p.name);
-        let pl = if is_connected { " Enabled " } else { " Disabled " };
-        let pc = if is_connected { colors::ACCENT_GREEN } else { colors::FG_MUTED };
+        // 三态：disabled(config.disabled_providers) > connected(有 auth) > 无 key。
+        // disabled 与 connected 是两个独立维度,此前 pill 拿 connected 冒充 enabled(伪权威)。
+        let (pl, pc) = if p.disabled {
+            (" Disabled ", colors::FG_MUTED())
+        } else if is_connected {
+            (" Enabled ", colors::ACCENT_GREEN())
+        } else {
+            (" No key ", colors::STATUS_WARN())
+        };
         (lbl, pl, pc)
     };
     let header_label_w = header_label.chars().count() as u16;
     let pill_w = pill.chars().count() as u16;
-    let mode_text = "Connection mode <API key>";
+    // 右侧操作：⚡ Test connection（可点击/按 t——keymap 命中与键路由同权威）。
+    let mode_text = "⚡ Test";
     let mode_w = mode_text.chars().count() as u16;
     let header = hstack().gap(1)
         .child_sized(Text::new(header_label).fg(title_color).bold(), header_label_w)
         .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(mode_text).fg(colors::FG_TRACE), mode_w)
+        .child_sized(Text::new(mode_text).fg(colors::FG_TRACE()), mode_w)
         .child_sized(Text::new("  "), 2);
 
-    // ── Name 字段(仅 Add 模式 editing 显示;Edit 模式 name 不允许改,不渲染单独字段)──
+    // ── Name 字段(editing 两模式均显示:Add=新建命名(兼 id),Edit=rename)──
     let name_field_opt = if is_add {
         let st = edit_state.expect("is_add => edit_state Some");
         let focused_field = st.focus == SettingsEditField::Name;
         Some(field_block_editing(
             "Name (also used as ID)",
+            st.name_input.clone(),
+            "",
+            focused_field,
+        ))
+    } else if editing_active {
+        let st = edit_state.expect("editing_active");
+        let focused_field = st.focus == SettingsEditField::Name;
+        Some(field_block_editing(
+            "Name",
             st.name_input.clone(),
             "",
             focused_field,
@@ -973,7 +995,7 @@ fn build_details_pane(
             .base_url
             .clone()
             .unwrap_or_else(|| "(not set)".to_string());
-        let base_color = if p.base_url.is_some() { colors::FG_PRIMARY } else { colors::FG_TRACE };
+        let base_color = if p.base_url.is_some() { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
         field_block("Base URL", &base_value, base_color, "")
     };
 
@@ -993,7 +1015,7 @@ fn build_details_pane(
             .as_deref()
             .map(protocol_display_label)
             .unwrap_or("(unknown)");
-        let protocol_color = if p.protocol.is_some() { colors::FG_PRIMARY } else { colors::FG_TRACE };
+        let protocol_color = if p.protocol.is_some() { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
         field_block("Protocol", protocol_value, protocol_color, "")
     };
 
@@ -1009,7 +1031,7 @@ fn build_details_pane(
         field_block(
             "API key",
             "••••••••••••••••••••",
-            colors::FG_MUTED,
+            colors::FG_MUTED(),
             api_key_hint,
         )
     };
@@ -1024,11 +1046,11 @@ fn build_details_pane(
     let models_hint_w = models_hint.chars().count() as u16;
     let models_header_row = hstack().gap(0)
         .child_sized(
-            Text::new(models_label).fg(colors::FG_SECONDARY).bold(),
+            Text::new(models_label).fg(colors::FG_SECONDARY()).bold(),
             models_label_w,
         )
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(models_hint).fg(colors::FG_TRACE), models_hint_w);
+        .child_sized(Text::new(models_hint).fg(colors::FG_TRACE()), models_hint_w);
     let mut models_block = vstack().gap(0)
         .child_sized(models_header_row, 1)
         .child_sized(Text::new(""), 1);
@@ -1039,7 +1061,7 @@ fn build_details_pane(
         let provider = provider_opt.expect("show_models => provider_opt Some");
         if provider.models.is_empty() {
             models_block = models_block.child_sized(
-                Text::new("   (no models configured)").fg(colors::FG_TRACE),
+                Text::new("   (no models configured)").fg(colors::FG_TRACE()),
                 1,
             );
         } else {
@@ -1050,12 +1072,12 @@ fn build_details_pane(
         }
     } else if is_add {
         models_block = models_block.child_sized(
-            Text::new("   (add models after saving)").fg(colors::FG_TRACE).italic(),
+            Text::new("   (add models after saving)").fg(colors::FG_TRACE()).italic(),
             1,
         );
     } else {
         models_block = models_block.child_sized(
-            Text::new("   (models hidden while editing)").fg(colors::FG_TRACE).italic(),
+            Text::new("   (models hidden while editing)").fg(colors::FG_TRACE()).italic(),
             1,
         );
     }
@@ -1084,7 +1106,7 @@ fn build_details_pane(
 fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revue::widget::Stack {
     let label_line = if hint.is_empty() {
         hstack().gap(0).child_flex(
-            Text::new(format!("  {}", label)).fg(colors::FG_SECONDARY),
+            Text::new(format!("  {}", label)).fg(colors::FG_SECONDARY()),
             1.0,
         )
     } else {
@@ -1092,13 +1114,13 @@ fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revu
         let lab_w = lab.chars().count() as u16;
         let hint_w = hint.chars().count() as u16;
         hstack().gap(0)
-            .child_sized(Text::new(lab).fg(colors::FG_SECONDARY), lab_w)
+            .child_sized(Text::new(lab).fg(colors::FG_SECONDARY()), lab_w)
             .child_flex(Text::new(""), 1.0)
-            .child_sized(Text::new(hint).fg(colors::FG_TRACE), hint_w)
+            .child_sized(Text::new(hint).fg(colors::FG_TRACE()), hint_w)
             .child_sized(Text::new("  "), 2)
     };
     let bordered = Border::only_bottom()
-        .fg(colors::BORDER)
+        .fg(colors::BORDER())
         .child(
             hstack().gap(0)
                 .child_sized(Text::new("  "), 2)
@@ -1113,7 +1135,7 @@ fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revu
 /// editing 进行中且当前字段 focused = true 时:
 ///   - label 颜色 E_AMBER(高亮)
 ///   - 下边框颜色 E_AMBER + Input.focused(true) 让光标闪
-/// focused = false(其他字段在编辑但不是当前焦点):
+///     focused = false(其他字段在编辑但不是当前焦点):
 ///   - label / 边框 用 BORDER 暗色
 ///   - Input.focused(false)
 ///
@@ -1124,8 +1146,8 @@ fn field_block_editing(
     hint: &str,
     focused: bool,
 ) -> revue::widget::Stack {
-    let label_color = if focused { colors::E_AMBER } else { colors::FG_SECONDARY };
-    let border_color = if focused { colors::E_AMBER } else { colors::BORDER };
+    let label_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
+    let border_color = if focused { colors::E_AMBER() } else { colors::BORDER() };
     let label_line = if hint.is_empty() {
         hstack().gap(0).child_flex(
             Text::new(format!("  {}", label)).fg(label_color),
@@ -1138,14 +1160,14 @@ fn field_block_editing(
         hstack().gap(0)
             .child_sized(Text::new(lab).fg(label_color), lab_w)
             .child_flex(Text::new(""), 1.0)
-            .child_sized(Text::new(hint).fg(colors::FG_TRACE), hint_w)
+            .child_sized(Text::new(hint).fg(colors::FG_TRACE()), hint_w)
             .child_sized(Text::new("  "), 2)
     };
     // Input 是 Clone:此处的 owned 副本只为渲染存在,渲染完即销毁;
     // SettingsEditState 保留原 Input 等下一次 handle_key 修改 buffer/cursor。
     let input_view = input
         .focused(focused)
-        .fg(colors::FG_PRIMARY);
+        .fg(colors::FG_PRIMARY());
     let bordered = Border::only_bottom()
         .fg(border_color)
         .child(
@@ -1161,10 +1183,10 @@ fn field_block_editing(
 /// 字段块·横向选择器(Protocol 字段专用):`‹ openai ›` 形态,focused 时
 /// 高亮箭头 + 加宽视觉权重,告诉用户"按 ←/→ 切",其他键无效。
 fn field_block_choice(label: &str, choice_label: &str, focused: bool) -> revue::widget::Stack {
-    let label_color = if focused { colors::E_AMBER } else { colors::FG_SECONDARY };
-    let border_color = if focused { colors::E_AMBER } else { colors::BORDER };
-    let arrow_color = if focused { colors::E_AMBER } else { colors::FG_TRACE };
-    let value_color = if focused { colors::FG_PRIMARY } else { colors::FG_SECONDARY };
+    let label_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
+    let border_color = if focused { colors::E_AMBER() } else { colors::BORDER() };
+    let arrow_color = if focused { colors::E_AMBER() } else { colors::FG_TRACE() };
+    let value_color = if focused { colors::FG_PRIMARY() } else { colors::FG_SECONDARY() };
     let label_line = hstack().gap(0).child_flex(
         Text::new(format!("  {}", label)).fg(label_color),
         1.0,
@@ -1196,10 +1218,10 @@ fn model_row(
     // (金律·成形语法:focus 信号通过颜色权威而非位置变化传达,避免视觉跳动)。
     let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
     let (marker, name_color) = if selected {
-        let color = if pane_focused { colors::E_AMBER } else { colors::FG_SECONDARY };
+        let color = if pane_focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
         ("▸ ", color)
     } else {
-        ("  ", colors::FG_PRIMARY)
+        ("  ", colors::FG_PRIMARY())
     };
     let ctx_label = match m.context_window {
         Some(n) if n > 0 => format!("{}K context", n / 1000),
@@ -1211,13 +1233,13 @@ fn model_row(
     hstack().gap(0)
         .child_sized(Text::new(name_str).fg(name_color), name_w)
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(ctx_label).fg(colors::FG_MUTED), ctx_w)
+        .child_sized(Text::new(ctx_label).fg(colors::FG_MUTED()), ctx_w)
         .child_sized(Text::new("   "), 3)
-        .child_sized(Text::new("🔗").fg(colors::FG_TRACE), 2)
+        .child_sized(Text::new("🔗").fg(colors::FG_TRACE()), 2)
         .child_sized(Text::new(" "), 1)
-        .child_sized(Text::new("✎").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new("✎").fg(colors::FG_TRACE()), 1)
         .child_sized(Text::new(" "), 1)
-        .child_sized(Text::new("✕").fg(colors::FG_TRACE), 1)
+        .child_sized(Text::new("✕").fg(colors::FG_TRACE()), 1)
         .child_sized(Text::new("  "), 2)
 }
 
@@ -1248,11 +1270,11 @@ fn footer_hint_editing(
 ) -> revue::widget::Stack {
     // 三状态:editing 中显示 Tab/Enter/Esc 编辑流;Details focused + 有 model 选中
     // → m/e/d;其他 → 通用 Tab/↑/↓。单点权威:每个状态对应唯一一行 hint。
-    let active_color = if focused { colors::FG_SECONDARY } else { colors::FG_TRACE };
+    let active_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     let line = if editing_active {
         "  Tab: Next field   ←/→: Protocol   Enter: Save   Esc: Cancel"
     } else if focused && has_selected_model {
-        "  ↑/↓: Model   m: Add  e: Edit  d: Delete   Tab: Pane   Esc: Back"
+        "  ↑/↓: Model   m: Add  e: Edit  d: Delete  t: Test   Tab: Pane   Esc: Back"
     } else if focused {
         "  ↑/↓: Browse models   m: Add model   Tab: Pane   Esc: Back"
     } else {
@@ -1294,6 +1316,7 @@ mod tests {
             models: vec![],
             base_url: Some("https://api.example.com".to_string()),
             protocol: Some("openai".to_string()),
+                disabled: false,
         }]);
         store.settings_selected_provider.set(Some("p1".to_string()));
         let mut buf = Buffer::new(120, 40);
@@ -1434,6 +1457,8 @@ mod tests {
     fn providers_pane_viewport_follows_selection_to_bottom() {
         let store = AppStore::new();
         store.navigate_settings();
+        // 默认分类已是 General（issue 修复），本测试针对 ModelSettings body，显式切换。
+        store.settings_category.set(SettingsCategory::ModelSettings);
         let mut providers = Vec::with_capacity(14);
         for i in 1..=14 {
             providers.push(agendao_client::ProviderInfo {
@@ -1442,6 +1467,7 @@ mod tests {
                 models: vec![],
                 base_url: None,
                 protocol: None,
+                    disabled: false,
             });
         }
         store.providers.set(providers);

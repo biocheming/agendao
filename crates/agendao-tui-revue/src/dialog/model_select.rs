@@ -58,6 +58,12 @@ pub struct ModelSelectDialog {
 #[derive(Clone)]
 enum FlatRow { Header(String), Model(usize, usize) } // group_idx, model_idx
 
+impl Default for ModelSelectDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelSelectDialog {
     pub fn new() -> Self { Self { visible: false, groups: vec![], flat: vec![], selected: 0, variant_idx: 0, recent: vec![], query: String::new() } }
 
@@ -252,7 +258,7 @@ impl ModelSelectDialog {
 
         backdrop::render_list_dialog_bottom(
             &title,
-            colors::ACCENT_CYAN,
+            colors::ACCENT_CYAN(),
             &items,
             self.selected,
             "type to filter  ↑↓ navigate  Tab: variant  Enter: select  Esc: close",

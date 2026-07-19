@@ -36,6 +36,12 @@ pub struct SkillProposalDialog {
     selected: usize,
 }
 
+impl Default for SkillProposalDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillProposalDialog {
     pub fn new() -> Self {
         Self { visible: false, proposals: Vec::new(), selected: 0 }
@@ -97,7 +103,7 @@ impl SkillProposalDialog {
             }];
             backdrop::render_list_dialog_bottom(
                 "Proposals",
-                colors::ACCENT_PURPLE,
+                colors::ACCENT_PURPLE(),
                 &items,
                 0,
                 "Esc: close",
@@ -115,7 +121,7 @@ impl SkillProposalDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Proposals",
-            colors::ACCENT_PURPLE,
+            colors::ACCENT_PURPLE(),
             &items,
             self.selected,
             "↑↓ navigate  a: approve  r: reject  Enter: view  Esc: close",

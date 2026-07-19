@@ -44,9 +44,8 @@ pub fn spawn_source_from_state(
                 event = rx.recv() => {
                     let Some(fe) = event else { break };
                     let Some(sid) = event_session_id(&fe) else { continue };
-                    if filter_rx.borrow().as_deref() == Some(sid) {
-                        if tx.send(fe).is_err() { break; }
-                    }
+                    if filter_rx.borrow().as_deref() == Some(sid)
+                        && tx.send(fe).is_err() { break; }
                 }
                 changed = filter_rx.changed() => {
                     if changed.is_err() { cancel.cancel(); break; }
@@ -90,9 +89,8 @@ pub fn spawn_event_source(
                     let Some(fe) = event else { break };
                     let Some(sid) = event_session_id(&fe) else { continue };
                     // Only forward if matches current session filter
-                    if filter_rx.borrow().as_deref() == Some(sid) {
-                        if tx.send(fe).is_err() { break; }
-                    }
+                    if filter_rx.borrow().as_deref() == Some(sid)
+                        && tx.send(fe).is_err() { break; }
                 }
                 changed = filter_rx.changed() => {
                     if changed.is_err() { cancel.cancel(); break; }

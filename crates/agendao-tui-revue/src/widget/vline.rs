@@ -15,7 +15,7 @@ use revue::prelude::*;
 /// 垂直分隔线：`render` 时遍历 area 把每个 cell 的 `symbol` 设为 `│`、
 /// `fg` 设为给定色（保留 bg，让终端黑透出）。
 ///
-/// 用法：`VLine::new(colors::SIDEBAR_DIVIDER)`，置于 hstack 中作 1 列宽 child。
+/// 用法：`VLine::new(colors::SIDEBAR_DIVIDER())`，置于 hstack 中作 1 列宽 child。
 pub struct VLine {
     color: Color,
 }

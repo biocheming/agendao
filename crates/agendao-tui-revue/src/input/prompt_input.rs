@@ -22,8 +22,8 @@ pub struct PromptInput {
 }
 
 fn default_history_path() -> std::path::PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join("agendao").join("prompt-history.json")
+    // 输入历史统一收在 agendao_home（~/.agendao,土律·单点权威）。
+    agendao_util::agendao_home().join("prompt-history.json")
 }
 
 fn load_history(path: &std::path::Path) -> Vec<String> {
@@ -53,6 +53,12 @@ fn save_history(path: &std::path::Path, history: &[String]) {
         {
             let _ = std::fs::write(path, &json);
         }
+    }
+}
+
+impl Default for PromptInput {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

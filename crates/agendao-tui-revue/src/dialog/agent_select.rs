@@ -22,6 +22,12 @@ pub struct AgentSelectDialog {
     selected: usize,
 }
 
+impl Default for AgentSelectDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentSelectDialog {
     pub fn new() -> Self {
         Self { visible: false, agents: Vec::new(), selected: 0 }
@@ -69,7 +75,7 @@ impl AgentSelectDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Select Agent",
-            colors::ACCENT_PURPLE,
+            colors::ACCENT_PURPLE(),
             &items,
             self.selected,
             "↑↓ navigate  Enter: select  Esc: close",

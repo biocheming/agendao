@@ -27,6 +27,12 @@ pub struct SkillListDialog {
     selected: usize,
 }
 
+impl Default for SkillListDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillListDialog {
     pub fn new() -> Self {
         Self { visible: false, skills: Vec::new(), selected: 0 }
@@ -75,7 +81,7 @@ impl SkillListDialog {
             }];
             backdrop::render_list_dialog_bottom(
                 "Skills",
-                colors::ACCENT_PURPLE,
+                colors::ACCENT_PURPLE(),
                 &items,
                 0,
                 "Esc: close",
@@ -93,7 +99,7 @@ impl SkillListDialog {
         }).collect();
         backdrop::render_list_dialog_bottom(
             "Skills",
-            colors::ACCENT_PURPLE,
+            colors::ACCENT_PURPLE(),
             &items,
             self.selected,
             "↑↓ navigate  Enter: select (read-only)  Esc: close",

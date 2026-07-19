@@ -13,7 +13,7 @@
 /// 以 `\x1b\\` ST 结尾）。失败返回 `None`。
 pub fn parse_osc11_response(resp: &str) -> Option<(u8, u8, u8)> {
     let body = resp.split("11;").nth(1)?;
-    let body = body.trim_end_matches(|c: char| c == '\x07' || c == '\x1b' || c == '\\');
+    let body = body.trim_end_matches(['\x07', '\x1b', '\\']);
     let rgb = body.strip_prefix("rgb:")?;
     let parts: Vec<&str> = rgb.split('/').collect();
     if parts.len() != 3 { return None; }

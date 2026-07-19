@@ -69,28 +69,21 @@ use crate::widget::VLine;
 use crate::store::app_store::{AppStore, Route};
 use crate::telemetry::event_bus::EventBus;
 use crate::store::session_store::SessionStore;
-use crate::store::types::{RunStatus, SessionListItem, ToolPhase};
+use crate::store::types::{RunStatus, ToolPhase};
 use crate::theme::colors;
 use crate::transport;
 
 pub fn run_app() -> anyhow::Result<()> { run_app_with_config(AppConfig::default()) }
 
 pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
-    // 主题收口（阴面唯一注册点）：颜色真值权威在 styles/base.css 的 :root
-    // 变量；此处 Theme 仅驱动运行时 variant。OSC11 终端背景探测（ds/osc11）
-    // 决定 dark/light variant：detect_bg 保守返回 None → fallback dark。
-    // variant 是唯一真相：theme_for(variant) 驱动渲染，store.theme_variant 记账，
-    // ToggleAppearance 经 toggle_variant 翻转两者——阴阳同口径（金律）。
+    // 主题收口（阴面唯一注册点）：颜色真值的运行时载体是 theme::Palette，
+    // ThemeId 是主题身份唯一权威（ds::theme）。初始主题判定顺序：
+    // 持久化 config.theme > OSC11 终端背景探测（ds/osc11，保守 stub 恒 None）
+    // > 默认 TokyoNight。API bridge 构建完成后才能读 config，故判定延后到
+    // 下方 api 就绪处；此处仅注册。
     crate::ds::theme::register_agendao_themes();
-    let variant = match crate::ds::osc11::detect_bg() {
-        Some((r, g, b)) if crate::ds::osc11::is_light_bg(r, g, b)
-            => revue::style::ThemeVariant::Light,
-        _ => revue::style::ThemeVariant::Dark,
-    };
-    revue::style::set_theme(crate::ds::theme::theme_for(variant));
 
     let store = AppStore::new();
-    store.theme_variant.set(variant);
     if let Some(ref dir) = config.working_dir { store.working_dir.set(dir.display().to_string()); }
     let rt = tokio::runtime::Runtime::new().map_err(|e| anyhow::anyhow!("tokio runtime: {}", e))?;
     let (sf_tx, sf_rx) = watch::channel::<Option<String>>(None);
@@ -123,20 +116,36 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             }
         };
         if let Some(ls) = local_state {
-            let _ = transport::spawn_local_event_source(tx, ls.clone(), &rt.handle(), sf_rx.clone());
+            let _ = transport::spawn_local_event_source(tx, ls.clone(), rt.handle(), sf_rx.clone());
             Some(ApiBridge::new_local(ls, rt.handle().clone()))
         } else {
             // Server creation failed — fall back to transport-based mode
-            let _ = transport::spawn_event_source(tx, wd, &rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
+            let _ = transport::spawn_event_source(tx, wd, rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
             None
         }
     } else {
-        let _ = transport::spawn_event_source(tx, wd, &rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
+        let _ = transport::spawn_event_source(tx, wd, rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
         ApiBridge::new(&config.base_url.clone().unwrap_or_else(|| "http://127.0.0.1:3000".into()), rt.handle().clone()).ok()
     };
     tracing::info!(api_present = api.is_some(), "ApiBridge construction complete");
     if let Some(ref a) = config.agent_name { store.selected_agent.set(Some(a.clone())); }
     if let Some(ref m) = config.model { store.selected_model.set(Some(m.clone())); }
+
+    // ── 主题初始化（土律归一）：持久化 > OSC11 > 默认 ──
+    // apply_theme 单点收口：色板切换 + revue 主题信号 + CSS 变量表产出；
+    // 变量在 App 构建后立即注入 stylesheet（见下），首帧即以真色渲染。
+    let initial_theme = api.as_ref()
+        .and_then(|a| a.get_config().ok())
+        .and_then(|c| c.theme)
+        .and_then(|t| crate::ds::theme::ThemeId::from_id(&t))
+        .or_else(|| match crate::ds::osc11::detect_bg() {
+            Some((r, g, b)) if crate::ds::osc11::is_light_bg(r, g, b)
+                => Some(crate::ds::theme::ThemeId::TokyoNightLight),
+            _ => None,
+        })
+        .unwrap_or(crate::ds::theme::ThemeId::TokyoNight);
+    let initial_theme_vars = crate::ds::theme::apply_theme(initial_theme);
+    store.theme_id.set(initial_theme);
 
     // ── Eager message load for --session / AGENDAO_TUI_SESSION ──
     //
@@ -152,6 +161,8 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     }
 
     let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
+    // 初始主题 CSS `:root` 变量注入（stylesheet_mut 自动清样式缓存）。
+    app.dom_renderer().stylesheet_mut().variables.extend(initial_theme_vars);
     let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new()));
     // 初始化 sidebar session 导航树(从 session_list + cwd 构建 NavigateSession 节点)。
     handler.borrow_mut().refresh_sidebar_session_tree();
@@ -173,7 +184,14 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         let handled = h.handle(event);
         let layout_dirty = h.layout_dirty;
         h.layout_dirty = false;
+        // 主题切换的 CSS 面交接：slash_action 经 apply_theme 换好色板后把
+        // `:root` 变量留在 pending 槽（它拿不到 &mut App），此处收口应用。
+        let theme_vars = h.pending_theme_vars.take();
         drop(h);
+        if let Some(vars) = theme_vars {
+            app.dom_renderer().stylesheet_mut().variables.extend(vars);
+            app.request_redraw();
+        }
         if handled {
             // Force a full redraw (revue's DOM dirty-region tracking
             // doesn't detect Input widget state changes, so we can't
@@ -355,10 +373,17 @@ pub(crate) struct AppHandler {
     /// Sidebar session tree 各 NavigateSession 行的 (绝对 y, session_id)（render 后发布），
     /// 供鼠标左键点击命中打开会话。空 = 无 sidebar / 无会话（点击不命中）。
     pub(crate) sidebar_nav_hits: Vec<crate::telemetry::sidebar::SidebarNavHit>,
+    /// Session tree 展开态唯一权威（土律）：命中的 session_id 才展开其子节点。
+    /// 默认空 = 全折叠（root 独占视野）；点击箭头 toggle、点击行打开时自动展开
+    /// 被打开会话的祖先链。`refresh_sidebar_session_tree` 重建时按此重放。
+    pub(crate) session_tree_expanded: std::collections::HashSet<String>,
     /// 终端总高（render 后发布）。sidebar 底部用户栏在 y = terminal_h - 1（sidebar
     /// 是全高左列、user_bar 是其最后一个 `child_sized(...,1)`），用此值定位 ⚙ 命中行。
     /// 同步发布与 sidebar_tab_y 同构（土律：可观测性单点）。
     pub(crate) terminal_h: u16,
+    /// 终端总宽（render 后发布，与 terminal_h 同源）。Settings Details 栏 models 行尾
+    /// ✎/✕ 图标的右缘命中、弹窗几何都需要宽度口径。
+    pub(crate) terminal_w: u16,
     // Session header dir 点击命中区（金：dir 全路径 tooltip 的阳面命中口径）。
     // header_y=dir 所在行（顶端空行后=1）；header_dir_x/w=dir 文本绝对列范围。
     // render 算好后 publish，keymap click handler 只读命中（土律：编排单点真相）。
@@ -370,6 +395,15 @@ pub(crate) struct AppHandler {
     /// drag state is just a remembered y origin so Drag events
     /// can map cursor-y → new selected index.
     pub(crate) session_list_scrollbar_drag: Option<crate::widget::ScrollbarDrag>,
+    /// 主题切换待应用的 CSS `:root` 变量（`ds::theme::apply_theme` 产出）。
+    /// slash_action 拿不到 `&mut App`，写此槽位；app 事件闭包在 handle 后
+    /// 取走并 merge 进 `dom_renderer().stylesheet_mut()`（土律：单点交接）。
+    pub(crate) pending_theme_vars: Option<Vec<(String, String)>>,
+    /// ModelEditDialog 渲染后发布的外框 Rect（绝对坐标，render 返回）。
+    /// keymap 鼠标据此做字段聚焦命中；panel != ModelEdit 时每帧回落 None。
+    pub(crate) model_edit_rect: Option<revue::prelude::Rect>,
+    /// ConfirmDialog 渲染后发布的外框 Rect（同构），供 y/n 按钮命中。
+    pub(crate) confirm_rect: Option<revue::prelude::Rect>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -400,6 +434,78 @@ fn gutter(content: impl View + 'static) -> revue::widget::Stack {
         .child_flex(content, 1.0)
 }
 
+/// Session 底部信息条：`↑1.2k ↓456  cache 89r/11m  ctx ▓▓▓▓▓░░░░░ 42% (85k)  $0.003`。
+/// token/成本为 session 累计（投影权威）;context 为最新 turn 占用百分比（非累计）。
+/// 全部数据来自 SessionProjectionReplaced,无第二真相（水律·回流可观测）。
+fn build_session_info_strip(
+    tokens: &crate::store::types::TokenUsage,
+    ctx_pct: u8,
+) -> revue::widget::Stack {
+    // 段 = (文本, 颜色)；宽度在构造处按字符数算（Bar 段 ▓/░ 均单宽,口径一致）。
+    let mut spans: Vec<(String, revue::prelude::Color)> = Vec::new();
+    if tokens.total > 0 {
+        spans.push((
+            format!(
+                " ↑{} ↓{}",
+                crate::theme::fmt_tokens(tokens.input),
+                crate::theme::fmt_tokens(tokens.output),
+            ),
+            colors::FG_MUTED(),
+        ));
+        if tokens.cache_read > 0 || tokens.cache_miss > 0 {
+            spans.push((
+                format!(
+                    "  cache {}r/{}m",
+                    crate::theme::fmt_tokens(tokens.cache_read),
+                    crate::theme::fmt_tokens(tokens.cache_miss),
+                ),
+                colors::FG_TRACE(),
+            ));
+        }
+        if tokens.total_cost > 0.0 {
+            spans.push((
+                format!("  {}", crate::theme::fmt_cost(tokens.total_cost)),
+                colors::FG_TRACE(),
+            ));
+        }
+    }
+    if tokens.context_tokens > 0 || ctx_pct > 0 {
+        // 进度条：10 格,按百分比着色(绿<50/黄50-80/红>80,与 sidebar meter 同口径)。
+        // context_tokens > 0 即显示——大上下文模型下 pct 可能四舍五入为 0%,
+        // 那也是真实状态,不该把 meter 藏起来。
+        const BAR_W: usize = 10;
+        let filled = ((ctx_pct as usize * BAR_W) + 50) / 100;
+        let bar_color = if ctx_pct > 80 {
+            colors::ACCENT_RED()
+        } else if ctx_pct > 50 {
+            colors::ACCENT_YELLOW()
+        } else {
+            colors::ACCENT_GREEN()
+        };
+        spans.push((
+            format!(
+                "  ctx {}{} {}%",
+                "▓".repeat(filled.min(BAR_W)),
+                "░".repeat(BAR_W - filled.min(BAR_W)),
+                ctx_pct,
+            ),
+            bar_color,
+        ));
+        if tokens.context_tokens > 0 {
+            spans.push((
+                format!(" ({})", crate::theme::fmt_tokens(tokens.context_tokens)),
+                colors::FG_TRACE(),
+            ));
+        }
+    }
+    let mut row = hstack().gap(0);
+    for (text, color) in spans {
+        let w = text.chars().count() as u16;
+        row = row.child_sized(Text::new(text).fg(color), w);
+    }
+    row.child_flex(Text::new(""), 1.0)
+}
+
 /// 当前路由输入框的屏幕几何（绝对坐标），返回 [`crate::dialog::backdrop::PromptGeom`]。
 /// 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）的宽/x/垂直位置都从此
 /// 派生——唯一真相（土律），避免两处各自算居中/宽度而漂移。Home 的 y_top 与
@@ -420,10 +526,11 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool) -> PromptGe
             PromptGeom { x, y_top: area.y + upper, w }
         }
         Route::Session { .. } => {
-            // prompt_bar 底部：status(1) + prompt_bar(4)，bordered 输入框上沿 = height-4。
+            // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(3)，
+            // 输入区上沿 = height - 5（覆盖 hint 行,浮层锚定不遮输入区）。
             PromptGeom {
                 x: main_x + PAD,
-                y_top: area.y + area.height.saturating_sub(4),
+                y_top: area.y + area.height.saturating_sub(5),
                 w: main_w.saturating_sub(PAD),
             }
         }
@@ -585,11 +692,16 @@ impl AppHandler {
             sidebar_active_tab: 0,
             sidebar_tab_y: 0,
             sidebar_nav_hits: Vec::new(),
+            session_tree_expanded: std::collections::HashSet::new(),
             terminal_h: 0,
+            terminal_w: 0,
             header_y: 1, // 顶端空行后（Session 路由固定；Home 不渲染 header）
             header_dir_x: 0,
             header_dir_w: 0,
             session_list_scrollbar_drag: None,
+            pending_theme_vars: None,
+            model_edit_rect: None,
+            confirm_rect: None,
         }
     }
 }
@@ -760,7 +872,7 @@ impl View for RootView {
             let active_sid = h.active_session.get_session_id();
             let (content, tab_y, nav_hits) = crate::telemetry::SessionSidebar::build(
                 &token, &cache, &price, ctx_pct, &trees, &mcp, &tools, h.sidebar_active_tab,
-                active_sid.as_deref(),
+                active_sid.as_deref(), ctx.area.height,
             );
             sidebar_opt = Some((content, tab_y));
             sidebar_nav_hits = nav_hits;
@@ -773,10 +885,10 @@ impl View for RootView {
                 // 极简首页：主区中间只放一个居中输入框（❯ 引导符 + Input 块光标 + 下边框），
                 // 不画倒角全框——边框权威归 Border（金律），Border::only_bottom() 只画底边。
                 let input_row = hstack().gap(1)
-                    .child_sized(Text::new("❯").fg(colors::E_TEAL), 1)
+                    .child_sized(Text::new("❯").fg(colors::E_TEAL()), 1)
                     .child_flex(h.prompt.widget(), 1.0);
                 let input_border = Border::only_bottom()
-                    .fg(colors::BORDER)
+                    .fg(colors::BORDER())
                     .max_width(HOME_INPUT_W)
                     .child(input_row);
                 // 水平居中（左右 flex 楔子）+ 垂直居中（上下 flex 楔子），不占满主区。
@@ -810,11 +922,11 @@ impl View for RootView {
                 let mut header = hstack().gap(2);
                 header = header
                     .child_sized(
-                        Text::new(&title).bold().fg(colors::FG_PRIMARY),
+                        Text::new(&title).bold().fg(colors::FG_PRIMARY()),
                         title_w,
                     )
                     .child_sized(
-                        Text::new(dir_short).fg(colors::FG_MUTED),
+                        Text::new(dir_short).fg(colors::FG_MUTED()),
                         dir_w,
                     );
 
@@ -827,7 +939,7 @@ impl View for RootView {
                     let label = format!("· {}", m);
                     let w = label.chars().count() as u16 + 1;
                     header = header.child_sized(
-                        Text::new(label).fg(colors::FG_MUTED),
+                        Text::new(label).fg(colors::FG_MUTED()),
                         w,
                     );
                 }
@@ -835,17 +947,17 @@ impl View for RootView {
                     let label = format!("· {}", a);
                     let w = label.chars().count() as u16 + 1;
                     header = header.child_sized(
-                        Text::new(label).fg(colors::FG_MUTED),
+                        Text::new(label).fg(colors::FG_MUTED()),
                         w,
                     );
                 }
                 // Run status indicator pinned to the right via a flex spacer.
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
-                    RunStatus::Running => (Some(" ● Running"), colors::ACCENT_GREEN),
-                    RunStatus::Sending => (Some(" ○ Sending"), colors::ACCENT_YELLOW),
-                    RunStatus::WaitingUser => (Some(" ⏸ Waiting"), colors::ACCENT_YELLOW),
-                    RunStatus::Error(_) => (Some(" ✕ Error"), colors::ACCENT_RED),
-                    RunStatus::Idle => (None, colors::FG_MUTED),
+                    RunStatus::Running => (Some(" ● Running"), colors::ACCENT_GREEN()),
+                    RunStatus::Sending => (Some(" ○ Sending"), colors::ACCENT_YELLOW()),
+                    RunStatus::WaitingUser => (Some(" ⏸ Waiting"), colors::ACCENT_YELLOW()),
+                    RunStatus::Error(_) => (Some(" ✕ Error"), colors::ACCENT_RED()),
+                    RunStatus::Idle => (None, colors::FG_MUTED()),
                 };
                 // Spacer flex grows to push the status to the right edge.
                 header = header.child_flex(Text::new(""), 1.0);
@@ -862,7 +974,7 @@ impl View for RootView {
                     // Divider: thin line, single row, FG_MUTED so it recedes
                     // visually rather than competing with the message content.
                     content_stack = content_stack.child_sized(
-                        Text::new("─".repeat(ctx.area.width as usize)).fg(colors::BORDER),
+                        Text::new("─".repeat(ctx.area.width as usize)).fg(colors::BORDER()),
                         1,
                     );
                 } else {
@@ -900,7 +1012,7 @@ impl View for RootView {
                 if msgs.is_empty() {
                     transcript = transcript.child(
                         Text::new("   Type below to start a conversation.")
-                            .fg(colors::FG_MUTED)
+                            .fg(colors::FG_MUTED())
                     );
                     main_area = main_area.child_flex(transcript, 1.0);
                 } else {
@@ -915,8 +1027,6 @@ impl View for RootView {
                     let available = ctx.area.height.saturating_sub(9);
                     // total_h 与渲染/鼠标命中/cursor 滚动同口径（聚合），单点
                     // transcript_total_height——避免逐块高度与聚合渲染错位致命中/滚动失准。
-                    let total_h = transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get());
-
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     // transcript 可用宽（几何规则基准）：扣除 sidebar（32）。
                     // scrollbar（1-2 列）作为微小偏差容忍。
@@ -928,6 +1038,7 @@ impl View for RootView {
                     // ❯ 引导）在 inner_w 内成形。
                     const PAD: u16 = 4;
                     let inner_w = transcript_w.saturating_sub(PAD.saturating_mul(2));
+                    let total_h = transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w);
                     // turn 级思考延续标记：UserPrompt 起一个新 turn，其后首个
                     // Thinking 用 ✻，同 turn 内被 text/tool 夹断的后续 Thinking
                     // 用 ┆ 续接符（避免 reasoning 流被拆成一串重复 ✻ 独立块）。
@@ -957,6 +1068,7 @@ impl View for RootView {
                         h.spinner_tick,
                         self.store.show_thinking.get(),
                         Some(viewport_range),
+                        inner_w,
                     );
                     for unit in units {
                         let is_cursor_unit = cursor_idx
@@ -1034,7 +1146,7 @@ impl View for RootView {
                     }
                     if matches!(status, RunStatus::Sending) {
                         transcript = transcript.child_sized(
-                            Text::new(" ⏳ Sending...").fg(colors::ACCENT_YELLOW),
+                            Text::new(" ⏳ Sending...").fg(colors::ACCENT_YELLOW()),
                             1,
                         );
                         extra_h = extra_h.saturating_add(1);
@@ -1102,14 +1214,14 @@ impl View for RootView {
             ctx_parts.push(format!("a:{}", a));
         }
         if let Some(ref m) = self.store.selected_mode.get() {
-            ctx_parts.push(format!("{}", m));
+            ctx_parts.push(m.to_string());
         }
         let context_strip_text = if ctx_parts.is_empty() {
             "[default]".to_string()
         } else {
             format!("[{}]", ctx_parts.join(" "))
         };
-        let context_strip = Text::new(&context_strip_text).fg(colors::FG_MUTED);
+        let context_strip = Text::new(&context_strip_text).fg(colors::FG_MUTED());
 
         // ── Attachment strip ──（attachments / attachment_h 已在 viewport 区提前借用）
         let attachment_strip = if attachments.is_empty() {
@@ -1125,18 +1237,14 @@ impl View for RootView {
                         format!(" ▸ {} [{}]", att.name, mime)
                     }
                 };
-                strip = strip.child(Text::new(&label).fg(colors::FG_MUTED));
+                strip = strip.child(Text::new(&label).fg(colors::FG_MUTED()));
             }
             strip
         };
 
         // ── Prompt bar ──
-        let spinner = if is_running {
-            format!("{} ", crate::widget::spinner::frame(
-                crate::widget::spinner::SpinnerGlyph::Claude,
-                h.spinner_tick / 3,
-            ))
-        } else { String::new() };
+        // 运行态指示：五行相生帧（木→火→土→金→水,各相位语义色）——
+        // 不是转圈,是一次完整的相生流转：运行中的一回合即一个阴阳闭环。
         let hint = if h.interrupt_pending {
             " ⚠ Press Esc again to interrupt".to_string()
         } else if is_slash {
@@ -1145,26 +1253,50 @@ impl View for RootView {
             h.prompt.status_hint(is_running)
         };
         // 金克木：tips 隐藏时 hint 行内容置空（几何不变以保 PromptGeom y_top 与
-        // Session 底部 4 行高度同口径——金律：渲染与命中几何不得漂移）。
+        // Session 底部行高同口径——金律：渲染与命中几何不得漂移）。
         let show_tips = self.store.show_tips.get();
         let hint_text = if show_tips {
-            Text::new(&format!(" {}{}", spinner, hint)).fg(colors::FG_MUTED)
+            let mut line = hstack().gap(0);
+            if is_running {
+                // 墨晕帧（·∘○◉●◉○∘·）：墨滴入水晕开再收,传"运行中"。
+                let frame = crate::widget::spinner::ink_frame(h.spinner_tick);
+                line = line
+                    .child_sized(Text::new(format!(" {}", frame)).fg(crate::widget::spinner::ink_color()), 2)
+                    .child_flex(Text::new(&hint).fg(colors::FG_MUTED()), 1.0);
+            } else if h.interrupt_pending || is_slash {
+                // 瞬态有用提示（Esc 再按打断 / slash 导航）保留。
+                line = line.child_flex(Text::new(format!(" {}", hint)).fg(colors::FG_MUTED()), 1.0);
+            } else {
+                // 静止态：只留一点墨（◉）。去掉 "Type to start..." 静态提示——
+                // 输入框自带 placeholder,这里是冗余信息（用户反馈：用处不大）。
+                line = line.child_sized(
+                    Text::new(format!(" {}", crate::widget::spinner::INK_REST)).fg(crate::widget::spinner::ink_color()),
+                    2,
+                );
+            }
+            line
         } else {
-            Text::new("")
+            hstack().gap(0).child_flex(Text::new(""), 1.0)
         };
         let input_border = if h.prompt.is_focused() {
-            Border::rounded().fg(colors::E_TEAL)
+            // 与 Home 同一成形语法：只画底线（金律·单一边界权威）。Session 此前
+            // 用 rounded 全框,与 Home 的克制语言不一致,且视觉重量过大。
+            Border::only_bottom().fg(colors::E_TEAL())
         } else {
-            Border::rounded().fg(colors::BORDER)
+            Border::only_bottom().fg(colors::BORDER())
         };
         let input_widget = input_border.child(h.prompt.widget());
-        // hint: 1 row, input border: 3 rows (top + content + bottom).
-        // Without child_sized, vstack divides the 4-row prompt_bar slot
-        // equally — clipping the bordered input to 2 rows and erasing
-        // its content line.
+        // hint: 1 row, only_bottom 输入框: 2 rows (content + 底线)。
         let prompt_bar = vstack()
             .child_sized(hint_text, 1)
-            .child_sized(input_widget, 3);
+            .child_sized(input_widget, 2);
+
+        // ── 会话信息条（prompt 下方,status 上方）──
+        // 上行/下行 token（session 累计）、cache、成本、context 使用进度条。
+        // 数据全部来自 SessionProjectionReplaced 投影（水律·回流可观测）。
+        let tokens = h.active_session.token_usage.get();
+        let ctx_pct = h.active_session.context_pct.get();
+        let info_strip = build_session_info_strip(&tokens, ctx_pct);
 
         // ── Status bar ──
         let panel_label = match h.panel {
@@ -1225,8 +1357,8 @@ impl View for RootView {
             dir_short, panel_label, stats, cursor_hint, nav_hint,
         );
         let status_bar = Text::new(&status_text)
-            .fg(colors::FG_MUTED)
-            .bg(colors::BG_SECONDARY);
+            .fg(colors::FG_MUTED())
+            .bg(colors::BG_SECONDARY());
 
         // ── Full layout ──
         // page_inner：右列（content_stack + footer）。footer 元素经 gutter() 左留 PAD，
@@ -1247,7 +1379,8 @@ impl View for RootView {
                 .child_flex(content_stack, 1.0)
                 .child_sized(gutter(context_strip), 1)
                 .child_sized(gutter(attachment_strip), attachment_h)
-                .child_sized(gutter(prompt_bar), 4)   // hint (1) + bordered input (3)
+                .child_sized(gutter(prompt_bar), 3)   // hint (1) + only_bottom input (2)
+                .child_sized(gutter(info_strip), 1)   // token + context 进度条
                 .child_sized(gutter(status_bar), 1),
             // Settings:仅 content_stack(SettingsScreen 全屏)+ 底部 status_bar;
             // 不画 context/attachment/prompt_bar(Settings 不接受 prompt 输入)。
@@ -1260,7 +1393,7 @@ impl View for RootView {
             // 两区之间仅一根极暗淡 VLine（SIDEBAR_DIVIDER #2e3440）划界。
             hstack().gap(0)
                 .child_sized(sidebar_view, SIDEBAR_WIDTH)
-                .child_sized(VLine::new(colors::SIDEBAR_DIVIDER), 1)
+                .child_sized(VLine::new(colors::SIDEBAR_DIVIDER()), 1)
                 .child_flex(page_inner, 1.0)
         } else {
             page_inner
@@ -1290,6 +1423,8 @@ impl View for RootView {
         // 终端总高：sidebar 底部用户栏 ⚙ 命中在 y = terminal_h - 1（sidebar 全高左列，
         // user_bar 是其最后一个 child_sized(...,1)）。同 sidebar_tab_y 模式发布。
         self.handler.borrow_mut().terminal_h = ctx.area.height;
+        // 终端总宽：与 terminal_h 同源发布，供 Settings models 行尾 ✎/✕ 右缘命中。
+        self.handler.borrow_mut().terminal_w = ctx.area.width;
         // Session header dir 点击命中区 publish（None=非 Session 路由→dir_w=0 不命中）。
         let (dir_x_snap, dir_w_snap) = dir_hit.unwrap_or((0, 0));
         // header 隐藏时 header_y=0（dir 不在屏幕上，点击不命中）。
@@ -1332,6 +1467,8 @@ impl View for RootView {
         // ——prompt_geometry 唯一权威（土律）：宽=输入框宽、x 对齐输入框、贴输入框正上方。
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
         let geom = prompt_geometry(&route, ctx.area, h.sidebar_visible);
+        let mut model_edit_rect: Option<revue::prelude::Rect> = None;
+        let mut confirm_rect: Option<revue::prelude::Rect> = None;
         match h.panel {
             Panel::Slash => {
                 // 补全框几何同上(外层 geom);fill 用绝对坐标填输入框宽(非全屏宽),挡下层 transcript。
@@ -1358,16 +1495,20 @@ impl View for RootView {
             Panel::Rename => h.rename_dialog.render(ctx, geom),
             Panel::Fork => h.fork_dialog.render(ctx, geom),
             Panel::Export => h.export_dialog.render(ctx, geom),
-            Panel::Confirm => h.confirm_dialog.render(ctx, geom),
+            Panel::Confirm => { confirm_rect = h.confirm_dialog.render(ctx, geom); }
             Panel::Help => h.help.render(ctx, geom),
             Panel::SkillList => h.skill_list.render(ctx, geom),
             Panel::SkillProposal => h.skill_proposal.render(ctx, geom),
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
-            Panel::ModelEdit => h.model_edit_dialog.render(ctx),
+            Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx); }
             _ => {}
         }
+        // 弹窗几何发布（render 后、借用于此处归还）——keymap 鼠标命中的唯一真相。
+        drop(h);
+        self.handler.borrow_mut().model_edit_rect = model_edit_rect;
+        self.handler.borrow_mut().confirm_rect = confirm_rect;
 
         // ── Toast overlay ─────────────────────────────────────────
         // Pending toasts hover above the prompt bar so the user sees
@@ -1386,10 +1527,10 @@ impl View for RootView {
         if let Some(t) = active {
             use crate::store::types::ToastMsgVariant;
             let (icon, color) = match t.variant {
-                ToastMsgVariant::Success => ("✓", colors::ACCENT_GREEN),
-                ToastMsgVariant::Error   => ("✕", colors::ACCENT_RED),
-                ToastMsgVariant::Warning => ("⚠", colors::ACCENT_YELLOW),
-                ToastMsgVariant::Info    => ("•", colors::ACCENT_CYAN),
+                ToastMsgVariant::Success => ("✓", colors::ACCENT_GREEN()),
+                ToastMsgVariant::Error   => ("✕", colors::ACCENT_RED()),
+                ToastMsgVariant::Warning => ("⚠", colors::ACCENT_YELLOW()),
+                ToastMsgVariant::Info    => ("•", colors::ACCENT_CYAN()),
             };
             let max_w = ctx.area.width.saturating_sub(4).min(80);
             let raw = format!("{} {}", icon, t.text);
@@ -1434,8 +1575,8 @@ impl View for RootView {
             // 贴近 dir 起点；超右边界则左移 clamp（不溢出屏幕）。
             let x = dt.x.min(ctx.area.width.saturating_sub(w + 2));
             let tooltip_widget = Border::rounded()
-                .fg(colors::FG_MUTED)
-                .child(Text::new(display).fg(colors::FG_SECONDARY));
+                .fg(colors::FG_MUTED())
+                .child(Text::new(display).fg(colors::FG_SECONDARY()));
             revue::widget::positioned(tooltip_widget)
                 .x(x as i16)
                 .y(dt.y as i16)

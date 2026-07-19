@@ -13,6 +13,12 @@ pub struct ConfirmDialog {
     pub confirmed: bool,
 }
 
+impl Default for ConfirmDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfirmDialog {
     pub fn new() -> Self {
         Self { visible: false, title: String::new(), message: String::new(), confirm_label: "Yes".into(), confirmed: false }
@@ -44,12 +50,13 @@ impl ConfirmDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) -> Option<revue::prelude::Rect> {
+        if !self.visible { return None; }
         let content = vstack().child(
-            Text::new(&self.message).fg(colors::FG_SECONDARY)
+            Text::new(&self.message).fg(colors::FG_SECONDARY())
         );
         let hint = format!("y/Enter: {}  n/Esc: cancel", self.confirm_label);
-        backdrop::render_dialog_bottom(&self.title, colors::ACCENT_YELLOW, content, &hint, ctx, geom, 5);
+        // 返回外框 Rect（绝对坐标）：发布给 keymap 做按钮命中（几何同源）。
+        Some(backdrop::render_dialog_bottom(&self.title, colors::ACCENT_YELLOW(), content, &hint, ctx, geom, 5))
     }
 }

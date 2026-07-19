@@ -95,9 +95,8 @@ async fn consume_stream(
             Ok(SseEvent::Message(msg)) => {
                 if let Some(fe) = parse_event(&msg.data) {
                     let sid = event_session_id(&fe);
-                    if filter_rx.borrow().as_deref() == sid {
-                        if tx.send(fe).is_err() { return true; }
-                    }
+                    if filter_rx.borrow().as_deref() == sid
+                        && tx.send(fe).is_err() { return true; }
                 }
                 // Check if session filter changed
                 if *filter_rx.borrow() != connected {

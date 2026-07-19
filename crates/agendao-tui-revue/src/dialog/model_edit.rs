@@ -26,7 +26,7 @@ pub enum ModelEditMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelEditField {
+pub(crate) enum ModelEditField {
     Id,
     Name,
     ContextWindow,
@@ -53,7 +53,7 @@ impl ModelEditField {
 }
 
 pub enum ModelEditAction {
-    Submit(ModelEditSubmission),
+    Submit(Box<ModelEditSubmission>),
     Cancel,
 }
 
@@ -214,7 +214,7 @@ impl ModelEditDialog {
                     prefill: self.prefill.take(),
                 };
                 self.close();
-                Some(ModelEditAction::Submit(submission))
+                Some(ModelEditAction::Submit(Box::new(submission)))
             }
             Key::Tab => {
                 self.focus = self.focus.next();
@@ -247,9 +247,9 @@ impl ModelEditDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) {
+    pub fn render(&self, ctx: &mut RenderContext) -> Option<revue::prelude::Rect> {
         if !self.visible {
-            return;
+            return None;
         }
         let title = match self.mode {
             ModelEditMode::Add => " Add Model ",
@@ -288,16 +288,38 @@ impl ModelEditDialog {
             .child_sized(ctx_field, 4)
             .child_sized(max_field, 4);
 
-        backdrop::render_dialog(
+        // 返回外框 Rect（绝对坐标）：发布给 keymap 做鼠标字段命中（金律·几何同源）。
+        Some(backdrop::render_dialog(
             title,
-            colors::ACCENT_CYAN,
+            colors::ACCENT_CYAN(),
             content,
             "Tab: next   Enter: save   Esc: cancel",
             ctx,
             70,
             22,
-        );
+        ))
     }
+}
+
+impl ModelEditDialog {
+    /// 鼠标点击设置当前字段（与 Tab 切换同一 `focus` 权威）。
+    pub(crate) fn set_focus(&mut self, field: ModelEditField) {
+        self.focus = field;
+    }
+
+    /// 当前焦点字段（测试/命中校验用）。
+    #[cfg(test)]
+    pub(crate) fn focus(&self) -> ModelEditField {
+        self.focus
+    }
+
+    /// 全部字段（渲染顺序）：鼠标按行块反查字段用。
+    pub(crate) const FIELDS: [ModelEditField; 4] = [
+        ModelEditField::Id,
+        ModelEditField::Name,
+        ModelEditField::ContextWindow,
+        ModelEditField::MaxOutputTokens,
+    ];
 }
 
 impl Default for ModelEditDialog {
@@ -322,18 +344,18 @@ fn field_input(
     readonly: bool,
 ) -> revue::widget::Stack {
     let label_color = if readonly {
-        colors::FG_MUTED
+        colors::FG_MUTED()
     } else if focused {
-        colors::E_AMBER
+        colors::E_AMBER()
     } else {
-        colors::FG_SECONDARY
+        colors::FG_SECONDARY()
     };
     let border_color = if readonly {
-        colors::BORDER
+        colors::BORDER()
     } else if focused {
-        colors::E_AMBER
+        colors::E_AMBER()
     } else {
-        colors::BORDER
+        colors::BORDER()
     };
     input = input.focused(focused && !readonly);
     let label_text = if readonly {
@@ -409,7 +431,7 @@ mod tests {
     fn enter_with_empty_id_does_not_submit() {
         let mut d = ModelEditDialog::new();
         d.open_add("openai");
-        assert!(matches!(d.handle_key(&Key::Enter), None));
+        assert!(d.handle_key(&Key::Enter).is_none());
         assert!(d.is_open());
     }
 

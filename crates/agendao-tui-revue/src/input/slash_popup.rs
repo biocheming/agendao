@@ -38,6 +38,12 @@ pub struct SlashPopup {
     selected_action: Option<UiActionId>,
 }
 
+impl Default for SlashPopup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlashPopup {
     pub fn new() -> Self {
         Self::with_dir(None)
@@ -190,7 +196,7 @@ impl SlashPopup {
         // 空状态:背景由 fill_background 预填,这里只显示提示(文字格补 .bg)
         if self.filtered.is_empty() {
             stack = stack.child(
-                Text::new("  No results ").fg(colors::FG_MUTED).bg(colors::BG_SURFACE),
+                Text::new("  No results ").fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
             );
             return stack;
         }
@@ -217,10 +223,10 @@ impl SlashPopup {
             let cat = cmd.category.label();
             if last_category.map(|c| c != cat).unwrap_or(true) {
                 if last_category.is_some() {
-                    list = list.child(Text::new("").bg(colors::BG_SURFACE));
+                    list = list.child(Text::new("").bg(colors::BG_SURFACE()));
                 }
                 list = list.child(
-                    Text::new(&format!(" {}:", cat)).fg(colors::ACCENT_BLUE).bg(colors::BG_SURFACE),
+                    Text::new(format!(" {}:", cat)).fg(colors::ACCENT_BLUE()).bg(colors::BG_SURFACE()),
                 );
                 last_category = Some(cat);
             }
@@ -237,9 +243,9 @@ impl SlashPopup {
             let desc = truncate_to_width(&desc, w.saturating_sub(1).max(8) as usize);
 
             let text = if is_selected {
-                Text::new(&desc).fg(colors::ACCENT_CYAN).bg(colors::BG_SURFACE)
+                Text::new(&desc).fg(colors::ACCENT_CYAN()).bg(colors::BG_SURFACE())
             } else {
-                Text::new(&desc).fg(colors::FG_SECONDARY).bg(colors::BG_SURFACE)
+                Text::new(&desc).fg(colors::FG_SECONDARY()).bg(colors::BG_SURFACE())
             };
             list = list.child(text);
         }
@@ -256,7 +262,7 @@ impl SlashPopup {
         // 底部 hint
         list = list.child(
             Text::new(format!(" ↑/↓ navigate · Enter select · Esc cancel{}", position_hint))
-                .fg(colors::FG_MUTED).bg(colors::BG_SURFACE),
+                .fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
         );
 
         stack = stack.child(list);
@@ -269,7 +275,7 @@ impl SlashPopup {
     /// 且内部 Stack/Text 渲染虽补了文字格 .bg,但 list 之外的浮层边缘/空白格仍透明。
     /// 故先实色预填整片,再让 render_popup 在其上绘制。守住"实色不透字"契约。
     pub fn fill_background(&self, buf: &mut Buffer, x: u16, y: u16, w: u16, h: u16) {
-        buf.fill(x, y, w, h, Cell::new(' ').bg(colors::BG_SURFACE));
+        buf.fill(x, y, w, h, Cell::new(' ').bg(colors::BG_SURFACE()));
     }
 }
 
@@ -286,8 +292,8 @@ mod tests {
         let mut buf = Buffer::new(20, 10);
         popup.fill_background(&mut buf, 2, 2, 10, 5);
         // 区域内实色
-        assert_eq!(buf.get(5, 4).and_then(|c| c.bg), Some(colors::BG_SURFACE));
-        assert_eq!(buf.get(10, 6).and_then(|c| c.bg), Some(colors::BG_SURFACE));
+        assert_eq!(buf.get(5, 4).and_then(|c| c.bg), Some(colors::BG_SURFACE()));
+        assert_eq!(buf.get(10, 6).and_then(|c| c.bg), Some(colors::BG_SURFACE()));
         // 区域外未被填充,保持 None
         assert_eq!(buf.get(0, 0).and_then(|c| c.bg), None);
         assert_eq!(buf.get(19, 9).and_then(|c| c.bg), None);
@@ -308,7 +314,7 @@ mod tests {
         for x in (1u16..59).step_by(5) {
             if has_solid { break; }
             for y in (1u16..19).step_by(2) {
-                if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE) {
+                if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE()) {
                     has_solid = true;
                     break;
                 }
@@ -334,7 +340,7 @@ mod tests {
         for x in (1u16..59).step_by(5) {
             if has_solid { break; }
             for y in (1u16..5).step_by(2) {
-                if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE) {
+                if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE()) {
                     has_solid = true;
                     break;
                 }

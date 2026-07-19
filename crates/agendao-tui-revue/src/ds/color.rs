@@ -32,17 +32,17 @@ pub enum Semantic {
 /// "角色→色"的语义判断只允许经过这里。
 pub fn resolve_color(s: Semantic) -> Color {
     match s {
-        Semantic::Wood   => colors::E_TEAL,        // 用户（主强调）
-        Semantic::Fire   => colors::E_AMBER,       // 工具（次强调）
-        Semantic::Earth  => colors::FG_MUTED,      // 系统（次要角色，降级）
-        Semantic::Metal  => colors::FG_PRIMARY,    // 助手（主文字色）
-        Semantic::Water  => colors::FG_MUTED,      // think/遥测（次要角色，降级）
-        Semantic::Ok     => colors::STATUS_OK,
-        Semantic::Warn   => colors::STATUS_WARN,
-        Semantic::Error  => colors::STATUS_ERROR,
-        Semantic::Info   => colors::STATUS_INFO,
-        Semantic::Muted  => colors::FG_MUTED,
-        Semantic::Accent => colors::ACCENT_CYAN,
+        Semantic::Wood   => colors::E_TEAL(),        // 用户（主强调）
+        Semantic::Fire   => colors::E_AMBER(),       // 工具（次强调）
+        Semantic::Earth  => colors::FG_MUTED(),      // 系统（次要角色，降级）
+        Semantic::Metal  => colors::FG_PRIMARY(),    // 助手（主文字色）
+        Semantic::Water  => colors::FG_MUTED(),      // think/遥测（次要角色，降级）
+        Semantic::Ok     => colors::STATUS_OK(),
+        Semantic::Warn   => colors::STATUS_WARN(),
+        Semantic::Error  => colors::STATUS_ERROR(),
+        Semantic::Info   => colors::STATUS_INFO(),
+        Semantic::Muted  => colors::FG_MUTED(),
+        Semantic::Accent => colors::ACCENT_CYAN(),
     }
 }
 
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn wood_resolves_to_teal() {
-        assert_eq!(resolve_color(Semantic::Wood), colors::E_TEAL);
+        assert_eq!(resolve_color(Semantic::Wood), colors::E_TEAL());
     }
 
     #[test]

@@ -56,9 +56,7 @@ fn env_bool(key: &str) -> Option<bool> {
 /// Initialize logging to file (mirrors old agendao::init_logging).
 pub fn init_logging() {
     use tracing_subscriber::EnvFilter;
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agendao").join("log");
+    let log_dir = agendao_util::agendao_home().join("log");
     std::fs::create_dir_all(&log_dir).ok();
     let log_file = std::fs::OpenOptions::new()
         .create(true).append(true)

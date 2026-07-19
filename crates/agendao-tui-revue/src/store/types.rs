@@ -158,7 +158,7 @@ impl TranscriptBlock {
                         1 + body + extra
                     }
                     FoldState::Expanded => {
-                        let lines = result.lines().count().min(20).max(1) as u16;
+                        let lines = result.lines().count().clamp(1, 20) as u16;
                         let extra = if result.lines().count() > 20 { 1 } else { 0 };
                         1 + lines + extra
                     }
@@ -484,7 +484,7 @@ impl GeneralRow {
             Self::ShowHeader => "Title/dir header row above the transcript",
             Self::ShowTips => "Hint line above the prompt input",
             Self::CompactDensity => "Remove blank lines between transcript blocks",
-            Self::Theme => "Dark / light appearance",
+            Self::Theme => "Cycle color themes with ← / →",
         }
     }
 }

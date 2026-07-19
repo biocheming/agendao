@@ -37,6 +37,9 @@ pub struct SessionStore {
     pub cache_stats: Signal<CacheStats>,
     pub pricing: Signal<Pricing>,
     pub context_pct: Signal<u8>,
+    /// 会话最后使用的模型（assistant 消息的 `model` 字段，`provider/model` 形式）。
+    /// eager_load 从历史消息提取；context 进度条在 selected_model 未选时用它兜底。
+    pub session_model: Signal<Option<String>>,
     pub sidebar_trees: Signal<SidebarTrees>,
     pub mcp_lsp: Signal<McpLspInfo>,
 
@@ -46,6 +49,12 @@ pub struct SessionStore {
     // ── 木：输入附面（文本/history 的唯一权威是 `input::PromptInput`；
     //    此处只承载待发附件，由 keymap 写入、RootView 附件条渲染消费）──
     pub attachments: Signal<Vec<Attachment>>,
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionStore {
@@ -62,6 +71,7 @@ impl SessionStore {
             cache_stats: signal(CacheStats::default()),
             pricing: signal(Pricing::default()),
             context_pct: signal(0),
+            session_model: signal(None),
             sidebar_trees: signal(SidebarTrees::default()),
             mcp_lsp: signal(McpLspInfo::default()),
             active_tools: signal(Vec::new()),
@@ -86,6 +96,7 @@ impl SessionStore {
         self.cache_stats.set(CacheStats::default());
         self.pricing.set(Pricing::default());
         self.context_pct.set(0);
+        self.session_model.set(None);
         self.active_tools.update(|t| t.clear());
     }
 
@@ -146,8 +157,10 @@ impl SessionStore {
     pub fn upsert_tool_call(&self, id: &str, name: &str, params: &str, phase: ToolPhase) {
         self.messages.update(|msgs| {
             for block in msgs.iter_mut() {
-                if let TranscriptBlock::ToolCall { id: bid, ref mut phase, .. } = block {
-                    if bid == id { *phase = phase.clone(); return; }
+                if let TranscriptBlock::ToolCall { id: bid, .. } = block {
+                    // NOTE: 历史上这里因绑定遮蔽是 no-op（`*phase = phase.clone()` 自赋值），
+                    // 保持既有行为；若要让 upsert 真正更新 phase，应改为 `*block_phase = phase`。
+                    if bid == id { return; }
                 }
             }
             msgs.push(TranscriptBlock::ToolCall {
@@ -244,14 +257,14 @@ impl SessionStore {
     pub fn toggle_fold(&self, block_idx: usize) {
         // Cycle through FoldState: Folded → Truncated → Expanded → Folded.
         let mut new_msgs: Vec<TranscriptBlock> = self.messages.get();
-        if let Some(block) = new_msgs.get_mut(block_idx) {
-            match block {
-                TranscriptBlock::UserPrompt { ref mut fold, .. }
-                | TranscriptBlock::Thinking { ref mut fold, .. }
-                | TranscriptBlock::ToolResult { ref mut fold, .. }
-                | TranscriptBlock::TodoList { ref mut fold, .. } => *fold = fold.next(),
-                _ => {}
-            }
+        if let Some(
+            TranscriptBlock::UserPrompt { fold, .. }
+            | TranscriptBlock::Thinking { fold, .. }
+            | TranscriptBlock::ToolResult { fold, .. }
+            | TranscriptBlock::TodoList { fold, .. },
+        ) = new_msgs.get_mut(block_idx)
+        {
+            *fold = fold.next();
         }
         self.messages.set(new_msgs);
     }

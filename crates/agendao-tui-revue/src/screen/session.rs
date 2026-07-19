@@ -25,17 +25,17 @@ const FOLD_PREVIEW_LINES: usize = 3;
 pub fn block_accent(block: &TranscriptBlock) -> revue::prelude::Color {
     use crate::theme::colors;
     match block {
-        TranscriptBlock::UserPrompt { .. } => colors::E_TEAL,
-        TranscriptBlock::AssistantMsg { .. } => colors::ACCENT_BLUE,
-        TranscriptBlock::Thinking { .. } => colors::FG_MUTED,
-        TranscriptBlock::ToolCall { .. } => colors::NORD_ORANGE,
-        TranscriptBlock::ToolResult { .. } => colors::E_AMBER,
-        TranscriptBlock::StageUpdate { .. } => colors::FG_MUTED,
-        TranscriptBlock::SkillActivated { .. } => colors::FG_MUTED,
-        TranscriptBlock::TodoList { .. } => colors::FG_MUTED,
-        TranscriptBlock::CompactionHint { .. } => colors::FG_MUTED,
-        TranscriptBlock::SystemNotice { .. } => colors::FG_MUTED,
-        TranscriptBlock::ImageRef { .. } => colors::FG_MUTED,
+        TranscriptBlock::UserPrompt { .. } => colors::E_TEAL(),
+        TranscriptBlock::AssistantMsg { .. } => colors::ACCENT_BLUE(),
+        TranscriptBlock::Thinking { .. } => colors::FG_MUTED(),
+        TranscriptBlock::ToolCall { .. } => colors::NORD_ORANGE(),
+        TranscriptBlock::ToolResult { .. } => colors::E_AMBER(),
+        TranscriptBlock::StageUpdate { .. } => colors::FG_MUTED(),
+        TranscriptBlock::SkillActivated { .. } => colors::FG_MUTED(),
+        TranscriptBlock::TodoList { .. } => colors::FG_MUTED(),
+        TranscriptBlock::CompactionHint { .. } => colors::FG_MUTED(),
+        TranscriptBlock::SystemNotice { .. } => colors::FG_MUTED(),
+        TranscriptBlock::ImageRef { .. } => colors::FG_MUTED(),
     }
 }
 
@@ -49,7 +49,7 @@ pub fn block_accent(block: &TranscriptBlock) -> revue::prelude::Color {
 pub fn block_bg(block: &TranscriptBlock) -> Option<revue::prelude::Color> {
     use crate::theme::colors;
     match block {
-        TranscriptBlock::ToolResult { .. } => Some(colors::BG_DEEP),
+        TranscriptBlock::ToolResult { .. } => Some(colors::BG_DEEP()),
         _ => None,
     }
 }
@@ -100,7 +100,8 @@ pub(crate) struct GroupLayout {
 }
 
 pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
-    layout_block_ctx(block, tick, false)
+    // 兼容入口：无宽度上下文时取典型内容宽 80（与 transcript 常见 inner_w 相当）。
+    layout_block_ctx(block, tick, false, 80)
 }
 
 /// 连续 ToolResult 的「单井聚合」成形（Gemini 收敛性整改令 + 可逐条展开）。
@@ -125,7 +126,7 @@ pub fn layout_block(block: &TranscriptBlock, tick: u64) -> BlockLayout {
 /// 结果详情。本函数只产出井内内容（顶/底虚线 + ℹ 汇总 + 各项含展开）与高度；
 /// 深井背景（BG_DEEP）由 app 层 BgStack 包络。`base_index` = 段首在 msgs 的
 /// 索引，用于把组内偏移换算成绝对 cursor 比较。金律：同一语义批次共享成形语法。
-
+///
 /// 单井聚合：连续 ToolResult 组项数超此阈值时折叠成前 N 项 + `[+N more]`。
 /// layout（本模块 `layout_tool_result_group`）与 session_store 的 toggle 折叠
 /// 判定共享此阈值——金律：成形阈值单点，避免两处魔法数漂移导致渲染与交互错位。
@@ -190,7 +191,7 @@ pub(crate) fn layout_tool_result_group(
     // 无顶/底横线（隐形边界令）：容器边界仅靠左侧 ┊ + 缩进表达，背景纯黑自然
     // 流入井上下方，消除「抽屉盒」感。ℹ 汇总即首行 → 命中段首（点击展开/折叠）。
     stack = stack.child_sized(
-        Text::new(format!("ℹ Found {} results", n)).fg(colors::FG_MUTED).italic(),
+        Text::new(format!("ℹ Found {} results", n)).fg(colors::FG_MUTED()).italic(),
         1,
     );
     height += 1;
@@ -214,11 +215,11 @@ pub(crate) fn layout_tool_result_group(
             };
             let marker = if is_cursor { "▶" } else { " " };
             let item_color = if *is_error {
-                colors::ACCENT_RED
+                colors::ACCENT_RED()
             } else if is_cursor {
-                colors::FG_PRIMARY
+                colors::FG_PRIMARY()
             } else {
-                colors::FG_TRACE
+                colors::FG_TRACE()
             };
             let line = format!(
                 "{:>2}. {} {} {} · {} lines",
@@ -230,7 +231,7 @@ pub(crate) fn layout_tool_result_group(
 
             // 展开项：详情行也归该项。
             if !collapsed && matches!(fold, FoldState::Expanded) {
-                let body_color = if *is_error { colors::ACCENT_RED } else { colors::FG_SECONDARY };
+                let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
                 for body_line in result.lines().take(20) {
                     stack = stack.child_sized(
                         Text::new(format!("    {}", body_line)).fg(body_color),
@@ -250,7 +251,7 @@ pub(crate) fn layout_tool_result_group(
             .map(|c| c >= base_index + shown && c < base_index + n)
             .unwrap_or(false);
         let marker = if cursor_in_folded { "▶" } else { " " };
-        let more_color = if cursor_in_folded { colors::FG_PRIMARY } else { colors::FG_TRACE };
+        let more_color = if cursor_in_folded { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
         stack = stack.child_sized(
             Text::new(format!("{} … [+{} more · Space to expand]", marker, more))
                 .fg(more_color)
@@ -289,7 +290,7 @@ pub(crate) fn layout_thinking_group(
 
     // 无顶/底横线（与 ToolResult 井同构，隐形边界令）。
     stack = stack.child_sized(
-        Text::new(format!("ℹ {} thoughts", n)).fg(colors::FG_MUTED).italic(),
+        Text::new(format!("ℹ {} thoughts", n)).fg(colors::FG_MUTED()).italic(),
         1,
     );
     height += 1;
@@ -305,7 +306,7 @@ pub(crate) fn layout_thinking_group(
                 format!("thinking · {} words", wc)
             };
             let marker = if is_cursor { "▶" } else { " " };
-            let item_color = if is_cursor { colors::FG_PRIMARY } else { colors::FG_TRACE };
+            let item_color = if is_cursor { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
             let line = format!("{:>2}. {} ⚇ {}", offset + 1, marker, summary);
             stack = stack.child_sized(Text::new(line).fg(item_color).italic(), 1);
             height += 1;
@@ -314,7 +315,7 @@ pub(crate) fn layout_thinking_group(
             if !collapsed && matches!(fold, FoldState::Expanded) {
                 for body_line in content.lines().take(20) {
                     stack = stack.child_sized(
-                        Text::new(format!("    {}", body_line)).fg(colors::FG_TRACE).italic(),
+                        Text::new(format!("    {}", body_line)).fg(colors::FG_TRACE()).italic(),
                         1,
                     );
                     height += 1;
@@ -330,7 +331,7 @@ pub(crate) fn layout_thinking_group(
             .map(|c| c >= base_index + shown && c < base_index + n)
             .unwrap_or(false);
         let marker = if cursor_in_folded { "▶" } else { " " };
-        let more_color = if cursor_in_folded { colors::FG_PRIMARY } else { colors::FG_TRACE };
+        let more_color = if cursor_in_folded { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
         stack = stack.child_sized(
             Text::new(format!("{} … [+{} more · Space to expand]", marker, more))
                 .fg(more_color)
@@ -383,6 +384,7 @@ fn detect_unit_at(
     tick: u64,
     show_thinking: bool,
     turn_has_thinking: bool,
+    text_width: u16,
 ) -> UnitSpan {
     let head = &msgs[i];
     let (glyph, glyph_w) = block_glyph(head);
@@ -430,7 +432,7 @@ fn detect_unit_at(
 
     let thinking_continuation =
         matches!(head, TranscriptBlock::Thinking { .. }) && turn_has_thinking;
-    let bl = layout_block_ctx(head, tick, thinking_continuation);
+    let bl = layout_block_ctx(head, tick, thinking_continuation, text_width);
     UnitSpan {
         span: 1,
         height: bl.height,
@@ -459,6 +461,7 @@ pub(crate) fn build_render_units(
     tick: u64,
     show_thinking: bool,
     viewport: Option<ViewportRange>,
+    text_width: u16,
 ) -> Vec<RenderUnit> {
     /// viewport 上下 padding（行）：抗 1-2 行抖动 + 吸收调用方先于内联 dialog
     /// 估算 scroll_top 的小幅偏差（permission/question 内联块在 build 之后才追加，
@@ -473,7 +476,7 @@ pub(crate) fn build_render_units(
     let mut turn_has_thinking = false;
 
     while i < msgs.len() {
-        let span = detect_unit_at(msgs, i, tick, show_thinking, turn_has_thinking);
+        let span = detect_unit_at(msgs, i, tick, show_thinking, turn_has_thinking, text_width);
 
         // 推进 turn 状态（无视后续是否 push）——与原循环同序。
         match &msgs[i] {
@@ -514,7 +517,7 @@ pub(crate) fn build_render_units(
                 };
                 (g.view, g.row_owners)
             } else {
-                let bl = layout_block_ctx(&msgs[i], tick, span.thinking_continuation);
+                let bl = layout_block_ctx(&msgs[i], tick, span.thinking_continuation, text_width);
                 let h = bl.height as usize;
                 (bl.view, vec![Some(0); h])
             }
@@ -548,13 +551,13 @@ pub(crate) fn build_render_units(
 /// show_thinking 与渲染同口径，否则高度错位。
 /// compact_density 与渲染块间空行同口径：紧凑模式块间 0 间隔，gap 也为 0，
 /// 否则 total_h 比实际渲染高 → max_offset 偏大 → 点击/scroll 漂移。
-pub(crate) fn transcript_total_height(msgs: &[TranscriptBlock], show_thinking: bool, compact_density: bool) -> u16 {
+pub(crate) fn transcript_total_height(msgs: &[TranscriptBlock], show_thinking: bool, compact_density: bool, text_width: u16) -> u16 {
     let mut total: u16 = 0;
     let mut count: u16 = 0;
     let mut turn_has_thinking = false;
     let mut i = 0usize;
     while i < msgs.len() {
-        let span = detect_unit_at(msgs, i, 0, show_thinking, turn_has_thinking);
+        let span = detect_unit_at(msgs, i, 0, show_thinking, turn_has_thinking, text_width);
         match &msgs[i] {
             TranscriptBlock::UserPrompt { .. } => turn_has_thinking = false,
             TranscriptBlock::Thinking { .. } => turn_has_thinking = true,
@@ -574,10 +577,13 @@ pub(crate) fn transcript_total_height(msgs: &[TranscriptBlock], show_thinking: b
 /// turn 内已出现过的思考的延续（被中间的 text/tool 夹断）——若是，用 ` ┆ `
 /// 续接符代替 ` ✻ `，避免 reasoning model 的「思考→工具→再思考」流被拆成
 /// 一串重复的 ✻ 独立块。土（编排层 turn 上下文）生金（成形符号）。
+///
+/// `text_width` = transcript 实际内容宽（markdown 行数估算与渲染同口径）。
 pub(crate) fn layout_block_ctx(
     block: &TranscriptBlock,
     tick: u64,
     thinking_continuation: bool,
+    text_width: u16,
 ) -> BlockLayout {
     match block {
         // ── User Prompt ──
@@ -602,13 +608,13 @@ pub(crate) fn layout_block_ctx(
 
             let mut stack = vstack().gap(0)
                 .child_sized(
-                    Text::new(first_line.to_string()).fg(colors::FG_PRIMARY),
+                    Text::new(first_line.to_string()).fg(colors::FG_PRIMARY()),
                     1,
                 );
             let mut height = 1u16;
             for line in &rest {
                 stack = stack.child_sized(
-                    Text::new(line.to_string()).fg(colors::FG_PRIMARY),
+                    Text::new(line.to_string()).fg(colors::FG_PRIMARY()),
                     1,
                 );
                 height += 1;
@@ -616,7 +622,7 @@ pub(crate) fn layout_block_ctx(
             if let Some(hint) = more_hint {
                 stack = stack.child_sized(
                     Text::new(format!("  {}", hint))
-                        .fg(colors::FG_MUTED).italic(),
+                        .fg(colors::FG_MUTED()).italic(),
                     1,
                 );
                 height += 1;
@@ -637,12 +643,12 @@ pub(crate) fn layout_block_ctx(
             if content.is_empty() {
                 BlockLayout {
                     height: 1,
-                    view: vstack().child(Text::new("…").fg(colors::FG_MUTED)),
+                    view: vstack().child(Text::new("…").fg(colors::FG_MUTED())),
                 }
             } else {
                 let mut md = crate::markdown::RevueMarkdown::new();
-                md.set_content(content);
-                let lines = md.line_count().max(1) as u16;
+                md.set_content(content, text_width);
+                let lines = md.line_count().max(1);
                 BlockLayout { height: lines, view: md.as_stack() }
             }
         }
@@ -665,7 +671,7 @@ pub(crate) fn layout_block_ctx(
                     BlockLayout {
                         height: 1,
                         view: vstack().child(
-                            Text::new(summary).fg(colors::FG_MUTED).italic(),
+                            Text::new(summary).fg(colors::FG_MUTED()).italic(),
                         ),
                     }
                 }
@@ -680,20 +686,20 @@ pub(crate) fn layout_block_ctx(
                     let mut height = 0u16;
                     if total == 0 {
                         body = body.child_sized(
-                            Text::new("…".to_string()).fg(colors::FG_MUTED).italic(), 1,
+                            Text::new("…".to_string()).fg(colors::FG_MUTED()).italic(), 1,
                         );
                         height = 1;
                     } else {
                         for line in content.lines().take(limit) {
                             body = body.child_sized(
-                                Text::new(line.to_string()).fg(colors::FG_MUTED).italic(), 1,
+                                Text::new(line.to_string()).fg(colors::FG_MUTED()).italic(), 1,
                             );
                             height += 1;
                         }
                         if total > limit {
                             body = body.child_sized(
                                 Text::new(format!("  … +{} more lines", total - limit))
-                                    .fg(colors::FG_MUTED).italic(),
+                                    .fg(colors::FG_MUTED()).italic(),
                                 1,
                             );
                             height += 1;
@@ -711,9 +717,9 @@ pub(crate) fn layout_block_ctx(
             use crate::widget::blink::blink_visible;
             let name_color = match phase {
                 ToolPhase::Starting | ToolPhase::Running => {
-                    if blink_visible(tick) { colors::FG_MUTED } else { colors::BG_PRIMARY }
+                    if blink_visible(tick) { colors::FG_MUTED() } else { colors::BG_PRIMARY() }
                 }
-                ToolPhase::Done => colors::E_AMBER,
+                ToolPhase::Done => colors::E_AMBER(),
             };
             let name_display = if name.len() > 20 {
                 format!("{}…", &name.chars().take(17).collect::<String>())
@@ -736,7 +742,7 @@ pub(crate) fn layout_block_ctx(
                             name_display.chars().count() as u16,
                         )
                         .child_flex(
-                            Text::new(format!(" {}", params_disp)).fg(colors::FG_MUTED),
+                            Text::new(format!(" {}", params_disp)).fg(colors::FG_MUTED()),
                             1.0,
                         ),
                 ),
@@ -768,35 +774,35 @@ pub(crate) fn layout_block_ctx(
                     view: vstack().child(
                         hstack().gap(0)
                             .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
+                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
+                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
                             .child_flex(
                                 Text::new(format!(" · {} lines", total_lines))
-                                    .fg(colors::FG_MUTED),
+                                    .fg(colors::FG_MUTED()),
                                 1.0,
                             ),
                     ),
                 },
                 FoldState::Truncated => {
-                    let body_color = if *is_error { colors::ACCENT_RED } else { colors::FG_SECONDARY };
+                    let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
                     let limit = FOLD_PREVIEW_LINES.min(total_lines);
                     let mut stack = vstack().gap(0).child_sized(
                         hstack().gap(0)
                             .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
+                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
+                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
                             .child_flex(Text::new(""), 1.0),
                         1,
                     );
                     let mut height = 1u16;
                     for line in result.lines().take(limit) {
-                        stack = stack.child_sized(Text::new(format!("{}", line)).fg(body_color), 1);
+                        stack = stack.child_sized(Text::new(line.to_string()).fg(body_color), 1);
                         height += 1;
                     }
                     if total_lines > limit {
                         stack = stack.child_sized(
                             Text::new(format!("  … +{} more lines", total_lines - limit))
-                                .fg(colors::FG_MUTED).italic(),
+                                .fg(colors::FG_MUTED()).italic(),
                             1,
                         );
                         height += 1;
@@ -804,25 +810,25 @@ pub(crate) fn layout_block_ctx(
                     BlockLayout { height, view: stack }
                 }
                 FoldState::Expanded => {
-                    let body_color = if *is_error { colors::ACCENT_RED } else { colors::FG_SECONDARY };
+                    let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
                     let view_lines = total_lines.min(20);
                     let mut stack = vstack().gap(0).child_sized(
                         hstack().gap(0)
                             .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY), name_w)
+                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
+                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
                             .child_flex(Text::new(""), 1.0),
                         1,
                     );
                     let mut height = 1u16;
                     for line in result.lines().take(view_lines) {
-                        stack = stack.child_sized(Text::new(format!("{}", line)).fg(body_color), 1);
+                        stack = stack.child_sized(Text::new(line.to_string()).fg(body_color), 1);
                         height += 1;
                     }
                     if total_lines > view_lines {
                         stack = stack.child_sized(
                             Text::new(format!("  … +{} more lines", total_lines - view_lines))
-                                .fg(colors::FG_MUTED).italic(),
+                                .fg(colors::FG_MUTED()).italic(),
                             1,
                         );
                         height += 1;
@@ -846,13 +852,13 @@ pub(crate) fn layout_block_ctx(
                 if !s.tokens.is_empty() { header.push_str(&format!(" · {}", s.tokens)); }
             }
             let mut s = vstack().gap(0)
-                .child_sized(Text::new(header).fg(colors::FG_MUTED).bold(), 1);
+                .child_sized(Text::new(header).fg(colors::FG_MUTED()).bold(), 1);
             let mut height = 1u16;
             match fold {
                 FoldState::Folded => {
                     s = s.child_sized(
                         Text::new(format!("  … {} pending, {} completed", pending, done))
-                            .fg(colors::FG_MUTED).italic(),
+                            .fg(colors::FG_MUTED()).italic(),
                         1,
                     );
                     height += 1;
@@ -869,7 +875,7 @@ pub(crate) fn layout_block_ctx(
                     if items.len() > limit {
                         s = s.child_sized(
                             Text::new(format!("  … +{} pending, +{} completed", pending, done))
-                                .fg(colors::FG_MUTED).italic(),
+                                .fg(colors::FG_MUTED()).italic(),
                             1,
                         );
                         height += 1;
@@ -891,7 +897,7 @@ pub(crate) fn layout_block_ctx(
         // ── Skill Activated ──
         TranscriptBlock::SkillActivated { name, .. } => BlockLayout {
             height: 1,
-            view: vstack().child(Text::new(format!("skill · {}", name)).fg(colors::FG_MUTED)),
+            view: vstack().child(Text::new(format!("skill · {}", name)).fg(colors::FG_MUTED())),
         },
 
         // ── Stage Update ──
@@ -905,8 +911,8 @@ pub(crate) fn layout_block_ctx(
             };
             let mut stack = vstack().gap(0).child_sized(
                 hstack().gap(1)
-                    .child_sized(Text::new(" ◆ ").fg(colors::FG_MUTED), 3)
-                    .child(Text::new(format!("stage · {}", name)).bold().fg(colors::FG_PRIMARY))
+                    .child_sized(Text::new(" ◆ ").fg(colors::FG_MUTED()), 3)
+                    .child(Text::new(format!("stage · {}", name)).bold().fg(colors::FG_PRIMARY()))
                     .child(Text::new(format!(" {} {}", status_icon, status)).fg(status_color)),
                 1,
             );
@@ -915,7 +921,7 @@ pub(crate) fn layout_block_ctx(
                 for line in detail.lines() {
                     if line.is_empty() { continue; }
                     stack = stack.child_sized(
-                        Text::new(format!("   {}", line)).fg(colors::FG_MUTED), 1,
+                        Text::new(format!("   {}", line)).fg(colors::FG_MUTED()), 1,
                     );
                     height += 1;
                 }
@@ -928,19 +934,19 @@ pub(crate) fn layout_block_ctx(
             height: 1,
             view: vstack().child(Text::new(
                 format!("compact · {} → {} tokens", before_tokens, after_tokens),
-            ).fg(colors::FG_MUTED).italic()),
+            ).fg(colors::FG_MUTED()).italic()),
         },
 
         // ── System Notice ──
         TranscriptBlock::SystemNotice { text, .. } => BlockLayout {
             height: 1,
-            view: vstack().child(Text::new(format!(" ℹ  {}", text)).fg(colors::FG_MUTED)),
+            view: vstack().child(Text::new(format!(" ℹ  {}", text)).fg(colors::FG_MUTED())),
         },
 
         // ── Image Reference ──
         TranscriptBlock::ImageRef { mime, .. } => BlockLayout {
             height: 1,
-            view: vstack().child(Text::new(format!("[{}]", mime)).fg(colors::FG_MUTED)),
+            view: vstack().child(Text::new(format!("[{}]", mime)).fg(colors::FG_MUTED())),
         },
     }
 }
@@ -1037,8 +1043,8 @@ mod layout_tests {
         for fold in [FoldState::Folded, FoldState::Truncated, FoldState::Expanded] {
             let b = mk(fold.clone());
             assert_eq!(
-                layout_block_ctx(&b, 0, false).height,
-                layout_block_ctx(&b, 0, true).height,
+                layout_block_ctx(&b, 0, false, 100).height,
+                layout_block_ctx(&b, 0, true, 100).height,
                 "continuation marker must not change height for {fold:?}",
             );
         }
@@ -1200,10 +1206,11 @@ mod layout_tests {
     #[test]
     fn viewport_window_matches_full_layout_heights() {
         let msgs = make_mixed_msgs();
-        let full = build_render_units(&msgs, None, 0, true, None);
+        let full = build_render_units(&msgs, None, 0, true, None, 100);
         let windowed = build_render_units(
             &msgs, None, 0, true,
             Some(ViewportRange { scroll_top: 30, viewport_h: 20 }),
+            100,
         );
 
         assert_eq!(full.len(), windowed.len(), "viewport 切换不应改变 unit 数");
@@ -1229,15 +1236,15 @@ mod layout_tests {
         let msgs = make_mixed_msgs();
         // transcript_total_height 现走纯量 detect_unit_at —— 必须与全量 build_render_units
         // 的 Σ height + count + 1 等同（compact_density=false 下每 unit 后 1 行 gap）。
-        let total = transcript_total_height(&msgs, true, false);
-        let units = build_render_units(&msgs, None, 0, true, None);
+        let total = transcript_total_height(&msgs, true, false, 100);
+        let units = build_render_units(&msgs, None, 0, true, None, 100);
         let sum_h: u16 = units.iter().filter(|u| u.height > 0)
             .map(|u| u.height).sum();
         let count = units.iter().filter(|u| u.height > 0).count() as u16;
         assert_eq!(total, sum_h.saturating_add(count).saturating_add(1));
 
         // compact_density=true 下无块间空行 gap 应为 0
-        let total_compact = transcript_total_height(&msgs, true, true);
+        let total_compact = transcript_total_height(&msgs, true, true, 100);
         assert_eq!(total_compact, sum_h.saturating_add(1));
     }
 }

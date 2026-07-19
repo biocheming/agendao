@@ -29,6 +29,12 @@ pub struct QuestionDialog {
     toggled: Vec<bool>,
 }
 
+impl Default for QuestionDialog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuestionDialog {
     pub fn new() -> Self { Self { visible: false, requests: Vec::new(), selected: 0, toggled: Vec::new() } }
 
@@ -108,7 +114,7 @@ impl QuestionDialog {
             .child_sized(
                 Text::new(format!(" ? {}{}", req.text, queue_hint))
                     .bold()
-                    .fg(colors::ACCENT_CYAN),
+                    .fg(colors::ACCENT_CYAN()),
                 1,
             );
         let mut height: u16 = 1;
@@ -119,9 +125,9 @@ impl QuestionDialog {
             } else if i == self.selected { "❯ " } else { "  " };
             let color = if (i == self.selected && !is_multi)
                 || (is_multi && self.toggled.get(i).copied().unwrap_or(false)) {
-                colors::ACCENT_CYAN
+                colors::ACCENT_CYAN()
             } else {
-                colors::FG_SECONDARY
+                colors::FG_SECONDARY()
             };
             let label = if opt.description.is_empty() {
                 opt.label.clone()
@@ -136,7 +142,7 @@ impl QuestionDialog {
         }
 
         content = content.child_sized(
-            Text::new(format!(" {}", hint)).fg(colors::FG_MUTED),
+            Text::new(format!(" {}", hint)).fg(colors::FG_MUTED()),
             1,
         );
         height += 1;

@@ -6,7 +6,6 @@
 use std::collections::HashSet;
 
 use revue::prelude::*;
-use revue::style::ThemeVariant;
 use crate::store::types::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,9 +60,9 @@ pub struct AppStore {
     pub show_tips: Signal<bool>,
     /// true=紧凑间距（块间 0 行间隔）；false=舒适（当前默认，块间 1 行）。
     pub compact_density: Signal<bool>,
-    /// 当前主题 variant（阴面记账）。启动时由 OSC11 检测初值；
-    /// ToggleAppearance 经 `ds::theme::toggle_variant` 翻转 + `set_theme` 同步渲染。
-    pub theme_variant: Signal<ThemeVariant>,
+    /// 当前主题（阴面记账）。启动时由持久化 config.theme / OSC11 兜底决定初值；
+    /// 切换经 `ds::theme::apply_theme` 单点收口（色板 + revue 信号同步）。
+    pub theme_id: Signal<crate::ds::theme::ThemeId>,
 
     // 土：Settings 页面状态(`OpenSettings` 进入时 navigate + load 写入;
     // SettingsScreen 唯一只读消费)。
@@ -84,7 +83,7 @@ pub struct AppStore {
     pub settings_focus_pane: Signal<SettingsFocusPane>,
     /// General 分类 body 内当前选中行下标(`GeneralRow::ALL` 索引)。
     /// keymap 写(↑/↓ 移动、Enter/Space 触发对应 toggle),screen 读(高亮当前行)。
-    /// 与 toggle 值本身无关——值真相在各 `show_*`/`theme_variant` signal(单点权威)。
+    /// 与 toggle 值本身无关——值真相在各 `show_*`/`theme_id` signal(单点权威)。
     pub settings_general_selected: Signal<usize>,
     /// Keybindings 分类 body 的滚动偏移(首个可见 entry 下标)。
     /// keymap 写(↑/↓/PgUp/PgDn),screen 读(视窗起点)。只读参考,无选中态。
@@ -97,6 +96,12 @@ pub struct AppStore {
     pub settings_skills: Signal<Vec<SettingsSkillRow>>,
     /// Skills 列表当前选中下标。
     pub settings_skills_selected: Signal<usize>,
+}
+
+impl Default for AppStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppStore {
@@ -120,12 +125,12 @@ impl AppStore {
             show_header: signal(true),
             show_tips: signal(true),
             compact_density: signal(false),
-            theme_variant: signal(ThemeVariant::Dark),
+            theme_id: signal(crate::ds::theme::ThemeId::TokyoNight),
             providers: signal(Vec::new()),
             providers_connected: signal(HashSet::new()),
             settings_selected_provider: signal(None),
             settings_selected_model: signal(None),
-            settings_category: signal(SettingsCategory::ModelSettings),
+            settings_category: signal(SettingsCategory::General),
             settings_focus_pane: signal(SettingsFocusPane::Providers),
             settings_general_selected: signal(0),
             settings_keybindings_scroll: signal(0),
@@ -194,7 +199,7 @@ mod tests {
         assert!(s.providers.get().is_empty());
         assert!(s.providers_connected.get().is_empty());
         assert!(s.settings_selected_provider.get().is_none());
-        assert_eq!(s.settings_category.get(), SettingsCategory::ModelSettings);
+        assert_eq!(s.settings_category.get(), SettingsCategory::General);
         assert_eq!(s.settings_focus_pane.get(), SettingsFocusPane::Providers);
         s.navigate_home();
         assert_eq!(s.route.get(), Route::Home);

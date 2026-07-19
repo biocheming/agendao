@@ -235,7 +235,7 @@ impl AppHandler {
                                 for c in proto.checkpoints {
                                     entries.push(RecoveryEntry {
                                         label: format!("checkpoint: [{}] {}", c.status, c.label),
-                                        detail: c.summary.unwrap_or_else(|| c.kind),
+                                        detail: c.summary.unwrap_or(c.kind),
                                         action_kind: None,
                                         target_id: None,
                                     });
@@ -465,7 +465,7 @@ impl AppHandler {
             }
             UiActionId::ConnectProvider => {
                 // TUI 路径已迁至全屏 Settings 页(`OpenSettings`),`ConnectProvider`
-                // 仅 CLI 互动模式仍消费(agendao-command-runtime)。TUI 这里诚实标注:
+                // 仅 CLI 互动模式仍消费(agendao-command::interactive)。TUI 这里诚实标注:
                 // 触发即提示用户走新入口,避免悄无声响地什么都不发生(土律·第十条)。
                 self.store.push_toast(
                     "Provider settings moved to /settings",
@@ -578,15 +578,27 @@ impl AppHandler {
                     crate::store::types::ToastMsgVariant::Warning,
                 );
             }
-            UiActionId::ToggleAppearance => {
-                // 运行时主题切换：翻转 variant（ds::theme 唯一翻转入口）→
-                // set_theme(theme_for) 同步 revue 渲染 → toast。阴阳同口径：
-                // store.theme_variant 记账，revue ThemeManager 渲染，两者经此同步。
-                let next = crate::ds::theme::toggle_variant(self.store.theme_variant.get());
-                self.store.theme_variant.set(next);
-                revue::style::set_theme(crate::ds::theme::theme_for(next));
+            UiActionId::ToggleAppearance | UiActionId::AppearanceNext | UiActionId::AppearancePrev => {
+                // 主题循环唯一权威（土律归一）：ToggleAppearance=下一个（Ctrl+P
+                // palette 兼容入口），AppearanceNext/Prev=Settings Theme 行 →/←。
+                // 色板 + revue 主题信号经 ds::theme::apply_theme 单点收口；
+                // CSS `:root` 变量写 pending 槽，由 app 事件闭包应用到 stylesheet。
+                let cur = self.store.theme_id.get();
+                let next = if action_id == UiActionId::AppearancePrev { cur.prev() } else { cur.next() };
+                self.pending_theme_vars = Some(crate::ds::theme::apply_theme(next));
+                self.store.theme_id.set(next);
+                // 持久化（config `theme` 键）fire-and-forget：失败仅日志，不阻塞换肤。
+                if let Some(ref api) = self.api {
+                    let api_c = api.clone();
+                    let id_str = next.id().to_string();
+                    api.handle().spawn(async move {
+                        if let Err(e) = api_c.patch_config_async(serde_json::json!({ "theme": id_str })).await {
+                            tracing::warn!(%e, "theme persist failed");
+                        }
+                    });
+                }
                 self.store.push_toast(
-                    &format!("Theme: {}", crate::ds::theme::variant_label(next)),
+                    &format!("Theme: {}", next.label()),
                     crate::store::types::ToastMsgVariant::Info,
                 );
             }

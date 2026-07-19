@@ -277,7 +277,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         stage.stage_name,
                         stage.step.unwrap_or(0),
                         stage.step_total.unwrap_or(0),
-                        if stage.focus.as_deref().unwrap_or("") != "" {
+                        if !stage.focus.as_deref().unwrap_or("").is_empty() {
                             format!("({})", stage.focus.as_deref().unwrap_or(""))
                         } else { String::new() },
                     );
