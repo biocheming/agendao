@@ -26,7 +26,7 @@ use std::pin::Pin;
 use crate::driver::{ApiStyle, ProviderDriver};
 #[cfg(feature = "http-transport")]
 use crate::protocol::{
-    ProviderAdapter, ProviderConfig, ProviderHttpClient, ProviderHttpStreamError,
+    ProviderAdapter, ProviderConfig, ProviderHttpClient,
 };
 #[cfg(feature = "http-transport")]
 use async_trait::async_trait;
@@ -421,7 +421,7 @@ impl ProviderAdapter for DriverBasedAdapter {
         // SSE decode → JSON values (Phase 1 infrastructure)
         let bytes_stream = response
             .bytes_stream()
-            .map(|result| result.map_err(|err| -> ProviderHttpStreamError { err }));
+            .map(|result| result);
         let json_stream = crate::stream::decode_sse_stream(bytes_stream).await?;
 
         // Use driver to parse JSON → StreamingEvent, then bridge → StreamEvent.

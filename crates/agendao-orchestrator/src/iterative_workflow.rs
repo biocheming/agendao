@@ -12,14 +12,14 @@ const VERIFIER_MAX_PAIRWISE_JUDGE_JOBS: u32 = 2_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum IterativeWorkflowSource {
-    Inline(IterativeWorkflowConfig),
+    Inline(Box<IterativeWorkflowConfig>),
     Path(String),
 }
 
 impl IterativeWorkflowSource {
     pub fn as_inline(&self) -> Option<&IterativeWorkflowConfig> {
         match self {
-            Self::Inline(config) => Some(config),
+            Self::Inline(config) => Some(config.as_ref()),
             Self::Path(_) => None,
         }
     }

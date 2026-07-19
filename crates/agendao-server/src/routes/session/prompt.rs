@@ -15,6 +15,7 @@ use agendao_types::{
     SessionContinuityLimits, SessionContinuityMemoryAnchor, SessionContinuityPacket,
     SessionContinuityTurn, SessionMessage,
 };
+use agendao_util::util::format::truncate_chars;
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -339,7 +340,7 @@ async fn resolve_prompt_payload(
         .unwrap_or_else(|| raw_arguments_for_hydration.clone());
     let hydrated_arguments = if let Some((arguments, _)) = scheduler_defaults {
         flatten_argument_values(
-            &invocation
+            invocation
                 .map(|item| item.argument_schema.as_slice())
                 .unwrap_or(&[]),
             &arguments,
@@ -796,18 +797,6 @@ fn role_label(role: &MessageRole) -> &'static str {
 
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn truncate_chars(value: &str, limit: usize) -> String {
-    if value.chars().count() <= limit {
-        return value.to_string();
-    }
-    let mut truncated = value
-        .chars()
-        .take(limit.saturating_sub(24))
-        .collect::<String>();
-    truncated.push_str("\n...[truncated]...");
-    truncated
 }
 
 fn normalize_command_field_key(key: &str) -> String {
@@ -1731,7 +1720,7 @@ pub(super) fn move_scheduler_final_answer_after_stage_messages(
         .skip(assistant_index + 1)
         .filter(|(_, message)| message.metadata.contains_key("scheduler_stage"))
         .map(|(index, _)| index)
-        .last()
+        .next_back()
     else {
         return;
     };
@@ -1782,6 +1771,8 @@ async fn session_prompt_inner(
     req: SessionPromptRequest,
     verified_ingress: Option<VerifiedSessionIngress>,
 ) -> Result<Json<serde_json::Value>> {
+    // 懒加载水合闸门：prompt 需要完整消息上下文，进入执行前先回填。
+    state.ensure_session_messages_hydrated(&id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
     super::super::permission::PERMISSION_ENGINE
         .lock()
         .await
@@ -1948,10 +1939,11 @@ async fn session_prompt_inner(
         .scheduler_profile
         .clone()
         .or(req.scheduler_profile.clone());
-    let effective_scheduler_profile_source = if resolved_prompt.scheduler_profile_override.is_some()
+    let effective_scheduler_profile_source = if resolved_prompt
+        .scheduler_profile_override
+        .is_some()
+        || resolved_prompt.scheduler_profile.is_some()
     {
-        Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
-    } else if resolved_prompt.scheduler_profile.is_some() {
         Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
     } else if req.scheduler_profile.is_some() {
         Some(PromptRequestSchedulerProfileSource::ExplicitRequest)

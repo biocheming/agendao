@@ -5,19 +5,36 @@ use crate::run::local_server_bridge;
 
 use super::message_io::{build_prompt_message, print_assistant_messages};
 
+/// Options controlling a single local CLI prompt run (session selection +
+/// prompt routing fields), grouped so `run_cli_prompt_local` stays readable.
+pub(in crate::run) struct LocalPromptRequest<'a> {
+    pub command: Option<&'a str>,
+    pub continue_last: bool,
+    pub session: Option<&'a str>,
+    pub fork: bool,
+    pub model: Option<&'a str>,
+    pub agent: Option<&'a str>,
+    pub variant: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub directory: &'a str,
+}
+
 pub(in crate::run) async fn run_cli_prompt_local(
     state: &Arc<local_server_bridge::CliLocalServerState>,
     input: &str,
-    command: Option<&str>,
-    continue_last: bool,
-    session: Option<&str>,
-    fork: bool,
-    model: Option<&str>,
-    agent: Option<&str>,
-    variant: Option<&str>,
-    title: Option<&str>,
-    directory: &str,
+    request: LocalPromptRequest<'_>,
 ) -> anyhow::Result<()> {
+    let LocalPromptRequest {
+        command,
+        continue_last,
+        session,
+        fork,
+        model,
+        agent,
+        variant,
+        title,
+        directory,
+    } = request;
     let session_id =
         resolve_local_session(state, continue_last, session, fork, title, directory).await?;
 

@@ -36,7 +36,7 @@ impl AgentRegistry {
         ConfigStore::from_project_dir(project_dir.as_ref())
             .ok()
             .map(|store| Self::from_config(&store.config()))
-            .unwrap_or_else(Self::new)
+            .unwrap_or_default()
     }
 
     pub fn get(&self, name: &str) -> Option<&AgentInfo> {

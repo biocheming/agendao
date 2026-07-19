@@ -143,7 +143,7 @@ impl<S: SessionStore> OrchestrationCore<S> {
                     created_at: record.created_at.to_rfc3339(),
                     last_message_at: Some(
                         chrono::DateTime::from_timestamp_millis(record.time.updated)
-                            .unwrap_or_else(|| chrono::Utc::now())
+                            .unwrap_or_else(chrono::Utc::now)
                             .to_rfc3339(),
                     ),
                 }
@@ -209,6 +209,7 @@ impl<S: SessionStore> OrchestrationCore<S> {
 
 /// Options for prompt execution
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct PromptExecutionOptions {
     pub agent_id: Option<String>,
     pub scheduler_profile: Option<String>,
@@ -230,22 +231,6 @@ pub struct PromptExecutionOptions {
     pub command: Option<String>,
 }
 
-impl Default for PromptExecutionOptions {
-    fn default() -> Self {
-        Self {
-            agent_id: None,
-            scheduler_profile: None,
-            model: None,
-            variant: None,
-            continue_last: false,
-            source_origin: None,
-            source_surface: None,
-            ingress_source: None,
-            idempotency_key: None,
-            command: None,
-        }
-    }
-}
 
 /// Result of prompt execution
 #[derive(Debug, Clone)]

@@ -37,7 +37,7 @@ async fn test_multi_turn_conversation() {
                 .execute_prompt(session_id, "How are you?", options.clone())
                 .await;
 
-            if let Ok(_) = result2 {
+            if result2.is_ok() {
                 // Verify session has correct number of messages
                 let sessions = core.list_sessions().await.unwrap();
                 assert!(sessions.iter().any(|s| s.id == session_id));

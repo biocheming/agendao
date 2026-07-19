@@ -27,7 +27,7 @@ agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-tool-web = { path = "../agendao-tool-web", optional = true }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
 lsp-types = { version = "0.97", optional = true }
-tokio = { version = "1", features = ["fs", "io-util", "net", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -45,7 +45,7 @@ dirs = { workspace = true }
 chrono = { workspace = true }
 which = "7"
 content_inspector = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-webpki-roots", "system-proxy"], optional = true }
+reqwest = { workspace = true, features = ["blocking", "system-proxy"], optional = true }
 url = { workspace = true }
 uuid = { workspace = true }
 ast-grep-core = { version = "0.41.0", optional = true }
@@ -56,5 +56,5 @@ base64 = "0.22"
 portable-pty = { version = "0.8", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"

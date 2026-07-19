@@ -233,7 +233,7 @@ fn flush_pending(
         return;
     }
 
-    let ids: Vec<String> = pending_tool_use_ids.drain(..).collect();
+    let ids: Vec<String> = std::mem::take(pending_tool_use_ids);
     for id in &ids {
         record(SanitizerAction::OrphanedToolResult {
             tool_call_id: id.clone(),
@@ -425,7 +425,7 @@ fn deduplicate_tool_use_ids_in_message(message: &Message) -> Message {
         deduped_parts.retain(|p| {
             p.tool_use
                 .as_ref()
-                .map_or(true, |tu| seen.insert(tu.id.clone()))
+                .is_none_or(|tu| seen.insert(tu.id.clone()))
         });
     }
     deduped

@@ -8,7 +8,7 @@ agendao-core = { path = "../agendao-core", features = ["subprocess-runtime", "pr
 agendao-types = { path = "../agendao-types" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["fs", "io-util", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "rt", "sync", "time"] }
 async-trait = "0.1"
 anyhow = "1.0"
 thiserror = "2"

@@ -751,12 +751,8 @@ fn normalize_frontmatter_shorthands(
     frontmatter: &mut Map<String, Value>,
     methodology: Option<&mut Map<String, Value>>,
 ) -> Option<&'static str> {
-    let Some(prerequisites_value) = frontmatter.get("prerequisites").cloned() else {
-        return None;
-    };
-    let Some(prerequisites) = string_array_from_value(&prerequisites_value) else {
-        return None;
-    };
+    let prerequisites_value = frontmatter.get("prerequisites").cloned()?;
+    let prerequisites = string_array_from_value(&prerequisites_value)?;
 
     if let Some(methodology) = methodology {
         frontmatter.remove("prerequisites");

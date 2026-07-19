@@ -64,9 +64,8 @@ use agendao_types::{
 
 use super::surface_contract::{
     collect_prompt_surface_provider_options, is_dynamic_catalog_header,
-    is_stable_governance_header, is_volatile_system_section, looks_like_clock_line,
-    normalize_stable_system_line, sanctioned_model_context_projection_for_message,
-    PromptSurfaceProviderOptionGroup,
+    is_volatile_system_section, looks_like_clock_line, normalize_stable_system_line,
+    sanctioned_model_context_projection_for_message, PromptSurfaceProviderOptionGroup,
 };
 use super::tools_and_output::ToolCatalogMode;
 use crate::SessionMessage;
@@ -300,7 +299,10 @@ impl PromptSurfaceInputs {
     ///
     /// Test-only compatibility constructor retained for authority equivalence
     /// checks. Production code must use `builder(...).set_*()`.
+    // 测试兼容构造器：参数与 PromptSurfaceInputs 字段一一对应，聚合结构体即
+    // 结构体本身，无收益。
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_session_prompt_parts(
         session_id: impl Into<String>,
         system_prompt: Option<String>,
@@ -1009,8 +1011,6 @@ fn render_preset_extension_layers(extension: &PresetPromptExtension) -> PromptSu
         }
         if is_dynamic_catalog_header(title) {
             layers.dynamic_overlay_sections.push(body.to_string());
-        } else if is_stable_governance_header(title) {
-            layers.stable_prefix_sections.push(body.to_string());
         } else {
             layers.stable_prefix_sections.push(body.to_string());
         }

@@ -63,7 +63,7 @@ pub(crate) async fn get_config_validation(
     Ok(Json(build_config_policy_validation_snapshot(&state).await))
 }
 
-async fn patch_config(
+pub(crate) async fn patch_config(
     State(state): State<Arc<ServerState>>,
     Json(patch): Json<serde_json::Value>,
 ) -> Result<Json<AppConfig>> {
@@ -199,6 +199,11 @@ pub(crate) async fn get_config_providers(
                 .unwrap_or_else(|| id.clone()),
             base_url: provider_base_urls.get(&id).cloned(),
             protocol: provider_protocols.get(&id).cloned(),
+            disabled: state
+                .config_store
+                .config()
+                .disabled_providers
+                .contains(&id),
             id: id.clone(),
             models,
         })

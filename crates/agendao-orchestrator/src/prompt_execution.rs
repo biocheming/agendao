@@ -238,7 +238,7 @@ pub async fn execute_prompt_with_session<S: SessionStore>(
     // 4. Get available tools
     let tool_definitions = {
         let tools_guard = tools.read().await;
-        build_tool_definitions(&*tools_guard).await
+        build_tool_definitions(&tools_guard).await
     };
 
     // 5. Enter LLM loop (may iterate multiple times for tool calls)
@@ -611,7 +611,7 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
     // 4. Get tool definitions
     let tool_definitions = {
         let tools_guard = tools.read().await;
-        build_tool_definitions(&*tools_guard).await
+        build_tool_definitions(&tools_guard).await
     };
 
     // 5. Clone Arc references for the stream
@@ -695,148 +695,196 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
 
     // 8. Create unfold stream that handles tool calling loop
     let output_stream = stream::unfold(initial_state, |mut state| async move {
-        loop {
-            if state.finished {
-                return None;
-            }
+        if state.finished {
+            return None;
+        }
 
-            // If we have a current stream, pull next event
-            if let Some(ref mut stream) = state.current_stream {
-                match stream.next().await {
-                    Some(Ok(event)) => {
-                        match &event {
-                            StreamEvent::TextDelta(text) => {
-                                state.accumulated_text.push_str(text);
-                            }
-                            StreamEvent::ToolCallEnd { id, name, input } => {
-                                state.accumulated_tool_calls.push(ToolCall {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                });
-                            }
-                            StreamEvent::FinishStep { usage, .. } => {
-                                state.accumulated_usage.input_tokens += usage.prompt_tokens;
-                                state.accumulated_usage.output_tokens += usage.completion_tokens;
-                                state.accumulated_usage.total_tokens +=
-                                    usage.prompt_tokens + usage.completion_tokens;
-                            }
-                            StreamEvent::Done => {
-                                // Stream finished, check if we have tool calls
-                                state.current_stream = None;
+        // If we have a current stream, pull next event
+        if let Some(ref mut stream) = state.current_stream {
+            match stream.next().await {
+                Some(Ok(event)) => {
+                    match &event {
+                        StreamEvent::TextDelta(text) => {
+                            state.accumulated_text.push_str(text);
+                        }
+                        StreamEvent::ToolCallEnd { id, name, input } => {
+                            state.accumulated_tool_calls.push(ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: input.clone(),
+                            });
+                        }
+                        StreamEvent::FinishStep { usage, .. } => {
+                            state.accumulated_usage.input_tokens += usage.prompt_tokens;
+                            state.accumulated_usage.output_tokens += usage.completion_tokens;
+                            state.accumulated_usage.total_tokens +=
+                                usage.prompt_tokens + usage.completion_tokens;
+                        }
+                        StreamEvent::Done => {
+                            // Stream finished, check if we have tool calls
+                            state.current_stream = None;
 
-                                // Save assistant message
+                            // Save assistant message. The session may have been
+                            // evicted while the lock was released mid-stream.
+                            let session_found = {
+                                let mut sessions_guard = state.sessions.lock().await;
+                                if let Some(session) =
+                                    sessions_guard.get_mut(&state.session_id)
                                 {
-                                    let mut sessions_guard = state.sessions.lock().await;
-                                    let session =
-                                        sessions_guard.get_mut(&state.session_id).unwrap();
                                     session.add_assistant_message(&state.accumulated_text);
                                     session.add_usage(
                                         state.accumulated_usage.input_tokens,
                                         state.accumulated_usage.output_tokens,
                                     );
-                                }
-
-                                if state.accumulated_tool_calls.is_empty() {
-                                    // No tool calls, we're done
-                                    state.finished = true;
-                                    return Some((Ok(event), state));
+                                    true
                                 } else {
-                                    // Execute tools and start next round
-                                    let tool_calls =
-                                        std::mem::take(&mut state.accumulated_tool_calls);
-                                    state.accumulated_text.clear();
-                                    state.round += 1;
+                                    false
+                                }
+                            };
+                            if !session_found {
+                                tracing::warn!(
+                                    session_id = %state.session_id,
+                                    "Session evicted mid-stream; aborting stream"
+                                );
+                                state.finished = true;
+                                return Some((
+                                    Err(agendao_provider::ProviderError::StreamError(
+                                        "Session not found".to_string(),
+                                    )),
+                                    state,
+                                ));
+                            }
 
-                                    // Execute each tool
-                                    for tool_call in tool_calls {
-                                        let tool_result = match execute_tool(
-                                            &state.tools,
-                                            &state.session_id,
-                                            &tool_call,
-                                        )
-                                        .await
-                                        {
-                                            Ok(result) => result,
-                                            Err(e) => format!("Error: {}", e),
-                                        };
+                            if state.accumulated_tool_calls.is_empty() {
+                                // No tool calls, we're done
+                                state.finished = true;
+                                return Some((Ok(event), state));
+                            } else {
+                                // Execute tools and start next round
+                                let tool_calls =
+                                    std::mem::take(&mut state.accumulated_tool_calls);
+                                state.accumulated_text.clear();
+                                state.round += 1;
 
-                                        // Save tool result to session
+                                // Execute each tool
+                                for tool_call in tool_calls {
+                                    let tool_result = match execute_tool(
+                                        &state.tools,
+                                        &state.session_id,
+                                        &tool_call,
+                                    )
+                                    .await
+                                    {
+                                        Ok(result) => result,
+                                        Err(e) => format!("Error: {}", e),
+                                    };
+
+                                    // Save tool result to session (may have been evicted)
+                                    let session_found = {
+                                        let mut sessions_guard = state.sessions.lock().await;
+                                        if let Some(session) =
+                                            sessions_guard.get_mut(&state.session_id)
                                         {
-                                            let mut sessions_guard = state.sessions.lock().await;
-                                            let session =
-                                                sessions_guard.get_mut(&state.session_id).unwrap();
                                             session.add_tool_result(
                                                 &tool_call.id,
                                                 &tool_result,
                                                 tool_result.starts_with("Error:"),
                                             );
-                                        }
-                                    }
-
-                                    // Build messages for next round
-                                    let messages = {
-                                        let sessions_guard = state.sessions.lock().await;
-                                        let session =
-                                            sessions_guard.get(&state.session_id).unwrap();
-                                        build_messages_from_session(session)
-                                    };
-
-                                    // Start next stream
-                                    let request = ChatRequest {
-                                        model: state.model_id.clone(),
-                                        messages,
-                                        max_tokens: Some(4096),
-                                        temperature: None,
-                                        top_p: None,
-                                        system: None,
-                                        tools: if state.tool_definitions.is_empty() {
-                                            None
+                                            true
                                         } else {
-                                            Some(state.tool_definitions.clone())
-                                        },
-                                        stream: Some(true),
-                                        provider_options: None,
-                                        variant: state.options.variant.clone(),
+                                            false
+                                        }
                                     };
+                                    if !session_found {
+                                        tracing::warn!(
+                                            session_id = %state.session_id,
+                                            "Session evicted mid-stream; aborting stream"
+                                        );
+                                        state.finished = true;
+                                        return Some((
+                                            Err(agendao_provider::ProviderError::StreamError(
+                                                "Session not found".to_string(),
+                                            )),
+                                            state,
+                                        ));
+                                    }
+                                }
 
-                                    match state.provider.chat_stream(request).await {
-                                        Ok(next_stream) => {
-                                            state.current_stream = Some(next_stream);
-                                            // Forward the Done event, then continue with next stream
-                                            return Some((Ok(event), state));
-                                        }
-                                        Err(e) => {
-                                            state.finished = true;
-                                            return Some((
-                                                Err(agendao_provider::ProviderError::StreamError(
-                                                    format!("Failed to start next round: {}", e),
-                                                )),
-                                                state,
-                                            ));
-                                        }
+                                // Build messages for next round (session may have been evicted)
+                                let messages = {
+                                    let sessions_guard = state.sessions.lock().await;
+                                    sessions_guard
+                                        .get(&state.session_id)
+                                        .map(build_messages_from_session)
+                                };
+                                let Some(messages) = messages else {
+                                    tracing::warn!(
+                                        session_id = %state.session_id,
+                                        "Session evicted mid-stream; aborting stream"
+                                    );
+                                    state.finished = true;
+                                    return Some((
+                                        Err(agendao_provider::ProviderError::StreamError(
+                                            "Session not found".to_string(),
+                                        )),
+                                        state,
+                                    ));
+                                };
+
+                                // Start next stream
+                                let request = ChatRequest {
+                                    model: state.model_id.clone(),
+                                    messages,
+                                    max_tokens: Some(4096),
+                                    temperature: None,
+                                    top_p: None,
+                                    system: None,
+                                    tools: if state.tool_definitions.is_empty() {
+                                        None
+                                    } else {
+                                        Some(state.tool_definitions.clone())
+                                    },
+                                    stream: Some(true),
+                                    provider_options: None,
+                                    variant: state.options.variant.clone(),
+                                };
+
+                                match state.provider.chat_stream(request).await {
+                                    Ok(next_stream) => {
+                                        state.current_stream = Some(next_stream);
+                                        // Forward the Done event, then continue with next stream
+                                        return Some((Ok(event), state));
+                                    }
+                                    Err(e) => {
+                                        state.finished = true;
+                                        return Some((
+                                            Err(agendao_provider::ProviderError::StreamError(
+                                                format!("Failed to start next round: {}", e),
+                                            )),
+                                            state,
+                                        ));
                                     }
                                 }
                             }
-                            _ => {}
                         }
+                        _ => {}
+                    }
 
-                        // Forward event to client
-                        return Some((Ok(event), state));
-                    }
-                    Some(Err(e)) => {
-                        state.finished = true;
-                        return Some((Err(e), state));
-                    }
-                    None => {
-                        // Stream ended without Done event
-                        return None;
-                    }
+                    // Forward event to client
+                    Some((Ok(event), state))
                 }
-            } else {
-                // No current stream and not finished - shouldn't happen
-                return None;
+                Some(Err(e)) => {
+                    state.finished = true;
+                    Some((Err(e), state))
+                }
+                None => {
+                    // Stream ended without Done event
+                    None
+                }
             }
+        } else {
+            // No current stream and not finished - shouldn't happen
+            None
         }
     });
 

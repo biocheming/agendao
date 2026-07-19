@@ -555,7 +555,6 @@ Legacy aliases accepted for recovery only (prefer the canonical names above):
             );
         }
 
-        let mut metadata = metadata;
         merge_tool_repair_telemetry(&mut metadata, &normalized.repair_metadata);
         Ok(ToolResult {
             title,

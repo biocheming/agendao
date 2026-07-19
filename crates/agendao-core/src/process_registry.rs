@@ -535,6 +535,9 @@ mod tests {
     // ── Reaper tests ────────────────────────────────────────────────────
 
     #[tokio::test]
+    // registry_test_guard 用 std Mutex 串行化共享全局注册表的测试；reaper 测试
+    // 必须持锁跨 sleep 等待，避免并发测试干扰全局状态，故允许 await 期间持锁。
+    #[allow(clippy::await_holding_lock)]
     async fn test_reaper_cleans_dead_pids() {
         let _test_guard = registry_test_guard();
         // Register a PID that definitely doesn't exist

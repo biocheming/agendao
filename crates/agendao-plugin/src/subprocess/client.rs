@@ -546,14 +546,12 @@ impl PluginSubprocess {
                     Err(err) => {
                         if let Some(tx) = start_tx.take() {
                             let _ = tx.send(Err(err));
-                        } else {
-                            if let Err(send_error) = chunk_tx.send(Err(err)).await {
-                                tracing::debug!(
-                                    plugin = %plugin_name,
-                                    error = %send_error,
-                                    "Failed to forward plugin stream startup error to consumer"
-                                );
-                            }
+                        } else if let Err(send_error) = chunk_tx.send(Err(err)).await {
+                            tracing::debug!(
+                                plugin = %plugin_name,
+                                error = %send_error,
+                                "Failed to forward plugin stream startup error to consumer"
+                            );
                         }
                         break;
                     }
@@ -566,14 +564,12 @@ impl PluginSubprocess {
                             let send_err = PluginSubprocessError::Json(err);
                             if let Some(tx) = start_tx.take() {
                                 let _ = tx.send(Err(send_err));
-                            } else {
-                                if let Err(error) = chunk_tx.send(Err(send_err)).await {
-                                    tracing::debug!(
-                                        plugin = %plugin_name,
-                                        error = %error,
-                                        "Failed to forward plugin stream JSON decode error to consumer"
-                                    );
-                                }
+                            } else if let Err(error) = chunk_tx.send(Err(send_err)).await {
+                                tracing::debug!(
+                                    plugin = %plugin_name,
+                                    error = %error,
+                                    "Failed to forward plugin stream JSON decode error to consumer"
+                                );
                             }
                             break;
                         }
@@ -583,14 +579,12 @@ impl PluginSubprocess {
                         let send_err = PluginSubprocessError::from(error);
                         if let Some(tx) = start_tx.take() {
                             let _ = tx.send(Err(send_err));
-                        } else {
-                            if let Err(error) = chunk_tx.send(Err(send_err)).await {
-                                tracing::debug!(
-                                    plugin = %plugin_name,
-                                    error = %error,
-                                    "Failed to forward plugin stream RPC error to consumer"
-                                );
-                            }
+                        } else if let Err(error) = chunk_tx.send(Err(send_err)).await {
+                            tracing::debug!(
+                                plugin = %plugin_name,
+                                error = %error,
+                                "Failed to forward plugin stream RPC error to consumer"
+                            );
                         }
                         break;
                     }
@@ -636,14 +630,12 @@ impl PluginSubprocess {
                         let error = PluginSubprocessError::Protocol(message);
                         if let Some(tx) = start_tx.take() {
                             let _ = tx.send(Err(error));
-                        } else {
-                            if let Err(send_error) = chunk_tx.send(Err(error)).await {
-                                tracing::debug!(
-                                    plugin = %plugin_name,
-                                    error = %send_error,
-                                    "Failed to forward plugin stream protocol error to consumer"
-                                );
-                            }
+                        } else if let Err(send_error) = chunk_tx.send(Err(error)).await {
+                            tracing::debug!(
+                                plugin = %plugin_name,
+                                error = %send_error,
+                                "Failed to forward plugin stream protocol error to consumer"
+                            );
                         }
                         break;
                     }

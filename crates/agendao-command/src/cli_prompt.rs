@@ -20,6 +20,7 @@ use crate::cli_panel::{
     row_char_index_for_display_column, truncate_display,
 };
 use crate::cli_style::CliStyle;
+use agendao_util::util::color::strip_ansi;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -1179,7 +1180,7 @@ fn render_prompt_frame<W: Write>(
     rendered_rows.extend(frame.chrome_after_input.iter().cloned());
     let rendered_plain_rows = rendered_rows
         .iter()
-        .map(|row| strip_ansi_text(row))
+        .map(|row| strip_ansi(row))
         .collect::<Vec<_>>();
     let new_frame_physical_rows = rendered_plain_rows
         .iter()
@@ -1304,27 +1305,6 @@ fn wrapped_terminal_row_count(row: &str, terminal_width: usize) -> usize {
     }
 }
 
-fn strip_ansi_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(next) = chars.next() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-                continue;
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
-}
-
 fn dismiss_prompt<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
     move_to_prompt_frame_top(stdout, state)?;
     clear_prompt_from_top(stdout)
@@ -1335,7 +1315,7 @@ fn move_to_prompt_frame_top<W: Write>(stdout: &mut W, state: &PromptRenderState)
         state.cursor_row_in_frame,
         state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
     );
-    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
+    debug_assert!(state.frame_height > state.cursor_row_in_frame);
     execute!(
         stdout,
         cursor::MoveToColumn(0),

@@ -13,6 +13,7 @@ pty = ["ws", "dep:agendao-server-pty"]
 mcp = ["dep:agendao-mcp"]
 
 [dependencies]
+agendao-util = { path = "../agendao-util" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
 agendao-api = { path = "../agendao-api" }
@@ -40,7 +41,7 @@ agendao-mcp = { path = "../agendao-mcp", optional = true }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-tool = { path = "../agendao-tool" }
 libc = { version = "0.2" }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -50,13 +51,13 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-axum = { version = "0.8", optional = true }
+clap = { workspace = true }
+axum = { workspace = true, optional = true }
 axum-extra = { version = "0.10", features = ["typed-header"], optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
-tokio-tungstenite = { version = "0.26", optional = true }
+tokio-tungstenite = { version = "0.28", optional = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }

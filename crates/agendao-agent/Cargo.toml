@@ -14,7 +14,7 @@ agendao-types = { path = "../agendao-types" }
 agendao-config = { path = "../agendao-config" }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-orchestrator = { path = "../agendao-orchestrator" }
-tokio = { version = "1", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,4 +26,4 @@ futures = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

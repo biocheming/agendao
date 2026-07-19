@@ -2,7 +2,6 @@ use agendao_session::{
     MessageRole, Session, SessionContextKind, SessionForkHistoryMode, SessionForkSpec,
     SessionManager,
 };
-use agendao_types;
 
 #[test]
 fn test_session_creation() {

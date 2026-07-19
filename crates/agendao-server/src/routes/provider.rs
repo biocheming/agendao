@@ -33,6 +33,8 @@ pub(crate) fn provider_routes() -> Router<Arc<ServerState>> {
         .route("/register", post(register_custom_provider))
         .route("/auth", get(get_provider_auth))
         .route("/{id}/descriptor", get(get_provider_descriptor))
+        .route("/{id}/disabled", put(set_provider_disabled))
+        .route("/{id}/test", post(test_provider_connection))
         .route("/{id}", put(update_provider).delete(delete_provider))
         .route("/{id}/oauth/authorize", post(oauth_authorize))
         .route("/{id}/oauth/callback", post(oauth_callback))
@@ -62,6 +64,10 @@ pub struct ProviderInfo {
     /// 与 base_url 配对决定 HTTP 实际打哪条契约;TUI Settings 展示给用户验证。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// 是否被用户禁用(`config.disabled_providers` 成员)。与 connected(有 auth)
+    /// 是两个独立维度:disabled 的 provider 不出现在运行时 registry,但配置保留。
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +88,10 @@ pub struct ManagedProviderInfo {
     pub known: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
+    /// 是否被用户禁用(`config.disabled_providers` 成员)。status 维度之外:
+    /// disabled 的 provider 不进运行时 registry,但配置保留可再启用。
+    #[serde(default)]
+    pub disabled: bool,
     pub known_model_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -876,15 +886,19 @@ pub(crate) async fn list_providers(
     let config = state.config_store.config();
     if let Some(configured_providers) = &config.provider {
         for (provider_id, provider) in configured_providers {
-            provider_names
-                .entry(provider_id.clone())
-                .or_insert_with(|| {
-                    provider
-                        .name
-                        .as_deref()
-                        .map(|name| provider_display_name(provider_id, name))
-                        .unwrap_or_else(|| provider_display_name(provider_id, provider_id))
-                });
+            // 显式配置的 name（rename）优先于 catalog 默认名——config 是用户权威
+            // （与 protocol 的 config-override 语义一致,此前 catalog 用 or_insert_with
+            // 抢在 config 前面,rename 在列表里不生效）。
+            if let Some(name) = provider.name.as_deref().filter(|n| !n.trim().is_empty()) {
+                provider_names.insert(
+                    provider_id.clone(),
+                    provider_display_name(provider_id, name),
+                );
+            } else {
+                provider_names
+                    .entry(provider_id.clone())
+                    .or_insert_with(|| provider_display_name(provider_id, provider_id));
+            }
             // base_url 填入(土律单点):config 显式配的优先;catalog 来源不带 base_url。
             if let Some(base) = provider.base_url.as_ref().filter(|s| !s.is_empty()) {
                 provider_base_urls
@@ -953,6 +967,7 @@ pub(crate) async fn list_providers(
                     .unwrap_or_else(|| id.clone()),
                 base_url: provider_base_urls.get(&id).cloned(),
                 protocol: provider_protocols.get(&id).cloned(),
+                disabled: config.disabled_providers.contains(&id),
                 id,
                 models,
             }
@@ -1300,6 +1315,7 @@ async fn list_managed_providers(
                 auth_type: managed_provider_auth_type(auth),
                 configured: configured_flag,
                 known: known.is_some(),
+                disabled: config.disabled_providers.contains(&id),
                 env: known
                     .map(|provider| provider.env.clone())
                     .unwrap_or_default(),
@@ -1756,6 +1772,136 @@ pub(crate) async fn update_provider(
     Ok(Json(true))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetProviderDisabledRequest {
+    pub disabled: bool,
+}
+
+/// Enable/disable provider（config.disabled_providers 的单一写入口）。
+///
+/// 用 `replace_with` 直接改写而非 PATCH merge——merge 的
+/// `merge_vec_replace_if_non_empty` 语义下空数组无法清除 disabled 列表，
+/// re-enable 会失效。disabled 的 provider 不进运行时 registry（bootstrap 消费），
+/// 但 provider 配置与 auth 全部保留，可随时再启用。
+pub(crate) async fn set_provider_disabled(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SetProviderDisabledRequest>,
+) -> Result<Json<bool>> {
+    let provider_id = id.trim();
+    if provider_id.is_empty() {
+        return Err(ApiError::BadRequest("provider id is required".to_string()));
+    }
+
+    let updated = state
+        .config_store
+        .replace_with(|config| {
+            if req.disabled {
+                if !config.disabled_providers.iter().any(|p| p == provider_id) {
+                    config.disabled_providers.push(provider_id.to_string());
+                }
+            } else {
+                config
+                    .disabled_providers
+                    .retain(|p| p != provider_id);
+            }
+            Ok(())
+        })
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    drop(updated);
+
+    state.rebuild_providers().await;
+    crate::session_runtime::events::broadcast_config_updated(state.as_ref());
+    Ok(Json(true))
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestProviderConnectionResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    pub latency_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 测试连接（金律·可观测性）：用存储的 auth 对 provider 的 models 端点发一个
+/// 轻量 GET，回报 ok/status/延迟/错误。不产生任何副作用（只读探测）。
+///
+/// 覆盖 openai 族（Bearer）、anthropic（x-api-key）、google（x-goog-api-key）；
+/// bedrock/vertex/github-copilot/gitlab（SigV4/OAuth 流）诚实回报 unsupported，
+/// 不假装测试通过（道纪·第十条）。
+pub(crate) async fn test_provider_connection(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> Result<Json<TestProviderConnectionResponse>> {
+    fn fail_fast(error: impl Into<String>) -> TestProviderConnectionResponse {
+        TestProviderConnectionResponse {
+            ok: false,
+            status: None,
+            latency_ms: 0,
+            error: Some(error.into()),
+        }
+    }
+
+    let provider_id = id.trim();
+    if provider_id.is_empty() {
+        return Err(ApiError::BadRequest("provider id is required".to_string()));
+    }
+
+    let config = state.config_store.config();
+    let configured = config
+        .provider
+        .as_ref()
+        .and_then(|m| m.get(provider_id));
+    // base_url：config 显式配置优先，catalog(models.dev)默认端点兜底——
+    // 多数 connected provider 并不在 config 里写 base_url(土律·兜底不假装)。
+    let base_url = configured
+        .and_then(|p| p.base_url.clone())
+        .filter(|s| !s.trim().is_empty());
+    let base_url = match base_url {
+        Some(url) => Some(url),
+        None => {
+            let models_data = load_catalog_snapshot(state.as_ref()).await.data;
+            models_data
+                .get(provider_id)
+                .and_then(|info| info.api.clone())
+        }
+    };
+    let Some(base_url) = base_url else {
+        return Ok(Json(fail_fast("no base_url configured for this provider")));
+    };
+    let protocol = configured
+        .and_then(|p| p.npm.as_deref())
+        .and_then(npm_to_protocol)
+        .unwrap_or("openai")
+        .to_string();
+    if matches!(
+        protocol.as_str(),
+        "bedrock" | "vertex" | "github-copilot" | "gitlab"
+    ) {
+        return Ok(Json(fail_fast(format!(
+            "connection test not supported for protocol `{}` yet",
+            protocol
+        ))));
+    }
+
+    let api_key = state.auth_manager.get_api_key(provider_id).await;
+
+    let outcome = agendao_provider::transport::connection_test(
+        &base_url,
+        &protocol,
+        api_key.as_deref(),
+    )
+    .await;
+    Ok(Json(TestProviderConnectionResponse {
+        ok: outcome.ok,
+        status: outcome.status,
+        latency_ms: outcome.latency_ms,
+        error: outcome.error,
+    }))
+}
+
 pub(crate) async fn delete_provider(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
@@ -1841,6 +1987,46 @@ mod tests {
             Some("openrouter")
         );
         assert_eq!(npm_to_protocol("@ai-sdk/perplexity"), Some("perplexity"));
+    }
+
+    #[tokio::test]
+    async fn set_provider_disabled_roundtrip() {
+        use super::{set_provider_disabled, SetProviderDisabledRequest};
+        use axum::{extract::Path, extract::State, Json};
+        use std::sync::Arc;
+
+        let state = Arc::new(crate::ServerState::new());
+        // disable → 进 disabled_providers
+        let Json(ok) = set_provider_disabled(
+            State(state.clone()),
+            Path("deepseek".to_string()),
+            Json(SetProviderDisabledRequest { disabled: true }),
+        )
+        .await
+        .expect("disable should succeed");
+        assert!(ok);
+        assert!(state
+            .config_store
+            .config()
+            .disabled_providers
+            .iter()
+            .any(|p| p == "deepseek"));
+        // re-enable → 必须能清出列表（PATCH merge 的空数组不可清除语义正是
+        // 为什么这个端点走 replace_with 直写——回归守卫）。
+        let Json(ok) = set_provider_disabled(
+            State(state.clone()),
+            Path("deepseek".to_string()),
+            Json(SetProviderDisabledRequest { disabled: false }),
+        )
+        .await
+        .expect("re-enable should succeed");
+        assert!(ok);
+        assert!(!state
+            .config_store
+            .config()
+            .disabled_providers
+            .iter()
+            .any(|p| p == "deepseek"));
     }
 
     #[test]

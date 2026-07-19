@@ -9,12 +9,13 @@ license.workspace = true
 agendao-client = { path = "../agendao-client" }
 agendao-config = { path = "../agendao-config" }
 agendao-provider = { path = "../agendao-provider" }
+agendao-api = { path = "../agendao-api" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
 agendao-server = { path = "../agendao-server", default-features = false, features = ["http"] }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-state = { path = "../agendao-state" }
 agendao-types = { path = "../agendao-types" }
-tokio = { version = "1", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

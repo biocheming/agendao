@@ -34,6 +34,23 @@ pub fn runtime_pipeline_enabled(config: &ProviderConfig) -> bool {
         })
 }
 
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            preflight_enabled: false,
+            pipeline_enabled: true,
+            circuit_breaker_threshold: 0,
+            circuit_breaker_cooldown_secs: 30,
+            rate_limit_rps: 0.0,
+            max_inflight: 0,
+            protocol_path: None,
+            protocol_version: None,
+            hot_reload: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::runtime_pipeline_enabled;
@@ -56,22 +73,5 @@ mod tests {
             .options
             .insert("runtime_pipeline".to_string(), Value::Bool(true));
         assert!(runtime_pipeline_enabled(&config));
-    }
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            preflight_enabled: false,
-            pipeline_enabled: true,
-            circuit_breaker_threshold: 0,
-            circuit_breaker_cooldown_secs: 30,
-            rate_limit_rps: 0.0,
-            max_inflight: 0,
-            protocol_path: None,
-            protocol_version: None,
-            hot_reload: false,
-        }
     }
 }

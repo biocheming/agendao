@@ -334,3 +334,82 @@ mod tests {
         );
     }
 }
+
+/// 连接测试结果（只读探测，无副作用）。
+#[derive(Debug, Clone)]
+pub struct ConnectionTestOutcome {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub latency_ms: u128,
+    pub error: Option<String>,
+}
+
+/// 测试与 provider 的连接：对其 models 端点发轻量 GET，回报 ok/status/延迟/错误。
+///
+/// 覆盖 openai 族（Bearer）、anthropic（x-api-key + version）、google
+/// （x-goog-api-key）；其余协议族（bedrock/vertex/copilot/gitlab 等 SigV4/OAuth
+/// 流）由调用方先行拒绝——本函数不假装支持（道纪·第十条）。
+pub async fn connection_test(
+    base_url: &str,
+    protocol: &str,
+    api_key: Option<&str>,
+) -> ConnectionTestOutcome {
+    // URL 归一：base 已含版本段（/v1 或 /v1beta）直接补 /models；否则按协议补。
+    let base = base_url.trim_end_matches('/');
+    let url = if base.ends_with("/models") {
+        base.to_string()
+    } else if base.ends_with("/v1") || base.ends_with("/v1beta") {
+        format!("{}/models", base)
+    } else if protocol == "google" {
+        format!("{}/v1beta/models", base)
+    } else {
+        format!("{}/v1/models", base)
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return ConnectionTestOutcome {
+                ok: false,
+                status: None,
+                latency_ms: 0,
+                error: Some(e.to_string()),
+            }
+        }
+    };
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = match protocol {
+            "anthropic" => apply_messages_api_headers(
+                req,
+                &crate::protocol::ProviderConfig::new("", "", key),
+            ),
+            "google" => req.header("x-goog-api-key", key),
+            _ => apply_bearer_auth(req, key),
+        };
+    }
+
+    let t0 = std::time::Instant::now();
+    let resp = req.send().await;
+    let latency_ms = t0.elapsed().as_millis();
+    match resp {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            ConnectionTestOutcome {
+                ok: r.status().is_success(),
+                status: Some(status),
+                latency_ms,
+                error: None,
+            }
+        }
+        Err(e) => ConnectionTestOutcome {
+            ok: false,
+            status: None,
+            latency_ms,
+            error: Some(e.to_string()),
+        },
+    }
+}

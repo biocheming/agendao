@@ -683,9 +683,7 @@ fn classify_discovery_result(detail: &str) -> Option<ToolResultDisplay> {
 #[cfg(feature = "terminal-ui")]
 fn classify_load_result(detail: &str) -> Option<ToolResultDisplay> {
     let first_line = detail.lines().next().map(str::trim).unwrap_or_default();
-    let Some(rest) = first_line.strip_prefix("Loaded ") else {
-        return None;
-    };
+    let rest = first_line.strip_prefix("Loaded ")?;
     let (source, governed) = governed_preview_text(detail);
     let summary = if let Some((kind, payload)) = rest.split_once(": ") {
         let label = payload
@@ -765,9 +763,7 @@ fn extract_url_host(url: &str) -> String {
 #[cfg(feature = "terminal-ui")]
 fn classify_fetch_result(detail: &str) -> Option<ToolResultDisplay> {
     let (url, mime, body) = parse_fetch_like_detail(detail);
-    let Some(url) = url else {
-        return None;
-    };
+    let url = url?;
     let (source, governed) = governed_preview_text(body);
     let mut summary_parts = Vec::new();
     let host = extract_url_host(&url);

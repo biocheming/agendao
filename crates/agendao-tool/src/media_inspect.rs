@@ -481,7 +481,7 @@ mod tests {
         assert!(has_field_containing(
             &prompt,
             SubsessionHandoffFieldKind::Constraint,
-            "First call the `read` tool on this exact path."
+            "First call the `read` tool on this exact path before answering:"
         ));
     }
 

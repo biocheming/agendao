@@ -131,14 +131,14 @@ impl Orchestrator for SkillListOrchestrator {
                 if failure.is_provider_not_found() {
                     OrchestratorError::NoProvider
                 } else {
-                    OrchestratorError::ModelError(failure)
+                    OrchestratorError::ModelError(Box::new(failure))
                 }
             }
             LoopError::ModelErrorWithTermination { failure, .. } => {
                 if failure.is_provider_not_found() {
                     OrchestratorError::NoProvider
                 } else {
-                    OrchestratorError::ModelError(failure)
+                    OrchestratorError::ModelError(Box::new(failure))
                 }
             }
             LoopError::ToolDispatchError { tool, error } => {

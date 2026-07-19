@@ -75,7 +75,7 @@ fn embed_windows_icon() {
         return;
     };
 
-    let status = Command::new(&compiler)
+    let status = Command::new(compiler)
         .args([
             "/nologo",
             "/fo",

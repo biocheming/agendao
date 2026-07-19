@@ -21,13 +21,17 @@ pub(crate) fn collect_skill_roots(base: &Path, config: Option<&Config>) -> Vec<S
         });
     }
 
+    // 用户级 agendao 目录经唯一权威入口解析（尊重 AGENDAO_HOME 覆盖）。
+    let agendao_home = agendao_util::agendao_home();
+    roots.push(SkillRoot {
+        path: agendao_home.join("skill"),
+    });
+    roots.push(SkillRoot {
+        path: agendao_home.join("skills"),
+    });
+
+    // ~/.agents/skills 是跨工具共享目录（非 agendao 自有），仍取真实用户主目录。
     if let Some(home) = dirs::home_dir() {
-        roots.push(SkillRoot {
-            path: home.join(".agendao/skill"),
-        });
-        roots.push(SkillRoot {
-            path: home.join(".agendao/skills"),
-        });
         roots.push(SkillRoot {
             path: home.join(".agents/skills"),
         });
@@ -201,6 +205,7 @@ pub(crate) fn is_valid_relative_skill_path(file_path: &str) -> bool {
 }
 
 fn resolve_skill_path(base: &Path, raw: &str) -> PathBuf {
+    // 展开用户配置里手写的 `~/`，要的是真实用户主目录，不经 agendao_home。
     if let Some(stripped) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(stripped);

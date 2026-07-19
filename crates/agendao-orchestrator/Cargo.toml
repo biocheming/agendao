@@ -12,12 +12,13 @@ agendao-provider = { path = "../agendao-provider" }
 agendao-session-core = { path = "../agendao-session-core" }
 agendao-tool = { path = "../agendao-tool" }
 agendao-types = { path = "../agendao-types" }
+agendao-util = { path = "../agendao-util" }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 petgraph = "0.8"
@@ -27,4 +28,4 @@ walkdir = "2"
 uuid = { workspace = true }
 jsonc-parser = { version = "0.29.0", features = ["serde"] }
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

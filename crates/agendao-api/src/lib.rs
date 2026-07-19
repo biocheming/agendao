@@ -1102,6 +1102,22 @@ pub struct ProviderInfo {
     /// `None` = catalog 无 npm 记录(rare),fallback 不假装(土律·第十条)。
     #[serde(default)]
     pub protocol: Option<String>,
+    /// 是否被用户禁用(`config.disabled_providers` 成员)。`#[serde(default)]`
+    /// 兼容老 server 响应缺该字段(视为未禁用)。
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// `POST /provider/{id}/test` 的响应：连接测试结果（只读探测）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestProviderConnectionResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub status: Option<u16>,
+    #[serde(default)]
+    pub latency_ms: u128,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1535,7 +1551,7 @@ mod subscription_tests {
     #[test]
     fn subscription_capabilities_roundtrip_via_json() {
         let caps = FrontendSubscriptionTier::WebMediumFrequency.default_capabilities();
-        let json = serde_json::to_value(&caps).expect("serialize");
+        let json = serde_json::to_value(caps).expect("serialize");
         let parsed: FrontendSubscriptionCapabilities =
             serde_json::from_value(json).expect("deserialize");
         assert_eq!(parsed, caps);

@@ -46,17 +46,14 @@ pub struct SkillSourceIndexEntry {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SkillTrustLevel {
     Official,
     Community,
+    #[default]
     Unknown,
 }
 
-impl Default for SkillTrustLevel {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillSourceIndexSnapshot {

@@ -114,17 +114,14 @@ pub struct SkillPrerequisites {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SkillReadinessStatus {
+    #[default]
     Available,
     SetupNeeded,
     Unsupported,
 }
 
-impl Default for SkillReadinessStatus {
-    fn default() -> Self {
-        Self::Available
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRequiredEnvironmentVariable {

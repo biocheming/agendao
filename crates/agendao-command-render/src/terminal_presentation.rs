@@ -1223,7 +1223,10 @@ mod tests {
             ],
         );
 
-        let segments = compose_assistant_segments(&message, &HashMap::new(), Some("call-1"), true);
+        let segments = compose_assistant_segments(&message, &HashMap::new(), Some("call-1"), true)
+            .into_iter()
+            .filter(|segment| !matches!(segment, TerminalAssistantSegment::Spacer))
+            .collect::<Vec<_>>();
 
         assert!(matches!(
             segments.as_slice(),
@@ -2157,8 +2160,26 @@ mod tests {
             true,
         );
 
-        assert_eq!(first_rendered, "[message:assistant] 快速");
-        assert_eq!(second_rendered, "上升期");
+        let end_identity = live_identity(
+            "assistant-1",
+            agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+            LiveMessagePartKind::AssistantText,
+            LivePartPhase::End,
+        );
+        let end = OutputBlock::Message(OutputMessageBlock::end(OutputMessageRole::Assistant));
+        accumulator.apply_output_block(Some("assistant-1"), &end);
+        let end_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &end,
+            Some(&end_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered, "");
+        assert_eq!(second_rendered, "");
+        assert_eq!(end_rendered, "[message:assistant] 快速上升期");
     }
 
     #[test]
@@ -2207,10 +2228,28 @@ mod tests {
             true,
         );
 
-        assert_eq!(first_rendered, "[message:assistant] University");
-        assert_eq!(second_rendered, " of China");
+        let end_identity = live_identity(
+            "assistant-1",
+            agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+            LiveMessagePartKind::AssistantText,
+            LivePartPhase::End,
+        );
+        let end = OutputBlock::Message(OutputMessageBlock::end(OutputMessageRole::Assistant));
+        accumulator.apply_output_block(Some("assistant-1"), &end);
+        let end_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &end,
+            Some(&end_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered, "");
+        assert_eq!(second_rendered, "");
+        assert_eq!(end_rendered, "[message:assistant] University of China");
         assert_eq!(
-            format!("{first_rendered}{second_rendered}")
+            format!("{first_rendered}{second_rendered}{end_rendered}")
                 .matches("[message:assistant]")
                 .count(),
             1
@@ -2273,15 +2312,15 @@ mod tests {
             true,
         );
 
-        assert_eq!(start_rendered, "\n[thinking]\n│ thinking");
-        assert_eq!(append_rendered, " more");
+        assert_eq!(start_rendered, "");
+        assert_eq!(append_rendered, "");
+        assert_eq!(end_rendered, "\n[thinking]\n│ thinking more");
         assert_eq!(
-            format!("{start_rendered}{append_rendered}")
+            format!("{start_rendered}{append_rendered}{end_rendered}")
                 .matches("[thinking]")
                 .count(),
             1
         );
-        assert_eq!(end_rendered, "\n");
     }
 
     #[test]
@@ -2323,12 +2362,31 @@ mod tests {
             true,
         );
 
-        assert_eq!(
-            first_rendered.matches("[thinking]").count(),
-            1,
-            "{first_rendered}"
+        let end_identity = live_identity(
+            "assistant-1",
+            agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::End,
         );
+        let end = OutputBlock::Reasoning(OutputReasoningBlock::end());
+        let end_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &end,
+            Some(&end_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered, "", "{first_rendered}");
         assert_eq!(rewrite_rendered, "", "{rewrite_rendered}");
+        assert_eq!(
+            format!("{first_rendered}{rewrite_rendered}{end_rendered}")
+                .matches("[thinking]")
+                .count(),
+            1,
+            "{end_rendered}"
+        );
     }
 
     #[test]

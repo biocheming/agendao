@@ -355,13 +355,15 @@ fn append_stream_tool_results_as_message_reads_runtime_budget_from_config_store(
         None,
     )];
 
-    let mut config = agendao_config::Config::default();
-    config.runtime_budget = Some(agendao_config::RuntimeBudgetConfig {
-        tool_result_max_chars: 128,
-        tool_batch_aggregate_max_chars: 128,
-        tool_result_preview_chars: 32,
-        ..agendao_config::RuntimeBudgetConfig::default()
-    });
+    let config = agendao_config::Config {
+        runtime_budget: Some(agendao_config::RuntimeBudgetConfig {
+            tool_result_max_chars: 128,
+            tool_batch_aggregate_max_chars: 128,
+            tool_result_preview_chars: 32,
+            ..agendao_config::RuntimeBudgetConfig::default()
+        }),
+        ..Default::default()
+    };
     let config_store = ConfigStore::new(config);
 
     SessionPrompt::append_stream_tool_results_as_message(
@@ -570,7 +572,7 @@ fn pre_dispatch_governance_persists_lightweight_trim_summary_when_trim_succeeds(
     );
     session.messages_mut().push(assistant);
     let mut tool = SessionMessage::tool(session_id.clone());
-    tool.add_tool_result("call_round", &"R".repeat(20_000), false);
+    tool.add_tool_result("call_round", "R".repeat(20_000), false);
     session.messages_mut().push(tool);
     session
         .messages_mut()
@@ -722,11 +724,10 @@ fn pre_dispatch_governance_clears_stale_lightweight_trim_summary_when_no_trim_oc
     );
 
     assert!(
-        session
+        !session
             .record()
             .metadata
-            .get(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY)
-            .is_none(),
+            .contains_key(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY),
         "stale trim summary should be removed when no trim occurs"
     );
 }
@@ -1805,7 +1806,9 @@ fn shell_exec_uses_bash_login_invocation() {
 
 #[tokio::test]
 async fn resolve_tools_with_mcp_registry_includes_mcp_tools() {
-    let tool_registry = agendao_tool::create_default_registry().await;
+    // 空注册表:工具总数低于 SearchFacade 门面阈值(24),MCP 工具直接出现在模型面。
+    // (create_default_registry 会触发门面化,MCP 工具改经 tool_catalog_call 调用。)
+    let tool_registry = agendao_tool::ToolRegistry::new();
     let mcp_registry = agendao_mcp::McpToolRegistry::new();
     mcp_registry
         .register(agendao_mcp::McpTool::new(
@@ -2339,7 +2342,7 @@ fn early_exit_does_not_break_on_tool_calls_finish() {
     // finish_reason is "tool-calls" — loop should continue, not break
     assistant.finish = Some("tool-calls".to_string());
 
-    let messages = vec![user, assistant];
+    let messages = [user, assistant];
 
     let last_user_idx = messages
         .iter()
@@ -2419,7 +2422,7 @@ fn early_exit_breaks_on_terminal_finish() {
     });
     assistant.finish = Some("stop".to_string());
 
-    let messages = vec![user, assistant];
+    let messages = [user, assistant];
 
     let last_user_idx = messages
         .iter()
@@ -2462,7 +2465,7 @@ fn early_exit_does_not_break_when_finish_is_none() {
     // finish is None — still streaming
     assistant.finish = None;
 
-    let messages = vec![user, assistant];
+    let messages = [user, assistant];
 
     let last_user_idx = messages
         .iter()

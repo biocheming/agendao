@@ -203,7 +203,7 @@ impl Tool for WebSearchTool {
         ctx.ask_permission(
             PermissionRequest::new("websearch")
                 .with_pattern(&input.query)
-                .with_scope_key(format!("net:search"))
+                .with_scope_key("net:search".to_string())
                 .with_metadata("query", serde_json::Value::String(input.query.clone()))
                 .with_metadata("numResults", serde_json::Value::Number(num_results.into()))
                 .always_allow(),

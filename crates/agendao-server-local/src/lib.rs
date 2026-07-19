@@ -133,6 +133,21 @@ pub async fn local_update_provider(
     agendao_server::local_update_provider(state, provider_id, name, base_url, protocol).await
 }
 
+pub async fn local_set_provider_disabled(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+    disabled: bool,
+) -> Result<bool> {
+    agendao_server::local_set_provider_disabled(state, provider_id, disabled).await
+}
+
+pub async fn local_test_provider_connection(
+    state: Arc<LocalServerState>,
+    provider_id: &str,
+) -> Result<agendao_api::TestProviderConnectionResponse> {
+    agendao_server::local_test_provider_connection(state, provider_id).await
+}
+
 pub async fn local_delete_provider(
     state: Arc<LocalServerState>,
     provider_id: &str,
@@ -234,6 +249,13 @@ pub async fn local_get_config_providers(
 
 pub async fn local_get_config(state: Arc<LocalServerState>) -> Result<agendao_config::Config> {
     agendao_server::local_get_config(state).await
+}
+
+pub async fn local_patch_config(
+    state: Arc<LocalServerState>,
+    patch: serde_json::Value,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_patch_config(state, patch).await
 }
 
 pub async fn local_get_config_validation(

@@ -34,10 +34,11 @@ pub use self::local_api::{
     local_get_session_diff, local_get_session_runtime, local_get_session_status,
     local_get_session_telemetry, local_get_session_todos, local_get_workspace_context,
     local_list_agents, local_list_execution_modes, local_list_messages, local_list_permissions,
-    local_list_questions, local_list_sessions, local_preflight_multimodal, local_prompt,
+    local_list_questions, local_list_sessions, local_patch_config, local_preflight_multimodal, local_prompt,
     local_put_provider_model_config, local_put_recent_models, local_refresh_provider_catalog,
     local_register_provider, local_reject_question, local_reply_permission, local_reply_question,
-    local_resolve_provider_connect, local_update_provider,
+    local_resolve_provider_connect, local_set_provider_disabled, local_test_provider_connection,
+    local_update_provider,
 };
 pub(crate) use self::messages::SendMessageRequest;
 pub(crate) use self::scheduler::{

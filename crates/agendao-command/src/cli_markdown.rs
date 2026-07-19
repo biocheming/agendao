@@ -560,9 +560,9 @@ impl<'a> MarkdownRenderer<'a> {
         let row_line = |row: &[String]| -> String {
             let mut s = String::new();
             s.push('│');
-            for i in 0..widths.len() {
+            for (i, width) in widths.iter().enumerate() {
                 let cell = row.get(i).map(|c| c.as_str()).unwrap_or("");
-                let w = widths[i].saturating_sub(2);
+                let w = width.saturating_sub(2);
                 let cell_w = unicode_width::UnicodeWidthStr::width(cell);
                 if cell_w <= w {
                     let pad = w - cell_w;

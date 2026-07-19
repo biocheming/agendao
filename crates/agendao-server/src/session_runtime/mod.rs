@@ -1874,7 +1874,7 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 let attached_message_id = active.attached_message_id.clone();
 
                 // Finalize attached-session assistant message if present.
-                if let (Some(ref child_sid), Some(ref child_mid)) =
+                if let (Some(child_sid), Some(child_mid)) =
                     (attached_session_id.as_ref(), attached_message_id.as_ref())
                 {
                     if let Some(mut child) = sessions.get(child_sid).cloned() {

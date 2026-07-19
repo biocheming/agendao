@@ -183,20 +183,35 @@ fn push_permission_pattern_lines(
     }
 }
 
+/// Fields describing a single permission request, shared by the summary
+/// formatter and the interactive prompt so they stay in sync.
+struct PermissionPromptContext<'a> {
+    permission: &'a str,
+    permission_class: Option<&'a str>,
+    scope_key: Option<&'a str>,
+    scope_label: Option<&'a str>,
+    matcher_label: Option<&'a str>,
+    grant_target_summary: Option<&'a str>,
+    patterns: &'a [String],
+    metadata: &'a std::collections::HashMap<String, serde_json::Value>,
+    lifetimes: &'a [PermissionLifetime],
+    risk_tags: &'a [String],
+}
+
 /// Format a permission request into a human-readable summary block for the terminal.
-fn format_permission_summary(
-    permission: &str,
-    permission_class: Option<&str>,
-    scope_key: Option<&str>,
-    scope_label: Option<&str>,
-    matcher_label: Option<&str>,
-    grant_target_summary: Option<&str>,
-    patterns: &[String],
-    metadata: &std::collections::HashMap<String, serde_json::Value>,
-    lifetimes: &[PermissionLifetime],
-    risk_tags: &[String],
-    style: &CliStyle,
-) -> String {
+fn format_permission_summary(ctx: &PermissionPromptContext<'_>, style: &CliStyle) -> String {
+    let PermissionPromptContext {
+        permission,
+        permission_class,
+        scope_key,
+        scope_label,
+        matcher_label,
+        grant_target_summary,
+        patterns,
+        metadata,
+        lifetimes,
+        risk_tags,
+    } = *ctx;
     let mut lines = Vec::new();
 
     // Permission type icon + label
@@ -296,35 +311,12 @@ fn format_permission_summary(
     lines.join("\n")
 }
 
-fn permission_summary_prelude_lines(
-    permission: &str,
-    permission_class: Option<&str>,
-    scope_key: Option<&str>,
-    scope_label: Option<&str>,
-    matcher_label: Option<&str>,
-    grant_target_summary: Option<&str>,
-    patterns: &[String],
-    metadata: &std::collections::HashMap<String, serde_json::Value>,
-    lifetimes: &[PermissionLifetime],
-    risk_tags: &[String],
-) -> Vec<String> {
+fn permission_summary_prelude_lines(ctx: &PermissionPromptContext<'_>) -> Vec<String> {
     let summary_style = CliStyle::plain();
-    format_permission_summary(
-        permission,
-        permission_class,
-        scope_key,
-        scope_label,
-        matcher_label,
-        grant_target_summary,
-        patterns,
-        metadata,
-        lifetimes,
-        risk_tags,
-        &summary_style,
-    )
-    .lines()
-    .map(str::to_string)
-    .collect()
+    format_permission_summary(ctx, &summary_style)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn permission_select_options(lifetimes: &[PermissionLifetime]) -> Vec<SelectOption> {
@@ -354,6 +346,9 @@ fn permission_select_options(lifetimes: &[PermissionLifetime]) -> Vec<SelectOpti
 /// Present a permission approval prompt to the user.
 ///
 /// Returns the user's decision.
+// 公共 CLI 入口：签名逐字段映射 PermissionRequest，聚合结构体
+// （PermissionPromptContext）是内部实现细节，改签名会破坏外部调用方。
+#[allow(clippy::too_many_arguments)]
 pub fn prompt_permission(
     permission: &str,
     permission_class: Option<&str>,
@@ -367,7 +362,7 @@ pub fn prompt_permission(
     risk_tags: &[String],
     style: &CliStyle,
 ) -> io::Result<PermissionDecision> {
-    let summary_lines = permission_summary_prelude_lines(
+    let ctx = PermissionPromptContext {
         permission,
         permission_class,
         scope_key,
@@ -378,7 +373,8 @@ pub fn prompt_permission(
         metadata,
         lifetimes,
         risk_tags,
-    );
+    };
+    let summary_lines = permission_summary_prelude_lines(&ctx);
     let options = permission_select_options(lifetimes);
 
     let result = interactive_select_with_prelude(
@@ -561,16 +557,18 @@ mod tests {
         metadata.insert("command".to_string(), serde_json::json!("cargo test --all"));
 
         let summary = format_permission_summary(
-            "bash",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &["cargo test --all".to_string()],
-            &metadata,
-            &[PermissionLifetime::Once],
-            &[],
+            &PermissionPromptContext {
+                permission: "bash",
+                permission_class: None,
+                scope_key: None,
+                scope_label: None,
+                matcher_label: None,
+                grant_target_summary: None,
+                patterns: &["cargo test --all".to_string()],
+                metadata: &metadata,
+                lifetimes: &[PermissionLifetime::Once],
+                risk_tags: &[],
+            },
             &style,
         );
 
@@ -582,19 +580,21 @@ mod tests {
     fn format_summary_bash_compresses_multiple_long_patterns() {
         let style = CliStyle::plain();
         let summary = format_permission_summary(
-            "bash",
-            Some("Dangerous execution"),
-            None,
-            None,
-            None,
-            None,
-            &[
-                "python3 /tmp/pubmed_xu.py".to_string(),
-                "cat << 'PYEOF' > /tmp/pubmed_xu.py".to_string(),
-            ],
-            &std::collections::HashMap::new(),
-            &[PermissionLifetime::Once],
-            &["dangerous_exec".to_string()],
+            &PermissionPromptContext {
+                permission: "bash",
+                permission_class: Some("Dangerous execution"),
+                scope_key: None,
+                scope_label: None,
+                matcher_label: None,
+                grant_target_summary: None,
+                patterns: &[
+                    "python3 /tmp/pubmed_xu.py".to_string(),
+                    "cat << 'PYEOF' > /tmp/pubmed_xu.py".to_string(),
+                ],
+                metadata: &std::collections::HashMap::new(),
+                lifetimes: &[PermissionLifetime::Once],
+                risk_tags: &["dangerous_exec".to_string()],
+            },
             &style,
         );
 
@@ -618,16 +618,18 @@ mod tests {
         metadata.insert("filepath".to_string(), serde_json::json!("src/main.rs"));
 
         let summary = format_permission_summary(
-            "edit",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &["src/main.rs".to_string()],
-            &metadata,
-            &[PermissionLifetime::Once, PermissionLifetime::Session],
-            &[],
+            &PermissionPromptContext {
+                permission: "edit",
+                permission_class: None,
+                scope_key: None,
+                scope_label: None,
+                matcher_label: None,
+                grant_target_summary: None,
+                patterns: &["src/main.rs".to_string()],
+                metadata: &metadata,
+                lifetimes: &[PermissionLifetime::Once, PermissionLifetime::Session],
+                risk_tags: &[],
+            },
             &style,
         );
 
@@ -638,18 +640,18 @@ mod tests {
 
     #[test]
     fn permission_summary_prelude_lines_are_plain_text_for_selector_panel() {
-        let lines = permission_summary_prelude_lines(
-            "websearch",
-            Some("External access"),
-            Some("web"),
-            Some("Web search"),
-            None,
-            None,
-            &["example research query".to_string()],
-            &std::collections::HashMap::new(),
-            &[PermissionLifetime::Once, PermissionLifetime::Session],
-            &[],
-        );
+        let lines = permission_summary_prelude_lines(&PermissionPromptContext {
+            permission: "websearch",
+            permission_class: Some("External access"),
+            scope_key: Some("web"),
+            scope_label: Some("Web search"),
+            matcher_label: None,
+            grant_target_summary: None,
+            patterns: &["example research query".to_string()],
+            metadata: &std::collections::HashMap::new(),
+            lifetimes: &[PermissionLifetime::Once, PermissionLifetime::Session],
+            risk_tags: &[],
+        });
 
         assert!(!lines.is_empty());
         assert!(lines.iter().all(|line| !line.contains('\u{1b}')));

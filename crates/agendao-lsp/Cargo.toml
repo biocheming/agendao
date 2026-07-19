@@ -6,7 +6,7 @@ description = "LSP client for agendao"
 
 [dependencies]
 agendao-core = { path = "../agendao-core", features = ["subprocess-runtime", "process-registry"] }
-tokio = { version = "1", features = ["fs", "io-util", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "rt", "sync", "time"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -17,4 +17,4 @@ url = "2.5"
 lsp-types = "0.97"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

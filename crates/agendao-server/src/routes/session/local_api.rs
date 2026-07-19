@@ -316,6 +316,17 @@ pub async fn local_get_config(state: Arc<ServerState>) -> anyhow::Result<agendao
     Ok(config)
 }
 
+/// 与 HTTP `PATCH /config` 同语义的进程内 shim（TUI 主题等 UI 偏好落盘用）。
+pub async fn local_patch_config(
+    state: Arc<ServerState>,
+    patch: serde_json::Value,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::patch_config(State(state), Json(patch))
+        .await
+        .map_err(api_error)?;
+    Ok(config)
+}
+
 pub async fn local_get_config_validation(
     state: Arc<ServerState>,
 ) -> anyhow::Result<agendao_types::ConfigPolicyValidationSnapshot> {
@@ -501,6 +512,41 @@ pub async fn local_update_provider(
     .await
     .map_err(api_error)?;
     Ok(updated)
+}
+
+/// PUT `/provider/{id}/disabled` 的 local-direct 短路（TUI 用）。
+pub async fn local_set_provider_disabled(
+    state: Arc<ServerState>,
+    provider_id: &str,
+    disabled: bool,
+) -> anyhow::Result<bool> {
+    let Json(updated) = super::super::provider::set_provider_disabled(
+        State(state),
+        Path(provider_id.to_string()),
+        Json(super::super::provider::SetProviderDisabledRequest { disabled }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(updated)
+}
+
+/// POST `/provider/{id}/test` 的 local-direct 短路（TUI 用）。
+pub async fn local_test_provider_connection(
+    state: Arc<ServerState>,
+    provider_id: &str,
+) -> anyhow::Result<agendao_api::TestProviderConnectionResponse> {
+    let Json(outcome) = super::super::provider::test_provider_connection(
+        State(state),
+        Path(provider_id.to_string()),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(agendao_api::TestProviderConnectionResponse {
+        ok: outcome.ok,
+        status: outcome.status,
+        latency_ms: outcome.latency_ms,
+        error: outcome.error,
+    })
 }
 
 /// DELETE `/provider/{id}` 的 local-direct 短路:config + auth 双删。

@@ -84,14 +84,12 @@ pub(super) fn append_provider_message(
                     } else {
                         conversation.add_assistant_message_with_reasoning(reasoning, text);
                     }
+                } else if reasoning.is_empty() {
+                    conversation.add_assistant_message_with_tools(text, tool_calls);
                 } else {
-                    if reasoning.is_empty() {
-                        conversation.add_assistant_message_with_tools(text, tool_calls);
-                    } else {
-                        conversation.add_assistant_message_with_reasoning_and_tools(
-                            reasoning, text, tool_calls,
-                        );
-                    }
+                    conversation.add_assistant_message_with_reasoning_and_tools(
+                        reasoning, text, tool_calls,
+                    );
                 }
             }
         },

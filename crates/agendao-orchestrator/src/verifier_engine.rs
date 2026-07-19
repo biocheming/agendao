@@ -90,7 +90,9 @@ pub(crate) enum VerifierScoreFallbackKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub(crate) enum VerifierLogprobStatus {
+    #[default]
     NotRequested,
     RequestedUsable,
     RequestedMissingProviderMetadata,
@@ -99,11 +101,6 @@ pub(crate) enum VerifierLogprobStatus {
     RequestedUnusableScoreTokenLogprobs,
 }
 
-impl Default for VerifierLogprobStatus {
-    fn default() -> Self {
-        Self::NotRequested
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VerifierScoreJobResult {
@@ -879,15 +876,13 @@ impl VerifierEngine {
         let mut decisions = Vec::new();
 
         for comparison_index in 1..=repetitions {
-            let Some(context) = self.judge_context(
+            let context = self.judge_context(
                 incumbent.clone(),
                 challenger.clone(),
                 selection_strategy,
                 comparison_index,
                 repetitions,
-            ) else {
-                return None;
-            };
+            )?;
             match self.run_judge(context).await {
                 Ok(Some(decision)) if decision.winner_id == incumbent.candidate_id => {
                     state.judge_calls += decision.judge_calls;
@@ -1977,17 +1972,16 @@ async fn collect_stream_output_inner(
         match event {
             Ok(agendao_provider::StreamEvent::TextDelta(text)) => output.text.push_str(&text),
             Ok(agendao_provider::StreamEvent::FinishStep {
-                provider_metadata, ..
+                provider_metadata: Some(metadata),
+                ..
             }) => {
-                if let Some(metadata) = provider_metadata {
-                    output.provider_metadata_seen = true;
-                    if metadata.get("logprobs").is_some() {
-                        output.logprobs_field_seen = true;
-                    }
-                    output
-                        .logprobs
-                        .extend(parse_provider_logprobs(metadata).unwrap_or_default());
+                output.provider_metadata_seen = true;
+                if metadata.get("logprobs").is_some() {
+                    output.logprobs_field_seen = true;
                 }
+                output
+                    .logprobs
+                    .extend(parse_provider_logprobs(metadata).unwrap_or_default());
             }
             Ok(agendao_provider::StreamEvent::Done) => break,
             Ok(agendao_provider::StreamEvent::Error(error)) => {

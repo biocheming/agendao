@@ -1,4 +1,5 @@
 use agendao_stage_protocol::{StageStatus, StageSummary};
+use agendao_util::util::format::truncate_chars;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -1315,18 +1316,6 @@ pub fn message_latest_compaction_summary(
         message_id: fallback_message_id.to_string(),
         summary: trimmed.to_string(),
     })
-}
-
-fn truncate_chars(value: &str, limit: usize) -> String {
-    if value.chars().count() <= limit {
-        return value.to_string();
-    }
-    let mut truncated = value
-        .chars()
-        .take(limit.saturating_sub(24))
-        .collect::<String>();
-    truncated.push_str("\n...[truncated]...");
-    truncated
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

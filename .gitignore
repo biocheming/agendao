@@ -21,6 +21,7 @@ apps/agendao-web/node_modules/
 apps/agendao-web/dist/
 apps/agendao-web/.build-cache/
 apps/agendao-web/.vite/
+apps/agendao-web/.cache/
 
 # Python cache
 __pycache__/

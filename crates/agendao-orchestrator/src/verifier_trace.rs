@@ -99,6 +99,9 @@ pub(crate) fn render_verifier_trace(
     sections.join("\n\n")
 }
 
+// 指纹输入来自调用点的多个异构来源（候选标识/执行统计/指标/命令轨迹），
+// 不存在天然的领域结构体可聚合；仅为搬运字段而引入结构体收益低。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn trajectory_fingerprint(
     candidate_id: &str,
     source_iteration: u32,

@@ -15,10 +15,10 @@ agendao-types = { path = "../agendao-types" }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { version = "1", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }

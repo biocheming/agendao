@@ -15,10 +15,10 @@ pub(super) fn sanitize_input(input: &str, repairs: &mut Vec<String>) -> String {
     }
 
     // ── ANSI escape sequences (A6) ──
-    // Matches: ESC[ ... m  (SGR sequences — the vast majority of ANSI codes)
-    // Also: ESC[ ... [A-Z] for cursor movement, etc.
+    // Matches: CSI sequences (ESC[ ... final byte), OSC sequences (ESC] ... ST/BEL),
+    // and simple two-byte escapes (ESC + single char)
     let ansi_len = s.len();
-    s = strip_ansi_escapes(&s);
+    s = crate::util::color::strip_ansi(&s);
     if s.len() != ansi_len {
         repairs.push("stripped ANSI escape sequences".into());
     }
@@ -78,55 +78,6 @@ pub(super) fn sanitize_input(input: &str, repairs: &mut Vec<String>) -> String {
     }
 
     s.trim().to_string()
-}
-
-/// Strip ANSI escape sequences (CSI sequences: ESC[ ... final_byte)
-fn strip_ansi_escapes(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            // Check for CSI sequence: ESC [
-            if chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                              // Consume parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
-                              // until final byte (0x40-0x7E)
-                loop {
-                    match chars.next() {
-                        Some(c) if ('\x40'..='\x7e').contains(&c) => break,
-                        Some(_) => continue,
-                        None => break,
-                    }
-                }
-                continue;
-            }
-            // OSC sequence: ESC ]
-            if chars.peek() == Some(&']') {
-                chars.next();
-                // Consume until ST (ESC \ or BEL \x07)
-                loop {
-                    match chars.next() {
-                        Some('\x07') => break,
-                        Some('\x1b') if chars.peek() == Some(&'\\') => {
-                            chars.next();
-                            break;
-                        }
-                        Some(_) => continue,
-                        None => break,
-                    }
-                }
-                continue;
-            }
-            // Simple two-byte escape: ESC + single char
-            if chars.peek().is_some() {
-                chars.next();
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 // =============================================================================

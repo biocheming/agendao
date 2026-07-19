@@ -33,7 +33,12 @@ impl ProviderInstance {
             name,
             config,
             adapter,
-            client: Client::new(),
+            // 只设 connect timeout:防止端点不可达时连接永不释放;
+            // 不设总超时,避免误杀长时间流式输出(reasoning 模型尤甚)。
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             models,
             runtime: None,
             provider_profile_fingerprint: None,

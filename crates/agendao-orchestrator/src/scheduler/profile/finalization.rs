@@ -28,10 +28,8 @@ impl SchedulerProfileOrchestrator {
             state.execution.reviewed.as_ref(),
             state.execution.handed_off.as_ref(),
             state.execution.synthesized.as_ref(),
-        ] {
-            if let Some(output) = output {
-                merge_output_metadata(&mut metadata, &output.metadata);
-            }
+        ].into_iter().flatten() {
+            merge_output_metadata(&mut metadata, &output.metadata);
         }
 
         // Preset-specific finalization metadata is applied after stage merges,

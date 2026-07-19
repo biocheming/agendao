@@ -2392,7 +2392,7 @@ mod tests {
     fn session_manager_events_store_rows_not_full_messages() {
         let mut manager = SessionManager::new();
         let mut session = manager.create("project-1", "/path/to/project");
-        session.add_user_message(&"x".repeat(32 * 1024));
+        session.add_user_message("x".repeat(32 * 1024));
         let session_id = session.id.clone();
         manager.update(session);
 

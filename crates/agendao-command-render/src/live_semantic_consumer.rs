@@ -201,8 +201,6 @@ impl LiveSemanticConsumer {
                     .cloned()
                     .unwrap_or_default(),
             }
-        } else if text.is_empty() {
-            SemanticAction::NoOp
         } else {
             SemanticAction::NoOp
         }
@@ -267,8 +265,6 @@ impl LiveSemanticConsumer {
                     .cloned()
                     .unwrap_or_default(),
             }
-        } else if text.is_empty() {
-            SemanticAction::NoOp
         } else {
             SemanticAction::NoOp
         }

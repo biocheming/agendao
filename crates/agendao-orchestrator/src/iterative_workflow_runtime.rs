@@ -1734,7 +1734,7 @@ fn select_json_path<'a>(value: &'a Value, path: &str) -> Result<&'a Value, Orche
         if let Some(stripped) = remaining.strip_prefix('.') {
             remaining = stripped;
             let key_len = remaining
-                .find(|ch: char| ch == '.' || ch == '[')
+                .find(['.', '['])
                 .unwrap_or(remaining.len());
             let key = &remaining[..key_len];
             if key.is_empty() {

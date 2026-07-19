@@ -1,4 +1,5 @@
 use crate::discovery::{parse_skill_file, read_skill_body};
+use crate::util::now_unix_timestamp;
 use crate::{SkillError, SkillMeta, SkillRoot};
 use agendao_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillSourceIndexEntry, SkillSourceIndexSnapshot,
@@ -8,7 +9,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -458,14 +458,6 @@ fn iter_skill_markdown_files(root: &Path) -> Vec<PathBuf> {
 
 fn normalize_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
-}
-
-fn now_unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 pub(crate) fn source_root_kind_supported(source: &SkillSourceRef) -> bool {

@@ -936,43 +936,6 @@ fn hunk_start_line(consumed_before: usize, count: usize) -> usize {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generate_diff_keeps_unchanged_lines_as_context() {
-        let diff = generate_diff("demo.txt", "one\ntwo\nthree\n", "one\nTWO\nthree\n");
-
-        assert!(diff.contains(" one\n"));
-        assert!(diff.contains("-two\n"));
-        assert!(diff.contains("+TWO\n"));
-        assert!(diff.contains(" three\n"));
-        assert!(!diff.contains("-one\n"));
-        assert!(!diff.contains("+one\n"));
-    }
-
-    #[test]
-    fn generate_diff_omits_distant_unchanged_lines() {
-        let old = (1..=12)
-            .map(|line| format!("line {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut new_lines = (1..=12)
-            .map(|line| format!("line {line}"))
-            .collect::<Vec<_>>();
-        new_lines[5] = "line six".to_string();
-        let new = new_lines.join("\n");
-
-        let diff = generate_diff("demo.txt", &old, &new);
-
-        assert!(diff.contains("-line 6\n"));
-        assert!(diff.contains("+line six\n"));
-        assert!(!diff.contains(" line 1\n"));
-        assert!(!diff.contains(" line 12\n"));
-    }
-}
-
 async fn collect_lsp_diagnostics_for_targets(
     base_path: &Path,
     targets: &[String],
@@ -1089,5 +1052,42 @@ async fn collect_lsp_diagnostics_for_targets(
 impl Default for ApplyPatchTool {
     fn default() -> Self {
         Self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_diff_keeps_unchanged_lines_as_context() {
+        let diff = generate_diff("demo.txt", "one\ntwo\nthree\n", "one\nTWO\nthree\n");
+
+        assert!(diff.contains(" one\n"));
+        assert!(diff.contains("-two\n"));
+        assert!(diff.contains("+TWO\n"));
+        assert!(diff.contains(" three\n"));
+        assert!(!diff.contains("-one\n"));
+        assert!(!diff.contains("+one\n"));
+    }
+
+    #[test]
+    fn generate_diff_omits_distant_unchanged_lines() {
+        let old = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut new_lines = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>();
+        new_lines[5] = "line six".to_string();
+        let new = new_lines.join("\n");
+
+        let diff = generate_diff("demo.txt", &old, &new);
+
+        assert!(diff.contains("-line 6\n"));
+        assert!(diff.contains("+line six\n"));
+        assert!(!diff.contains(" line 1\n"));
+        assert!(!diff.contains(" line 12\n"));
     }
 }

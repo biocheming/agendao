@@ -485,7 +485,7 @@ impl MemoryRepository {
         let Some(row) = row else {
             return Ok(None);
         };
-        let evidence = self.load_evidence_map(&[row.id.clone()]).await?;
+        let evidence = self.load_evidence_map(std::slice::from_ref(&row.id)).await?;
         Ok(Some(row.into_record(
             evidence.get(id).cloned().unwrap_or_default(),
         )))

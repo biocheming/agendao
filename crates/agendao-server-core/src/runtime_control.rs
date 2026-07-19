@@ -242,6 +242,13 @@ pub struct RuntimeControlRegistry {
     on_topology_changed: Option<TopologyChangedCallback>,
 }
 
+#[cfg(test)]
+impl Default for RuntimeControlRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuntimeControlRegistry {
     #[cfg(test)]
     pub fn new() -> Self {
@@ -253,7 +260,6 @@ impl RuntimeControlRegistry {
             on_topology_changed: None,
         }
     }
-
     /// Create a registry with a callback that fires whenever the execution
     /// topology is mutated (upsert, update, or finish).
     pub fn with_topology_callback(callback: TopologyChangedCallback) -> Self {

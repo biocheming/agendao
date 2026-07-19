@@ -344,6 +344,57 @@ pub fn scheduler_preset_extension_from_plan(
     })
 }
 
+// ── Preset prompt extension (Commit 6) ─────────────────────────────────
+//
+// PresetPromptExtension is defined in agendao-types (no circular dep).
+// Re-exported here so presets can use `crate::scheduler::PresetPromptExtension`.
+pub use agendao_types::PresetPromptExtension;
+
+/// Render a preset prompt extension into the exact scheduler charter text.
+///
+/// The extension already carries fully rendered section bodies in the
+/// correct order. This helper is the single renderer for the typed
+/// contract, so every populated field must become model-visible text.
+pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> String {
+    let mut sections = Vec::new();
+
+    let role_summary = extension.role_summary.trim();
+    if !role_summary.is_empty() {
+        sections.push(format!("## Preset Role Summary\n{role_summary}"));
+    }
+
+    sections.extend(
+        extension
+            .extra_sections
+            .iter()
+            .map(|(_, body)| body.trim())
+            .filter(|body| !body.is_empty())
+            .map(str::to_string),
+    );
+
+    if let Some(tone_augment) = extension
+        .tone_augment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Tone Augment\n{tone_augment}"));
+    }
+
+    // Keep large runtime capability catalogs late so the prompt prefix
+    // stays anchored by higher-stability preset governance text.
+    if let Some(capability_projection) = extension
+        .capability_projection
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(format!("## Capability Projection\n{capability_projection}"));
+    }
+
+    sections.join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,14 +596,14 @@ mod tests {
     #[test]
     fn scheduler_preset_infers_prometheus_from_plan_workflow() {
         let profile = SchedulerProfileConfig {
-            workflow: Some(crate::IterativeWorkflowSource::Inline(
+            workflow: Some(crate::IterativeWorkflowSource::Inline(Box::new(
                 crate::IterativeWorkflowConfig::load_from_str(
                     r#"{
                       "workflow": { "kind": "autoresearch", "mode": "plan" }
                     }"#,
                 )
                 .unwrap(),
-            )),
+            ))),
             ..Default::default()
         };
         let plan = scheduler_plan_from_profile(Some("planner".to_string()), &profile).unwrap();
@@ -572,7 +623,7 @@ mod tests {
     #[test]
     fn scheduler_preset_infers_hephaestus_from_run_workflow() {
         let profile = SchedulerProfileConfig {
-            workflow: Some(crate::IterativeWorkflowSource::Inline(
+            workflow: Some(crate::IterativeWorkflowSource::Inline(Box::new(
                 crate::IterativeWorkflowConfig::load_from_str(
                     r#"{
                       "workflow": { "kind": "autoresearch", "mode": "run" },
@@ -589,7 +640,7 @@ mod tests {
                     }"#,
                 )
                 .unwrap(),
-            )),
+            ))),
             ..Default::default()
         };
         let plan = scheduler_plan_from_profile(Some("run".to_string()), &profile).unwrap();
@@ -606,7 +657,7 @@ mod tests {
     #[test]
     fn scheduler_preset_infers_verifier_from_verify_workflow() {
         let profile = SchedulerProfileConfig {
-            workflow: Some(crate::IterativeWorkflowSource::Inline(
+            workflow: Some(crate::IterativeWorkflowSource::Inline(Box::new(
                 crate::IterativeWorkflowConfig::load_from_str(
                     r#"{
                       "workflow": { "kind": "autoresearch", "mode": "verify" },
@@ -632,7 +683,7 @@ mod tests {
                     }"#,
                 )
                 .unwrap(),
-            )),
+            ))),
             ..Default::default()
         };
         let plan = scheduler_plan_from_profile(Some("verify".to_string()), &profile).unwrap();
@@ -1050,55 +1101,4 @@ mod tests {
             .iter()
             .any(|(_, body)| !body.trim().is_empty()));
     }
-}
-
-// ── Preset prompt extension (Commit 6) ─────────────────────────────────
-//
-// PresetPromptExtension is defined in agendao-types (no circular dep).
-// Re-exported here so presets can use `crate::scheduler::PresetPromptExtension`.
-pub use agendao_types::PresetPromptExtension;
-
-/// Render a preset prompt extension into the exact scheduler charter text.
-///
-/// The extension already carries fully rendered section bodies in the
-/// correct order. This helper is the single renderer for the typed
-/// contract, so every populated field must become model-visible text.
-pub fn render_preset_prompt_extension(extension: &PresetPromptExtension) -> String {
-    let mut sections = Vec::new();
-
-    let role_summary = extension.role_summary.trim();
-    if !role_summary.is_empty() {
-        sections.push(format!("## Preset Role Summary\n{role_summary}"));
-    }
-
-    sections.extend(
-        extension
-            .extra_sections
-            .iter()
-            .map(|(_, body)| body.trim())
-            .filter(|body| !body.is_empty())
-            .map(str::to_string),
-    );
-
-    if let Some(tone_augment) = extension
-        .tone_augment
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(format!("## Tone Augment\n{tone_augment}"));
-    }
-
-    // Keep large runtime capability catalogs late so the prompt prefix
-    // stays anchored by higher-stability preset governance text.
-    if let Some(capability_projection) = extension
-        .capability_projection
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(format!("## Capability Projection\n{capability_projection}"));
-    }
-
-    sections.join("\n\n")
 }

@@ -776,6 +776,9 @@ pub(super) async fn send_message(
     Path(session_id): Path<String>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<Json<MessageInfo>> {
+    // 懒加载水合闸门：append 前先回填——否则随后的全量 flush 会因
+    // dehydrated 守卫跳过消息写入，丢掉这条新消息。
+    state.ensure_session_messages_hydrated(&session_id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
     let mut sessions = state.sessions.lock().await;
     let session = sessions
         .get_mut(&session_id)
@@ -825,6 +828,8 @@ pub(super) async fn list_messages(
 
     let mut pending_questions =
         super::super::tui::list_questions_for_session(&state, &session_id).await;
+    // 懒加载水合闸门：打开会话读消息前，确保消息体已从 storage 回填。
+    state.ensure_session_messages_hydrated(&session_id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
     let sessions = state.sessions.lock().await;
     let session = sessions
         .get(&session_id)

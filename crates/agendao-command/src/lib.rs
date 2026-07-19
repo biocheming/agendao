@@ -14,16 +14,12 @@ pub mod cli_markdown;
 #[cfg(feature = "terminal-ui")]
 pub mod cli_panel;
 #[cfg(feature = "runtime-hooks")]
-#[path = "../../agendao-command-runtime/src/cli_permission.rs"]
 pub mod cli_permission;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-runtime/src/cli_prompt.rs"]
 pub mod cli_prompt;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-runtime/src/cli_select.rs"]
 pub mod cli_select;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-runtime/src/cli_spinner.rs"]
 pub mod cli_spinner;
 #[cfg(feature = "terminal-ui")]
 pub mod cli_style;
@@ -32,7 +28,6 @@ pub mod cli_style;
 pub mod governance_fixtures;
 #[cfg(test)]
 mod governance_tests;
-#[path = "../../agendao-command-runtime/src/interactive.rs"]
 pub mod interactive;
 #[path = "../../agendao-command-render/src/live_semantic_consumer.rs"]
 pub mod live_semantic_consumer;

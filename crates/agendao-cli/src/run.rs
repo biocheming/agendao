@@ -13,7 +13,9 @@ use crate::remote::{run_non_interactive_attach, RemoteAttachOptions};
 use crate::server_lifecycle::CliRuntimeContext;
 use crate::util::{append_cli_file_attachments, collect_run_input};
 use model_state::{cli_resolve_show_thinking, cli_save_recent_model_ref};
-use session_exec::{cli_session_directory, run_cli_prompt_local, run_cli_prompt_transport};
+use session_exec::{
+    cli_session_directory, run_cli_prompt_local, run_cli_prompt_transport, LocalPromptRequest,
+};
 
 pub(super) async fn run_non_interactive(
     options: RunNonInteractiveOptions,
@@ -125,15 +127,17 @@ pub(super) async fn run_non_interactive(
         run_cli_prompt_local(
             &local,
             &input,
-            command.as_deref(),
-            continue_last,
-            session.as_deref(),
-            fork,
-            model.as_deref(),
-            requested_agent.as_deref(),
-            variant.as_deref(),
-            title.as_deref(),
-            &cli_session_directory(&working_dir),
+            LocalPromptRequest {
+                command: command.as_deref(),
+                continue_last,
+                session: session.as_deref(),
+                fork,
+                model: model.as_deref(),
+                agent: requested_agent.as_deref(),
+                variant: variant.as_deref(),
+                title: title.as_deref(),
+                directory: &cli_session_directory(&working_dir),
+            },
         )
         .await?;
         return Ok(());

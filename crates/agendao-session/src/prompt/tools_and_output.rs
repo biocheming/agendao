@@ -223,11 +223,9 @@ pub fn resolve_tool_catalog_mode(
         *family_counts.entry((domain, family)).or_default() += 1;
     }
 
-    family_counts
+    if family_counts
         .values()
-        .any(|count| *count >= LARGE_FAMILY_THRESHOLD)
-        .then_some(ToolCatalogMode::SearchFacade)
-        .unwrap_or(ToolCatalogMode::FullSchema)
+        .any(|count| *count >= LARGE_FAMILY_THRESHOLD) { ToolCatalogMode::SearchFacade } else { ToolCatalogMode::FullSchema }
 }
 
 pub fn tool_catalog_fingerprint(catalog_by_tool: &BTreeMap<String, ToolCatalogMetadata>) -> String {

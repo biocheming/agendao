@@ -404,14 +404,17 @@ pub fn aggregate_model_tool_repair_telemetry<'a>(
     })
 }
 
-fn finalized_tool_call_metadata<'a>(
-    status: &crate::ToolCallStatus,
-    state: Option<&'a ToolState>,
-) -> Option<(
+/// (is_error, error_text, metadata) extracted from a finalized tool call.
+type FinalizedToolCallMetadata<'a> = (
     bool,
     Option<&'a str>,
     Option<&'a std::collections::HashMap<String, serde_json::Value>>,
-)> {
+);
+
+fn finalized_tool_call_metadata<'a>(
+    status: &crate::ToolCallStatus,
+    state: Option<&'a ToolState>,
+) -> Option<FinalizedToolCallMetadata<'a>> {
     match state {
         Some(ToolState::Completed { metadata, .. }) => Some((false, None, Some(metadata))),
         Some(ToolState::Error {

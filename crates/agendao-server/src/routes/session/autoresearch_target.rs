@@ -499,7 +499,7 @@ fn compile_profile(
     };
 
     profile.description = Some(document.description.clone());
-    profile.workflow = Some(IterativeWorkflowSource::Inline(workflow));
+    profile.workflow = Some(IterativeWorkflowSource::Inline(Box::new(workflow)));
     profile.skill_tree = Some(compile_skill_tree_plan(
         profile.skill_tree.as_ref(),
         &document.context_markdown,

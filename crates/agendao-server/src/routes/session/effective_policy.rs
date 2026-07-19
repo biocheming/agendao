@@ -444,9 +444,7 @@ fn build_skill_tree_policy(
         });
     }
 
-    let Some(skill_tree) = configured_skill_tree else {
-        return None;
-    };
+    let skill_tree = configured_skill_tree?;
 
     if enabled {
         warnings.push(
@@ -795,8 +793,8 @@ mod tests {
         assert_eq!(skill_tree.token_budget, Some(64));
         assert_eq!(skill_tree.truncation_strategy.as_deref(), Some("tail"));
 
-        assert_eq!(policy.compaction.auto, false);
-        assert_eq!(policy.compaction.prune, true);
+        assert!(!policy.compaction.auto);
+        assert!(policy.compaction.prune);
         assert_eq!(policy.compaction.reserved, Some(512));
 
         let external = policy.external_adapter.expect("external adapter policy");

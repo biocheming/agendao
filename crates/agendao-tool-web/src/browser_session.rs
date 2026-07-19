@@ -741,6 +741,16 @@ mod tests {
 
     #[tokio::test]
     async fn browser_session_persists_cookies_across_visits() {
+        // SSRF 防护默认拒绝环回地址;本测试显式开门(本进程内唯一使用该开关的测试)。
+        struct PrivateHostsGuard;
+        impl Drop for PrivateHostsGuard {
+            fn drop(&mut self) {
+                std::env::remove_var("AGENDAO_WEB_ALLOW_PRIVATE_HOSTS");
+            }
+        }
+        std::env::set_var("AGENDAO_WEB_ALLOW_PRIVATE_HOSTS", "1");
+        let _guard = PrivateHostsGuard;
+
         let (base_url, server_handle) = match spawn_test_server().await {
             Ok(value) => value,
             Err(err) if should_skip_local_http_test(&err) => {

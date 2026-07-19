@@ -8,5 +8,5 @@ license.workspace = true
 [dependencies]
 agendao-client = { path = "../agendao-client" }
 anyhow = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
 futures = { workspace = true }

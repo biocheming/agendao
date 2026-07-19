@@ -49,7 +49,7 @@ agendao-types = { path = "../agendao-types" }
 agendao-command-render = { path = "../agendao-command-render", optional = true }
 agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -57,10 +57,10 @@ tracing = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-webpki-roots", "system-proxy"] }
+reqwest = { workspace = true, features = ["charset", "http2", "json", "system-proxy"] }
 chrono = { workspace = true }
 dirs = { workspace = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+sqlx = { workspace = true, optional = true }
 url = { workspace = true }
 which = "7"
 base64 = { workspace = true }

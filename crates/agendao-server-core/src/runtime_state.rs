@@ -77,7 +77,9 @@ impl SessionRuntimeState {
 /// Coarse run-status for the session, derived from lifecycle hooks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RunStatus {
+    #[default]
     Idle,
     Running,
     Compacting,
@@ -90,11 +92,6 @@ pub enum RunStatus {
     Sleeping,
 }
 
-impl Default for RunStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// Summary of a currently executing tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,9 +406,7 @@ impl RuntimeStateStore {
     pub async fn scheduler_stage_finished(&self, session_id: &str, stage_id: Option<&str>) {
         self.update(session_id, |s| {
             s.active_stage_count = s.active_stage_count.saturating_sub(1);
-            if s.active_stage_count == 0 {
-                s.active_stage_id = None;
-            } else if s.active_stage_id.as_deref() == stage_id {
+            if s.active_stage_count == 0 || s.active_stage_id.as_deref() == stage_id {
                 s.active_stage_id = None;
             }
         })

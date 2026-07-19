@@ -317,7 +317,7 @@ async fn execute_tool_catalog_search(
             serde_json::json!(
                 results
                     .iter()
-                    .map(|entry| entry_json(entry))
+                    .map(entry_json)
                     .collect::<Vec<_>>()
             ),
         )

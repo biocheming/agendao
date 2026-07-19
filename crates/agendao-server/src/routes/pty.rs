@@ -3,6 +3,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
+    http::HeaderMap,
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -217,6 +218,44 @@ pub struct PtyConnectQuery {
     pub cursor: Option<i64>,
 }
 
+/// Browsers always send an `Origin` header on WebSocket upgrades, so a request
+/// carrying one comes from a web page and could be a cross-site WebSocket
+/// hijacking (CSWSH) / DNS-rebinding attempt against the local unauthenticated
+/// server. Only localhost origins may upgrade; requests without an `Origin`
+/// header are treated as non-browser clients (curl, wscat, our own frontend
+/// backend) and allowed through.
+fn ws_origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    // Origin is `scheme://host[:port]`; extract the host portion.
+    let authority = origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(origin)
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    // Strip the optional port, keeping bracketed IPv6 literals intact. Anything
+    // malformed after the bracket (e.g. `[::1].evil.com`) is rejected outright.
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, "")) => host,
+            Some((host, port)) if port.starts_with(':') => host,
+            _ => return false,
+        },
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
 /// WebSocket endpoint that bridges a client to a PTY session, matching the TS
 /// `Pty.connect` protocol:
 ///   1. On connect: replay buffered output from the requested cursor, then send
@@ -227,8 +266,22 @@ pub struct PtyConnectQuery {
 async fn pty_connect(
     Path(id): Path<String>,
     Query(query): Query<PtyConnectQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    if !ws_origin_allowed(&headers) {
+        let origin = headers
+            .get(axum::http::header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<unparseable>");
+        tracing::warn!(%origin, "rejecting PTY WebSocket upgrade from disallowed origin");
+        return axum::response::Response::builder()
+            .status(403)
+            .body(axum::body::Body::from("Origin not allowed"))
+            .unwrap()
+            .into_response();
+    }
+
     let manager = get_pty_manager();
 
     // Validate the session exists before upgrading.
@@ -328,7 +381,15 @@ async fn handle_pty_websocket(mut socket: WebSocket, sub: PtySubscription, curso
                         if data.is_empty() { continue; }
                         let w = writer.clone();
                         let res = tokio::task::spawn_blocking(move || {
-                            let mut guard = w.lock().unwrap();
+                            let mut guard = match w.lock() {
+                                Ok(guard) => guard,
+                                Err(_) => {
+                                    tracing::warn!("PTY writer lock poisoned, closing websocket");
+                                    return Err(std::io::Error::other(
+                                        "PTY writer lock poisoned",
+                                    ));
+                                }
+                            };
                             guard.write_all(&data)?;
                             guard.flush()
                         }).await;
@@ -341,7 +402,15 @@ async fn handle_pty_websocket(mut socket: WebSocket, sub: PtySubscription, curso
                         if data.is_empty() { continue; }
                         let w = writer.clone();
                         let res = tokio::task::spawn_blocking(move || {
-                            let mut guard = w.lock().unwrap();
+                            let mut guard = match w.lock() {
+                                Ok(guard) => guard,
+                                Err(_) => {
+                                    tracing::warn!("PTY writer lock poisoned, closing websocket");
+                                    return Err(std::io::Error::other(
+                                        "PTY writer lock poisoned",
+                                    ));
+                                }
+                            };
                             guard.write_all(&data)?;
                             guard.flush()
                         }).await;
@@ -362,7 +431,60 @@ async fn handle_pty_websocket(mut socket: WebSocket, sub: PtySubscription, curso
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pty_permission_request, required_session_id};
+    use super::{build_pty_permission_request, required_session_id, ws_origin_allowed};
+    use axum::http::header::ORIGIN;
+    use axum::http::HeaderMap;
+
+    fn headers_with_origin(origin: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN, origin.parse().expect("valid header value"));
+        headers
+    }
+
+    #[test]
+    fn ws_origin_allowed_permits_requests_without_origin() {
+        // Non-browser clients (curl, wscat, our own frontend backend) send no Origin.
+        assert!(ws_origin_allowed(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn ws_origin_allowed_permits_localhost_origins() {
+        for origin in [
+            "http://localhost",
+            "http://localhost:3000",
+            "https://localhost:8443",
+            "http://LOCALHOST:3000",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "https://127.0.0.1:443",
+            "http://[::1]",
+            "http://[::1]:3000",
+        ] {
+            assert!(
+                ws_origin_allowed(&headers_with_origin(origin)),
+                "expected {origin} to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn ws_origin_allowed_rejects_foreign_origins() {
+        for origin in [
+            "http://evil.com",
+            "https://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "http://[::1].evil.com",
+            "http://example.com:8080",
+            "http://user@evil.com",
+            "null",
+            "",
+        ] {
+            assert!(
+                !ws_origin_allowed(&headers_with_origin(origin)),
+                "expected {origin} to be rejected"
+            );
+        }
+    }
 
     #[test]
     fn required_session_id_rejects_missing_or_empty_values() {

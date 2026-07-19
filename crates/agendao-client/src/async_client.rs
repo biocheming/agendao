@@ -826,6 +826,35 @@ impl AsyncApiClient {
         .await
     }
 
+    /// PUT `/provider/{id}/disabled`:enable/disable 切换(config.disabled_providers
+    /// 单一写入口;disabled 不进运行时 registry,配置与 auth 保留)。
+    pub async fn set_provider_disabled(
+        &self,
+        provider_id: &str,
+        disabled: bool,
+    ) -> anyhow::Result<bool> {
+        let url = server_url(
+            &self.base_url,
+            &format!("/provider/{}/disabled", urlencoding::encode(provider_id)),
+        );
+        let body = serde_json::json!({ "disabled": disabled });
+        let resp = self.client.put(&url).json(&body).send().await?;
+        Self::json_ok(resp, &format!("set provider `{}` disabled={}", provider_id, disabled)).await
+    }
+
+    /// POST `/provider/{id}/test`:测试连接（只读探测，返回 ok/status/延迟/错误）。
+    pub async fn test_provider_connection(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<agendao_api::TestProviderConnectionResponse> {
+        let url = server_url(
+            &self.base_url,
+            &format!("/provider/{}/test", urlencoding::encode(provider_id)),
+        );
+        let resp = self.client.post(&url).send().await?;
+        Self::json_ok(resp, &format!("test provider `{}` connection", provider_id)).await
+    }
+
     pub async fn list_execution_modes(&self) -> anyhow::Result<Vec<ExecutionModeInfo>> {
         let url = server_url(&self.base_url, "/mode");
         let resp = self.client.get(&url).send().await?;
@@ -1388,6 +1417,8 @@ impl AsyncApiClient {
     }
 }
 
+// 参数与 PromptRequest 线格式字段一一对应；聚合结构体即 PromptRequest 本身。
+#[allow(clippy::too_many_arguments)]
 fn build_prompt_request(
     content: String,
     parts: Option<Vec<PromptPart>>,

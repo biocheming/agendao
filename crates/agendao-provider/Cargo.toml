@@ -13,7 +13,7 @@ streaming = ["http-transport", "dep:tokio-stream"]
 [dependencies]
 agendao-types = { path = "../agendao-types" }
 agendao-util = { path = "../agendao-util" }
-tokio = { version = "1", features = ["fs", "macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt", "sync", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -21,7 +21,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-webpki-roots", "stream", "system-proxy"], optional = true }
+reqwest = { workspace = true, features = ["charset", "http2", "json", "stream", "system-proxy"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 pin-project-lite = "0.2"
 uuid = { workspace = true }

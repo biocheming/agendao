@@ -16,4 +16,4 @@ dirs = { workspace = true }
 lazy_static = "1.4"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

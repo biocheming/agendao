@@ -119,7 +119,7 @@ pub fn append_assistant_output_projection(
 ) {
     let projection = project_assistant_output(content, options);
 
-    if let Ok(value) = serde_json::to_value(&projection.model_context_policy) {
+    if let Ok(value) = serde_json::to_value(projection.model_context_policy) {
         metadata.insert(
             SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
             value,

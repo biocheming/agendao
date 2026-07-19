@@ -188,9 +188,9 @@ fn resolve_builtin_scheduler_request_defaults(
     Some(scheduler_request_defaults_from_plan(&plan))
 }
 
-fn normalized_requested_scheduler_profile<'a>(
-    requested_profile: Option<&'a str>,
-) -> Option<&'a str> {
+fn normalized_requested_scheduler_profile(
+    requested_profile: Option<&str>,
+) -> Option<&str> {
     requested_profile
         .map(str::trim)
         .filter(|value| !value.is_empty())

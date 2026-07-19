@@ -153,8 +153,8 @@ pub(crate) fn stream_server_events(
                                 }
                                 if let Some(flushed) = pending.take() {
                                     if let Err(error) = send_server_event_json(&tx, &flushed).await {
-                                        let _ = error;
                                         tracing::debug!(
+                                            ?error,
                                             "Failed to flush pending server event after broadcast channel closed"
                                         );
                                     }

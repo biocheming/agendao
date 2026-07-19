@@ -346,9 +346,7 @@ fn collect_session_tree_ids(
     sessions: &agendao_session::SessionManager,
     root_id: &str,
 ) -> Option<Vec<String>> {
-    if sessions.get(root_id).is_none() {
-        return None;
-    }
+    sessions.get(root_id)?;
 
     fn visit(sessions: &agendao_session::SessionManager, session_id: &str, out: &mut Vec<String>) {
         out.push(session_id.to_string());
@@ -816,6 +814,9 @@ pub(super) async fn fork_session(
     Path(id): Path<String>,
     Json(req): Json<ForkSessionRequest>,
 ) -> Result<Json<SessionInfo>> {
+    // 懒加载水合闸门：fork 从内存复制父会话消息，dehydrated 父会话需先回填，
+    // 否则 fork 出空历史子会话（且后续 flush 语义错乱）。
+    state.ensure_session_messages_hydrated(&id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
     let spec = SessionForkSpec {
         message_id: req.message_id.as_deref(),
         history_mode: req.history_mode.unwrap_or_default(),

@@ -479,6 +479,40 @@ fn parse_vertex_sse(data: &str) -> Option<StreamEvent> {
     Some(StreamEvent::TextDelta(text))
 }
 
+fn parse_vertex_sse_line(line: &str) -> Option<StreamEvent> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with(':') {
+        return None;
+    }
+    if let Some(data) = line.strip_prefix("data: ") {
+        return parse_vertex_sse(data);
+    }
+    // Vertex may return raw JSON lines without the "data: " prefix.
+    parse_vertex_sse(line)
+}
+
+fn drain_vertex_sse_events(buffer: &mut String, flush: bool) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+
+    while let Some(newline_idx) = buffer.find('\n') {
+        let line = buffer[..newline_idx].trim_end_matches('\r').to_string();
+        buffer.drain(..=newline_idx);
+        if let Some(event) = parse_vertex_sse_line(&line) {
+            events.push(event);
+        }
+    }
+
+    if flush {
+        let line = buffer.trim();
+        if let Some(event) = parse_vertex_sse_line(line) {
+            events.push(event);
+        }
+        buffer.clear();
+    }
+
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,38 +550,4 @@ mod tests {
                     && response.response == json!({ "content": "[Tool execution was interrupted]" })
         ));
     }
-}
-
-fn parse_vertex_sse_line(line: &str) -> Option<StreamEvent> {
-    let line = line.trim();
-    if line.is_empty() || line.starts_with(':') {
-        return None;
-    }
-    if let Some(data) = line.strip_prefix("data: ") {
-        return parse_vertex_sse(data);
-    }
-    // Vertex may return raw JSON lines without the "data: " prefix.
-    parse_vertex_sse(line)
-}
-
-fn drain_vertex_sse_events(buffer: &mut String, flush: bool) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-
-    while let Some(newline_idx) = buffer.find('\n') {
-        let line = buffer[..newline_idx].trim_end_matches('\r').to_string();
-        buffer.drain(..=newline_idx);
-        if let Some(event) = parse_vertex_sse_line(&line) {
-            events.push(event);
-        }
-    }
-
-    if flush {
-        let line = buffer.trim();
-        if let Some(event) = parse_vertex_sse_line(line) {
-            events.push(event);
-        }
-        buffer.clear();
-    }
-
-    events
 }

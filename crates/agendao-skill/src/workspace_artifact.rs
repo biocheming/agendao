@@ -46,7 +46,7 @@ pub fn export_workspace_skill_artifact_bundle(
 
     let entries = skills
         .iter()
-        .map(|meta| export_workspace_skill_entry(meta))
+        .map(export_workspace_skill_entry)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WorkspaceSkillArtifactBundle::new_now(entries))
 }

@@ -56,8 +56,7 @@ impl agendao_provider::Provider for MockConcurrentProvider {
         let user_msg = request
             .messages
             .iter()
-            .filter(|m| matches!(m.role, agendao_provider::Role::User))
-            .last()
+            .rfind(|m| matches!(m.role, agendao_provider::Role::User))
             .and_then(|m| match &m.content {
                 agendao_provider::Content::Text(text) => Some(text.as_str()),
                 _ => None,
@@ -95,8 +94,7 @@ impl agendao_provider::Provider for MockConcurrentProvider {
         let user_msg = request
             .messages
             .iter()
-            .filter(|m| matches!(m.role, agendao_provider::Role::User))
-            .last()
+            .rfind(|m| matches!(m.role, agendao_provider::Role::User))
             .and_then(|m| match &m.content {
                 agendao_provider::Content::Text(text) => Some(text.as_str()),
                 _ => None,

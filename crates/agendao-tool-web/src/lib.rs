@@ -83,7 +83,19 @@ fn parse_http_url(url: &str) -> Result<Url, WebError> {
     }
 }
 
+/// 私网/环回访问逃生门（SSRF 防护的受控开关）。
+/// 设置 `AGENDAO_WEB_ALLOW_PRIVATE_HOSTS=1/true/yes` 时跳过私网拦截；
+/// 仅限本机测试或可信内网环境使用。
+fn private_hosts_allowed() -> bool {
+    std::env::var("AGENDAO_WEB_ALLOW_PRIVATE_HOSTS")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 fn validate_http_url_host(parsed: &Url) -> Result<(), WebError> {
+    if private_hosts_allowed() {
+        return Ok(());
+    }
     let host = parsed.host().ok_or_else(|| {
         WebError::InvalidArguments(format!("URL `{}` must include a host", parsed))
     })?;
@@ -103,6 +115,9 @@ fn validate_http_url_host(parsed: &Url) -> Result<(), WebError> {
 }
 
 async fn validate_resolved_host(parsed: &Url) -> Result<(), WebError> {
+    if private_hosts_allowed() {
+        return Ok(());
+    }
     let Some(domain) = parsed.host_str() else {
         return Ok(());
     };

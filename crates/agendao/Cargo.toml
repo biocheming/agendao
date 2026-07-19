@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+default-run = "agendao"
 
 [features]
 default = ["product-shell"]
@@ -65,21 +66,22 @@ path = "src/bin/agendao-product-serve.rs"
 required-features = ["product-serve-bin"]
 
 [dependencies]
+agendao-util = { path = "../agendao-util" }
 agendao-cli = { path = "../agendao-cli", optional = true, default-features = false }
 agendao-client = { path = "../agendao-client", optional = true }
 agendao-launcher = { path = "../agendao-launcher", optional = true }
 agendao-server = { path = "../agendao-server", optional = true, default-features = false }
 agendao-tui-revue = { path = "../agendao-tui-revue", optional = true, default-features = false }
-tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-clap = { version = "4", optional = true, features = ["derive"] }
+clap = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["charset", "http2", "json", "rustls-tls-webpki-roots", "system-proxy"] }
+reqwest = { workspace = true, optional = true, default-features = false, features = ["charset", "http2", "json", "system-proxy"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
 which = { version = "7", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

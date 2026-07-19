@@ -57,7 +57,7 @@ impl ServerStateOrchestrationAdapter {
                     created_at: record.created_at.to_rfc3339(),
                     last_message_at: Some(
                         chrono::DateTime::from_timestamp_millis(record.time.updated)
-                            .unwrap_or_else(|| chrono::Utc::now())
+                            .unwrap_or_else(chrono::Utc::now)
                             .to_rfc3339(),
                     ),
                 }

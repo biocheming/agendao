@@ -298,6 +298,8 @@ impl SessionManager {
         let session = Session::new(id.clone());
 
         self.sessions.insert(id.clone(), session);
+        // Unreachable in practice: the entry was just inserted above and
+        // nothing runs in between, so the key is guaranteed to be present.
         self.sessions.get(&id).unwrap()
     }
 
@@ -311,11 +313,9 @@ impl SessionManager {
 
     /// Get or create a session (Phase 6.1)
     pub fn get_or_create(&mut self, id: &str) -> &mut Session {
-        if !self.sessions.contains_key(id) {
-            let session = Session::new(id.to_string());
-            self.sessions.insert(id.to_string(), session);
-        }
-        self.sessions.get_mut(id).unwrap()
+        self.sessions
+            .entry(id.to_string())
+            .or_insert_with(|| Session::new(id.to_string()))
     }
 
     pub fn list(&self) -> Vec<&Session> {

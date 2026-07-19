@@ -210,12 +210,12 @@ impl WorkflowArtifactWriter {
                 .artifacts
                 .as_ref()
                 .and_then(|artifacts| artifacts.iteration_log.as_ref())
-                .map(|file| ArtifactFileConfig::iteration_log(file)),
+                .map(ArtifactFileConfig::iteration_log),
             summary: config
                 .artifacts
                 .as_ref()
                 .and_then(|artifacts| artifacts.summary.as_ref())
-                .map(|file| ArtifactFileConfig::summary(file)),
+                .map(ArtifactFileConfig::summary),
         })
     }
 
@@ -814,9 +814,7 @@ fn render_bool(value: Option<bool>) -> String {
 
 fn escape_tsv(value: &str) -> String {
     value
-        .replace('\t', " ")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\t', '\n', '\r'], " ")
         .trim()
         .to_string()
 }

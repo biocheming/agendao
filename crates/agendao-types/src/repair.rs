@@ -816,6 +816,55 @@ impl RepairEvent {
     }
 }
 
+impl SanitizerAction {
+    /// Short, machine-stable kind string for telemetry aggregation.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::OrphanedToolResult { .. } => "orphaned_tool_result",
+            Self::DuplicateToolId { .. } => "duplicate_tool_id",
+            Self::ThinkingOnlyAssistant => "thinking_only_assistant",
+            Self::TrailingInvalidThinkingBlock => "trailing_invalid_thinking_block",
+            Self::FallbackContinuationStrip { .. } => "fallback_continuation_strip",
+            Self::CompactionResidue { .. } => "compaction_residue",
+            Self::AssistantMalformedPlaceholder => "assistant_malformed_placeholder",
+            Self::OrphanedContinuationAutoHeal => "orphaned_continuation_auto_heal",
+        }
+    }
+
+    /// Human-readable description suitable for debug logs.
+    pub fn description(&self) -> String {
+        match self {
+            Self::OrphanedToolResult { tool_call_id } => {
+                format!("orphaned tool_result without pending tool_use: {tool_call_id}")
+            }
+            Self::DuplicateToolId { tool_call_id } => {
+                format!("duplicate tool_use id resolved: {tool_call_id}")
+            }
+            Self::ThinkingOnlyAssistant => {
+                "dropped assistant message with only thinking blocks".to_string()
+            }
+            Self::TrailingInvalidThinkingBlock => {
+                "removed trailing invalid thinking block".to_string()
+            }
+            Self::FallbackContinuationStrip { removed_keys } => {
+                format!(
+                    "stripped continuation keys for fallback: {}",
+                    removed_keys.join(", ")
+                )
+            }
+            Self::CompactionResidue { reason } => {
+                format!("cleaned compaction residue: {reason}")
+            }
+            Self::AssistantMalformedPlaceholder => {
+                "replaced malformed assistant message with placeholder".to_string()
+            }
+            Self::OrphanedContinuationAutoHeal => {
+                "auto-healed orphaned continuation signature".to_string()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod repair_kind_tests {
     use super::*;
@@ -1007,54 +1056,5 @@ mod repair_kind_tests {
         summary.band = ToolTrajectoryQualityBand::Risky;
         assert!(!summary.is_clean());
         assert!(summary.is_risky());
-    }
-}
-
-impl SanitizerAction {
-    /// Short, machine-stable kind string for telemetry aggregation.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::OrphanedToolResult { .. } => "orphaned_tool_result",
-            Self::DuplicateToolId { .. } => "duplicate_tool_id",
-            Self::ThinkingOnlyAssistant => "thinking_only_assistant",
-            Self::TrailingInvalidThinkingBlock => "trailing_invalid_thinking_block",
-            Self::FallbackContinuationStrip { .. } => "fallback_continuation_strip",
-            Self::CompactionResidue { .. } => "compaction_residue",
-            Self::AssistantMalformedPlaceholder => "assistant_malformed_placeholder",
-            Self::OrphanedContinuationAutoHeal => "orphaned_continuation_auto_heal",
-        }
-    }
-
-    /// Human-readable description suitable for debug logs.
-    pub fn description(&self) -> String {
-        match self {
-            Self::OrphanedToolResult { tool_call_id } => {
-                format!("orphaned tool_result without pending tool_use: {tool_call_id}")
-            }
-            Self::DuplicateToolId { tool_call_id } => {
-                format!("duplicate tool_use id resolved: {tool_call_id}")
-            }
-            Self::ThinkingOnlyAssistant => {
-                "dropped assistant message with only thinking blocks".to_string()
-            }
-            Self::TrailingInvalidThinkingBlock => {
-                "removed trailing invalid thinking block".to_string()
-            }
-            Self::FallbackContinuationStrip { removed_keys } => {
-                format!(
-                    "stripped continuation keys for fallback: {}",
-                    removed_keys.join(", ")
-                )
-            }
-            Self::CompactionResidue { reason } => {
-                format!("cleaned compaction residue: {reason}")
-            }
-            Self::AssistantMalformedPlaceholder => {
-                "replaced malformed assistant message with placeholder".to_string()
-            }
-            Self::OrphanedContinuationAutoHeal => {
-                "auto-healed orphaned continuation signature".to_string()
-            }
-        }
     }
 }

@@ -443,7 +443,7 @@ pub fn query_model_repair_summary<'a>(
                     .collect(),
                 10,
             ),
-            top_tools: top_n(tool_map.into_iter().map(|(k, v)| (k, v)).collect(), 10),
+            top_tools: top_n(tool_map.into_iter().collect(), 10),
         }),
         rows: result_rows,
         samples: Vec::new(),

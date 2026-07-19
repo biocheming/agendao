@@ -1,4 +1,5 @@
 use crate::audit::{append_audit_event, load_audit_events, DEFAULT_AUDIT_TAIL_LIMIT};
+use crate::util::now_unix_timestamp;
 use crate::SkillError;
 use agendao_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillAuditEvent,
@@ -810,14 +811,6 @@ fn remote_index_virtual_path(base_dir: &Path, source: &SkillSourceRef) -> PathBu
 
 fn is_http_locator(locator: &str) -> bool {
     locator.starts_with("http://") || locator.starts_with("https://")
-}
-
-fn now_unix_timestamp() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillError> {

@@ -46,7 +46,9 @@ fn random_base62(length: usize) -> String {
 }
 
 fn get_counter() -> u32 {
-    let mut counter = COUNTER.lock().unwrap();
+    // Recover from poisoning: the counter has no invariants that a panicking
+    // writer could corrupt, so a poisoned lock must not abort ID generation.
+    let mut counter = COUNTER.lock().unwrap_or_else(|e| e.into_inner());
     *counter += 1;
     *counter
 }
@@ -62,7 +64,7 @@ pub fn create(prefix: Prefix, descending: bool, timestamp: Option<u64>) -> Strin
     let last = LAST_TIMESTAMP.load(Ordering::Relaxed);
     if current_timestamp != last {
         LAST_TIMESTAMP.store(current_timestamp, Ordering::Relaxed);
-        let mut counter = COUNTER.lock().unwrap();
+        let mut counter = COUNTER.lock().unwrap_or_else(|e| e.into_inner());
         *counter = 0;
     }
 

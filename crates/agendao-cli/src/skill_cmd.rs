@@ -1519,11 +1519,11 @@ fn skill_name_eq(left: &str, right: &str) -> bool {
 }
 
 fn format_duration_seconds(value: u64) -> String {
-    if value % 86_400 == 0 {
+    if value.is_multiple_of(86_400) {
         format!("{}d ({}s)", value / 86_400, value)
-    } else if value % 3_600 == 0 {
+    } else if value.is_multiple_of(3_600) {
         format!("{}h ({}s)", value / 3_600, value)
-    } else if value % 60 == 0 {
+    } else if value.is_multiple_of(60) {
         format!("{}m ({}s)", value / 60, value)
     } else {
         format!("{}s", value)
@@ -1531,7 +1531,7 @@ fn format_duration_seconds(value: u64) -> String {
 }
 
 fn format_duration_ms(value: u64) -> String {
-    if value % 1000 == 0 {
+    if value.is_multiple_of(1000) {
         format!("{}s ({}ms)", value / 1000, value)
     } else {
         format!("{}ms", value)
@@ -1541,9 +1541,9 @@ fn format_duration_ms(value: u64) -> String {
 fn format_bytes(value: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * 1024;
-    if value >= MIB && value % MIB == 0 {
+    if value >= MIB && value.is_multiple_of(MIB) {
         format!("{} MiB ({} bytes)", value / MIB, value)
-    } else if value >= KIB && value % KIB == 0 {
+    } else if value >= KIB && value.is_multiple_of(KIB) {
         format!("{} KiB ({} bytes)", value / KIB, value)
     } else {
         format!("{} bytes", value)
@@ -1705,7 +1705,7 @@ async fn list_skill_evolution_proposals(
 ) -> anyhow::Result<Vec<agendao_types::SkillEvolutionProposal>> {
     let db = agendao_storage::Database::new().await?;
     let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
-    Ok(repo.list_by_status(status).await?)
+    repo.list_by_status(status).await
 }
 
 #[cfg(feature = "proposal-db")]
@@ -1714,7 +1714,7 @@ async fn get_skill_evolution_proposal(
 ) -> anyhow::Result<Option<agendao_types::SkillEvolutionProposal>> {
     let db = agendao_storage::Database::new().await?;
     let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
-    Ok(repo.get_by_id(id).await?)
+    repo.get_by_id(id).await
 }
 
 #[cfg(feature = "proposal-db")]

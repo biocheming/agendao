@@ -58,7 +58,7 @@ impl ModelCallerBridge {
         error: crate::error::OrchestratorError,
     ) -> ModelFailure {
         match error {
-            crate::error::OrchestratorError::ModelError(failure) => failure,
+            crate::error::OrchestratorError::ModelError(failure) => *failure,
             crate::error::OrchestratorError::NoProvider => self.no_provider_failure(),
             other => ModelFailure::Message(other.to_string()),
         }

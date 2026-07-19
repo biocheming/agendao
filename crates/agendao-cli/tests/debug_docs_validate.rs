@@ -23,6 +23,9 @@ fn run_agendao_json(current_dir: &Path, args: &[&str]) -> serde_json::Value {
         .arg(&manifest_path)
         .arg("-p")
         .arg("agendao")
+        // 产品壳默认不带 db/lsp,debug 子命令需要显式开启(见 agendao-cli/src/lib.rs:43)。
+        .arg("--features")
+        .arg("agendao-cli/db,agendao-cli/lsp")
         .arg("--")
         .args(args)
         .current_dir(current_dir)

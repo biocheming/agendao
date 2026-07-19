@@ -10,7 +10,6 @@ members = [
     "crates/agendao-output-blocks",
     "crates/agendao-stage-protocol",
     "crates/agendao-command-render",
-    "crates/agendao-command-runtime",
     "crates/agendao-types",
     "crates/agendao-util",
     "crates/agendao-multimodal",
@@ -82,6 +81,16 @@ futures = "0.3"
 url = "2.5"
 sha2 = "0.10"
 base64 = "0.22"
-tokio = { version = "1", features = ["full"] }
+# tokio intentionally carries no features here: member crates enable only the
+# features they need (additive on top of `workspace = true`), so the unified
+# build gets the union instead of "full".
+tokio = "1"
+# Shared reqwest baseline: every member disables default features and uses
+# rustls with webpki roots; crate-specific extras (json, blocking, stream,
+# charset, http2, system-proxy) stay in the member manifests.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
 ratatui = "0.30.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }

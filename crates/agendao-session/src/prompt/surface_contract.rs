@@ -26,6 +26,7 @@ pub(super) const DYNAMIC_CATALOG_SECTION_TITLES: &[&str] = &[
     "Delegation Table",
 ];
 
+#[cfg(test)]
 pub(super) const STABLE_GOVERNANCE_SECTION_TITLES: &[&str] = &[
     "Preset Role Summary",
     "Tone Augment",
@@ -217,6 +218,7 @@ pub(super) fn is_dynamic_catalog_header(title: &str) -> bool {
         .any(|candidate| title.eq_ignore_ascii_case(candidate))
 }
 
+#[cfg(test)]
 pub(super) fn is_stable_governance_header(title: &str) -> bool {
     STABLE_GOVERNANCE_SECTION_TITLES
         .iter()

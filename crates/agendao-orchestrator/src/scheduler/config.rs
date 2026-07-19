@@ -313,7 +313,7 @@ impl SchedulerConfig {
                         err
                     ))
                 })?;
-                Ok(IterativeWorkflowSource::Inline(config))
+                Ok(IterativeWorkflowSource::Inline(Box::new(config)))
             }
         }
     }

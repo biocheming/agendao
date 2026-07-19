@@ -328,7 +328,6 @@ fn finalize_output_merges_workflow_mode_artifacts_with_stage_precedence() {
             reviewed: Some(stage_output("reviewed", 2, "triaged")),
             handed_off: Some(stage_output("handed_off", 3, "ready")),
             synthesized: Some(stage_output("synthesized", 4, "verified")),
-            ..Default::default()
         },
         metrics: SchedulerMetricsState {
             total_steps: 4,

@@ -345,7 +345,7 @@ fn eligible_for_pattern_promotion(record: &MemoryRecord) -> bool {
 
 fn methodology_ready(record: &MemoryRecord) -> bool {
     let validation_terms = count_validation_terms(record);
-    record.trigger_conditions.len() >= 1
+    !record.trigger_conditions.is_empty()
         && record.normalized_facts.len() >= 2
         && record.boundaries.len() >= 2
         && has_non_goal_boundary(record)

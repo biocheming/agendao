@@ -32,6 +32,7 @@ pub enum ConfigValue {
 
 pub type ConfigPermission = HashMap<String, ConfigValue>;
 
+// 展开权限规则里用户手写的 `~/`、`~`、`$HOME/` 模式，要的是真实用户主目录，不经 agendao_home。
 fn expand(pattern: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         if pattern.starts_with("~/") {

@@ -64,6 +64,8 @@ pub enum UiActionId {
     CycleAgentPrevious,
     CycleVariant,
     ToggleAppearance,
+    AppearanceNext,
+    AppearancePrev,
     ViewStatus,
     ToggleMcp,
 }
@@ -839,10 +841,28 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
         UiCommandSpec {
             action_id: UiActionId::ToggleAppearance,
             title: "Toggle appearance",
-            description: "Toggle between light and dark theme variants",
+            description: "Cycle to the next color theme",
             category: UiCommandCategory::System,
             keybind: None,
             include_in_palette: true,
+            slash: None,
+        },
+        UiCommandSpec {
+            action_id: UiActionId::AppearanceNext,
+            title: "Next theme",
+            description: "Cycle to the next color theme",
+            category: UiCommandCategory::System,
+            keybind: None,
+            include_in_palette: false,
+            slash: None,
+        },
+        UiCommandSpec {
+            action_id: UiActionId::AppearancePrev,
+            title: "Previous theme",
+            description: "Cycle to the previous color theme",
+            category: UiCommandCategory::System,
+            keybind: None,
+            include_in_palette: false,
             slash: None,
         },
         UiCommandSpec {

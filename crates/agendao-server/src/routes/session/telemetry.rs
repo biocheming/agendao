@@ -810,7 +810,7 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.last_permission_miss_count =
         session_metadata_u64(session, "last_permission_miss_count");
     // Patch 4: steering telemetry — populate from session metadata and runtime state.
-    populate_steering_telemetry(&mut snapshot, session, &state).await;
+    populate_steering_telemetry(&mut snapshot, session, state).await;
 
     if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
         tracing::warn!(

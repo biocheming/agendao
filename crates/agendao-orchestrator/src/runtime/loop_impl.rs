@@ -7,6 +7,7 @@ use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ModelContextLimits, ToolDedupScope, ToolErrorStrategy};
 use crate::runtime::traits::{LoopSink, ModelCaller, ToolDispatcher};
 use agendao_provider::is_retryable_stream_error_message;
+use agendao_util::util::format::truncate_chars;
 use futures::StreamExt;
 use std::collections::HashSet;
 use tracing::Instrument;
@@ -135,14 +136,6 @@ impl<'a> LoopConversation<'a> {
             compacted_message_count: compacted_count,
         })
     }
-}
-
-fn truncate_chars(value: &str, limit: usize) -> String {
-    let mut truncated = value.chars().take(limit).collect::<String>();
-    if value.chars().count() > limit {
-        truncated.push_str("...");
-    }
-    truncated
 }
 
 fn compact_json_preview(value: &serde_json::Value) -> String {

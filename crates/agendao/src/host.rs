@@ -363,86 +363,6 @@ fn build_acp_network_args(
     args
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        append_server_password_query, redact_server_password_query, AutoStartedServerOwner,
-    };
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn append_server_password_query_adds_password_without_overwriting_existing_value() {
-        assert_eq!(
-            append_server_password_query("http://localhost:3000".to_string(), Some("secret")),
-            "http://localhost:3000/?server_password=secret"
-        );
-        assert_eq!(
-            append_server_password_query(
-                "http://localhost:3000/?server_password=existing".to_string(),
-                Some("secret"),
-            ),
-            "http://localhost:3000/?server_password=existing"
-        );
-    }
-
-    #[test]
-    fn redact_server_password_query_hides_password_for_display() {
-        assert_eq!(
-            redact_server_password_query("http://localhost:3000/?server_password=secret&x=1"),
-            "http://localhost:3000/?server_password=%3Credacted%3E&x=1"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn auto_started_server_owner_drop_kills_owned_child() {
-        use std::os::raw::c_int;
-
-        unsafe extern "C" {
-            fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-        }
-
-        const WNOHANG: c_int = 1;
-
-        let owner = AutoStartedServerOwner::default();
-        let child = tokio::process::Command::new("sh")
-            .kill_on_drop(true)
-            .arg("-c")
-            .arg("sleep 30")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sleep child");
-        let pid = child.id().expect("child pid") as c_int;
-        owner.replace("http://127.0.0.1:3000".to_string(), child);
-
-        drop(owner);
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let mut status = 0;
-            let result = unsafe { waitpid(pid, &mut status, WNOHANG) };
-            if result == pid {
-                return;
-            }
-            if result == -1 {
-                let errno = std::io::Error::last_os_error().raw_os_error();
-                if errno == Some(10) {
-                    return;
-                }
-                panic!("waitpid failed for auto-started child {pid}: errno={errno:?}");
-            }
-            assert!(
-                Instant::now() < deadline,
-                "auto-started child {pid} was not killed when owner dropped"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-}
-
 fn run_acp_bridge_candidate(
     program: &str,
     args: &[String],
@@ -597,4 +517,84 @@ fn try_run_external_acp_bridge(
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        append_server_password_query, redact_server_password_query, AutoStartedServerOwner,
+    };
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn append_server_password_query_adds_password_without_overwriting_existing_value() {
+        assert_eq!(
+            append_server_password_query("http://localhost:3000".to_string(), Some("secret")),
+            "http://localhost:3000/?server_password=secret"
+        );
+        assert_eq!(
+            append_server_password_query(
+                "http://localhost:3000/?server_password=existing".to_string(),
+                Some("secret"),
+            ),
+            "http://localhost:3000/?server_password=existing"
+        );
+    }
+
+    #[test]
+    fn redact_server_password_query_hides_password_for_display() {
+        assert_eq!(
+            redact_server_password_query("http://localhost:3000/?server_password=secret&x=1"),
+            "http://localhost:3000/?server_password=%3Credacted%3E&x=1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auto_started_server_owner_drop_kills_owned_child() {
+        use std::os::raw::c_int;
+
+        unsafe extern "C" {
+            fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+        }
+
+        const WNOHANG: c_int = 1;
+
+        let owner = AutoStartedServerOwner::default();
+        let child = tokio::process::Command::new("sh")
+            .kill_on_drop(true)
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep child");
+        let pid = child.id().expect("child pid") as c_int;
+        owner.replace("http://127.0.0.1:3000".to_string(), child);
+
+        drop(owner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut status = 0;
+            let result = unsafe { waitpid(pid, &mut status, WNOHANG) };
+            if result == pid {
+                return;
+            }
+            if result == -1 {
+                let errno = std::io::Error::last_os_error().raw_os_error();
+                if errno == Some(10) {
+                    return;
+                }
+                panic!("waitpid failed for auto-started child {pid}: errno={errno:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "auto-started child {pid} was not killed when owner dropped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
 }

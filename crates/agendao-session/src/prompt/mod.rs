@@ -1141,6 +1141,9 @@ fn context_compaction_decision_trace(
     }
 }
 
+// 参数即产出的 ContextPressureGovernanceSummary 各字段（另含两个由字段派生
+// 的百分比），聚合参数结构体等于重复定义产出结构体，故保留平铺签名。
+#[allow(clippy::too_many_arguments)]
 fn context_pressure_governance_summary(
     trigger: &str,
     phase: &str,
@@ -2169,9 +2172,7 @@ impl SessionPrompt {
         if runtime_instruction_sources.is_empty() {
             return None;
         }
-        let Some(governance) = self.skill_governance_for_workspace(workspace_directory) else {
-            return None;
-        };
+        let governance = self.skill_governance_for_workspace(workspace_directory)?;
 
         let skill_names = infer_runtime_skill_names(project_dir, runtime_instruction_sources);
         if skill_names.is_empty() {
@@ -3314,6 +3315,7 @@ pub async fn resolve_prompt_parts(
             seen.insert(name.to_string());
 
             let filepath = if let Some(stripped) = name.strip_prefix("~/") {
+                // 展开用户输入的 `@~/...` 文件引用，要的是真实用户主目录，不经 agendao_home。
                 if let Some(home) = dirs::home_dir() {
                     home.join(stripped)
                 } else {

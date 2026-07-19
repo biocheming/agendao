@@ -209,6 +209,7 @@ struct PathsResponse {
 }
 
 async fn get_paths(State(state): State<Arc<ServerState>>) -> Result<Json<PathsResponse>> {
+    // 该接口报告真实用户主目录（与 config/data 并列的诊断信息），保留 dirs::home_dir。
     let home = dirs::home_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();

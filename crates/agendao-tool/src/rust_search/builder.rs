@@ -4,6 +4,7 @@ use super::filter::FilterType;
 use super::search::SearchOptions;
 use super::Search;
 
+// 展开用户手写的 `~` 搜索路径，要的是真实用户主目录，故不经 agendao_home。
 fn replace_tilde_with_home_dir(path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     if path.starts_with("~") {

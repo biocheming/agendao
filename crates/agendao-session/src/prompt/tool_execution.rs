@@ -2205,8 +2205,10 @@ mod tests {
             Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
 
         // Strict policy via config store.
-        let mut config = agendao_config::Config::default();
-        config.repair_policy = Some(agendao_types::RepairPolicy::Strict);
+        let config = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Strict),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
@@ -2264,12 +2266,14 @@ mod tests {
         let provider: Arc<dyn Provider> =
             Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
 
-        let mut config = agendao_config::Config::default();
-        config.runtime_budget = Some(agendao_config::RuntimeBudgetConfig {
-            tool_result_max_chars: 128,
-            tool_result_preview_chars: 32,
-            ..agendao_config::RuntimeBudgetConfig::default()
-        });
+        let config = agendao_config::Config {
+            runtime_budget: Some(agendao_config::RuntimeBudgetConfig {
+                tool_result_max_chars: 128,
+                tool_result_preview_chars: 32,
+                ..agendao_config::RuntimeBudgetConfig::default()
+            }),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
@@ -2340,8 +2344,10 @@ mod tests {
         let provider: Arc<dyn Provider> =
             Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
 
-        let mut config = agendao_config::Config::default();
-        config.repair_policy = Some(agendao_types::RepairPolicy::Strict);
+        let config = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Strict),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
@@ -2420,8 +2426,10 @@ mod tests {
         assistant.add_tool_call("call_fail_p", "fail_tool", serde_json::json!({}));
         session.messages_mut().push(assistant);
 
-        let mut config = agendao_config::Config::default();
-        config.repair_policy = Some(agendao_types::RepairPolicy::Permissive);
+        let config = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Permissive),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
@@ -2463,8 +2471,10 @@ mod tests {
         assistant2.add_tool_call("call_fail_s", "fail_tool", serde_json::json!({}));
         session2.messages_mut().push(assistant2);
 
-        let mut config2 = agendao_config::Config::default();
-        config2.repair_policy = Some(agendao_types::RepairPolicy::Strict);
+        let config2 = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Strict),
+            ..Default::default()
+        };
         let config_store2 = Arc::new(agendao_config::ConfigStore::new(config2));
         let ctx2 = ToolContext::new(session2.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store2);
@@ -2525,8 +2535,10 @@ mod tests {
         let provider: Arc<dyn Provider> =
             Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
         // Permissive policy so the reroute happens.
-        let mut config = agendao_config::Config::default();
-        config.repair_policy = Some(agendao_types::RepairPolicy::Permissive);
+        let config = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Permissive),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
@@ -2645,8 +2657,10 @@ mod tests {
 
         let provider: Arc<dyn Provider> =
             Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-        let mut config = agendao_config::Config::default();
-        config.repair_policy = Some(agendao_types::RepairPolicy::Permissive);
+        let config = agendao_config::Config {
+            repair_policy: Some(agendao_types::RepairPolicy::Permissive),
+            ..Default::default()
+        };
         let config_store = Arc::new(agendao_config::ConfigStore::new(config));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);

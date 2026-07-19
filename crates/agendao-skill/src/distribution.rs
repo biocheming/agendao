@@ -1,3 +1,4 @@
+use crate::util::now_unix_timestamp;
 use crate::SkillError;
 use agendao_types::{
     SkillArtifactKind, SkillArtifactRef, SkillDistributionRecord, SkillDistributionRelease,
@@ -9,7 +10,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default)]
 pub struct SkillDistributionResolver;
@@ -419,14 +419,6 @@ fn join_url_path_like(base: &str, relative: &str) -> String {
 
 fn is_http_locator(locator: &str) -> bool {
     locator.starts_with("http://") || locator.starts_with("https://")
-}
-
-fn now_unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 pub(crate) fn verify_sha256_checksum(

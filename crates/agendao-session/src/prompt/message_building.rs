@@ -300,7 +300,7 @@ impl SessionPrompt {
         let sanitized = messages
             .iter()
             .enumerate()
-            .map(|(message_idx, message)| {
+            .filter_map(|(message_idx, message)| {
                 let Content::Parts(parts) = &message.content else {
                     return Some(message.clone());
                 };
@@ -363,7 +363,6 @@ impl SessionPrompt {
 
                 Self::rebuild_hygiene_message(message, filtered_parts)
             })
-            .flatten()
             .collect();
 
         for (message_idx, message) in messages.iter().enumerate() {
@@ -374,7 +373,7 @@ impl SessionPrompt {
                 continue;
             };
             for (part_idx, part) in parts.iter().enumerate() {
-                if !part.tool_use.is_some() {
+                if part.tool_use.is_none() {
                     continue;
                 }
                 let key = (message_idx, part_idx);
@@ -1188,9 +1187,7 @@ impl SessionPrompt {
             .map(|(index, _)| index)
             .collect();
 
-        let Some(last_compaction_index) = recent_compaction_offsets.last().copied() else {
-            return None;
-        };
+        let last_compaction_index = recent_compaction_offsets.last().copied()?;
 
         let messages_since_last = messages.len().saturating_sub(last_compaction_index + 1);
         let user_turns_since_last = messages
@@ -3508,7 +3505,7 @@ mod tests {
         });
 
         let mut assistant_after = SessionMessage::assistant("ses_test");
-        assistant_after.add_text(&"A".repeat(240_000));
+        assistant_after.add_text("A".repeat(240_000));
 
         let messages = vec![compaction_message, assistant_after];
         let assessment = SessionPrompt::assess_compaction(
@@ -3542,7 +3539,7 @@ mod tests {
             "bash",
             serde_json::json!({"command": "npm test"}),
         );
-        old_assistant.add_tool_result("call_old", &"X".repeat(20_000), false);
+        old_assistant.add_tool_result("call_old", "X".repeat(20_000), false);
         session.messages_mut().push(old_assistant);
 
         session
@@ -3554,7 +3551,7 @@ mod tests {
             "bash",
             serde_json::json!({"command": "npm run build"}),
         );
-        latest_assistant.add_tool_result("call_new", &"Y".repeat(20_000), false);
+        latest_assistant.add_tool_result("call_new", "Y".repeat(20_000), false);
         session.messages_mut().push(latest_assistant);
 
         let summary = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
@@ -3632,7 +3629,7 @@ mod tests {
         session.messages_mut().push(assistant);
 
         let mut tool = SessionMessage::tool(session_id.clone());
-        tool.add_tool_result("call_round", &"R".repeat(20_000), false);
+        tool.add_tool_result("call_round", "R".repeat(20_000), false);
         session.messages_mut().push(tool);
 
         session
@@ -3678,7 +3675,7 @@ mod tests {
         session.messages_mut().push(old_assistant);
 
         let mut old_tool = SessionMessage::tool(session_id.clone());
-        old_tool.add_tool_result("call_old", &"R".repeat(20_000), false);
+        old_tool.add_tool_result("call_old", "R".repeat(20_000), false);
         session.messages_mut().push(old_tool);
 
         session
@@ -4554,7 +4551,7 @@ mod tests {
         );
 
         let result = SessionPrompt::filter_compacted_messages_from_continuity_packet(
-            &session.messages_mut(),
+            session.messages_mut(),
             1,
             &compact_msg,
         );
@@ -4608,7 +4605,7 @@ mod tests {
 
         // compaction_index past end → tail empty → only user1 in filtered.
         let result = SessionPrompt::filter_compacted_messages_from_continuity_packet(
-            &session.messages_mut(),
+            session.messages_mut(),
             3,
             &compact_msg,
         );

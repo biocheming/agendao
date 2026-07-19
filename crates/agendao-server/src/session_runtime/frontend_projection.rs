@@ -329,7 +329,7 @@ async fn project_projection_replaced(
         let sessions_guard = sessions.lock().await;
         let session = sessions_guard.get(session_id)?;
         build_session_projection_fields(
-            &session,
+            session,
             session_id,
             runtime.usage.as_ref(),
             &sessions_guard,

@@ -1,6 +1,7 @@
 use crate::discovery::{parse_skill_file, read_skill_body};
 use crate::distribution::verify_sha256_checksum;
 use crate::hub::governance_dir;
+use crate::util::now_unix_timestamp;
 use crate::write::build_skill_document;
 use crate::{SkillError, SkillRoot};
 use agendao_config::ConfigStore;
@@ -16,7 +17,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const ARTIFACT_CACHE_DIRNAME: &str = "artifact-cache";
@@ -681,14 +681,6 @@ fn parse_test_timeout_locator(locator: &str) -> Option<u64> {
         .trim()
         .strip_prefix("test+timeout://")
         .and_then(|value| value.parse::<u64>().ok())
-}
-
-fn now_unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 fn read_limited_bytes<R: Read>(

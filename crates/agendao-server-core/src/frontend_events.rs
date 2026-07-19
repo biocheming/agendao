@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant is a delta instruction: the frontend should apply this change
 /// to its local state without issuing follow-up queries.
+// 线缆协议类型：variant 负载即协议字段，Box 大 variant 会波及 serde 线格式
+// 与 server/tui 两侧全部构造/match 点，故保留现状。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendEvent {

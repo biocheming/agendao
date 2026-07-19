@@ -323,76 +323,11 @@ impl DeepMerge for WatcherConfig {
     }
 }
 
-impl AgentConfig {
-    fn merge_replace_fields(
-        &mut self,
-        name: Option<String>,
-        model: Option<String>,
-        variant: Option<String>,
-        temperature: Option<f32>,
-        top_p: Option<f32>,
-        prompt: Option<String>,
-        disable: Option<bool>,
-        description: Option<String>,
-        mode: Option<AgentMode>,
-        hidden: Option<bool>,
-        color: Option<String>,
-        steps: Option<u32>,
-        max_tokens: Option<u64>,
-        max_steps: Option<u32>,
-    ) {
-        merge_option_replace(&mut self.name, name);
-        merge_option_replace(&mut self.model, model);
-        merge_option_replace(&mut self.variant, variant);
-        merge_option_replace(&mut self.temperature, temperature);
-        merge_option_replace(&mut self.top_p, top_p);
-        merge_option_replace(&mut self.prompt, prompt);
-        merge_option_replace(&mut self.disable, disable);
-        merge_option_replace(&mut self.description, description);
-        merge_option_replace(&mut self.mode, mode);
-        merge_option_replace(&mut self.hidden, hidden);
-        merge_option_replace(&mut self.color, color);
-        merge_option_replace(&mut self.steps, steps);
-        merge_option_replace(&mut self.max_tokens, max_tokens);
-        merge_option_replace(&mut self.max_steps, max_steps);
-    }
-
-    fn merge_json_fields(&mut self, options: Option<HashMap<String, serde_json::Value>>) {
-        merge_option_json_map(&mut self.options, options);
-    }
-
-    fn merge_nested_fields(&mut self, permission: Option<PermissionConfig>) {
-        merge_option_deep(&mut self.permission, permission);
-    }
-
-    fn merge_map_fields(&mut self, tools: Option<HashMap<String, bool>>) {
-        merge_option_map_overwrite_values(&mut self.tools, tools);
-    }
-}
-
 impl DeepMerge for AgentConfig {
     fn deep_merge(&mut self, other: Self) {
-        let AgentConfig {
-            name,
-            model,
-            variant,
-            temperature,
-            top_p,
-            prompt,
-            disable,
-            description,
-            mode,
-            hidden,
-            options,
-            color,
-            steps,
-            max_steps,
-            max_tokens,
-            permission,
-            tools,
-        } = other;
-
-        self.merge_replace_fields(
+        merge_option_replace_fields!(
+            self,
+            other,
             name,
             model,
             variant,
@@ -408,9 +343,9 @@ impl DeepMerge for AgentConfig {
             max_tokens,
             max_steps,
         );
-        self.merge_json_fields(options);
-        self.merge_nested_fields(permission);
-        self.merge_map_fields(tools);
+        merge_option_json_map(&mut self.options, other.options);
+        merge_option_deep(&mut self.permission, other.permission);
+        merge_option_map_overwrite_values(&mut self.tools, other.tools);
     }
 }
 
@@ -465,92 +400,12 @@ impl DeepMerge for ModelProviderConfig {
     }
 }
 
-impl ModelConfig {
-    // Scalar capability/identity fields use straightforward overlay semantics.
-    fn merge_replace_fields(
-        &mut self,
-        name: Option<String>,
-        model: Option<String>,
-        api_key: Option<String>,
-        base_url: Option<String>,
-        tool_call: Option<bool>,
-        reasoning: Option<bool>,
-        attachment: Option<bool>,
-        temperature: Option<bool>,
-        interleaved: Option<ModelInterleavedConfig>,
-        family: Option<String>,
-        status: Option<String>,
-        release_date: Option<String>,
-        experimental: Option<bool>,
-    ) {
-        merge_option_replace(&mut self.name, name);
-        merge_option_replace(&mut self.model, model);
-        merge_option_replace(&mut self.api_key, api_key);
-        merge_option_replace(&mut self.base_url, base_url);
-        merge_option_replace(&mut self.tool_call, tool_call);
-        merge_option_replace(&mut self.reasoning, reasoning);
-        merge_option_replace(&mut self.attachment, attachment);
-        merge_option_replace(&mut self.temperature, temperature);
-        merge_option_replace(&mut self.interleaved, interleaved);
-        merge_option_replace(&mut self.family, family);
-        merge_option_replace(&mut self.status, status);
-        merge_option_replace(&mut self.release_date, release_date);
-        merge_option_replace(&mut self.experimental, experimental);
-    }
-
-    // Maps stay grouped so overwrite vs deep-merge policy is visible in one place.
-    fn merge_map_fields(
-        &mut self,
-        variants: Option<HashMap<String, ModelVariantConfig>>,
-        options: Option<HashMap<String, serde_json::Value>>,
-        headers: Option<HashMap<String, String>>,
-    ) {
-        merge_option_map_deep_values(&mut self.variants, variants);
-        merge_option_json_map(&mut self.options, options);
-        merge_option_map_overwrite_values(&mut self.headers, headers);
-    }
-
-    // Nested config blocks recurse using each child type's own merge contract.
-    fn merge_nested_fields(
-        &mut self,
-        modalities: Option<ModelModalities>,
-        cost: Option<ModelCostConfig>,
-        limit: Option<ModelLimitConfig>,
-        provider: Option<ModelProviderConfig>,
-    ) {
-        merge_option_deep(&mut self.modalities, modalities);
-        merge_option_deep(&mut self.cost, cost);
-        merge_option_deep(&mut self.limit, limit);
-        merge_option_deep(&mut self.provider, provider);
-    }
-}
-
 impl DeepMerge for ModelConfig {
     fn deep_merge(&mut self, other: Self) {
-        let ModelConfig {
-            name,
-            model,
-            api_key,
-            base_url,
-            variants,
-            tool_call,
-            modalities,
-            reasoning,
-            attachment,
-            temperature,
-            interleaved,
-            options,
-            cost,
-            limit,
-            headers,
-            family,
-            status,
-            release_date,
-            experimental,
-            provider,
-        } = other;
-
-        self.merge_replace_fields(
+        // Scalar capability/identity fields use straightforward overlay semantics.
+        merge_option_replace_fields!(
+            self,
+            other,
             name,
             model,
             api_key,
@@ -565,8 +420,12 @@ impl DeepMerge for ModelConfig {
             release_date,
             experimental,
         );
-        self.merge_map_fields(variants, options, headers);
-        self.merge_nested_fields(modalities, cost, limit, provider);
+        // Maps stay grouped so overwrite vs deep-merge policy is visible in one place.
+        merge_option_map_deep_values(&mut self.variants, other.variants);
+        merge_option_json_map(&mut self.options, other.options);
+        merge_option_map_overwrite_values(&mut self.headers, other.headers);
+        // Nested config blocks recurse using each child type's own merge contract.
+        merge_option_deep_fields!(self, other, modalities, cost, limit, provider,);
     }
 }
 
@@ -577,71 +436,12 @@ impl DeepMerge for ModelVariantConfig {
     }
 }
 
-impl ProviderConfig {
-    // Provider identity/auth fields are scalar overlays.
-    fn merge_replace_fields(
-        &mut self,
-        name: Option<String>,
-        id: Option<String>,
-        api_key: Option<String>,
-        base_url: Option<String>,
-        npm: Option<String>,
-        api_style: Option<String>,
-        api_shape: Option<String>,
-        transport: Option<String>,
-        usage_shape: Option<String>,
-        env: Option<Vec<String>>,
-    ) {
-        merge_option_replace(&mut self.name, name);
-        merge_option_replace(&mut self.id, id);
-        merge_option_replace(&mut self.api_key, api_key);
-        merge_option_replace(&mut self.base_url, base_url);
-        merge_option_replace(&mut self.npm, npm);
-        merge_option_replace(&mut self.api_style, api_style);
-        merge_option_replace(&mut self.api_shape, api_shape);
-        merge_option_replace(&mut self.transport, transport);
-        merge_option_replace(&mut self.usage_shape, usage_shape);
-        merge_option_replace(&mut self.env, env);
-    }
-
-    // Provider child model map and option bag use different merge semantics.
-    fn merge_map_fields(
-        &mut self,
-        models: Option<HashMap<String, ModelConfig>>,
-        options: Option<HashMap<String, serde_json::Value>>,
-    ) {
-        merge_option_map_deep_values(&mut self.models, models);
-        merge_option_json_map(&mut self.options, options);
-    }
-
-    // Allow/deny lists are replace-if-non-empty, not union.
-    fn merge_vec_fields(&mut self, whitelist: Vec<String>, blacklist: Vec<String>) {
-        merge_vec_replace_if_non_empty(&mut self.whitelist, whitelist);
-        merge_vec_replace_if_non_empty(&mut self.blacklist, blacklist);
-    }
-}
-
 impl DeepMerge for ProviderConfig {
     fn deep_merge(&mut self, other: Self) {
-        let ProviderConfig {
-            name,
-            id,
-            api_key,
-            base_url,
-            models,
-            options,
-            npm,
-            api_style,
-            api_shape,
-            transport,
-            usage_shape,
-            quirks,
-            env,
-            whitelist,
-            blacklist,
-        } = other;
-
-        self.merge_replace_fields(
+        // Provider identity/auth fields are scalar overlays.
+        merge_option_replace_fields!(
+            self,
+            other,
             name,
             id,
             api_key,
@@ -653,70 +453,22 @@ impl DeepMerge for ProviderConfig {
             usage_shape,
             env,
         );
-        self.merge_map_fields(models, options);
-        merge_vec_replace_if_non_empty(&mut self.quirks, quirks);
-        self.merge_vec_fields(whitelist, blacklist);
-    }
-}
-
-impl McpServer {
-    // Endpoint identity and switches overlay directly.
-    fn merge_replace_fields(
-        &mut self,
-        server_type: Option<String>,
-        url: Option<String>,
-        enabled: Option<bool>,
-        timeout: Option<u64>,
-        oauth: Option<McpOAuthConfig>,
-        client_id: Option<String>,
-        authorization_url: Option<String>,
-    ) {
-        merge_option_replace(&mut self.server_type, server_type);
-        merge_option_replace(&mut self.url, url);
-        merge_option_replace(&mut self.enabled, enabled);
-        merge_option_replace(&mut self.timeout, timeout);
-        merge_option_replace(&mut self.oauth, oauth);
-        merge_option_replace(&mut self.client_id, client_id);
-        merge_option_replace(&mut self.authorization_url, authorization_url);
-    }
-
-    // Command/args vectors are replace-if-non-empty, matching existing launch semantics.
-    fn merge_vec_fields(&mut self, command: Vec<String>, args: Vec<String>) {
-        merge_vec_replace_if_non_empty(&mut self.command, command);
-        merge_vec_replace_if_non_empty(&mut self.args, args);
-    }
-
-    // Environment/header bags overwrite by key rather than deep-merging values.
-    fn merge_map_fields(
-        &mut self,
-        environment: Option<HashMap<String, String>>,
-        headers: Option<HashMap<String, String>>,
-        env: Option<HashMap<String, String>>,
-    ) {
-        merge_option_map_overwrite_values(&mut self.environment, environment);
-        merge_option_map_overwrite_values(&mut self.headers, headers);
-        merge_option_map_overwrite_values(&mut self.env, env);
+        // Provider child model map and option bag use different merge semantics.
+        merge_option_map_deep_values(&mut self.models, other.models);
+        merge_option_json_map(&mut self.options, other.options);
+        merge_vec_replace_if_non_empty(&mut self.quirks, other.quirks);
+        // Allow/deny lists are replace-if-non-empty, not union.
+        merge_vec_replace_if_non_empty(&mut self.whitelist, other.whitelist);
+        merge_vec_replace_if_non_empty(&mut self.blacklist, other.blacklist);
     }
 }
 
 impl DeepMerge for McpServer {
     fn deep_merge(&mut self, other: Self) {
-        let McpServer {
-            server_type,
-            command,
-            environment,
-            url,
-            enabled,
-            timeout,
-            headers,
-            oauth,
-            args,
-            env,
-            client_id,
-            authorization_url,
-        } = other;
-
-        self.merge_replace_fields(
+        // Endpoint identity and switches overlay directly.
+        merge_option_replace_fields!(
+            self,
+            other,
             server_type,
             url,
             enabled,
@@ -725,8 +477,13 @@ impl DeepMerge for McpServer {
             client_id,
             authorization_url,
         );
-        self.merge_vec_fields(command, args);
-        self.merge_map_fields(environment, headers, env);
+        // Command/args vectors are replace-if-non-empty, matching existing launch semantics.
+        merge_vec_replace_if_non_empty(&mut self.command, other.command);
+        merge_vec_replace_if_non_empty(&mut self.args, other.args);
+        // Environment/header bags overwrite by key rather than deep-merging values.
+        merge_option_map_overwrite_values(&mut self.environment, other.environment);
+        merge_option_map_overwrite_values(&mut self.headers, other.headers);
+        merge_option_map_overwrite_values(&mut self.env, other.env);
     }
 }
 
@@ -1076,178 +833,11 @@ impl DeepMerge for UiPreferencesConfig {
 }
 
 impl Config {
-    // Top-level scalar selectors and toggles overwrite directly.
-    fn merge_replace_fields(
-        &mut self,
-        schema: Option<String>,
-        theme: Option<String>,
-        log_level: Option<String>,
-        scheduler_path: Option<String>,
-        task_category_path: Option<String>,
-        snapshot: Option<bool>,
-        share: Option<ShareMode>,
-        autoshare: Option<bool>,
-        autoupdate: Option<AutoUpdateMode>,
-        model: Option<String>,
-        small_model: Option<String>,
-        default_agent: Option<String>,
-        username: Option<String>,
-        layout: Option<LayoutMode>,
-        repair_policy: Option<RepairPolicy>,
-    ) {
-        merge_option_replace(&mut self.schema, schema);
-        merge_option_replace(&mut self.theme, theme);
-        merge_option_replace(&mut self.log_level, log_level);
-        merge_option_replace(&mut self.scheduler_path, scheduler_path);
-        merge_option_replace(&mut self.task_category_path, task_category_path);
-        merge_option_replace(&mut self.snapshot, snapshot);
-        merge_option_replace(&mut self.share, share);
-        merge_option_replace(&mut self.autoshare, autoshare);
-        merge_option_replace(&mut self.autoupdate, autoupdate);
-        merge_option_replace(&mut self.model, model);
-        merge_option_replace(&mut self.small_model, small_model);
-        merge_option_replace(&mut self.default_agent, default_agent);
-        merge_option_replace(&mut self.username, username);
-        merge_option_replace(&mut self.layout, layout);
-        merge_option_replace(&mut self.repair_policy, repair_policy);
-    }
-
-    // Nested config authorities recurse through their own merge contracts.
-    fn merge_nested_fields(
-        &mut self,
-        keybinds: Option<KeybindsConfig>,
-        tui: Option<TuiConfig>,
-        server: Option<ServerConfig>,
-        skills: Option<SkillsConfig>,
-        docs: Option<DocsConfig>,
-        watcher: Option<WatcherConfig>,
-        mode: Option<AgentConfigs>,
-        agent: Option<AgentConfigs>,
-        composition: Option<CompositionConfig>,
-        formatter: Option<FormatterConfig>,
-        lsp: Option<LspConfig>,
-        ui_preferences: Option<UiPreferencesConfig>,
-        permission: Option<PermissionConfig>,
-        web_search: Option<WebSearchConfig>,
-        multimodal: Option<MultimodalConfig>,
-        external_adapter: Option<ExternalAdapterConfig>,
-        voice: Option<VoiceConfig>,
-        enterprise: Option<EnterpriseConfig>,
-        compaction: Option<CompactionConfig>,
-        experimental: Option<ExperimentalConfig>,
-    ) {
-        merge_option_deep(&mut self.keybinds, keybinds);
-        merge_option_deep(&mut self.tui, tui);
-        merge_option_deep(&mut self.server, server);
-        merge_option_deep(&mut self.skills, skills);
-        merge_option_deep(&mut self.docs, docs);
-        merge_option_deep(&mut self.watcher, watcher);
-        merge_option_deep(&mut self.mode, mode);
-        merge_option_deep(&mut self.agent, agent);
-        merge_option_deep(&mut self.composition, composition);
-        merge_option_deep(&mut self.formatter, formatter);
-        merge_option_deep(&mut self.lsp, lsp);
-        merge_option_deep(&mut self.ui_preferences, ui_preferences);
-        merge_option_deep(&mut self.permission, permission);
-        merge_option_deep(&mut self.web_search, web_search);
-        merge_option_deep(&mut self.multimodal, multimodal);
-        merge_option_deep(&mut self.external_adapter, external_adapter);
-        merge_option_deep(&mut self.voice, voice);
-        merge_option_deep(&mut self.enterprise, enterprise);
-        merge_option_deep(&mut self.compaction, compaction);
-        merge_option_deep(&mut self.experimental, experimental);
-    }
-
-    // Keep map semantics centralized: some maps deep-merge children, others overwrite values.
-    fn merge_map_fields(
-        &mut self,
-        command: Option<HashMap<String, CommandConfig>>,
-        provider: Option<HashMap<String, ProviderConfig>>,
-        mcp: Option<HashMap<String, McpServerConfig>>,
-        skill_paths: HashMap<String, String>,
-        tools: Option<HashMap<String, bool>>,
-        env: Option<HashMap<String, String>>,
-        plugin_paths: HashMap<String, String>,
-        plugin: HashMap<String, PluginConfig>,
-    ) {
-        merge_option_map_deep_values(&mut self.command, command);
-        merge_option_map_deep_values(&mut self.provider, provider);
-        merge_option_map_deep_values(&mut self.mcp, mcp);
-        merge_map_overwrite_values(&mut self.skill_paths, skill_paths);
-        merge_option_map_overwrite_values(&mut self.tools, tools);
-        merge_option_map_overwrite_values(&mut self.env, env);
-        merge_map_overwrite_values(&mut self.plugin_paths, plugin_paths);
-        merge_map_overwrite_values(&mut self.plugin, plugin);
-    }
-
-    // Sequence-style fields intentionally stay separate because they are not all simple replace.
-    fn merge_sequence_fields(
-        &mut self,
-        instructions: Vec<String>,
-        disabled_providers: Vec<String>,
-        enabled_providers: Vec<String>,
-        tool_imports: Vec<String>,
-    ) {
-        append_unique_keep_order(&mut self.instructions, instructions);
-        merge_vec_replace_if_non_empty(&mut self.disabled_providers, disabled_providers);
-        merge_vec_replace_if_non_empty(&mut self.enabled_providers, enabled_providers);
-        append_unique_keep_order(&mut self.tool_imports, tool_imports);
-    }
-
     pub fn merge(&mut self, other: Config) {
-        let Config {
-            schema,
-            theme,
-            keybinds,
-            log_level,
-            tui,
-            server,
-            command,
-            skills,
-            docs,
-            scheduler_path,
-            task_category_path,
-            skill_paths,
-            watcher,
-            plugin,
-            plugin_paths,
-            tool_imports,
-            snapshot,
-            share,
-            autoshare,
-            autoupdate,
-            disabled_providers,
-            enabled_providers,
-            model,
-            small_model,
-            default_agent,
-            username,
-            mode,
-            agent,
-            composition,
-            provider,
-            mcp,
-            formatter,
-            lsp,
-            instructions,
-            layout,
-            ui_preferences,
-            permission,
-            tools,
-            web_search,
-            multimodal,
-            external_adapter,
-            voice,
-            enterprise,
-            compaction,
-            repair_policy,
-            experimental,
-            env,
-            runtime_budget,
-            ..
-        } = other;
-
-        self.merge_replace_fields(
+        // Top-level scalar selectors and toggles overwrite directly.
+        merge_option_replace_fields!(
+            self,
+            other,
             schema,
             theme,
             log_level,
@@ -1264,7 +854,10 @@ impl Config {
             layout,
             repair_policy,
         );
-        self.merge_nested_fields(
+        // Nested config authorities recurse through their own merge contracts.
+        merge_option_deep_fields!(
+            self,
+            other,
             keybinds,
             tui,
             server,
@@ -1286,28 +879,26 @@ impl Config {
             compaction,
             experimental,
         );
-        self.merge_map_fields(
-            command,
-            provider,
-            mcp,
-            skill_paths,
-            tools,
-            env,
-            plugin_paths,
-            plugin,
-        );
-        self.merge_sequence_fields(
-            instructions,
-            disabled_providers,
-            enabled_providers,
-            tool_imports,
-        );
+        // Keep map semantics centralized: some maps deep-merge children, others overwrite values.
+        merge_option_map_deep_values(&mut self.command, other.command);
+        merge_option_map_deep_values(&mut self.provider, other.provider);
+        merge_option_map_deep_values(&mut self.mcp, other.mcp);
+        merge_map_overwrite_values(&mut self.skill_paths, other.skill_paths);
+        merge_option_map_overwrite_values(&mut self.tools, other.tools);
+        merge_option_map_overwrite_values(&mut self.env, other.env);
+        merge_map_overwrite_values(&mut self.plugin_paths, other.plugin_paths);
+        merge_map_overwrite_values(&mut self.plugin, other.plugin);
+        // Sequence-style fields intentionally stay separate because they are not all simple replace.
+        append_unique_keep_order(&mut self.instructions, other.instructions);
+        merge_vec_replace_if_non_empty(&mut self.disabled_providers, other.disabled_providers);
+        merge_vec_replace_if_non_empty(&mut self.enabled_providers, other.enabled_providers);
+        append_unique_keep_order(&mut self.tool_imports, other.tool_imports);
 
         // runtime_budget: replace on present — the budget authority has no
         // per-key partial merge; a user-provided budget stanza replaces the
         // previous one wholesale.
-        if runtime_budget.is_some() {
-            self.runtime_budget = runtime_budget;
+        if other.runtime_budget.is_some() {
+            self.runtime_budget = other.runtime_budget;
         }
     }
 }

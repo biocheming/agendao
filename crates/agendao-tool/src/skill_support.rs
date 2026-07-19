@@ -536,6 +536,201 @@ pub(crate) fn attach_skill_runtime_preflight(
     report.attach_to_metadata(metadata);
 }
 
+pub(crate) fn format_loaded_skill_file_output(file: &LoadedSkillFile) -> (String, Metadata) {
+    let output = format!(
+        "<skill_file skill=\"{}\" path=\"{}\">\n\n{}\n\n</skill_file>",
+        file.skill_name, file.file_path, file.content
+    );
+
+    let mut metadata = Metadata::new();
+    metadata.insert("name".to_string(), serde_json::json!(&file.skill_name));
+    metadata.insert("file".to_string(), serde_json::json!(&file.file_path));
+    metadata.insert("file_path".to_string(), serde_json::json!(&file.file_path));
+    metadata.insert(
+        "location".to_string(),
+        serde_json::json!(file.location.to_string_lossy().to_string()),
+    );
+    metadata.insert(
+        "path".to_string(),
+        serde_json::json!(file.location.to_string_lossy().to_string()),
+    );
+    metadata.insert(
+        "file_type".to_string(),
+        serde_json::json!(file_extension(&file.file_path)),
+    );
+    metadata.insert("is_binary".to_string(), serde_json::json!(false));
+    metadata.insert(
+        "display.summary".to_string(),
+        serde_json::json!(format!("{} :: {}", file.skill_name, file.file_path)),
+    );
+
+    (output, metadata)
+}
+
+pub(crate) fn format_skill_list_output(skills: &[SkillMetaView]) -> String {
+    if skills.is_empty() {
+        return "<available_skills />".to_string();
+    }
+
+    let mut output = String::from("<available_skills>\n");
+    for skill in skills {
+        match skill.category.as_deref() {
+            Some(category) if !category.is_empty() => {
+                output.push_str(&format!(
+                    "- {} [category: {}]: {}\n",
+                    skill.name, category, skill.description
+                ));
+            }
+            _ => {
+                output.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+            }
+        }
+    }
+    output.push_str("</available_skills>");
+    output
+}
+
+pub(crate) fn format_skill_categories_output(categories: &[SkillCategoryView]) -> String {
+    if categories.is_empty() {
+        return "<skill_categories />".to_string();
+    }
+
+    let mut output = String::from("<skill_categories>\n");
+    for category in categories {
+        match category.description.as_deref() {
+            Some(description) if !description.is_empty() => output.push_str(&format!(
+                "- {} ({} skills): {}\n",
+                category.name, category.skill_count, description
+            )),
+            _ => output.push_str(&format!(
+                "- {} ({} skills)\n",
+                category.name, category.skill_count
+            )),
+        }
+    }
+    output.push_str("</skill_categories>");
+    output
+}
+
+pub(crate) fn collect_skill_categories(skills: &[SkillMetaView]) -> Vec<String> {
+    skills
+        .iter()
+        .filter_map(|skill| skill.category.clone())
+        .filter(|category| !category.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn collect_skill_category_views(skills: &[SkillMetaView]) -> Vec<SkillCategoryView> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for skill in skills {
+        if let Some(category) = skill
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            *counts.entry(category.to_string()).or_default() += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|(name, skill_count)| SkillCategoryView {
+            name,
+            skill_count,
+            description: None,
+        })
+        .collect()
+}
+
+pub(crate) fn format_supporting_files_hint(supporting_files: &[SkillFileRef]) -> String {
+    if supporting_files.is_empty() {
+        return "This skill exposes no linked files. Omit file_path and call skill_view(name) to load the main SKILL.md content.".to_string();
+    }
+
+    let preview = supporting_files
+        .iter()
+        .take(8)
+        .map(|file| format!("`{}`", file.relative_path))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if supporting_files.len() > 8 {
+        format!(" ({} total)", supporting_files.len())
+    } else {
+        String::new()
+    };
+
+    format!(
+        "Use one of the linked files listed in `supporting_files`, for example: {}{}. Call skill_view(name) without file_path to inspect the main SKILL.md first.",
+        preview, suffix
+    )
+}
+
+fn build_linked_files(
+    supporting_files: &[agendao_skill::SkillFileRef],
+) -> BTreeMap<&'static str, Vec<String>> {
+    let mut linked_files = BTreeMap::<&'static str, Vec<String>>::new();
+    for file in supporting_files {
+        let bucket = if file.relative_path.starts_with("references/") {
+            "references"
+        } else if file.relative_path.starts_with("templates/") {
+            "templates"
+        } else if file.relative_path.starts_with("assets/") {
+            "assets"
+        } else if file.relative_path.starts_with("scripts/") {
+            "scripts"
+        } else {
+            "other"
+        };
+        linked_files
+            .entry(bucket)
+            .or_default()
+            .push(file.relative_path.clone());
+    }
+
+    linked_files
+}
+
+fn file_extension(file_path: &str) -> String {
+    std::path::Path::new(file_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value))
+        .unwrap_or_default()
+}
+
+fn normalize_requested_skill_names(raw_names: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for raw_name in raw_names {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if normalized
+            .iter()
+            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+        normalized.push(trimmed.to_string());
+    }
+    normalized
+}
+
+fn metadata_string_set(metadata: &Metadata, key: &str) -> Option<HashSet<String>> {
+    let values = metadata.get(key)?.as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,199 +1134,4 @@ mod tests {
         assert!(hint.contains("scripts/search.py"));
         assert!(hint.contains("skill_view(name) without file_path"));
     }
-}
-
-pub(crate) fn format_loaded_skill_file_output(file: &LoadedSkillFile) -> (String, Metadata) {
-    let output = format!(
-        "<skill_file skill=\"{}\" path=\"{}\">\n\n{}\n\n</skill_file>",
-        file.skill_name, file.file_path, file.content
-    );
-
-    let mut metadata = Metadata::new();
-    metadata.insert("name".to_string(), serde_json::json!(&file.skill_name));
-    metadata.insert("file".to_string(), serde_json::json!(&file.file_path));
-    metadata.insert("file_path".to_string(), serde_json::json!(&file.file_path));
-    metadata.insert(
-        "location".to_string(),
-        serde_json::json!(file.location.to_string_lossy().to_string()),
-    );
-    metadata.insert(
-        "path".to_string(),
-        serde_json::json!(file.location.to_string_lossy().to_string()),
-    );
-    metadata.insert(
-        "file_type".to_string(),
-        serde_json::json!(file_extension(&file.file_path)),
-    );
-    metadata.insert("is_binary".to_string(), serde_json::json!(false));
-    metadata.insert(
-        "display.summary".to_string(),
-        serde_json::json!(format!("{} :: {}", file.skill_name, file.file_path)),
-    );
-
-    (output, metadata)
-}
-
-pub(crate) fn format_skill_list_output(skills: &[SkillMetaView]) -> String {
-    if skills.is_empty() {
-        return "<available_skills />".to_string();
-    }
-
-    let mut output = String::from("<available_skills>\n");
-    for skill in skills {
-        match skill.category.as_deref() {
-            Some(category) if !category.is_empty() => {
-                output.push_str(&format!(
-                    "- {} [category: {}]: {}\n",
-                    skill.name, category, skill.description
-                ));
-            }
-            _ => {
-                output.push_str(&format!("- {}: {}\n", skill.name, skill.description));
-            }
-        }
-    }
-    output.push_str("</available_skills>");
-    output
-}
-
-pub(crate) fn format_skill_categories_output(categories: &[SkillCategoryView]) -> String {
-    if categories.is_empty() {
-        return "<skill_categories />".to_string();
-    }
-
-    let mut output = String::from("<skill_categories>\n");
-    for category in categories {
-        match category.description.as_deref() {
-            Some(description) if !description.is_empty() => output.push_str(&format!(
-                "- {} ({} skills): {}\n",
-                category.name, category.skill_count, description
-            )),
-            _ => output.push_str(&format!(
-                "- {} ({} skills)\n",
-                category.name, category.skill_count
-            )),
-        }
-    }
-    output.push_str("</skill_categories>");
-    output
-}
-
-pub(crate) fn collect_skill_categories(skills: &[SkillMetaView]) -> Vec<String> {
-    skills
-        .iter()
-        .filter_map(|skill| skill.category.clone())
-        .filter(|category| !category.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-pub(crate) fn collect_skill_category_views(skills: &[SkillMetaView]) -> Vec<SkillCategoryView> {
-    let mut counts = BTreeMap::<String, usize>::new();
-    for skill in skills {
-        if let Some(category) = skill
-            .category
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            *counts.entry(category.to_string()).or_default() += 1;
-        }
-    }
-
-    counts
-        .into_iter()
-        .map(|(name, skill_count)| SkillCategoryView {
-            name,
-            skill_count,
-            description: None,
-        })
-        .collect()
-}
-
-pub(crate) fn format_supporting_files_hint(supporting_files: &[SkillFileRef]) -> String {
-    if supporting_files.is_empty() {
-        return "This skill exposes no linked files. Omit file_path and call skill_view(name) to load the main SKILL.md content.".to_string();
-    }
-
-    let preview = supporting_files
-        .iter()
-        .take(8)
-        .map(|file| format!("`{}`", file.relative_path))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let suffix = if supporting_files.len() > 8 {
-        format!(" ({} total)", supporting_files.len())
-    } else {
-        String::new()
-    };
-
-    format!(
-        "Use one of the linked files listed in `supporting_files`, for example: {}{}. Call skill_view(name) without file_path to inspect the main SKILL.md first.",
-        preview, suffix
-    )
-}
-
-fn build_linked_files(
-    supporting_files: &[agendao_skill::SkillFileRef],
-) -> BTreeMap<&'static str, Vec<String>> {
-    let mut linked_files = BTreeMap::<&'static str, Vec<String>>::new();
-    for file in supporting_files {
-        let bucket = if file.relative_path.starts_with("references/") {
-            "references"
-        } else if file.relative_path.starts_with("templates/") {
-            "templates"
-        } else if file.relative_path.starts_with("assets/") {
-            "assets"
-        } else if file.relative_path.starts_with("scripts/") {
-            "scripts"
-        } else {
-            "other"
-        };
-        linked_files
-            .entry(bucket)
-            .or_default()
-            .push(file.relative_path.clone());
-    }
-
-    linked_files
-}
-
-fn file_extension(file_path: &str) -> String {
-    std::path::Path::new(file_path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value))
-        .unwrap_or_default()
-}
-
-fn normalize_requested_skill_names(raw_names: &[String]) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for raw_name in raw_names {
-        let trimmed = raw_name.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if normalized
-            .iter()
-            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
-        {
-            continue;
-        }
-        normalized.push(trimmed.to_string());
-    }
-    normalized
-}
-
-fn metadata_string_set(metadata: &Metadata, key: &str) -> Option<HashSet<String>> {
-    let values = metadata.get(key)?.as_array()?;
-    Some(
-        values
-            .iter()
-            .filter_map(|value| value.as_str())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .collect(),
-    )
 }

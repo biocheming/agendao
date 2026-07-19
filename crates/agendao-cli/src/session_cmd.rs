@@ -41,7 +41,7 @@ pub(super) async fn handle_session_command(
                 })
                 .await?;
             print_provisioned_external_adapter_session(&response, format)?;
-            return Ok(());
+            Ok(())
         }
         SessionCommands::List {
             max_count,

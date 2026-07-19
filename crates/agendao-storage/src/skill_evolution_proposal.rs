@@ -208,14 +208,14 @@ impl SkillEvolutionProposalRepository {
             anyhow::bail!("proposal not found: {}", id);
         };
 
-        let allowed = match (&current.status, next) {
+        let allowed = matches!(
+            (&current.status, next),
             (ProposalStatus::Draft, ProposalStatus::Accepted)
-            | (ProposalStatus::Draft, ProposalStatus::Rejected)
-            | (ProposalStatus::Draft, ProposalStatus::Superseded)
-            | (ProposalStatus::Accepted, ProposalStatus::Rejected)
-            | (ProposalStatus::Accepted, ProposalStatus::Applied) => true,
-            _ => false,
-        };
+                | (ProposalStatus::Draft, ProposalStatus::Rejected)
+                | (ProposalStatus::Draft, ProposalStatus::Superseded)
+                | (ProposalStatus::Accepted, ProposalStatus::Rejected)
+                | (ProposalStatus::Accepted, ProposalStatus::Applied)
+        );
 
         if !allowed {
             anyhow::bail!(
@@ -297,7 +297,7 @@ pub async fn generate_skill_evolution_proposals(
         let evidence_hash = SkillEvolutionProposal::compute_evidence_hash(
             &proposal_kind,
             record.linked_skill_name.as_deref(),
-            &[record.id.0.clone()],
+            std::slice::from_ref(&record.id.0),
             &suggested_changes,
         );
 
@@ -363,7 +363,7 @@ fn build_suggested_changes(
             for trigger in &record.trigger_conditions {
                 changes.push(SuggestedSkillChange::AddTriggerCondition {
                     text: trigger.clone(),
-                    evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
+                    evidence_refs: record.evidence_refs.iter().map(format_ref).collect(),
                 });
                 title_parts.push(format!("add trigger '{}'", trigger));
             }
@@ -379,7 +379,7 @@ fn build_suggested_changes(
                 {
                     changes.push(SuggestedSkillChange::AddCoreStep {
                         text: fact.clone(),
-                        evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
+                        evidence_refs: record.evidence_refs.iter().map(format_ref).collect(),
                     });
                 }
             }
@@ -388,7 +388,7 @@ fn build_suggested_changes(
             for boundary in &record.boundaries {
                 changes.push(SuggestedSkillChange::AddBoundary {
                     text: boundary.clone(),
-                    evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
+                    evidence_refs: record.evidence_refs.iter().map(format_ref).collect(),
                 });
             }
 
@@ -406,7 +406,7 @@ fn build_suggested_changes(
                 .clone()
                 .unwrap_or_else(|| "unnamed-skill".to_string());
 
-            let when_to_use: Vec<String> = record.trigger_conditions.iter().cloned().collect();
+            let when_to_use: Vec<String> = record.trigger_conditions.to_vec();
             let core_steps: Vec<String> = record
                 .normalized_facts
                 .iter()
@@ -419,7 +419,7 @@ fn build_suggested_changes(
                 .collect();
             let boundaries: Vec<String> = record.boundaries.clone();
             let validation: Vec<String> =
-                record.evidence_refs.iter().map(|e| format_ref(e)).collect();
+                record.evidence_refs.iter().map(format_ref).collect();
 
             (
                 format!("Create skill '{}'", suggested_name),

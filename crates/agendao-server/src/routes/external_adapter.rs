@@ -366,7 +366,7 @@ async fn verify_generic_webhook_request(
         .external_adapter
         .as_ref()
         .and_then(|external| external.replay.as_ref());
-    let adapter = configured_generic_webhook_adapter(&config, &request.event)?;
+    let adapter = configured_generic_webhook_adapter(config, &request.event)?;
     enforce_binding_policy(adapter, &request.binding)?;
     let secret_ref = adapter
         .secret_ref

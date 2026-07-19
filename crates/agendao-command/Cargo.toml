@@ -21,10 +21,11 @@ agendao-agent = { path = "../agendao-agent", optional = true }
 agendao-plugin = { path = "../agendao-plugin", optional = true }
 agendao-tool = { path = "../agendao-tool", optional = true }
 agendao-types = { path = "../agendao-types" }
+agendao-util = { path = "../agendao-util" }
 agendao-permission = { path = "../agendao-permission", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["macros", "rt", "sync", "time"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"], optional = true }
 anyhow = "1.0"
 tracing = "0.1"
 pulldown-cmark = { version = "0.13", optional = true }

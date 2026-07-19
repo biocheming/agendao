@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # agendao-launcher build.rs 用 npm 构建内嵌 web 资源
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/agendao-web/package-lock.json
+      - run: npm ci --prefix apps/agendao-web
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Runtime governance gates
+        run: bash scripts/check_runtime_governance.sh
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      # 存量约 130+ 条警告(见审计 P3-2),清理完毕前仅作信息展示,不作门禁。
+      - name: cargo clippy (informational)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: true
+
+      # NOTE: 本仓库未统一 rustfmt 风格(cargo fmt --check 全库 900+ diff),
+      # 不加 fmt 门禁;若将来统一格式化再启用。
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agendao-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/agendao-web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npx vitest run

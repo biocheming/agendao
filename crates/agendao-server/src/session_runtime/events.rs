@@ -95,7 +95,7 @@ pub(crate) fn broadcast_session_reconcile(
     );
     let telemetry = state.runtime_telemetry.clone();
     tokio::spawn(async move {
-        telemetry.record_session_updated(&session_id, &source).await;
+        telemetry.record_session_updated(&session_id, source).await;
     });
 }
 

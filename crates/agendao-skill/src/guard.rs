@@ -10,17 +10,14 @@ const MAX_SKILL_MARKDOWN_BYTES: usize = 256 * 1024;
 const MAX_SUPPORTING_FILE_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SkillGuardMode {
     Off,
+    #[default]
     Warn,
     Enforce,
 }
 
-impl Default for SkillGuardMode {
-    fn default() -> Self {
-        Self::Warn
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct SkillGuardEngine {

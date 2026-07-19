@@ -1926,6 +1926,9 @@ impl SessionPrompt {
         }
     }
 
+    // 压缩执行上下文：会话/消息/三类生命周期钩子/状态文案/生命周期记录，
+    // 均为管线独立关注点，聚合成上下文结构体会掩盖数据流、收益低。
+    #[allow(clippy::too_many_arguments)]
     async fn compact_context_for_reason(
         session_id: &str,
         session: &mut Session,
@@ -1994,6 +1997,9 @@ impl SessionPrompt {
         false
     }
 
+    // 预检压缩上下文：会话/消息/提供者/编译后请求/三类钩子/请求统计，
+    // 均为管线独立关注点，聚合成上下文结构体会掩盖数据流、收益低。
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_compact_context_from_request_view(
         session_id: &str,
         session: &mut Session,
@@ -2597,11 +2603,8 @@ impl SessionPrompt {
                     .collect(),
             }
         });
-        let Some(summary) = current_sections
-            .to_prompt_surface_evidence_summary(&previous_sections, volatility_report.as_ref())
-        else {
-            return None;
-        };
+        let summary = current_sections
+            .to_prompt_surface_evidence_summary(&previous_sections, volatility_report.as_ref())?;
 
         Some(PromptSurfaceEvidence {
             severity: Self::provider_cache_severity_from_session(summary.severity),

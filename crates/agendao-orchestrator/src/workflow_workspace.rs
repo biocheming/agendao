@@ -260,7 +260,7 @@ impl WorkflowWorkspaceService {
             .any(|pattern| pattern.matches(relative_path))
     }
 
-    fn to_workdir_relative<'a>(&self, repo_relative: &'a str) -> Option<String> {
+    fn to_workdir_relative(&self, repo_relative: &str) -> Option<String> {
         let path = Path::new(repo_relative);
         let prefix = self
             .workdir_prefix

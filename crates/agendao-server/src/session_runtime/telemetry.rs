@@ -142,7 +142,7 @@ impl RuntimeTelemetryAuthority {
         match current {
             SessionRunStatus::Blocked { recheck_at, .. } => {
                 let now = chrono::Utc::now().timestamp_millis();
-                if recheck_at.map_or(true, |ts| now >= ts) {
+                if recheck_at.is_none_or(|ts| now >= ts) {
                     self.set_session_run_status(session_id, SessionRunStatus::Idle)
                         .await;
                     Some(SessionRunStatus::Idle)
@@ -162,7 +162,7 @@ impl RuntimeTelemetryAuthority {
         match current {
             SessionRunStatus::Sleeping { wake_at, .. } => {
                 let now = chrono::Utc::now().timestamp_millis();
-                if wake_at.map_or(true, |ts| now >= ts) {
+                if wake_at.is_none_or(|ts| now >= ts) {
                     self.set_session_run_status(session_id, SessionRunStatus::Idle)
                         .await;
                     Some(SessionRunStatus::Idle)

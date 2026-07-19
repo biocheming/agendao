@@ -24,7 +24,7 @@ agendao-mcp = { path = "../agendao-mcp" }
 agendao-lsp = { path = "../agendao-lsp" }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-memory = { path = "../agendao-memory" }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -38,8 +38,8 @@ async-trait = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }
 glob = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls-webpki-roots", "system-proxy"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+reqwest = { workspace = true, features = ["charset", "http2", "system-proxy"] }
+sqlx = { workspace = true }
 url = { workspace = true }
 base64 = { workspace = true }
 

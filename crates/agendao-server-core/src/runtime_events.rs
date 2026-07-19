@@ -819,9 +819,9 @@ mod tests {
             ),
         ];
         for (alias, json) in cases {
-            let event: ServerEvent =
-                serde_json::from_value(json.clone()).expect(&format!("legacy event {alias}"));
-            match alias.as_ref() {
+            let event: ServerEvent = serde_json::from_value(json.clone())
+                .unwrap_or_else(|e| panic!("legacy event {alias}: {e}"));
+            match *alias {
                 "question.replied" => assert!(matches!(
                     event, ServerEvent::QuestionResolved { request_id, .. }
                         if request_id == "q-1"

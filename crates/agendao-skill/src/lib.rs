@@ -14,6 +14,7 @@ mod methodology;
 mod runtime;
 mod sync;
 mod types;
+mod util;
 mod workspace_artifact;
 mod write;
 

@@ -16,7 +16,7 @@ agendao-permission = { path = "../agendao-permission" }
 agendao-types = { path = "../agendao-types" }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
 lsp-types = { version = "0.97", optional = true }
-tokio = { version = "1", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

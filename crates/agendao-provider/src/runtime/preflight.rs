@@ -1,5 +1,3 @@
-#![cfg(feature = "http-transport")]
-
 use crate::runtime::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::rate_limiter::{RateLimiter, RateLimiterConfig};
