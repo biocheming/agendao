@@ -3,6 +3,7 @@ import type {
   KnownProviderEntry,
   ProviderRecord,
 } from "../lib/provider";
+import type { CommandApiSpec } from "../lib/command";
 import type { ExecutionMode, ThemeId } from "../lib/webRuntime";
 import type { WorkspaceContextRecord, FileTreeNodeRecord } from "../lib/workspace";
 import type { SessionRecord } from "../lib/session";
@@ -66,6 +67,7 @@ export interface AgendaoState {
   knownProviders: KnownProviderEntry[];
   connectProtocols: ConnectProtocolOption[];
   modes: ExecutionMode[];
+  slashCommands: CommandApiSpec[];
   workspaceContext: WorkspaceContextRecord | null;
   selectedModel: string;
   selectedMode: string;
@@ -77,6 +79,7 @@ export interface AgendaoState {
   setKnownProviders: (knownProviders: SetStateFn<KnownProviderEntry[]>) => void;
   setConnectProtocols: (protocols: SetStateFn<ConnectProtocolOption[]>) => void;
   setModes: (modes: SetStateFn<ExecutionMode[]>) => void;
+  setSlashCommands: (commands: SetStateFn<CommandApiSpec[]>) => void;
   setWorkspaceContext: (context: SetStateFn<WorkspaceContextRecord | null>) => void;
   setSelectedModel: (model: SetStateFn<string>) => void;
   setSelectedMode: (mode: SetStateFn<string>) => void;

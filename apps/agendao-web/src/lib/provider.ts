@@ -99,6 +99,7 @@ export interface ManagedProviderInfoRecord {
   configured: boolean;
   known: boolean;
   has_auth: boolean;
+  disabled?: boolean;
   auth_type?: string | null;
   env?: string[];
   base_url?: string | null;
@@ -165,6 +166,13 @@ export interface RefreshProviderCatalogueResponseRecord {
   generation_after: number;
   status: "updated" | "not_modified" | "fallback_cached";
   error_message?: string | null;
+}
+
+export interface TestProviderConnectionResponseRecord {
+  ok: boolean;
+  status?: number;
+  latency_ms: number;
+  error?: string;
 }
 
 export function flattenProviderModels(providers: ProviderRecord[]) {

@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "./generated/themeTokens.generated.css";
 
 @custom-variant dark (&:is([data-theme="cobalt"] *));
 
@@ -989,7 +990,9 @@ html[data-theme="cobalt"] {
   }
 
   .roc-toolbar-label {
-    @apply text-[10px] font-semibold uppercase tracking-widest text-primary/50;
+    /* 与 roc-section-label / roc-form-label 同一微标签口径（a11y：10px 微标签
+       不再用 text-primary/50——daylight 下对比度 ~2.5:1 不达 4.5:1）。 */
+    @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
   .roc-inline-fact {
@@ -1384,4 +1387,27 @@ html[data-theme="cobalt"] {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: oklch(0.5 0 0 / 35%);
+}
+
+/* shimmer 文本扫光（替代原 motion 驱动的 background-position 动画——
+   单组件用不起整包，CSS 零依赖同等效果）。 */
+@keyframes agendao-shimmer-slide {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+
+.agendao-shimmer {
+  animation-name: agendao-shimmer-slide;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agendao-shimmer {
+    animation: none;
+  }
 }

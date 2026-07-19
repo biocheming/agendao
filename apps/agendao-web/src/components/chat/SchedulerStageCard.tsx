@@ -16,6 +16,7 @@ import {
   ChevronDownIcon,
   GitBranchPlusIcon,
   InfoIcon,
+  SquareIcon,
   WorkflowIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -33,6 +34,8 @@ interface SchedulerStageCardProps {
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
+  onAbortStage?: (stageId: string) => void;
+  stageAborting?: boolean;
 }
 
 function StructuredValue({ value }: { value: unknown }) {
@@ -130,6 +133,8 @@ export function SchedulerStageCard({
   highlighted = false,
   onNavigateStage,
   onNavigateAttachedSession,
+  onAbortStage,
+  stageAborting = false,
 }: SchedulerStageCardProps) {
   const attachedSessionId = feedAttachedSessionId(message);
   const chips = [
@@ -233,6 +238,20 @@ export function SchedulerStageCard({
             >
               <GitBranchPlusIcon className="size-3.5" />
               attached {attachedSessionId}
+            </Button>
+          ) : null}
+          {message.stage_id && message.status === "running" && onAbortStage ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="roc-action roc-action-compact gap-1.5 px-3"
+              data-testid="scheduler-stage-abort"
+              disabled={stageAborting}
+              onClick={() => onAbortStage(message.stage_id!)}
+            >
+              <SquareIcon className="size-3.5" />
+              {stageAborting ? "Aborting…" : "Abort stage"}
             </Button>
           ) : null}
         </div>

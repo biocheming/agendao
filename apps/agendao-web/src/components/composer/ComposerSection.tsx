@@ -76,6 +76,7 @@ export function ComposerSection(props: ComposerSectionProps) {
     [workspaceContext?.recent_models],
   );
   const references = useMemo(() => extractPromptReferences(composer), [composer]);
+  const slashCommands = useAgendaoStore((s) => s.slashCommands);
   const selectedAttachment =
     (selectedAttachmentIndex !== null && attachments[selectedAttachmentIndex]) ||
     attachments[attachments.length - 1] ||
@@ -95,6 +96,7 @@ export function ComposerSection(props: ComposerSectionProps) {
         recentModels={recentModels}
         selectedModel={selectedModel}
         references={references}
+        slashCommands={slashCommands}
         attachments={attachments}
         selectedAttachmentIndex={selectedAttachmentIndex}
         selectedAttachment={selectedAttachment}

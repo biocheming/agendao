@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ClipboardEvent, DragEvent } from "react";
+import type { FormEvent, ClipboardEvent, DragEvent, KeyboardEvent } from "react";
 import type { BreadcrumbProvenance } from "../../hooks/useSchedulerNavigation";
 import { AttachmentDetailsPanel } from "../chat/AttachmentDetailsPanel";
 import { ComposerContextStrip } from "./ComposerContextStrip";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 import type { ComposerAttachmentRecord } from "../../lib/composerContext";
+import {
+  filterSlashCommands,
+  slashCommandQueryFromText,
+  type CommandApiSpec,
+} from "../../lib/command";
 import { contextPressureLabel, contextPressureTone } from "../../lib/contextPressure";
 import type {
   ProviderModelCapabilitiesRecord,
@@ -13,6 +19,7 @@ import type {
   ProviderRecord,
 } from "../../lib/provider";
 import type { RecentModelRecord } from "../../lib/workspace";
+import { useI18n } from "@/i18n/I18nProvider";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
@@ -204,6 +211,7 @@ interface ComposerPanelProps {
   selectedModel: string;
   onModelChange: (value: string) => void;
   references: string[];
+  slashCommands: CommandApiSpec[];
   attachments: ComposerAttachmentRecord[];
   selectedAttachmentIndex: number | null;
   selectedAttachment: ComposerAttachmentRecord | null;
@@ -263,6 +271,7 @@ export function ComposerPanel({
   selectedModel,
   onModelChange,
   references,
+  slashCommands,
   attachments,
   selectedAttachmentIndex,
   selectedAttachment,
@@ -305,6 +314,7 @@ export function ComposerPanel({
   onPaste,
   onComposerChange,
 }: ComposerPanelProps) {
+  const { t } = useI18n();
   type NoticePhase = "idle" | "enter" | "exit";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -322,6 +332,80 @@ export function ComposerPanel({
   const [displayNotice, setDisplayNotice] = useState(composerNotice);
   const [noticePhase, setNoticePhase] = useState<NoticePhase>(composerNotice ? "enter" : "idle");
   const [countPulse, setCountPulse] = useState(false);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [slashDismissedQuery, setSlashDismissedQuery] = useState<string | null>(null);
+  const slashCaretRef = useRef<number | null>(null);
+
+  const slashQuery = slashCommandQueryFromText(composer);
+  const slashItems = useMemo(
+    () => (slashQuery === null ? [] : filterSlashCommands(slashCommands, slashQuery)),
+    [slashCommands, slashQuery],
+  );
+  const slashMenuOpen =
+    !streaming &&
+    slashQuery !== null &&
+    slashQuery !== slashDismissedQuery &&
+    slashItems.length > 0;
+  const slashMenuActiveIndex = slashItems.length
+    ? Math.min(slashActiveIndex, slashItems.length - 1)
+    : 0;
+
+  useEffect(() => {
+    setSlashActiveIndex(0);
+  }, [slashQuery]);
+
+  useLayoutEffect(() => {
+    if (slashCaretRef.current === null) return;
+    const caret = slashCaretRef.current;
+    slashCaretRef.current = null;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+  }, [composer]);
+
+  useEffect(() => {
+    if (!slashMenuOpen) return;
+    const activeItem = textareaRef.current
+      ?.closest("form")
+      ?.querySelector<HTMLElement>(
+        '[data-testid="slash-command-menu"] [data-active="true"]',
+      );
+    activeItem?.scrollIntoView?.({ block: "nearest" });
+  }, [slashMenuOpen, slashMenuActiveIndex, slashItems]);
+
+  const selectSlashCommand = (command: CommandApiSpec) => {
+    slashCaretRef.current = command.name.length + 2;
+    setSlashDismissedQuery(null);
+    setSlashActiveIndex(0);
+    onComposerChange(`/${command.name} `);
+  };
+
+  const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!slashMenuOpen) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSlashActiveIndex((current) => (current + 1) % slashItems.length);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSlashActiveIndex(
+        (current) => (current - 1 + slashItems.length) % slashItems.length,
+      );
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const command = slashItems[slashMenuActiveIndex];
+      if (command) selectSlashCommand(command);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setSlashDismissedQuery(slashQuery);
+    }
+  };
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -416,7 +500,7 @@ export function ComposerPanel({
       setCountPulse(false);
     }, 360);
     return () => window.clearTimeout(timeoutId);
-  }, [displayNotice?.id, displayNotice?.count]);
+  }, [displayNotice]);
 
   const stopVoiceCapture = () => {
     const recorder = voiceRecorderRef.current;
@@ -432,7 +516,7 @@ export function ComposerPanel({
     if (typeof window === "undefined" || typeof navigator === "undefined") return;
     if (typeof window.MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setVoiceSupported(false);
-      setVoiceError("This browser does not support direct audio capture.");
+      setVoiceError(t("composer.voiceUnsupported"));
       return;
     }
     if (voiceRecorderRef.current && voiceRecorderRef.current.state !== "inactive") {
@@ -460,7 +544,7 @@ export function ComposerPanel({
         }
       };
       recorder.onerror = () => {
-        setVoiceError("Voice capture failed while recording.");
+        setVoiceError(t("composer.voiceCaptureFailed"));
         setVoiceListening(false);
       };
       recorder.onstop = () => {
@@ -473,7 +557,7 @@ export function ComposerPanel({
         stream?.getTracks().forEach((track) => track.stop());
 
         if (!chunks.length) {
-          setVoiceError("No audio was captured.");
+          setVoiceError(t("composer.voiceNoAudioCaptured"));
           return;
         }
 
@@ -482,9 +566,9 @@ export function ComposerPanel({
         const file = new File([blob], `voice-${Date.now()}.${extension}`, {
           type: mimeType,
         });
-        void Promise.resolve(onAttachFiles([file], "Voice capture failed")).catch((error) => {
+        void Promise.resolve(onAttachFiles([file], t("composer.voiceCaptureFailedShort"))).catch((error) => {
           setVoiceError(
-            error instanceof Error ? error.message : "Voice capture failed while attaching audio.",
+            error instanceof Error ? error.message : t("composer.voiceAttachFailed"),
           );
         });
       };
@@ -494,12 +578,12 @@ export function ComposerPanel({
     } catch (error) {
       const message =
         error instanceof DOMException && error.name === "NotAllowedError"
-          ? "Microphone permission was denied."
+          ? t("composer.voiceMicDenied")
           : error instanceof DOMException && error.name === "NotFoundError"
-            ? "No microphone was found on this device."
+            ? t("composer.voiceNoMicFound")
             : error instanceof Error
               ? error.message
-              : "Voice capture failed to start.";
+              : t("composer.voiceStartFailed");
       setVoiceError(message);
       setVoiceListening(false);
     }
@@ -513,11 +597,11 @@ export function ComposerPanel({
   const activityHint = voiceError
     ? voiceError
     : composerDragActive
-      ? "Drop files or images to attach them to this turn."
+      ? t("composer.dropFilesHint")
       : voiceListening
-        ? "Recording audio. Stop capture to attach the clip to this turn."
+        ? t("composer.recordingHint")
       : streaming
-        ? "AgenDao is responding. You can stop the current turn."
+        ? t("composer.respondingHint")
         : null;
   const hasContextEstimate =
     typeof contextTokensUsed === "number" &&
@@ -540,27 +624,34 @@ export function ComposerPanel({
     contextPressureTone(contextPercentValue) === "critical"
       ? "text-destructive"
       : contextPressureTone(contextPercentValue) === "warning"
-        ? "text-amber-700 dark:text-amber-300"
+        ? "text-(--ds-warn)"
         : "text-muted-foreground",
   );
   const pricingLabel = (() => {
     const input = formatCompactPrice(inputPricePerMillion);
     const output = formatCompactPrice(outputPricePerMillion);
     if (!input || !output) return null;
-    return `$${input} in · $${output} out / 1M`;
+    return t("composer.pricingLabel", { input, output });
   })();
   const turnUsageLabel =
     typeof lastTurnInputTokens === "number" &&
     typeof lastTurnOutputTokens === "number" &&
     (lastTurnInputTokens > 0 || lastTurnOutputTokens > 0)
-      ? `Turn ↑${formatCompactTokenCount(lastTurnInputTokens)} ↓${formatCompactTokenCount(lastTurnOutputTokens)}`
+      ? t("composer.turnUsage", {
+          input: formatCompactTokenCount(lastTurnInputTokens),
+          output: formatCompactTokenCount(lastTurnOutputTokens),
+        })
       : null;
   const cacheUsageLabel =
     ((cacheReadTokens ?? 0) > 0 || (cacheMissTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0)
-      ? `Cache H/M/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheMissTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
+      ? t("composer.cacheUsage", {
+          read: formatCompactTokenCount(cacheReadTokens),
+          miss: formatCompactTokenCount(cacheMissTokens),
+          write: formatCompactTokenCount(cacheWriteTokens),
+        })
       : null;
   const contextBadgeLabel =
-    contextCount > 0 ? `${references.length} refs · ${attachments.length} files` : null;
+    contextCount > 0 ? t("composer.contextBadge", { refs: references.length, files: attachments.length }) : null;
   const contextSummary = hasContextEstimate
     ? hasContextLimit
       ? `${formatCompactTokenCount(contextTokensUsed)} / ${formatCompactTokenCount(contextTokensLimit)}`
@@ -570,7 +661,7 @@ export function ComposerPanel({
     ? selectedProviderModel.model.name?.trim() || selectedProviderModel.model.id
     : modelValue.trim()
       ? compactOptionLabel(modelValue)
-      : "Auto";
+      : t("composer.auto");
   const selectedModelSubtitle = selectedProviderModel
     ? [
         selectedProviderModel.provider.name,
@@ -581,8 +672,8 @@ export function ComposerPanel({
         .filter(Boolean)
         .join(" · ")
     : modelValue.trim()
-      ? "Selected explicitly"
-      : "Use session or workspace default";
+      ? t("composer.modelSelectedExplicitly")
+      : t("composer.modelDefaultSubtitle");
   const modelSearchValue = modelValue || AUTO_MODEL_VALUE;
   const recentProviderModels = useMemo(() => {
     const entries: Array<{ provider: ProviderRecord; model: ProviderModelRecord; key: string }> = [];
@@ -617,6 +708,14 @@ export function ComposerPanel({
       setTelemetryExpanded(true);
     }
   }, [hasDiagnostics]);
+
+  // Badge keys (vision/audio/...) map to composer.capability.* messages; the
+  // English label stays in CommandItem keywords so search behavior is unchanged.
+  const renderLocalizedModelBadge = (badge: {
+    key: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }) => renderModelBadge({ label: t(`composer.capability.${badge.key}`), icon: badge.icon });
 
   const renderModelOption = (
     provider: ProviderRecord,
@@ -667,7 +766,7 @@ export function ComposerPanel({
                   {formatCompactCapacity(model.context_window)} ctx
                 </span>
               ) : null}
-              {badges.map(renderModelBadge)}
+              {badges.map(renderLocalizedModelBadge)}
             </div>
           </div>
         </div>
@@ -742,34 +841,43 @@ export function ComposerPanel({
                 <div
                   key={displayNotice.id}
                   data-state={noticePhase}
-                  className="roc-composer-notice-chip inline-flex max-w-full items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/8 px-2.5 py-1 text-[11px] leading-5 text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] dark:text-emerald-200"
+                  className="roc-composer-notice-chip inline-flex max-w-full items-center gap-2 rounded-full border border-(--ds-ok)/20 bg-(--ds-ok)/8 px-2.5 py-1 text-[11px] leading-5 text-(--ds-ok) shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
                 >
-                  <span className="rounded-full bg-emerald-500/14 px-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
-                    Attached
+                  <span className="rounded-full bg-(--ds-ok)/14 px-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-(--ds-ok)">
+                    {t("composer.attached")}
                   </span>
                   {displayNotice.count > 1 ? (
                     <span
                       data-pulse={countPulse ? "true" : "false"}
-                      className="roc-composer-notice-count inline-flex min-w-5 items-center justify-center rounded-full bg-emerald-500/16 px-1.5 text-[10px] font-semibold tabular-nums text-emerald-700 dark:text-emerald-200"
+                      className="roc-composer-notice-count inline-flex min-w-5 items-center justify-center rounded-full bg-(--ds-ok)/16 px-1.5 text-[10px] font-semibold tabular-nums text-(--ds-ok)"
                     >
                       {displayNotice.count}
                     </span>
                   ) : null}
-                  <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <CheckIcon className="size-3.5 shrink-0 text-(--ds-ok)" />
                   <span className="truncate">{displayNotice.text}</span>
                 </div>
               </div>
             ) : null}
-            <div className={cn("px-4 pb-3 md:px-5", displayNotice ? "pt-2.5" : "pt-4")}>
+            <div className={cn("relative px-4 pb-3 md:px-5", displayNotice ? "pt-2.5" : "pt-4")}>
+              {slashMenuOpen ? (
+                <SlashCommandMenu
+                  items={slashItems}
+                  activeIndex={slashMenuActiveIndex}
+                  onActiveIndexChange={setSlashActiveIndex}
+                  onSelect={selectSlashCommand}
+                />
+              ) : null}
               <div className="flex items-end gap-2">
                 <textarea
                   ref={textareaRef}
                   data-testid="composer-input"
                   name="message"
                   rows={1}
-                  placeholder="Ask AgenDao"
+                  placeholder={t("composer.placeholder")}
                   value={composer}
                   onChange={(e) => onComposerChange(e.target.value)}
+                  onKeyDown={handleComposerKeyDown}
                   onPaste={onPaste}
                   disabled={streaming}
                   className="h-auto min-h-0 flex-1 resize-none border-0 bg-transparent py-0.5 text-[15px] leading-[1.65] text-foreground outline-none placeholder:text-muted-foreground/50"
@@ -782,7 +890,7 @@ export function ComposerPanel({
                         variant="ghost"
                         size="icon"
                         className="roc-action h-9 w-9 rounded-full"
-                        title="Add voice, file, or image"
+                        title={t("composer.addAttachment")}
                       >
                         <PlusIcon className="size-4" />
                         {contextCount > 0 ? (
@@ -799,7 +907,7 @@ export function ComposerPanel({
                         className="gap-2 text-xs"
                       >
                         <MicIcon className="size-3.5" />
-                        {voiceListening ? "Stop recording" : "Voice"}
+                        {voiceListening ? t("composer.stopRecording") : t("composer.voice")}
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={!allowFileInput}
@@ -807,7 +915,7 @@ export function ComposerPanel({
                         className="gap-2 text-xs"
                       >
                         <PaperclipIcon className="size-3.5" />
-                        File
+                        {t("composer.file")}
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={!allowImageInput}
@@ -815,7 +923,7 @@ export function ComposerPanel({
                         className="gap-2 text-xs"
                       >
                         <ImageIcon className="size-3.5" />
-                        Image
+                        {t("composer.image")}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -826,7 +934,7 @@ export function ComposerPanel({
                       size="icon"
                       className="h-9 w-9 rounded-full border-destructive/50 text-destructive hover:bg-destructive/10"
                       data-testid="composer-stop"
-                      title="Stop current response"
+                      title={t("composer.stopResponse")}
                       onClick={() => void onStopStreaming()}
                     >
                       <SquareIcon className="size-3.5 fill-current" />
@@ -836,9 +944,9 @@ export function ComposerPanel({
                       type="button"
                       variant="outline"
                       size="icon"
-                      className="h-9 w-9 rounded-full border-amber-500/55 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                      className="h-9 w-9 rounded-full border-(--ds-warn)/55 text-(--ds-warn) hover:bg-(--ds-warn)/10"
                       data-testid="composer-voice-stop"
-                      title="Stop voice recording"
+                      title={t("composer.stopVoiceRecording")}
                       onClick={stopVoiceCapture}
                     >
                       <MicIcon className="size-3.5 fill-current" />
@@ -851,7 +959,7 @@ export function ComposerPanel({
                     size="icon"
                     disabled={!composer.trim() && attachments.length === 0}
                     className="roc-primary-action h-9 w-9 rounded-full"
-                    title="Send"
+                    title={t("composer.send")}
                   >
                     <SendIcon className="size-4" />
                   </Button>
@@ -862,7 +970,7 @@ export function ComposerPanel({
             <button
               type="button"
               className="roc-composer-meter group relative h-3 w-full overflow-hidden border-t border-border/55 bg-muted/35 text-left"
-              title="Show mode, model, token usage, and context detail"
+              title={t("composer.meterTitle")}
               aria-expanded={detailsExpanded}
               onClick={() => setDetailsExpanded((value) => !value)}
             >
@@ -872,7 +980,7 @@ export function ComposerPanel({
                   contextRatio === null
                     ? "bg-muted-foreground/20"
                     : contextRatio >= 0.8
-                      ? "bg-amber-500/70"
+                      ? "bg-(--ds-warn)/70"
                       : "bg-primary/65",
                 )}
                 style={{ width: contextRatio !== null ? `${Math.max(3, Math.round(contextRatio * 100))}%` : "0%" }}
@@ -887,15 +995,15 @@ export function ComposerPanel({
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <label className="roc-toolbar-field max-w-full">
-                        <span className="roc-toolbar-label">Mode</span>
+                        <span className="roc-toolbar-label">{t("composer.mode")}</span>
                         <div className="flex min-w-0 flex-col">
                           <select
-                            aria-label="Execution mode"
+                            aria-label={t("composer.executionMode")}
                             className="roc-toolbar-select max-w-[8rem]"
                             value={modeValue}
                             onChange={(event) => onModeChange(event.target.value)}
                           >
-                            <option value="">Auto</option>
+                            <option value="">{t("composer.auto")}</option>
                             {modeOptions.map((mode) => (
                               <option key={mode.key} value={mode.key}>
                                 {compactOptionLabel(mode.label)}
@@ -907,18 +1015,18 @@ export function ComposerPanel({
                               {parseModeKind(modeValue) || "agent"}
                             </span>
                           ) : (
-                            <span className="text-[10px] leading-4 text-muted-foreground">auto-detect</span>
+                            <span className="text-[10px] leading-4 text-muted-foreground">{t("composer.autoDetect")}</span>
                           )}
                         </div>
                       </label>
 
                       <div className="roc-toolbar-field min-w-[16rem] max-w-full">
-                        <span className="roc-toolbar-label">Model</span>
+                        <span className="roc-toolbar-label">{t("composer.model")}</span>
                         <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
                           <PopoverTrigger asChild>
                             <button
                               type="button"
-                              aria-label="Model"
+                              aria-label={t("composer.model")}
                               aria-expanded={modelPickerOpen}
                               className="flex min-w-0 flex-1 items-center gap-2 border-0 bg-transparent px-0 py-0 text-left shadow-none outline-none"
                             >
@@ -933,7 +1041,7 @@ export function ComposerPanel({
                                     </div>
                                     {selectedModelBadges.length > 0 ? (
                                       <div className="flex shrink-0 items-center gap-1">
-                                        {selectedModelBadges.slice(0, 2).map(renderModelBadge)}
+                                        {selectedModelBadges.slice(0, 2).map(renderLocalizedModelBadge)}
                                       </div>
                                     ) : null}
                                   </div>
@@ -949,12 +1057,12 @@ export function ComposerPanel({
                           >
                             <Command
                               shouldFilter
-                              className="max-h-[22rem] rounded-[24px] bg-transparent"
+                              className="max-h-[22rem] rounded-4xl bg-transparent"
                             >
-                              <CommandInput placeholder="Filter models, providers, capabilities..." />
+                              <CommandInput placeholder={t("composer.filterModels")} />
                               <CommandList className="max-h-[17.5rem]">
-                                <CommandEmpty>No matching model.</CommandEmpty>
-                                <CommandGroup heading="Automatic">
+                                <CommandEmpty>{t("composer.noMatchingModel")}</CommandEmpty>
+                                <CommandGroup heading={t("composer.automatic")}>
                                   <CommandItem
                                     value={AUTO_MODEL_VALUE}
                                     keywords={["auto", "default", "automatic", "workspace", "session"]}
@@ -977,17 +1085,17 @@ export function ComposerPanel({
                                       </div>
                                       <div className="flex min-w-0 flex-1 flex-col gap-1">
                                         <span className="text-sm font-medium text-foreground">
-                                          Auto
+                                          {t("composer.auto")}
                                         </span>
                                         <span className="text-[11px] leading-[1.35] text-muted-foreground">
-                                          Use the session or workspace default model.
+                                          {t("composer.autoModelDescription")}
                                         </span>
                                       </div>
                                     </div>
                                   </CommandItem>
                                 </CommandGroup>
                                 {recentProviderModels.length > 0 ? (
-                                  <CommandGroup heading="Recent">
+                                  <CommandGroup heading={t("composer.recent")}>
                                     {recentProviderModels.map(({ provider, model, key }) =>
                                       renderModelOption(provider, model, key),
                                     )}
@@ -1018,7 +1126,7 @@ export function ComposerPanel({
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 rounded-full text-foreground"
-                          title="Stop voice recording"
+                          title={t("composer.stopVoiceRecording")}
                           onClick={stopVoiceCapture}
                         >
                           <SquareIcon className="size-3.5 fill-current" />
@@ -1044,7 +1152,7 @@ export function ComposerPanel({
                           {contextPressure ? <span className={contextPressureClass}> · {contextPressure}</span> : null}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">Awaiting telemetry</span>
+                        <span className="text-muted-foreground">{t("composer.awaitingTelemetry")}</span>
                       )}
                       {turnUsageLabel ? (
                         <span className="text-muted-foreground">{turnUsageLabel}</span>
@@ -1054,7 +1162,7 @@ export function ComposerPanel({
                       ) : null}
                       {contextCount > 0 ? (
                         <span className="roc-badge">
-                          {references.length} refs · {attachments.length} files
+                          {t("composer.contextBadge", { refs: references.length, files: attachments.length })}
                         </span>
                       ) : null}
                     </div>
@@ -1066,7 +1174,7 @@ export function ComposerPanel({
                           aria-expanded={telemetryExpanded}
                           onClick={() => setTelemetryExpanded((value) => !value)}
                         >
-                          {telemetryExpanded ? "Hide diagnostics" : "Show diagnostics"}
+                          {telemetryExpanded ? t("composer.hideDiagnostics") : t("composer.showDiagnostics")}
                         </button>
                       </div>
                     ) : null}
@@ -1074,24 +1182,24 @@ export function ComposerPanel({
                       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5">
                         {closureDiagnosticLabel ? (
                           <span
-                            className="text-amber-700 dark:text-amber-300"
-                            title="Context closure / cache coarse diagnostic"
+                            className="text-(--ds-warn)"
+                            title={t("composer.closureDiagnosticTitle")}
                           >
-                            Closure {closureDiagnosticLabel}
+                            {t("composer.closureDiagnostic", { label: closureDiagnosticLabel })}
                           </span>
                         ) : null}
                         {ingressDiagnosticLabel ? (
-                          <span className="text-muted-foreground" title="Ingress stabilization">
-                            Ingress {ingressDiagnosticLabel}
+                          <span className="text-muted-foreground" title={t("composer.ingressDiagnosticTitle")}>
+                            {t("composer.ingressDiagnostic", { label: ingressDiagnosticLabel })}
                           </span>
                         ) : null}
                         {providerDiagnosticLabel ? (
-                          <span className="text-amber-700 dark:text-amber-300" title="Provider diagnostic">
-                            Provider {providerDiagnosticLabel}
+                          <span className="text-(--ds-warn)" title={t("composer.providerDiagnosticTitle")}>
+                            {t("composer.providerDiagnostic", { label: providerDiagnosticLabel })}
                           </span>
                         ) : null}
                         {pricingLabel ? (
-                          <span className="text-muted-foreground" title="Model pricing per million tokens">
+                          <span className="text-muted-foreground" title={t("composer.pricingTitle")}>
                             {pricingLabel}
                           </span>
                         ) : null}
@@ -1100,7 +1208,7 @@ export function ComposerPanel({
                             key={`${hint.tone}:${hint.text}:${index}`}
                             className={cn(
                               hint.tone === "warning"
-                                ? "text-amber-700 dark:text-amber-300"
+                                ? "text-(--ds-warn)"
                                 : "text-muted-foreground",
                             )}
                           >
@@ -1119,7 +1227,7 @@ export function ComposerPanel({
                               permissionStatusTone === "destructive"
                                 ? "text-destructive"
                                 : permissionStatusTone === "warning"
-                                  ? "text-amber-700 dark:text-amber-300"
+                                  ? "text-(--ds-warn)"
                                   : "text-muted-foreground",
                             )}
                           >

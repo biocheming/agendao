@@ -237,40 +237,40 @@ function ChangeItem({ change }: { change: SuggestedSkillChangeRecord }) {
   switch (change.kind) {
     case "add_trigger_condition":
       return (
-        <div className="border-l-2 border-green-500 pl-2">
-          <div className="text-xs text-green-600">+ Trigger</div>
+        <div className="border-l-2 border-(--ds-ok) pl-2">
+          <div className="text-xs text-(--ds-ok)">+ Trigger</div>
           <div>{change.text}</div>
           <RefsList refs={change.evidence_refs} />
         </div>
       );
     case "add_core_step":
       return (
-        <div className="border-l-2 border-blue-500 pl-2">
-          <div className="text-xs text-blue-600">+ Step</div>
+        <div className="border-l-2 border-(--ds-info) pl-2">
+          <div className="text-xs text-(--ds-info)">+ Step</div>
           <div>{change.text}</div>
           <RefsList refs={change.evidence_refs} />
         </div>
       );
     case "add_boundary":
       return (
-        <div className="border-l-2 border-orange-500 pl-2">
-          <div className="text-xs text-orange-600">+ Boundary</div>
+        <div className="border-l-2 border-(--ds-fire) pl-2">
+          <div className="text-xs text-(--ds-fire)">+ Boundary</div>
           <div>{change.text}</div>
           <RefsList refs={change.evidence_refs} />
         </div>
       );
     case "add_validation_step":
       return (
-        <div className="border-l-2 border-purple-500 pl-2">
-          <div className="text-xs text-purple-600">+ Validation</div>
+        <div className="border-l-2 border-(--ds-water) pl-2">
+          <div className="text-xs text-(--ds-water)">+ Validation</div>
           <div>{change.text}</div>
           <RefsList refs={change.evidence_refs} />
         </div>
       );
     case "create_skill_draft":
       return (
-        <div className="border-l-2 border-teal-500 pl-2 space-y-1">
-          <div className="text-xs text-teal-600">
+        <div className="border-l-2 border-(--ds-wood) pl-2 space-y-1">
+          <div className="text-xs text-(--ds-wood)">
             = Create skill: {change.suggested_name}
           </div>
           {change.when_to_use && change.when_to_use.length > 0 && (

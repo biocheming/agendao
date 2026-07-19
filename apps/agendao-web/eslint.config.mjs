@@ -50,7 +50,7 @@ export default tseslint.config(
       },
     },
     rules: {
-      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         {
@@ -63,7 +63,7 @@ export default tseslint.config(
       "no-empty": ["error", { allowEmptyCatch: true }],
       "no-undef": "off",
       "no-useless-escape": "off",
-      "react-hooks/exhaustive-deps": "warn",
+      "react-hooks/exhaustive-deps": "error",
       "react-hooks/rules-of-hooks": "error",
     },
   },

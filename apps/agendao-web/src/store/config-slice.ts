@@ -9,6 +9,7 @@ export function createConfigSlice(
   | "knownProviders"
   | "connectProtocols"
   | "modes"
+  | "slashCommands"
   | "workspaceContext"
   | "selectedModel"
   | "selectedMode"
@@ -19,6 +20,7 @@ export function createConfigSlice(
   | "setKnownProviders"
   | "setConnectProtocols"
   | "setModes"
+  | "setSlashCommands"
   | "setWorkspaceContext"
   | "setSelectedModel"
   | "setSelectedMode"
@@ -31,6 +33,7 @@ export function createConfigSlice(
     knownProviders: [],
     connectProtocols: [],
     modes: [],
+    slashCommands: [],
     workspaceContext: null,
     selectedModel: "",
     selectedMode: "",
@@ -46,6 +49,8 @@ export function createConfigSlice(
       set({ connectProtocols: resolveSetState(connectProtocols, get().connectProtocols) }),
     setModes: (modes: SetStateFn<AgendaoState["modes"]>) =>
       set({ modes: resolveSetState(modes, get().modes) }),
+    setSlashCommands: (slashCommands: SetStateFn<AgendaoState["slashCommands"]>) =>
+      set({ slashCommands: resolveSetState(slashCommands, get().slashCommands) }),
     setWorkspaceContext: (workspaceContext: SetStateFn<AgendaoState["workspaceContext"]>) =>
       set({ workspaceContext: resolveSetState(workspaceContext, get().workspaceContext) }),
     setSelectedModel: (selectedModel: SetStateFn<string>) =>

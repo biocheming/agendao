@@ -6,11 +6,11 @@ export type ReadOnlyDiagnosticTone = "good" | "warn" | "critical" | "neutral";
 function diagnosticToneClass(tone: ReadOnlyDiagnosticTone) {
   switch (tone) {
     case "good":
-      return "bg-green-500/10 text-green-700 dark:text-green-300";
+      return "bg-(--ds-ok)/10 text-(--ds-ok)";
     case "warn":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "bg-(--ds-warn)/10 text-(--ds-warn)";
     case "critical":
-      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+      return "bg-(--ds-error)/10 text-(--ds-error)";
     default:
       return "bg-muted text-muted-foreground";
   }

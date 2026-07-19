@@ -9,6 +9,7 @@ import {
   type ComposerAttachmentRecord,
 } from "../../lib/composerContext";
 import type { BreadcrumbProvenance } from "../../hooks/useSchedulerNavigation";
+import { useI18n } from "@/i18n/I18nProvider";
 import { cn } from "@/lib/utils";
 
 interface ComposerContextStripProps {
@@ -27,9 +28,26 @@ interface ComposerContextStripProps {
 
 const toneClassMap: Record<string, string> = {
   reference: "bg-primary/10 border-primary/20",
-  workspace: "bg-green-500/10 border-green-500/20",
-  directory: "bg-amber-600/12 border-amber-600/20",
-  image: "bg-purple-500/10 border-purple-500/20",
+  workspace: "bg-(--ds-ok)/10 border-(--ds-ok)/20",
+  directory: "bg-(--ds-warn)/12 border-(--ds-warn)/20",
+  image: "bg-(--ds-water)/10 border-(--ds-water)/20",
+};
+
+// Display-only translation keys for attachmentSource()/attachmentKind() values.
+// The raw values stay in data-* attributes; only the rendered label is localized.
+const ATTACHMENT_SOURCE_KEYS: Record<string, string> = {
+  "inline image": "composer.attachmentSource.inlineImage",
+  "inline file": "composer.attachmentSource.inlineFile",
+  uploaded: "composer.attachmentSource.uploaded",
+  workspace: "composer.attachmentSource.workspace",
+  remote: "composer.attachmentSource.remote",
+};
+
+const ATTACHMENT_KIND_KEYS: Record<string, string> = {
+  directory: "composer.attachmentKind.directory",
+  image: "composer.attachmentKind.image",
+  text: "composer.attachmentKind.text",
+  file: "composer.attachmentKind.file",
 };
 
 export function ComposerContextStrip({
@@ -45,6 +63,7 @@ export function ComposerContextStrip({
   onSelectAttachment,
   onPreviewStage,
 }: ComposerContextStripProps) {
+  const { t } = useI18n();
   if (references.length === 0 && attachments.length === 0) {
     return null;
   }
@@ -59,7 +78,7 @@ export function ComposerContextStrip({
           data-testid="context-reference-chip"
           data-reference={reference}
           onClick={() => onRemoveReference(reference)}
-          title={`Remove @${reference}`}
+          title={t("composer.removeReference", { reference })}
         >
           <span className="max-w-60 overflow-hidden text-ellipsis whitespace-nowrap">@{reference}</span>
           <span className="context-chip-remove">×</span>
@@ -77,6 +96,8 @@ export function ComposerContextStrip({
               : null;
 
           const tone = attachmentTone(attachment);
+          const sourceLabel = attachmentSource(attachment);
+          const kindLabel = attachmentKind(attachment);
 
           return (
             <div
@@ -90,7 +111,7 @@ export function ComposerContextStrip({
                 "min-h-9 rounded-full border border-border bg-card/75 text-foreground inline-flex items-center gap-2.5 pr-1.5",
                 toneClassMap[tone],
                 workspaceLinked && "border-primary/30 shadow-inner shadow-primary/20",
-                selected && "border-amber-600/30 shadow-inner shadow-amber-600/20",
+                selected && "border-(--ds-wood)/30 shadow-inner shadow-(--ds-wood)/20",
               )}
               onMouseEnter={() => hoverStageId ? onPreviewStage?.(hoverStageId) : undefined}
               onMouseLeave={() => hoverStageId ? onPreviewStage?.(null) : undefined}
@@ -102,8 +123,8 @@ export function ComposerContextStrip({
                 onClick={() => onSelectAttachment(index, attachment)}
                 title={
                   attachmentWorkspacePath(attachment)
-                    ? `${attachmentWorkspacePath(attachment)}\nClick to inspect and locate in workspace`
-                    : `Inspect ${attachmentLabel(attachment)}`
+                    ? t("composer.inspectLocateAttachment", { path: attachmentWorkspacePath(attachment)! })
+                    : t("composer.inspectAttachment", { name: attachmentLabel(attachment) })
                 }
               >
                 {tone === "image" && attachment.url?.startsWith("data:image/") ? (
@@ -116,11 +137,11 @@ export function ComposerContextStrip({
                 <span className="context-chip-body">
                   <span className="max-w-60 overflow-hidden text-ellipsis whitespace-nowrap">{attachmentLabel(attachment)}</span>
                   <span className="context-chip-meta">
-                    {attachmentSource(attachment)} · {attachmentKind(attachment)}
+                    {t(ATTACHMENT_SOURCE_KEYS[sourceLabel] ?? sourceLabel)} · {t(ATTACHMENT_KIND_KEYS[kindLabel] ?? kindLabel)}
                     {attachmentWorkspacePath(attachment)
                       ? ` · ${toWorkspaceReferencePath(attachmentWorkspacePath(attachment)!, workspaceRootPath)}`
                       : ""}
-                    {provenance ? ` · ${provenance.toolCallId ? `tool ${provenance.toolCallId}` : provenance.stageId ? `stage ${provenance.stageId}` : "source trail"}` : ""}
+                    {provenance ? ` · ${provenance.toolCallId ? t("composer.provenanceTool", { id: provenance.toolCallId }) : provenance.stageId ? t("composer.provenanceStage", { id: provenance.stageId }) : t("composer.provenanceSourceTrail")}` : ""}
                   </span>
                 </span>
               </button>
@@ -129,7 +150,7 @@ export function ComposerContextStrip({
                 type="button"
                 data-testid="context-attachment-remove"
                 onClick={() => onRemoveAttachment(index)}
-                title={`Remove ${attachmentLabel(attachment)}`}
+                title={t("composer.removeAttachment", { name: attachmentLabel(attachment) })}
               >
                 <span className="context-chip-remove">×</span>
               </button>

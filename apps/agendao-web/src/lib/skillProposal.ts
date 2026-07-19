@@ -34,21 +34,21 @@ export function listSkillProposals(
   status: string = "draft"
 ): Promise<SkillEvolutionProposalRecord[]> {
   return apiJson(
-    `/api/skill/proposal/?status=${encodeURIComponent(status)}`
+    `/skill/proposal?status=${encodeURIComponent(status)}`
   );
 }
 
 export function getSkillProposal(
   id: string
 ): Promise<SkillEvolutionProposalRecord> {
-  return apiJson(`/api/skill/proposal/${encodeURIComponent(id)}`);
+  return apiJson(`/skill/proposal/${encodeURIComponent(id)}`);
 }
 
 export function updateSkillProposalStatus(
   id: string,
   status: string
 ): Promise<SkillEvolutionProposalRecord> {
-  return apiJson(`/api/skill/proposal/${encodeURIComponent(id)}/status`, {
+  return apiJson(`/skill/proposal/${encodeURIComponent(id)}/status`, {
     method: "POST",
     body: JSON.stringify({ status }),
   });

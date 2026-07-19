@@ -38,6 +38,8 @@ interface ConversationFeedPanelProps {
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
+  onAbortStage?: (stageId: string) => void;
+  stageAbortingId?: string | null;
 }
 
 function FeedLoadingState() {
@@ -136,6 +138,8 @@ export function ConversationFeedPanel({
   onToggleMessageSelected,
   onNavigateStage,
   onNavigateAttachedSession,
+  onAbortStage,
+  stageAbortingId = null,
 }: ConversationFeedPanelProps) {
   const { t } = useI18n();
   const historyLoading = useAgendaoStore((s) => s.historyLoading);
@@ -323,6 +327,8 @@ export function ConversationFeedPanel({
                 onToggleSelected={onToggleMessageSelected}
                 onNavigateStage={onNavigateStage}
                 onNavigateAttachedSession={onNavigateAttachedSession}
+                onAbortStage={onAbortStage}
+                stageAbortingId={stageAbortingId}
               />
             ))}
             {streaming ? (

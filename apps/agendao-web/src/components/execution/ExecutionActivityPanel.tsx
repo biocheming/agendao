@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "../../i18n/I18nProvider";
 import type { ConversationJumpTarget } from "../../hooks/useConversationJump";
 import type { useExecutionActivity } from "../../hooks/useExecutionActivity";
 import { partitionLiveExecutions } from "../../lib/liveExecutionState";
@@ -87,10 +88,13 @@ function currentContextEstimate(activity: ExecutionActivityState) {
   return currentContextTokensFromSources(activity.sessionUsage?.context_tokens, activeStageContext);
 }
 
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
 function formatRepairKindSummary(
   counts: SessionToolRepairTelemetrySummaryRecord["event_kinds"] | undefined,
+  t: TranslateFn,
 ) {
-  if (!counts?.length) return "No repair kinds recorded yet.";
+  if (!counts?.length) return t("execution.noRepairKinds");
   return counts
     .slice(0, 3)
     .map((count) => `${count.key} ${count.count}`)
@@ -99,17 +103,18 @@ function formatRepairKindSummary(
 
 function formatRepairToolSummary(
   tools: SessionToolRepairTelemetrySummaryRecord["tools"] | undefined,
+  t: TranslateFn,
 ) {
-  if (!tools?.length) return "No repaired tools recorded yet.";
+  if (!tools?.length) return t("execution.noRepairedTools");
   return tools
     .slice(0, 3)
     .map((tool) => {
       const parts = [`${tool.tool_name} ${tool.repaired_call_count}/${tool.call_count}`];
       if (tool.error_call_count > 0) {
-        parts.push(`err ${tool.error_call_count}`);
+        parts.push(`${t("execution.metric.err")} ${tool.error_call_count}`);
       }
       if (tool.repair_event_count > 0) {
-        parts.push(`events ${tool.repair_event_count}`);
+        parts.push(`${t("execution.metric.events")} ${tool.repair_event_count}`);
       }
       return parts.join(" · ");
     })
@@ -125,14 +130,14 @@ function liveExecutionTone(status: string) {
   switch (status) {
     case "done":
     case "result":
-      return "bg-green-500/10 text-green-700 dark:text-green-300";
+      return "bg-(--ds-ok)/10 text-(--ds-ok)";
     case "error":
-      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+      return "bg-(--ds-error)/10 text-(--ds-error)";
     case "start":
     case "running":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+      return "bg-(--ds-info)/10 text-(--ds-info)";
     default:
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "bg-(--ds-fire)/10 text-(--ds-fire)";
   }
 }
 
@@ -149,89 +154,89 @@ function liveExecutionFieldSummary(fields: OutputField[]) {
     .join(" · ");
 }
 
-function liveExecutionPreviewLabel(kind?: string | null) {
+function liveExecutionPreviewLabel(kind: string | null | undefined, t: TranslateFn) {
   switch (kind) {
     case "diff":
-      return "Preview";
+      return t("execution.previewKind.preview");
     case "code":
-      return "Output";
+      return t("execution.previewKind.output");
     default:
-      return "Detail";
+      return t("execution.previewKind.detail");
   }
 }
 
 function runTailToneClass(tone: ExecutionActivityState["runTailSummary"]["tone"]) {
   switch (tone) {
     case "success":
-      return "bg-green-500/10 text-green-700 dark:text-green-300";
+      return "bg-(--ds-ok)/10 text-(--ds-ok)";
     case "danger":
-      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+      return "bg-(--ds-error)/10 text-(--ds-error)";
     case "warning":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "bg-(--ds-warn)/10 text-(--ds-warn)";
     case "info":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+      return "bg-(--ds-info)/10 text-(--ds-info)";
     default:
       return "bg-muted text-muted-foreground";
   }
 }
 
-function eventWindowLabel(page: number, count: number, pageSize: number) {
-  if (count === 0) return `page ${page} · items 0`;
+function eventWindowLabel(page: number, count: number, pageSize: number, t: TranslateFn) {
+  if (count === 0) return t("execution.eventWindow", { page, range: "0" });
   const start = (page - 1) * pageSize + 1;
   const end = start + count - 1;
-  return `page ${page} · items ${start}-${end}`;
+  return t("execution.eventWindow", { page, range: `${start}-${end}` });
 }
 
 function stageStatusTone(status: ExecutionActivityState["stageSummaries"][number]["status"]) {
   switch (status) {
     case "running":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+      return "bg-(--ds-info)/10 text-(--ds-info)";
     case "waiting":
     case "blocked":
     case "retrying":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "bg-(--ds-warn)/10 text-(--ds-warn)";
     case "done":
-      return "bg-green-500/10 text-green-700 dark:text-green-300";
+      return "bg-(--ds-ok)/10 text-(--ds-ok)";
     case "cancelled":
     case "cancelling":
-      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+      return "bg-(--ds-error)/10 text-(--ds-error)";
     default:
       return "bg-muted text-muted-foreground";
   }
 }
 
-function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number]) {
+function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number], t: TranslateFn) {
   const parts: string[] = [];
   if (typeof stage.index === "number" && typeof stage.total === "number") {
     parts.push(`${stage.index}/${stage.total}`);
   }
   if (typeof stage.step === "number" && typeof stage.step_total === "number") {
-    parts.push(`step ${stage.step}/${stage.step_total}`);
+    parts.push(`${t("execution.metric.step")} ${stage.step}/${stage.step_total}`);
   }
   if (stage.waiting_on) {
-    parts.push(`waiting ${humanizeStageWaitTarget(stage.waiting_on) ?? stage.waiting_on}`);
+    parts.push(`${t("execution.metric.waiting")} ${humanizeStageWaitTarget(stage.waiting_on) ?? stage.waiting_on}`);
   }
   if (typeof stage.retry_attempt === "number") {
-    parts.push(`retry ${stage.retry_attempt}`);
+    parts.push(`${t("execution.metric.retry")} ${stage.retry_attempt}`);
   }
   if (stage.active_agent_count > 0) {
-    parts.push(`agents ${stage.active_agent_count}`);
+    parts.push(`${t("execution.metric.agents")} ${stage.active_agent_count}`);
   }
   if (stage.active_tool_count > 0) {
-    parts.push(`tools ${stage.active_tool_count}`);
+    parts.push(`${t("execution.metric.tools")} ${stage.active_tool_count}`);
   }
   if (stage.attached_session_count > 0) {
-    parts.push(`attached ${stage.attached_session_count}`);
+    parts.push(`${t("execution.metric.attached")} ${stage.attached_session_count}`);
   }
   if (typeof stage.skill_tree_budget === "number") {
     parts.push(
-      `budget ${stage.skill_tree_budget}${stage.skill_tree_truncated ? " truncated" : ""}`,
+      `${t("execution.metric.budget")} ${stage.skill_tree_budget}${stage.skill_tree_truncated ? t("execution.truncatedSuffix") : ""}`,
     );
   }
   if (typeof stage.context_tokens === "number") {
-    parts.push(`ctx ${formatCompactTokenCount(stage.context_tokens)}`);
+    parts.push(`${t("execution.metric.ctx")} ${formatCompactTokenCount(stage.context_tokens)}`);
   } else if (typeof stage.estimated_context_tokens === "number") {
-    parts.push(`ctx ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
+    parts.push(`${t("execution.metric.ctx")} ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
   }
   return parts;
 }
@@ -313,6 +318,7 @@ function ExecutionNodeTree({
   onSelectExecution: (id: string) => void;
   onJumpToConversation: (target: ConversationJumpTarget) => void;
 }) {
+  const { t } = useI18n();
   const jumpTarget = executionJumpTarget(node);
   const stageClass =
     selectedExecutionId === node.id
@@ -333,7 +339,7 @@ function ExecutionNodeTree({
           type="button"
           onClick={() => onSelectExecution(node.id)}
         >
-          <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", node.status === "done" ? "bg-green-500" : node.status === "running" ? "bg-blue-500 animate-pulse" : node.status === "waiting" ? "bg-amber-400" : "bg-muted-foreground/40")} />
+          <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", node.status === "done" ? "bg-(--ds-ok)" : node.status === "running" ? "bg-(--ds-info) animate-pulse" : node.status === "waiting" ? "bg-(--ds-fire)" : "bg-muted-foreground/40")} />
           <span className="text-xs text-muted-foreground font-mono">{node.kind}</span>
           <strong>{node.label || node.id}</strong>
         </button>
@@ -343,7 +349,7 @@ function ExecutionNodeTree({
             type="button"
             onClick={() => onJumpToConversation(jumpTarget)}
           >
-            Jump
+            {t("execution.jump")}
           </button>
         ) : null}
       </div>
@@ -378,6 +384,7 @@ export function ExecutionActivityPanel({
   onNavigateAttachedSession,
   onNavigateToolCall,
 }: ExecutionActivityPanelProps) {
+  const { t } = useI18n();
   const [pageDraft, setPageDraft] = useState(String(activity.activityPage));
   const contextEstimate = currentContextEstimate(activity);
   const executionJump = executionJumpTarget(activity.selectedExecution);
@@ -428,7 +435,7 @@ export function ExecutionActivityPanel({
   const renderLiveExecutionCard = (entry: typeof liveExecutions[number], key: string) => {
     const fieldSummary = liveExecutionFieldSummary(entry.fields);
     const previewText = entry.preview?.text?.trim() || null;
-    const previewLabel = liveExecutionPreviewLabel(entry.preview?.kind);
+    const previewLabel = liveExecutionPreviewLabel(entry.preview?.kind, t);
     return (
       <div key={key} className="roc-rail-item grid gap-1 bg-card/45">
         <div className="roc-rail-meta-list items-center">
@@ -443,7 +450,7 @@ export function ExecutionActivityPanel({
               className="text-xs text-muted-foreground transition-colors hover:text-primary"
               onClick={() => onNavigateStage(entry.stageId!)}
             >
-              stage {entry.stageId}
+              {t("composer.provenanceStage", { id: entry.stageId })}
             </button>
           ) : null}
           {entry.toolCallId ? (
@@ -457,7 +464,7 @@ export function ExecutionActivityPanel({
                 })
               }
             >
-              tool {entry.toolCallId}
+              {t("composer.provenanceTool", { id: entry.toolCallId })}
             </button>
           ) : null}
         </div>
@@ -486,12 +493,12 @@ export function ExecutionActivityPanel({
               {previewText}
             </pre>
             {entry.preview?.truncated ? (
-              <p className="text-[11px] text-muted-foreground">Preview truncated.</p>
+              <p className="text-[11px] text-muted-foreground">{t("execution.previewTruncated")}</p>
             ) : null}
           </div>
         ) : null}
         <p className="text-xs text-muted-foreground">
-          Updated {formatTs(entry.updatedAt)}
+          {t("session.updatedAt", { time: formatTs(entry.updatedAt) })}
         </p>
       </div>
     );
@@ -501,9 +508,9 @@ export function ExecutionActivityPanel({
     <div className="roc-panel roc-rail-panel p-5">
       <div className="roc-rail-header">
         <div className="roc-rail-headline">
-          <p className="roc-section-label">Scheduler</p>
-          <h3 className="roc-rail-title">Execution + Activity</h3>
-          <p className="roc-rail-description">Authority-backed topology, stage runtime, and recent event flow for the current session.</p>
+          <p className="roc-section-label">{t("execution.section.scheduler")}</p>
+          <h3 className="roc-rail-title">{t("execution.panelTitle")}</h3>
+          <p className="roc-rail-description">{t("execution.panelDescription")}</p>
         </div>
         <button
           className={actionButtonClass}
@@ -517,14 +524,14 @@ export function ExecutionActivityPanel({
           }
           disabled={activity.activityLoading}
         >
-          {activity.activityLoading ? "Refreshing..." : "Refresh"}
+          {activity.activityLoading ? t("execution.refreshing") : t("execution.refresh")}
         </button>
       </div>
 
       {activity.executionTopology ? (
         <>
           <div className={sideSectionClass}>
-            <p className="roc-section-label">Run Tail</p>
+            <p className="roc-section-label">{t("execution.section.runTail")}</p>
             <div className="roc-rail-item grid gap-2 bg-card/45">
               <div className="roc-rail-meta-list items-center">
                 <strong>{runTail.title}</strong>
@@ -538,103 +545,104 @@ export function ExecutionActivityPanel({
             </div>
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            Topology{" "}
+            {t("execution.topology")}{" "}
             {summarizeMetrics([
-              ["active", activity.executionTopology.active_count],
-              ["running", activity.executionTopology.running_count],
-              ["waiting", activity.executionTopology.waiting_count],
-              ["retry", activity.executionTopology.retry_count ?? 0],
-              ["cancelling", activity.executionTopology.cancelling_count ?? 0],
-              ["done", activity.executionTopology.done_count],
+              [t("execution.metric.active"), activity.executionTopology.active_count],
+              [t("execution.metric.running"), activity.executionTopology.running_count],
+              [t("execution.metric.waiting"), activity.executionTopology.waiting_count],
+              [t("execution.metric.retry"), activity.executionTopology.retry_count ?? 0],
+              [t("execution.metric.cancelling"), activity.executionTopology.cancelling_count ?? 0],
+              [t("execution.metric.done"), activity.executionTopology.done_count],
             ])}
           </p>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            Updated {formatTs(activity.executionTopology.updated_at ?? undefined)}
+            {t("session.updatedAt", { time: formatTs(activity.executionTopology.updated_at ?? undefined) })}
           </p>
           {activity.sessionUsage ? (
             <div className="grid gap-3 md:grid-cols-2">
               <div className={sideSectionClass}>
-                <p className="roc-section-label">Session Cumulative</p>
+                <p className="roc-section-label">{t("execution.section.sessionCumulative")}</p>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Tokens{" "}
+                  {t("execution.tokens")}{" "}
                   {summarizeMetrics([
-                    ["input", formatCompactTokenCount(activity.sessionUsage.input_tokens)],
-                    ["output", formatCompactTokenCount(activity.sessionUsage.output_tokens)],
-                    ["reasoning", formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)],
+                    [t("execution.metric.input"), formatCompactTokenCount(activity.sessionUsage.input_tokens)],
+                    [t("execution.metric.output"), formatCompactTokenCount(activity.sessionUsage.output_tokens)],
+                    [t("execution.metric.reasoning"), formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)],
                   ])}
                 </p>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Cache{" "}
+                  {t("execution.cache")}{" "}
                   {summarizeMetrics([
-                    ["read", formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)],
-                    ["miss", formatCompactTokenCount(activity.sessionUsage.cache_miss_tokens)],
-                    ["write", formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)],
+                    [t("execution.metric.read"), formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)],
+                    [t("execution.metric.miss"), formatCompactTokenCount(activity.sessionUsage.cache_miss_tokens)],
+                    [t("execution.metric.write"), formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)],
                   ])}
                 </p>
                 {contextEstimate ? (
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Current live context {formatCompactTokenCount(contextEstimate)}
+                    {t("session.currentLiveContext", { tokens: formatCompactTokenCount(contextEstimate) })}
                   </p>
                 ) : null}
-                <p className="text-sm text-muted-foreground leading-relaxed">Total cost {formatMoney(activity.sessionUsage.total_cost)}</p>
+                <p className="text-sm text-muted-foreground leading-relaxed">{t("execution.totalCost", { value: formatMoney(activity.sessionUsage.total_cost) })}</p>
               </div>
               <div className={sideSectionClass}>
-                <p className="roc-section-label">Active Stage</p>
+                <p className="roc-section-label">{t("execution.section.activeStage")}</p>
                 {activity.activeStageSummary ? (
                   <>
                     <div className="roc-rail-meta-list items-center">
                       <strong>{activity.activeStageSummary.stage_name}</strong>
                       <span className="roc-badge px-3 py-1 text-xs">{activity.activeStageSummary.status}</span>
                       {activity.sessionRuntime?.active_stage_count ? (
-                        <span className="text-xs text-muted-foreground">active {activity.sessionRuntime.active_stage_count}</span>
+                        <span className="text-xs text-muted-foreground">{t("execution.metric.active")} {activity.sessionRuntime.active_stage_count}</span>
                       ) : null}
                     </div>
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {summarizeMetrics([
                         typeof activity.activeStageSummary.prompt_tokens === "number"
-                          ? ["in", formatCompactTokenCount(activity.activeStageSummary.prompt_tokens)]
+                          ? [t("execution.metric.in"), formatCompactTokenCount(activity.activeStageSummary.prompt_tokens)]
                           : ["", null],
                         typeof activity.activeStageSummary.completion_tokens === "number"
-                          ? ["out", formatCompactTokenCount(activity.activeStageSummary.completion_tokens)]
+                          ? [t("execution.metric.out"), formatCompactTokenCount(activity.activeStageSummary.completion_tokens)]
                           : ["", null],
                         typeof activity.activeStageSummary.reasoning_tokens === "number"
-                          ? ["reasoning", formatCompactTokenCount(activity.activeStageSummary.reasoning_tokens)]
+                          ? [t("execution.metric.reasoning"), formatCompactTokenCount(activity.activeStageSummary.reasoning_tokens)]
                           : ["", null],
                         typeof activity.activeStageSummary.skill_tree_budget === "number"
-                          ? ["budget", activity.activeStageSummary.skill_tree_budget]
+                          ? [t("execution.metric.budget"), activity.activeStageSummary.skill_tree_budget]
                           : ["", null],
                       ])}
                     </p>
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {activity.activeStageSummary.waiting_on
-                        ? `Waiting for ${
-                            humanizeStageWaitTarget(activity.activeStageSummary.waiting_on) ??
-                            activity.activeStageSummary.waiting_on
-                          }`
-                        : humanizeStageEvent(activity.activeStageSummary.last_event) || "No active wait signal"}
+                        ? t("execution.waitingFor", {
+                            value:
+                              humanizeStageWaitTarget(activity.activeStageSummary.waiting_on) ??
+                              activity.activeStageSummary.waiting_on,
+                          })
+                        : humanizeStageEvent(activity.activeStageSummary.last_event) || t("execution.noActiveWaitSignal")}
                     </p>
                     {activity.activeStageSummary.activity ? (
                       <p className="text-sm text-muted-foreground leading-relaxed">
-                        Activity: {activity.activeStageSummary.activity.replace(/\n+/g, " · ")}
+                        {t("execution.activityPrefix", { value: activity.activeStageSummary.activity.replace(/\n+/g, " · ") })}
                       </p>
                     ) : null}
                     {activity.activeStageSummary.skill_tree_truncated ? (
-                      <p className="text-sm text-amber-700 dark:text-amber-300 leading-relaxed">
-                        Skill tree truncated{activity.activeStageSummary.skill_tree_truncation_strategy
-                          ? ` via ${activity.activeStageSummary.skill_tree_truncation_strategy}`
+                      <p className="text-sm text-(--ds-warn) leading-relaxed">
+                        {t("execution.skillTreeTruncated")}{activity.activeStageSummary.skill_tree_truncation_strategy
+                          ? t("execution.skillTreeTruncatedVia", { strategy: activity.activeStageSummary.skill_tree_truncation_strategy })
                           : ""}
                       </p>
                     ) : null}
                   </>
                 ) : (
-                  <p className="text-sm text-muted-foreground leading-relaxed">No active stage summary in telemetry.</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{t("execution.noActiveStageSummary")}</p>
                 )}
               </div>
             </div>
           ) : null}
           {currentLiveExecutions.length ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Current Tools + Skills</p>
+              <p className="roc-section-label">{t("execution.section.currentToolsSkills")}</p>
               <div className="grid gap-2">
                 {currentLiveExecutions.map((entry) => renderLiveExecutionCard(entry, entry.id))}
               </div>
@@ -642,7 +650,7 @@ export function ExecutionActivityPanel({
           ) : null}
           {recentLiveExecutionOutcomes.length ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Recent Tool Outcomes</p>
+              <p className="roc-section-label">{t("execution.section.recentToolOutcomes")}</p>
               <div className="grid gap-2">
                 {recentLiveExecutionOutcomes.map((entry) =>
                   renderLiveExecutionCard(entry, `recent-${entry.id}`),
@@ -652,10 +660,10 @@ export function ExecutionActivityPanel({
           ) : null}
           {recentTerminalStages.length ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Recent Stage Outcomes</p>
+              <p className="roc-section-label">{t("execution.section.recentStageOutcomes")}</p>
               <div className="grid gap-2">
                 {recentTerminalStages.map((stage) => {
-                  const meta = stageSummaryMeta(stage);
+                  const meta = stageSummaryMeta(stage, t);
                   return (
                     <div key={`terminal-${stage.stage_id}`} className="roc-rail-item grid gap-1 bg-card/45">
                       <div className="roc-rail-meta-list items-center">
@@ -668,7 +676,7 @@ export function ExecutionActivityPanel({
                           className="text-xs text-muted-foreground transition-colors hover:text-primary"
                           onClick={() => onNavigateStage(stage.stage_id)}
                         >
-                          stage {stage.stage_id}
+                          {t("composer.provenanceStage", { id: stage.stage_id })}
                         </button>
                       </div>
                       {meta.length ? (
@@ -691,45 +699,49 @@ export function ExecutionActivityPanel({
             <div className="grid gap-3 md:grid-cols-2">
               {sessionToolRepairSummary ? (
                 <div className={sideSectionClass}>
-                  <p className="roc-section-label">Tool Repair</p>
+                  <p className="roc-section-label">{t("execution.section.toolRepair")}</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Session-local repair activity for finalized tool calls.{" "}
+                    {t("execution.toolRepairDescription")}{" "}
                     {summarizeMetrics([
                       [
-                        "repaired",
+                        t("execution.metric.repaired"),
                         `${sessionToolRepairSummary.repaired_tool_call_count}/${sessionToolRepairSummary.total_tool_calls}`,
                       ],
-                      ["errors", sessionToolRepairSummary.error_tool_call_count],
-                      ["events", sessionToolRepairSummary.repair_event_count],
+                      [t("execution.metric.errors"), sessionToolRepairSummary.error_tool_call_count],
+                      [t("execution.metric.events"), sessionToolRepairSummary.repair_event_count],
                     ])}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Kinds {formatRepairKindSummary(sessionToolRepairSummary.event_kinds)}
+                    {t("execution.repairKindsLabel")} {formatRepairKindSummary(sessionToolRepairSummary.event_kinds, t)}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Tools {formatRepairToolSummary(sessionToolRepairSummary.tools)}
+                    {t("execution.repairToolsLabel")} {formatRepairToolSummary(sessionToolRepairSummary.tools, t)}
                   </p>
                 </div>
               ) : null}
               {modelToolRepairSummary ? (
                 <div className={sideSectionClass}>
-                  <p className="roc-section-label">Model Repair Baseline</p>
+                  <p className="roc-section-label">{t("execution.section.modelRepairBaseline")}</p>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Cross-session baseline for {modelToolRepairSummary.provider_id}/
-                    {modelToolRepairSummary.model_id}.{" "}
+                    {t("execution.modelRepairBaselineFor", {
+                      provider: modelToolRepairSummary.provider_id,
+                      model: modelToolRepairSummary.model_id,
+                    })}{" "}
                     {summarizeMetrics([
-                      ["sessions", modelToolRepairSummary.session_count],
-                      ["repaired sessions", modelToolRepairSummary.repaired_session_count],
+                      [t("execution.metric.sessions"), modelToolRepairSummary.session_count],
+                      [t("execution.metric.repairedSessions"), modelToolRepairSummary.repaired_session_count],
                     ])}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Calls {modelToolRepairSummary.repaired_tool_call_count}/
-                    {modelToolRepairSummary.total_tool_calls} repaired · errors{" "}
-                    {modelToolRepairSummary.error_tool_call_count} · events{" "}
-                    {modelToolRepairSummary.repair_event_count}
+                    {t("execution.modelRepairCalls", {
+                      repaired: modelToolRepairSummary.repaired_tool_call_count,
+                      total: modelToolRepairSummary.total_tool_calls,
+                      errors: modelToolRepairSummary.error_tool_call_count,
+                      events: modelToolRepairSummary.repair_event_count,
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Kinds {formatRepairKindSummary(modelToolRepairSummary.event_kinds)}
+                    {t("execution.repairKindsLabel")} {formatRepairKindSummary(modelToolRepairSummary.event_kinds, t)}
                   </p>
                 </div>
               ) : null}
@@ -737,14 +749,22 @@ export function ExecutionActivityPanel({
           ) : null}
           {trajectoryQuality ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Trajectory Quality</p>
+              <p className="roc-section-label">{t("execution.section.trajectoryQuality")}</p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Score {trajectoryQuality.score} · {formatTrajectoryBand(trajectoryQuality.band)} ·{" "}
-                repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls}
-                {" · "}errors {trajectoryQuality.error_tool_call_count}
+                {t("execution.trajectoryScore", {
+                  score: trajectoryQuality.score,
+                  band: formatTrajectoryBand(trajectoryQuality.band),
+                  repaired: trajectoryQuality.repaired_tool_call_count,
+                  total: trajectoryQuality.total_tool_calls,
+                  errors: trajectoryQuality.error_tool_call_count,
+                })}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Sanitizer {trajectoryQuality.sanitizer_event_count} · strict-fail {trajectoryQuality.strict_would_fail_count} · provider {trajectoryQuality.provider_diagnostic_count}
+                {t("execution.trajectorySanitizer", {
+                  sanitizer: trajectoryQuality.sanitizer_event_count,
+                  strictFail: trajectoryQuality.strict_would_fail_count,
+                  provider: trajectoryQuality.provider_diagnostic_count,
+                })}
               </p>
             </div>
           ) : null}
@@ -753,35 +773,35 @@ export function ExecutionActivityPanel({
             || (activity.telemetry?.granted_by_session_count ?? 0) > 0
             || (activity.telemetry?.last_permission_miss_count ?? 0) > 0 ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Permission Authority</p>
+              <p className="roc-section-label">{t("execution.section.permissionAuthority")}</p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["turn", activity.telemetry?.granted_by_turn_count ?? 0],
-                  ["session", activity.telemetry?.granted_by_session_count ?? 0],
-                  ["pending", activity.telemetry?.pending_permission_count ?? 0],
-                  ["misses", activity.telemetry?.last_permission_miss_count ?? 0],
+                  [t("execution.metric.turn"), activity.telemetry?.granted_by_turn_count ?? 0],
+                  [t("execution.metric.session"), activity.telemetry?.granted_by_session_count ?? 0],
+                  [t("execution.metric.pending"), activity.telemetry?.pending_permission_count ?? 0],
+                  [t("execution.metric.misses"), activity.telemetry?.last_permission_miss_count ?? 0],
                 ])}
               </p>
               {activity.telemetry?.last_permission_matcher_kind ? (
                 <p className="text-xs text-muted-foreground">
-                  Last grant: {activity.telemetry.last_permission_matcher_kind}
+                  {t("execution.lastGrant", { value: activity.telemetry.last_permission_matcher_kind })}
                 </p>
               ) : null}
             </div>
           ) : null}
           {activity.telemetry?.runtime_protocol ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Runtime Protocol</p>
+              <p className="roc-section-label">{t("execution.section.runtimeProtocol")}</p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["ingress", activity.telemetry.runtime_protocol.prompt_ingress],
-                  ["steering", activity.telemetry.runtime_protocol.steering.pending_count],
-                  ["interrupt", activity.telemetry.runtime_protocol.interrupt.phase],
+                  [t("execution.metric.ingress"), activity.telemetry.runtime_protocol.prompt_ingress],
+                  [t("execution.metric.steering"), activity.telemetry.runtime_protocol.steering.pending_count],
+                  [t("execution.metric.interrupt"), activity.telemetry.runtime_protocol.interrupt.phase],
                 ])}
               </p>
               {activity.telemetry.runtime_protocol.permission.pending ? (
                 <p className="text-xs text-muted-foreground">
-                  Permission {activity.telemetry.runtime_protocol.permission.pending_permission_id}
+                  {t("execution.permissionPendingId", { id: activity.telemetry.runtime_protocol.permission.pending_permission_id ?? "" })}
                   {activity.telemetry.runtime_protocol.permission.pending_tool
                     ? ` · ${activity.telemetry.runtime_protocol.permission.pending_tool}`
                     : ""}
@@ -789,29 +809,31 @@ export function ExecutionActivityPanel({
               ) : null}
               {activity.telemetry.runtime_protocol.steering.last_latency_ms != null ? (
                 <p className="text-xs text-muted-foreground">
-                  Steering latency {activity.telemetry.runtime_protocol.steering.last_latency_ms}ms
+                  {t("execution.steeringLatency", { ms: activity.telemetry.runtime_protocol.steering.last_latency_ms })}
                 </p>
               ) : null}
               {activity.telemetry.runtime_protocol.permission.last_pending_duration_ms != null ? (
                 <p className="text-xs text-muted-foreground">
-                  Permission pending {activity.telemetry.runtime_protocol.permission.last_pending_duration_ms}ms
+                  {t("execution.permissionPendingDuration", { ms: activity.telemetry.runtime_protocol.permission.last_pending_duration_ms })}
                 </p>
               ) : null}
             </div>
           ) : null}
           {activity.telemetry?.event_bus_telemetry ? (
             <div className={sideSectionClass}>
-              <p className="roc-section-label">Event Bus</p>
+              <p className="roc-section-label">{t("execution.section.eventBus")}</p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["sends", activity.telemetry.event_bus_telemetry.send_count],
-                  ["no-receiver", activity.telemetry.event_bus_telemetry.send_error_count],
-                  ["max receivers", activity.telemetry.event_bus_telemetry.max_receivers],
+                  [t("execution.metric.sends"), activity.telemetry.event_bus_telemetry.send_count],
+                  [t("execution.metric.noReceiver"), activity.telemetry.event_bus_telemetry.send_error_count],
+                  [t("execution.metric.maxReceivers"), activity.telemetry.event_bus_telemetry.max_receivers],
                 ])}
               </p>
               <p className="text-xs text-muted-foreground">
-                Last send {activity.telemetry.event_bus_telemetry.last_send_at_ms || 0} · last error{" "}
-                {activity.telemetry.event_bus_telemetry.last_send_error_at_ms || 0}
+                {t("execution.eventBusLast", {
+                  send: activity.telemetry.event_bus_telemetry.last_send_at_ms || 0,
+                  error: activity.telemetry.event_bus_telemetry.last_send_error_at_ms || 0,
+                })}
               </p>
             </div>
           ) : null}
@@ -819,29 +841,32 @@ export function ExecutionActivityPanel({
             <div className={sideSectionClass}>
               <div className="roc-rail-section-header">
                 <div className="roc-rail-section-copy">
-                  <p className="roc-section-label">Context Closure</p>
-                  <h4 className="roc-rail-section-title">Read-only Acceptance Contract</h4>
+                  <p className="roc-section-label">{t("execution.section.contextClosure")}</p>
+                  <h4 className="roc-rail-section-title">{t("execution.readOnlyAcceptanceContract")}</h4>
                 </div>
-                <p className="roc-rail-section-note">Authority-backed telemetry snapshot</p>
+                <p className="roc-rail-section-note">{t("execution.authorityBackedSnapshot")}</p>
               </div>
               <div className="grid gap-3 xl:grid-cols-2">
                 <ReadOnlyDiagnosticCard
-                  title="Prefix"
+                  title={t("execution.closureCard.prefix")}
                   statusLabel={contextClosurePrefixStatusLabel(contextClosure.prefix_stability)}
                   statusTone={
                     contextClosure.prefix_stability.prefix_change_detected ? "warn" : "good"
                   }
                 >
                   <p className="text-xs text-muted-foreground">
-                    Basis API view · {contextClosure.prefix_stability.api_view_messages} messages · trimmed {contextClosure.prefix_stability.trimmed_model_visible_messages}
+                    {t("execution.prefixBasis", {
+                      messages: contextClosure.prefix_stability.api_view_messages,
+                      trimmed: contextClosure.prefix_stability.trimmed_model_visible_messages,
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {contextClosure.prefix_stability.explanation || "No prefix instability explanation recorded."}
+                    {contextClosure.prefix_stability.explanation || t("execution.noPrefixExplanation")}
                   </p>
                 </ReadOnlyDiagnosticCard>
 
                 <ReadOnlyDiagnosticCard
-                  title="Boundary"
+                  title={t("execution.closureCard.boundary")}
                   statusLabel={contextClosureBoundaryStatusLabel(contextClosure.compaction_boundary)}
                   statusTone={
                     contextClosure.compaction_boundary.blocking
@@ -861,27 +886,37 @@ export function ExecutionActivityPanel({
                   }
                 >
                   <p className="text-xs text-muted-foreground">
-                    Detail {contextClosure.compaction_boundary.phase || "--"} · {contextClosure.compaction_boundary.trigger || "--"} · {contextClosure.compaction_boundary.reason || "--"}
+                    {t("execution.boundaryDetail", {
+                      phase: contextClosure.compaction_boundary.phase || "--",
+                      trigger: contextClosure.compaction_boundary.trigger || "--",
+                      reason: contextClosure.compaction_boundary.reason || "--",
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Request {typeof contextClosure.compaction_boundary.request_pressure_percent === "number"
-                      ? `${contextClosure.compaction_boundary.request_pressure_percent}%`
-                      : "--"} · live {typeof contextClosure.compaction_boundary.live_pressure_percent === "number"
-                      ? `${contextClosure.compaction_boundary.live_pressure_percent}%`
-                      : "--"} · attempted {contextClosure.compaction_boundary.compaction_attempted ? "yes" : "no"} · succeeded {contextClosure.compaction_boundary.compaction_succeeded ? "yes" : "no"} · blocking {contextClosure.compaction_boundary.blocking ? "yes" : "no"}
+                    {t("execution.boundaryRequest", {
+                      request: typeof contextClosure.compaction_boundary.request_pressure_percent === "number"
+                        ? `${contextClosure.compaction_boundary.request_pressure_percent}%`
+                        : "--",
+                      live: typeof contextClosure.compaction_boundary.live_pressure_percent === "number"
+                        ? `${contextClosure.compaction_boundary.live_pressure_percent}%`
+                        : "--",
+                      attempted: contextClosure.compaction_boundary.compaction_attempted ? t("session.yes") : t("session.no"),
+                      succeeded: contextClosure.compaction_boundary.compaction_succeeded ? t("session.yes") : t("session.no"),
+                      blocking: contextClosure.compaction_boundary.blocking ? t("session.yes") : t("session.no"),
+                    })}
                   </p>
                 </ReadOnlyDiagnosticCard>
 
                 {compactionContinuity ? (
                   <CompactionContinuityCard
                     continuity={compactionContinuity}
-                    title="Continuity"
+                    title={t("execution.closureCard.continuity")}
                     className="roc-rail-item bg-card/45 p-4"
                   />
                 ) : null}
 
                 <ReadOnlyDiagnosticCard
-                  title="Cache"
+                  title={t("execution.closureCard.cache")}
                   statusLabel={contextClosureCacheStatusLabel(
                     contextClosure.cache_explainability,
                   )}
@@ -894,37 +929,42 @@ export function ExecutionActivityPanel({
                   }
                 >
                   <p className="text-xs text-muted-foreground">
-                    Source {contextClosureExplainabilitySourceLabel(
-                      contextClosure.cache_explainability.source,
-                    )} · severity {contextClosureSeverityLabel(
-                      contextClosure.cache_explainability.severity,
-                    )}
+                    {t("execution.cacheSource", {
+                      source: contextClosureExplainabilitySourceLabel(
+                        contextClosure.cache_explainability.source,
+                      ),
+                      severity: contextClosureSeverityLabel(
+                        contextClosure.cache_explainability.severity,
+                      ),
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {contextClosure.cache_explainability.explanation ||
-                      "No cache explainability note recorded."}
+                      t("execution.noCacheNote")}
                   </p>
                   {promptSurfaceEvidence?.changed_fields?.length ? (
                     <p className="text-xs text-muted-foreground">
-                      Evidence prompt surface {promptSurfaceEvidence.changed_fields.join(", ")}
+                      {t("execution.evidencePromptSurface", { fields: promptSurfaceEvidence.changed_fields.join(", ") })}
                     </p>
                   ) : null}
                   {typeof promptSurfaceEvidence?.stable_prefix_change === "boolean" ? (
                     <p className="text-xs text-muted-foreground">
-                      Prefix {promptSurfaceEvidence.stable_prefix_change
-                        ? "stable prefix changed"
-                        : "stable prefix held"}
+                      {t("execution.prefixState", {
+                        state: promptSurfaceEvidence.stable_prefix_change
+                          ? t("execution.prefixState.changed")
+                          : t("execution.prefixState.held"),
+                      })}
                     </p>
                   ) : null}
                   {promptSurfaceEvidence?.dynamic_overlay_reasons?.length ? (
                     <p className="text-xs text-muted-foreground">
-                      Overlay {promptSurfaceEvidence.dynamic_overlay_reasons.join(" · ")}
+                      {t("execution.overlayReasons", { reasons: promptSurfaceEvidence.dynamic_overlay_reasons.join(" · ") })}
                     </p>
                   ) : null}
                 </ReadOnlyDiagnosticCard>
 
                 <ReadOnlyDiagnosticCard
-                  title="Isolation"
+                  title={t("execution.closureCard.isolation")}
                   statusLabel={contextClosureIsolationStatusLabel(
                     contextClosure.child_history_isolation,
                   )}
@@ -937,18 +977,25 @@ export function ExecutionActivityPanel({
                   }
                 >
                   <p className="text-xs text-muted-foreground">
-                    Usage attached subtree {contextClosure.child_history_isolation.attached_subtree_session_count} · subtree cumulative {formatCompactTokenCount(
-                      contextClosure.child_history_isolation.attached_subtree_cumulative_tokens,
-                    )} · owner live {typeof contextClosure.child_history_isolation.owner_live_context_tokens === "number"
-                      ? formatCompactTokenCount(
-                          contextClosure.child_history_isolation.owner_live_context_tokens,
-                        )
-                      : "--"}
+                    {t("execution.isolationUsage", {
+                      attached: contextClosure.child_history_isolation.attached_subtree_session_count,
+                      subtree: formatCompactTokenCount(
+                        contextClosure.child_history_isolation.attached_subtree_cumulative_tokens,
+                      ),
+                      owner: typeof contextClosure.child_history_isolation.owner_live_context_tokens === "number"
+                        ? formatCompactTokenCount(
+                            contextClosure.child_history_isolation.owner_live_context_tokens,
+                          )
+                        : "--",
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Scope owner-local live prefix {contextClosure.child_history_isolation.owner_local_live_prefix ? "yes" : "no"} · workflow cumulative {formatCompactTokenCount(
-                      contextClosure.child_history_isolation.workflow_cumulative_tokens,
-                    )}
+                    {t("execution.isolationScope", {
+                      ownerLocal: contextClosure.child_history_isolation.owner_local_live_prefix ? t("session.yes") : t("session.no"),
+                      workflow: formatCompactTokenCount(
+                        contextClosure.child_history_isolation.workflow_cumulative_tokens,
+                      ),
+                    })}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {contextClosure.child_history_isolation.explanation}
@@ -961,55 +1008,70 @@ export function ExecutionActivityPanel({
             <div className={sideSectionClass}>
               <div className="roc-rail-section-header">
                 <div className="roc-rail-section-copy">
-                  <p className="roc-section-label">Memory Runtime</p>
-                  <h4 className="roc-rail-section-title">{sessionMemory.workspace_mode} workspace explain</h4>
+                  <p className="roc-section-label">{t("execution.section.memoryRuntime")}</p>
+                  <h4 className="roc-rail-section-title">{t("execution.workspaceExplain", { mode: sessionMemory.workspace_mode })}</h4>
                 </div>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["snapshot", sessionMemory.frozen_snapshot_items],
-                  ["prefetch", sessionMemory.last_prefetch_items],
-                  ["rule hits", sessionMemoryRecentRuleHits.length],
+                  [t("execution.metric.snapshot"), sessionMemory.frozen_snapshot_items],
+                  [t("execution.metric.prefetch"), sessionMemory.last_prefetch_items],
+                  [t("execution.metric.ruleHits"), sessionMemoryRecentRuleHits.length],
                   [
-                    "session writes",
+                    t("execution.metric.sessionWrites"),
                     sessionMemory.candidate_count + sessionMemory.validated_count + sessionMemory.rejected_count,
                   ],
                 ])}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["warnings", sessionMemory.warning_count],
-                  ["methodology", sessionMemory.methodology_candidate_count],
-                  ["skill targets", sessionMemory.derived_skill_candidate_count],
-                  ["linked skills", sessionMemory.linked_skill_count],
+                  [t("execution.metric.warnings"), sessionMemory.warning_count],
+                  [t("execution.metric.methodology"), sessionMemory.methodology_candidate_count],
+                  [t("execution.metric.skillTargets"), sessionMemory.derived_skill_candidate_count],
+                  [t("execution.metric.linkedSkills"), sessionMemory.linked_skill_count],
                 ])}
                 {sessionMemory.latest_consolidation_run
-                  ? ` · consolidation ${sessionMemory.latest_consolidation_run.run_id}`
+                  ? t("execution.consolidationSuffix", { id: sessionMemory.latest_consolidation_run.run_id })
                   : ""}
               </p>
               <div className="grid gap-1 text-sm text-muted-foreground">
-                <p>Workspace key: {sessionMemory.workspace_key}</p>
-                <p>Frozen snapshot generated: {formatDateTime(sessionMemory.frozen_snapshot_generated_at ?? undefined)}</p>
-                <p>Last prefetch generated: {formatDateTime(sessionMemory.last_prefetch_generated_at ?? undefined)}</p>
+                <p>{t("session.workspaceKey", { value: sessionMemory.workspace_key })}</p>
+                <p>{t("session.frozenSnapshotGenerated", { value: formatDateTime(sessionMemory.frozen_snapshot_generated_at ?? undefined) })}</p>
+                <p>{t("session.lastPrefetchGenerated", { value: formatDateTime(sessionMemory.last_prefetch_generated_at ?? undefined) })}</p>
                 <p>
-                  Last prefetch query: {sessionMemory.last_prefetch_query?.trim() || "No query captured"}
+                  {t("session.lastPrefetchQuery", { value: sessionMemory.last_prefetch_query?.trim() || t("session.noQueryCaptured") })}
                 </p>
                 <p>
-                  Session memory records: candidate {sessionMemory.candidate_count} · validated {sessionMemory.validated_count} · rejected {sessionMemory.rejected_count}
+                  {t("execution.sessionMemoryRecords", {
+                    candidate: sessionMemory.candidate_count,
+                    validated: sessionMemory.validated_count,
+                    rejected: sessionMemory.rejected_count,
+                  })}
                 </p>
                 <p>
-                  Validation pressure: warnings {sessionMemory.warning_count} · methodology {sessionMemory.methodology_candidate_count} · skill targets {sessionMemory.derived_skill_candidate_count}
+                  {t("session.validationPressure", {
+                    warnings: sessionMemory.warning_count,
+                    methodology: sessionMemory.methodology_candidate_count,
+                    skillTargets: sessionMemory.derived_skill_candidate_count,
+                  })}
                 </p>
                 <p>
-                  Skill linkage: linked {sessionMemory.linked_skill_count} · feedback lessons {sessionMemory.skill_feedback_lesson_count}
+                  {t("execution.skillLinkage", {
+                    linked: sessionMemory.linked_skill_count,
+                    lessons: sessionMemory.skill_feedback_lesson_count,
+                  })}
                 </p>
                 <p>
-                  Retrieval: runs {sessionMemory.retrieval_run_count} · hits {sessionMemory.retrieval_hit_count} · used {sessionMemory.retrieval_use_count}
+                  {t("session.retrieval", {
+                    runs: sessionMemory.retrieval_run_count,
+                    hits: sessionMemory.retrieval_hit_count,
+                    used: sessionMemory.retrieval_use_count,
+                  })}
                 </p>
               </div>
               {recentSkillRecords.length ? (
                 <div className="grid gap-2">
-                  <p className="roc-section-label">Recent Skill-Linked Memory</p>
+                  <p className="roc-section-label">{t("execution.section.recentSkillLinkedMemory")}</p>
                   <div className="grid gap-1 text-sm text-muted-foreground">
                     {recentSkillRecords.slice(0, 4).map((item) => (
                       <p key={memoryRecordIdValue(item.id)}>
@@ -1022,18 +1084,22 @@ export function ExecutionActivityPanel({
               {sessionMemory.latest_consolidation_run ? (
                 <div className="grid gap-1 text-sm text-muted-foreground">
                   <p>
-                    Latest consolidation finished {formatDateTime(sessionMemory.latest_consolidation_run.finished_at ?? sessionMemory.latest_consolidation_run.started_at)}
+                    {t("execution.latestConsolidationFinished", { time: formatDateTime(sessionMemory.latest_consolidation_run.finished_at ?? sessionMemory.latest_consolidation_run.started_at) })}
                   </p>
                   <p>
-                    Merged {sessionMemory.latest_consolidation_run.merged_count} · promoted {sessionMemory.latest_consolidation_run.promoted_count} · conflicts {sessionMemory.latest_consolidation_run.conflict_count}
+                    {t("session.consolidationSummary", {
+                      merged: sessionMemory.latest_consolidation_run.merged_count,
+                      promoted: sessionMemory.latest_consolidation_run.promoted_count,
+                      conflicts: sessionMemory.latest_consolidation_run.conflict_count,
+                    })}
                   </p>
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground leading-relaxed">No consolidation run has been recorded for this workspace yet.</p>
+                <p className="text-sm text-muted-foreground leading-relaxed">{t("execution.noConsolidationRun")}</p>
               )}
               {sessionMemoryRecentRuleHits.length ? (
                 <div className="grid gap-2">
-                  <p className="roc-section-label">Recent Rule Hits</p>
+                  <p className="roc-section-label">{t("execution.section.recentRuleHits")}</p>
                   <div className="grid gap-2 md:grid-cols-2">
                     {sessionMemoryRecentRuleHits.map((hit) => (
                       <div key={hit.id} className={sideItemCardClass}>
@@ -1042,7 +1108,7 @@ export function ExecutionActivityPanel({
                           {hit.memory_id ? <span className="text-xs text-muted-foreground">{memoryRecordIdValue(hit.memory_id)}</span> : null}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          {hit.detail || "No detail attached"}
+                          {hit.detail || t("session.noDetailAttached")}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {formatDateTime(hit.created_at)}
@@ -1057,8 +1123,8 @@ export function ExecutionActivityPanel({
         </>
       ) : (
         <div className="roc-rail-empty">
-          <div className="roc-section-label">Scheduler</div>
-          <p className="text-sm font-semibold tracking-tight text-foreground">No scheduler topology loaded yet.</p>
+          <div className="roc-section-label">{t("execution.section.scheduler")}</div>
+          <p className="text-sm font-semibold tracking-tight text-foreground">{t("execution.noSchedulerTopology")}</p>
         </div>
       )}
 
@@ -1066,16 +1132,16 @@ export function ExecutionActivityPanel({
         <div className={sideSectionClass}>
           <div className="roc-rail-section-header">
             <div className="roc-rail-section-copy">
-              <p className="roc-section-label">Stage Summaries</p>
-              <h4 className="roc-rail-section-title">{activity.stageSummaries.length} stages</h4>
+              <p className="roc-section-label">{t("execution.section.stageSummaries")}</p>
+              <h4 className="roc-rail-section-title">{t("execution.stagesCount", { count: activity.stageSummaries.length })}</h4>
             </div>
             <p className="roc-rail-section-note">
-              Authority-backed telemetry snapshot
+              {t("execution.authorityBackedSnapshot")}
             </p>
           </div>
           <div className="grid gap-3 xl:grid-cols-2">
             {activity.stageSummaries.map((stage) => {
-              const meta = stageSummaryMeta(stage);
+              const meta = stageSummaryMeta(stage, t);
               const isHighlighted =
                 stage.stage_id === activity.sessionRuntime?.active_stage_id ||
                 stage.stage_id === previewStageId;
@@ -1109,15 +1175,26 @@ export function ExecutionActivityPanel({
                         type="button"
                         onClick={() => onNavigateStage(stage.stage_id)}
                       >
-                        Open
+                        {t("execution.open")}
                       </button>
                       <button
                         className={compactActionButtonClass}
                         type="button"
                         onClick={() => activity.patchActivityFilters({ stageId: stage.stage_id })}
                       >
-                        Filter Events
+                        {t("execution.filterEvents")}
                       </button>
+                      {stage.status === "running" ? (
+                        <button
+                          className={compactActionButtonClass}
+                          type="button"
+                          data-testid={`stage-abort-${stage.stage_id}`}
+                          disabled={activity.stageAbortingId === stage.stage_id}
+                          onClick={() => void activity.abortSchedulerStage(stage.stage_id)}
+                        >
+                          {activity.stageAbortingId === stage.stage_id ? t("execution.aborting") : t("execution.abort")}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                   {meta.length ? (
@@ -1133,18 +1210,18 @@ export function ExecutionActivityPanel({
                     </div>
                   ) : null}
                   <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    {typeof stage.prompt_tokens === "number" ? <span>in {formatCompactTokenCount(stage.prompt_tokens)}</span> : null}
-                    {typeof stage.completion_tokens === "number" ? <span>out {formatCompactTokenCount(stage.completion_tokens)}</span> : null}
-                    {typeof stage.reasoning_tokens === "number" ? <span>reasoning {formatCompactTokenCount(stage.reasoning_tokens)}</span> : null}
-                    {typeof stage.cache_read_tokens === "number" ? <span>cache read {formatCompactTokenCount(stage.cache_read_tokens)}</span> : null}
-                    {typeof stage.cache_miss_tokens === "number" ? <span>cache miss {formatCompactTokenCount(stage.cache_miss_tokens)}</span> : null}
-                    {typeof stage.cache_write_tokens === "number" ? <span>cache write {formatCompactTokenCount(stage.cache_write_tokens)}</span> : null}
+                    {typeof stage.prompt_tokens === "number" ? <span>{t("execution.metric.in")} {formatCompactTokenCount(stage.prompt_tokens)}</span> : null}
+                    {typeof stage.completion_tokens === "number" ? <span>{t("execution.metric.out")} {formatCompactTokenCount(stage.completion_tokens)}</span> : null}
+                    {typeof stage.reasoning_tokens === "number" ? <span>{t("execution.metric.reasoning")} {formatCompactTokenCount(stage.reasoning_tokens)}</span> : null}
+                    {typeof stage.cache_read_tokens === "number" ? <span>{t("execution.metric.cacheRead")} {formatCompactTokenCount(stage.cache_read_tokens)}</span> : null}
+                    {typeof stage.cache_miss_tokens === "number" ? <span>{t("execution.metric.cacheMiss")} {formatCompactTokenCount(stage.cache_miss_tokens)}</span> : null}
+                    {typeof stage.cache_write_tokens === "number" ? <span>{t("execution.metric.cacheWrite")} {formatCompactTokenCount(stage.cache_write_tokens)}</span> : null}
                   </div>
                   {stage.last_event || stage.focus || stage.activity ? (
                     <div className="grid gap-1 text-xs text-muted-foreground">
-                      {stage.last_event ? <p>Last event: {humanizeStageEvent(stage.last_event) || stage.last_event}</p> : null}
-                      {stage.focus ? <p>Focus: {stage.focus}</p> : null}
-                      {stage.activity ? <p>Activity: {stage.activity.replace(/\n+/g, " · ")}</p> : null}
+                      {stage.last_event ? <p>{t("execution.lastEvent", { value: humanizeStageEvent(stage.last_event) || stage.last_event })}</p> : null}
+                      {stage.focus ? <p>{t("execution.focus", { value: stage.focus })}</p> : null}
+                      {stage.activity ? <p>{t("execution.activityPrefix", { value: stage.activity.replace(/\n+/g, " · ") })}</p> : null}
                     </div>
                   ) : null}
                 </div>
@@ -1156,13 +1233,13 @@ export function ExecutionActivityPanel({
 
       <div className="grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto] md:items-end">
         <label className={formFieldClass}>
-          <span className={formLabelClass}>Stage</span>
+          <span className={formLabelClass}>{t("execution.stageLabel")}</span>
           <select
             className={formSelectClass}
             value={activity.activityFilters.stageId}
             onChange={(event) => activity.patchActivityFilters({ stageId: event.target.value })}
           >
-            <option value="">all stages</option>
+            <option value="">{t("execution.filter.allStages")}</option>
             {activity.stageOptions.map((stageId) => (
               <option key={stageId} value={stageId}>
                 {stageId}
@@ -1171,13 +1248,13 @@ export function ExecutionActivityPanel({
           </select>
         </label>
         <label className={formFieldClass}>
-          <span className={formLabelClass}>Execution</span>
+          <span className={formLabelClass}>{t("execution.executionLabel")}</span>
           <select
             className={formSelectClass}
             value={activity.activityFilters.executionId}
             onChange={(event) => activity.patchActivityFilters({ executionId: event.target.value })}
           >
-            <option value="">all executions</option>
+            <option value="">{t("execution.filter.allExecutions")}</option>
             {activity.executionNodes.map((node) => (
               <option key={node.id} value={node.id}>
                 {node.label || node.id}
@@ -1186,13 +1263,13 @@ export function ExecutionActivityPanel({
           </select>
         </label>
         <label className={formFieldClass}>
-          <span className={formLabelClass}>Event Type</span>
+          <span className={formLabelClass}>{t("execution.filter.eventType")}</span>
           <select
             className={formSelectClass}
             value={activity.activityFilters.eventType}
             onChange={(event) => activity.patchActivityFilters({ eventType: event.target.value })}
           >
-            <option value="">all events</option>
+            <option value="">{t("execution.filter.allEvents")}</option>
             {activity.knownEventTypes.map((eventType) => (
               <option key={eventType} value={eventType}>
                 {eventType}
@@ -1201,7 +1278,7 @@ export function ExecutionActivityPanel({
           </select>
         </label>
         <button className={actionButtonClass} type="button" onClick={activity.clearActivityFilters}>
-          Clear
+          {t("app.clear")}
         </button>
       </div>
 
@@ -1220,8 +1297,8 @@ export function ExecutionActivityPanel({
           ))
         ) : (
           <div className="roc-rail-empty">
-            <div className="roc-section-label">Execution</div>
-            <p className="text-sm font-semibold tracking-tight text-foreground">No active execution topology for this session.</p>
+            <div className="roc-section-label">{t("execution.executionLabel")}</div>
+            <p className="text-sm font-semibold tracking-tight text-foreground">{t("execution.noExecutionTopology")}</p>
           </div>
         )}
       </div>
@@ -1230,8 +1307,8 @@ export function ExecutionActivityPanel({
         <div className={sideSectionClass}>
           <div className="roc-rail-section-header">
             <div className="roc-rail-section-copy">
-              <p className="roc-section-label">Execution</p>
-              <h4 className="roc-rail-section-title">{activity.selectedExecution?.label || "Select an execution node"}</h4>
+              <p className="roc-section-label">{t("execution.executionLabel")}</p>
+              <h4 className="roc-rail-section-title">{activity.selectedExecution?.label || t("execution.selectExecutionNode")}</h4>
             </div>
             <div className="flex flex-wrap gap-2">
               {executionJump ? (
@@ -1240,7 +1317,7 @@ export function ExecutionActivityPanel({
                   type="button"
                   onClick={() => onJumpToConversation(executionJump)}
                 >
-                  Jump to Message
+                  {t("execution.jumpToMessage")}
                 </button>
               ) : null}
               {activity.selectedExecution ? (
@@ -1251,8 +1328,8 @@ export function ExecutionActivityPanel({
                   onClick={() => void activity.cancelExecution(activity.selectedExecution!.id || undefined)}
                 >
                   {activity.executionCancellingId === activity.selectedExecution!.id
-                    ? "Cancelling..."
-                    : "Cancel"}
+                    ? t("execution.cancelling")
+                    : t("execution.cancel")}
                 </button>
               ) : null}
             </div>
@@ -1265,15 +1342,15 @@ export function ExecutionActivityPanel({
                   <>
                     <dl className="roc-structured-dl">
                       <div className="roc-structured-row">
-                        <dt className="roc-structured-key">ID</dt>
+                        <dt className="roc-structured-key">{t("execution.field.id")}</dt>
                         <dd className="text-sm text-foreground">{selected.id}</dd>
                       </div>
                       <div className="roc-structured-row">
-                        <dt className="roc-structured-key">Status</dt>
+                        <dt className="roc-structured-key">{t("execution.field.status")}</dt>
                         <dd className="text-sm text-foreground">{selected.status}</dd>
                       </div>
                       <div className="roc-structured-row">
-                        <dt className="roc-structured-key">Stage</dt>
+                        <dt className="roc-structured-key">{t("execution.stageLabel")}</dt>
                         <dd className="text-sm text-foreground">
                           {selected.stage_id ? (
                             <button
@@ -1289,7 +1366,7 @@ export function ExecutionActivityPanel({
                         </dd>
                       </div>
                       <div className="roc-structured-row">
-                        <dt className="roc-structured-key">Updated</dt>
+                        <dt className="roc-structured-key">{t("session.updatedLabel")}</dt>
                         <dd className="text-sm text-foreground">{formatTs(selected.updated_at)}</dd>
                       </div>
                     </dl>
@@ -1299,7 +1376,7 @@ export function ExecutionActivityPanel({
                         type="button"
                         onClick={() => activity.patchActivityFilters({ executionId: selected.id || "" })}
                       >
-                        Filter Events to Execution
+                        {t("execution.filterEventsToExecution")}
                       </button>
                       {selected.stage_id ? (
                         <button
@@ -1311,13 +1388,13 @@ export function ExecutionActivityPanel({
                             })
                           }
                         >
-                          Filter Events to Stage
+                          {t("execution.filterEventsToStage")}
                         </button>
                       ) : null}
                     </div>
                     <StructuredDataView
                       value={selected.metadata}
-                      emptyLabel="No execution metadata for this node."
+                      emptyLabel={t("execution.noExecutionMetadata")}
                     />
                   </>
                 );
@@ -1325,8 +1402,8 @@ export function ExecutionActivityPanel({
             </>
           ) : (
             <div className="roc-rail-empty">
-              <div className="roc-section-label">Execution</div>
-              <p className="text-sm font-semibold tracking-tight text-foreground">Choose a node to inspect its metadata and provenance.</p>
+              <div className="roc-section-label">{t("execution.executionLabel")}</div>
+              <p className="text-sm font-semibold tracking-tight text-foreground">{t("execution.chooseNodePrompt")}</p>
             </div>
           )}
         </div>
@@ -1334,8 +1411,8 @@ export function ExecutionActivityPanel({
         <div className={sideSectionClass}>
           <div className="roc-rail-section-header">
             <div className="roc-rail-section-copy">
-              <p className="roc-section-label">Activity</p>
-              <h4 className="roc-rail-section-title">{activity.selectedEvent?.event_type || "Recent events"}</h4>
+              <p className="roc-section-label">{t("execution.activityLabel")}</p>
+              <h4 className="roc-rail-section-title">{activity.selectedEvent?.event_type || t("execution.recentEvents")}</h4>
             </div>
             {selectedEventJump ? (
               <button
@@ -1343,7 +1420,7 @@ export function ExecutionActivityPanel({
                 type="button"
                 onClick={() => onJumpToConversation(selectedEventJump)}
               >
-                Jump to Provenance
+                {t("execution.jumpToProvenance")}
               </button>
             ) : null}
           </div>
@@ -1351,7 +1428,7 @@ export function ExecutionActivityPanel({
             <dl className="roc-structured-dl">
               {activity.selectedEvent.stage_id ? (
                 <div className="roc-structured-row">
-                  <dt className="roc-structured-key">Stage</dt>
+                  <dt className="roc-structured-key">{t("execution.stageLabel")}</dt>
                   <dd className="text-sm text-foreground">
                     <button
                       className="roc-rail-link"
@@ -1365,7 +1442,7 @@ export function ExecutionActivityPanel({
               ) : null}
               {selectedEventAttachedSessionId ? (
                 <div className="roc-structured-row">
-                  <dt className="roc-structured-key">Attached Session</dt>
+                  <dt className="roc-structured-key">{t("execution.attachedSession")}</dt>
                   <dd className="text-sm text-foreground">
                     <button
                       className="roc-rail-link"
@@ -1385,7 +1462,7 @@ export function ExecutionActivityPanel({
               ) : null}
               {selectedEventJump?.toolCallId ? (
                 <div className="roc-structured-row">
-                  <dt className="roc-structured-key">Tool Call</dt>
+                  <dt className="roc-structured-key">{t("execution.toolCall")}</dt>
                   <dd className="text-sm text-foreground">
                     <button
                       className="roc-rail-link"
@@ -1422,16 +1499,16 @@ export function ExecutionActivityPanel({
                   {event.summary ? <p>{event.summary}</p> : null}
                   {event.stage_id || event.execution_id ? (
                     <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                      {event.stage_id ? <span>stage {event.stage_id}</span> : null}
-                      {event.execution_id ? <span>exec {event.execution_id}</span> : null}
+                      {event.stage_id ? <span>{t("composer.provenanceStage", { id: event.stage_id })}</span> : null}
+                      {event.execution_id ? <span>{t("execution.execLabel", { id: event.execution_id })}</span> : null}
                     </div>
                   ) : null}
                 </button>
               ))
             ) : (
               <div className="roc-rail-empty">
-                <div className="roc-section-label">Activity</div>
-                <p className="text-sm font-semibold tracking-tight text-foreground">No recent activity events for this filter.</p>
+                <div className="roc-section-label">{t("execution.activityLabel")}</div>
+                <p className="text-sm font-semibold tracking-tight text-foreground">{t("execution.noActivityEvents")}</p>
               </div>
             )}
           </div>
@@ -1441,8 +1518,9 @@ export function ExecutionActivityPanel({
                 activity.activityPage,
                 activity.activityEvents.length,
                 activity.activityPageSize,
+                t,
               )}{" "}
-              · limit {activity.activityPageSize}
+              {t("execution.limitSuffix", { value: activity.activityPageSize })}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -1451,7 +1529,7 @@ export function ExecutionActivityPanel({
                 disabled={!activity.activityHasPreviousPage}
                 onClick={activity.firstActivityPage}
               >
-                First
+                {t("execution.pager.first")}
               </button>
               <button
                 className={compactActionButtonClass}
@@ -1459,10 +1537,10 @@ export function ExecutionActivityPanel({
                 disabled={!activity.activityHasPreviousPage}
                 onClick={activity.previousActivityPage}
               >
-                Prev
+                {t("execution.pager.prev")}
               </button>
               <label className="flex items-center gap-2">
-                <span className={formLabelClass}>Page</span>
+                <span className={formLabelClass}>{t("execution.pager.page")}</span>
                 <input
                   className={`${formInputClass} h-8 w-20 px-2.5 py-1.5`}
                   type="number"
@@ -1486,7 +1564,7 @@ export function ExecutionActivityPanel({
                   activity.goToActivityPage(Number.isFinite(page) ? page : 1);
                 }}
               >
-                Go
+                {t("execution.pager.go")}
               </button>
               <button
                 className={compactActionButtonClass}
@@ -1494,7 +1572,7 @@ export function ExecutionActivityPanel({
                 disabled={!activity.activityHasNextPage}
                 onClick={activity.nextActivityPage}
               >
-                Next
+                {t("execution.pager.next")}
               </button>
             </div>
           </div>
@@ -1509,7 +1587,7 @@ export function ExecutionActivityPanel({
                       activity.patchActivityFilters({ executionId: activity.selectedEvent?.execution_id || "" })
                     }
                   >
-                    Filter to Execution
+                    {t("execution.filterToExecution")}
                   </button>
                 ) : null}
                 {activity.selectedEvent.stage_id ? (
@@ -1520,7 +1598,7 @@ export function ExecutionActivityPanel({
                       activity.patchActivityFilters({ stageId: activity.selectedEvent?.stage_id || "" })
                     }
                   >
-                    Filter to Stage
+                    {t("execution.filterToStage")}
                   </button>
                 ) : null}
                 {selectedEventAttachedSessionId ? (
@@ -1535,7 +1613,7 @@ export function ExecutionActivityPanel({
                       })
                     }
                   >
-                    Open Attached Session
+                    {t("execution.openAttachedSession")}
                   </button>
                 ) : null}
                 {selectedEventJump?.toolCallId ? (
@@ -1549,7 +1627,7 @@ export function ExecutionActivityPanel({
                       })
                     }
                   >
-                    Open Tool Call
+                    {t("execution.openToolCall")}
                   </button>
                 ) : null}
               </div>
@@ -1562,7 +1640,7 @@ export function ExecutionActivityPanel({
                   tool_call_id: selectedEventJump?.toolCallId ?? null,
                   payload: activity.selectedEvent.payload,
                 }}
-                emptyLabel="No structured payload for this event."
+                emptyLabel={t("execution.noStructuredPayload")}
                 onNavigateKeyValue={(key, value) => {
                   if (key === "stage_id") onNavigateStage(value);
                   if (key === "attached_session_id") {

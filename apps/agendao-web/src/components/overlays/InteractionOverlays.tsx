@@ -192,7 +192,7 @@ export function InteractionOverlays({
               {permission.message ? <p>{permission.message}</p> : null}
               {permissionSubmitError ? (
                 <p
-                  className="rounded-2xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-100"
+                  className="rounded-2xl border border-(--ds-error)/35 bg-(--ds-error)/10 px-4 py-3 text-sm text-(--ds-error)"
                   data-testid="permission-submit-error"
                 >
                   {permissionSubmitError}

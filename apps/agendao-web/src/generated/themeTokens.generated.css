@@ -1,0 +1,31 @@
+/* Generated from crates/agendao-tui-revue/src/theme.rs. Do not edit by hand. */
+/* 五行语义色变量：与 TUI 同源，web 组件语义色统一挂点。 */
+:root,
+[data-theme="daylight"],
+[data-theme="sunset"] {
+  --ds-wood: #5f9184;
+  --ds-fire: #b5503c;
+  --ds-earth: #4d535b;
+  --ds-metal: #2e3238;
+  --ds-water: #7d6b8f;
+  --ds-ok: #54805e;
+  --ds-warn: #a8862a;
+  --ds-error: #9e3d3a;
+  --ds-info: #6b9e93;
+  --ds-muted: #8b8f88;
+  --ds-accent: #6b9e93;
+}
+
+[data-theme="cobalt"] {
+  --ds-wood: #3cb8a2;
+  --ds-fire: #f0a852;
+  --ds-earth: #a9b1d6;
+  --ds-metal: #c0caf5;
+  --ds-water: #bb9af7;
+  --ds-ok: #9ece6a;
+  --ds-warn: #e0af68;
+  --ds-error: #f7768e;
+  --ds-info: #7dcfff;
+  --ds-muted: #565f89;
+  --ds-accent: #7dcfff;
+}

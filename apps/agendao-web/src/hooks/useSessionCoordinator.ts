@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
+import type { MessageRecord } from "../lib/history";
+import { buildSessionExportMarkdown, sessionExportFileName } from "../lib/sessionExport";
 import { normalizeSessionRecord, normalizeSessionRecords } from "../lib/sidebar";
 import {
   OPTIMISTIC_SESSION_ID_PREFIX,
@@ -209,6 +211,36 @@ export function useSessionCoordinator({
     ],
   );
 
+  // Client-side export: the server has no export endpoint, so the transcript
+  // is pulled from GET /session/{id}/message and serialized to Markdown here.
+  const exportSession = useCallback(
+    async (sessionId: string) => {
+      const session = sessions.find((item) => item.id === sessionId);
+      try {
+        const history = await apiJson<MessageRecord[]>(`/session/${sessionId}/message`);
+        const markdown = buildSessionExportMarkdown({
+          title: session?.title ?? "",
+          sessionId,
+          exportedAt: new Date(),
+          messages: history,
+        });
+        const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = sessionExportFileName(session?.title, sessionId);
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        setBanner(`Exported session ${session?.title || sessionId}`);
+      } catch (error) {
+        setBanner(`Failed to export session: ${formatError(error)}`);
+      }
+    },
+    [apiJson, formatError, sessions, setBanner],
+  );
+
   const selectWorkspace = useCallback(
     (workspacePath: string) => {
       setCurrentWorkspacePath(workspacePath);
@@ -286,6 +318,33 @@ export function useSessionCoordinator({
     ],
   );
 
+  const renameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      const trimmedTitle = title.trim();
+      if (!sessionId || !trimmedTitle) return;
+      try {
+        // PATCH returns the updated SessionInfo; the server also broadcasts a
+        // reconcile over SSE, but we merge the response immediately so the
+        // sidebar reflects the rename without waiting for the stream.
+        const renamed = normalizeSessionRecord(
+          await apiJson<SessionRecord>(`/session/${sessionId}/title`, {
+            method: "PATCH",
+            body: JSON.stringify({ title: trimmedTitle }),
+          }),
+        );
+        setSessions((current) =>
+          normalizeSessionRecords(
+            current.map((item) => (item.id === sessionId ? { ...item, ...renamed } : item)),
+          ),
+        );
+        setBanner(`Renamed session to ${renamed.title}`);
+      } catch (error) {
+        setBanner(`Failed to rename session: ${formatError(error)}`);
+      }
+    },
+    [apiJson, formatError, setBanner, setSessions],
+  );
+
   const selectSession = useCallback(
     (sessionId: string | null) => {
       routeSyncSourceRef.current = "app";
@@ -352,10 +411,12 @@ export function useSessionCoordinator({
     clearPendingSessionRefresh,
     createSession,
     deleteSelectedSessions,
+    exportSession,
     forkSelectedSession,
     forkSessionFromMessage,
     provisionExternalAdapterSession,
     refreshSessions,
+    renameSession,
     scheduleSessionRefresh,
     selectSession,
     selectWorkspace,

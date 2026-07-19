@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n/I18nProvider";
 import type { SkillMethodologyTemplateRecord } from "@/lib/skill";
 
 export interface SkillMethodologyDraft {
@@ -28,57 +29,61 @@ interface MethodologyFieldDescriptor {
   minHeightClass?: string;
 }
 
-const methodologyFields: MethodologyFieldDescriptor[] = [
-  {
-    key: "whenToUse",
-    label: "When To Use",
-    hint: "One trigger per line.",
-    placeholder: "Use when provider metadata is stale",
-  },
-  {
-    key: "whenNotToUse",
-    label: "When Not To Use",
-    hint: "One boundary per line.",
-    placeholder: "Do not use for one-off API key edits",
-  },
-  {
-    key: "prerequisites",
-    label: "Prerequisites",
-    hint: "One requirement per line.",
-    placeholder: "Provider auth already configured",
-  },
-  {
-    key: "coreSteps",
-    label: "Core Steps",
-    hint: "One step per line: Title | Action | Outcome(optional)",
-    placeholder: "Refresh catalog | Run /providers refresh | Latest ids appear",
-    minHeightClass: "min-h-[9rem]",
-  },
-  {
-    key: "successCriteria",
-    label: "Success Criteria",
-    hint: "One checklist item per line.",
-    placeholder: "Expected model ids appear in the catalog",
-  },
-  {
-    key: "validation",
-    label: "Validation",
-    hint: "One verification item per line.",
-    placeholder: "Reload the provider list and compare ids",
-  },
-  {
-    key: "pitfalls",
-    label: "Boundaries / Pitfalls",
-    hint: "One pitfall per line.",
-    placeholder: "Do not overwrite workspace-local overrides",
-  },
-  {
-    key: "references",
-    label: "References",
-    hint: "One reference per line: path | label",
-    placeholder: "docs/provider-index.md | Source contract",
-  },
-];
+function methodologyFields(
+  t: (key: string) => string,
+): MethodologyFieldDescriptor[] {
+  return [
+    {
+      key: "whenToUse",
+      label: t("settings.skills.methodology.whenToUse.label"),
+      hint: t("settings.skills.methodology.whenToUse.hint"),
+      placeholder: t("settings.skills.methodology.whenToUse.placeholder"),
+    },
+    {
+      key: "whenNotToUse",
+      label: t("settings.skills.methodology.whenNotToUse.label"),
+      hint: t("settings.skills.methodology.whenNotToUse.hint"),
+      placeholder: t("settings.skills.methodology.whenNotToUse.placeholder"),
+    },
+    {
+      key: "prerequisites",
+      label: t("settings.skills.methodology.prerequisites.label"),
+      hint: t("settings.skills.methodology.prerequisites.hint"),
+      placeholder: t("settings.skills.methodology.prerequisites.placeholder"),
+    },
+    {
+      key: "coreSteps",
+      label: t("settings.skills.methodology.coreSteps.label"),
+      hint: t("settings.skills.methodology.coreSteps.hint"),
+      placeholder: t("settings.skills.methodology.coreSteps.placeholder"),
+      minHeightClass: "min-h-[9rem]",
+    },
+    {
+      key: "successCriteria",
+      label: t("settings.skills.methodology.successCriteria.label"),
+      hint: t("settings.skills.methodology.successCriteria.hint"),
+      placeholder: t("settings.skills.methodology.successCriteria.placeholder"),
+    },
+    {
+      key: "validation",
+      label: t("settings.skills.methodology.validation.label"),
+      hint: t("settings.skills.methodology.validation.hint"),
+      placeholder: t("settings.skills.methodology.validation.placeholder"),
+    },
+    {
+      key: "pitfalls",
+      label: t("settings.skills.methodology.pitfalls.label"),
+      hint: t("settings.skills.methodology.pitfalls.hint"),
+      placeholder: t("settings.skills.methodology.pitfalls.placeholder"),
+    },
+    {
+      key: "references",
+      label: t("settings.skills.methodology.references.label"),
+      hint: t("settings.skills.methodology.references.hint"),
+      placeholder: t("settings.skills.methodology.references.placeholder"),
+    },
+  ];
+}
 
 export function emptySkillMethodologyDraft(): SkillMethodologyDraft {
   return {
@@ -155,10 +160,11 @@ export function SkillMethodologyEditor({
   previewError,
   disabled = false,
 }: SkillMethodologyEditorProps) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(19rem,0.85fr)]">
       <div className="grid gap-3">
-        {methodologyFields.map((field) => (
+        {methodologyFields(t).map((field) => (
           <label
             key={field.key}
             className="grid gap-1.5 rounded-xl border border-border/40 bg-background/55 p-3"
@@ -189,26 +195,26 @@ export function SkillMethodologyEditor({
         <div className="rounded-xl border border-border/40 bg-background/55 p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="m-0 text-sm font-semibold text-foreground">Preview</p>
+              <p className="m-0 text-sm font-semibold text-foreground">{t("settings.skills.methodology.preview")}</p>
               <p className="m-0 mt-1 text-xs text-muted-foreground">
-                This renders the structured methodology into the final skill body.
+                {t("settings.skills.methodology.previewNote")}
               </p>
             </div>
             {previewError ? (
-              <span className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
-                incomplete
+              <span className="rounded-full border border-(--ds-warn)/40 bg-(--ds-warn)/12 px-2.5 py-1 text-xs font-semibold text-(--ds-warn)">
+                {t("settings.skills.methodology.incomplete")}
               </span>
             ) : (
               <span className="rounded-full border border-border bg-card/80 px-2.5 py-1 text-xs font-semibold text-muted-foreground">
-                rendered
+                {t("settings.skills.methodology.rendered")}
               </span>
             )}
           </div>
         </div>
         <pre className="min-h-[34rem] overflow-auto rounded-xl border border-border/45 bg-background/78 p-4 text-sm leading-relaxed text-foreground whitespace-pre-wrap">
           {previewError
-            ? `Methodology preview is incomplete.\n\n${previewError}`
-            : previewBody || "Preview will appear here once the methodology becomes valid."}
+            ? t("settings.skills.methodology.previewIncomplete", { error: previewError })
+            : previewBody || t("settings.skills.methodology.previewPlaceholder")}
         </pre>
       </div>
     </div>

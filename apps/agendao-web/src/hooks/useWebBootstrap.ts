@@ -12,6 +12,7 @@ import type {
 } from "../lib/provider";
 import type { PathsResponseRecord, WorkspaceContextRecord } from "../lib/workspace";
 import { workspaceRootFromContext } from "../lib/workspace";
+import type { CommandApiSpec } from "../lib/command";
 import { readWebSessionRoute, type WebExternalAdapterProvisioningRoute } from "../lib/webSessionUrl";
 import {
   applyPreferences,
@@ -37,6 +38,7 @@ interface ConfigSurfaceData {
   knownProviders: KnownProviderEntry[];
   connectProtocols: ConnectProtocolOption[];
   modes: ExecutionMode[];
+  slashCommands: CommandApiSpec[];
   workspaceContext: WorkspaceContextRecord | null;
 }
 
@@ -76,10 +78,13 @@ export function useWebBootstrap({
 
   const loadConfigSurface = useCallback(
     async (includeWorkspaceContext: boolean): Promise<ConfigSurfaceData> => {
-      const [providersData, modeData, connectSchema, context] = await Promise.all([
+      const [providersData, modeData, connectSchema, slashCommandData, context] = await Promise.all([
         apiJson<ConfigProvidersResponseRecord>("/config/providers"),
         apiJson<ExecutionMode[]>("/mode"),
         apiJson<ProviderConnectSchemaResponseRecord>("/provider/connect/schema"),
+        // Slash commands are a composer convenience: degrade to an empty list
+        // instead of failing the whole config surface when unavailable.
+        apiJson<CommandApiSpec[]>("/command").catch(() => [] as CommandApiSpec[]),
         includeWorkspaceContext
           ? apiJson<WorkspaceContextRecord>("/workspace/context")
           : Promise.resolve(null),
@@ -89,6 +94,7 @@ export function useWebBootstrap({
         knownProviders: connectSchema.providers ?? [],
         connectProtocols: connectSchema.protocols ?? [],
         modes: visibleModes(modeData),
+        slashCommands: slashCommandData,
         workspaceContext: context,
       };
     },
@@ -102,6 +108,7 @@ export function useWebBootstrap({
       store.setKnownProviders(data.knownProviders);
       store.setConnectProtocols(data.connectProtocols);
       store.setModes(data.modes);
+      store.setSlashCommands(data.slashCommands);
       if (data.workspaceContext) {
         store.setWorkspaceContext(data.workspaceContext);
         const currentRoot = store.serviceRootPath;

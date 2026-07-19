@@ -46,7 +46,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
 
   const loadWorktrees = useCallback(async () => {
     try {
-      const data = await apiJson<WorktreeInfo[]>("/worktree");
+      const data = await apiJson<WorktreeInfo[]>("/experimental/worktree");
       setWorktrees(data);
       setError(null);
     } catch (err) {
@@ -63,7 +63,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
   const handleCreate = useCallback(async () => {
     setCreating(true);
     try {
-      await apiJson<WorktreeInfo>("/worktree", {
+      await apiJson<WorktreeInfo>("/experimental/worktree", {
         method: "POST",
         body: JSON.stringify({
           branch: newBranchName || null,
@@ -85,7 +85,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
     async (path: string) => {
       if (!confirm(`Remove worktree at ${path}?`)) return;
       try {
-        await apiJson("/worktree", {
+        await apiJson("/experimental/worktree", {
           method: "DELETE",
           body: JSON.stringify({ path, force: false }),
         });

@@ -37,13 +37,13 @@ function fileIcon(name: string): ReactNode {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
 
   if (["json", "jsonl"].includes(ext))
-    return <FileJsonIcon className="size-3.5 text-amber-600/80" />;
+    return <FileJsonIcon className="size-3.5 text-(--ds-warn)/80" />;
   if (["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "c", "cpp", "h"].includes(ext))
-    return <FileCodeIcon className="size-3.5 text-violet-500/80" />;
+    return <FileCodeIcon className="size-3.5 text-(--ds-water)/80" />;
   if (["md", "mdx", "txt", "log"].includes(ext))
-    return <FileTextIcon className="size-3.5 text-emerald-600/80" />;
+    return <FileTextIcon className="size-3.5 text-(--ds-ok)/80" />;
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext))
-    return <FileImageIcon className="size-3.5 text-rose-500/80" />;
+    return <FileImageIcon className="size-3.5 text-(--ds-error)/80" />;
 
   return <FileIcon className="size-3.5 text-muted-foreground/60" />;
 }
@@ -100,7 +100,7 @@ export function WorkspaceTreeNode({
           className={cn(
             "group w-full min-h-[28px] border border-transparent bg-transparent text-left flex items-center gap-1.5 text-xs font-medium text-muted-foreground/80 cursor-pointer hover:bg-muted/30 transition-colors",
             selectedPath === node.path && "bg-primary/5 border-primary/10",
-            linked && "bg-amber-500/5",
+            linked && "bg-(--ds-warn)/5",
           )}
           style={{ paddingLeft: `${depth > 0 ? 4 : 0}px` }}
           aria-expanded={hasChildren ? isExpanded : undefined}
@@ -139,8 +139,8 @@ export function WorkspaceTreeNode({
 
           {/* Linked badge */}
           {selectedPath === node.path && linkedLabel ? (
-            <span className="ml-auto flex items-center gap-1 rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700/90">
-              <span className="size-1.5 rounded-full bg-amber-500/70" />
+            <span className="ml-auto flex items-center gap-1 rounded-sm border border-(--ds-warn)/30 bg-(--ds-warn)/10 px-1.5 py-0.5 text-[10px] text-(--ds-warn)/90">
+              <span className="size-1.5 rounded-full bg-(--ds-warn)/70" />
               {linkedLabel}
             </span>
           ) : null}
@@ -183,7 +183,7 @@ export function WorkspaceTreeNode({
       className={cn(
         "group w-full min-h-[28px] border border-transparent bg-transparent text-left flex items-center gap-1.5 text-xs text-muted-foreground/70 cursor-pointer hover:bg-muted/30 hover:text-foreground/90 transition-colors",
         selectedPath === node.path && "bg-primary/5 border-primary/10 text-foreground",
-        linked && "bg-amber-500/5",
+        linked && "bg-(--ds-warn)/5",
       )}
       style={{ paddingLeft: `${depth > 0 ? 4 : 0}px` }}
       onClick={() => onSelectNode(node)}
@@ -206,8 +206,8 @@ export function WorkspaceTreeNode({
 
       {/* Linked badge */}
       {selectedPath === node.path && linkedLabel ? (
-        <span className="ml-auto flex items-center gap-1 rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700/90">
-          <span className="size-1.5 rounded-full bg-amber-500/70" />
+        <span className="ml-auto flex items-center gap-1 rounded-sm border border-(--ds-warn)/30 bg-(--ds-warn)/10 px-1.5 py-0.5 text-[10px] text-(--ds-warn)/90">
+          <span className="size-1.5 rounded-full bg-(--ds-warn)/70" />
           {linkedLabel}
         </span>
       ) : null}

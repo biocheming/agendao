@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useI18n } from "../../i18n/I18nProvider";
 import { compactionContinuitySourceLabel } from "../../lib/contextClosureDiagnostics";
 import { ReadOnlyDiagnosticCard } from "./ReadOnlyDiagnosticCard";
 
@@ -25,34 +26,39 @@ function compactionContinuityToneClass(source: string) {
 
 export function CompactionContinuityCard({
   continuity,
-  title = "Compaction Continuity",
+  title,
   className,
 }: CompactionContinuityCardProps) {
+  const { t } = useI18n();
   return (
     <ReadOnlyDiagnosticCard
-      title={title}
+      title={title ?? t("execution.continuity.title")}
       statusLabel={compactionContinuitySourceLabel(continuity)}
       statusTone={compactionContinuityToneClass(continuity.source)}
       className={cn("grid gap-2", className)}
     >
       <p className="text-xs text-muted-foreground">
-        Tail {typeof continuity.exact_recent_tail_count === "number"
-          ? continuity.exact_recent_tail_count
-          : "--"}{" "}
-        · omitted {typeof continuity.omitted_older_turns === "number"
-          ? continuity.omitted_older_turns
-          : "--"}{" "}
-        · ledger {continuity.has_working_ledger ? "yes" : "no"} · memory anchors{" "}
-        {continuity.has_memory_anchors ? "yes" : "no"}
+        {t("execution.continuity.tail", {
+          tail: typeof continuity.exact_recent_tail_count === "number"
+            ? continuity.exact_recent_tail_count
+            : "--",
+          omitted: typeof continuity.omitted_older_turns === "number"
+            ? continuity.omitted_older_turns
+            : "--",
+          ledger: continuity.has_working_ledger ? t("session.yes") : t("session.no"),
+          anchors: continuity.has_memory_anchors ? t("session.yes") : t("session.no"),
+        })}
       </p>
       <p className="text-xs text-muted-foreground">
-        Eligible {typeof continuity.eligible_message_count === "number"
-          ? continuity.eligible_message_count
-          : "--"}{" "}
-        · recall {continuity.recall_policy || "--"}
+        {t("execution.continuity.eligible", {
+          eligible: typeof continuity.eligible_message_count === "number"
+            ? continuity.eligible_message_count
+            : "--",
+          recall: continuity.recall_policy || "--",
+        })}
       </p>
       <p className="text-xs text-muted-foreground">
-        {continuity.summary_text || "No continuity summary text recorded."}
+        {continuity.summary_text || t("execution.continuity.noSummary")}
       </p>
     </ReadOnlyDiagnosticCard>
   );

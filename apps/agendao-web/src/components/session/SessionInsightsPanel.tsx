@@ -9,6 +9,7 @@ import {
   isLiveStageStatus,
 } from "../../lib/contextPressure";
 import { multimodalCombinedWarnings, multimodalDisplayLabel } from "../../lib/multimodal";
+import { useI18n } from "@/i18n/I18nProvider";
 import { CompactionContinuityCard } from "../execution/CompactionContinuityCard";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
@@ -53,24 +54,26 @@ function summarizeMetrics(items: Array<[string, string | number | null | undefin
     .join(" · ");
 }
 
-function schedulerTraceLabel(kind?: string | null) {
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
+function schedulerTraceLabel(kind: string | null | undefined, t: TranslateFn) {
   switch (kind) {
     case "requested_profile":
-      return "Requested profile";
+      return t("session.trace.requestedProfile");
     case "command_workflow_override":
-      return "Command/workflow";
+      return t("session.trace.commandWorkflow");
     case "session_pinned_profile":
-      return "Session pinned";
+      return t("session.trace.sessionPinned");
     case "legacy_session_pinned_profile":
-      return "Legacy session";
+      return t("session.trace.legacySession");
     case "config_default_profile":
-      return "Config default";
+      return t("session.trace.configDefault");
     case "auto_route":
-      return "Auto route";
+      return t("session.trace.autoRoute");
     case "soft_fallback":
-      return "Soft fallback";
+      return t("session.trace.softFallback");
     default:
-      return kind || "Trace";
+      return kind || t("session.trace.fallback");
   }
 }
 
@@ -103,6 +106,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
   activity,
   apiJson,
 }: SessionInsightsPanelProps) {
+  const { t } = useI18n();
   const insights = activity.sessionInsights;
   const telemetry = insights?.telemetry ?? null;
   const runtimeTelemetry = activity.telemetry ?? null;
@@ -142,7 +146,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
       setSelectedMemoryDetail(detail);
     } catch (error) {
       setSelectedMemoryDetail(null);
-      setDetailError(error instanceof Error ? error.message : "Unknown error");
+      setDetailError(error instanceof Error ? error.message : t("session.unknownError"));
     } finally {
       setDetailLoading(false);
     }
@@ -187,9 +191,9 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
     <div className="roc-panel roc-rail-panel min-h-0 p-5">
         <div className="roc-rail-header">
           <div className="roc-rail-headline">
-            <p className="roc-section-label">Runtime Explain</p>
-            <h3 className="roc-rail-title">Session Insights</h3>
-            <p className="roc-rail-description">Persisted telemetry, multimodal runtime, and memory traces for the current session.</p>
+            <p className="roc-section-label">{t("session.runtimeExplain")}</p>
+            <h3 className="roc-rail-title">{t("session.panelTitle")}</h3>
+            <p className="roc-rail-description">{t("session.panelDescription")}</p>
         </div>
         <button
           className={panelActionClass}
@@ -203,36 +207,35 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
           }
           disabled={activity.activityLoading}
         >
-          {activity.activityLoading ? "Refreshing..." : "Refresh"}
+          {activity.activityLoading ? t("session.refreshing") : t("session.refresh")}
         </button>
       </div>
 
       {!insights ? (
         <div className="roc-rail-empty">
-          <div className="roc-section-label">Insights</div>
-          <p className="text-sm font-semibold tracking-tight text-foreground">No session insights yet.</p>
+          <div className="roc-section-label">{t("session.emptyLabel")}</div>
+          <p className="text-sm font-semibold tracking-tight text-foreground">{t("session.emptyTitle")}</p>
           <p className="text-sm leading-6 text-muted-foreground">
-            Run a prompt or press Refresh after activity is recorded. This tab surfaces memory hits,
-            multimodal attachments, and live context telemetry rather than duplicating the file preview.
+            {t("session.emptyDescription")}
           </p>
         </div>
       ) : (
         <>
           <dl className="roc-structured-dl">
             <div className="roc-structured-row">
-              <dt className="roc-structured-key">Session</dt>
+              <dt className="roc-structured-key">{t("session.sessionLabel")}</dt>
               <dd className="text-sm text-foreground">{insights.id}</dd>
             </div>
             <div className="roc-structured-row">
-              <dt className="roc-structured-key">Title</dt>
+              <dt className="roc-structured-key">{t("session.titleLabel")}</dt>
               <dd className="text-sm text-foreground">{insights.title}</dd>
             </div>
             <div className="roc-structured-row">
-              <dt className="roc-structured-key">Directory</dt>
+              <dt className="roc-structured-key">{t("session.directoryLabel")}</dt>
               <dd className="text-sm text-foreground break-all">{insights.directory}</dd>
             </div>
             <div className="roc-structured-row">
-              <dt className="roc-structured-key">Updated</dt>
+              <dt className="roc-structured-key">{t("session.updatedLabel")}</dt>
               <dd className="text-sm text-foreground">{formatDateTime(insights.updated)}</dd>
             </div>
           </dl>
@@ -240,60 +243,79 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
           {telemetry ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
-                <p className="roc-section-label">Runtime Telemetry</p>
-                <h4 className="roc-rail-section-title">Current Run Snapshot</h4>
+                <p className="roc-section-label">{t("session.runtimeTelemetry")}</p>
+                <h4 className="roc-rail-section-title">{t("session.currentRunSnapshot")}</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">status {telemetry.last_run_status}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">{t("session.statusValue", { status: telemetry.last_run_status })}</span>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["version", telemetry.version],
-                  ["stages", telemetryStages.length],
+                  [t("session.metric.version"), telemetry.version],
+                  [t("session.metric.stages"), telemetryStages.length],
                   trajectoryQuality
-                    ? ["trajectory", `${trajectoryQuality.score} ${formatTrajectoryBand(trajectoryQuality.band)}`]
+                    ? [t("session.metric.trajectory"), `${trajectoryQuality.score} ${formatTrajectoryBand(trajectoryQuality.band)}`]
                     : ["", null],
                 ])}
               </p>
               {currentContextTokens ? (
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Current live context {formatCompactTokenCount(currentContextTokens)}
+                  {t("session.currentLiveContext", { tokens: formatCompactTokenCount(currentContextTokens) })}
                 </p>
               ) : null}
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Session cumulative {formatCompactTokenCount(totalUsageTokens(telemetryUsage))} total · input {formatCompactTokenCount(telemetryUsage?.input_tokens ?? 0)} · output {formatCompactTokenCount(telemetryUsage?.output_tokens ?? 0)} · reasoning {formatCompactTokenCount(telemetryUsage?.reasoning_tokens ?? 0)}
+                {t("session.sessionCumulative", {
+                  total: formatCompactTokenCount(totalUsageTokens(telemetryUsage)),
+                  input: formatCompactTokenCount(telemetryUsage?.input_tokens ?? 0),
+                  output: formatCompactTokenCount(telemetryUsage?.output_tokens ?? 0),
+                  reasoning: formatCompactTokenCount(telemetryUsage?.reasoning_tokens ?? 0),
+                })}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Cache read {formatCompactTokenCount(telemetryUsage?.cache_read_tokens ?? 0)} · cache miss {formatCompactTokenCount(telemetryUsage?.cache_miss_tokens ?? 0)} · cache write {formatCompactTokenCount(telemetryUsage?.cache_write_tokens ?? 0)} · cost {formatMoney(telemetryUsage?.total_cost)}
+                {t("session.cacheUsageLine", {
+                  read: formatCompactTokenCount(telemetryUsage?.cache_read_tokens ?? 0),
+                  miss: formatCompactTokenCount(telemetryUsage?.cache_miss_tokens ?? 0),
+                  write: formatCompactTokenCount(telemetryUsage?.cache_write_tokens ?? 0),
+                  cost: formatMoney(telemetryUsage?.total_cost),
+                })}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Updated {formatDateTime(telemetry.updated_at)}
+                {t("session.updatedAt", { time: formatDateTime(telemetry.updated_at) })}
               </p>
               {trajectoryQuality ? (
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Trajectory quality {trajectoryQuality.score} · {formatTrajectoryBand(trajectoryQuality.band)} · repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls} · errors {trajectoryQuality.error_tool_call_count}
+                  {t("session.trajectoryQuality", {
+                    score: trajectoryQuality.score,
+                    band: formatTrajectoryBand(trajectoryQuality.band),
+                    repaired: trajectoryQuality.repaired_tool_call_count,
+                    total: trajectoryQuality.total_tool_calls,
+                    errors: trajectoryQuality.error_tool_call_count,
+                  })}
                 </p>
               ) : null}
               {runtimeTelemetry || telemetry ? (
                 <div className={detailTileClass}>
                   <div className="grid gap-1">
-                    <p className="roc-section-label">Tool Result Governance</p>
+                    <p className="roc-section-label">{t("session.toolResultGovernance")}</p>
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {summarizeMetrics([
-                        ["single", toolResultGovernance?.single_result_governed_count ?? 0],
-                        ["batch", toolResultGovernance?.batch_governed_count ?? 0],
-                        ["transcript fallback", toolResultGovernance?.transcript_fallback_count ?? 0],
-                        ["artifact", toolResultGovernance?.artifact_fallback_count ?? 0],
+                        [t("session.metric.single"), toolResultGovernance?.single_result_governed_count ?? 0],
+                        [t("session.metric.batch"), toolResultGovernance?.batch_governed_count ?? 0],
+                        [t("session.metric.transcriptFallback"), toolResultGovernance?.transcript_fallback_count ?? 0],
+                        [t("session.metric.artifact"), toolResultGovernance?.artifact_fallback_count ?? 0],
                       ])}
                     </p>
                   </div>
                   {(toolResultGovernance?.total_original_chars ?? 0) > 0 ? (
                     <p className="text-sm text-muted-foreground leading-relaxed">
-                      Chars: {(toolResultGovernance?.total_original_chars ?? 0).toLocaleString()} original → {(toolResultGovernance?.total_displayed_chars ?? 0).toLocaleString()} displayed. Full results are artifact-backed — fetched on demand, not held in UI store.
+                      {t("session.governanceChars", {
+                        original: (toolResultGovernance?.total_original_chars ?? 0).toLocaleString(),
+                        displayed: (toolResultGovernance?.total_displayed_chars ?? 0).toLocaleString(),
+                      })}
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground leading-relaxed">
-                      Shows how many finalized tool results were governed into preview/artifact form before entering transcript and replay surfaces.
+                      {t("session.governanceExplanation")}
                     </p>
                   )}
                 </div>
@@ -312,37 +334,37 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
           {effectivePolicy ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
-                <p className="roc-section-label">Effective Policy</p>
-                <h4 className="roc-rail-section-title">Scheduler Selection</h4>
+                <p className="roc-section-label">{t("session.effectivePolicy")}</p>
+                <h4 className="roc-rail-section-title">{t("session.schedulerSelection")}</h4>
               </div>
               {schedulerPolicy ? (
                 <>
                   <p className="text-sm text-muted-foreground leading-relaxed">
                     {summarizeMetrics([
-                      ["source", schedulerPolicy.source],
-                      ["applied", schedulerPolicy.applied ? "yes" : "no"],
-                      ["requested", schedulerPolicy.requested_profile || "--"],
-                      ["effective", schedulerPolicy.effective_profile || "--"],
+                      [t("session.metric.source"), schedulerPolicy.source],
+                      [t("session.metric.applied"), schedulerPolicy.applied ? t("session.yes") : t("session.no")],
+                      [t("session.metric.requested"), schedulerPolicy.requested_profile || "--"],
+                      [t("session.metric.effective"), schedulerPolicy.effective_profile || "--"],
                     ])}
                   </p>
                   <div className="grid gap-1 text-sm text-muted-foreground">
-                    <p>Mode kind: {schedulerPolicy.mode_kind || "--"}</p>
-                    <p>Root agent: {schedulerPolicy.root_agent || "--"}</p>
-                    <p>Resolved agent: {schedulerPolicy.resolved_agent || "--"}</p>
+                    <p>{t("session.modeKind", { value: schedulerPolicy.mode_kind || "--" })}</p>
+                    <p>{t("session.rootAgent", { value: schedulerPolicy.root_agent || "--" })}</p>
+                    <p>{t("session.resolvedAgent", { value: schedulerPolicy.resolved_agent || "--" })}</p>
                   </div>
                   {(schedulerPolicy.selection_trace ?? []).length ? (
                     <div className="grid gap-2">
-                      <p className="roc-section-label">Selection Trace</p>
+                      <p className="roc-section-label">{t("session.selectionTrace")}</p>
                       {(schedulerPolicy.selection_trace ?? []).map((step, index) => (
                         <div
                           key={`scheduler-trace:${index}:${step.kind}:${step.profile ?? "--"}`}
                           className={detailTileClass}
                         >
                           <div className="flex flex-wrap items-center gap-2">
-                            <strong>{schedulerTraceLabel(step.kind)}</strong>
+                            <strong>{schedulerTraceLabel(step.kind, t)}</strong>
                             {step.profile ? <span className="text-xs text-muted-foreground">{step.profile}</span> : null}
                             <span className="text-xs text-muted-foreground">
-                              applied {step.applied ? "yes" : "no"}
+                              {t("session.appliedValue", { applied: step.applied ? t("session.yes") : t("session.no") })}
                             </span>
                           </div>
                           {step.detail ? (
@@ -359,11 +381,11 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                   ) : null}
                 </>
               ) : (
-                <p className="text-sm text-muted-foreground">No scheduler policy is currently active.</p>
+                <p className="text-sm text-muted-foreground">{t("session.noSchedulerPolicy")}</p>
               )}
               {(effectivePolicy.warnings ?? []).length ? (
                 <div className="grid gap-2">
-                  <p className="roc-section-label">Policy Warnings</p>
+                  <p className="roc-section-label">{t("session.policyWarnings")}</p>
                   {(effectivePolicy.warnings ?? []).map((warning, index) => (
                     <div key={`effective-policy-warning:${index}`} className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
                       {warning}
@@ -377,33 +399,36 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
           {multimodal ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
-                <p className="roc-section-label">Multimodal Explain</p>
-                <h4 className="roc-rail-section-title">{multimodalDisplayLabel(multimodal) || "Attachment-backed input"}</h4>
+                <p className="roc-section-label">{t("session.multimodalExplain")}</p>
+                <h4 className="roc-rail-section-title">{multimodalDisplayLabel(multimodal) || t("session.attachmentBackedInput")}</h4>
               </div>
               <div className="roc-rail-meta-list">
                 <span className="text-xs text-muted-foreground">
                   {summarizeMetrics([
-                    ["message", multimodal.user_message_id],
-                    ["attachments", multimodal.attachment_count],
+                    [t("session.metric.message"), multimodal.user_message_id],
+                    [t("session.metric.attachments"), multimodal.attachment_count],
                   ])}
                 </span>
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
-                <p>Kinds: {(multimodal.kinds ?? []).join(", ") || "--"}</p>
-                <p>Resolved model: {multimodal.resolved_model || "--"}</p>
-                <p>Badges: {(multimodal.badges ?? []).join(", ") || "--"}</p>
-                <p>Hard block: {multimodal.hard_block ? "yes" : "no"}</p>
+                <p>{t("session.kinds", { value: (multimodal.kinds ?? []).join(", ") || "--" })}</p>
+                <p>{t("session.resolvedModel", { value: multimodal.resolved_model || "--" })}</p>
+                <p>{t("session.badges", { value: (multimodal.badges ?? []).join(", ") || "--" })}</p>
+                <p>{t("session.hardBlock", { value: multimodal.hard_block ? t("session.yes") : t("session.no") })}</p>
                 <p>
-                  Unsupported parts:{" "}
-                  {(multimodal.unsupported_parts ?? []).join(", ") || "none"}
+                  {t("session.unsupportedParts", {
+                    value: (multimodal.unsupported_parts ?? []).join(", ") || t("session.none"),
+                  })}
                 </p>
                 <p>
-                  Recommended downgrade:{" "}
-                  {multimodal.recommended_downgrade || "none"}
+                  {t("session.recommendedDowngrade", {
+                    value: multimodal.recommended_downgrade || t("session.none"),
+                  })}
                 </p>
                 <p>
-                  Transport replaced parts:{" "}
-                  {(multimodal.transport_replaced_parts ?? []).join(", ") || "none"}
+                  {t("session.transportReplacedParts", {
+                    value: (multimodal.transport_replaced_parts ?? []).join(", ") || t("session.none"),
+                  })}
                 </p>
               </div>
               {(multimodal.attachments ?? []).length ? (
@@ -421,7 +446,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {multimodalCombinedWarnings(multimodal).length ? (
                 <div className="grid gap-2">
-                  <p className="roc-section-label">Warnings</p>
+                  <p className="roc-section-label">{t("session.warningsLabel")}</p>
                   {multimodalCombinedWarnings(multimodal).map((warning, index) => (
                     <div key={`multimodal-warning:${index}`} className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
                       {warning}
@@ -435,44 +460,56 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
           {insights.memory ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
-                <p className="roc-section-label">Memory Explain</p>
-                <h4 className="roc-rail-section-title">{insights.memory.summary.workspace_mode} workspace</h4>
+                <p className="roc-section-label">{t("session.memoryExplain")}</p>
+                <h4 className="roc-rail-section-title">{t("session.workspaceModeTitle", { mode: insights.memory.summary.workspace_mode })}</h4>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["snapshot", insights.memory.summary.frozen_snapshot_items],
-                  ["prefetch", insights.memory.summary.last_prefetch_items],
-                  ["rule hits", memoryRecentRuleHits.length],
-                  ["warnings", insights.memory.summary.warning_count],
+                  [t("session.metric.snapshot"), insights.memory.summary.frozen_snapshot_items],
+                  [t("session.metric.prefetch"), insights.memory.summary.last_prefetch_items],
+                  [t("session.metric.ruleHits"), memoryRecentRuleHits.length],
+                  [t("session.metric.warnings"), insights.memory.summary.warning_count],
                 ])}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
-                  ["methodology", insights.memory.summary.methodology_candidate_count],
-                  ["skill targets", insights.memory.summary.derived_skill_candidate_count],
-                  ["linked skills", insights.memory.summary.linked_skill_count],
-                  ["feedback lessons", insights.memory.summary.skill_feedback_lesson_count],
+                  [t("session.metric.methodology"), insights.memory.summary.methodology_candidate_count],
+                  [t("session.metric.skillTargets"), insights.memory.summary.derived_skill_candidate_count],
+                  [t("session.metric.linkedSkills"), insights.memory.summary.linked_skill_count],
+                  [t("session.metric.feedbackLessons"), insights.memory.summary.skill_feedback_lesson_count],
                 ])}
               </p>
               <div className="grid gap-1 text-sm text-muted-foreground">
-                <p>Workspace key: {insights.memory.summary.workspace_key}</p>
-                <p>Allowed scopes: {memoryAllowedScopes.join(", ") || "--"}</p>
-                <p>Frozen snapshot generated: {formatDateTime(insights.memory.summary.frozen_snapshot_generated_at)}</p>
-                <p>Last prefetch generated: {formatDateTime(insights.memory.summary.last_prefetch_generated_at)}</p>
-                <p>Last prefetch query: {insights.memory.summary.last_prefetch_query?.trim() || "No query captured"}</p>
+                <p>{t("session.workspaceKey", { value: insights.memory.summary.workspace_key })}</p>
+                <p>{t("session.allowedScopes", { value: memoryAllowedScopes.join(", ") || "--" })}</p>
+                <p>{t("session.frozenSnapshotGenerated", { value: formatDateTime(insights.memory.summary.frozen_snapshot_generated_at) })}</p>
+                <p>{t("session.lastPrefetchGenerated", { value: formatDateTime(insights.memory.summary.last_prefetch_generated_at) })}</p>
+                <p>{t("session.lastPrefetchQuery", { value: insights.memory.summary.last_prefetch_query?.trim() || t("session.noQueryCaptured") })}</p>
                 <p>
-                  Session records: candidate {insights.memory.summary.candidate_count} · validated {insights.memory.summary.validated_count} · rejected {insights.memory.summary.rejected_count}
+                  {t("session.sessionRecords", {
+                    candidate: insights.memory.summary.candidate_count,
+                    validated: insights.memory.summary.validated_count,
+                    rejected: insights.memory.summary.rejected_count,
+                  })}
                 </p>
                 <p>
-                  Validation pressure: warnings {insights.memory.summary.warning_count} · methodology {insights.memory.summary.methodology_candidate_count} · skill targets {insights.memory.summary.derived_skill_candidate_count}
+                  {t("session.validationPressure", {
+                    warnings: insights.memory.summary.warning_count,
+                    methodology: insights.memory.summary.methodology_candidate_count,
+                    skillTargets: insights.memory.summary.derived_skill_candidate_count,
+                  })}
                 </p>
                 <p>
-                  Retrieval: runs {insights.memory.summary.retrieval_run_count} · hits {insights.memory.summary.retrieval_hit_count} · used {insights.memory.summary.retrieval_use_count}
+                  {t("session.retrieval", {
+                    runs: insights.memory.summary.retrieval_run_count,
+                    hits: insights.memory.summary.retrieval_hit_count,
+                    used: insights.memory.summary.retrieval_use_count,
+                  })}
                 </p>
               </div>
               {skillLinkedRecords.length ? (
                 <div className="grid gap-2">
-                  <p className="roc-section-label">Skill-Linked Recent Records</p>
+                  <p className="roc-section-label">{t("session.skillLinkedRecords")}</p>
                   <div className="grid gap-2 md:grid-cols-2">
                     {skillLinkedRecords.map((item) => (
                       <div
@@ -489,7 +526,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                           type="button"
                           onClick={() => void loadMemoryDetail(memoryRecordIdValue(item.id))}
                         >
-                          Inspect Memory
+                          {t("session.inspectMemory")}
                         </button>
                       </div>
                     ))}
@@ -498,9 +535,13 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {insights.memory.summary.latest_consolidation_run ? (
                 <div className="grid gap-1 text-sm text-muted-foreground">
-                  <p>Latest consolidation: {insights.memory.summary.latest_consolidation_run.run_id}</p>
+                  <p>{t("session.latestConsolidation", { id: insights.memory.summary.latest_consolidation_run.run_id })}</p>
                   <p>
-                    Merged {insights.memory.summary.latest_consolidation_run.merged_count} · promoted {insights.memory.summary.latest_consolidation_run.promoted_count} · conflicts {insights.memory.summary.latest_consolidation_run.conflict_count}
+                    {t("session.consolidationSummary", {
+                      merged: insights.memory.summary.latest_consolidation_run.merged_count,
+                      promoted: insights.memory.summary.latest_consolidation_run.promoted_count,
+                      conflicts: insights.memory.summary.latest_consolidation_run.conflict_count,
+                    })}
                   </p>
                 </div>
               ) : null}
@@ -513,7 +554,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                         {hit.memory_id ? <span className="text-xs text-muted-foreground">{memoryRecordIdValue(hit.memory_id)}</span> : null}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {hit.detail || "No detail attached"}
+                        {hit.detail || t("session.noDetailAttached")}
                       </p>
                       {hit.memory_id ? (
                         <button
@@ -521,7 +562,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                           type="button"
                           onClick={() => void loadMemoryDetail(memoryRecordIdValue(hit.memory_id))}
                         >
-                          Inspect Memory
+                          {t("session.inspectMemory")}
                         </button>
                       ) : null}
                       <p className="text-xs text-muted-foreground">
@@ -533,13 +574,15 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {insights.memory.frozen_snapshot ? (
                 <div className="grid gap-2 text-sm text-muted-foreground">
-                  <p>Frozen snapshot note: {insights.memory.frozen_snapshot.note || "No note"}</p>
+                  <p>{t("session.frozenSnapshotNote", { value: insights.memory.frozen_snapshot.note || t("session.noNote") })}</p>
                   <p>
-                    Frozen snapshot scopes: {(insights.memory.frozen_snapshot.scopes ?? []).join(", ") || "--"}
+                    {t("session.frozenSnapshotScopes", {
+                      value: (insights.memory.frozen_snapshot.scopes ?? []).join(", ") || "--",
+                    })}
                   </p>
                   {memoryFrozenItems.length ? (
                     <div className="grid gap-2">
-                      <p className="roc-section-label">Frozen Items</p>
+                      <p className="roc-section-label">{t("session.frozenItems")}</p>
                       {memoryFrozenItems.map((item) => (
                         <div
                           key={`frozen:${memoryRecordIdValue(item.card.id)}`}
@@ -557,7 +600,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                               type="button"
                               onClick={() => void loadMemoryDetail(memoryRecordIdValue(item.card.id))}
                             >
-                              Inspect
+                              {t("session.inspect")}
                             </button>
                           </div>
                           <p className="text-xs text-muted-foreground">{item.why_recalled}</p>
@@ -570,14 +613,16 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {insights.memory.last_prefetch_packet ? (
                 <div className="grid gap-2 text-sm text-muted-foreground">
-                  <p>Prefetch note: {insights.memory.last_prefetch_packet.note || "No note"}</p>
+                  <p>{t("session.prefetchNote", { value: insights.memory.last_prefetch_packet.note || t("session.noNote") })}</p>
                   <p>
-                    Prefetch scopes: {(insights.memory.last_prefetch_packet.scopes ?? []).join(", ") || "--"}
+                    {t("session.prefetchScopes", {
+                      value: (insights.memory.last_prefetch_packet.scopes ?? []).join(", ") || "--",
+                    })}
                   </p>
-                  <p>Prefetch recalled items: {memoryPrefetchItems.length}</p>
+                  <p>{t("session.prefetchRecalledItems", { count: memoryPrefetchItems.length })}</p>
                   {memoryPrefetchItems.length ? (
                     <div className="grid gap-2">
-                      <p className="roc-section-label">Prefetch Items</p>
+                      <p className="roc-section-label">{t("session.prefetchItems")}</p>
                       {memoryPrefetchItems.map((item) => (
                         <div
                           key={`prefetch:${memoryRecordIdValue(item.card.id)}`}
@@ -595,7 +640,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                               type="button"
                               onClick={() => void loadMemoryDetail(memoryRecordIdValue(item.card.id))}
                             >
-                              Inspect
+                              {t("session.inspect")}
                             </button>
                           </div>
                           <p className="text-xs text-muted-foreground">{item.why_recalled}</p>
@@ -608,7 +653,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {memoryRecentSessionRecords.length ? (
                 <div className="grid gap-2 text-sm text-muted-foreground">
-                  <p className="roc-section-label">Session Memory Writes</p>
+                  <p className="roc-section-label">{t("session.sessionMemoryWrites")}</p>
                   <div className="grid gap-2">
                     {memoryRecentSessionRecords.map((record) => (
                       <div
@@ -627,7 +672,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                             type="button"
                             onClick={() => void loadMemoryDetail(memoryRecordIdValue(record.id))}
                           >
-                            Inspect
+                            {t("session.inspect")}
                           </button>
                         </div>
                         <p className="text-xs text-muted-foreground">
@@ -643,7 +688,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                 <div className="roc-rail-section bg-background/70">
                   <div className="roc-rail-section-header">
                     <div className="roc-rail-section-copy">
-                      <p className="roc-section-label">Memory Detail</p>
+                      <p className="roc-section-label">{t("session.memoryDetail")}</p>
                       <h4 className="roc-rail-section-title">{selectedMemoryId}</h4>
                     </div>
                     <button
@@ -655,16 +700,16 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                         setDetailError(null);
                       }}
                     >
-                      Close
+                      {t("session.close")}
                     </button>
                   </div>
                   {detailLoading ? (
                     <div className="roc-state-card" data-tone="loading">
-                      <p className="text-sm text-muted-foreground">Loading memory detail...</p>
+                      <p className="text-sm text-muted-foreground">{t("session.loadingMemoryDetail")}</p>
                     </div>
                   ) : detailError ? (
                     <div className="roc-state-card" data-tone="danger">
-                      <p className="text-sm text-rose-700 dark:text-rose-300">{detailError}</p>
+                      <p className="text-sm text-(--ds-error)">{detailError}</p>
                     </div>
                   ) : selectedMemoryDetail ? (
                     <div className="grid gap-1 text-sm text-muted-foreground">
@@ -677,20 +722,24 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                       </p>
                       {(selectedMemoryDetail.record.trigger_conditions ?? []).length ? (
                         <p>
-                          Triggers: {(selectedMemoryDetail.record.trigger_conditions ?? []).join(" · ")}
+                          {t("session.triggers", {
+                            value: (selectedMemoryDetail.record.trigger_conditions ?? []).join(" · "),
+                          })}
                         </p>
                       ) : null}
                       {(selectedMemoryDetail.record.normalized_facts ?? []).length ? (
                         <p>
-                          Facts: {(selectedMemoryDetail.record.normalized_facts ?? [])
-                            .slice(0, 4)
-                            .join(" · ")}
+                          {t("session.facts", {
+                            value: (selectedMemoryDetail.record.normalized_facts ?? [])
+                              .slice(0, 4)
+                              .join(" · "),
+                          })}
                         </p>
                       ) : null}
                     </div>
                   ) : (
                     <div className="roc-state-card" data-tone="muted">
-                      <p className="text-sm text-muted-foreground">No detail loaded.</p>
+                      <p className="text-sm text-muted-foreground">{t("session.noDetailLoaded")}</p>
                     </div>
                   )}
                 </div>

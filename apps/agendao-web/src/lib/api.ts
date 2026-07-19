@@ -123,33 +123,48 @@ export function currentApiBaseUrl(): string | null {
 }
 
 export function apiUrl(path: string): string {
-  const serverPassword = currentServerPassword();
+  // 程序化 fetch 的 URL 解析：不携带密码。凭证经 `api()` 的
+  // `Authorization: Bearer` header 传输（防 URL 进 server 日志/浏览器历史）。
   if (/^[a-z]+:\/\//i.test(path)) {
-    if (!serverPassword) return path;
-    const url = new URL(path);
-    if (!url.searchParams.has(SERVER_PASSWORD_QUERY_PARAM)) {
-      url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
-    }
-    return url.toString();
+    return path;
   }
 
   const baseUrl = currentApiBaseUrl();
   if (!baseUrl) {
-    if (!serverPassword) return path;
     const url = new URL(path, hasWindow() ? window.location.origin : "http://127.0.0.1");
-    url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
     return `${url.pathname}${url.search}${url.hash}`;
   }
 
-  const url = new URL(path, `${baseUrl}/`);
-  if (serverPassword && !url.searchParams.has(SERVER_PASSWORD_QUERY_PARAM)) {
+  return new URL(path, `${baseUrl}/`).toString();
+}
+
+/// 浏览器原生上下文（WebSocket / <img> / iframe / location 跳转 / <script>）
+/// 无法设置 Authorization header——密码只能走 query param，集中在此函数并
+/// 显式命名，杜绝向普通 fetch URL 泄漏。server 侧对 WS/下载类端点同样接受
+/// query 凭证（request_server_password 三通道之一）。
+export function apiUrlWithPasswordQuery(path: string): string {
+  const serverPassword = currentServerPassword();
+  const resolved = apiUrl(path);
+  if (!serverPassword) return resolved;
+  const url = new URL(resolved, hasWindow() ? window.location.origin : "http://127.0.0.1");
+  if (!url.searchParams.has(SERVER_PASSWORD_QUERY_PARAM)) {
     url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
   }
-  return url.toString();
+  if (/^[a-z]+:\/\//i.test(resolved)) {
+    return url.toString();
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+/// 给不走 `api()` 的裸 fetch（如 SSE 长连接）补 Authorization header。
+export function serverPasswordAuthHeaders(): Record<string, string> {
+  const serverPassword = currentServerPassword();
+  return serverPassword ? { Authorization: `Bearer ${serverPassword}` } : {};
 }
 
 export function webSocketUrl(path: string): string {
-  const resolved = apiUrl(path);
+  // 浏览器 WebSocket 不支持自定义 header，凭证只能经 query（见上方注释）。
+  const resolved = apiUrlWithPasswordQuery(path);
   const url = hasWindow()
     ? new URL(resolved, window.location.origin)
     : new URL(resolved);

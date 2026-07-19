@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MessageCard } from "./MessageCard";
 import type { FeedMessage } from "../../lib/history";
 
-function renderMessageCard(message: FeedMessage, onEditAndResend = vi.fn()) {
+function renderMessageCard(message: FeedMessage, onEditAndResend = vi.fn<(message: FeedMessage) => void>()) {
   return render(
     <MessageCard
       message={message}
@@ -16,7 +16,7 @@ function renderMessageCard(message: FeedMessage, onEditAndResend = vi.fn()) {
 
 describe("MessageCard", () => {
   it("shows revise and resend for user prompts and invokes the callback", () => {
-    const onEditAndResend = vi.fn();
+    const onEditAndResend = vi.fn<(message: FeedMessage) => void>();
     const message: FeedMessage = {
       kind: "message",
       role: "user",

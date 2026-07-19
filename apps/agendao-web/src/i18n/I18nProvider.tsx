@@ -38,10 +38,16 @@ export function I18nProvider({ children }: PropsWithChildren) {
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
+// Components can render outside I18nProvider (e.g. isolated component tests).
+// Fall back to translating against the detected locale instead of throwing;
+// translate() itself falls back to the English catalog and finally the key.
+const fallbackValue: I18nValue = {
+  locale: detectLocale(),
+  setLocale: () => undefined,
+  t: (key, params) => translate(detectLocale(), key, params),
+};
+
 export function useI18n() {
   const context = useContext(I18nContext);
-  if (!context) {
-    throw new Error("useI18n must be used within I18nProvider");
-  }
-  return context;
+  return context ?? fallbackValue;
 }

@@ -8,7 +8,7 @@ import type { FileTreeNodeRecord } from "../lib/workspace";
 function createApiJsonStub(
   impl?: (path: string, options?: RequestInit) => Promise<unknown>,
 ): <T>(path: string, options?: RequestInit) => Promise<T> {
-  return vi.fn(async (path: string, options?: RequestInit) => {
+  return vi.fn<(path: string, options?: RequestInit) => Promise<unknown>>(async (path: string, options?: RequestInit) => {
     if (!impl) {
       return undefined;
     }

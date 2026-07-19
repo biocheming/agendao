@@ -81,7 +81,7 @@ describe("useWebBootstrap", () => {
         apiJson,
         formatError: (error) => (error instanceof Error ? error.message : "Unknown error"),
         preferencesReadyRef,
-        provisionExternalAdapterSession: vi.fn(async () => sessionId),
+        provisionExternalAdapterSession: vi.fn<() => Promise<string>>(async () => sessionId),
       }),
     );
 

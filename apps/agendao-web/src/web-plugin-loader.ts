@@ -1,4 +1,4 @@
-import { apiUrl } from "./lib/api";
+import { apiUrlWithPasswordQuery } from "./lib/api";
 import { webPluginRegistry } from "./web-plugin-registry";
 
 interface WebPluginEntry {
@@ -21,7 +21,7 @@ function webPluginModuleUrl(plugin: WebPluginEntry, workspacePath?: string | nul
   const path = workspace
     ? `/web-plugin/serve/${pluginName}/${entryPath}?workspace=${encodeURIComponent(workspace)}`
     : `/web-plugin/serve/${pluginName}/${entryPath}`;
-  return apiUrl(path);
+  return apiUrlWithPasswordQuery(path);
 }
 
 function webPluginIndexUrl(workspacePath?: string | null): string {

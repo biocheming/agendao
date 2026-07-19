@@ -21,10 +21,7 @@ function manualChunks(id: string) {
     return "vendor-react";
   }
 
-  if (
-    normalizedId.includes("/lucide-react/") ||
-    normalizedId.includes("/motion/")
-  ) {
+  if (normalizedId.includes("/lucide-react/")) {
     return "vendor-visuals";
   }
 

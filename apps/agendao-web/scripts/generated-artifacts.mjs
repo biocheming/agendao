@@ -14,6 +14,10 @@ const tasks = [
     name: "context-closure",
     script: resolve(__dirname, "generate-context-closure.mjs"),
   },
+  {
+    name: "theme-tokens",
+    script: resolve(__dirname, "generate-theme-tokens.mjs"),
+  },
 ];
 
 for (const task of tasks) {

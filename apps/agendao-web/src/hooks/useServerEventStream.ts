@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { apiUrl, parseSSE } from "../lib/api";
+import { apiUrl, parseSSE, serverPasswordAuthHeaders } from "../lib/api";
 import type { OutputBlock } from "../lib/history";
 import { applyOutputBlock, shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
 import {
@@ -234,7 +234,7 @@ export function useServerEventStream({
         controller = new AbortController();
         try {
           const response = await fetch(apiUrl("/event?tier=web"), {
-            headers: { Accept: "text/event-stream" },
+            headers: { Accept: "text/event-stream", ...serverPasswordAuthHeaders() },
             signal: controller.signal,
           });
           if (!response.ok) {

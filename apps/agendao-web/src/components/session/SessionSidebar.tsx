@@ -4,10 +4,12 @@ import {
   ChevronsUpDown,
   ChevronDown,
   ChevronRight,
+  Download,
   FolderPlus,
   FolderTree,
   Layers2,
   PanelLeftClose,
+  Pencil,
   Search,
   Square,
   Trash2,
@@ -46,6 +48,8 @@ interface SessionSidebarProps {
   onCreateProject: (input: { path: string; title?: string }) => void;
   onCreateSession: () => void;
   onDeleteSessions: (sessionIds: string[]) => void;
+  onExportSession: (sessionId: string) => void;
+  onRenameSession: (sessionId: string, title: string) => void;
   onSelectWorkspace: (workspacePath: string) => void;
   onSelectSession: (sessionId: string) => void;
   onHideSidebar: () => void;
@@ -85,20 +89,30 @@ function SessionTreeList({
   selectionMode,
   selectedIds,
   collapsedIds,
+  renamingSessionId,
   depth = 0,
   onToggleCollapsed,
   onToggleSelected,
   onSelectSession,
+  onStartRename,
+  onSubmitRename,
+  onCancelRename,
+  onExportSession,
 }: {
   nodes: SessionTreeNode[];
   selectedSessionId: string | null;
   selectionMode: boolean;
   selectedIds: Set<string>;
   collapsedIds: Set<string>;
+  renamingSessionId: string | null;
   depth?: number;
   onToggleCollapsed: (sessionId: string) => void;
   onToggleSelected: (sessionId: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onStartRename: (sessionId: string) => void;
+  onSubmitRename: (sessionId: string, title: string) => void;
+  onCancelRename: () => void;
+  onExportSession: (sessionId: string) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -119,7 +133,7 @@ function SessionTreeList({
                 <button
                   type="button"
                   className="roc-sidebar-toggle"
-                  aria-label={collapsedIds.has(node.id) ? "Expand session" : "Collapse session"}
+                  aria-label={collapsedIds.has(node.id) ? t("sidebar.expandSession") : t("sidebar.collapseSession")}
                   onClick={() => onToggleCollapsed(node.id)}
                 >
                   {collapsedIds.has(node.id) ? (
@@ -133,6 +147,27 @@ function SessionTreeList({
               )}
               </div>
 
+              {renamingSessionId === node.id ? (
+                <div className="roc-sidebar-item min-w-0 flex-1" data-testid="session-rename-editor">
+                  <Input
+                    autoFocus
+                    defaultValue={node.title ?? ""}
+                    aria-label={t("sidebar.renameSession")}
+                    className="h-7 rounded-lg border-border/45 bg-background/72 px-2 text-[12.5px]"
+                    data-testid="session-rename-input"
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onSubmitRename(node.id, event.currentTarget.value);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        onCancelRename();
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
               <button
                 type="button"
                 data-testid="session-item"
@@ -176,6 +211,31 @@ function SessionTreeList({
                   ) : null}
                 </div>
               </button>
+              )}
+              {!selectionMode && renamingSessionId !== node.id ? (
+                <div className="flex shrink-0 items-center gap-0.5 pt-1.5">
+                  <button
+                    type="button"
+                    className="roc-sidebar-toggle"
+                    title={t("sidebar.renameSession")}
+                    aria-label={t("sidebar.renameSession")}
+                    data-testid={`session-rename-${node.id}`}
+                    onClick={() => onStartRename(node.id)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    className="roc-sidebar-toggle"
+                    title={t("sidebar.exportSession")}
+                    aria-label={t("sidebar.exportSession")}
+                    data-testid={`session-export-${node.id}`}
+                    onClick={() => onExportSession(node.id)}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {node.children.length > 0 && !collapsedIds.has(node.id) ? (
@@ -185,10 +245,15 @@ function SessionTreeList({
                 selectionMode={selectionMode}
                 selectedIds={selectedIds}
                 collapsedIds={collapsedIds}
+                renamingSessionId={renamingSessionId}
                 depth={depth + 1}
                 onToggleCollapsed={onToggleCollapsed}
                 onToggleSelected={onToggleSelected}
                 onSelectSession={onSelectSession}
+                onStartRename={onStartRename}
+                onSubmitRename={onSubmitRename}
+                onCancelRename={onCancelRename}
+                onExportSession={onExportSession}
               />
             ) : null}
           </div>
@@ -210,6 +275,8 @@ export function SessionSidebar({
   onCreateProject,
   onCreateSession,
   onDeleteSessions,
+  onExportSession,
+  onRenameSession,
   onSelectWorkspace,
   onSelectSession,
   onHideSidebar,
@@ -225,6 +292,7 @@ export function SessionSidebar({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const workspaceModeKey = workspaceModeLabel(currentWorkspaceMode);
   const currentWorkspaceHint = workspacePathHint(currentWorkspacePath, currentWorkspaceRootPath);
   const currentWorkspaceShort = compactPathLabel(currentWorkspacePath) || currentWorkspaceLabel;
@@ -271,6 +339,18 @@ export function SessionSidebar({
     setSelectedSessionIds(new Set());
     setDeleteConfirmOpen(false);
   }, [sessionTree.length]);
+
+  useEffect(() => {
+    if (!selectionMode) return;
+    setRenamingSessionId(null);
+  }, [selectionMode]);
+
+  const submitRename = (sessionId: string, title: string) => {
+    setRenamingSessionId(null);
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    onRenameSession(sessionId, trimmed);
+  };
 
   useEffect(() => {
     if (!deletingSessions) return;
@@ -443,7 +523,7 @@ export function SessionSidebar({
             <div className="min-h-0 overflow-y-auto pr-1">
               <div className="flex flex-col gap-2">
                 {filteredWorkspaces.length === 0 ? (
-                  <div className="rounded-[16px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
                     {workspaces.length === 0 ? t("sidebar.emptyWorkspaces") : t("sidebar.emptyMatchingWorkspaces")}
                   </div>
                 ) : (
@@ -540,7 +620,7 @@ export function SessionSidebar({
 
           <div className="min-h-0 overflow-y-auto pr-1">
             {sessionTree.length === 0 ? (
-              <div className="rounded-[16px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
+              <div className="rounded-2xl border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
                 {t("sidebar.emptySessions")}
               </div>
             ) : (
@@ -550,9 +630,14 @@ export function SessionSidebar({
                 selectionMode={selectionMode}
                 selectedIds={selectedSessionIds}
                 collapsedIds={collapsedSessionIds}
+                renamingSessionId={renamingSessionId}
                 onToggleCollapsed={toggleCollapsed}
                 onToggleSelected={toggleSelected}
                 onSelectSession={onSelectSession}
+                onStartRename={setRenamingSessionId}
+                onSubmitRename={submitRename}
+                onCancelRename={() => setRenamingSessionId(null)}
+                onExportSession={onExportSession}
               />
             )}
           </div>

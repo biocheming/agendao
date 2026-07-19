@@ -1,8 +1,4 @@
 import {
-  type ChangeEvent,
-  type ClipboardEvent,
-  type DragEvent,
-  type FormEvent,
   Suspense,
   lazy,
   useCallback,
@@ -16,6 +12,11 @@ import { ConversationFeedPanel } from "./components/chat/ConversationFeedPanel";
 import { SessionHeader } from "./components/session/SessionHeader";
 import { DeferredTerminalPanel } from "./components/terminal/DeferredTerminalPanel";
 import { InteractionOverlays } from "./components/overlays/InteractionOverlays";
+import { BannerNotice } from "./components/chat/BannerNotice";
+import {
+  RuntimeSurfaceSection,
+  type RuntimeSurfaceTab,
+} from "./components/execution/RuntimeSurfaceSection";
 import { loadWebPlugins } from "./web-plugin-loader";
 import { api, apiJson } from "./lib/api";
 import { cn } from "./lib/utils";
@@ -23,23 +24,18 @@ import { useAgendaoStore } from "./store";
 import { useI18n } from "./i18n/I18nProvider";
 import {
   formatError,
-  modeKey,
-  mergePendingCommandArguments,
-  pendingCommandFromSession,
-  promptPreviewText,
   pushRecentModel,
   readRuntimeBudgetNumber,
   resolveActiveModelRef,
-  runtimeSurfaceDebugDetail,
   runtimeSurfaceLabel,
-  runtimeSurfacePhase,
-  runtimeSurfacePreview,
-  normalizedAnswerValues,
   workspaceRecentModelScope,
   type PromptPart,
 } from "./lib/display";
+import { useComposerAttachments } from "./hooks/useComposerAttachments";
 import { useExecutionActivity } from "./hooks/useExecutionActivity";
+import { useInteractionReplies } from "./hooks/useInteractionReplies";
 import { useMultimodalComposer } from "./hooks/useMultimodalComposer";
+import { usePromptSubmission } from "./hooks/usePromptSubmission";
 import { useRuntimeSurface } from "./hooks/useRuntimeSurface";
 import { useSchedulerNavigation } from "./hooks/useSchedulerNavigation";
 import { useSessionCoordinator } from "./hooks/useSessionCoordinator";
@@ -51,29 +47,16 @@ import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth
 import { useProviderConnectForm } from "./hooks/useProviderConnectForm";
 import { useDiagnosticsFromTelemetry } from "./hooks/useDiagnosticsFromTelemetry";
 import { useProjectCreation } from "./hooks/useProjectCreation";
-import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
   currentContextTokensFromSources,
   isLiveStageStatus,
 } from "./lib/contextPressure";
 import {
-  attachmentKind,
   attachmentContainsWorkspacePath,
-  attachmentLabel,
-  attachmentWorkspacePath,
-  clipboardImageFiles,
-  droppedFiles,
 } from "./lib/composerContext";
-import type { RuntimeSurfaceOutputBlock } from "./lib/history";
 import {
-  applyOutputBlock,
-  createOptimisticUserFeedMessage,
   estimateContextTokensFromHistory,
 } from "./lib/liveTranscriptState";
-import {
-  type PromptResponseRecord,
-} from "./lib/interaction";
-import type { SessionRecord } from "./lib/session";
 import {
   flattenProviderModels,
 } from "./lib/provider";
@@ -87,22 +70,19 @@ import {
   workspaceRootFromContext,
 } from "./lib/workspace";
 import {
-  AlertTriangleIcon,
   FolderTreeIcon,
   GitForkIcon,
   PanelLeftIcon,
   SettingsIcon,
   TerminalSquareIcon,
-  XIcon,
 } from "lucide-react";
 import {
-  THEMES,
   type ThemeId,
 } from "./lib/webRuntime";
 
-const SettingsDrawer = lazy(async () => {
-  const module = await import("./components/settings/SettingsDrawer");
-  return { default: module.SettingsDrawer };
+const SettingsPage = lazy(async () => {
+  const module = await import("./components/settings/SettingsPage");
+  return { default: module.SettingsPage };
 });
 
 const SessionSidebar = lazy(async () => {
@@ -121,81 +101,6 @@ const THEME_FAVICON_SRC: Record<ThemeId, string> = {
   cobalt: `${import.meta.env.BASE_URL}brand/agendao-icon-mark-cobalt.svg`,
 };
 
-type RuntimeSurfaceTab = "queue" | "session" | "inspect";
-type ComposerNotice = { id: number; text: string; count: number };
-
-function composerAttachmentNotice(parts: PromptPart[]) {
-  if (parts.length === 1) {
-    const part = parts[0];
-    const kind = attachmentKind(part);
-    const label = attachmentLabel(part);
-    if (kind === "image") return `Image ready: ${label}`;
-    if (kind === "directory") return `Folder ready: ${label}`;
-    if (kind === "text") return `File ready: ${label}`;
-    return `Attachment ready: ${label}`;
-  }
-
-  const imageCount = parts.filter((part) => attachmentKind(part) === "image").length;
-  if (imageCount === parts.length) {
-    return `${parts.length} images ready`;
-  }
-  return `${parts.length} attachments ready`;
-}
-
-function RuntimeSurfaceList({
-  title,
-  blocks,
-  emptyLabel,
-}: {
-  title: string;
-  blocks: RuntimeSurfaceOutputBlock[];
-  emptyLabel: string;
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border border-border/40 bg-background/78">
-      <div className="flex items-center justify-between border-b border-border/35 px-3 py-2.5">
-        <h3 className="text-sm font-medium text-foreground">{title}</h3>
-        <span className="text-xs text-muted-foreground">{blocks.length}</span>
-      </div>
-      {blocks.length === 0 ? (
-        <div className="px-3 py-5 text-sm text-muted-foreground">{emptyLabel}</div>
-      ) : (
-        <div className="max-h-[124px] space-y-2 overflow-auto px-3 py-2.5">
-          {blocks.map((block) => {
-            const preview = runtimeSurfacePreview(block);
-            const phase = runtimeSurfacePhase(block);
-            return (
-              <article
-                key={block.id ?? `${block.kind}:${block.event ?? block.title ?? preview ?? Math.random()}`}
-                className="rounded-lg border border-border/30 bg-card/70 px-2.5 py-2"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium text-foreground">
-                    {runtimeSurfaceLabel(block)}
-                  </span>
-                  {phase ? (
-                    <span className="roc-badge px-2 py-0.5 text-[11px]">{phase}</span>
-                  ) : null}
-                </div>
-                {preview ? (
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
-                    {preview}
-                  </p>
-                ) : null}
-                {runtimeSurfaceDebugDetail(block) ? (
-                  <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted-foreground/80">
-                    {runtimeSurfaceDebugDetail(block)}
-                  </p>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export default function App() {
   const { t } = useI18n();
   // ============================================================
@@ -204,7 +109,6 @@ export default function App() {
   const sessions = useAgendaoStore((s) => s.sessions);
   const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
   const setSelectedMessageIds = useAgendaoStore((s) => s.setSelectedMessageIds);
-  const composer = useAgendaoStore((s) => s.composer);
   const setComposer = useAgendaoStore((s) => s.setComposer);
   const attachments = useAgendaoStore((s) => s.attachments);
   const setAttachments = useAgendaoStore((s) => s.setAttachments);
@@ -221,28 +125,16 @@ export default function App() {
   const setTheme = useAgendaoStore((s) => s.setTheme);
   const showThinking = useAgendaoStore((s) => s.showThinking);
   const setShowThinking = useAgendaoStore((s) => s.setShowThinking);
-  const streaming = useAgendaoStore((s) => s.streaming);
   const route = useAgendaoStore((s) => s.route);
   const setRoute = useAgendaoStore((s) => s.setRoute);
   const statusLine = useAgendaoStore((s) => s.statusLine);
   const latestRuntimeError = useAgendaoStore((s) => s.latestRuntimeError);
-  const banner = useAgendaoStore((s) => s.banner);
   const setBanner = useAgendaoStore((s) => s.setBanner);
   const deletingSessions = useAgendaoStore((s) => s.deletingSessions);
   const question = useAgendaoStore((s) => s.question);
   const permission = useAgendaoStore((s) => s.permission);
   const questionAnswers = useAgendaoStore((s) => s.questionAnswers);
-  const setQuestion = useAgendaoStore((s) => s.setQuestion);
   const setQuestionAnswers = useAgendaoStore((s) => s.setQuestionAnswers);
-  const setQuestionSubmitting = useAgendaoStore((s) => s.setQuestionSubmitting);
-  const setPermission = useAgendaoStore((s) => s.setPermission);
-  const setPermissionSubmitCompletedAt = useAgendaoStore((s) => s.setPermissionSubmitCompletedAt);
-  const setPermissionSubmitError = useAgendaoStore((s) => s.setPermissionSubmitError);
-  const setPermissionSubmitStartedAt = useAgendaoStore((s) => s.setPermissionSubmitStartedAt);
-  const setPermissionSubmitting = useAgendaoStore((s) => s.setPermissionSubmitting);
-  const setStreaming = useAgendaoStore((s) => s.setStreaming);
-  const setStatusLine = useAgendaoStore((s) => s.setStatusLine);
-  const setLatestRuntimeError = useAgendaoStore((s) => s.setLatestRuntimeError);
   const setCurrentWorkspacePath = useAgendaoStore((s) => s.setCurrentWorkspacePath);
   const setSelectedAttachmentIndex = useAgendaoStore((s) => s.selectAttachment);
   const setWorkspaceContext = useAgendaoStore((s) => s.setWorkspaceContext);
@@ -282,24 +174,9 @@ export default function App() {
   const [connectForm, connectFormActions] = useProviderConnectForm(
     connectProtocols, apiJson as <T>(url: string, init?: RequestInit) => Promise<T>, formatError,
   );
-  const connectQuery = connectForm.query;
-  const setConnectQuery = connectFormActions.setQuery;
-  const connectProviderId = connectForm.providerId;
-  const setConnectProviderId = connectFormActions.setProviderId;
   const leftResize = useResizableWidth(312, 220, 520, "left");
   const rightResize = useResizableWidth(420, 320, 880, "right");
   const terminalResize = useResizableHeight(320, 180, 640);
-  const connectProtocol = connectForm.protocol;
-  const setConnectProtocol = connectFormActions.setProtocol;
-  const connectApiKey = connectForm.apiKey;
-  const setConnectApiKey = connectFormActions.setApiKey;
-  const connectBaseUrl = connectForm.baseUrl;
-  const setConnectBaseUrl = connectFormActions.setBaseUrl;
-  const connectResolution = connectForm.resolution;
-  const connectResolveBusy = connectForm.resolveBusy;
-  const connectResolveError = connectForm.resolveError;
-  const connectBusy = connectForm.busy;
-  const setConnectBusy = connectFormActions.setBusy;
   const feedRef = useRef<HTMLDivElement | null>(null);
   const preferencesReadyRef = useRef(false);
   const maxPendingOutputBlocks = useMemo(
@@ -312,48 +189,19 @@ export default function App() {
     currentRuntimeSurface,
     hasCurrentRuntimeSurface,
   } = useRuntimeSurface();
-  const [composerNotice, setComposerNotice] = useState<ComposerNotice | null>(null);
   const [runtimeSurfaceExpanded, setRuntimeSurfaceExpanded] = useState(false);
   const [runtimeSurfaceTab, setRuntimeSurfaceTab] = useState<RuntimeSurfaceTab>("queue");
+
   // P2-3: viewport budget for rendered messages. When exceeded, only the most
   // recent messages are rendered. Full transcript is preserved in state.
   // Derived from agendao_config::RuntimeBudgetConfig.tui_max_viewport_messages.
   // connectResolveRequestRef moved to useProviderConnectForm
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
-  const composerNoticeIdRef = useRef(0);
-
-  useEffect(() => {
-    if (!composerNotice) return;
-    const timeoutId = window.setTimeout(() => {
-      setComposerNotice((current) => (current?.id === composerNotice.id ? null : current));
-    }, 2400);
-    return () => window.clearTimeout(timeoutId);
-  }, [composerNotice]);
 
   const recentModels = useMemo(
     () => workspaceContext?.recent_models ?? [],
     [workspaceContext?.recent_models],
-  );
-  const modelOptions = useMemo(() => {
-    const options = flattenProviderModels(providers);
-    if (recentModels.length === 0) return options;
-    const recentKeys = recentModels.map((entry) => `${entry.provider}/${entry.model}`);
-    const recentSet = new Set(recentKeys);
-    return [
-      ...recentKeys
-        .map((key) => options.find((option) => option.key === key))
-        .filter((option): option is (typeof options)[number] => Boolean(option)),
-      ...options.filter((option) => !recentSet.has(option.key)),
-    ];
-  }, [providers, recentModels]);
-  const settingsModeOptions = useMemo(
-    () =>
-      modes.map((mode) => ({
-        key: modeKey(mode),
-        label: mode.kind === "agent" ? mode.name : `${mode.kind}:${mode.name}`,
-      })),
-    [modes],
   );
   const currentSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId) ?? null, [selectedSessionId, sessions]);
   const activeModelRef = useMemo(
@@ -565,23 +413,16 @@ export default function App() {
     sessionId: currentSession?.id ?? selectedSessionId ?? null,
   });
 
-  const sendPromptRequest = async (
-    sessionId: string,
-    payload: Record<string, unknown>,
-  ): Promise<PromptResponseRecord> =>
-    apiJson<PromptResponseRecord>(`/session/${sessionId}/prompt`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-
   const {
     clearPendingSessionRefresh,
     createSession,
     deleteSelectedSessions,
+    exportSession,
     forkSelectedSession,
     forkSessionFromMessage,
     provisionExternalAdapterSession,
     refreshSessions,
+    renameSession,
     scheduleSessionRefresh,
     selectSession,
     selectWorkspace,
@@ -698,6 +539,42 @@ export default function App() {
   });
   const workspaceLinkLabel = schedulerNavigation.activeStageId ? `stage ${schedulerNavigation.activeStageId}` : schedulerNavigation.currentBreadcrumbProvenance?.toolCallId ? `tool ${schedulerNavigation.currentBreadcrumbProvenance.toolCallId}` : schedulerNavigation.currentBreadcrumbProvenance?.stageId ? `stage ${schedulerNavigation.currentBreadcrumbProvenance.stageId}` : null;
   const workspaceLinkStageId = schedulerNavigation.activeStageId ?? schedulerNavigation.currentBreadcrumbProvenance?.stageId ?? null;
+  const {
+    attachComposerFiles,
+    clearComposerNotice,
+    composerNotice,
+    handleComposerDrop,
+    handleComposerPaste,
+    handleFileChange,
+    removeAttachmentAt,
+  } = useComposerAttachments({
+    apiJson,
+    reloadWorkspacePreservingSelection,
+    workspaceBasePath,
+    workspaceDirty,
+  });
+  const { sendPromptRequest, stopActivePrompt, submitPrompt } = usePromptSubmission({
+    apiJson,
+    clearComposerNotice,
+    createSession,
+    loadPendingQuestion,
+    optimisticMessagesRef,
+    preflightBeforeSubmit: multimodalComposer.preflightBeforeSubmit,
+    refreshSessions,
+    setMessages,
+  });
+  const {
+    permissionStatusLabel,
+    permissionStatusTone,
+    rejectQuestion,
+    replyPermission,
+    submitQuestion,
+  } = useInteractionReplies({
+    api,
+    apiJson,
+    loadPendingQuestion,
+    sendPromptRequest,
+  });
 
   useEffect(() => {
     if (!selectedWorkspacePath) return;
@@ -772,334 +649,6 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [selectedMode, selectedModel, setBanner, showThinking, theme]);
 
-  const submitPrompt = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const content = composer.trim();
-    const promptParts = attachments;
-    if ((!content && promptParts.length === 0) || streaming) return;
-
-    setBanner(null);
-
-    try {
-      const multimodalGate = await multimodalComposer.preflightBeforeSubmit();
-      if (multimodalGate.blocked) {
-        setBanner(multimodalGate.banner);
-        return;
-      }
-      if (multimodalGate.banner) {
-        setBanner(multimodalGate.banner);
-      }
-    } catch (error) {
-      setBanner(`Multimodal preflight unavailable: ${formatError(error)}`);
-    }
-
-    let sessionId = selectedSessionId;
-    if (!sessionId) {
-      try {
-        sessionId = await createSession();
-      } catch (error) {
-        setBanner(`Failed to create session: ${formatError(error)}`);
-        return;
-      }
-    }
-
-    const preview = promptPreviewText(content, promptParts);
-    const optimisticMessage = createOptimisticUserFeedMessage(preview);
-    const ingressIdempotencyKey =
-      optimisticMessage.feedId || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    optimisticMessagesRef.current = {
-      ...optimisticMessagesRef.current,
-      [sessionId]: [
-        ...(optimisticMessagesRef.current[sessionId] ?? []),
-        optimisticMessage,
-      ],
-    };
-    setMessages((current) => [...current, optimisticMessage]);
-    setComposer("");
-    setAttachments([]);
-    setComposerNotice(null);
-    setStreaming(true);
-    setStatusLine("running");
-    setLatestRuntimeError(null);
-
-    try {
-      const payload: Record<string, unknown> = {
-        message: content || undefined,
-        idempotency_key: ingressIdempotencyKey,
-        ingress_source: "web",
-      };
-      if (selectedModel) payload.model = selectedModel;
-      if (promptParts.length > 0) payload.parts = promptParts;
-      if (selectedMode) {
-        const [kind, id] = selectedMode.split(":", 2);
-        if (kind === "agent") payload.agent = id;
-        if (kind === "preset" || kind === "profile") payload.scheduler_profile = id;
-      }
-
-      const response = await sendPromptRequest(sessionId, payload);
-      if (response.status === "awaiting_user") {
-        setStreaming(false);
-        setStatusLine("awaiting_user");
-        if (response.pending_question_id) {
-          await loadPendingQuestion(response.pending_question_id, sessionId);
-        }
-      }
-    } catch (error) {
-      setMessages((current) =>
-        applyOutputBlock(
-          current,
-          {
-            kind: "status",
-            tone: "error",
-            text: formatError(error),
-          },
-          showThinking,
-        ),
-      );
-      setBanner(`Prompt failed: ${formatError(error)}`);
-      setStreaming(false);
-      setStatusLine("error");
-      setLatestRuntimeError(formatError(error));
-    }
-
-    try {
-      await refreshSessions();
-    } catch {
-      // best effort
-    }
-  };
-
-  const stopActivePrompt = useCallback(async () => {
-    if (!selectedSessionId || !streaming) return;
-
-    setBanner(null);
-    setStatusLine("cancelling");
-
-    try {
-      await apiJson(`/session/${selectedSessionId}/abort`, { method: "POST" });
-    } catch (error) {
-      setBanner(`Failed to stop session: ${formatError(error)}`);
-      setStatusLine("running");
-    }
-  }, [selectedSessionId, setBanner, setStatusLine, streaming]);
-
-  const attachComposerFiles = async (files: File[], failurePrefix: string) => {
-    if (!files.length) return;
-
-    const nextParts = await prepareComposerAttachments(files, {
-      workspaceBasePath,
-      uploadJson: apiJson,
-    }).catch((error) => {
-      setComposerNotice(null);
-      setBanner(`${failurePrefix}: ${formatError(error)}`);
-      return [];
-    });
-
-    if (!nextParts.length) return;
-    setAttachments((current) => {
-      setSelectedAttachmentIndex(current.length + nextParts.length - 1);
-      return [...current, ...nextParts];
-    });
-    const uploadedPaths = nextParts
-      .map((part) => attachmentWorkspacePath(part))
-      .filter((path): path is string => Boolean(path && path.includes("/.agendao/uploads/")));
-    if (uploadedPaths.length && !workspaceDirty) {
-      reloadWorkspacePreservingSelection();
-    }
-    composerNoticeIdRef.current += 1;
-    setComposerNotice({
-      id: composerNoticeIdRef.current,
-      text: composerAttachmentNotice(nextParts),
-      count: nextParts.length,
-    });
-  };
-
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    await attachComposerFiles(Array.from(event.target.files ?? []), "Attachment failed");
-    event.target.value = "";
-  };
-
-  const handleComposerPaste = async (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const itemFiles = clipboardImageFiles(event.clipboardData.items ?? []);
-    const files =
-      itemFiles.length > 0
-        ? itemFiles
-        : Array.from(event.clipboardData.files ?? []).filter((file) =>
-            file.type.startsWith("image/"),
-          );
-    if (!files.length) return;
-    event.preventDefault();
-    await attachComposerFiles(files, "Image paste failed");
-  };
-
-  const handleComposerDrop = async (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setComposerDragActive(false);
-    await attachComposerFiles(droppedFiles(event.dataTransfer), "Drop attach failed");
-  };
-
-  const submitQuestion = async () => {
-    if (!question) return;
-    setQuestionSubmitting(true);
-    try {
-      const answers = question.questions.map((item, index) =>
-        normalizedAnswerValues(questionAnswers[index], Boolean(item.multiple)),
-      );
-      await api(`/question/${question.request_id}/reply`, {
-        method: "POST",
-        body: JSON.stringify({ answers }),
-      });
-      setQuestion(null);
-      setQuestionAnswers({});
-      const sessionId = question.session_id ?? selectedSessionId;
-      if (sessionId) {
-        const session = await apiJson<SessionRecord>(`/session/${sessionId}`);
-        const pending = pendingCommandFromSession(session, question.request_id);
-        if (pending) {
-          const argumentsText = mergePendingCommandArguments(pending, answers);
-          const response = await sendPromptRequest(sessionId, {
-            command: pending.command,
-            arguments: argumentsText || undefined,
-            model: selectedModel || undefined,
-            ingress_source: "web",
-            idempotency_key: `web-command-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          });
-          if (response.status === "awaiting_user") {
-            setStreaming(false);
-            setStatusLine("awaiting_user");
-            if (response.pending_question_id) {
-              await loadPendingQuestion(response.pending_question_id, sessionId);
-            }
-          } else {
-            setStreaming(true);
-            setStatusLine("running");
-            setLatestRuntimeError(null);
-          }
-        }
-      }
-    } catch (error) {
-      setBanner(`Question reply failed: ${formatError(error)}`);
-    } finally {
-      setQuestionSubmitting(false);
-    }
-  };
-
-  const rejectQuestion = async () => {
-    if (!question) return;
-    setQuestionSubmitting(true);
-    try {
-      await api(`/question/${question.request_id}/reject`, { method: "POST" });
-      setQuestion(null);
-      setQuestionAnswers({});
-    } catch (error) {
-      setBanner(`Question reject failed: ${formatError(error)}`);
-    } finally {
-      setQuestionSubmitting(false);
-    }
-  };
-
-  const replyPermission = async (reply: "once" | "turn" | "session" | "reject") => {
-    const currentPermission = permission;
-    if (!currentPermission || permissionSubmitting) return;
-    setPermissionSubmitting(true);
-    setPermissionSubmitError(null);
-    setPermissionSubmitStartedAt(new Date().toISOString());
-    try {
-      await api(`/permission/${currentPermission.permission_id}/reply`, {
-        method: "POST",
-        body: JSON.stringify({ reply }),
-      });
-      setPermission(null);
-      setPermissionSubmitting(false);
-      setPermissionSubmitCompletedAt(new Date().toISOString());
-    } catch (error) {
-      const message = formatError(error);
-      setBanner(`Permission reply failed: ${message}`);
-      setPermissionSubmitError(message);
-      setPermissionSubmitting(false);
-      setPermissionSubmitCompletedAt(new Date().toISOString());
-    }
-  };
-
-  const permissionStatusLabel = permissionSubmitError
-    ? `Permission reply failed · ${permissionSubmitError}`
-    : permissionSubmitting
-      ? "Submitting permission reply…"
-      : permission
-        ? "Pending permission request"
-        : permissionSubmitCompletedAt
-          ? `Permission reply sent · ${permissionSubmitCompletedAt}`
-          : null;
-  const permissionStatusTone: "muted" | "warning" | "destructive" = permissionSubmitError
-    ? "destructive"
-    : permissionSubmitting || permission
-      ? "warning"
-      : "muted";
-
-  const connectProvider = async () => {
-    const providerId = connectProviderId.trim();
-    const apiKey = connectApiKey.trim();
-    if (!providerId || !apiKey) {
-      setBanner("provider_id and api_key are required");
-      return;
-    }
-
-    const baseUrl = connectBaseUrl.trim();
-    const defaultProtocol = connectProtocols[0]?.id || "openai";
-    const protocol = connectProtocol.trim() || defaultProtocol;
-    const suggestedDraft = connectResolution?.draft ?? null;
-    const suggestedBaseUrl = suggestedDraft?.base_url?.trim() ?? "";
-    const suggestedProtocol = suggestedDraft?.protocol?.trim() || defaultProtocol;
-
-    setConnectBusy(true);
-    try {
-      const useKnownQuickConnect =
-        suggestedDraft?.mode === "known" &&
-        suggestedDraft.provider_id.toLowerCase() === providerId.toLowerCase() &&
-        ((baseUrl === suggestedBaseUrl && protocol === suggestedProtocol) || !baseUrl);
-      if (!useKnownQuickConnect && !baseUrl) {
-        setBanner("Custom or advanced provider connect requires a base URL.");
-        return;
-      }
-
-      await api("/provider/connect", {
-        method: "POST",
-        body: JSON.stringify({
-          provider_id: providerId,
-          api_key: apiKey,
-          base_url: useKnownQuickConnect ? undefined : baseUrl,
-          protocol: useKnownQuickConnect ? undefined : protocol,
-        }),
-      });
-      setConnectApiKey("");
-      setConnectBaseUrl("");
-      await reloadCoreSettingsData();
-      setBanner(`Connected provider ${providerId}`);
-    } catch (error) {
-      setBanner(`Provider connect failed: ${formatError(error)}`);
-    } finally {
-      setConnectBusy(false);
-    }
-  };
-
-  const removeAttachmentAt = (index: number) => {
-    setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index));
-    const current = selectedAttachmentIndex;
-    if (current === null) {
-      setSelectedAttachmentIndex(null);
-      return;
-    }
-    if (current === index) {
-      setSelectedAttachmentIndex(null);
-      return;
-    }
-    if (current > index) {
-      setSelectedAttachmentIndex(current - 1);
-      return;
-    }
-    setSelectedAttachmentIndex(current);
-  };
-
   const settingsPage = (
     <Suspense
       fallback={
@@ -1115,45 +664,31 @@ export default function App() {
         </div>
       }
     >
-      <SettingsDrawer
-        onClose={() => setRoute("workbench")}
-        theme={theme}
-        themes={THEMES}
-        onThemeChange={(nextTheme) => setTheme(nextTheme as ThemeId)}
-        workspaceMode={resolvedWorkspaceMode}
-        workspaceRootPath={resolvedWorkspaceRootPath}
-        workspaceConfigDir={workspaceContext?.identity?.config_dir ?? null}
-        selectedSessionId={selectedSessionId}
-        modeOptions={settingsModeOptions}
-        selectedMode={selectedMode}
-        onModeChange={setSelectedMode}
-        modelOptions={modelOptions}
-        selectedModel={selectedModel}
-        onModelChange={handleModelChange}
-        showThinking={showThinking}
-        onShowThinkingChange={setShowThinking}
-        providers={providers}
-        knownProviders={knownProviders}
-        connectProtocols={connectProtocols}
-        connectQuery={connectQuery}
-        onConnectQueryChange={setConnectQuery}
-        connectResolution={connectResolution}
-        connectResolveBusy={connectResolveBusy}
-        connectResolveError={connectResolveError}
-        connectProviderId={connectProviderId}
-        onConnectProviderIdChange={setConnectProviderId}
-        connectProtocol={connectProtocol}
-        onConnectProtocolChange={setConnectProtocol}
-        connectApiKey={connectApiKey}
-        onConnectApiKeyChange={setConnectApiKey}
-        connectBaseUrl={connectBaseUrl}
-        onConnectBaseUrlChange={setConnectBaseUrl}
-        connectBusy={connectBusy}
-        onConnectProvider={connectProvider}
+      <SettingsPage
         api={api}
         apiJson={apiJson}
+        connectForm={connectForm}
+        connectFormActions={connectFormActions}
+        connectProtocols={connectProtocols}
+        knownProviders={knownProviders}
+        modes={modes}
         onBanner={setBanner}
+        onClose={() => setRoute("workbench")}
+        onModeChange={setSelectedMode}
+        onModelChange={handleModelChange}
         onReloadCoreData={reloadCoreSettingsData}
+        onShowThinkingChange={setShowThinking}
+        onThemeChange={setTheme}
+        providers={providers}
+        recentModels={recentModels}
+        selectedMode={selectedMode}
+        selectedModel={selectedModel}
+        selectedSessionId={selectedSessionId}
+        showThinking={showThinking}
+        theme={theme}
+        workspaceConfigDir={workspaceContext?.identity?.config_dir ?? null}
+        workspaceMode={resolvedWorkspaceMode}
+        workspaceRootPath={resolvedWorkspaceRootPath}
       />
     </Suspense>
   );
@@ -1190,6 +725,12 @@ export default function App() {
                   }}
                   onDeleteSessions={(sessionIds) => {
                     void deleteSelectedSessions(sessionIds);
+                  }}
+                  onExportSession={(sessionId) => {
+                    void exportSession(sessionId);
+                  }}
+                  onRenameSession={(sessionId, title) => {
+                    void renameSession(sessionId, title);
                   }}
                   onSelectWorkspace={selectWorkspace}
                   onSelectSession={selectSession}
@@ -1259,97 +800,20 @@ export default function App() {
               <SettingsIcon className="size-4" />
             </button>
           </div>
-          {banner ? (
-            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
-              <div className="roc-banner flex items-start gap-3" data-tone="warning">
-                <div className="roc-status-orb mt-0.5 shrink-0" data-tone="loading">
-                  <AlertTriangleIcon className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="roc-section-label">{t("app.attention")}</div>
-                  <p className="mt-1 text-sm leading-6 text-current/92">{banner}</p>
-                </div>
-                <button
-                  type="button"
-                  className="roc-banner-dismiss shrink-0"
-                  aria-label={t("app.dismissStatusMessage")}
-                  onClick={() => setBanner(null)}
-                >
-                  <XIcon className="size-4" />
-                </button>
-              </div>
-            </div>
-          ) : null}
+          <BannerNotice />
 
-          {selectedSessionId && hasCurrentRuntimeSurface && hasRuntimeSurfaceContent ? (
-            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
-              <div
-                className="roc-panel max-h-[240px] overflow-hidden px-0 py-0"
-                data-testid="runtime-surface"
-                data-expanded={runtimeSurfaceExpanded ? "true" : "false"}
-              >
-                <button
-                  type="button"
-                  data-testid="runtime-surface-toggle"
-                  className="flex h-10 w-full items-center justify-between gap-3 px-4 text-left"
-                  aria-expanded={runtimeSurfaceExpanded}
-                  title={runtimeSurfaceExpanded ? t("app.runtimeSurfaceHideDetails") : t("app.runtimeSurfaceDetails")}
-                  onClick={() => setRuntimeSurfaceExpanded((value) => !value)}
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-foreground">{runtimeSurfaceSummary}</p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {runtimeSurfaceTabs.map((tab) =>
-                      tab.count > 0 ? (
-                        <span key={tab.key} className="roc-badge px-2 py-0.5 text-[11px]">
-                          {tab.label} {tab.count}
-                        </span>
-                      ) : null,
-                    )}
-                  </div>
-                </button>
-                {runtimeSurfaceExpanded ? (
-                  <div
-                    className="max-h-[196px] overflow-hidden border-t border-border/40 px-3 pb-3 pt-2.5"
-                    data-testid="runtime-surface-expanded"
-                  >
-                    <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid="runtime-surface-tabs">
-                      {runtimeSurfaceTabs.map((tab) => (
-                        <button
-                          key={tab.key}
-                          type="button"
-                          data-testid={`runtime-surface-tab-${tab.key}`}
-                          className={cn(
-                            "inline-flex h-7 items-center rounded-full px-2.5 text-[11px] font-medium transition-colors",
-                            activeRuntimeSurfaceTab.key === tab.key
-                              ? "bg-foreground/8 text-foreground"
-                              : "text-muted-foreground hover:bg-accent/45 hover:text-foreground",
-                          )}
-                          onClick={() => setRuntimeSurfaceTab(tab.key)}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-                    {currentRuntimeSurface.banner ? (
-                      <div
-                        className="mb-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-sm leading-5 text-amber-900 dark:text-amber-100"
-                        data-testid="runtime-surface-banner"
-                      >
-                        {currentRuntimeSurface.banner}
-                      </div>
-                    ) : null}
-                    <RuntimeSurfaceList
-                      title={activeRuntimeSurfaceTab.label}
-                      blocks={activeRuntimeSurfaceTab.blocks}
-                      emptyLabel={t("app.noEventsYet")}
-                    />
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
+          <RuntimeSurfaceSection
+            activeRuntimeSurfaceTab={activeRuntimeSurfaceTab}
+            currentRuntimeSurface={currentRuntimeSurface}
+            hasCurrentRuntimeSurface={hasCurrentRuntimeSurface}
+            hasRuntimeSurfaceContent={hasRuntimeSurfaceContent}
+            runtimeSurfaceExpanded={runtimeSurfaceExpanded}
+            runtimeSurfaceSummary={runtimeSurfaceSummary}
+            runtimeSurfaceTabs={runtimeSurfaceTabs}
+            selectedSessionId={selectedSessionId}
+            setRuntimeSurfaceExpanded={setRuntimeSurfaceExpanded}
+            setRuntimeSurfaceTab={setRuntimeSurfaceTab}
+          />
 
           {selectedSessionId ? (
             <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
@@ -1389,6 +853,8 @@ export default function App() {
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
             onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
+            onAbortStage={(stageId) => void executionActivity.abortSchedulerStage(stageId)}
+            stageAbortingId={executionActivity.stageAbortingId}
           />
 
           <div className="shrink-0 px-4 pb-5 pt-2 md:px-5">

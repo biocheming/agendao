@@ -31,7 +31,7 @@ export class PanelErrorBoundary extends Component<
 
     return (
       <div className="roc-state-card m-2" data-tone="danger">
-        <p className="text-sm font-semibold text-rose-700 dark:text-rose-300">
+        <p className="text-sm font-semibold text-(--ds-error)">
           {this.props.label} failed to render.
         </p>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">

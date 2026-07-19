@@ -51,10 +51,10 @@ function getEventIcon(eventType: string) {
     return <PlayIcon className="size-3.5" />;
   }
   if (eventType.includes("complete") || eventType.includes("done")) {
-    return <CheckCircleIcon className="size-3.5 text-green-500" />;
+    return <CheckCircleIcon className="size-3.5 text-(--ds-ok)" />;
   }
   if (eventType.includes("fail") || eventType.includes("error")) {
-    return <XCircleIcon className="size-3.5 text-red-500" />;
+    return <XCircleIcon className="size-3.5 text-(--ds-error)" />;
   }
   if (eventType.includes("message") || eventType.includes("user")) {
     return <MessageSquareIcon className="size-3.5" />;

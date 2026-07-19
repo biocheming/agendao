@@ -73,6 +73,8 @@ interface MessageCardProps {
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
+  onAbortStage?: (stageId: string) => void;
+  stageAbortingId?: string | null;
 }
 
 function formatClock(ts?: number) {
@@ -297,7 +299,7 @@ function StatusBlock({ message }: { message: StatusOutputBlock }) {
     return (
       <section className="roc-detail-card" data-tone="warning" data-kind="compaction">
         <div className="flex items-start gap-2.5">
-          <div className="roc-detail-icon text-amber-600 dark:text-amber-300">
+          <div className="roc-detail-icon text-(--ds-warn)">
             <ActivityIcon className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
@@ -413,7 +415,7 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
   const isRunning = partKind === "tool_call";
   const isResult = partKind === "tool_result";
   const label = isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL";
-  const iconColor = isRunning ? "text-amber-500" : isResult ? "text-emerald-500" : "";
+  const iconColor = isRunning ? "text-(--ds-fire)" : isResult ? "text-(--ds-ok)" : "";
 
   // P2-3: tool presentation is centralized in lib/toolPresentation.ts
   const summary = toolDisplaySummary(message);
@@ -494,6 +496,8 @@ export function MessageCard({
   onToggleSelected,
   onNavigateStage,
   onNavigateAttachedSession,
+  onAbortStage,
+  stageAbortingId = null,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
   const displayText = sanitizeAssistantDisplayText(message.text ?? "", message.kind, message.role);
@@ -511,6 +515,8 @@ export function MessageCard({
         highlighted={highlighted || Boolean(activeStageId && message.stage_id === activeStageId)}
         onNavigateStage={onNavigateStage}
         onNavigateAttachedSession={onNavigateAttachedSession}
+        onAbortStage={onAbortStage}
+        stageAborting={Boolean(message.stage_id && stageAbortingId === message.stage_id)}
       />
     );
   }
@@ -592,7 +598,7 @@ export function MessageCard({
                   className={cn(
                     "text-xs",
                     cacheDiagnosticLabel
-                      ? "text-amber-700 dark:text-amber-300"
+                      ? "text-(--ds-warn)"
                       : "text-muted-foreground",
                   )}
                   title={cacheDiagnosticDetail || metaSummary}

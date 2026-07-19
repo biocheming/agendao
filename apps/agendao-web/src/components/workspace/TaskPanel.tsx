@@ -37,16 +37,16 @@ function formatDuration(seconds: number): string {
 
 function StatusIcon({ status }: { status: string }) {
   if (status === "completed") {
-    return <CheckCircleIcon className="size-4 text-green-500" />;
+    return <CheckCircleIcon className="size-4 text-(--ds-ok)" />;
   }
   if (status === "failed") {
-    return <XCircleIcon className="size-4 text-red-500" />;
+    return <XCircleIcon className="size-4 text-(--ds-error)" />;
   }
   if (status === "running") {
-    return <LoaderCircleIcon className="size-4 text-blue-500 animate-spin" />;
+    return <LoaderCircleIcon className="size-4 text-(--ds-info) animate-spin" />;
   }
   if (status === "cancelled") {
-    return <XCircleIcon className="size-4 text-yellow-500" />;
+    return <XCircleIcon className="size-4 text-(--ds-warn)" />;
   }
   return <ClockIcon className="size-4 text-muted-foreground" />;
 }
@@ -76,10 +76,10 @@ function TaskCard({
     <div
       className={cn(
         "rounded-xl border bg-card/80 p-4 grid gap-3",
-        task.status === "running" && "border-blue-500/30",
-        task.status === "completed" && "border-green-500/20",
-        task.status === "failed" && "border-red-500/30",
-        task.status === "cancelled" && "border-yellow-500/20"
+        task.status === "running" && "border-(--ds-info)/30",
+        task.status === "completed" && "border-(--ds-ok)/20",
+        task.status === "failed" && "border-(--ds-error)/30",
+        task.status === "cancelled" && "border-(--ds-warn)/20"
       )}
     >
       {/* Header */}
@@ -126,10 +126,10 @@ function TaskCard({
           <span
             className={cn(
               "px-2 py-0.5 rounded-full text-xs",
-              task.status === "running" && "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-              task.status === "completed" && "bg-green-500/10 text-green-600 dark:text-green-400",
-              task.status === "failed" && "bg-red-500/10 text-red-600 dark:text-red-400",
-              task.status === "cancelled" && "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
+              task.status === "running" && "bg-(--ds-info)/10 text-(--ds-info)",
+              task.status === "completed" && "bg-(--ds-ok)/10 text-(--ds-ok)",
+              task.status === "failed" && "bg-(--ds-error)/10 text-(--ds-error)",
+              task.status === "cancelled" && "bg-(--ds-warn)/10 text-(--ds-warn)",
               task.status === "pending" && "bg-muted text-muted-foreground"
             )}
           >
@@ -143,7 +143,7 @@ function TaskCard({
       {task.status === "running" && task.step !== null && task.max_steps !== null && (
         <div className="h-1 bg-muted rounded-full overflow-hidden">
           <div
-            className="h-full bg-blue-500 transition-all duration-300"
+            className="h-full bg-(--ds-info) transition-all duration-300"
             style={{ width: `${((task.step + 1) / task.max_steps) * 100}%` }}
           />
         </div>
@@ -205,7 +205,7 @@ export function TaskPanel({
         <div className="flex items-center gap-2">
           <h3 className="font-medium text-sm">Tasks</h3>
           {runningTasks.length > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs">
+            <span className="px-2 py-0.5 rounded-full bg-(--ds-info)/10 text-(--ds-info) text-xs">
               {runningTasks.length} active
             </span>
           )}

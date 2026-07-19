@@ -212,6 +212,7 @@ export function useExecutionActivity({
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [knownEventTypes, setKnownEventTypes] = useState<string[]>([]);
   const [executionCancellingId, setExecutionCancellingId] = useState<string | null>(null);
+  const [stageAbortingId, setStageAbortingId] = useState<string | null>(null);
   const [liveExecutions, setLiveExecutions] = useState<LiveExecutionEntry[]>([]);
   const sessionRef = useRef<string | null>(selectedSessionId);
   const previousSessionRef = useRef<string | null>(selectedSessionId);
@@ -509,6 +510,26 @@ export function useExecutionActivity({
     [apiJson, onError, onInfo, refreshExecutionActivity, selectedExecutionId],
   );
 
+  const abortSchedulerStage = useCallback(
+    async (stageId: string, sessionId = sessionRef.current) => {
+      if (!sessionId || !stageId) return;
+      setStageAbortingId(stageId);
+      try {
+        // The endpoint targets the session's currently-running scheduler stage
+        // (no stage id in the request); the button is only offered on cards
+        // whose stage is the running one.
+        await apiJson(`/session/${sessionId}/scheduler/stage/abort`, { method: "POST" });
+        onInfo(`Abort requested for stage ${stageId}`);
+        await refreshExecutionActivity(sessionId, filtersRef.current, pageRef.current);
+      } catch (error) {
+        onError(`Failed to abort stage: ${formatError(error)}`);
+      } finally {
+        setStageAbortingId((current) => (current === stageId ? null : current));
+      }
+    },
+    [apiJson, onError, onInfo, refreshExecutionActivity],
+  );
+
   return {
     telemetry,
     sessionInsights: insights,
@@ -542,6 +563,8 @@ export function useExecutionActivity({
     previousActivityPage,
     firstActivityPage,
     cancelExecution,
+    abortSchedulerStage,
+    stageAbortingId,
     refreshExecutionActivity,
     applySchedulerStageOutputBlock,
     applyLiveExecutionOutputBlock,

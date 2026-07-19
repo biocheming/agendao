@@ -1,4 +1,4 @@
-import { apiUrl } from "@/lib/api";
+import { apiUrlWithPasswordQuery } from "@/lib/api";
 
 const FILE_REFERENCE_REGEX = /(?:^|([^\w`]))@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)/g;
 export const INLINE_IMAGE_MAX_BYTES = 512 * 1024;
@@ -186,7 +186,7 @@ export function attachmentPreviewUrl(part: ComposerAttachmentRecord): string | n
 
   const workspacePath = attachmentWorkspacePath(part);
   if (workspacePath && part.mime?.startsWith("image/")) {
-    return apiUrl(`/file/download?path=${encodeURIComponent(workspacePath)}`);
+    return apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(workspacePath)}`);
   }
 
   return null;
@@ -194,7 +194,7 @@ export function attachmentPreviewUrl(part: ComposerAttachmentRecord): string | n
 
 export function attachmentDownloadUrl(part: ComposerAttachmentRecord): string | null {
   const workspacePath = attachmentWorkspacePath(part);
-  return workspacePath ? apiUrl(`/file/download?path=${encodeURIComponent(workspacePath)}`) : null;
+  return workspacePath ? apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(workspacePath)}`) : null;
 }
 
 export function attachmentTextPreview(part: ComposerAttachmentRecord): string | null {

@@ -1,5 +1,5 @@
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef } from "react";
-import { apiUrl } from "../lib/api";
+import { apiUrlWithPasswordQuery } from "../lib/api";
 import { previewPathFromMessageMetadata } from "../lib/display";
 import type { MessageRecord } from "../lib/history";
 import type { PromptPart } from "../lib/display";
@@ -458,7 +458,7 @@ export function useWorkspaceCoordinator({
 
   const downloadSelectedFile = useCallback(() => {
     if (!selectedFilePath) return;
-    window.location.assign(apiUrl(`/file/download?path=${encodeURIComponent(selectedFilePath)}`));
+    window.location.assign(apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(selectedFilePath)}`));
   }, [selectedFilePath]);
 
   const uploadWorkspaceFiles = useCallback(

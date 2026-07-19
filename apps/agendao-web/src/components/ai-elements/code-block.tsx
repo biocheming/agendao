@@ -146,7 +146,7 @@ const getHighlighter = (
   const highlighterPromise = import("shiki").then(({ createHighlighter }) =>
     createHighlighter({
       langs: [language],
-      themes: ["github-light", "github-dark"],
+      themes: ["github-light", "tokyo-night"],
     })
   );
 
@@ -203,7 +203,7 @@ export const highlightCode = (
       const result = highlighter.codeToTokens(code, {
         lang: langToUse,
         themes: {
-          dark: "github-dark",
+          dark: "tokyo-night",
           light: "github-light",
         },
       });

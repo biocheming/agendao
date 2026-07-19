@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { FileIcon } from "lucide-react";
-import { apiUrl } from "@/lib/api";
+import { apiJson, apiUrlWithPasswordQuery } from "@/lib/api";
 import { webPluginRegistry } from "@/web-plugin-registry";
 
 type RendererKind = "iframe" | "markdown" | "code" | "image" | "pdf" | "text";
@@ -74,7 +74,7 @@ function resolveBuiltinRenderer(ext: string): RendererKind {
 function IframePreview({ filePath }: { filePath: string }) {
   return (
     <iframe
-      src={apiUrl(`/file/download?path=${encodeURIComponent(filePath)}`)}
+      src={apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(filePath)}`)}
       title={filePath}
       className="w-full h-full border-0"
       sandbox=""
@@ -86,7 +86,7 @@ function ImagePreview({ filePath }: { filePath: string }) {
   return (
     <div className="flex items-center justify-center h-full p-4">
       <img
-        src={apiUrl(`/file/download?path=${encodeURIComponent(filePath)}`)}
+        src={apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(filePath)}`)}
         alt={filePath.split("/").pop() ?? filePath}
         className="max-w-full max-h-full object-contain"
       />
@@ -97,7 +97,7 @@ function ImagePreview({ filePath }: { filePath: string }) {
 function PdfPreview({ filePath }: { filePath: string }) {
   return (
     <iframe
-      src={apiUrl(`/file/download?path=${encodeURIComponent(filePath)}`)}
+      src={apiUrlWithPasswordQuery(`/file/download?path=${encodeURIComponent(filePath)}`)}
       title={filePath}
       className="w-full h-full border-0"
     />
@@ -110,8 +110,8 @@ function TextPreview({ filePath }: { filePath: string }) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(apiUrl(`/file/content?path=${encodeURIComponent(filePath)}`))
-      .then((r) => r.json())
+    // 走 api()（Authorization header），不再经带密码 query 的裸 fetch。
+    apiJson<{ content?: string }>(`/file/content?path=${encodeURIComponent(filePath)}`)
       .then((data) => setContent(data.content ?? ""))
       .catch(() => setContent("Failed to load file"))
       .finally(() => setLoading(false));

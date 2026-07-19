@@ -10,6 +10,7 @@ import type {
   MemoryValidationReportResponseRecord,
 } from "@/lib/memory";
 import { useState } from "react";
+import { useI18n } from "@/i18n/I18nProvider";
 import { memoryRecordIdValue } from "@/lib/memory";
 import { cn } from "@/lib/utils";
 
@@ -23,7 +24,7 @@ interface MemoryTabStyles {
   disclosureCardClass: string;
 }
 
-interface MemoryTabProps {
+export interface MemoryTabProps {
   selectedSessionId: string | null;
   styles: MemoryTabStyles;
   memorySearchDraft: string;
@@ -99,6 +100,7 @@ export function MemoryTab({
     secondaryButtonClass,
     mutedCardClass,
   } = styles;
+  const { t } = useI18n();
 
 
   const [memoryTab, setMemoryTab] = useState<"overview" | "records" | "governance" | "retrieval">("overview");
@@ -107,7 +109,7 @@ export function MemoryTab({
     <div className="relative grid gap-4" data-testid="settings-memory-root">
       {/* Header + Sub-tabs */}
       <div className="flex items-center justify-between gap-3">
-        <h3 className="m-0 text-base font-semibold">Memory</h3>
+        <h3 className="m-0 text-base font-semibold">{t("settings.memory.title")}</h3>
         <div className="flex gap-1 rounded-lg bg-muted/40 p-1">
           {(["overview", "records", "governance", "retrieval"] as const).map((tab) => (
             <button
@@ -123,7 +125,7 @@ export function MemoryTab({
               )}
               onClick={() => setMemoryTab(tab)}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {t(`settings.memory.subtab.${tab}`)}
             </button>
           ))}
         </div>
@@ -133,33 +135,33 @@ export function MemoryTab({
       {memoryTab === "overview" ? (
         <div className="grid gap-5">
           <div className="grid gap-2">
-            <label htmlFor="settings-memory-search" className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Search</label>
+            <label htmlFor="settings-memory-search" className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.search")}</label>
             <input
               id="settings-memory-search"
               data-testid="settings-memory-search"
               type="text"
-              placeholder="Search title, summary, normalized facts"
+              placeholder={t("settings.memory.searchPlaceholder")}
               value={memorySearchDraft}
               onChange={(event) => onMemorySearchDraftChange(event.target.value)}
             />
           </div>
 
           <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
-            <span><strong className="text-foreground">{memoryListResponse?.items.length ?? 0}</strong> records</span>
-            <span><strong className="text-foreground">{memoryRulePacks?.items?.length ?? 0}</strong> rule packs</span>
-            <span><strong className="text-foreground">{memoryRuleHits?.items?.length ?? 0}</strong> hits</span>
-            <span><strong className="text-foreground">{memoryConsolidationRuns?.items?.length ?? 0}</strong> runs</span>
+            <span><strong className="text-foreground">{memoryListResponse?.items.length ?? 0}</strong> {t("settings.memory.stats.records")}</span>
+            <span><strong className="text-foreground">{memoryRulePacks?.items?.length ?? 0}</strong> {t("settings.memory.stats.rulePacks")}</span>
+            <span><strong className="text-foreground">{memoryRuleHits?.items?.length ?? 0}</strong> {t("settings.memory.stats.hits")}</span>
+            <span><strong className="text-foreground">{memoryConsolidationRuns?.items?.length ?? 0}</strong> {t("settings.memory.stats.runs")}</span>
           </div>
 
           <div className="flex flex-wrap gap-2">
             <button type="button" className={primaryButtonClass} data-testid="settings-memory-refresh" onClick={onLoadMemoryList} disabled={memoryListLoading}>
-              {memoryListLoading ? "Refreshing..." : "Refresh Memory"}
+              {memoryListLoading ? t("settings.memory.refreshing") : t("settings.memory.refreshMemory")}
             </button>
             <button type="button" className={secondaryButtonClass} data-testid="settings-memory-preview" onClick={onLoadMemoryPreview} disabled={memoryPreviewLoading}>
-              {memoryPreviewLoading ? "Previewing..." : "Preview Injection"}
+              {memoryPreviewLoading ? t("settings.memory.previewing") : t("settings.memory.previewInjection")}
             </button>
             <button type="button" className={secondaryButtonClass} data-testid="settings-memory-governance-refresh" onClick={onLoadMemoryGovernance} disabled={memoryGovernanceLoading}>
-              {memoryGovernanceLoading ? "Refreshing..." : "Refresh Governance"}
+              {memoryGovernanceLoading ? t("settings.memory.refreshing") : t("settings.memory.refreshGovernance")}
             </button>
           </div>
 
@@ -167,18 +169,20 @@ export function MemoryTab({
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input data-testid="settings-memory-include-candidates" type="checkbox" checked={memoryConsolidateIncludeCandidates} onChange={(event) => onMemoryConsolidateIncludeCandidatesChange(event.target.checked)} />
-                Include candidates
+                {t("settings.memory.includeCandidates")}
               </label>
               <button type="button" className={primaryButtonClass} data-testid="settings-memory-consolidate" onClick={onRunMemoryConsolidation} disabled={memoryConsolidating}>
-                {memoryConsolidating ? "Consolidating..." : "Run Consolidation"}
+                {memoryConsolidating ? t("settings.memory.consolidating") : t("settings.memory.runConsolidation")}
               </button>
             </div>
             {memoryConsolidationResult ? (
               <div className="mt-3 text-sm">
                 <span className="text-muted-foreground">
-                  Last run: merged {memoryConsolidationResult.run.merged_count} · promoted{" "}
-                  {memoryConsolidationResult.run.promoted_count} · conflicts{" "}
-                  {memoryConsolidationResult.run.conflict_count}
+                  {t("settings.memory.lastRun", {
+                    merged: memoryConsolidationResult.run.merged_count,
+                    promoted: memoryConsolidationResult.run.promoted_count,
+                    conflicts: memoryConsolidationResult.run.conflict_count,
+                  })}
                 </span>
               </div>
             ) : null}
@@ -187,20 +191,20 @@ export function MemoryTab({
           <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
             <div className="grid gap-2">
               <div>
-                <span className="text-xs tracking-widest uppercase font-semibold">Scope</span>
-                <span className="ml-2 text-foreground">{selectedSessionId || "workspace authority"}</span>
+                <span className="text-xs tracking-widest uppercase font-semibold">{t("settings.memory.scope")}</span>
+                <span className="ml-2 text-foreground">{selectedSessionId || t("settings.memory.workspaceAuthority")}</span>
               </div>
               <div>
-                <span className="text-xs tracking-widest uppercase font-semibold">Search Fields</span>
+                <span className="text-xs tracking-widest uppercase font-semibold">{t("settings.memory.searchFields")}</span>
                 <span className="ml-2">{arrayOrEmpty(memoryListResponse?.contract.search_fields).join(", ") || "--"}</span>
               </div>
               <div>
-                <span className="text-xs tracking-widest uppercase font-semibold">Filters</span>
+                <span className="text-xs tracking-widest uppercase font-semibold">{t("settings.memory.filters")}</span>
                 <span className="ml-2">{arrayOrEmpty(memoryListResponse?.contract.filter_query_parameters).join(", ") || "--"}</span>
               </div>
               <div className="mt-1 text-xs">
                 {memoryListResponse?.contract.note ||
-                  "Read models come from /memory/list, /memory/{id}, /memory/{id}/validation-report, and /memory/{id}/conflicts."}
+                  t("settings.memory.contractNoteFallback")}
               </div>
             </div>
           </div>
@@ -212,9 +216,9 @@ export function MemoryTab({
         <div className="relative">
           <div className="grid gap-2 max-h-[28rem] overflow-y-auto pr-1" data-testid="settings-memory-records">
             <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Memory Records</span>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.records")}</span>
               <span className="text-xs text-muted-foreground">
-                {memoryListLoading ? "Loading..." : `${memoryListResponse?.items.length ?? 0} records`}
+                {memoryListLoading ? t("settings.common.loading") : t("settings.memory.recordsCount", { count: memoryListResponse?.items.length ?? 0 })}
               </span>
             </div>
 
@@ -242,10 +246,10 @@ export function MemoryTab({
                       <span>·</span>
                       <span>{item.validation_status}</span>
                       {item.linked_skill_name ? (
-                        <><span>·</span><span>linked {item.linked_skill_name}</span></>
+                        <><span>·</span><span>{t("settings.memory.linkedPrefix", { name: item.linked_skill_name })}</span></>
                       ) : null}
                       {item.derived_skill_name ? (
-                        <><span>·</span><span>target {item.derived_skill_name}</span></>
+                        <><span>·</span><span>{t("settings.memory.targetPrefix", { name: item.derived_skill_name })}</span></>
                       ) : null}
                     </div>
                     <strong className="text-sm">{item.title}</strong>
@@ -254,15 +258,15 @@ export function MemoryTab({
                 );
               })
             ) : (
-              <div className={mutedCardClass} data-testid="settings-memory-records-empty">No memory records matched this query.</div>
+              <div className={mutedCardClass} data-testid="settings-memory-records-empty">{t("settings.memory.recordsEmpty")}</div>
             )}
           </div>
 
           {selectedMemoryId && memoryDetail && !memoryDetailLoading ? (
-            <div className="absolute inset-2 z-10 overflow-hidden rounded-[22px] border border-border/60 bg-background/98 shadow-2xl backdrop-blur-sm">
+            <div className="absolute inset-2 z-10 overflow-hidden rounded-4xl border border-border/60 bg-background/98 shadow-2xl backdrop-blur-sm">
               <div className="flex items-center gap-3 border-b border-border/60 px-4 py-3">
                 <button type="button" className="text-xs text-muted-foreground transition-colors hover:text-foreground" onClick={() => onSelectMemoryId("")}>
-                  ← Back to records
+                  {t("settings.memory.backToRecords")}
                 </button>
                 <span className="truncate text-xs text-muted-foreground">{memoryRecordIdValue(memoryDetail.record.id)}</span>
               </div>
@@ -280,31 +284,31 @@ export function MemoryTab({
                   </div>
                   {(memoryDetail.record.linked_skill_name || memoryDetail.record.derived_skill_name) ? (
                     <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-                      <span>linked {memoryDetail.record.linked_skill_name || "--"}</span>
-                      <span>target {memoryDetail.record.derived_skill_name || "--"}</span>
+                      <span>{t("settings.memory.linkedPrefix", { name: memoryDetail.record.linked_skill_name || "--" })}</span>
+                      <span>{t("settings.memory.targetPrefix", { name: memoryDetail.record.derived_skill_name || "--" })}</span>
                     </div>
                   ) : null}
                 </div>
 
                 <details open>
                   <summary className="cursor-pointer list-none">
-                    <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Record Semantics</span>
+                    <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.recordSemantics")}</span>
                   </summary>
                   <div className="mt-2 grid gap-3 sm:grid-cols-3">
                     <div className="grid gap-1">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Triggers</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.triggers")}</span>
                       {arrayOrEmpty(memoryDetail.record.trigger_conditions).length
                         ? arrayOrEmpty(memoryDetail.record.trigger_conditions).map((v) => (<span key={v} className="text-sm">{v}</span>))
                         : <span className="text-sm text-muted-foreground">--</span>}
                     </div>
                     <div className="grid gap-1">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Boundaries</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.boundaries")}</span>
                       {arrayOrEmpty(memoryDetail.record.boundaries).length
                         ? arrayOrEmpty(memoryDetail.record.boundaries).map((v) => (<span key={v} className="text-sm">{v}</span>))
                         : <span className="text-sm text-muted-foreground">--</span>}
                     </div>
                     <div className="grid gap-1">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Normalized Facts</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.normalizedFacts")}</span>
                       {arrayOrEmpty(memoryDetail.record.normalized_facts).length
                         ? arrayOrEmpty(memoryDetail.record.normalized_facts).map((v) => (<span key={v} className="text-sm">{v}</span>))
                         : <span className="text-sm text-muted-foreground">--</span>}
@@ -315,36 +319,36 @@ export function MemoryTab({
                 <details>
                   <summary className="cursor-pointer list-none">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Validation + Conflicts</span>
-                      <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryConflicts?.conflicts).length} conflict{arrayOrEmpty(memoryConflicts?.conflicts).length === 1 ? "" : "s"}</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.validationConflicts")}</span>
+                      <span className="text-xs text-muted-foreground">{t("settings.memory.conflictsCount", { count: arrayOrEmpty(memoryConflicts?.conflicts).length })}</span>
                     </div>
                   </summary>
                   <div className="mt-2 grid gap-4 sm:grid-cols-2">
                     <div className="grid gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Validation</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.validation")}</span>
                       {memoryValidationReport?.latest ? (
                         <div className="grid gap-1 text-sm">
                           <strong>{memoryValidationReport.latest.status}</strong>
-                          <span className="text-muted-foreground">Checked: {unixTimeLabel(memoryValidationReport.latest.checked_at)}</span>
+                          <span className="text-muted-foreground">{t("settings.memory.checkedAt", { time: unixTimeLabel(memoryValidationReport.latest.checked_at) })}</span>
                           {arrayOrEmpty(memoryValidationReport.latest.issues).length
                             ? arrayOrEmpty(memoryValidationReport.latest.issues).map((issue) => (<span key={issue}>{issue}</span>))
-                            : <span className="text-muted-foreground">No issues.</span>}
+                            : <span className="text-muted-foreground">{t("settings.memory.noIssues")}</span>}
                         </div>
-                      ) : <span className="text-sm text-muted-foreground">No validation report yet.</span>}
+                      ) : <span className="text-sm text-muted-foreground">{t("settings.memory.noValidationReport")}</span>}
                     </div>
                     <div className="grid gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Conflicts</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.conflicts")}</span>
                       {arrayOrEmpty(memoryConflicts?.conflicts).length ? (
                         <div className="grid gap-2">
                           {arrayOrEmpty(memoryConflicts?.conflicts).map((conflict) => (
                             <div key={conflict.id} className="rounded bg-muted/30 px-3 py-2 text-sm">
                               <strong className="block">{conflict.conflict_kind}</strong>
-                              <span className="block text-muted-foreground">Other: {memoryRecordIdValue(conflict.other_record_id)}</span>
+                              <span className="block text-muted-foreground">{t("settings.memory.otherPrefix", { id: memoryRecordIdValue(conflict.other_record_id) })}</span>
                               <span className="block">{conflict.detail}</span>
                             </div>
                           ))}
                         </div>
-                      ) : <span className="text-sm text-muted-foreground">No conflicts.</span>}
+                      ) : <span className="text-sm text-muted-foreground">{t("settings.memory.noConflicts")}</span>}
                     </div>
                   </div>
                 </details>
@@ -352,22 +356,22 @@ export function MemoryTab({
                 <details>
                   <summary className="cursor-pointer list-none">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Evidence</span>
-                      <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryDetail.record.evidence_refs).length} ref{arrayOrEmpty(memoryDetail.record.evidence_refs).length === 1 ? "" : "s"}</span>
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("settings.memory.evidence")}</span>
+                      <span className="text-xs text-muted-foreground">{t("settings.memory.refsCount", { count: arrayOrEmpty(memoryDetail.record.evidence_refs).length })}</span>
                     </div>
                   </summary>
                   <div className="mt-2 grid gap-2">
                     {arrayOrEmpty(memoryDetail.record.evidence_refs).length ? (
                       arrayOrEmpty(memoryDetail.record.evidence_refs).map((ref, index) => (
                         <div key={`${ref.session_id ?? "session"}-${index}`} className="rounded bg-muted/30 px-3 py-2 text-sm">
-                          <div>session: {ref.session_id || "--"}</div>
-                          <div>message: {ref.message_id || "--"}</div>
-                          <div>tool: {ref.tool_call_id || "--"}</div>
-                          <div>stage: {ref.stage_id || "--"}</div>
-                          {ref.note ? <div className="text-muted-foreground">note: {ref.note}</div> : null}
+                          <div>{t("settings.memory.evidenceSession", { id: ref.session_id || "--" })}</div>
+                          <div>{t("settings.memory.evidenceMessage", { id: ref.message_id || "--" })}</div>
+                          <div>{t("settings.memory.evidenceTool", { id: ref.tool_call_id || "--" })}</div>
+                          <div>{t("settings.memory.evidenceStage", { id: ref.stage_id || "--" })}</div>
+                          {ref.note ? <div className="text-muted-foreground">{t("settings.memory.evidenceNote", { value: ref.note })}</div> : null}
                         </div>
                       ))
-                    ) : <span className="text-sm text-muted-foreground">No evidence refs.</span>}
+                    ) : <span className="text-sm text-muted-foreground">{t("settings.memory.noEvidenceRefs")}</span>}
                   </div>
                 </details>
               </div>
@@ -375,8 +379,8 @@ export function MemoryTab({
           ) : null}
 
           {selectedMemoryId && memoryDetailLoading ? (
-            <div className="absolute inset-2 z-10 flex items-center justify-center rounded-[22px] border border-border/50 bg-background/85 backdrop-blur-sm">
-              <span className="text-sm text-muted-foreground">Loading detail...</span>
+            <div className="absolute inset-2 z-10 flex items-center justify-center rounded-4xl border border-border/50 bg-background/85 backdrop-blur-sm">
+              <span className="text-sm text-muted-foreground">{t("settings.memory.loadingDetail")}</span>
             </div>
           ) : null}
         </div>
@@ -387,8 +391,8 @@ export function MemoryTab({
         <div className="grid gap-5">
           <div data-testid="settings-memory-rule-packs">
             <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Rule Packs</span>
-              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryRulePacks?.items?.length ?? 0} packs`}</span>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.rulePacks")}</span>
+              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? t("settings.common.loading") : t("settings.memory.packsCount", { count: memoryRulePacks?.items?.length ?? 0 })}</span>
             </div>
             <div className="grid gap-2">
               {memoryRulePacks?.items?.length ? (
@@ -404,21 +408,21 @@ export function MemoryTab({
                           <div key={rule.id} className="bg-muted/40 rounded px-3 py-2 text-sm">
                             <strong className="block">{rule.id}</strong>
                             <span className="block text-muted-foreground">{rule.description}</span>
-                            {rule.promotion_target ? <span className="block text-xs text-muted-foreground">promotion target: {rule.promotion_target}</span> : null}
+                            {rule.promotion_target ? <span className="block text-xs text-muted-foreground">{t("settings.memory.promotionTarget", { value: rule.promotion_target })}</span> : null}
                           </div>
                         ))}
                       </div>
-                    ) : <span className="mt-1 block text-xs text-muted-foreground">No rules declared.</span>}
+                    ) : <span className="mt-1 block text-xs text-muted-foreground">{t("settings.memory.noRules")}</span>}
                   </div>
                 ))
-              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-packs-empty">{memoryGovernanceLoading ? "Loading rule packs..." : "No rule packs available."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-packs-empty">{memoryGovernanceLoading ? t("settings.memory.loadingRulePacks") : t("settings.memory.noRulePacks")}</div>}
             </div>
           </div>
 
           <div data-testid="settings-memory-rule-hits">
             <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Recent Rule Hits</span>
-              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryRuleHits?.items?.length ?? 0} hits`}</span>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.recentRuleHits")}</span>
+              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? t("settings.common.loading") : t("settings.memory.hitsCount", { count: memoryRuleHits?.items?.length ?? 0 })}</span>
             </div>
             <div className="grid gap-2">
               {arrayOrEmpty(memoryRuleHits?.items).length ? (
@@ -426,30 +430,30 @@ export function MemoryTab({
                   <div key={hit.id} className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
                     <strong className="block text-sm">{hit.hit_kind}</strong>
                     <div className="mt-1 grid gap-0.5 text-sm text-muted-foreground">
-                      <span>run: {hit.run_id || "--"}</span>
-                      <span>record: {memoryRecordIdValue(hit.memory_id)}</span>
-                      <span>pack: {hit.rule_pack_id || "--"}</span>
+                      <span>{t("settings.memory.hitRun", { id: hit.run_id || "--" })}</span>
+                      <span>{t("settings.memory.hitRecord", { id: memoryRecordIdValue(hit.memory_id) })}</span>
+                      <span>{t("settings.memory.hitPack", { id: hit.rule_pack_id || "--" })}</span>
                       <span>{unixTimeLabel(hit.created_at)}</span>
                       {hit.detail ? <span>{hit.detail}</span> : null}
                     </div>
                   </div>
                 ))
-              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-hits-empty">{memoryGovernanceLoading ? "Loading rule hits..." : "No recent rule hits."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-hits-empty">{memoryGovernanceLoading ? t("settings.memory.loadingRuleHits") : t("settings.memory.noRuleHits")}</div>}
             </div>
           </div>
 
           <div data-testid="settings-memory-consolidation-runs">
             <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Consolidation Runs</span>
-              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryConsolidationRuns?.items?.length ?? 0} runs`}</span>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.consolidationRuns")}</span>
+              <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? t("settings.common.loading") : t("settings.memory.runsCount", { count: memoryConsolidationRuns?.items?.length ?? 0 })}</span>
             </div>
             <div className="grid gap-2">
               {memoryConsolidationResult ? (
                 <div className="border-l-2 border-l-foreground bg-foreground/5 px-4 py-3">
-                  <strong className="block text-sm">Latest Consolidation</strong>
+                  <strong className="block text-sm">{t("settings.memory.latestConsolidation")}</strong>
                   <div className="mt-1 grid gap-0.5 text-sm text-muted-foreground">
-                    <span>run: {memoryConsolidationResult.run.run_id}</span>
-                    <span>merged {memoryConsolidationResult.run.merged_count} · promoted {memoryConsolidationResult.run.promoted_count} · conflicts {memoryConsolidationResult.run.conflict_count}</span>
+                    <span>{t("settings.memory.hitRun", { id: memoryConsolidationResult.run.run_id })}</span>
+                    <span>{t("settings.memory.consolidationSummary", { merged: memoryConsolidationResult.run.merged_count, promoted: memoryConsolidationResult.run.promoted_count, conflicts: memoryConsolidationResult.run.conflict_count })}</span>
                     {arrayOrEmpty(memoryConsolidationResult.reflection_notes).length ? (
                       <div className="mt-1 grid gap-0.5">{arrayOrEmpty(memoryConsolidationResult.reflection_notes).map((note) => (<span key={note}>{note}</span>))}</div>
                     ) : null}
@@ -461,13 +465,13 @@ export function MemoryTab({
                   <div key={run.run_id} className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
                     <strong className="block text-sm">{run.run_id}</strong>
                     <div className="mt-1 grid gap-0.5 text-sm text-muted-foreground">
-                      <span>merged {run.merged_count} · promoted {run.promoted_count} · conflicts {run.conflict_count}</span>
-                      <span>started: {unixTimeLabel(run.started_at)}</span>
-                      <span>finished: {run.finished_at ? unixTimeLabel(run.finished_at) : "--"}</span>
+                      <span>{t("settings.memory.consolidationSummary", { merged: run.merged_count, promoted: run.promoted_count, conflicts: run.conflict_count })}</span>
+                      <span>{t("settings.memory.startedAt", { time: unixTimeLabel(run.started_at) })}</span>
+                      <span>{t("settings.memory.finishedAt", { time: run.finished_at ? unixTimeLabel(run.finished_at) : "--" })}</span>
                     </div>
                   </div>
                 ))
-              ) : <div className={mutedCardClass} data-testid="settings-memory-consolidation-runs-empty">{memoryGovernanceLoading ? "Loading consolidation runs..." : "No consolidation runs recorded yet."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-consolidation-runs-empty">{memoryGovernanceLoading ? t("settings.memory.loadingConsolidationRuns") : t("settings.memory.noConsolidationRuns")}</div>}
             </div>
           </div>
         </div>
@@ -477,11 +481,11 @@ export function MemoryTab({
       {memoryTab === "retrieval" ? (
         <div className="grid gap-4">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Retrieval Preview</span>
-            <span className="text-xs text-muted-foreground">{memoryPreviewLoading ? "Loading preview..." : `${arrayOrEmpty(memoryPreview?.packet.items).length} recalled`}</span>
+            <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.memory.retrievalPreview")}</span>
+            <span className="text-xs text-muted-foreground">{memoryPreviewLoading ? t("settings.memory.loadingPreview") : t("settings.memory.recalledCount", { count: arrayOrEmpty(memoryPreview?.packet.items).length })}</span>
           </div>
           <div className={mutedCardClass}>
-            {memoryPreview?.contract.note || "Formal preview of which memory records would be injected into the current turn and why."}
+            {memoryPreview?.contract.note || t("settings.memory.retrievalNoteFallback")}
           </div>
           <div className="grid gap-3" data-testid="settings-memory-retrieval-items">
             {arrayOrEmpty(memoryPreview?.packet.items).length ? (
@@ -492,13 +496,13 @@ export function MemoryTab({
                   </div>
                   <strong className="mt-1 block text-sm">{item.card.title}</strong>
                   <div className="mt-1 text-sm text-muted-foreground">
-                    <div>why: {item.why_recalled}</div>
-                    <div>summary: {item.card.summary}</div>
-                    {item.evidence_summary ? <div>evidence: {item.evidence_summary}</div> : null}
+                    <div>{t("settings.memory.whyRecalled", { value: item.why_recalled })}</div>
+                    <div>{t("settings.memory.summaryPrefix", { value: item.card.summary })}</div>
+                    {item.evidence_summary ? <div>{t("settings.memory.evidencePrefix", { value: item.evidence_summary })}</div> : null}
                   </div>
                 </div>
               ))
-            ) : <div className={mutedCardClass} data-testid="settings-memory-retrieval-empty">No memory records would be injected for the current search/session scope.</div>}
+            ) : <div className={mutedCardClass} data-testid="settings-memory-retrieval-empty">{t("settings.memory.retrievalEmpty")}</div>}
           </div>
         </div>
       ) : null}

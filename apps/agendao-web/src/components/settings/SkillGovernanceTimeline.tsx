@@ -6,6 +6,7 @@ import type {
   SkillGovernanceTimelineEntryRecord,
 } from "@/lib/skill";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n/I18nProvider";
 
 type TimelineScope = "all" | "skill" | "source";
 
@@ -23,20 +24,20 @@ function formatTimestamp(ts: number): string {
 function statusClasses(status: SkillGovernanceTimelineEntryRecord["status"]): string {
   switch (status) {
     case "success":
-      return "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950/60 dark:text-green-300";
+      return "border-(--ds-ok)/40 bg-(--ds-ok)/12 text-(--ds-ok)";
     case "warn":
-      return "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200";
+      return "border-(--ds-warn)/40 bg-(--ds-warn)/12 text-(--ds-warn)";
     case "error":
-      return "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950/60 dark:text-red-300";
+      return "border-(--ds-error)/40 bg-(--ds-error)/12 text-(--ds-error)";
     default:
       return "border-border bg-muted text-muted-foreground";
   }
 }
 
-function managedStateLabel(record: ManagedSkillRecord): string {
-  if (record.deleted_locally) return "deleted locally";
-  if (record.locally_modified) return "locally modified";
-  return "clean";
+function managedStateLabel(record: ManagedSkillRecord, t: (key: string) => string): string {
+  if (record.deleted_locally) return t("settings.skills.state.deletedLocally");
+  if (record.locally_modified) return t("settings.skills.state.locallyModified");
+  return t("settings.skills.state.clean");
 }
 
 function matchesSkill(
@@ -60,6 +61,7 @@ export function SkillGovernanceTimeline({
   selectedSkillName,
   selectedSourceId,
 }: SkillGovernanceTimelineProps) {
+  const { t } = useI18n();
   const [scope, setScope] = useState<TimelineScope>("all");
 
   const counts = useMemo(() => {
@@ -97,9 +99,9 @@ export function SkillGovernanceTimeline({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="m-0 text-xs tracking-widest uppercase text-muted-foreground font-semibold">
-            Governance Timeline
+            {t("settings.skills.timeline.title")}
           </p>
-          <h3 className="m-0 mt-1">Guard, audit, and managed provenance in one read model</h3>
+          <h3 className="m-0 mt-1">{t("settings.skills.timeline.subtitle")}</h3>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -112,7 +114,7 @@ export function SkillGovernanceTimeline({
             )}
             onClick={() => setScope("all")}
           >
-            All · {entries.length}
+            {t("settings.skills.timeline.scopeAll", { count: entries.length })}
           </button>
           <button
             type="button"
@@ -125,7 +127,7 @@ export function SkillGovernanceTimeline({
             )}
             onClick={() => setScope("skill")}
           >
-            Skill · {counts.skill}
+            {t("settings.skills.timeline.scopeSkill", { count: counts.skill })}
           </button>
           <button
             type="button"
@@ -138,20 +140,20 @@ export function SkillGovernanceTimeline({
             )}
             onClick={() => setScope("source")}
           >
-            Source · {counts.source}
+            {t("settings.skills.timeline.scopeSource", { count: counts.source })}
           </button>
         </div>
       </div>
 
       <div className="text-sm text-muted-foreground">
         {scope === "skill" && selectedSkillName ? (
-          <span>Focused on selected skill <code>{selectedSkillName}</code>.</span>
+          <span>{t("settings.skills.timeline.focusSkill", { name: selectedSkillName })}</span>
         ) : null}
         {scope === "source" && selectedSourceId ? (
-          <span>Focused on selected source <code>{selectedSourceId}</code>.</span>
+          <span>{t("settings.skills.timeline.focusSource", { id: selectedSourceId })}</span>
         ) : null}
         {scope === "all" ? (
-          <span>Showing the current workspace governance history tail.</span>
+          <span>{t("settings.skills.timeline.showAll")}</span>
         ) : null}
       </div>
 
@@ -187,9 +189,9 @@ export function SkillGovernanceTimeline({
 
               <div className="mt-3 text-xs text-muted-foreground">
                 {[
-                  entry.skill_name ? `skill ${entry.skill_name}` : null,
-                  entry.source_id ? `source ${entry.source_id}` : null,
-                  entry.actor ? `actor ${entry.actor}` : null,
+                  entry.skill_name ? t("settings.skills.skillPrefix", { name: entry.skill_name }) : null,
+                  entry.source_id ? t("settings.skills.sourcePrefix", { value: entry.source_id }) : null,
+                  entry.actor ? t("settings.skills.timeline.actorPrefix", { name: entry.actor }) : null,
                 ]
                   .filter(Boolean)
                   .join(" · ")}
@@ -198,11 +200,13 @@ export function SkillGovernanceTimeline({
               {entry.managed_record ? (
                 <div className="mt-3 rounded-lg border border-border/35 bg-background/65 p-3 text-xs text-muted-foreground">
                   <div>
-                    managed revision {entry.managed_record.installed_revision || "--"} ·{" "}
-                    {managedStateLabel(entry.managed_record)}
+                    {t("settings.skills.timeline.managedRevision", {
+                      revision: entry.managed_record.installed_revision || "--",
+                      state: managedStateLabel(entry.managed_record, t),
+                    })}
                   </div>
                   <div className="mt-1 break-all">
-                    locator {entry.managed_record.source?.locator || "--"}
+                    {t("settings.skills.timeline.locatorLine", { value: entry.managed_record.source?.locator || "--" })}
                   </div>
                 </div>
               ) : null}
@@ -232,7 +236,7 @@ export function SkillGovernanceTimeline({
           ))
         ) : (
           <div className="rounded-xl border border-border bg-muted/10 p-4 text-sm text-muted-foreground">
-            No timeline entries for the current focus.
+            {t("settings.skills.timeline.empty")}
           </div>
         )}
       </div>
