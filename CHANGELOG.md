@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (2026-07)
+
+- 用户目录统一：全局配置、会话数据库、日志、凭证、模型目录缓存、skills、prompt 历史全部收归 `~/.agendao`（可用 `AGENDAO_HOME` 覆盖），首次启动自动从旧 XDG 目录（`~/.config/agendao`、`~/.local/share/agendao`、`~/.cache/agendao`）幂等迁移。
+- TUI：新增全屏 Settings 页，General / Skills / MCP Servers / Keybindings / About 各分类均可查看与编辑；provider 支持原地增删、改名、启停与连接测试；session tree 支持折叠展开；输入框下方新增 token 与 context 用量状态条；新增宋代美学色系主题与"墨韵"加载动画。
+- Web：按 `docs/plans/agendao-web-audit-2026-07.md` 完成一轮修复——修复 skillProposal / worktree 两个死路由，server 密码改走 Authorization header，裸色值全面 token 化，App.tsx 从 1530 行拆到 996 行，lint 强化为 0 警告。
+- 工程治理：完成全项目审计（`docs/plans/agendao-project-audit-2026-07.md`）；新增最小 CI（`.github/workflows/ci.yml`：governance 门禁 + cargo check/test + clippy + web lint/build/test）；移除孤儿 crate `agendao-command-runtime`（源文件迁回 `agendao-command`）；修复 11 个存量失败测试，workspace 3092 个测试全绿。
+- 安全与健壮性：`mcp-auth.json` 写入权限收紧为 0600；provider 主 client 增加 connect timeout；`cargo run -p agendao` 增加 `default-run` 修复多 bin 歧义。
+
 ## 2026.6.10
 
 - 同步工作区版本到 `v2026.6.10`，统一根配置、README、用户手册、文档首页与示例文档的版本基线。

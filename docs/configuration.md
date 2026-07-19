@@ -9,11 +9,14 @@ AgenDao 通过分层的 JSON/JSONC 配置系统进行配置。本文档描述 `a
 ### 全局配置
 
 ```
-~/.config/agendao/agendao.jsonc
-~/.config/agendao/agendao.json
+~/.agendao/agendao.jsonc
+~/.agendao/agendao.json
 ```
 
 如果不存在，AgenDao 会在首次运行时使用默认值。
+
+> 自 2026.7 起，全局配置与数据统一收在 `~/.agendao`（可用 `AGENDAO_HOME` 覆盖）。
+> 旧位置 `~/.config/agendao/agendao.json{,c}` 会在首次启动时自动迁移过来。
 
 ### 项目级配置
 
@@ -22,7 +25,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | 来源 | 路径 | 优先级 |
 |------|------|--------|
 | 远程 well-known | `{url}/.well-known/opencode` | 最低 |
-| 全局配置 | `~/.config/agendao/agendao.jsonc` / `~/.config/agendao/agendao.json` | 中 |
+| 全局配置 | `~/.agendao/agendao.jsonc` / `~/.agendao/agendao.json` | 中 |
 | 项目 `.agendao` 目录 | `<project>/.agendao/agendao.jsonc` / `<project>/.agendao/agendao.json` | 高 |
 | 项目根目录 | `<project>/agendao.jsonc` / `<project>/agendao.json` | 最高 |
 
@@ -147,7 +150,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 {
   "toolImports": [
     "./tools/cadd/tools.jsonc",
-    "~/.config/agendao/tools/lab/tools.jsonc"
+    "~/.agendao/tools/lab/tools.jsonc"
   ]
 }
 ```
@@ -460,7 +463,7 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 | `runtime` | string | 运行时覆盖（如 `"python3.11"`） |
 | `options` | object | 插件特定选项 |
 
-自动发现路径：`~/.config/agendao/plugins/`、`~/.agendao/plugins/`、`<project>/.agendao/plugins/`，以及 `pluginPaths` 中配置的自定义路径。
+自动发现路径：`~/.agendao/plugins/`（权威位置）、`<project>/.agendao/plugins/`、旧版遗留 `~/.config/agendao/plugins/`，以及 `pluginPaths` 中配置的自定义路径。
 
 如果你要看一张更硬的“插件类型 -> 是否真实可用 -> hook 面”矩阵，见 [plugins-capability-matrix](plugins-capability-matrix)。
 

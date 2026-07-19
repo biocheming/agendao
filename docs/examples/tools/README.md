@@ -79,7 +79,7 @@
 ## Copying notes
 
 - 这些示例文件放在 `docs/examples/tools/` 下，路径是为了演示“相对谁解析”
-- 如果你把示例复制到 `.agendao/agendao.jsonc` 或 `~/.config/agendao/agendao.jsonc`，记得同步改相对路径
+- 如果你把示例复制到 `.agendao/agendao.jsonc` 或 `~/.agendao/agendao.jsonc`，记得同步改相对路径
 - 推荐最终目录形态：
 
 ```text

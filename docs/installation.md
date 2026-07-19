@@ -164,9 +164,8 @@ Build Info:
   Built at:   2026-05-17T...
 
 Paths:
-  Data:       ~/.local/share/agendao
-  Config:     ~/.config/agendao
-  Cache:      ~/.cache/agendao
+  Home:       ~/.agendao
+  (AGENDAO_HOME 环境变量可覆盖;配置、数据、日志、缓存统一收于此)
 ```
 
 确认二进制文件位置：
@@ -223,8 +222,8 @@ touch agendao.jsonc   # 或 agendao.json
 **全局配置**：
 
 ```bash
-mkdir -p ~/.config/agendao
-touch ~/.config/agendao/agendao.jsonc   # 或 ~/.config/agendao/agendao.json
+mkdir -p ~/.agendao
+touch ~/.agendao/agendao.jsonc   # 或 ~/.agendao/agendao.json
 ```
 
 最小配置示例：
@@ -266,15 +265,31 @@ agendao run "explain the project structure"
 
 ## 重要目录
 
-AgenDao 使用以下标准目录（遵循 XDG 规范）：
+自 2026.7 起，AgenDao 把所有用户级数据统一收在一个目录（与 `~/.codex`、`~/.claude` 同一约定）：
 
 | 目录 | 路径 | 用途 |
 |------|------|------|
-| 数据目录 | `~/.local/share/agendao` | 日志、数据库、认证信息 |
-| 配置目录 | `~/.config/agendao` | 全局配置 |
-| 缓存目录 | `~/.cache/agendao` | 模型目录缓存、其他缓存 |
+| 用户主目录 | `~/.agendao` | 配置、数据库、日志、认证、缓存、skills，全部收于此 |
 | 项目配置 | `<project>/.agendao/` | 项目级配置、agent、command |
 | 项目根配置 | `<project>/agendao.jsonc` / `<project>/agendao.json` | 项目根配置文件 |
+
+`~/.agendao` 内部布局：
+
+```
+~/.agendao/
+├── agendao.jsonc / agendao.json   # 全局配置
+├── agendao.db                     # 会话数据库（含 -wal/-shm）
+├── auth.json / mcp-auth.json      # 凭证
+├── log/agendao.log                # 日志
+├── cache/                         # 模型目录、github_research 等缓存
+├── skills/                        # 用户级 skills
+├── plugins/                       # 用户级插件
+├── global-state.json              # 全局 UI 状态
+└── prompt-history.json            # TUI prompt 历史
+```
+
+- 首次启动会自动把旧 XDG 位置（`~/.config/agendao`、`~/.local/share/agendao`、`~/.cache/agendao`）的数据迁移进来；目标已存在时以新位置为准，旧目录只留空壳。
+- 可用 `AGENDAO_HOME` 环境变量整体换到别的位置（测试/便携场景）。
 
 使用 `agendao debug paths` 查看当前系统中的实际路径。
 
@@ -299,6 +314,7 @@ AgenDao 使用以下标准目录（遵循 XDG 规范）：
 | `KIMI_FOR_CODING_API_KEY` | Moonshot Kimi API 密钥 |
 | `AGENDAO_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:3000`） |
 | `AGENDAO_WEB_DIST` | 显式覆盖默认内嵌 Web 资源，改为加载外部 `dist/` 目录 |
+| `AGENDAO_HOME` | 覆盖用户主目录（默认 `~/.agendao`，配置/数据/日志/缓存都在其下） |
 | `AGENDAO_CONFIG_DIR` | 覆盖配置目录路径 |
 | `RUST_LOG` | 日志级别过滤（如 `debug`、`agendao_provider=trace`） |
 
@@ -317,6 +333,8 @@ sudo rm /usr/local/bin/agendao
 sudo rm -rf /usr/local/share/agendao/web
 
 # 移除配置和数据（可选）
+rm -rf ~/.agendao
+# 旧版 XDG 残留（如曾运行过 2026.7 之前的版本）
 rm -rf ~/.config/agendao
 rm -rf ~/.local/share/agendao
 rm -rf ~/.cache/agendao

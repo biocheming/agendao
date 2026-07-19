@@ -150,7 +150,7 @@ agendao auth logout openai
 当前 server 会从下面的位置加载持久凭证：
 
 - `AGENDAO_DATA_DIR/auth.json`
-- 如果没配 `AGENDAO_DATA_DIR`，默认是 `~/.local/share/agendao/data/auth.json`
+- 如果没配 `AGENDAO_DATA_DIR`，默认是 `~/.agendao/auth.json`（统一用户目录，见 installation 文档）
 
 这里的凭证类型包括：
 

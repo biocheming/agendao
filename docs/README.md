@@ -98,6 +98,8 @@
   - Verifier preset 的算法与架构设计；主体已落地，文档现在偏复盘与边界说明
 - `docs/plans/verifier-mode-implementation-checklist.md`
   - Verifier mode 已完成项与剩余 polish
+- `docs/plans/agendao-web-audit-2026-07.md`
+  - agendao-web 框架/功能/审美三维审计报告（2026-07-17），含修复清单与状态追踪
 
 更完整的计划状态，统一看 `documentation-status.md`。
 

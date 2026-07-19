@@ -1,6 +1,6 @@
 # AgenDao 文档状态总表
 
-文档日期：`2026-06-06`
+文档日期：`2026-07-19`
 
 本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `agendao/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
 
@@ -78,7 +78,7 @@
 结论：
 
 - `agendao` 已是产品壳。
-- `agendao-cli` / `agendao-tui` / `agendao-web` / `agendao-server` 的角色划分已经清楚：`agendao-cli` 负责非交互执行与管理命令，`agendao-tui` 负责终端会话界面，`agendao-web` 负责浏览器界面，`agendao-server` 负责 authority。
+- `agendao-cli` / `agendao-tui-revue` / `agendao-web` / `agendao-server` 的角色划分已经清楚：`agendao-cli` 负责非交互执行与管理命令，`agendao-tui-revue` 负责终端会话界面（旧 agendao-tui 已移除），`agendao-web` 负责浏览器界面，`agendao-server` 负责 authority。
 - 这份蓝图文档现在更像边界守护参考，而不是高频执行清单。
 
 对应文档：
@@ -112,6 +112,22 @@
 - `plans/verifier-mode-preset-design.md`
 - `plans/verifier-mode-implementation-checklist.md`
 
+### 7. 用户目录统一 / 全项目审计 / TUI Settings
+
+状态：`已落地`
+
+结论：
+
+- 用户级数据（配置、数据库、日志、凭证、缓存、skills）统一收归 `~/.agendao`，旧 XDG 目录首启自动迁移；`AGENDAO_HOME` 可覆盖。
+- 已完成一次全项目审计（架构/质量/安全/测试/文档/Web 六专项），P0 级问题（CI 缺失、存量失败测试、孤儿 crate）已修复。
+- TUI 全屏 Settings 页落地，各分类可查看可编辑，provider 支持原地 CRUD 与连接测试。
+
+对应文档：
+
+- `plans/agendao-project-audit-2026-07.md`
+- `plans/agendao-web-audit-2026-07.md`
+- `../CHANGELOG.md`（Unreleased 2026-07）
+
 ## 根目录文档状态
 
 | 文档 | 当前定位 | 状态判断 |
@@ -134,22 +150,7 @@
 
 ## 阶段记录与归档文档
 
-下列文档继续保留，因为它们能解释特定阶段的设计判断、实现顺序或测试口径；但阅读时应把它们视为归档材料，而不是当前产品面的直接说明：
-
-| 文档 | 当前定位 | 状态判断 |
-| --- | --- | --- |
-| `agendao-统一前端事件契约-2026-06-05.md` | 前端事件收口阶段记录 | `归档参考` |
-| `frontend-transport-event-matrix-2026-05-28.md` | 传输/事件覆盖快照 | `归档参考` |
-| `mixed-transport-progress.md` | 混合传输阶段总进度记录 | `归档参考` |
-| `phase4.2-session-manager-extraction.md` | SessionManager 提取复盘 | `归档参考` |
-| `phase5.1-unix-socket-transport.md` | Unix socket 阶段实现记录 | `归档参考` |
-| `phase5.2-server-integration.md` | 服务端接入阶段记录 | `归档参考` |
-| `phase5.3-tui-cli-integration.md` | 传输选择集成阶段记录 | `归档参考` |
-| `phase6.1-complete-execute-prompt.md` | prompt 执行阶段记录 | `归档参考` |
-| `phase6.2-tool-calling-support.md` | tool calling 阶段记录 | `归档参考` |
-| `phase6.3-streaming-support.md` | streaming 阶段记录 | `归档参考` |
-| `phase6.4-performance-testing.md` | 性能测试计划稿 | `归档参考` |
-| `phase6.5-integration-testing.md` | 集成测试计划稿 | `归档参考` |
+早期传输/阶段复盘文档（`phase4.2`~`phase6.5`、`mixed-transport-progress` 等 12 份）已在文档清理中移除，相关结论已沉淀进各产品文档；git 历史仍可查阅。
 
 ## 计划文档状态
 
@@ -164,7 +165,9 @@
 | `plans/provider-profile-protocol-transport-refactor-plan.md` | provider 清债路线 | `进行中` |
 | `plans/verifier-mode-preset-design.md` | verifier 设计与现状 | `主体完成，余下 polish` |
 | `plans/verifier-mode-implementation-checklist.md` | verifier 落地清单 | `主体完成，余下 polish` |
-| `plans/tui-session-graph-sidebar.md` | TUI sidebar 设计草图 | `设计 backlog` |
+| `plans/tui-session-graph-sidebar.md` | TUI sidebar 设计草图 | `已落地（2026-07），可归档` |
+| `plans/agendao-web-audit-2026-07.md` | Web 前端专项审计与修复追踪 | `进行中（主体已修）` |
+| `plans/agendao-project-audit-2026-07.md` | 全项目六专项审计 | `P0/P1/P2/P3 已全部核销` |
 
 ## 示例与 schema 状态
 
