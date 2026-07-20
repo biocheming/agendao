@@ -12,6 +12,23 @@ use crate::{
 
 const GOOGLE_API_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
+/// 解析 Gemini 请求的 base（含 `/models` 后缀），与 connection_test 的归一保持一致：
+/// 空 base 走官方默认；已含 `/models` 原样；否则先做版本段归一（google 补 /v1beta，
+/// 已有 /vN 保留）再补 `/models`。
+fn google_models_base_url(config_base_url: &str) -> String {
+    let trimmed = config_base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return GOOGLE_API_URL.to_string();
+    }
+    if trimmed.ends_with("/models") {
+        return trimmed.to_string();
+    }
+    format!(
+        "{}/models",
+        crate::transport::normalize_provider_base_url(trimmed, "google")
+    )
+}
+
 pub struct GeminiAdapter;
 
 impl Default for GeminiAdapter {
@@ -81,11 +98,7 @@ impl ProviderAdapter for GeminiAdapter {
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<ChatResponse, ProviderError> {
-        let base_url = if config.base_url.trim().is_empty() {
-            GOOGLE_API_URL
-        } else {
-            config.base_url.trim()
-        };
+        let base_url = google_models_base_url(&config.base_url);
         let url = format!(
             "{}/{}:generateContent?key={}",
             base_url, request.model, config.api_key
@@ -128,11 +141,7 @@ impl ProviderAdapter for GeminiAdapter {
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
         let use_pipeline = runtime_pipeline_enabled(config);
-        let base_url = if config.base_url.trim().is_empty() {
-            GOOGLE_API_URL
-        } else {
-            config.base_url.trim()
-        };
+        let base_url = google_models_base_url(&config.base_url);
         let url = format!(
             "{}/{}:streamGenerateContent?key={}&alt=sse",
             base_url, request.model, config.api_key
@@ -357,6 +366,36 @@ mod tests {
     use super::*;
     use crate::ContentPart;
     use serde_json::json;
+
+    #[test]
+    fn google_models_base_url_normalizes_like_connection_test() {
+        // 空 base 走官方默认。
+        assert_eq!(google_models_base_url(""), GOOGLE_API_URL);
+        assert_eq!(google_models_base_url("   "), GOOGLE_API_URL);
+        // 已含 /models 原样（去尾斜杠）。
+        assert_eq!(
+            google_models_base_url("https://proxy.example.com/v1beta/models"),
+            "https://proxy.example.com/v1beta/models"
+        );
+        // 已含版本段：补 /models，与 connection_test 的 {base}/models 一致。
+        assert_eq!(
+            google_models_base_url("https://proxy.example.com/v1beta"),
+            "https://proxy.example.com/v1beta/models"
+        );
+        assert_eq!(
+            google_models_base_url("https://proxy.example.com/v1"),
+            "https://proxy.example.com/v1/models"
+        );
+        // 裸 base：google 协议补 /v1beta，与 connection_test 一致。
+        assert_eq!(
+            google_models_base_url("https://api.kimi.com/coding"),
+            "https://api.kimi.com/coding/v1beta/models"
+        );
+        assert_eq!(
+            google_models_base_url("https://api.kimi.com/coding/"),
+            "https://api.kimi.com/coding/v1beta/models"
+        );
+    }
 
     #[test]
     fn convert_request_drops_tool_only_history_from_text_protocol() {

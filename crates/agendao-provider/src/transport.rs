@@ -301,6 +301,81 @@ mod tests {
     }
 
     #[test]
+    fn normalize_base_url_keeps_existing_version_segment() {
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/v1", "openai"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/v2", "openai"),
+            "https://api.example.com/v2"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/v1beta", "google"),
+            "https://api.example.com/v1beta"
+        );
+        assert_eq!(
+            normalize_provider_base_url("http://localhost:11434/v1", "ollama"),
+            "http://localhost:11434/v1"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_appends_version_segment_per_protocol() {
+        assert_eq!(
+            normalize_provider_base_url("https://api.kimi.com/coding", "anthropic"),
+            "https://api.kimi.com/coding/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.kimi.com/coding", "openai"),
+            "https://api.kimi.com/coding/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.kimi.com/coding", "google"),
+            "https://api.kimi.com/coding/v1beta"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_strips_trailing_slash() {
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/v1/", "openai"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/", "openai"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com//", "google"),
+            "https://api.example.com/v1beta"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_returns_empty_as_is() {
+        assert_eq!(normalize_provider_base_url("", "openai"), "");
+        assert_eq!(normalize_provider_base_url("   ", "google"), "   ");
+    }
+
+    #[test]
+    fn normalize_base_url_ignores_non_version_segments() {
+        // "v1beta" 必须完整成段；路径中间的 v1 不算结尾版本段。
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/v1/proxy", "openai"),
+            "https://api.example.com/v1/proxy/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/vbeta", "openai"),
+            "https://api.example.com/vbeta/v1"
+        );
+        assert_eq!(
+            normalize_provider_base_url("https://api.example.com/version", "openai"),
+            "https://api.example.com/version/v1"
+        );
+    }
+
+    #[test]
     fn sigv4_signing_includes_session_token_in_signed_headers() {
         let headers = sign_aws_sigv4_json_request(
             AwsSigV4Credentials {
@@ -335,6 +410,39 @@ mod tests {
     }
 }
 
+/// 判断 base URL 是否以 API 版本段结尾（/v1、/v2、/v1beta 等 `/v{digits}[beta]`）。
+fn ends_with_version_segment(base: &str) -> bool {
+    let last = base.rsplit('/').next().unwrap_or("");
+    let Some(rest) = last.strip_prefix('v') else {
+        return false;
+    };
+    let rest = rest.strip_suffix("beta").unwrap_or(rest);
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+/// 归一 provider base URL：确保以协议对应的版本段结尾。
+///
+/// - base 已以版本段结尾（/v1、/v2、/v1beta 等）→ 原样（仅去掉尾 `/`）；
+/// - 否则 google 协议补 `/v1beta`，其余协议补 `/v1`；
+/// - 空 base（trim 后为空）→ 原样返回，由各适配器走自己的默认 URL。
+///
+/// 聊天适配器与 `connection_test` 共用本函数，保证测连与实际请求打到同一版本段。
+pub fn normalize_provider_base_url(base_url: &str, protocol: &str) -> String {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return base_url.to_string();
+    }
+    let base = trimmed.trim_end_matches('/');
+    if ends_with_version_segment(base) {
+        return base.to_string();
+    }
+    if protocol == "google" {
+        format!("{base}/v1beta")
+    } else {
+        format!("{base}/v1")
+    }
+}
+
 /// 连接测试结果（只读探测，无副作用）。
 #[derive(Debug, Clone)]
 pub struct ConnectionTestOutcome {
@@ -358,12 +466,8 @@ pub async fn connection_test(
     let base = base_url.trim_end_matches('/');
     let url = if base.ends_with("/models") {
         base.to_string()
-    } else if base.ends_with("/v1") || base.ends_with("/v1beta") {
-        format!("{}/models", base)
-    } else if protocol == "google" {
-        format!("{}/v1beta/models", base)
     } else {
-        format!("{}/v1/models", base)
+        format!("{}/models", normalize_provider_base_url(base, protocol))
     };
 
     let client = match reqwest::Client::builder()

@@ -26,7 +26,8 @@ fn ethnopic_url(base_url: &str) -> String {
     if base.ends_with("/messages") {
         return base.to_string();
     }
-    let base = base.trim_end_matches('/');
+    // 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
+    let base = crate::transport::normalize_provider_base_url(base, "ethnopic");
     format!("{base}/messages")
 }
 
@@ -589,6 +590,24 @@ mod tests {
         assert_eq!(
             ethnopic_url("https://example.com/v1/"),
             "https://example.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn ethnopic_url_appends_v1_like_connection_test() {
+        // 与 transport::connection_test 的归一保持一致：裸 base 补 /v1，
+        // 已含 /vN 版本段的 base（ollama /v1、astron /v2 等）不受影响。
+        assert_eq!(
+            ethnopic_url("https://api.kimi.com/coding"),
+            "https://api.kimi.com/coding/v1/messages"
+        );
+        assert_eq!(
+            ethnopic_url("https://api.kimi.com/coding/"),
+            "https://api.kimi.com/coding/v1/messages"
+        );
+        assert_eq!(
+            ethnopic_url("https://astron.example.com/v2"),
+            "https://astron.example.com/v2/messages"
         );
     }
 

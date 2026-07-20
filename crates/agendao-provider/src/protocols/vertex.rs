@@ -55,7 +55,12 @@ impl VertexGeminiAdapter {
     }
 
     fn build_url(vertex_config: &VertexExtractedConfig, model: &str, method: &str) -> String {
-        let base = vertex_config.base_url.as_deref().unwrap_or(VERTEX_API_BASE);
+        // 自定义 base 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
+        let base = vertex_config
+            .base_url
+            .as_deref()
+            .map(|base| crate::transport::normalize_provider_base_url(base, "vertex"))
+            .unwrap_or_else(|| VERTEX_API_BASE.to_string());
         format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:{}",
             base, vertex_config.project_id, vertex_config.location, model, method
@@ -524,6 +529,36 @@ mod tests {
     use super::*;
     use crate::ContentPart;
     use serde_json::json;
+
+    fn vertex_config_with_base(base_url: Option<&str>) -> VertexExtractedConfig {
+        VertexExtractedConfig {
+            access_token: "token".to_string(),
+            project_id: "proj".to_string(),
+            location: "us-east5".to_string(),
+            base_url: base_url.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn build_url_normalizes_custom_base_like_connection_test() {
+        // 默认 base 自带 /v1，不受影响。
+        let url =
+            VertexGeminiAdapter::build_url(&vertex_config_with_base(None), "m", "generateContent");
+        assert!(url.starts_with("https://aiplatform.googleapis.com/v1/projects/"));
+        // 裸 base 补 /v1；已含版本段的 base 原样保留。
+        let url = VertexGeminiAdapter::build_url(
+            &vertex_config_with_base(Some("https://proxy.example.com")),
+            "m",
+            "generateContent",
+        );
+        assert!(url.starts_with("https://proxy.example.com/v1/projects/"));
+        let url = VertexGeminiAdapter::build_url(
+            &vertex_config_with_base(Some("https://proxy.example.com/v1")),
+            "m",
+            "generateContent",
+        );
+        assert!(url.starts_with("https://proxy.example.com/v1/projects/"));
+    }
 
     #[test]
     fn convert_request_injects_interrupted_tool_result_for_vertex_tool_protocol() {

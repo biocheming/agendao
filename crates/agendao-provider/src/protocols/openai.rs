@@ -178,11 +178,9 @@ fn chat_completions_url(base_url: Option<&str>) -> String {
             if base.ends_with("/chat/completions") {
                 return base.to_string();
             }
-            if base.ends_with('/') {
-                format!("{base}chat/completions")
-            } else {
-                format!("{base}/chat/completions")
-            }
+            // 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
+            let base = crate::transport::normalize_provider_base_url(base, "openai");
+            format!("{base}/chat/completions")
         }
     }
 }
@@ -195,14 +193,9 @@ fn responses_url(base_url: Option<&str>, path: &str) -> String {
             if base.ends_with("/chat/completions") {
                 return format!("{}/{}", base.trim_end_matches("/chat/completions"), path);
             }
-            if base.ends_with("/v1") {
-                return format!("{}/{}", base.trim_end_matches('/'), path);
-            }
-            if base.ends_with('/') {
-                format!("{}{}", base, path)
-            } else {
-                format!("{}/{}", base, path)
-            }
+            // 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
+            let base = crate::transport::normalize_provider_base_url(base, "openai");
+            format!("{base}/{}", path)
         }
     }
 }
@@ -773,6 +766,53 @@ mod tests {
             .with_option("npm", serde_json::json!("@ai-sdk/openai-compatible"))
             .with_option("useResponsesApi", serde_json::json!(true));
         assert!(!uses_chat_completions_shape(&config).unwrap());
+    }
+
+    #[test]
+    fn chat_completions_url_normalizes_like_connection_test() {
+        // 与 transport::connection_test 的归一保持一致：裸 base 补 /v1，
+        // 已含 /vN 版本段的 base（ollama /v1、astron /v2 等）不受影响。
+        assert_eq!(
+            chat_completions_url(Some("https://api.kimi.com/coding")),
+            "https://api.kimi.com/coding/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url(Some("https://api.kimi.com/coding/")),
+            "https://api.kimi.com/coding/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url(Some("http://localhost:11434/v1")),
+            "http://localhost:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url(Some("https://astron.example.com/v2")),
+            "https://astron.example.com/v2/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url(Some("https://example.com/v1/chat/completions")),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(chat_completions_url(None), OPENAI_API_URL);
+    }
+
+    #[test]
+    fn responses_url_normalizes_like_connection_test() {
+        assert_eq!(
+            responses_url(Some("https://api.kimi.com/coding"), "responses"),
+            "https://api.kimi.com/coding/v1/responses"
+        );
+        assert_eq!(
+            responses_url(Some("https://example.com/v1"), "responses"),
+            "https://example.com/v1/responses"
+        );
+        assert_eq!(
+            responses_url(Some("https://example.com/v2/"), "/responses"),
+            "https://example.com/v2/responses"
+        );
+        assert_eq!(
+            responses_url(None, "responses"),
+            "https://api.openai.com/v1/responses"
+        );
     }
 
     #[test]
