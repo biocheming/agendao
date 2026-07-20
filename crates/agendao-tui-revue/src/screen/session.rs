@@ -455,6 +455,12 @@ fn detect_unit_at(
 /// row_owners——绝不 paint 也不命中（viewport 外用户点不到），但高度 / glyph /
 /// accent / bg 真实，scrollbar / scroll_top / cursor 计算照旧正确。
 /// SAFETY_PAD 上下各多 layout 8 行，容许 1~2 行抖动不重布局。
+///
+/// 坐标系口径（金律：渲染/滚动/命中同一坐标）：`viewport.scroll_top` 由调用方从
+/// `transcript_total_height`（含块间 gap 行）推出，渲染层 vstack 也在每个 unit 后
+/// 插 1 行 gap（compact_density 时无）。因此本函数的累加坐标 `acc_top` 必须同步
+/// 计入 gap 行——此前只累加 unit.height，长会话（gap 总数 > SAFETY_PAD + viewport
+/// 余量）下窗口与所有 unit 错开，全部判成占位 → 整屏只剩图标没有文字。
 pub(crate) fn build_render_units(
     msgs: &[TranscriptBlock],
     cursor_idx: Option<usize>,
@@ -462,11 +468,16 @@ pub(crate) fn build_render_units(
     show_thinking: bool,
     viewport: Option<ViewportRange>,
     text_width: u16,
+    compact_density: bool,
 ) -> Vec<RenderUnit> {
     /// viewport 上下 padding（行）：抗 1-2 行抖动 + 吸收调用方先于内联 dialog
     /// 估算 scroll_top 的小幅偏差（permission/question 内联块在 build 之后才追加，
     /// 致 viewport 起点可能下移 5~10 行；16 行余量覆盖之）。
     const SAFETY_PAD: u16 = 16;
+
+    // 块间 gap 行高（与渲染循环 child_sized(Text::new(""), 1)、
+    // transcript_total_height 的 `gap = count` 同口径）。
+    let gap_row: u16 = if compact_density { 0 } else { 1 };
 
     let mut units = Vec::new();
     let mut i = 0usize;
@@ -541,7 +552,7 @@ pub(crate) fn build_render_units(
             is_well: span.is_well,
         });
 
-        acc_top = unit_bottom;
+        acc_top = unit_bottom.saturating_add(gap_row);
         i += span.span;
     }
     units
@@ -1206,11 +1217,12 @@ mod layout_tests {
     #[test]
     fn viewport_window_matches_full_layout_heights() {
         let msgs = make_mixed_msgs();
-        let full = build_render_units(&msgs, None, 0, true, None, 100);
+        let full = build_render_units(&msgs, None, 0, true, None, 100, false);
         let windowed = build_render_units(
             &msgs, None, 0, true,
             Some(ViewportRange { scroll_top: 30, viewport_h: 20 }),
             100,
+            false,
         );
 
         assert_eq!(full.len(), windowed.len(), "viewport 切换不应改变 unit 数");
@@ -1237,7 +1249,7 @@ mod layout_tests {
         // transcript_total_height 现走纯量 detect_unit_at —— 必须与全量 build_render_units
         // 的 Σ height + count + 1 等同（compact_density=false 下每 unit 后 1 行 gap）。
         let total = transcript_total_height(&msgs, true, false, 100);
-        let units = build_render_units(&msgs, None, 0, true, None, 100);
+        let units = build_render_units(&msgs, None, 0, true, None, 100, false);
         let sum_h: u16 = units.iter().filter(|u| u.height > 0)
             .map(|u| u.height).sum();
         let count = units.iter().filter(|u| u.height > 0).count() as u16;
@@ -1246,5 +1258,48 @@ mod layout_tests {
         // compact_density=true 下无块间空行 gap 应为 0
         let total_compact = transcript_total_height(&msgs, true, true, 100);
         assert_eq!(total_compact, sum_h.saturating_add(1));
+    }
+
+    /// 回归（Bug A）：长 transcript 钉底时，可见窗口内的 unit 必须是真布局
+    /// （能渲染出文本），不得是占位空 view。
+    ///
+    /// 修复前 `build_render_units` 的 `acc_top` 只累加 unit 高度、不计块间
+    /// gap 行，而 `ViewportRange.scroll_top` 由 `transcript_total_height`
+    /// （含 gap）推出——块数一多（gap 总数 > viewport + SAFETY_PAD）窗口与
+    /// 所有 unit 错开，全部判成占位 → 旧会话整屏只剩图标没有文字。
+    #[test]
+    fn bottom_viewport_layouts_real_content_for_long_transcripts() {
+        let mut msgs = Vec::new();
+        for i in 0..120 {
+            msgs.push(TranscriptBlock::UserPrompt {
+                id: format!("u{i}"),
+                content: format!("question {i}"),
+                fold: FoldState::Expanded,
+            });
+            msgs.push(TranscriptBlock::AssistantMsg {
+                id: format!("a{i}"),
+                content: format!("answer {i}"),
+            });
+        }
+        let text_width: u16 = 100;
+        let available: u16 = 41;
+        let total_h = transcript_total_height(&msgs, true, false, text_width);
+        let scroll_top = total_h.saturating_sub(available);
+        let units = build_render_units(
+            &msgs, None, 0, true,
+            Some(ViewportRange { scroll_top, viewport_h: available }),
+            text_width, false,
+        );
+        // 末尾 unit（钉底时必在可见窗口内）渲染其 content，必须出现文本字符。
+        let last = units.last().expect("units 非空");
+        let h = last.height.max(1);
+        let mut buf = Buffer::new(120, h);
+        let area = Rect::new(0, 0, 120, h);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        last.content.render(&mut ctx);
+        let any_text = (0..h).any(|y| {
+            (0..120).any(|x| buf.get(x, y).map(|c| c.symbol != ' ').unwrap_or(false))
+        });
+        assert!(any_text, "钉底可见 unit 必须是真布局（修复前为占位空 view → 只剩图标）");
     }
 }

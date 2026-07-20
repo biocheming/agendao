@@ -12,6 +12,16 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 SessionRunStatusKind::Idle => RunStatus::Idle,
                 SessionRunStatusKind::Running => RunStatus::Running,
                 SessionRunStatusKind::WaitingOnUser => RunStatus::WaitingUser,
+                // 轮次内的活跃相位仍算"运行中"：工具一调用，
+                // runtime_state.tool_started 就把 run_status 置 WaitingOnTool，
+                // 随后的 TopologyChanged/SessionStatus 快照重投影会把它广播出来；
+                // 此前 `_ => Idle` 把这些相位映射成 Idle，spinner 在每次工具
+                // 调用/压缩期间被冻结（"墨韵"恒静止的主因）。Cancelling 同理：
+                // 取消落定前这一轮仍在跑。
+                SessionRunStatusKind::Compacting
+                | SessionRunStatusKind::WaitingOnTool
+                | SessionRunStatusKind::Cancelling => RunStatus::Running,
+                // Blocked/Sleeping 是 session 级静置，不算运行。
                 _ => RunStatus::Idle,
             };
             session.run_status.set(status);
@@ -56,10 +66,12 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                     match phase {
                         // delta — stream-extend the running assistant block
                         Some("delta") => session.push_assistant_delta(bid, text),
-                        // full / end — append (or replace) with the final text
+                        // full — 快照语义见 SessionStore::apply_assistant_snapshot：
+                        // start 后首个 full 追加新段（逐 chunk 片段流），段内/
+                        // 无 start 的 full 按 merge 合并（累积快照前缀替换）。
                         Some("full") => {
                             if !text.is_empty() {
-                                session.push_assistant_delta(bid, text);
+                                session.apply_assistant_snapshot(bid, text);
                             }
                         }
                         Some("end") => {
@@ -67,14 +79,26 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                             // as idle so the prompt bar reactivates.
                             session.run_status.set(RunStatus::Idle);
                         }
-                        Some("start") => { /* start is silent — wait for delta */ }
+                        Some("start") => {
+                            // 新段开始：下一条同 id 的 full 追加为新片段
+                            // （逐 chunk 生命周期流）。单生命周期流里 start
+                            // 只出现一次，随后的累积 full 走段内 merge。
+                            session.mark_stream_segment_start("m", bid);
+                        }
                         _ => {}
                     }
                 }
                 "reasoning" => {
                     match phase {
-                        Some("delta") | Some("full") => {
+                        Some("delta") => {
                             if !text.is_empty() { session.push_thinking(bid, text); }
+                        }
+                        // full — 同 message 分支：start 后追加新段，否则 merge。
+                        Some("full") => {
+                            if !text.is_empty() { session.apply_thinking_snapshot(bid, text); }
+                        }
+                        Some("start") => {
+                            session.mark_stream_segment_start("r", bid);
                         }
                         _ => {}
                     }
@@ -290,5 +314,126 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
         }
 
         FrontendEvent::DiffReplaced { session_id, .. } => Some(session_id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output_block(id: &str, kind: &str, phase: &str, text: &str) -> FrontendEvent {
+        FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({"kind": kind, "phase": phase, "text": text}),
+            id: Some(id.into()),
+            live_identity: None,
+        }
+    }
+
+    /// 回归（Bug B）：单生命周期内服务端 coalesce 把 delta 归并成**累积全文**
+    /// 快照逐帧下发（phase="full"），段内必须合并为最新快照，而非逐帧拼接——
+    /// 否则渲染出 "TheThe answer toThe answer to 1..."。
+    #[test]
+    fn cumulative_full_snapshots_replace_within_segment() {
+        let session = SessionStore::new();
+        apply_frontend_event(&output_block("m1", "message", "start", ""), &session);
+        for snap in ["The", "The answer to", "The answer to 1+1 is 2"] {
+            apply_frontend_event(&output_block("m1", "message", "full", snap), &session);
+        }
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1, "同一 id 的快照应合并为一个块");
+        match &msgs[0] {
+            TranscriptBlock::AssistantMsg { content, .. } => {
+                assert_eq!(content, "The answer to 1+1 is 2", "累积快照必须替换而非拼接");
+            }
+            _ => panic!("expected AssistantMsg"),
+        }
+    }
+
+    /// 回归（逐 chunk 生命周期形态）：每个 chunk 都是独立 start/full/end，
+    /// full 只携带该 chunk 的片段（实测 deepseek-v4-flash / qwen 流式），
+    /// start 后必须追加拼接，否则只剩最后一截。
+    #[test]
+    fn fragment_full_snapshots_append_after_each_start() {
+        let session = SessionStore::new();
+        for frag in ["1", "+", "1", " =", " **", "2", "**"] {
+            apply_frontend_event(&output_block("m1", "message", "start", ""), &session);
+            apply_frontend_event(&output_block("m1", "message", "full", frag), &session);
+            apply_frontend_event(&output_block("m1", "message", "end", ""), &session);
+        }
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            TranscriptBlock::AssistantMsg { content, .. } => {
+                assert_eq!(content, "1+1 = **2**", "逐 chunk 片段必须按段拼接");
+            }
+            _ => panic!("expected AssistantMsg"),
+        }
+    }
+
+    /// reasoning 的逐 chunk 片段流同样按段拼接；段内累积快照按前缀替换。
+    #[test]
+    fn reasoning_full_snapshots_segmented_merge() {
+        let session = SessionStore::new();
+        // 逐 chunk 片段
+        for frag in ["think", "ing longer"] {
+            apply_frontend_event(&output_block("r1", "reasoning", "start", ""), &session);
+            apply_frontend_event(&output_block("r1", "reasoning", "full", frag), &session);
+        }
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            TranscriptBlock::Thinking { content, .. } => {
+                assert_eq!(content, "thinking longer");
+            }
+            _ => panic!("expected Thinking"),
+        }
+
+        // 同 id 单生命周期累积流
+        let session2 = SessionStore::new();
+        apply_frontend_event(&output_block("r2", "reasoning", "start", ""), &session2);
+        for snap in ["think", "thinking longer"] {
+            apply_frontend_event(&output_block("r2", "reasoning", "full", snap), &session2);
+        }
+        let msgs2 = session2.messages.get();
+        match &msgs2[0] {
+            TranscriptBlock::Thinking { content, .. } => {
+                assert_eq!(content, "thinking longer", "累积快照不得拼接成 thinkthinking longer");
+            }
+            _ => panic!("expected Thinking"),
+        }
+    }
+
+    /// delta 分支不变：legacy（无 live_identity）透传的增量仍逐段追加。
+    #[test]
+    fn deltas_still_append() {
+        let session = SessionStore::new();
+        apply_frontend_event(&output_block("m1", "message", "delta", "Hello"), &session);
+        apply_frontend_event(&output_block("m1", "message", "delta", " World"), &session);
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            TranscriptBlock::AssistantMsg { content, .. } => {
+                assert_eq!(content, "Hello World");
+            }
+            _ => panic!("expected AssistantMsg"),
+        }
+    }
+
+    /// reasoning 的 full 快照同样是累积全文：替换而非追加。
+    #[test]
+    fn reasoning_full_snapshots_replace() {
+        let session = SessionStore::new();
+        for snap in ["think", "thinking longer"] {
+            apply_frontend_event(&output_block("r1", "reasoning", "full", snap), &session);
+        }
+        let msgs = session.messages.get();
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            TranscriptBlock::Thinking { content, .. } => {
+                assert_eq!(content, "thinking longer");
+            }
+            _ => panic!("expected Thinking"),
+        }
     }
 }

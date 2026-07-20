@@ -43,6 +43,11 @@ pub struct SessionStore {
     pub sidebar_trees: Signal<SidebarTrees>,
     pub mcp_lsp: Signal<McpLspInfo>,
 
+    /// 流式分段的待决集合：`kind:id` 在 `start` 时登记，`full` 时取出。
+    /// 见 `apply_assistant_snapshot` 的两种线上 `full` 形态说明。不参与渲染，
+    /// 仅作事件流状态（writer = telemetry::event_handler）。
+    pub stream_new_segments: Signal<std::collections::HashSet<String>>,
+
     // ── 火：运行时 ──
     pub active_tools: Signal<Vec<ActiveTool>>,
 
@@ -76,6 +81,7 @@ impl SessionStore {
             mcp_lsp: signal(McpLspInfo::default()),
             active_tools: signal(Vec::new()),
             attachments: signal(Vec::new()),
+            stream_new_segments: signal(std::collections::HashSet::new()),
         }
     }
 
@@ -98,6 +104,7 @@ impl SessionStore {
         self.context_pct.set(0);
         self.session_model.set(None);
         self.active_tools.update(|t| t.clear());
+        self.stream_new_segments.update(|s| s.clear());
     }
 
     // ── 消息追加（金：EventBus → messages）──
@@ -134,6 +141,58 @@ impl SessionStore {
         });
     }
 
+    /// phase="start"：登记"下一条同 key 的 full 起新段"（追加而非合并）。
+    /// kind 用短前缀区分流：m = assistant message，r = reasoning。
+    pub fn mark_stream_segment_start(&self, kind: &str, block_id: &str) {
+        let key = format!("{kind}:{block_id}");
+        self.stream_new_segments.update(|s| {
+            s.insert(key);
+        });
+    }
+
+    /// 取出并清除分段标记（一次性）。
+    fn take_stream_segment(&self, kind: &str, block_id: &str) -> bool {
+        let key = format!("{kind}:{block_id}");
+        let marked = self.stream_new_segments.get().contains(&key);
+        if marked {
+            self.stream_new_segments.update(|s| {
+                s.remove(&key);
+            });
+        }
+        marked
+    }
+
+    /// Merge a `full`-phase snapshot into the running assistant block.
+    ///
+    /// 线上 `full` 块有两种真实形态（实测 wire 取证）：
+    ///   1. **单生命周期累积流**：一次 `start` 后逐帧 `full`（累积全文，经
+    ///      direct_bridge coalesce 归并 delta 而来）——段内后续 `full` 必须
+    ///      按快照合并（前缀替换），否则追加出 "TheThe answer to..."（Bug B）。
+    ///   2. **逐 chunk 生命周期**（deepseek-v4-flash / qwen 实测）：每个 chunk
+    ///      都是独立 `start`/`full`/`end`，`full` 只携带该 chunk 的**片段**
+    ///      （coalesce 的累积器被逐 chunk 的 End 清零）——`start` 后的首个
+    ///      `full` 必须**追加**为新段，否则替换到只剩最后一截。
+    /// `start` 由 `mark_stream_segment_start` 记录；无 `start` 的 `full`
+    /// （一次性错误文本、历史回填、turn-final 完成帧）按 merge 口径处理：
+    /// 累积→前缀替换、重复→去重、多 part→拼接。
+    pub fn apply_assistant_snapshot(&self, block_id: &str, text: &str) {
+        let new_segment = self.take_stream_segment("m", block_id);
+        self.messages.update(|msgs| {
+            match msgs.last_mut() {
+                Some(TranscriptBlock::AssistantMsg { id, content }) if id == block_id => {
+                    if new_segment {
+                        content.push_str(text);
+                    } else {
+                        *content = merge_snapshot_text(content, text);
+                    }
+                }
+                _ => msgs.push(TranscriptBlock::AssistantMsg {
+                    id: block_id.into(), content: text.into(),
+                }),
+            }
+        });
+    }
+
     /// Append a thinking block, or extend the most-recent reasoning block
     /// when the id matches. Without this delta-aware merge, every
     /// reasoning chunk from the LLM stream appended a NEW thinking row,
@@ -144,6 +203,27 @@ impl SessionStore {
             if let Some(TranscriptBlock::Thinking { id: bid, content, .. }) = msgs.last_mut() {
                 if bid == id {
                     content.push_str(text);
+                    return;
+                }
+            }
+            msgs.push(TranscriptBlock::Thinking {
+                id: id.into(), content: text.into(), fold: FoldState::Truncated, duration_ms: 0,
+            });
+        });
+    }
+
+    /// Merge a `full`-phase reasoning snapshot into the running thinking block.
+    /// 与 `apply_assistant_snapshot` 同理（`start` 新段追加，否则 merge）。
+    pub fn apply_thinking_snapshot(&self, id: &str, text: &str) {
+        let new_segment = self.take_stream_segment("r", id);
+        self.messages.update(|msgs| {
+            if let Some(TranscriptBlock::Thinking { id: bid, content, .. }) = msgs.last_mut() {
+                if bid == id {
+                    if new_segment {
+                        content.push_str(text);
+                    } else {
+                        *content = merge_snapshot_text(content, text);
+                    }
                     return;
                 }
             }
@@ -606,9 +686,82 @@ impl SessionStore {
     }
 }
 
+/// 快照合并（与服务端 `merge_snapshot_text` 同口径——routes/event_stream.rs 与
+/// session_runtime/direct_bridge.rs 两处副本的第三种消费方副本）。
+///
+/// `full` 快照的 text 在两种线上形态下都正确：
+///   - 累积快照：incoming 以 existing 为前缀 → 取 incoming（替换）。
+///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
+///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接。
+fn merge_snapshot_text(existing: &str, incoming: &str) -> String {
+    if existing.is_empty() {
+        return incoming.to_string();
+    }
+    if incoming.is_empty() {
+        return existing.to_string();
+    }
+    if incoming.starts_with(existing) {
+        return incoming.to_string();
+    }
+    if existing.starts_with(incoming) {
+        return existing.to_string();
+    }
+
+    let overlap = suffix_prefix_overlap(existing, incoming);
+    if overlap > 0 {
+        let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
+        merged.push_str(existing);
+        merged.push_str(&incoming[overlap..]);
+        return merged;
+    }
+
+    let mut merged = String::with_capacity(existing.len() + incoming.len());
+    merged.push_str(existing);
+    merged.push_str(incoming);
+    merged
+}
+
+fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
+    let max = existing.len().min(incoming.len());
+    for size in (1..=max).rev() {
+        if existing.is_char_boundary(existing.len() - size)
+            && incoming.is_char_boundary(size)
+            && existing[existing.len() - size..] == incoming[..size]
+        {
+            return size;
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_snapshot_handles_cumulative_and_fragment_streams() {
+        // 累积快照（Bug B 形态）：替换而非拼接
+        let mut acc = String::new();
+        for snap in ["The", "The answer to", "The answer to 1+1 is 2"] {
+            acc = merge_snapshot_text(&acc, snap);
+        }
+        assert_eq!(acc, "The answer to 1+1 is 2");
+
+        // 逐 chunk 片段（无前缀关系时退化为拼接——段内混合内容的兜底）
+        let mut acc = String::new();
+        for frag in ["R", "ust is", " a systems", " language"] {
+            acc = merge_snapshot_text(&acc, frag);
+        }
+        assert_eq!(acc, "Rust is a systems language");
+
+        // 重叠去重
+        assert_eq!(merge_snapshot_text("Rust is", "is a"), "Rust is a");
+        // 陈旧快照去重
+        assert_eq!(merge_snapshot_text("The answer", "The"), "The answer");
+        // 注意：逐 token 片段流（如 "1","+","1"）不靠 merge 拼接——片段携带
+        // per-chunk `start`，由 apply_assistant_snapshot 的分段追加负责
+        // （见 event_handler::tests::fragment_full_snapshots_append_after_each_start）。
+    }
 
     /// reset_for_new_session 必须清空对话运行态(messages/session_id/title/scroll/cursor),
     /// 否则 /new 或 dispatch 创建新 session 时携带旧 session 残留——
