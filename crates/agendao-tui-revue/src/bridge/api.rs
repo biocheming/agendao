@@ -525,8 +525,9 @@ impl ApiBridge {
         self.block_on(self.client.manage_skill(req))
     }
 
-    /// /skill/proposal：列出自演化提案。status 传 "pending" 看待处理项；
-    /// 传 "all" 或空看全部（server 端会 fallback）。读视图 first slice——
+    /// /skill/proposal：列出自演化提案。status 传 "draft" 看待处理项
+    /// （ProposalStatus 为 snake_case：draft/accepted/rejected/superseded/applied，
+    /// 传 "pending" 会被 server 400 拒绝）；读视图 first slice——
     /// approve/reject 需 update_skill_proposal_status，留 B 层第三批。
     pub fn list_skill_proposals(
         &self,

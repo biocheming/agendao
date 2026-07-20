@@ -155,7 +155,7 @@ impl AppHandler {
                 // 读视图 first slice：approve/reject 需 update_skill_proposal_status
                 // + confirm，留 B 层第三批（道纪第十条：不伪"已批准"）。
                 if let Some(ref api) = self.api {
-                    match api.list_skill_proposals("pending") {
+                    match api.list_skill_proposals("draft") {
                         Ok(proposals) => {
                             let entries: Vec<SkillProposalEntry> = proposals.into_iter()
                                 .map(|p| SkillProposalEntry {

@@ -71,7 +71,7 @@ impl AppHandler {
         let Some(api) = self.api.as_ref() else { return };
         let mut rows: Vec<SettingsSkillRow> = Vec::new();
 
-        match api.list_skill_proposals("pending") {
+        match api.list_skill_proposals("draft") {
             Ok(proposals) => {
                 for p in proposals {
                     rows.push(SettingsSkillRow::Proposal {
