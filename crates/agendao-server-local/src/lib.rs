@@ -350,3 +350,111 @@ pub async fn local_register_provider(
 ) {
     agendao_server::local_register_provider(state, provider).await
 }
+
+/// GET `/skill/catalog` 的 local-direct 短路：TUI Settings skills 读通路。
+pub async fn local_list_skills(
+    state: Arc<LocalServerState>,
+    query: agendao_client::SkillCatalogQuery,
+) -> Result<Vec<agendao_client::SkillCatalogEntry>> {
+    agendao_server::local_list_skills(state, query).await
+}
+
+/// GET `/tool/catalog` 的 local-direct 短路：TUI Settings→Tools 读通路。
+pub async fn local_list_tools(
+    state: Arc<LocalServerState>,
+) -> Result<Vec<agendao_client::ToolListEntry>> {
+    agendao_server::local_list_tools(state).await
+}
+
+/// PUT `/config/disabled` 的 local-direct 短路：TUI Settings skills/tools
+/// 启停写通路（`Some(vec)` 整体替换，允许空 vec 清空）。
+pub async fn local_put_disabled_config(
+    state: Arc<LocalServerState>,
+    update: agendao_client::DisabledConfigUpdate,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_put_disabled_config(state, update).await
+}
+
+/// GET `/skill/proposal/?status=` 的 local-direct 短路：TUI Settings 提案读通路。
+pub async fn local_list_skill_proposals(
+    state: Arc<LocalServerState>,
+    status: &str,
+) -> Result<Vec<agendao_client::SkillEvolutionProposal>> {
+    agendao_server::local_list_skill_proposals(state, status).await
+}
+
+/// POST `/skill/manage` 的 local-direct 短路：TUI Settings skills 管理写通路
+/// （本阶段用于 Delete）。
+pub async fn local_manage_skill(
+    state: Arc<LocalServerState>,
+    request: agendao_client::SkillManageRequest,
+) -> Result<agendao_client::SkillManageResponse> {
+    agendao_server::local_manage_skill(state, request).await
+}
+
+/// POST `/skill/proposal/{id}/status` 的 local-direct 短路（approve/reject）。
+pub async fn local_update_skill_proposal_status(
+    state: Arc<LocalServerState>,
+    id: &str,
+    status: &str,
+) -> Result<agendao_client::SkillEvolutionProposal> {
+    agendao_server::local_update_skill_proposal_status(state, id, status).await
+}
+
+/// GET `/mcp` 的 local-direct 短路：返回已按 name 排序的 Vec（同 HTTP client 语义）。
+pub async fn local_get_mcp_status(
+    state: Arc<LocalServerState>,
+) -> Result<Vec<agendao_client::McpStatusInfo>> {
+    agendao_server::local_get_mcp_status(state).await
+}
+
+/// POST `/mcp/{name}/connect` 的 local-direct 短路。
+pub async fn local_connect_mcp(state: Arc<LocalServerState>, name: &str) -> Result<bool> {
+    agendao_server::local_connect_mcp(state, name).await
+}
+
+/// POST `/mcp/{name}/disconnect` 的 local-direct 短路。
+pub async fn local_disconnect_mcp(state: Arc<LocalServerState>, name: &str) -> Result<bool> {
+    agendao_server::local_disconnect_mcp(state, name).await
+}
+
+/// PUT `/config/mcp/{key}` 的 local-direct 短路（TUI Settings→MCP 增/改/启停）。
+pub async fn local_put_mcp_config(
+    state: Arc<LocalServerState>,
+    key: &str,
+    mcp: agendao_config::McpServerConfig,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_put_mcp_config(state, key, mcp).await
+}
+
+/// DELETE `/config/mcp/{key}` 的 local-direct 短路。
+pub async fn local_delete_mcp_config(
+    state: Arc<LocalServerState>,
+    key: &str,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_delete_mcp_config(state, key).await
+}
+
+/// PUT `/config/plugin/{key}` 的 local-direct 短路（TUI Settings→Plugins 安装）。
+pub async fn local_put_plugin_config(
+    state: Arc<LocalServerState>,
+    key: &str,
+    plugin: agendao_config::PluginConfig,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_put_plugin_config(state, key, plugin).await
+}
+
+/// DELETE `/config/plugin/{key}` 的 local-direct 短路（managed 条目删除）。
+pub async fn local_delete_plugin_config(
+    state: Arc<LocalServerState>,
+    key: &str,
+) -> Result<agendao_config::Config> {
+    agendao_server::local_delete_plugin_config(state, key).await
+}
+
+/// GET `/config/plugins` 的 local-direct 短路：TUI Settings→Plugins 读通路。
+pub async fn local_list_plugins(
+    state: Arc<LocalServerState>,
+) -> Result<Vec<agendao_client::PluginListEntry>> {
+    agendao_server::local_list_plugins(state).await
+}

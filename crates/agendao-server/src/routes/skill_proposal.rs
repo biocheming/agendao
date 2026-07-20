@@ -27,9 +27,9 @@ pub(crate) fn skill_proposal_routes() -> Router<Arc<ServerState>> {
 // ── query params ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
-struct ListQuery {
+pub(crate) struct ListQuery {
     #[serde(default = "default_status")]
-    status: String,
+    pub(crate) status: String,
 }
 
 fn default_status() -> String {
@@ -37,13 +37,13 @@ fn default_status() -> String {
 }
 
 #[derive(Deserialize)]
-struct StatusUpdate {
-    status: String,
+pub(crate) struct StatusUpdate {
+    pub(crate) status: String,
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────
 
-async fn list_proposals(
+pub(crate) async fn list_proposals(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<SkillEvolutionProposal>>> {
@@ -81,7 +81,7 @@ async fn get_proposal(
     Ok(Json(proposal))
 }
 
-async fn update_proposal_status(
+pub(crate) async fn update_proposal_status(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Json(body): Json<StatusUpdate>,

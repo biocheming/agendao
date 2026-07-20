@@ -42,6 +42,37 @@ fn get_mcp_oauth_manager() -> &'static McpOAuthManager {
     MCP_OAUTH_MANAGER.get_or_init(McpOAuthManager::new)
 }
 
+/// config 写面（PUT/DELETE `/config/mcp/{key}`）同步 runtime manager 的入口。
+/// 不写时 manager 只增不删（`sync_mcp_from_disk` 的 has_server 短路），
+/// 删除/启停后状态列表会残留旧值——写后同步让启停即时生效。
+pub(crate) async fn sync_manager_after_mcp_config_write(
+    key: &str,
+    cfg: Option<&LoadedMcpServerConfig>,
+) {
+    let manager = get_mcp_oauth_manager();
+    let runtime = cfg.and_then(|c| parse_runtime_from_loaded_config(c.clone()).ok().flatten());
+    match runtime {
+        Some((config, enabled)) => {
+            let was_connected = manager
+                .get_server(key)
+                .await
+                .is_some_and(|info| info.status == "connected");
+            if manager.has_server(key).await && !enabled {
+                let _ = manager.disconnect(key).await;
+            }
+            manager.add_server(key.to_string(), config, enabled).await;
+            // 原本连着的：重连以应用新 command/url/enabled。
+            if enabled && was_connected {
+                let _ = manager.connect(key).await;
+            }
+        }
+        // 无 runtime（Enabled{} 变体 / DELETE）：从 manager 摘除。
+        None => {
+            manager.remove_server(key).await;
+        }
+    }
+}
+
 impl From<McpServerInfoStruct> for McpStatusInfo {
     fn from(info: McpServerInfoStruct) -> Self {
         Self {
@@ -54,7 +85,7 @@ impl From<McpServerInfoStruct> for McpStatusInfo {
     }
 }
 
-async fn get_mcp_status(
+pub(crate) async fn get_mcp_status(
     State(state): State<Arc<ServerState>>,
 ) -> Json<HashMap<String, McpStatusInfo>> {
     let manager = get_mcp_oauth_manager();
@@ -182,7 +213,7 @@ async fn remove_mcp_auth(
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
-async fn connect_mcp(
+pub(crate) async fn connect_mcp(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<bool>> {
@@ -195,7 +226,7 @@ async fn connect_mcp(
     Ok(Json(true))
 }
 
-async fn disconnect_mcp(
+pub(crate) async fn disconnect_mcp(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<bool>> {

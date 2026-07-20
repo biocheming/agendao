@@ -477,7 +477,52 @@ impl ApiBridge {
         &self,
         query: Option<&agendao_client::SkillCatalogQuery>,
     ) -> anyhow::Result<Vec<agendao_client::SkillCatalogEntry>> {
+        if let Some(ref ls) = self.local {
+            let query = query.cloned().unwrap_or_default();
+            return self.block_on(agendao_server_local::local_list_skills(Arc::clone(ls), query));
+        }
         self.block_on(self.client.list_skills(query))
+    }
+
+    /// /tool/catalog：列出全部 tool（含 disabled，打标）——Settings→Tools 读面。
+    pub fn list_tools(&self) -> anyhow::Result<Vec<agendao_client::ToolListEntry>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_list_tools(Arc::clone(ls)));
+        }
+        self.block_on(self.client.list_tools())
+    }
+
+    /// PUT `/config/disabled`：整体替换 `disabled_tools` / `skills.disabled`。
+    /// `Some(vec)` 允许空 vec 清空（patch merge 表达不了清空）；`None` 不动。
+    /// server 侧在 tools 变更时重建 tool registry（即时生效）。
+    pub fn put_disabled_config(
+        &self,
+        update: &agendao_client::DisabledConfigUpdate,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_put_disabled_config(
+                Arc::clone(ls),
+                update.clone(),
+            ));
+        }
+        self.block_on(self.client.put_disabled_config(update))
+    }
+
+    /// POST `/skill/manage`（双模式）：skills 管理写面（本阶段用于 Delete）。
+    /// local-direct 短路 `local_manage_skill`——server 侧跳过交互式权限门
+    /// （TUI ConfirmDialog 已是用户确认；同步 block_on 无法响应权限弹窗），
+    /// HTTP 模式保持走 POST `/skill/manage` 完整权限流。
+    pub fn manage_skill(
+        &self,
+        req: &agendao_client::SkillManageRequest,
+    ) -> anyhow::Result<agendao_client::SkillManageResponse> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_manage_skill(
+                Arc::clone(ls),
+                req.clone(),
+            ));
+        }
+        self.block_on(self.client.manage_skill(req))
     }
 
     /// /skill/proposal：列出自演化提案。status 传 "pending" 看待处理项；
@@ -487,12 +532,21 @@ impl ApiBridge {
         &self,
         status: &str,
     ) -> anyhow::Result<Vec<agendao_client::SkillEvolutionProposal>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_list_skill_proposals(
+                Arc::clone(ls),
+                status,
+            ));
+        }
         self.block_on(self.client.list_skill_proposals(status))
     }
 
     /// /mcp：列出所有 MCP 服务器状态（全局）。读视图——connect/disconnect
     /// 需独立 dialog + API，留后续。
     pub fn get_mcp_status(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_get_mcp_status(Arc::clone(ls)));
+        }
         self.block_on(self.client.get_mcp_status())
     }
 
@@ -512,26 +566,101 @@ impl ApiBridge {
 
     /// /skill/proposal/{id}/status POST：approve（"accepted"）/reject（"rejected"）。
     /// 直接执行类——dialog 保持打开，Ok 后由调用方 remove_by_id 回流（水生木）。
-    /// 局限：无 local-direct 短路（与 list_skill_proposals 等读路径一致），
-    /// local-direct 模式走 dummy client 会失败，留后续工程。
     pub fn update_skill_proposal_status(
         &self,
         id: &str,
         status: &str,
     ) -> anyhow::Result<agendao_client::SkillEvolutionProposal> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_update_skill_proposal_status(
+                Arc::clone(ls),
+                id,
+                status,
+            ));
+        }
         self.block_on(self.client.update_skill_proposal_status(id, status))
     }
 
     /// /mcp/{name}/connect POST：连接 MCP server。直接执行类——Ok 后重拉
     /// get_mcp_status 回流（status 字段变化非移除，重拉是唯一权威）。
     pub fn connect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_connect_mcp(Arc::clone(ls), name));
+        }
         self.block_on(self.client.connect_mcp(name))
     }
 
     /// /mcp/{name}/disconnect POST：断开 MCP server。直接执行类——Ok 后重拉回流。
     pub fn disconnect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_disconnect_mcp(Arc::clone(ls), name));
+        }
         self.block_on(self.client.disconnect_mcp(name))
     }
+
+    /// PUT `/config/mcp/{key}`（双模式）：写 MCP server 配置条目。
+    /// 增/改/启停共用——整体覆写语义，Edit 前调用方须先读 config 合并。
+    pub fn put_mcp_config(
+        &self,
+        key: &str,
+        mcp: &agendao_config::McpServerConfig,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_put_mcp_config(
+                Arc::clone(ls),
+                key,
+                mcp.clone(),
+            ));
+        }
+        self.block_on(self.client.put_mcp_config(key, mcp))
+    }
+
+    /// DELETE `/config/mcp/{key}`（双模式）：删 MCP server 配置条目。
+    pub fn delete_mcp_config(&self, key: &str) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_delete_mcp_config(
+                Arc::clone(ls),
+                key,
+            ));
+        }
+        self.block_on(self.client.delete_mcp_config(key))
+    }
+
+    /// GET `/config/plugins`（双模式）：已安装插件列表（managed + discovered）。
+    pub fn list_plugins(&self) -> anyhow::Result<Vec<agendao_client::PluginListEntry>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_list_plugins(Arc::clone(ls)));
+        }
+        self.block_on(self.client.list_plugins())
+    }
+
+    /// PUT `/config/plugin/{key}`（双模式）：写 plugin 配置条目（安装）。
+    pub fn put_plugin_config(
+        &self,
+        key: &str,
+        plugin: &agendao_config::PluginConfig,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_put_plugin_config(
+                Arc::clone(ls),
+                key,
+                plugin.clone(),
+            ));
+        }
+        self.block_on(self.client.put_plugin_config(key, plugin))
+    }
+
+    /// DELETE `/config/plugin/{key}`（双模式）：删 managed plugin 配置条目。
+    pub fn delete_plugin_config(&self, key: &str) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_delete_plugin_config(
+                Arc::clone(ls),
+                key,
+            ));
+        }
+        self.block_on(self.client.delete_plugin_config(key))
+    }
+
 
     /// /session/{id}/recovery/execute POST：执行 recovery action。confirm 类——
     /// 经 PendingConfirm::ExecuteRecovery 路由（panel_dispatch），不在 list dialog 直接调。

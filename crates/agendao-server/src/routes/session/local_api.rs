@@ -628,3 +628,204 @@ pub async fn local_list_execution_modes(
     serde_json::from_value(serde_json::to_value(response)?)
         .context("failed to convert local execution modes payload")
 }
+
+/// GET `/skill/catalog` 的 local-direct 短路：TUI Settings skills 读通路。
+pub async fn local_list_skills(
+    state: Arc<ServerState>,
+    query: agendao_api::SkillCatalogQuery,
+) -> anyhow::Result<Vec<agendao_api::SkillCatalogEntry>> {
+    let Json(entries) = super::super::skill_catalog::list_skill_catalog_entries(
+        State(state),
+        Query(super::super::skill_catalog::SkillCatalogQuery {
+            session_id: query.session_id,
+            category: query.category,
+            stage: query.stage,
+            tool_policy: query.tool_policy,
+            tools: query.tools,
+            toolsets: query.toolsets,
+            include_disabled: query.include_disabled,
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    serde_json::from_value(serde_json::to_value(entries)?)
+        .context("failed to convert local skill catalog payload")
+}
+
+/// GET `/tool/catalog` 的 local-direct 短路：TUI Settings→Tools 读通路。
+/// 返回全量 tool（含 disabled，打标），按 id 排序。
+pub async fn local_list_tools(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<agendao_api::ToolListEntry>> {
+    Ok(super::super::tool_catalog::build_tool_list_entries(&state).await)
+}
+
+/// PUT `/config/disabled` 的 local-direct 短路：TUI Settings skills/tools
+/// 启停写通路。`Some(vec)` 整体替换对应 disabled 列表（允许空 vec 清空）。
+pub async fn local_put_disabled_config(
+    state: Arc<ServerState>,
+    update: agendao_api::DisabledConfigUpdate,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::put_disabled_config(State(state), Json(update))
+        .await
+        .map_err(api_error)?;
+    Ok(config)
+}
+
+/// POST `/skill/manage` 的 local-direct 短路：TUI Settings skills 管理写通路
+/// （本阶段用于 Delete）。走 `execute_skill_manage_request_without_interactive_gate`
+/// ——TUI 已用自有 ConfirmDialog 完成用户确认，同步 block_on 无法响应交互式权限弹窗。
+pub async fn local_manage_skill(
+    state: Arc<ServerState>,
+    request: agendao_api::SkillManageRequest,
+) -> anyhow::Result<agendao_api::SkillManageResponse> {
+    let request: super::super::skill_catalog::SkillManageRequest =
+        serde_json::from_value(serde_json::to_value(request)?)
+            .context("failed to convert local skill manage request")?;
+    let result =
+        super::super::skill_catalog::execute_skill_manage_request_without_interactive_gate(
+            &state, request,
+        )
+        .await
+        .map_err(api_error)?;
+    serde_json::from_value(
+        serde_json::to_value(super::super::skill_catalog::SkillManageResponse {
+            result: result.result,
+            guard_report: result.guard_report,
+        })?,
+    )
+    .context("failed to convert local skill manage payload")
+}
+
+/// GET `/skill/proposal/?status=` 的 local-direct 短路：TUI Settings 提案读通路。
+pub async fn local_list_skill_proposals(
+    state: Arc<ServerState>,
+    status: &str,
+) -> anyhow::Result<Vec<agendao_types::SkillEvolutionProposal>> {
+    let Json(proposals) = super::super::skill_proposal::list_proposals(
+        State(state),
+        Query(super::super::skill_proposal::ListQuery {
+            status: status.to_string(),
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(proposals)
+}
+
+/// POST `/skill/proposal/{id}/status` 的 local-direct 短路（approve/reject）。
+pub async fn local_update_skill_proposal_status(
+    state: Arc<ServerState>,
+    id: &str,
+    status: &str,
+) -> anyhow::Result<agendao_types::SkillEvolutionProposal> {
+    let Json(proposal) = super::super::skill_proposal::update_proposal_status(
+        State(state),
+        Path(id.to_string()),
+        Json(super::super::skill_proposal::StatusUpdate {
+            status: status.to_string(),
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(proposal)
+}
+
+/// GET `/mcp` 的 local-direct 短路：与 HTTP client 同语义——map 摊平成 Vec 后按 name 排序。
+pub async fn local_get_mcp_status(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<agendao_api::McpStatusInfo>> {
+    let Json(map) = super::super::mcp::get_mcp_status(State(state)).await;
+    let mut servers: Vec<agendao_api::McpStatusInfo> = map
+        .into_values()
+        .map(|info| agendao_api::McpStatusInfo {
+            name: info.name,
+            status: info.status,
+            tools: info.tools,
+            resources: info.resources,
+            error: info.error,
+        })
+        .collect();
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(servers)
+}
+
+/// POST `/mcp/{name}/connect` 的 local-direct 短路。
+pub async fn local_connect_mcp(state: Arc<ServerState>, name: &str) -> anyhow::Result<bool> {
+    let Json(connected) = super::super::mcp::connect_mcp(State(state), Path(name.to_string()))
+        .await
+        .map_err(api_error)?;
+    Ok(connected)
+}
+
+/// POST `/mcp/{name}/disconnect` 的 local-direct 短路。
+pub async fn local_disconnect_mcp(state: Arc<ServerState>, name: &str) -> anyhow::Result<bool> {
+    let Json(disconnected) =
+        super::super::mcp::disconnect_mcp(State(state), Path(name.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(disconnected)
+}
+
+/// PUT `/config/mcp/{key}` 的 local-direct 短路：TUI Settings→MCP 增/改/启停写通路。
+pub async fn local_put_mcp_config(
+    state: Arc<ServerState>,
+    key: &str,
+    mcp: agendao_config::McpServerConfig,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::put_mcp_config(
+        State(state),
+        Path(key.to_string()),
+        Json(mcp),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(config)
+}
+
+/// DELETE `/config/mcp/{key}` 的 local-direct 短路。
+pub async fn local_delete_mcp_config(
+    state: Arc<ServerState>,
+    key: &str,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) =
+        super::super::config::delete_mcp_config(State(state), Path(key.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(config)
+}
+
+/// PUT `/config/plugin/{key}` 的 local-direct 短路：TUI Settings→Plugins 安装写通路。
+pub async fn local_put_plugin_config(
+    state: Arc<ServerState>,
+    key: &str,
+    plugin: agendao_config::PluginConfig,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::put_plugin_config(
+        State(state),
+        Path(key.to_string()),
+        Json(plugin),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(config)
+}
+
+/// DELETE `/config/plugin/{key}` 的 local-direct 短路（managed 条目删除）。
+pub async fn local_delete_plugin_config(
+    state: Arc<ServerState>,
+    key: &str,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) =
+        super::super::config::delete_plugin_config(State(state), Path(key.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(config)
+}
+
+/// GET `/config/plugins` 的 local-direct 短路：TUI Settings→Plugins 读通路。
+pub async fn local_list_plugins(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<agendao_api::PluginListEntry>> {
+    Ok(super::super::config::build_plugin_list_entries(&state).await)
+}

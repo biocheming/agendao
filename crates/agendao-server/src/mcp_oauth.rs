@@ -121,6 +121,20 @@ impl McpOAuthManager {
         self.servers.read().await.contains_key(server_name)
     }
 
+    /// 删除 server 注册（config 条目删除时同步调用，避免 manager 残留已删
+    /// 条目继续出现在状态列表）。local 进程经 clients.remove 回收。
+    pub async fn remove_server(&self, server_name: &str) -> bool {
+        let managed = self.servers.write().await.remove(server_name);
+        let Some(managed) = managed else { return false };
+        if let McpRuntimeConfig::Local(_) = managed.config {
+            let _ = self.clients.remove(server_name).await;
+        }
+        self.statuses.write().await.remove(server_name);
+        self.logs.write().await.remove(server_name);
+        self.oauth_states.write().await.remove(server_name);
+        true
+    }
+
     pub async fn add_server(
         &self,
         server_name: String,
