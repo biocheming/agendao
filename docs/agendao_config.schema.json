@@ -100,6 +100,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "disabled": {
+          "description": "Skills hidden from the catalog at discovery time. Entries are exact skill names or `category/*` wildcards matched against the skill's category",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -159,6 +166,20 @@
     },
     "enabled_providers": {
       "description": "When set, ONLY these providers will be enabled. All other providers will be ignored",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "disabled_tools": {
+      "description": "Tools removed from the tool surface at registry build time. Entries are exact tool ids or `family/*` category wildcards matched against tool catalog metadata. Facade/bridge tools (tool_catalog_*, skills_*, skill, skill_view) are exempt",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "disabled_plugins": {
+      "description": "Plugins skipped at load time. Entries are exact plugin map keys or `prefix/*` wildcards",
       "type": "array",
       "items": {
         "type": "string"
@@ -5868,6 +5889,27 @@
                 },
                 "reasoning": {
                   "type": "boolean"
+                },
+                "reasoning_effort": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "description": "Model-level reasoning effort; invalid values are ignored with a warning at resolution time"
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Request-level timeout in seconds for this model"
+                },
+                "stream_stall_timeout_secs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Streaming stall detection: declare the stream dead after N seconds without a chunk"
                 },
                 "temperature": {
                   "type": "boolean"

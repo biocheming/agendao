@@ -484,6 +484,8 @@ impl AppHandler {
                 self.refresh_providers_into_store();
                 self.refresh_mcp_into_store();
                 self.refresh_skills_into_store();
+                self.refresh_tools_into_store();
+                self.refresh_plugins_into_store();
             }
             UiActionId::DeleteSession => {
                 if let Some(sid) = self.active_session.get_session_id() {

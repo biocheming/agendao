@@ -106,6 +106,20 @@ impl SettingsScreen {
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
+            SettingsCategory::Tools => {
+                let body = build_tools_body(store, pane_height, focus);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
+            SettingsCategory::Plugins => {
+                let body = build_plugins_body(store, pane_height, focus);
+                hstack().gap(0)
+                    .child_sized(cat_pane, CATEGORIES_W)
+                    .child_sized(vline(), VLINE_W)
+                    .child_flex(body, 1.0)
+            }
             SettingsCategory::About => {
                 hstack().gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
@@ -180,13 +194,13 @@ fn build_general_pane(
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
-        .child_sized(Text::new("  ☯ General").fg(title_color).bold(), 1)
+        .child_sized(title_row("  ☯ General", title_color), 1)
         .child_sized(Text::new(""), 1);
 
     // Working dir 只读展示(改 cwd 是更大范围,暂只读)。
     let wd = store.working_dir.get();
     let wd_line = format!("  Working dir: {}", wd);
-    let wd_w = wd_line.chars().count() as u16;
+    let wd_w = cell_w(&wd_line);
     s = s
         .child_sized(
             hstack().gap(0)
@@ -240,7 +254,7 @@ fn general_toggle_row(
         (" ", colors::FG_PRIMARY())
     };
     let label = format!("  {} {}", marker, row.label());
-    let label_w = label.chars().count() as u16;
+    let label_w = cell_w(&label);
     // On 用绿色,dark/light 等非布尔值用青色,Off 用暗色。
     let value_color = match value {
         "On" => colors::ACCENT_GREEN(),
@@ -248,7 +262,7 @@ fn general_toggle_row(
         _ => colors::E_TEAL(),
     };
     let pill = format!("[ {} ]", value);
-    let pill_w = pill.chars().count() as u16;
+    let pill_w = cell_w(&pill);
     hstack().gap(0)
         .child_sized(Text::new(label).fg(label_color), label_w)
         .child_flex(Text::new(""), 1.0)
@@ -262,7 +276,7 @@ fn general_row_desc(
 ) -> revue::widget::Stack {
     let color = if selected { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     let line = format!("      {}", row.description());
-    let w = line.chars().count() as u16;
+    let w = cell_w(&line);
     hstack().gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
@@ -275,7 +289,7 @@ fn general_footer_hint(focused: bool) -> revue::widget::Stack {
     } else {
         "  Tab/Enter: Enter General   Esc: Back"
     };
-    let w = line.chars().count() as u16;
+    let w = cell_w(&line);
     hstack().gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
@@ -286,7 +300,7 @@ fn general_footer_hint(focused: bool) -> revue::widget::Stack {
 fn build_about_pane() -> revue::widget::Stack {
     let version = env!("CARGO_PKG_VERSION");
     let title = format!("  ℹ AgenDao TUI  v{}", version);
-    let title_w = title.chars().count() as u16;
+    let title_w = cell_w(&title);
     let lines: [(&str, Color); 5] = [
         ("  道纪 — Canon of Flow and Governance", colors::FG_SECONDARY()),
         ("  A terminal UI for the AgenDao agent runtime.", colors::FG_PRIMARY()),
@@ -304,7 +318,7 @@ fn build_about_pane() -> revue::widget::Stack {
         )
         .child_sized(Text::new(""), 1);
     for (line, color) in lines {
-        let w = line.chars().count().max(1) as u16;
+        let w = cell_w(line).max(1);
         s = s.child_sized(
             hstack().gap(0)
                 .child_sized(Text::new(line).fg(color), w)
@@ -338,7 +352,7 @@ fn build_keybindings_pane(
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
-        .child_sized(Text::new("  ⌨ Keybindings").fg(title_color).bold(), 1)
+        .child_sized(title_row("  ⌨ Keybindings", title_color), 1)
         .child_sized(Text::new(""), 1);
 
     let total = KEYBINDINGS.len();
@@ -351,7 +365,7 @@ fn build_keybindings_pane(
                 .child_flex(Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE()), 1.0),
             HelpEntry::Binding(key, desc) => {
                 let key_str = format!("  {:>12}", key);
-                let key_w = key_str.chars().count() as u16;
+                let key_w = cell_w(&key_str);
                 hstack().gap(2)
                     .child_sized(Text::new(key_str).fg(colors::ACCENT_CYAN()), key_w)
                     .child_flex(Text::new((*desc).to_string()).fg(colors::FG_SECONDARY()), 1.0)
@@ -371,7 +385,7 @@ fn build_keybindings_pane(
         "  Tab/Enter: Enter Keybindings   Esc: Back".to_string()
     };
     let hint_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
-    let hint_w = hint.chars().count() as u16;
+    let hint_w = cell_w(&hint);
     s.child_flex(Text::new(""), 1.0)
         .child_sized(
             hstack().gap(0)
@@ -403,8 +417,11 @@ fn build_mcp_body(
         |i| {
             let r = &rows[i];
             let marker = if i == selected { "▸" } else { "◇" };
+            // 被禁行暗色（FG_TRACE）——视觉与 [ Off ] pill 同源。
             let color = if i == selected {
                 colors::E_TEAL()
+            } else if !r.enabled {
+                colors::FG_TRACE()
             } else {
                 colors::FG_PRIMARY()
             };
@@ -415,15 +432,18 @@ fn build_mcp_body(
                 colors::FG_TRACE()
             };
             let prefix = format!(" {} {}", marker, r.name);
-            let prefix_w = prefix.chars().count() as u16;
+            let prefix_w = cell_w(&prefix);
+            let (pill, pill_color) = on_off_pill(r.enabled);
             hstack().gap(0)
                 .child_sized(Text::new(prefix).fg(color), prefix_w)
                 .child_flex(Text::new(""), 1.0)
+                .child_sized(Text::new(pill).fg(pill_color), cell_w(pill))
+                .child_sized(Text::new(" "), 1)
                 .child_sized(Text::new(dot).fg(dot_color), 1)
                 .child_sized(Text::new(" "), 1)
         },
         if list_focused {
-            "  ↑/↓  c: Connect  d: Disconnect  Tab: Detail"
+            "  ↑/↓  a/e  t: On/Off  x: Del  c/d"
         } else {
             "  Tab: Enter list"
         },
@@ -432,7 +452,7 @@ fn build_mcp_body(
     let detail = if let Some(r) = rows.get(selected) {
         build_mcp_detail(r, detail_focused)
     } else {
-        build_empty_detail("No MCP servers configured", detail_focused)
+        build_empty_detail("No MCP servers configured — press a to add", detail_focused)
     };
 
     hstack().gap(0)
@@ -450,19 +470,45 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
         colors::FG_MUTED()
     };
     let header = format!("  ⚔ {}", r.name);
-    let header_w = header.chars().count() as u16;
-    let pill_w = pill.chars().count() as u16;
+    let header_w = cell_w(&header);
+    let pill_w = cell_w(&pill);
+    let (on_pill, on_pill_color) = on_off_pill(r.enabled);
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
             hstack().gap(1)
                 .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                 .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
+                .child_sized(Text::new(on_pill).fg(on_pill_color).bold(), cell_w(on_pill))
                 .child_flex(Text::new(""), 1.0),
             1,
         )
         .child_sized(Text::new(""), 1)
         .child_sized(field_block("Status", &r.status, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(Text::new(""), 1)
+        .child_sized(field_block("Transport", &r.transport, colors::FG_PRIMARY(), ""), 3);
+    // transport 对应端点字段：local → command；remote → url；unknown → 两者皆无。
+    if let Some(ref cmd) = r.command {
+        s = s
+            .child_sized(Text::new(""), 1)
+            .child_sized(field_block("Command", cmd, colors::FG_PRIMARY(), ""), 3);
+    }
+    if let Some(ref url) = r.url {
+        s = s
+            .child_sized(Text::new(""), 1)
+            .child_sized(field_block("URL", url, colors::FG_PRIMARY(), ""), 3);
+    }
+    s = s
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block(
+                "Enabled",
+                if r.enabled { "on (config.mcp)" } else { "off (config.mcp)" },
+                if r.enabled { colors::FG_PRIMARY() } else { colors::FG_MUTED() },
+                "t: toggle",
+            ),
+            3,
+        )
         .child_sized(Text::new(""), 1)
         .child_sized(
             field_block("Tools", &r.tools.to_string(), colors::FG_PRIMARY(), ""),
@@ -479,7 +525,140 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
             .child_sized(field_block("Error", err, colors::ACCENT_RED(), ""), 3);
     }
     let hint = if focused {
-        "  c: Connect   d: Disconnect   Tab: List   Esc: Back"
+        "  c: Connect   d: Disconnect   t: On/Off   e: Edit   x: Delete   Tab: List   Esc: Back"
+    } else {
+        "  Tab: Detail pane"
+    };
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(
+            Text::new(hint).fg(if focused {
+                colors::FG_SECONDARY()
+            } else {
+                colors::FG_TRACE()
+            }),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+}
+
+// ── Plugins 分类 body ──
+
+fn build_plugins_body(
+    store: &AppStore,
+    pane_height: u16,
+    focus: SettingsFocusPane,
+) -> revue::widget::Stack {
+    let rows = store.settings_plugins.get();
+    let selected = store
+        .settings_plugins_selected
+        .get()
+        .min(rows.len().saturating_sub(1));
+    let list_focused = focus == SettingsFocusPane::Providers;
+    let detail_focused = focus == SettingsFocusPane::Details;
+
+    let list = build_named_list_pane(
+        "⧉ Plugins",
+        list_focused,
+        pane_height,
+        rows.len(),
+        selected,
+        |i| {
+            let r = &rows[i];
+            let is_sel = i == selected;
+            let marker = if is_sel { "▸" } else { " " };
+            let (tag, tag_color) = if r.managed {
+                ("[M]", colors::ACCENT_CYAN())
+            } else {
+                ("[D]", colors::E_AMBER())
+            };
+            // 被禁行暗色（FG_TRACE）——视觉与 [ Off ] pill 同源。
+            let name_color = if is_sel {
+                colors::E_TEAL()
+            } else if r.disabled {
+                colors::FG_TRACE()
+            } else {
+                colors::FG_PRIMARY()
+            };
+            let prefix = format!(" {} {} ", marker, tag);
+            let prefix_w = cell_w(&prefix);
+            let name_w = cell_w(&r.name);
+            let (pill, pill_color) = on_off_pill(!r.disabled);
+            hstack().gap(0)
+                .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
+                .child_sized(Text::new(r.name.clone()).fg(name_color), name_w)
+                .child_flex(Text::new(""), 1.0)
+                .child_sized(Text::new(pill).fg(pill_color), cell_w(pill))
+                .child_sized(Text::new("  "), 2)
+        },
+        if list_focused {
+            "  ↑/↓  a: Install  t: On/Off  x: Del"
+        } else {
+            "  Tab: Enter list"
+        },
+    );
+
+    let detail = if let Some(r) = rows.get(selected) {
+        build_plugin_detail(r, detail_focused)
+    } else {
+        build_empty_detail("No plugins installed — press a to install", detail_focused)
+    };
+
+    hstack().gap(0)
+        .child_sized(list, LIST_COL_W)
+        .child_sized(vline(), VLINE_W)
+        .child_flex(detail, 1.0)
+}
+
+fn build_plugin_detail(
+    r: &crate::store::types::SettingsPluginRow,
+    focused: bool,
+) -> revue::widget::Stack {
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let header = format!("  ⧉ {}", r.name);
+    let header_w = cell_w(&header);
+    let (pill, pill_color) = on_off_pill(!r.disabled);
+    let pill_w = cell_w(pill);
+    let source_label = if r.managed {
+        "managed (config.plugin)"
+    } else {
+        "discovered (directory scan)"
+    };
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            hstack().gap(1)
+                .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(field_block("Type", &r.plugin_type, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(Text::new(""), 1)
+        .child_sized(field_block("Source", source_label, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(Text::new(""), 1)
+        // 安装途径：server `build_plugin_list_entries` 单点权威标签。
+        .child_sized(field_block("Origin", &r.origin, colors::FG_PRIMARY(), ""), 3);
+    if let Some(ref path) = r.path {
+        s = s
+            .child_sized(Text::new(""), 1)
+            .child_sized(field_block("Path", path, colors::FG_PRIMARY(), ""), 3);
+    }
+    s = s.child_sized(Text::new(""), 1).child_sized(
+        field_block(
+            "Version",
+            r.version.as_deref().unwrap_or("(unspecified)"),
+            colors::FG_PRIMARY(),
+            "",
+        ),
+        3,
+    );
+    let hint = if focused {
+        if r.managed {
+            "  t: On/Off   x/d: Delete   Tab: List   Esc: Back"
+        } else {
+            "  t: On/Off   discovered: delete files from origin dir   Tab: List   Esc: Back"
+        }
     } else {
         "  Tab: Detail pane"
     };
@@ -502,13 +681,15 @@ fn build_skills_body(
     pane_height: u16,
     focus: SettingsFocusPane,
 ) -> revue::widget::Stack {
-    use crate::store::types::SettingsSkillRow;
+    use crate::store::types::{flatten_settings_skill_rows, SettingsSkillLine, SettingsSkillRow};
 
     let rows = store.settings_skills.get();
+    let collapsed = store.settings_skills_collapsed.get();
+    let lines = flatten_settings_skill_rows(&rows, &collapsed);
     let selected = store
         .settings_skills_selected
         .get()
-        .min(rows.len().saturating_sub(1));
+        .min(lines.len().saturating_sub(1));
     let list_focused = focus == SettingsFocusPane::Providers;
     let detail_focused = focus == SettingsFocusPane::Details;
 
@@ -516,46 +697,212 @@ fn build_skills_body(
         "✧ Skills",
         list_focused,
         pane_height,
-        rows.len(),
+        lines.len(),
         selected,
-        |i| {
-            let r = &rows[i];
-            let marker = if i == selected { "▸" } else { " " };
-            let (tag, tag_color) = match r {
-                SettingsSkillRow::Proposal { .. } => ("[P]", colors::E_AMBER()),
-                SettingsSkillRow::Catalog { .. } => ("[S]", colors::ACCENT_CYAN()),
-            };
-            let name_color = if i == selected {
-                colors::E_TEAL()
-            } else {
-                colors::FG_PRIMARY()
-            };
-            let prefix = format!(" {} {} ", marker, tag);
-            let prefix_w = prefix.chars().count() as u16;
-            let name = r.label().to_string();
-            let name_w = name.chars().count() as u16;
-            hstack().gap(0)
-                .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
-                .child_sized(Text::new(name).fg(name_color), name_w)
-                .child_flex(Text::new(""), 1.0)
+        |i| match &lines[i] {
+            SettingsSkillLine::Category {
+                name,
+                count,
+                collapsed,
+                disabled_count,
+            } => {
+                // 类目头：选中 ▸ + E_TEAL；未选中 FG_SECONDARY。
+                // 折叠glyph ▶/▼ 独立于选中 marker，避免双 ▸ 歧义。
+                let is_sel = i == selected;
+                let marker = if is_sel { "▸" } else { " " };
+                let fold = if *collapsed { "▶" } else { "▼" };
+                let color = if is_sel {
+                    colors::E_TEAL()
+                } else {
+                    colors::ACCENT_BLUE()
+                };
+                let line = format!(" {} {} {} ({})", marker, fold, name, count);
+                let line_w = cell_w(&line);
+                let (pill, pill_color) = group_switch_pill(*count, *disabled_count);
+                let pill_w = cell_w(&pill);
+                hstack().gap(0)
+                    .child_sized(Text::new(line).fg(color), line_w)
+                    .child_flex(Text::new(""), 1.0)
+                    .child_sized(Text::new(pill).fg(pill_color), pill_w)
+                    .child_sized(Text::new("  "), 2)
+            }
+            SettingsSkillLine::Row(src) => {
+                let r = &rows[*src];
+                let marker = if i == selected { "▸" } else { " " };
+                let (tag, tag_color) = match r {
+                    SettingsSkillRow::Proposal { .. } => ("[P]", colors::E_AMBER()),
+                    SettingsSkillRow::Catalog { .. } => ("[S]", colors::ACCENT_CYAN()),
+                };
+                let disabled = r.is_disabled();
+                // 被禁行暗色（FG_TRACE）——视觉与 Off pill 同源。
+                let name_color = if i == selected {
+                    colors::E_TEAL()
+                } else if disabled {
+                    colors::FG_TRACE()
+                } else {
+                    colors::FG_PRIMARY()
+                };
+                // 数据行缩进 2 列，挂在类目头之下（树形层级）。
+                let prefix = format!("   {} {} ", marker, tag);
+                let prefix_w = cell_w(&prefix);
+                let name = r.label().to_string();
+                let name_w = cell_w(&name);
+                let mut row = hstack().gap(0)
+                    .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
+                    .child_sized(Text::new(name).fg(name_color), name_w)
+                    .child_flex(Text::new(""), 1.0);
+                // proposal 行无开关（由 a/r 裁决）；catalog 行带 On/Off pill。
+                if !r.is_proposal() {
+                    let (pill, pill_color) = on_off_pill(!disabled);
+                    row = row
+                        .child_sized(Text::new(pill).fg(pill_color), cell_w(pill))
+                        .child_sized(Text::new("  "), 2);
+                }
+                row
+            }
         },
         if list_focused {
-            "  ↑/↓  a: Approve  r: Reject  Tab: Detail"
+            "  ↑/↓  Enter: Fold  t: On/Off  x: Del"
         } else {
             "  Tab: Enter list"
         },
     );
 
-    let detail = if let Some(r) = rows.get(selected) {
-        build_skill_detail(r, detail_focused)
-    } else {
-        build_empty_detail("No skills or proposals", detail_focused)
+    let detail = match lines.get(selected) {
+        Some(SettingsSkillLine::Category {
+            name,
+            count,
+            collapsed,
+            disabled_count,
+        }) => build_skill_category_detail(name, *count, *collapsed, *disabled_count, detail_focused),
+        Some(SettingsSkillLine::Row(src)) => build_skill_detail(&rows[*src], detail_focused),
+        None => build_empty_detail("No skills or proposals", detail_focused),
     };
 
     hstack().gap(0)
         .child_sized(list, LIST_COL_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail, 1.0)
+}
+
+/// 行尾 On/Off 开关 pill 文案+颜色（鼠标命中区与渲染同源：keymap 按行尾命中）。
+/// enabled → 绿 `[ On ]`；disabled → 暗 `[ Off ]`。
+fn on_off_pill(enabled: bool) -> (&'static str, Color) {
+    if enabled {
+        ("[ On ]", colors::ACCENT_GREEN())
+    } else {
+        ("[ Off ]", colors::FG_MUTED())
+    }
+}
+
+/// 类目头聚合开关 pill：全禁 `[ Off ]`；全启 `[ On ]`；部分禁 `[n/m]`（琥珀）。
+fn group_switch_pill(count: usize, disabled_count: usize) -> (String, Color) {
+    if count > 0 && disabled_count == count {
+        ("[ Off ]".to_string(), colors::FG_MUTED())
+    } else if disabled_count == 0 {
+        ("[ On ]".to_string(), colors::ACCENT_GREEN())
+    } else {
+        (
+            format!("[{}/{}]", count - disabled_count, count),
+            colors::E_AMBER(),
+        )
+    }
+}
+
+/// 类目头 detail：组名 + 行数 + 聚合启停态（`t` 整组启停 = `name/*` 通配）。
+fn build_skill_category_detail(
+    name: &str,
+    count: usize,
+    collapsed: bool,
+    disabled_count: usize,
+    focused: bool,
+) -> revue::widget::Stack {
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let header = format!("  ✧ {}", name);
+    let header_w = cell_w(&header);
+    let state = if collapsed { " Collapsed " } else { " Expanded " };
+    let state_w = cell_w(state);
+    let (pill, pill_color) = group_switch_pill(count, disabled_count);
+    let pill_w = cell_w(&pill);
+    let switch_state = if count > 0 && disabled_count == count {
+        format!("All off ({}/*)", name)
+    } else if disabled_count == 0 {
+        "On".to_string()
+    } else {
+        format!("{}/{} off", disabled_count, count)
+    };
+    let hint = if focused {
+        "  Enter/Space: Fold   t: Toggle all   ↑/↓: Move   Tab: List   Esc: Back"
+    } else {
+        "  Tab: Detail pane"
+    };
+    vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            hstack().gap(1)
+                .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                .child_sized(Text::new(state).fg(colors::FG_MUTED()).bold(), state_w)
+                .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Skills", &count.to_string(), colors::FG_PRIMARY(), ""),
+            3,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Switch", &switch_state, colors::FG_PRIMARY(), "t toggles name/*"),
+            3,
+        )
+        .child_flex(Text::new(""), 1.0)
+        .child_sized(
+            Text::new(hint).fg(if focused {
+                colors::FG_SECONDARY()
+            } else {
+                colors::FG_TRACE()
+            }),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+}
+
+/// 安装途径推断：`SkillCatalogEntry` 没有 source/root 字段，按 location 前缀/
+/// 路径组件推断（诚实标注 inferred——土律·第十条）。
+///
+/// 推断顺序（先绝对前缀后组件匹配）：
+///   1. `$AGENDAO_HOME/skill(s)`（默认 ~/.agendao/skills）→ user 级
+///   2. `~/.agents/skills`（跨工具共享目录）→ shared 级
+///   3. 路径组件含 `.agendao/skills` 或 `.agents/skills` → 项目级
+///   4. 其余 → config `skill_paths` 外部目录（含 hub 安装）
+fn skill_install_source(location: &str) -> String {
+    let loc = std::path::Path::new(location);
+    let agendao_home = agendao_util::agendao_home();
+    if loc.starts_with(agendao_home.join("skills")) || loc.starts_with(agendao_home.join("skill")) {
+        return "user (~/.agendao/skills)".to_string();
+    }
+    if let Some(home) = dirs::home_dir() {
+        if loc.starts_with(home.join(".agents/skills")) {
+            return "shared (~/.agents/skills)".to_string();
+        }
+    }
+    let components: Vec<&str> = loc
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    for pair in components.windows(2) {
+        match (pair[0], pair[1]) {
+            (".agendao", "skills") | (".agendao", "skill") => {
+                return "project (.agendao/skills)".to_string();
+            }
+            (".agents", "skills") => {
+                return "project (.agents/skills)".to_string();
+            }
+            _ => {}
+        }
+    }
+    "external (config skill_paths)".to_string()
 }
 
 fn build_skill_detail(
@@ -572,13 +919,17 @@ fn build_skill_detail(
             location,
             category,
             writable,
+            disabled,
         } => {
             let header = format!("  ✧ {}", name);
-            let header_w = header.chars().count() as u16;
+            let header_w = cell_w(&header);
+            let (pill, pill_color) = on_off_pill(!disabled);
+            let pill_w = cell_w(pill);
             s = s
                 .child_sized(
-                    hstack().gap(0)
+                    hstack().gap(1)
                         .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                        .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
                         .child_flex(Text::new(""), 1.0),
                     1,
                 )
@@ -599,6 +950,17 @@ fn build_skill_detail(
                 .child_sized(Text::new(""), 1)
                 .child_sized(field_block("Location", location, colors::FG_PRIMARY(), ""), 3)
                 .child_sized(Text::new(""), 1)
+                // 安装途径：entry 无 source/root 字段，按 location 前缀推断并注明。
+                .child_sized(
+                    field_block(
+                        "Source",
+                        &skill_install_source(location),
+                        colors::FG_PRIMARY(),
+                        "inferred from location",
+                    ),
+                    3,
+                )
+                .child_sized(Text::new(""), 1)
                 .child_sized(
                     field_block(
                         "Category",
@@ -612,14 +974,22 @@ fn build_skill_detail(
                 .child_sized(
                     field_block(
                         "Writable",
-                        if *writable { "yes" } else { "no" },
+                        if *writable {
+                            "yes"
+                        } else {
+                            "no — delete disabled (not in project .agendao/skills)"
+                        },
                         colors::FG_PRIMARY(),
                         "",
                     ),
                     3,
                 );
             let hint = if focused {
-                "  Catalog entry (read-only)   Tab: List   Esc: Back"
+                if *writable {
+                    "  t: On/Off   x/d: Delete   Tab: List   Esc: Back"
+                } else {
+                    "  t: On/Off   read-only: delete via install source   Tab: List   Esc: Back"
+                }
             } else {
                 "  Tab: Detail pane"
             };
@@ -641,7 +1011,7 @@ fn build_skill_detail(
             kind,
         } => {
             let header = format!("  ✧ {}", title);
-            let header_w = header.chars().count() as u16;
+            let header_w = cell_w(&header);
             s = s
                 .child_sized(
                     hstack().gap(0)
@@ -673,6 +1043,256 @@ fn build_skill_detail(
     }
 }
 
+// ── Tools 分类 body ──
+
+fn build_tools_body(
+    store: &AppStore,
+    pane_height: u16,
+    focus: SettingsFocusPane,
+) -> revue::widget::Stack {
+    use crate::store::types::{flatten_settings_tool_rows, SettingsToolLine};
+
+    let rows = store.settings_tools.get();
+    let collapsed = store.settings_tools_collapsed.get();
+    let lines = flatten_settings_tool_rows(&rows, &collapsed);
+    let selected = store
+        .settings_tools_selected
+        .get()
+        .min(lines.len().saturating_sub(1));
+    let list_focused = focus == SettingsFocusPane::Providers;
+    let detail_focused = focus == SettingsFocusPane::Details;
+
+    let list = build_named_list_pane(
+        "⛏ Tools",
+        list_focused,
+        pane_height,
+        lines.len(),
+        selected,
+        |i| match &lines[i] {
+            SettingsToolLine::Category {
+                name,
+                count,
+                collapsed,
+                disabled_count,
+            } => {
+                let is_sel = i == selected;
+                let marker = if is_sel { "▸" } else { " " };
+                let fold = if *collapsed { "▶" } else { "▼" };
+                let color = if is_sel {
+                    colors::E_TEAL()
+                } else {
+                    colors::ACCENT_BLUE()
+                };
+                let line = format!(" {} {} {} ({})", marker, fold, name, count);
+                let line_w = cell_w(&line);
+                let (pill, pill_color) = group_switch_pill(*count, *disabled_count);
+                let pill_w = cell_w(&pill);
+                hstack().gap(0)
+                    .child_sized(Text::new(line).fg(color), line_w)
+                    .child_flex(Text::new(""), 1.0)
+                    .child_sized(Text::new(pill).fg(pill_color), pill_w)
+                    .child_sized(Text::new("  "), 2)
+            }
+            SettingsToolLine::Row(src) => {
+                let r = &rows[*src];
+                let is_sel = i == selected;
+                let marker = if is_sel { "▸" } else { " " };
+                // protected（facade/bridge）行：锁定标记 + 无开关。
+                let (tag, tag_color) = if r.protected {
+                    ("[*]", colors::FG_MUTED())
+                } else {
+                    ("[T]", colors::ACCENT_CYAN())
+                };
+                let name_color = if is_sel {
+                    colors::E_TEAL()
+                } else if r.disabled {
+                    colors::FG_TRACE()
+                } else {
+                    colors::FG_PRIMARY()
+                };
+                let prefix = format!("   {} {} ", marker, tag);
+                let prefix_w = cell_w(&prefix);
+                let name_w = cell_w(&r.id);
+                let mut row = hstack().gap(0)
+                    .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
+                    .child_sized(Text::new(r.id.clone()).fg(name_color), name_w)
+                    .child_flex(Text::new(""), 1.0);
+                if !r.protected {
+                    let (pill, pill_color) = on_off_pill(!r.disabled);
+                    row = row
+                        .child_sized(Text::new(pill).fg(pill_color), cell_w(pill))
+                        .child_sized(Text::new("  "), 2);
+                }
+                row
+            }
+        },
+        if list_focused {
+            "  ↑/↓  Enter: Fold  t: On/Off"
+        } else {
+            "  Tab: Enter list"
+        },
+    );
+
+    let detail = match lines.get(selected) {
+        Some(SettingsToolLine::Category {
+            name,
+            count,
+            collapsed,
+            disabled_count,
+        }) => build_tool_category_detail(name, *count, *collapsed, *disabled_count, detail_focused),
+        Some(SettingsToolLine::Row(src)) => build_tool_detail(&rows[*src], detail_focused),
+        None => build_empty_detail("No tools", detail_focused),
+    };
+
+    hstack().gap(0)
+        .child_sized(list, LIST_COL_W)
+        .child_sized(vline(), VLINE_W)
+        .child_flex(detail, 1.0)
+}
+
+/// family 类目头 detail：组名 + 行数 + 聚合启停态（`t` 整组启停 = `family/*`）。
+fn build_tool_category_detail(
+    name: &str,
+    count: usize,
+    collapsed: bool,
+    disabled_count: usize,
+    focused: bool,
+) -> revue::widget::Stack {
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let header = format!("  ⛏ {}", name);
+    let header_w = cell_w(&header);
+    let state = if collapsed { " Collapsed " } else { " Expanded " };
+    let state_w = cell_w(state);
+    let (pill, pill_color) = group_switch_pill(count, disabled_count);
+    let pill_w = cell_w(&pill);
+    let switch_state = if count > 0 && disabled_count == count {
+        format!("All off ({}/*)", name)
+    } else if disabled_count == 0 {
+        "On".to_string()
+    } else {
+        format!("{}/{} off", disabled_count, count)
+    };
+    let hint = if focused {
+        "  Enter/Space: Fold   t: Toggle all   ↑/↓: Move   Tab: List   Esc: Back"
+    } else {
+        "  Tab: Detail pane"
+    };
+    vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            hstack().gap(1)
+                .child_sized(Text::new(header).fg(title_color).bold(), header_w)
+                .child_sized(Text::new(state).fg(colors::FG_MUTED()).bold(), state_w)
+                .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
+                .child_flex(Text::new(""), 1.0),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Tools", &count.to_string(), colors::FG_PRIMARY(), ""),
+            3,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block("Switch", &switch_state, colors::FG_PRIMARY(), "t toggles family/*"),
+            3,
+        )
+        .child_flex(Text::new(""), 1.0)
+        .child_sized(
+            Text::new(hint).fg(if focused {
+                colors::FG_SECONDARY()
+            } else {
+                colors::FG_TRACE()
+            }),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+}
+
+fn build_tool_detail(
+    r: &crate::store::types::SettingsToolRow,
+    focused: bool,
+) -> revue::widget::Stack {
+    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let header = format!("  ⛏ {}", r.id);
+    let header_w = cell_w(&header);
+    let mut header_row = hstack().gap(1)
+        .child_sized(Text::new(header).fg(title_color).bold(), header_w);
+    if r.protected {
+        header_row = header_row.child_sized(
+            Text::new(" protected ").fg(colors::E_AMBER()).bold(),
+            11,
+        );
+    } else {
+        let (pill, pill_color) = on_off_pill(!r.disabled);
+        header_row = header_row.child_sized(
+            Text::new(pill).fg(pill_color).bold(),
+            cell_w(pill),
+        );
+    }
+    header_row = header_row.child_flex(Text::new(""), 1.0);
+
+    let mut s = vstack().gap(0)
+        .child_sized(Text::new(""), 1)
+        .child_sized(header_row, 1)
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block(
+                "Description",
+                if r.description.is_empty() {
+                    "(none)"
+                } else {
+                    r.description.as_str()
+                },
+                colors::FG_PRIMARY(),
+                "",
+            ),
+            3,
+        )
+        .child_sized(Text::new(""), 1)
+        .child_sized(
+            field_block(
+                "Family",
+                r.family.as_deref().unwrap_or("(none)"),
+                colors::FG_PRIMARY(),
+                "",
+            ),
+            3,
+        );
+    if r.protected {
+        s = s
+            .child_sized(Text::new(""), 1)
+            .child_sized(
+                field_block(
+                    "Protected",
+                    "facade/bridge tool — the model reaches other tools and skill content through it; disabling is rejected by the registry filter",
+                    colors::E_AMBER(),
+                    "",
+                ),
+                3,
+            );
+    }
+    let hint = if focused {
+        if r.protected {
+            "  protected: cannot be disabled   Tab: List   Esc: Back"
+        } else {
+            "  t: On/Off (registry rebuilds, effective immediately)   Tab: List   Esc: Back"
+        }
+    } else {
+        "  Tab: Detail pane"
+    };
+    s.child_flex(Text::new(""), 1.0)
+        .child_sized(
+            Text::new(hint).fg(if focused {
+                colors::FG_SECONDARY()
+            } else {
+                colors::FG_TRACE()
+            }),
+            1,
+        )
+        .child_sized(Text::new(""), 1)
+}
+
 fn build_empty_detail(msg: &str, focused: bool) -> revue::widget::Stack {
     let color = if focused {
         colors::FG_SECONDARY()
@@ -701,7 +1321,7 @@ where
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
-        .child_sized(Text::new(format!("  {}", title)).fg(title_color).bold(), 1)
+        .child_sized(title_row(&format!("  {}", title), title_color), 1)
         .child_sized(Text::new(""), 1);
 
     if total == 0 {
@@ -719,13 +1339,13 @@ where
         s = s.child_sized(row_builder(i), 1);
     }
     let pos = format!("{}/{}", selected + 1, total);
-    let pos_w = pos.chars().count() as u16;
+    let pos_w = cell_w(&pos);
     let footer_color = if focused {
         colors::FG_SECONDARY()
     } else {
         colors::FG_TRACE()
     };
-    let footer_w = footer.chars().count() as u16;
+    let footer_w = cell_w(&footer);
     let footer_row = hstack().gap(0)
         .child_sized(Text::new(footer).fg(footer_color), footer_w)
         .child_flex(Text::new(""), 1.0)
@@ -738,13 +1358,28 @@ where
 
 // ── 公共小件 ──
 
-/// 垂直分隔线(占 1 列,贯整列高 `│` 暗色)。revue stack 会按 child 区域裁切高度,
-/// 这里返回一个 vstack 填满即可。
-fn vline() -> revue::widget::Stack {
-    vstack().gap(0).child_flex(
-        Text::new("│".repeat(64)).fg(colors::SIDEBAR_DIVIDER()),
-        1.0,
-    )
+/// 单元格显示宽度(unicode-width,与 revue RichText 逐字宽度计量同源)。
+/// `chars().count()` 把宽字形(CJK/emoji)按 1 列计,child_sized 宽度不足
+/// 会导致后续 child 错位(内容区右侧多出一列);改用显示宽度对齐计量口径。
+fn cell_w(s: &str) -> u16 {
+    unicode_width::UnicodeWidthStr::width(s) as u16
+}
+
+/// Pane 标题行:标题 + 尾随 flex 铺满整行宽。
+/// 必须铺满:revue 局部 dirty 重渲染只清 dirty rect(copy_from 旧 buffer 后
+/// 按区域清),裸 `child_sized(Text, 1)` 的行只占内容宽,新标题比旧标题短时
+/// 旧字符残留在行尾(切换分类残影,如 "MCP Servergs")。
+fn title_row(title: &str, color: Color) -> revue::widget::Stack {
+    hstack().gap(0)
+        .child_sized(Text::new(title.to_string()).fg(color).bold(), cell_w(title))
+        .child_flex(Text::new(""), 1.0)
+}
+
+/// 垂直分隔线(占 1 列,贯整列高 `│` 暗色)。
+/// 委托 [`crate::widget::VLine`]:render 时逐 cell 写 symbol,任意高度不断线
+/// (旧实现 `"│".repeat(64)` 塞单个 Text 靠裁切当竖线,高度 >64 断线)。
+fn vline() -> crate::widget::VLine {
+    crate::widget::VLine::new(colors::SIDEBAR_DIVIDER())
 }
 
 // ── 第一栏:Categories ──
@@ -755,7 +1390,7 @@ fn build_categories_pane(active: SettingsCategory, focused: bool) -> revue::widg
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1) // 顶呼吸 1 行
-        .child_sized(Text::new("  ⚙ Preferences").fg(title_color).bold(), 1)
+        .child_sized(title_row("  ⚙ Preferences", title_color), 1)
         .child_sized(Text::new(""), 1);
 
     for cat in SettingsCategory::ALL.iter().copied() {
@@ -778,7 +1413,7 @@ fn category_row(cat: SettingsCategory, is_active: bool) -> revue::widget::Stack 
         (" ", colors::FG_TRACE())
     };
     let line = format!(" {} {} {}", icon, cat.icon(), cat.label());
-    let w = line.chars().count() as u16;
+    let w = cell_w(&line);
     hstack().gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
@@ -798,7 +1433,7 @@ fn build_providers_pane(
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let mut s = vstack().gap(0)
         .child_sized(Text::new(""), 1)
-        .child_sized(Text::new("  ◆ Providers").fg(title_color).bold(), 1)
+        .child_sized(title_row("  ◆ Providers", title_color), 1)
         .child_sized(Text::new(""), 1);
 
     if providers.is_empty() && !is_add {
@@ -845,7 +1480,7 @@ fn build_providers_pane(
         Some(i) => format!("{}/{}", i + 1, total),
         None => format!("-/{}", total),
     };
-    let pos_w = pos.chars().count() as u16;
+    let pos_w = cell_w(&pos);
     let add_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
     // Providers pane 通常窄(~24 列),hint 必须极简:`a/e/d` 三字母合订 +
     // 后边 `+ Add provider` 主入口文案。详细 hint("a: Add e: Edit d: Delete")
@@ -853,7 +1488,7 @@ fn build_providers_pane(
     // 同一信号同时存在于两层窗口对**不同视野阶**用户友好:
     // 老用户看 a/e/d 即懂,新用户切 Details focus 后看长 hint(金律·成形递进)。
     let add_text = if focused { "  + Add  (a/e/d)" } else { "  + Add provider" };
-    let add_w = add_text.chars().count() as u16;
+    let add_w = cell_w(&add_text);
     let footer_row = hstack().gap(0)
         .child_sized(Text::new(add_text).fg(add_color), add_w)
         .child_flex(Text::new(""), 1.0)
@@ -870,7 +1505,7 @@ fn build_providers_pane(
 fn provider_row_draft(focused: bool) -> revue::widget::Stack {
     let name_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
     let prefix = " ▸ (new provider)";
-    let prefix_w = prefix.chars().count() as u16;
+    let prefix_w = cell_w(&prefix);
     hstack().gap(0)
         .child_sized(Text::new(prefix).fg(name_color).italic(), prefix_w)
         .child_flex(Text::new(""), 1.0)
@@ -889,7 +1524,7 @@ fn provider_row(name: &str, is_connected: bool, is_selected: bool) -> revue::wid
     let dot = if is_connected { "●" } else { "─" };
     let dot_color = if is_connected { colors::ACCENT_GREEN() } else { colors::FG_TRACE() };
     let prefix = format!(" {} {}", marker, name);
-    let prefix_w = prefix.chars().count() as u16;
+    let prefix_w = cell_w(&prefix);
     hstack().gap(0)
         .child_sized(Text::new(prefix).fg(color), prefix_w)
         .child_flex(Text::new(""), 1.0)
@@ -949,11 +1584,11 @@ fn build_details_pane(
         };
         (lbl, pl, pc)
     };
-    let header_label_w = header_label.chars().count() as u16;
-    let pill_w = pill.chars().count() as u16;
+    let header_label_w = cell_w(&header_label);
+    let pill_w = cell_w(&pill);
     // 右侧操作：⚡ Test connection（可点击/按 t——keymap 命中与键路由同权威）。
     let mode_text = "⚡ Test";
-    let mode_w = mode_text.chars().count() as u16;
+    let mode_w = cell_w(&mode_text);
     let header = hstack().gap(1)
         .child_sized(Text::new(header_label).fg(title_color).bold(), header_label_w)
         .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
@@ -1021,7 +1656,8 @@ fn build_details_pane(
 
     // ── APIKey 字段:editing 时 Input.password 显示 `•`,buffer 明文(submit 时取);
     // 非 editing 时 placeholder 永远 `••••••` 永不下发;focused 时 hint "e: Edit"
-    // 让用户知道改 key 走 e 进入 in-place 编辑(Part 7c 接线)。
+    // 让用户知道改 key 走 e——Providers 栏按 e 弹 ProviderEditDialog
+    // (Details 栏有选中 model 时 e 编辑 model,无选中 model 时同样弹 provider 编辑)。
     let api_key_field = if editing_active {
         let st = edit_state.expect("editing_active");
         let focused_field = st.focus == SettingsEditField::ApiKey;
@@ -1041,16 +1677,19 @@ fn build_details_pane(
     // 与 Providers footer 同形态(金律·成形语法权威):每个区段的"可用动作"
     // 都贴在该区段的边缘,而非藏在屏幕底栏一并展示。
     let models_label = "  Models";
-    let models_label_w = models_label.chars().count() as u16;
+    let models_label_w = cell_w(&models_label);
     let models_hint = if focused && !editing_active { "m: Add  e: Edit  d: Delete  " } else { "" };
-    let models_hint_w = models_hint.chars().count() as u16;
+    let models_hint_w = cell_w(&models_hint);
+    // 动作区高亮（E_AMBER）：focused 时让可用动作一眼可见（与 API key 行
+    // "e: Edit" hint 同信号，金律·成形语法权威）。
+    let models_hint_color = if focused { colors::E_AMBER() } else { colors::FG_TRACE() };
     let models_header_row = hstack().gap(0)
         .child_sized(
             Text::new(models_label).fg(colors::FG_SECONDARY()).bold(),
             models_label_w,
         )
         .child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new(models_hint).fg(colors::FG_TRACE()), models_hint_w);
+        .child_sized(Text::new(models_hint).fg(models_hint_color), models_hint_w);
     let mut models_block = vstack().gap(0)
         .child_sized(models_header_row, 1)
         .child_sized(Text::new(""), 1);
@@ -1111,12 +1750,14 @@ fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revu
         )
     } else {
         let lab = format!("  {}", label);
-        let lab_w = lab.chars().count() as u16;
-        let hint_w = hint.chars().count() as u16;
+        let lab_w = cell_w(&lab);
+        let hint_w = cell_w(&hint);
         hstack().gap(0)
             .child_sized(Text::new(lab).fg(colors::FG_SECONDARY()), lab_w)
             .child_flex(Text::new(""), 1.0)
-            .child_sized(Text::new(hint).fg(colors::FG_TRACE()), hint_w)
+            // 动作 hint（如 API key 行的 "e: Edit"）用 E_AMBER + bold 显眼化——
+            // 仅在 pane focused 时出现（调用方控制），高亮动作区引导发现编辑入口。
+            .child_sized(Text::new(hint).fg(colors::E_AMBER()).bold(), hint_w)
             .child_sized(Text::new("  "), 2)
     };
     let bordered = Border::only_bottom()
@@ -1155,8 +1796,8 @@ fn field_block_editing(
         )
     } else {
         let lab = format!("  {}", label);
-        let lab_w = lab.chars().count() as u16;
-        let hint_w = hint.chars().count() as u16;
+        let lab_w = cell_w(&lab);
+        let hint_w = cell_w(&hint);
         hstack().gap(0)
             .child_sized(Text::new(lab).fg(label_color), lab_w)
             .child_flex(Text::new(""), 1.0)
@@ -1193,8 +1834,8 @@ fn field_block_choice(label: &str, choice_label: &str, focused: bool) -> revue::
     );
     let value_text = format!("  ‹ {} ›", choice_label);
     let arrow_hint = if focused { "  ←/→ to change  " } else { "" };
-    let arrow_hint_w = arrow_hint.chars().count() as u16;
-    let value_w = value_text.chars().count() as u16;
+    let arrow_hint_w = cell_w(&arrow_hint);
+    let value_w = cell_w(&value_text);
     let value_row = hstack().gap(0)
         .child_sized(Text::new(value_text).fg(value_color), value_w)
         .child_flex(Text::new(""), 1.0)
@@ -1228,8 +1869,8 @@ fn model_row(
         _ => "—".to_string(),
     };
     let name_str = format!("{}{}", marker, name);
-    let name_w = name_str.chars().count() as u16;
-    let ctx_w = ctx_label.chars().count() as u16;
+    let name_w = cell_w(&name_str);
+    let ctx_w = cell_w(&ctx_label);
     hstack().gap(0)
         .child_sized(Text::new(name_str).fg(name_color), name_w)
         .child_flex(Text::new(""), 1.0)
@@ -1280,7 +1921,7 @@ fn footer_hint_editing(
     } else {
         "  Tab: Cycle Panes   ↑/↓: Navigate   Enter: Select   Esc: Back"
     };
-    let w = line.chars().count() as u16;
+    let w = cell_w(&line);
     hstack().gap(0)
         .child_sized(Text::new(line).fg(active_color), w)
         .child_flex(Text::new(""), 1.0)
@@ -1419,6 +2060,7 @@ mod tests {
                 location: "/skills/review".into(),
                 category: Some("dev".into()),
                 writable: false,
+                disabled: false,
             },
         ]);
         let mut buf = Buffer::new(120, 40);
@@ -1432,6 +2074,85 @@ mod tests {
             .join("\n");
         assert!(merged.contains("Skills"), "title missing:\n{}", merged);
         assert!(merged.contains("Add trigger") || merged.contains("[P]"), "proposal missing:\n{}", merged);
+    }
+
+    /// Skills 分类:catalog 行带 [ On ] 开关 pill;disabled 行带 [ Off ]。
+    #[test]
+    fn render_skills_rows_show_switch_pills() {
+        use crate::store::types::{SettingsCategory, SettingsSkillRow};
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::Skills);
+        store.settings_skills.set(vec![
+            SettingsSkillRow::Catalog {
+                name: "review".into(),
+                description: String::new(),
+                location: "/skills/review".into(),
+                category: Some("dev".into()),
+                writable: true,
+                disabled: false,
+            },
+            SettingsSkillRow::Catalog {
+                name: "lint".into(),
+                description: String::new(),
+                location: "/skills/lint".into(),
+                category: Some("dev".into()),
+                writable: true,
+                disabled: true,
+            },
+        ]);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
+        assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
+        // 类目头聚合：1/2 启用。
+        assert!(merged.contains("[1/2]"), "partial pill missing:\n{}", merged);
+    }
+
+    /// Tools 分类:family 类目头 + 行开关 pill + protected 行无 pill。
+    #[test]
+    fn render_tools_category_with_rows() {
+        use crate::store::types::{SettingsCategory, SettingsToolRow};
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::Tools);
+        store.settings_tools.set(vec![
+            SettingsToolRow {
+                id: "bash".into(),
+                description: "Run shell".into(),
+                family: Some("shell".into()),
+                protected: false,
+                disabled: false,
+            },
+            SettingsToolRow {
+                id: "tool_catalog_call".into(),
+                description: "Facade".into(),
+                family: Some("tool_catalog".into()),
+                protected: true,
+                disabled: false,
+            },
+        ]);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("Tools"), "title missing:\n{}", merged);
+        assert!(merged.contains("shell"), "family group missing:\n{}", merged);
+        assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
+        // protected 行详情：开关禁用说明。
+        assert!(merged.contains("protected") || merged.contains("[*]"), "protected marker missing:\n{}", merged);
     }
 
     /// About 分类:body 渲染版本号,不 panic。
@@ -1496,5 +2217,98 @@ mod tests {
         assert!(!has_p1_token, "P1 must be scrolled off when selecting P14:\n{}", merged);
         // 位置指示 "14/14" 应在 footer "+ Add provider" 行右侧。
         assert!(merged.contains("14/14"), "position indicator 14/14 missing:\n{}", merged);
+    }
+
+    /// Plugins 分类：managed/discovered 行渲染 tag + 开关 pill + detail 字段。
+    #[test]
+    fn render_plugins_category_with_rows() {
+        use crate::store::types::{SettingsCategory, SettingsPluginRow};
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::Plugins);
+        store.settings_plugins.set(vec![
+            SettingsPluginRow {
+                name: "my-tools".into(),
+                plugin_type: "file".into(),
+                managed: true,
+                version: None,
+                path: Some("/abs/plugins/my-tools/index.ts".into()),
+                origin: "config (declared)".into(),
+                disabled: false,
+            },
+            SettingsPluginRow {
+                name: "auto-found".into(),
+                plugin_type: "file".into(),
+                managed: false,
+                version: None,
+                path: Some("/home/u/.agendao/plugins/auto-found.ts".into()),
+                origin: "user (~/.agendao/plugins)".into(),
+                disabled: true,
+            },
+        ]);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("Plugins"), "title missing:\n{}", merged);
+        assert!(merged.contains("[M]"), "managed tag missing:\n{}", merged);
+        assert!(merged.contains("[D]"), "discovered tag missing:\n{}", merged);
+        assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
+        assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
+        // detail 区：首行选中 my-tools → Origin 字段。
+        assert!(merged.contains("Origin"), "origin field missing:\n{}", merged);
+    }
+
+    /// MCP 分类：行渲染启停 pill + 连接 dot；detail 展示 transport/command/enabled。
+    #[test]
+    fn render_mcp_category_with_config_fields() {
+        use crate::store::types::{SettingsCategory, SettingsMcpRow};
+        let store = AppStore::new();
+        store.navigate_settings();
+        store.settings_category.set(SettingsCategory::McpServers);
+        store.settings_mcp.set(vec![
+            SettingsMcpRow {
+                name: "fs".into(),
+                status: "connected".into(),
+                tools: 3,
+                resources: 1,
+                error: None,
+                transport: "local".into(),
+                command: Some("npx -y srv /tmp".into()),
+                url: None,
+                enabled: true,
+            },
+            SettingsMcpRow {
+                name: "remote-svc".into(),
+                status: "disabled".into(),
+                tools: 0,
+                resources: 0,
+                error: None,
+                transport: "remote".into(),
+                command: None,
+                url: Some("https://mcp.example.com".into()),
+                enabled: false,
+            },
+        ]);
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        let stack = SettingsScreen::build(&store, 40, None);
+        stack.render(&mut ctx);
+        let merged: String = (0..40)
+            .map(|y| collect_row(&buf, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
+        assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
+        // detail（首行 fs 选中）：transport + command + enabled 字段。
+        assert!(merged.contains("Transport"), "transport field missing:\n{}", merged);
+        assert!(merged.contains("npx -y srv /tmp"), "command field missing:\n{}", merged);
+        assert!(merged.contains("Enabled"), "enabled field missing:\n{}", merged);
     }
 }

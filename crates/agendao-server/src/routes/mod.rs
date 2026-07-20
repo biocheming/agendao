@@ -24,6 +24,7 @@ mod skill_hub;
 mod skill_proposal;
 mod stream;
 mod task;
+mod tool_catalog;
 mod tui;
 mod web_plugin;
 mod workspace;
@@ -112,6 +113,7 @@ pub fn router() -> Router<Arc<ServerState>> {
             post(preview_skill_methodology),
         )
         .route("/skill/manage", post(manage_skill))
+        .route("/tool/catalog", get(tool_catalog::list_tool_entries))
         .nest("/skill/hub", skill_hub_routes())
         .nest("/skill/proposal", skill_proposal_routes())
         .nest("/memory", memory_routes())

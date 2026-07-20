@@ -78,6 +78,33 @@ impl SkillAuthority {
         self.filtered_skills(filter)
     }
 
+    /// Inspection/Settings surface: like [`Self::list_skill_catalog`] but keeps
+    /// skills matched by `skills.disabled` in the result, flagging each row
+    /// with its disabled state instead of filtering it out. Runtime-facing
+    /// consumers must keep using `list_skill_catalog` (filtered).
+    pub fn list_skill_catalog_with_disabled(
+        &self,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<Vec<(SkillMeta, bool)>, SkillError> {
+        let config = self.current_config();
+        let snapshot = self.resolve_snapshot(config.clone())?;
+        let disabled = config
+            .as_deref()
+            .and_then(|config| config.skills.as_ref())
+            .map(|skills| skills.disabled.as_slice())
+            .unwrap_or(&[]);
+        Ok(snapshot
+            .skills
+            .into_iter()
+            .filter(|skill| skill_matches_filter(skill, filter))
+            .map(|skill| {
+                let is_disabled =
+                    matched_disabled_skill_pattern(disabled, &skill).is_some();
+                (skill, is_disabled)
+            })
+            .collect())
+    }
+
     pub fn list_skill_categories(
         &self,
         filter: Option<&SkillFilter<'_>>,
@@ -598,6 +625,15 @@ impl SkillAuthority {
 
     fn current_snapshot(&self) -> Result<SkillCatalogSnapshot, SkillError> {
         let config = self.current_config();
+        let mut snapshot = self.resolve_snapshot(config.clone())?;
+        filter_disabled_skills(&mut snapshot, config.as_deref());
+        Ok(snapshot)
+    }
+
+    fn resolve_snapshot(
+        &self,
+        config: Option<Arc<Config>>,
+    ) -> Result<SkillCatalogSnapshot, SkillError> {
         let roots = collect_skill_roots(&self.base_dir, config.as_deref());
         let config_revision = self.current_config_revision();
         {
@@ -775,8 +811,52 @@ where
     toolsets
 }
 
-fn skill_matches_filter(skill: &SkillMeta, filter: Option<&SkillFilter<'_>>) -> bool {
-    let Some(filter) = filter else {
+/// Returns the first `skills.disabled` pattern matching `skill` — exact skill
+/// name or a `category/*` wildcard matched against the skill's category.
+/// Shared by [`filter_disabled_skills`] (runtime filtering) and the
+/// `include_disabled` inspection listing (flagging).
+fn matched_disabled_skill_pattern<'a>(disabled: &'a [String], skill: &SkillMeta) -> Option<&'a str> {
+    agendao_config::matching::matching_disabled_pattern(disabled, &skill.name).or_else(|| {
+        skill
+            .category
+            .as_deref()
+            .and_then(|category| agendao_config::matching::matching_disabled_pattern(disabled, category))
+    })
+}
+
+/// Applies `skills.disabled` (exact skill names or `category/*` wildcards) to a
+/// freshly resolved catalog snapshot. Filtering happens here — right after the
+/// snapshot leaves the cache — instead of at scan/persist time so that a config
+/// change takes effect even when the on-disk/catalog cache is still valid.
+fn filter_disabled_skills(snapshot: &mut SkillCatalogSnapshot, config: Option<&Config>) {
+    let Some(disabled) = config
+        .and_then(|config| config.skills.as_ref())
+        .map(|skills| skills.disabled.as_slice())
+        .filter(|disabled| !disabled.is_empty())
+    else {
+        return;
+    };
+
+    let mut removed = Vec::new();
+    snapshot.skills.retain(|skill| {
+        let matched = matched_disabled_skill_pattern(disabled, skill);
+        if let Some(pattern) = matched {
+            removed.push((skill.name.clone(), pattern.to_string()));
+            return false;
+        }
+        true
+    });
+
+    for (name, pattern) in removed {
+        tracing::debug!(
+            skill = %name,
+            pattern = %pattern,
+            "skill filtered from catalog via skills.disabled"
+        );
+    }
+}
+
+fn skill_matches_filter(skill: &SkillMeta, filter: Option<&SkillFilter<'_>>) -> bool {    let Some(filter) = filter else {
         return true;
     };
 

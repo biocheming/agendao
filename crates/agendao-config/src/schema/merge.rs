@@ -287,6 +287,7 @@ impl DeepMerge for SkillsConfig {
     fn deep_merge(&mut self, other: Self) {
         merge_vec_replace_if_non_empty(&mut self.paths, other.paths);
         merge_vec_replace_if_non_empty(&mut self.urls, other.urls);
+        merge_vec_replace_if_non_empty(&mut self.disabled, other.disabled);
         merge_option_deep(&mut self.hub, other.hub);
     }
 }
@@ -412,6 +413,9 @@ impl DeepMerge for ModelConfig {
             base_url,
             tool_call,
             reasoning,
+            reasoning_effort,
+            timeout_secs,
+            stream_stall_timeout_secs,
             attachment,
             temperature,
             interleaved,
@@ -892,6 +896,8 @@ impl Config {
         append_unique_keep_order(&mut self.instructions, other.instructions);
         merge_vec_replace_if_non_empty(&mut self.disabled_providers, other.disabled_providers);
         merge_vec_replace_if_non_empty(&mut self.enabled_providers, other.enabled_providers);
+        merge_vec_replace_if_non_empty(&mut self.disabled_tools, other.disabled_tools);
+        merge_vec_replace_if_non_empty(&mut self.disabled_plugins, other.disabled_plugins);
         append_unique_keep_order(&mut self.tool_imports, other.tool_imports);
 
         // runtime_budget: replace on present — the budget authority has no

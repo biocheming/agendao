@@ -168,6 +168,15 @@ impl AppHandler {
                             Some(PendingConfirm::DeleteProviderModel { provider_id, model_key }) => {
                                 self.delete_provider_model_action(&provider_id, &model_key);
                             }
+                            Some(PendingConfirm::DeleteSkill(name)) => {
+                                self.delete_skill_action(&name);
+                            }
+                            Some(PendingConfirm::DeleteMcp(name)) => {
+                                self.delete_mcp_action(&name);
+                            }
+                            Some(PendingConfirm::DeletePlugin(name)) => {
+                                self.delete_plugin_action(&name);
+                            }
                             None => {}
                         }
                     } else {
@@ -395,6 +404,50 @@ impl AppHandler {
                     return true;
                 }
                 if !self.model_edit_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
+            Panel::McpEdit => {
+                if let Some(action) = self.mcp_edit_dialog.handle_key(key) {
+                    match action {
+                        crate::dialog::McpEditAction::Submit(s) => {
+                            self.submit_mcp_edit(*s);
+                        }
+                        crate::dialog::McpEditAction::Cancel => {}
+                    }
+                    self.panel = Panel::None;
+                    return true;
+                }
+                if !self.mcp_edit_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
+            Panel::PluginEdit => {
+                if let Some(action) = self.plugin_edit_dialog.handle_key(key) {
+                    match action {
+                        crate::dialog::PluginEditAction::Submit(s) => {
+                            self.install_plugin_action(*s);
+                        }
+                        crate::dialog::PluginEditAction::Cancel => {}
+                    }
+                    self.panel = Panel::None;
+                    return true;
+                }
+                if !self.plugin_edit_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
+            Panel::ProviderEdit => {
+                if let Some(action) = self.provider_edit_dialog.handle_key(key) {
+                    match action {
+                        crate::dialog::ProviderEditAction::Submit(s) => {
+                            // 载荷即 ProviderEditSubmission,直连既有写入链路
+                            // (client → server → refresh_providers_into_store)。
+                            self.submit_provider_edit(*s);
+                        }
+                        crate::dialog::ProviderEditAction::Cancel => {}
+                    }
+                    self.panel = Panel::None;
+                    return true;
+                }
+                if !self.provider_edit_dialog.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::Fork => {

@@ -2,6 +2,7 @@ pub mod builtin_categories;
 pub mod category;
 pub mod external_tools;
 pub mod loader;
+pub mod matching;
 pub mod runtime_budget;
 pub mod schema;
 pub mod store;

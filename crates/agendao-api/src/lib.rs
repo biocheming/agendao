@@ -85,6 +85,68 @@ pub struct SkillCatalogEntry {
     pub writable: bool,
     #[serde(default)]
     pub supporting_files: Vec<String>,
+    /// True when the skill matches `skills.disabled` (exact name or
+    /// `category/*` wildcard). Only populated when the query sets
+    /// `include_disabled`; runtime-facing catalog reads keep filtering
+    /// disabled skills out entirely.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// Settings→Tools 列表行（GET `/tool/catalog` / `local_list_tools`）。
+/// 与 skill catalog 不同：disabled tools 仍列出（`disabled` 标记），
+/// 否则 UI 无法提供 re-enable 入口。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolListEntry {
+    pub id: String,
+    pub description: String,
+    /// Catalog metadata family（`family/*` 通配禁用的类目 key）；无 metadata
+    /// 的 tool 为 `None`，只能按精确名禁用。
+    #[serde(default)]
+    pub family: Option<String>,
+    /// Facade/bridge 工具（`tool_catalog_*`/`skills_*`/`skill`/`skill_view`
+    /// 及 legacy 别名）——禁用它们会切断模型对其它一切工具的触达，
+    /// registry 过滤对它们豁免，UI 侧开关锁定。
+    #[serde(default)]
+    pub protected: bool,
+    /// True when the tool matches `disabled_tools`（精确 id 或 `family/*`）。
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// PUT `/config/disabled` 请求体：`Some(vec)` = 整体替换对应 disabled 列表
+/// （允许空 vec 清空——`PATCH /config` 的 merge 语义无法表达清空）；
+/// `None`/缺省 = 不动该列表。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DisabledConfigUpdate {
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+    /// 顶层 `disabled_plugins`（精确名或 `前缀/*` 通配）。
+    #[serde(default)]
+    pub plugins: Option<Vec<String>>,
+}
+
+/// Settings→Plugins 列表行（GET `/config/plugins` / `local_list_plugins`）。
+/// 数据源 = config.plugin（managed）+ discovery 目录扫描（discovered）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginListEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub plugin_type: String,
+    /// `"managed"`（config 声明）/ `"discovered"`（插件根目录扫描）。
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// 安装途径标签（config 声明 / user (~/.agendao/plugins) /
+    /// project (.agendao/plugins) / external (config plugin_paths)）。
+    pub origin: String,
+    /// True when the plugin matches `disabled_plugins`（精确名或 `前缀/*`）。
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -191,6 +253,11 @@ pub struct SkillCatalogQuery {
     pub tools: Vec<String>,
     #[serde(default)]
     pub toolsets: Vec<String>,
+    /// Include skills matched by `skills.disabled` in the response (flagged
+    /// via `SkillCatalogEntry.disabled`) instead of filtering them out.
+    /// Inspection/Settings surface only; runtime resolution keeps filtering.
+    #[serde(default)]
+    pub include_disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

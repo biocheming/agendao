@@ -282,6 +282,9 @@ impl TaskAgentInfo {
                         top_p: self.top_p,
                         variant: self.variant.clone(),
                         provider_options: None,
+                        reasoning_effort: None,
+                        timeout_secs: None,
+                        stream_stall_timeout_secs: None,
                     })
             })
     }

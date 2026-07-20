@@ -557,6 +557,96 @@ fn provider_lists_follow_replace_semantics_instead_of_union() {
 }
 
 #[test]
+fn disabled_lists_deserialize_with_defaults() {
+    let config: Config = serde_json::from_str(
+        r#"{
+            "skills": { "disabled": ["old-skill", "literature-research/*"] },
+            "disabled_tools": ["bash", "skill_knowledge/*"],
+            "disabled_plugins": ["metrics"]
+        }"#,
+    )
+    .unwrap();
+
+    let skills = config.skills.expect("skills config should exist");
+    assert_eq!(
+        skills.disabled,
+        vec!["old-skill".to_string(), "literature-research/*".to_string()]
+    );
+    assert_eq!(
+        config.disabled_tools,
+        vec!["bash".to_string(), "skill_knowledge/*".to_string()]
+    );
+    assert_eq!(config.disabled_plugins, vec!["metrics".to_string()]);
+
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    assert!(empty.skills.is_none());
+    assert!(empty.disabled_tools.is_empty());
+    assert!(empty.disabled_plugins.is_empty());
+}
+
+#[test]
+fn disabled_tool_and_plugin_lists_follow_replace_semantics() {
+    let mut base = Config {
+        disabled_tools: vec!["bash".to_string()],
+        disabled_plugins: vec!["metrics".to_string()],
+        skills: Some(SkillsConfig {
+            disabled: vec!["old-skill".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let overlay = Config {
+        disabled_tools: vec!["grep".to_string()],
+        skills: Some(SkillsConfig {
+            disabled: vec!["web/*".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    base.merge(overlay);
+
+    assert_eq!(base.disabled_tools, vec!["grep".to_string()]);
+    assert_eq!(base.disabled_plugins, vec!["metrics".to_string()]);
+    assert_eq!(
+        base.skills.unwrap().disabled,
+        vec!["web/*".to_string()]
+    );
+}
+
+#[test]
+fn disabled_plugins_filter_applies_to_plugin_map_keys() {
+    let config: Config = serde_json::from_str(
+        r#"{
+            "plugin": {
+                "metrics": {"type": "npm", "package": "@acme/metrics"},
+                "auth/github": {"type": "npm", "package": "@acme/github-auth"},
+                "auth/gitlab": {"type": "npm", "package": "@acme/gitlab-auth"}
+            },
+            "disabled_plugins": ["metrics", "auth/*"]
+        }"#,
+    )
+    .unwrap();
+
+    let enabled: Vec<&String> = config
+        .plugin
+        .keys()
+        .filter(|name| !crate::matching::is_disabled(&config.disabled_plugins, name))
+        .collect();
+    assert!(enabled.is_empty());
+    assert!(crate::matching::is_disabled(&config.disabled_plugins, "metrics"));
+    assert!(crate::matching::is_disabled(
+        &config.disabled_plugins,
+        "auth/github"
+    ));
+    assert!(!crate::matching::is_disabled(
+        &config.disabled_plugins,
+        "authentication/github"
+    ));
+}
+
+#[test]
 fn mcp_enabled_flag_overlay_keeps_existing_full_server_fields() {
     let mut base = Config {
         mcp: Some(HashMap::from([(
@@ -1382,4 +1472,118 @@ fn tool_imports_merge_append_unique_keep_order() {
             "/override/tools/biology.jsonc".to_string(),
         ]
     );
+}
+
+#[test]
+fn model_level_tuning_fields_deserialize_and_skip_none() {
+    let config: Config = serde_json::from_str(
+        r#"{
+            "provider": {
+                "openai": {
+                    "models": {
+                        "gpt-5": {
+                            "reasoning": true,
+                            "reasoning_effort": "high",
+                            "timeout_secs": 600,
+                            "stream_stall_timeout_secs": 30
+                        },
+                        "gpt-4o": {}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let models = config
+        .provider
+        .as_ref()
+        .and_then(|providers| providers.get("openai"))
+        .and_then(|provider| provider.models.as_ref())
+        .expect("models should exist");
+
+    let tuned = models.get("gpt-5").expect("gpt-5 model");
+    assert_eq!(tuned.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(tuned.timeout_secs, Some(600));
+    assert_eq!(tuned.stream_stall_timeout_secs, Some(30));
+
+    let plain = models.get("gpt-4o").expect("gpt-4o model");
+    assert_eq!(plain.reasoning_effort, None);
+    assert_eq!(plain.timeout_secs, None);
+    assert_eq!(plain.stream_stall_timeout_secs, None);
+    // Absent fields stay absent on serialization (skip_none semantics).
+    let serialized = serde_json::to_value(plain).unwrap();
+    assert!(serialized.get("reasoning_effort").is_none());
+    assert!(serialized.get("timeout_secs").is_none());
+    assert!(serialized.get("stream_stall_timeout_secs").is_none());
+}
+
+#[test]
+fn model_level_tuning_fields_support_camel_case_aliases() {
+    let model: ModelConfig = serde_json::from_str(
+        r#"{
+            "reasoningEffort": "low",
+            "timeoutSecs": 120,
+            "streamStallTimeoutSecs": 10
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(model.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(model.timeout_secs, Some(120));
+    assert_eq!(model.stream_stall_timeout_secs, Some(10));
+}
+
+#[test]
+fn model_level_tuning_fields_merge_with_option_override_semantics() {
+    let mut base = Config {
+        provider: Some(HashMap::from([(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(HashMap::from([(
+                    "gpt-5".to_string(),
+                    ModelConfig {
+                        reasoning_effort: Some("low".to_string()),
+                        timeout_secs: Some(300),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+
+    let overlay = Config {
+        provider: Some(HashMap::from([(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(HashMap::from([(
+                    "gpt-5".to_string(),
+                    ModelConfig {
+                        reasoning_effort: Some("high".to_string()),
+                        stream_stall_timeout_secs: Some(45),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+
+    base.merge(overlay);
+
+    let merged = base
+        .provider
+        .as_ref()
+        .and_then(|providers| providers.get("openai"))
+        .and_then(|provider| provider.models.as_ref())
+        .and_then(|models| models.get("gpt-5"))
+        .expect("merged model");
+    // Overlay replaces fields it sets...
+    assert_eq!(merged.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(merged.stream_stall_timeout_secs, Some(45));
+    // ...and leaves fields it does not set untouched.
+    assert_eq!(merged.timeout_secs, Some(300));
 }

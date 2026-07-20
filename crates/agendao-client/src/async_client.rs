@@ -13,8 +13,9 @@ use crate::common::{
 };
 use crate::{
     AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
-    ConfigPolicyValidationSnapshot, CreateSessionRequest, ExecuteRecoveryRequest,
-    ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse, KnownProvidersResponse,
+    ConfigPolicyValidationSnapshot, CreateSessionRequest, DisabledConfigUpdate,
+    ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse,
+    KnownProvidersResponse,
     McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest,
     MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
     MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
@@ -24,6 +25,7 @@ use crate::{
     MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
     ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
+    PluginListEntry,
     RecoveryActionKind, RefreshProviderCatalogResponse, RepairQuery, RepairQueryResponse,
     ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest, RevertResponse,
     SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
@@ -43,7 +45,7 @@ use crate::{
     SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
     SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
     SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, TaskSummaryInfo,
-    UpdateSessionRequest,
+    ToolListEntry, UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -636,6 +638,72 @@ impl AsyncApiClient {
 
     pub async fn patch_config(&self, patch: &serde_json::Value) -> anyhow::Result<AppConfig> {
         self.patch_json("/config", "patch config", patch).await
+    }
+
+    /// PUT `/config/disabled`：整体替换 `disabled_tools` / `skills.disabled`
+    /// （允许空 vec 清空，patch merge 语义表达不了清空）。
+    pub async fn put_disabled_config(
+        &self,
+        update: &DisabledConfigUpdate,
+    ) -> anyhow::Result<AppConfig> {
+        self.put_json("/config/disabled", "put disabled config", update)
+            .await
+    }
+
+    /// GET `/tool/catalog`：全量 tool 列表（含 disabled，打标）。
+    pub async fn list_tools(&self) -> anyhow::Result<Vec<ToolListEntry>> {
+        self.get_json("/tool/catalog", "list tools").await
+    }
+
+    /// GET `/config/plugins`：已安装插件列表（managed + discovered，打标）。
+    pub async fn list_plugins(&self) -> anyhow::Result<Vec<PluginListEntry>> {
+        self.get_json("/config/plugins", "list plugins").await
+    }
+
+    /// PUT `/config/mcp/{key}`：写 MCP server 配置条目（增/改/启停共用整体覆写）。
+    pub async fn put_mcp_config(
+        &self,
+        key: &str,
+        mcp: &agendao_config::McpServerConfig,
+    ) -> anyhow::Result<AppConfig> {
+        self.put_json(
+            &format!("/config/mcp/{}", urlencoding::encode(key)),
+            &format!("put mcp config `{key}`"),
+            mcp,
+        )
+        .await
+    }
+
+    /// DELETE `/config/mcp/{key}`：删 MCP server 配置条目。
+    pub async fn delete_mcp_config(&self, key: &str) -> anyhow::Result<AppConfig> {
+        self.delete_json(
+            &format!("/config/mcp/{}", urlencoding::encode(key)),
+            &format!("delete mcp config `{key}`"),
+        )
+        .await
+    }
+
+    /// PUT `/config/plugin/{key}`：写 plugin 配置条目（安装 file 类型等）。
+    pub async fn put_plugin_config(
+        &self,
+        key: &str,
+        plugin: &agendao_config::PluginConfig,
+    ) -> anyhow::Result<AppConfig> {
+        self.put_json(
+            &format!("/config/plugin/{}", urlencoding::encode(key)),
+            &format!("put plugin config `{key}`"),
+            plugin,
+        )
+        .await
+    }
+
+    /// DELETE `/config/plugin/{key}`：删 plugin 配置条目（managed 删除）。
+    pub async fn delete_plugin_config(&self, key: &str) -> anyhow::Result<AppConfig> {
+        self.delete_json(
+            &format!("/config/plugin/{}", urlencoding::encode(key)),
+            &format!("delete plugin config `{key}`"),
+        )
+        .await
     }
 
     pub async fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {

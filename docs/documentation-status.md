@@ -133,6 +133,7 @@
 | 文档 | 当前定位 | 状态判断 |
 | --- | --- | --- |
 | `README.md` | docs 门户与阅读顺序 | 当前 |
+| `architecture.md` | 五行视角架构图（模块连接+功能清单） | 当前 |
 | `index.md` | 产品总览 | 当前 |
 | `installation.md` | 安装/分发 | 当前 |
 | `commands.md` | CLI/斜杠命令参考 | 当前，已补齐 memory/provider/repair 等入口 |

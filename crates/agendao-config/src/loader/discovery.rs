@@ -180,7 +180,7 @@ pub(super) fn load_modes_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
     result
 }
 
-pub(crate) fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {
+pub fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {
     // 展开用户配置里手写的 `~/`，要的是真实用户主目录，不经 agendao_home。
     if let Some(stripped) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -270,7 +270,10 @@ fn collect_plugins_in_dir(dir: &Path, plugins: &mut Vec<String>) {
 /// Load plugin paths from a directory.
 /// - Direct files in `path`
 /// - Compatibility subdirectories `path/plugin` and `path/plugins`
-pub(super) fn load_plugins_from_path(path: &Path) -> Vec<String> {
+///
+/// `pub`：server 的插件列表读面（Settings→Plugins）复用同一扫描口径，
+/// 不再复制「文件 / index.ts|js|mjs」规则。
+pub fn load_plugins_from_path(path: &Path) -> Vec<String> {
     let mut plugins = Vec::new();
     collect_plugins_in_dir(path, &mut plugins);
     collect_plugins_in_dir(&path.join("plugin"), &mut plugins);

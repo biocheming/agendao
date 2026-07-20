@@ -455,6 +455,21 @@ impl ToolRegistry {
         tools.get(id).cloned()
     }
 
+    /// Removes a tool from the registry. Returns true when a tool was present.
+    pub async fn unregister(&self, id: &str) -> bool {
+        let mut tools = self.tools.write().await;
+        tools.remove(id).is_some()
+    }
+
+    /// Atomically replaces the entire tool set with another registry's
+    /// contents. Used by the server's config-write path to rebuild the live
+    /// registry after `disabled_tools` changes — holders of the same
+    /// `Arc<ToolRegistry>` observe the new set on their next lookup.
+    pub async fn replace_with(&self, other: ToolRegistry) {
+        let new_tools = other.tools.into_inner();
+        *self.tools.write().await = new_tools;
+    }
+
     pub async fn list(&self) -> Vec<Arc<dyn Tool>> {
         let tools = self.tools.read().await;
         tools.values().cloned().collect()
@@ -1103,7 +1118,65 @@ pub async fn create_default_registry_with_config(
         register_plugin_tools(&registry, loader).await;
     }
 
+    if let Some(config) = config {
+        apply_disabled_tools_filter(&registry, &config.disabled_tools).await;
+    }
+
     registry
+}
+
+/// Facade/bridge tools that must survive `disabled_tools`. In facade mode the
+/// model can only reach other tools through `tool_catalog_*` (and their legacy
+/// `mcp_*` aliases), and can only reach skill content through the `skills_*`
+/// discovery tools plus the `skill`/`skill_view` loaders — disabling those
+/// would cut the model off from everything behind them.
+pub fn is_protected_facade_tool(name: &str) -> bool {
+    name.starts_with("tool_catalog_")
+        || name.starts_with("skills_")
+        || crate::tool_catalog::is_legacy_tool_catalog_facade_alias_tool(name)
+        || matches!(name, "skill" | "skill_view")
+}
+
+/// Removes tools listed in `disabled_tools` (exact tool id or `family/*`
+/// category wildcard matched against catalog metadata) from a fully assembled
+/// registry. Protected facade/bridge tools are never removed.
+async fn apply_disabled_tools_filter(registry: &ToolRegistry, disabled: &[String]) {
+    if disabled.is_empty() {
+        return;
+    }
+
+    for tool in registry.list().await {
+        let id = tool.id().to_string();
+        let matched = agendao_config::matching::matching_disabled_pattern(disabled, &id)
+            .map(|pattern| pattern.to_string())
+            .or_else(|| {
+                tool.catalog_metadata()
+                    .and_then(|catalog| catalog.family)
+                    .and_then(|family| {
+                        agendao_config::matching::matching_disabled_pattern(disabled, &family)
+                    })
+                    .map(|pattern| pattern.to_string())
+            });
+        let Some(pattern) = matched else {
+            continue;
+        };
+
+        if is_protected_facade_tool(&id) {
+            tracing::debug!(
+                tool = %id,
+                pattern = %pattern,
+                "disabled_tools entry ignored: facade/bridge tool is exempt"
+            );
+            continue;
+        }
+
+        registry.unregister(&id).await;
+        tracing::debug!(
+            tool = %id,
+            pattern = %pattern,
+            "tool removed from registry via disabled_tools"
+        );
+    }
 }
 
 async fn register_plugin_tools(
@@ -1536,6 +1609,73 @@ mod tests {
         assert!(normalized.is_object());
         assert_eq!(normalized["filepath"], "/tmp/test.html");
         assert_eq!(normalized["content"], "<html></html>");
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_are_removed_by_exact_name_and_family_wildcard() {
+        let mut config = agendao_config::Config::default();
+        config.disabled_tools = vec![
+            "bash".to_string(),
+            "task_governance/*".to_string(),
+        ];
+        let registry = create_default_registry_with_config(Some(&config)).await;
+        let ids = registry.list_ids().await;
+
+        assert!(!ids.iter().any(|id| id == "bash"));
+        // family wildcard removes every member of task_governance
+        for family_member in ["todoread", "todowrite", "batch", "plan_enter", "plan_exit"] {
+            assert!(
+                !ids.iter().any(|id| id == family_member),
+                "{family_member} should be disabled via task_governance/*"
+            );
+        }
+        // unrelated tools survive
+        assert!(ids.iter().any(|id| id == "read"));
+        assert!(ids.iter().any(|id| id == "grep"));
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_cannot_remove_facade_or_bridge_tools() {
+        let mut config = agendao_config::Config::default();
+        config.disabled_tools = vec![
+            "tool_catalog_search".to_string(),
+            "skills_list".to_string(),
+            "skill".to_string(),
+            "skill_view".to_string(),
+            "skill_knowledge/*".to_string(),
+            "execution_resource_catalog/*".to_string(),
+        ];
+        let registry = create_default_registry_with_config(Some(&config)).await;
+        let ids = registry.list_ids().await;
+
+        // Facade/bridge tools survive even when listed explicitly or via a
+        // family wildcard covering their catalog family.
+        for protected in [
+            "tool_catalog_search",
+            "tool_catalog_describe",
+            "tool_catalog_call",
+            "skills_categories",
+            "skills_list",
+            "skill",
+            "skill_view",
+        ] {
+            assert!(
+                ids.iter().any(|id| id == protected),
+                "{protected} must be exempt from disabled_tools"
+            );
+        }
+        // Non-bridge members of the same family are still removable.
+        assert!(!ids.iter().any(|id| id == "skill_hub"));
+        assert!(!ids.iter().any(|id| id == "skill_manage"));
+    }
+
+    #[tokio::test]
+    async fn empty_disabled_tools_leaves_registry_untouched() {
+        let config = agendao_config::Config::default();
+        let registry = create_default_registry_with_config(Some(&config)).await;
+        let ids = registry.list_ids().await;
+        assert!(ids.iter().any(|id| id == "bash"));
+        assert!(ids.iter().any(|id| id == "todoread"));
     }
 }
 

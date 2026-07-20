@@ -36,6 +36,11 @@ pub(crate) struct SkillCatalogQuery {
     pub tools: Vec<String>,
     #[serde(default)]
     pub toolsets: Vec<String>,
+    /// Inspection/Settings surface: keep `skills.disabled` matches in the
+    /// response (flagged via `SkillCatalogEntry.disabled`) instead of
+    /// filtering them out. Runtime resolution keeps filtering.
+    #[serde(default)]
+    pub include_disabled: bool,
 }
 
 pub(crate) async fn resolve_skill_catalog(
@@ -53,6 +58,8 @@ pub(crate) struct SkillCatalogEntry {
     pub location: String,
     pub writable: bool,
     pub supporting_files: Vec<String>,
+    /// 仅在 `include_disabled` 查询下为 true 时有意义（默认 false）。
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -125,13 +132,27 @@ pub(crate) async fn list_skill_catalog_entries(
     let filter = build_skill_filter(&state, &query).await?;
     let authority_filter = filter.as_ref().map(OwnedSkillFilter::as_filter);
     let authority = skill_authority(&state);
+    if query.include_disabled {
+        // Settings 读面：disabled skills 仍列出并打标，否则 UI 无 re-enable 入口。
+        let skills = authority
+            .list_skill_catalog_with_disabled(authority_filter.as_ref())
+            .map_err(map_skill_error_to_api_error)?;
+        return Ok(Json(
+            skills
+                .into_iter()
+                .map(|(skill, disabled)| {
+                    skill_catalog_entry_from_meta(&authority, skill, disabled)
+                })
+                .collect(),
+        ));
+    }
     let skills = authority
         .list_skill_catalog(authority_filter.as_ref())
         .map_err(map_skill_error_to_api_error)?;
     Ok(Json(
         skills
             .into_iter()
-            .map(|skill| skill_catalog_entry_from_meta(&authority, skill))
+            .map(|skill| skill_catalog_entry_from_meta(&authority, skill, false))
             .collect(),
     ))
 }
@@ -306,6 +327,7 @@ async fn resolve_skill_refs_for_stage(
         tool_policy: policy.map(StageToolPolicy::label),
         tools: Vec::new(),
         toolsets: Vec::new(),
+        include_disabled: false,
     };
     let views = resolve_skill_catalog_inner(state, &query, requested_names, true).await?;
     Ok(views
@@ -581,6 +603,7 @@ fn skill_runtime_resolver(state: &Arc<ServerState>) -> SkillRuntimeResolver {
 fn skill_catalog_entry_from_meta(
     authority: &SkillAuthority,
     skill: SkillMeta,
+    disabled: bool,
 ) -> SkillCatalogEntry {
     let writable = authority.is_skill_meta_writable(&skill);
     SkillCatalogEntry {
@@ -594,6 +617,7 @@ fn skill_catalog_entry_from_meta(
             .into_iter()
             .map(|file| file.relative_path)
             .collect(),
+        disabled,
     }
 }
 
@@ -603,6 +627,22 @@ async fn execute_skill_manage_request(
 ) -> Result<SkillGovernedWriteResult> {
     execute_skill_manage_request_with_gate(state, req, |state, session_id, permission| async move {
         request_permission(state, session_id, permission).await
+    })
+    .await
+}
+
+/// local-direct 短路执行入口：跳过交互式权限门。
+///
+/// 调用方（TUI Settings→Skills 删除）已用自有 ConfirmDialog 完成用户确认；
+/// 且 local-direct 下 TUI 以同步 `block_on` 驱动本调用，事件循环被占时
+/// 300s 等待的权限弹窗永远得不到回复（死锁），因此 gate 直接放行。
+/// 写面仍走 `SkillGovernanceAuthority` 同一权威与 memory 回流，与 HTTP 路径一致。
+pub(crate) async fn execute_skill_manage_request_without_interactive_gate(
+    state: &Arc<ServerState>,
+    req: SkillManageRequest,
+) -> Result<SkillGovernedWriteResult> {
+    execute_skill_manage_request_with_gate(state, req, |_state, _session_id, _permission| async {
+        Ok(())
     })
     .await
 }

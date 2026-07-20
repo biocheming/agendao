@@ -113,15 +113,186 @@ impl AppHandler {
         self.store.settings_mcp_selected.set(nxt as usize);
     }
 
-    /// Skills 列表选中循环移动（同上）。
+    /// Plugins 列表选中循环移动（同 MCP 口径）。
+    pub(crate) fn settings_move_plugins(&mut self, dir: i32) {
+        let n = self.store.settings_plugins.get().len() as i32;
+        if n == 0 {
+            return;
+        }
+        let cur = self.store.settings_plugins_selected.get() as i32;
+        let nxt = (((cur + dir) % n) + n) % n;
+        self.store.settings_plugins_selected.set(nxt as usize);
+    }
+
+    /// `a`（MCP 列表/详情聚焦）：弹 McpEditDialog 新增 server。
+    pub(crate) fn settings_open_add_mcp(&mut self) {
+        self.mcp_edit_dialog.open_add();
+        self.panel = crate::app::Panel::McpEdit;
+    }
+
+    /// `e`（MCP 列表/详情聚焦）：弹 McpEditDialog 编辑选中 server（行已含
+    /// config 合并字段，open_edit 直接 prefill，无需二次 GET）。
+    pub(crate) fn settings_open_edit_mcp(&mut self) {
+        let rows = self.store.settings_mcp.get();
+        let idx = self.store.settings_mcp_selected.get();
+        let Some(row) = rows.get(idx) else { return };
+        self.mcp_edit_dialog.open_edit(row);
+        self.panel = crate::app::Panel::McpEdit;
+    }
+
+    /// `x`（MCP 列表/详情聚焦）：Confirm 删选中 server（DELETE /config/mcp/{key}）。
+    pub(crate) fn settings_confirm_delete_mcp(&mut self) {
+        let rows = self.store.settings_mcp.get();
+        let idx = self.store.settings_mcp_selected.get();
+        let Some(row) = rows.get(idx) else { return };
+        let name = row.name.clone();
+        self.confirm_dialog.ask(
+            "Delete MCP Server",
+            &format!(
+                "Delete MCP server \"{}\"? This removes the config.mcp entry.",
+                name,
+            ),
+            "Delete",
+        );
+        self.pending_confirm = Some(crate::app::PendingConfirm::DeleteMcp(name));
+        self.panel = crate::app::Panel::Confirm;
+    }
+
+    /// `a`（Plugins 列表/详情聚焦）：弹 PluginEditDialog 安装 file 类型插件。
+    pub(crate) fn settings_open_install_plugin(&mut self) {
+        self.plugin_edit_dialog.open_add();
+        self.panel = crate::app::Panel::PluginEdit;
+    }
+
+    /// `x`/`d`（Plugins 列表/详情聚焦）：managed → Confirm 删 config 条目；
+    /// discovered → toast 指引去对应目录删除（删除入口不在 config，诚实标注）。
+    pub(crate) fn settings_confirm_delete_plugin(&mut self) {
+        let rows = self.store.settings_plugins.get();
+        let sel = self
+            .store
+            .settings_plugins_selected
+            .get()
+            .min(rows.len().saturating_sub(1));
+        let Some(row) = rows.get(sel) else { return };
+        if !row.managed {
+            self.store.push_toast(
+                &format!(
+                    "\"{}\" is discovered — delete it from {} (not a config entry)",
+                    row.name, row.origin,
+                ),
+                ToastMsgVariant::Warning,
+            );
+            return;
+        }
+        let name = row.name.clone();
+        self.confirm_dialog.ask(
+            "Delete Plugin",
+            &format!(
+                "Delete plugin \"{}\"? This removes the config.plugin entry.",
+                name,
+            ),
+            "Delete",
+        );
+        self.pending_confirm = Some(crate::app::PendingConfirm::DeletePlugin(name));
+        self.panel = crate::app::Panel::Confirm;
+    }
+
+    /// Skills 列表选中循环移动（同上）。下标是树状展开后的可见行（含类目头），
+    /// 光标可停在类目头上（Enter/Space 折叠/展开），简单可靠优先。
     pub(crate) fn settings_move_skills(&mut self, dir: i32) {
-        let n = self.store.settings_skills.get().len() as i32;
+        let rows = self.store.settings_skills.get();
+        let collapsed = self.store.settings_skills_collapsed.get();
+        let n = crate::store::types::flatten_settings_skill_rows(&rows, &collapsed).len() as i32;
         if n == 0 {
             return;
         }
         let cur = self.store.settings_skills_selected.get() as i32;
         let nxt = (((cur + dir) % n) + n) % n;
         self.store.settings_skills_selected.set(nxt as usize);
+    }
+
+    /// Enter/Space（Skills 列表类目头行）：折叠/展开该组（session tree 折叠同范式）。
+    /// 数据行上调用为 no-op。返回 true = 当前行是类目头（已切换）。
+    pub(crate) fn settings_toggle_skill_group(&mut self) -> bool {
+        use crate::store::types::{flatten_settings_skill_rows, SettingsSkillLine};
+        let rows = self.store.settings_skills.get();
+        let collapsed = self.store.settings_skills_collapsed.get();
+        let lines = flatten_settings_skill_rows(&rows, &collapsed);
+        let sel = self
+            .store
+            .settings_skills_selected
+            .get()
+            .min(lines.len().saturating_sub(1));
+        let Some(SettingsSkillLine::Category { name, .. }) = lines.get(sel) else {
+            return false;
+        };
+        // 折叠集 key = 小写类目名（与 flatten 匹配口径一致）。
+        let key = name.to_ascii_lowercase();
+        self.store.settings_skills_collapsed.update(|set| {
+            if !set.remove(&key) {
+                set.insert(key.clone());
+            }
+        });
+        // 光标停在类目头上：折叠后下标不变仍指该行，天然合法，无需重定位。
+        self.layout_dirty = true;
+        true
+    }
+
+    /// Tools 列表选中循环移动（同 skills）。下标是树状展开后的可见行（含类目头）。
+    pub(crate) fn settings_move_tools(&mut self, dir: i32) {
+        let rows = self.store.settings_tools.get();
+        let collapsed = self.store.settings_tools_collapsed.get();
+        let n = crate::store::types::flatten_settings_tool_rows(&rows, &collapsed).len() as i32;
+        if n == 0 {
+            return;
+        }
+        let cur = self.store.settings_tools_selected.get() as i32;
+        let nxt = (((cur + dir) % n) + n) % n;
+        self.store.settings_tools_selected.set(nxt as usize);
+    }
+
+    /// Enter/Space（Tools 列表类目头行）：折叠/展开该 family 组。数据行 no-op。
+    pub(crate) fn settings_toggle_tool_group(&mut self) -> bool {
+        use crate::store::types::{flatten_settings_tool_rows, SettingsToolLine};
+        let rows = self.store.settings_tools.get();
+        let collapsed = self.store.settings_tools_collapsed.get();
+        let lines = flatten_settings_tool_rows(&rows, &collapsed);
+        let sel = self
+            .store
+            .settings_tools_selected
+            .get()
+            .min(lines.len().saturating_sub(1));
+        let Some(SettingsToolLine::Category { name, .. }) = lines.get(sel) else {
+            return false;
+        };
+        let key = name.to_ascii_lowercase();
+        self.store.settings_tools_collapsed.update(|set| {
+            if !set.remove(&key) {
+                set.insert(key.clone());
+            }
+        });
+        self.layout_dirty = true;
+        true
+    }
+
+    /// `a`（Providers 聚焦）：弹 ProviderEditDialog 新建 provider。
+    pub(crate) fn settings_open_add_provider(&mut self) {
+        self.provider_edit_dialog.open_add();
+        self.panel = crate::app::Panel::ProviderEdit;
+    }
+
+    /// `e`（Providers 聚焦）：弹 ProviderEditDialog 编辑选中 provider。
+    pub(crate) fn settings_open_edit_provider(&mut self) {
+        let providers = self.store.providers.get();
+        let sel_id = self.store.settings_selected_provider.get();
+        let Some(sel) = sel_id
+            .as_ref()
+            .and_then(|id| providers.iter().find(|p| &p.id == id))
+        else {
+            return;
+        };
+        self.provider_edit_dialog.open_edit(sel);
+        self.panel = crate::app::Panel::ProviderEdit;
     }
 
     /// `a`（Providers 聚焦 / "+ Add provider" 点击）：进入 Add provider 表单。
@@ -131,7 +302,9 @@ impl AppHandler {
         self.layout_dirty = true;
     }
 
-    /// `e`（Providers 聚焦）：编辑选中 provider（就地表单）。
+    /// `E`（Providers 聚焦）：legacy in-place 编辑（Details pane 内嵌表单）。
+    /// 主路径已迁到 ProviderEditDialog（`e`）；此入口保留给习惯内嵌表单的用户，
+    /// 两条路径共享同一 `submit_provider_edit` 写入链路。
     pub(crate) fn settings_enter_edit_provider(&mut self) {
         let providers = self.store.providers.get();
         let sel_id = self.store.settings_selected_provider.get();
@@ -214,6 +387,67 @@ impl AppHandler {
         );
         self.pending_confirm = Some(crate::app::PendingConfirm::DeleteProvider(sel.id.clone()));
         self.panel = crate::app::Panel::Confirm;
+    }
+
+    /// `x`/`d`（Skills 列表/详情聚焦）：Confirm 删除可写 catalog skill。
+    /// 类目头 / proposal / 不可写 skill 只 toast 说明，不弹确认（诚实标注）。
+    pub(crate) fn settings_confirm_delete_skill(&mut self) {
+        use crate::store::types::{
+            flatten_settings_skill_rows, SettingsSkillLine, SettingsSkillRow,
+        };
+        let rows = self.store.settings_skills.get();
+        let collapsed = self.store.settings_skills_collapsed.get();
+        let lines = flatten_settings_skill_rows(&rows, &collapsed);
+        let sel = self
+            .store
+            .settings_skills_selected
+            .get()
+            .min(lines.len().saturating_sub(1));
+        let Some(line) = lines.get(sel) else { return };
+        let SettingsSkillLine::Row(src) = line else {
+            self.store.push_toast(
+                "Category headers only group skills — select a skill row to delete",
+                ToastMsgVariant::Info,
+            );
+            return;
+        };
+        match &rows[*src] {
+            SettingsSkillRow::Catalog {
+                name,
+                writable,
+                location,
+                ..
+            } => {
+                if !writable {
+                    self.store.push_toast(
+                        &format!(
+                            "\"{}\" is read-only (installed outside project .agendao/skills) — remove it from its install source",
+                            name
+                        ),
+                        ToastMsgVariant::Warning,
+                    );
+                    return;
+                }
+                let name = name.clone();
+                let location = location.clone();
+                self.confirm_dialog.ask(
+                    "Delete Skill",
+                    &format!(
+                        "Delete skill \"{}\"? This removes {} from the project.",
+                        name, location,
+                    ),
+                    "Delete",
+                );
+                self.pending_confirm = Some(crate::app::PendingConfirm::DeleteSkill(name));
+                self.panel = crate::app::Panel::Confirm;
+            }
+            SettingsSkillRow::Proposal { .. } => {
+                self.store.push_toast(
+                    "Proposals are approved/rejected (a/r), not deleted",
+                    ToastMsgVariant::Info,
+                );
+            }
+        }
     }
 
     /// `d`（Details 聚焦 / 行尾 ✕ 点击）：Confirm 删 model。
@@ -378,9 +612,20 @@ impl AppHandler {
                         dispatch_outcome::DispatchOutcome::Sent { status, .. } => {
                             if status == "queued" || status == "awaiting_user" {
                                 self.active_session.run_status.set(RunStatus::Running);
+                            } else if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
+                                // 同步整轮回执（"accepted"）：local_prompt 与 HTTP
+                                // session_prompt 都是整轮跑完才返回，回执到达即本轮
+                                // 已结束。正常路径轮末 SessionRuntimeReplaced(Idle)
+                                // 已先复位；这里是兜底——broadcast lagged 丢事件时
+                                // run_status 会永卡 Sending，spinner 永转不停。
+                                // 只清 Sending：若事件流已推进到 Running/Idle，说明
+                                // 状态机比回执更新，不抢（防迟到回执误清新一轮的状态；
+                                // 新一轮只可能由本 session 再次 dispatch 发起，其
+                                // Running 事件随即到达，即使撞上也会自愈）。
+                                self.active_session.run_status.set(RunStatus::Idle);
                             }
-                            // status 其他值：等服务端 FrontendEvent 经 event_bus
-                            // 驱动状态机，此处不抢。
+                            // status 其他值且事件流已接管：等服务端 FrontendEvent 经
+                            // event_bus 驱动状态机，此处不抢。
                             self.title_refresh_pending = true;
                             changed = true;
                         }
@@ -676,13 +921,55 @@ impl AppHandler {
                         // ── 弹窗鼠标（overlay 优先于底层命中）──
                         // ModelEdit：框内点击 = 聚焦对应字段（4 行一块，border 内侧）；
                         // 框外点击不 Esc（防误关），仅消费。几何来自 render 发布的 Rect。
+                        // Reasoning effort 字段显隐会影响块序，反查走 dialog 同源方法。
                         if self.panel == crate::app::Panel::ModelEdit {
                             if let Some(rect) = self.model_edit_rect {
                                 let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
-                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::ModelEditDialog::FIELDS.len() {
-                                    self.model_edit_dialog.set_focus(crate::dialog::ModelEditDialog::FIELDS[idx]);
+                                if in_x && m.y > rect.y && rel % 4 != 0 {
+                                    if let Some(field) = self.model_edit_dialog.field_at_block_index(idx) {
+                                        self.model_edit_dialog.set_focus(field);
+                                        self.layout_dirty = true;
+                                    }
+                                }
+                                return true;
+                            }
+                        }
+                        // McpEdit：同 ModelEdit 口径（4 字段 × 4 行块）。
+                        if self.panel == crate::app::Panel::McpEdit {
+                            if let Some(rect) = self.mcp_edit_rect {
+                                let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
+                                let rel = m.y.wrapping_sub(rect.y + 1);
+                                let idx = (rel / 4) as usize;
+                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::McpEditDialog::FIELDS.len() {
+                                    self.mcp_edit_dialog.set_focus(crate::dialog::McpEditDialog::FIELDS[idx]);
+                                    self.layout_dirty = true;
+                                }
+                                return true;
+                            }
+                        }
+                        // PluginEdit：同 ModelEdit 口径（2 字段 × 4 行块）。
+                        if self.panel == crate::app::Panel::PluginEdit {
+                            if let Some(rect) = self.plugin_edit_rect {
+                                let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
+                                let rel = m.y.wrapping_sub(rect.y + 1);
+                                let idx = (rel / 4) as usize;
+                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::PluginEditDialog::FIELDS.len() {
+                                    self.plugin_edit_dialog.set_focus(crate::dialog::PluginEditDialog::FIELDS[idx]);
+                                    self.layout_dirty = true;
+                                }
+                                return true;
+                            }
+                        }
+                        // ProviderEdit：同 ModelEdit 口径（4 字段 × 4 行块）。
+                        if self.panel == crate::app::Panel::ProviderEdit {
+                            if let Some(rect) = self.provider_edit_rect {
+                                let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
+                                let rel = m.y.wrapping_sub(rect.y + 1);
+                                let idx = (rel / 4) as usize;
+                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::ProviderEditDialog::FIELDS.len() {
+                                    self.provider_edit_dialog.set_focus(crate::dialog::ProviderEditDialog::FIELDS[idx]);
                                     self.layout_dirty = true;
                                 }
                                 return true;
@@ -887,7 +1174,7 @@ impl AppHandler {
                                 // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
                                 // row_owners 真实（否则点 ToolResult 子项错块），显式 None
                                 // 全量布局。
-                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, 80);
+                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, 80, self.store.compact_density.get());
                                 let mut acc: u16 = 0;
                                 let mut clicked_idx = None;
                                 for unit in &units {
@@ -1710,7 +1997,8 @@ impl AppHandler {
             }
 
             SettingsCategory::McpServers => {
-                // 列表栏行点选。
+                // 列表栏行点选；点行尾开关 pill 区（末 10 列 = pill 7 + 空格 + dot + 空格，
+                // 与渲染同源）= 启停切换（同 `t` 权威）。
                 if m.x >= x2 && m.x < x2 + geo::LIST_COL_W {
                     if m.y < geo::PANE_FIRST_ROW_Y {
                         return false;
@@ -1734,12 +2022,16 @@ impl AppHandler {
                     if i < end {
                         self.store.settings_mcp_selected.set(i);
                         self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        if m.x >= x2 + geo::LIST_COL_W.saturating_sub(10) {
+                            self.toggle_settings_mcp_enabled();
+                        }
                         self.layout_dirty = true;
                         return true;
                     }
                     return false;
                 }
-                // Detail Status pill 点击 → toggle connect/disconnect（同 c/d 权威）。
+                // Detail Status pill 点击 → toggle connect/disconnect（同 c/d 权威）；
+                // 其后 On/Off pill 点击 → 启停切换（同 `t` 权威）。
                 if m.x >= x3 && m.y == 1 {
                     let rows = self.store.settings_mcp.get();
                     if rows.is_empty() {
@@ -1760,24 +2052,32 @@ impl AppHandler {
                         self.store.settings_focus_pane.set(SettingsFocusPane::Details);
                         return true;
                     }
+                    // gap(1) 后的 [ On ]/[ Off ] pill（宽 7，与渲染同源）。
+                    let px1 = px0 + pill_w + 1;
+                    if m.x >= px1 && m.x < px1 + 7 {
+                        self.toggle_settings_mcp_enabled();
+                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        return true;
+                    }
                 }
                 false
             }
 
-            SettingsCategory::Skills => {
-                // 列表栏行点选。
+            SettingsCategory::Plugins => {
+                // 列表栏行点选（同 MCP 口径）；点行尾开关 pill 区（末 9 列 =
+                // pill 7 + 2 空格，与渲染同源）= 启停切换（同 `t` 权威）。
                 if m.x >= x2 && m.x < x2 + geo::LIST_COL_W {
                     if m.y < geo::PANE_FIRST_ROW_Y {
                         return false;
                     }
-                    let rows = self.store.settings_skills.get();
+                    let rows = self.store.settings_plugins.get();
                     if rows.is_empty() {
                         return false;
                     }
                     let visible = pane_h.saturating_sub(5).max(1) as usize;
                     let sel = self
                         .store
-                        .settings_skills_selected
+                        .settings_plugins_selected
                         .get()
                         .min(rows.len() - 1);
                     let (start, end) = crate::dialog::backdrop::list_viewport_window(
@@ -1787,8 +2087,55 @@ impl AppHandler {
                     );
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
+                        self.store.settings_plugins_selected.set(i);
+                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        if m.x >= x2 + geo::LIST_COL_W.saturating_sub(9) {
+                            self.toggle_settings_plugin();
+                        }
+                        self.layout_dirty = true;
+                        return true;
+                    }
+                    return false;
+                }
+                false
+            }
+
+            SettingsCategory::Skills => {
+                // 列表栏行点选（树状展开口径与渲染同源）；点类目头 = 选中 + 折叠/展开；
+                // 点行尾开关 pill 区（末 9 列，与渲染的 pill + 2 空格同源）= 启停切换。
+                if m.x >= x2 && m.x < x2 + geo::LIST_COL_W {
+                    if m.y < geo::PANE_FIRST_ROW_Y {
+                        return false;
+                    }
+                    let rows = self.store.settings_skills.get();
+                    let collapsed = self.store.settings_skills_collapsed.get();
+                    let lines = crate::store::types::flatten_settings_skill_rows(&rows, &collapsed);
+                    if lines.is_empty() {
+                        return false;
+                    }
+                    let visible = pane_h.saturating_sub(5).max(1) as usize;
+                    let sel = self
+                        .store
+                        .settings_skills_selected
+                        .get()
+                        .min(lines.len() - 1);
+                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
+                        lines.len(),
+                        sel,
+                        visible,
+                    );
+                    let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
+                    if i < end {
                         self.store.settings_skills_selected.set(i);
                         self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        let in_pill_zone = m.x >= x2 + geo::LIST_COL_W.saturating_sub(9);
+                        if in_pill_zone {
+                            self.toggle_settings_skill();
+                        } else if let crate::store::types::SettingsSkillLine::Category { .. } =
+                            &lines[i]
+                        {
+                            self.settings_toggle_skill_group();
+                        }
                         self.layout_dirty = true;
                         return true;
                     }
@@ -1807,6 +2154,50 @@ impl AppHandler {
                         self.store.settings_focus_pane.set(SettingsFocusPane::Details);
                         return true;
                     }
+                }
+                false
+            }
+
+            SettingsCategory::Tools => {
+                // 列表栏行点选（同 Skills 口径）；点类目头 = 选中 + 折叠/展开；
+                // 点行尾开关 pill 区 = 启停切换（protected 行由 toggle 内部 toast 拦截）。
+                if m.x >= x2 && m.x < x2 + geo::LIST_COL_W {
+                    if m.y < geo::PANE_FIRST_ROW_Y {
+                        return false;
+                    }
+                    let rows = self.store.settings_tools.get();
+                    let collapsed = self.store.settings_tools_collapsed.get();
+                    let lines = crate::store::types::flatten_settings_tool_rows(&rows, &collapsed);
+                    if lines.is_empty() {
+                        return false;
+                    }
+                    let visible = pane_h.saturating_sub(5).max(1) as usize;
+                    let sel = self
+                        .store
+                        .settings_tools_selected
+                        .get()
+                        .min(lines.len() - 1);
+                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
+                        lines.len(),
+                        sel,
+                        visible,
+                    );
+                    let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
+                    if i < end {
+                        self.store.settings_tools_selected.set(i);
+                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        let in_pill_zone = m.x >= x2 + geo::LIST_COL_W.saturating_sub(9);
+                        if in_pill_zone {
+                            self.toggle_settings_tool();
+                        } else if let crate::store::types::SettingsToolLine::Category { .. } =
+                            &lines[i]
+                        {
+                            self.settings_toggle_tool_group();
+                        }
+                        self.layout_dirty = true;
+                        return true;
+                    }
+                    return false;
                 }
                 false
             }
@@ -1834,6 +2225,8 @@ impl AppHandler {
                 SettingsCategory::ModelSettings => self.settings_move_provider(dir),
                 SettingsCategory::McpServers => self.settings_move_mcp(dir),
                 SettingsCategory::Skills => self.settings_move_skills(dir),
+                SettingsCategory::Tools => self.settings_move_tools(dir),
+                SettingsCategory::Plugins => self.settings_move_plugins(dir),
                 SettingsCategory::General => {
                     let n = GeneralRow::ALL.len() as i32;
                     let cur = self.store.settings_general_selected.get() as i32;
@@ -1856,6 +2249,8 @@ impl AppHandler {
                 SettingsCategory::ModelSettings => self.settings_move_model(dir),
                 SettingsCategory::McpServers => self.settings_move_mcp(dir),
                 SettingsCategory::Skills => self.settings_move_skills(dir),
+                SettingsCategory::Tools => self.settings_move_tools(dir),
+                SettingsCategory::Plugins => self.settings_move_plugins(dir),
                 SettingsCategory::General => {
                     let n = GeneralRow::ALL.len() as i32;
                     let cur = self.store.settings_general_selected.get() as i32;
@@ -1922,14 +2317,16 @@ impl AppHandler {
         let category = self.store.settings_category.get();
         let focus = self.store.settings_focus_pane.get();
 
-        // ── 非 ModelSettings / MCP / Skills 的简单 body 路由 ──
+        // ── 非 ModelSettings / MCP / Skills / Tools / Plugins 的简单 body 路由 ──
         // General / Keybindings / About:两区(Categories | body)。
-        // MCP / Skills:三区(Categories | List=Providers | Details),走下方 match。
+        // MCP / Skills / Tools / Plugins:三区(Categories | List=Providers | Details),走下方 match。
         if !matches!(
             category,
             SettingsCategory::ModelSettings
                 | SettingsCategory::McpServers
                 | SettingsCategory::Skills
+                | SettingsCategory::Tools
+                | SettingsCategory::Plugins
         ) && focus != SettingsFocusPane::Categories
             && !matches!(key, Key::Tab | Key::Escape)
         {
@@ -1944,13 +2341,15 @@ impl AppHandler {
         match key {
             Key::Tab => {
                 let cur = self.store.settings_focus_pane.get();
-                // 三栏循环:ModelSettings / MCP / Skills。
+                // 三栏循环:ModelSettings / MCP / Skills / Tools / Plugins。
                 // 两区循环:General / Keybindings / About(Categories ⇄ Details)。
                 let next = if matches!(
                     category,
                     SettingsCategory::ModelSettings
                         | SettingsCategory::McpServers
                         | SettingsCategory::Skills
+                        | SettingsCategory::Tools
+                        | SettingsCategory::Plugins
                 ) {
                     cur.next()
                 } else {
@@ -1978,6 +2377,8 @@ impl AppHandler {
                         match category {
                             SettingsCategory::McpServers => self.settings_move_mcp(dir),
                             SettingsCategory::Skills => self.settings_move_skills(dir),
+                            SettingsCategory::Tools => self.settings_move_tools(dir),
+                            SettingsCategory::Plugins => self.settings_move_plugins(dir),
                             _ => self.settings_move_provider(dir),
                         }
                     }
@@ -1985,6 +2386,8 @@ impl AppHandler {
                         match category {
                             SettingsCategory::McpServers => self.settings_move_mcp(dir),
                             SettingsCategory::Skills => self.settings_move_skills(dir),
+                            SettingsCategory::Tools => self.settings_move_tools(dir),
+                            SettingsCategory::Plugins => self.settings_move_plugins(dir),
                             _ => self.settings_move_model(dir),
                         }
                     }
@@ -1992,7 +2395,7 @@ impl AppHandler {
                 self.layout_dirty = true;
                 true
             }
-            Key::Enter => {
+            Key::Enter | Key::Char(' ') => {
                 let focus = self.store.settings_focus_pane.get();
                 if matches!(focus, SettingsFocusPane::Categories) {
                     let cat = self.store.settings_category.get();
@@ -2002,6 +2405,8 @@ impl AppHandler {
                         SettingsCategory::ModelSettings
                             | SettingsCategory::McpServers
                             | SettingsCategory::Skills
+                            | SettingsCategory::Tools
+                            | SettingsCategory::Plugins
                     ) {
                         SettingsFocusPane::Providers
                     } else {
@@ -2009,10 +2414,26 @@ impl AppHandler {
                     };
                     self.store.settings_focus_pane.set(body);
                     self.layout_dirty = true;
+                } else if category == SettingsCategory::Skills
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    // Skills 树：类目头行 Enter/Space = 折叠/展开；数据行 no-op。
+                    self.settings_toggle_skill_group();
+                } else if category == SettingsCategory::Tools
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    // Tools 树：类目头行 Enter/Space = 折叠/展开；数据行 no-op。
+                    self.settings_toggle_tool_group();
                 }
                 true
             }
-            // Provider CRUD / MCP connect / Skills approve(木律·唯一入口)。
+            // Provider/MCP CRUD / Plugins 安装 / Skills approve(木律·唯一入口)。
             Key::Char('a') => {
                 let focus = self.store.settings_focus_pane.get();
                 let cat = self.store.settings_category.get();
@@ -2026,11 +2447,21 @@ impl AppHandler {
                     SettingsCategory::ModelSettings
                         if matches!(focus, SettingsFocusPane::Providers) =>
                     {
-                        self.settings_enter_add_provider();
+                        // 主路径：弹 ProviderEditDialog（不再走进隐蔽的 in-place 表单；
+                        // in-place Add 仍可由鼠标 "+ Add provider" 进入）。
+                        self.settings_open_add_provider();
                         true
                     }
                     SettingsCategory::Skills => {
                         self.decide_settings_skill_proposal(true);
+                        true
+                    }
+                    SettingsCategory::McpServers => {
+                        self.settings_open_add_mcp();
+                        true
+                    }
+                    SettingsCategory::Plugins => {
+                        self.settings_open_install_plugin();
                         true
                     }
                     _ => false,
@@ -2077,32 +2508,135 @@ impl AppHandler {
                 self.settings_open_add_model();
                 true
             }
-            // `t` 仅在 ModelSettings Details focused 时响应:测试 provider 连接。
+            // `t`：ModelSettings Details = 测试连接；Skills/Tools/Plugins/MCP 列表或详情 = 启停开关。
             Key::Char('t') => {
-                if self.store.settings_category.get() != SettingsCategory::ModelSettings {
-                    return false;
+                let cat = self.store.settings_category.get();
+                let focus = self.store.settings_focus_pane.get();
+                match cat {
+                    SettingsCategory::ModelSettings => {
+                        if !matches!(focus, SettingsFocusPane::Details) {
+                            return false;
+                        }
+                        self.settings_test_provider_connection();
+                        true
+                    }
+                    SettingsCategory::Skills => {
+                        if !matches!(
+                            focus,
+                            SettingsFocusPane::Providers | SettingsFocusPane::Details
+                        ) {
+                            return false;
+                        }
+                        self.toggle_settings_skill();
+                        true
+                    }
+                    SettingsCategory::Tools => {
+                        if !matches!(
+                            focus,
+                            SettingsFocusPane::Providers | SettingsFocusPane::Details
+                        ) {
+                            return false;
+                        }
+                        self.toggle_settings_tool();
+                        true
+                    }
+                    SettingsCategory::McpServers => {
+                        if !matches!(
+                            focus,
+                            SettingsFocusPane::Providers | SettingsFocusPane::Details
+                        ) {
+                            return false;
+                        }
+                        self.toggle_settings_mcp_enabled();
+                        true
+                    }
+                    SettingsCategory::Plugins => {
+                        if !matches!(
+                            focus,
+                            SettingsFocusPane::Providers | SettingsFocusPane::Details
+                        ) {
+                            return false;
+                        }
+                        self.toggle_settings_plugin();
+                        true
+                    }
+                    _ => false,
                 }
-                if !matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Details) {
-                    return false;
-                }
-                self.settings_test_provider_connection();
-                true
             }
             Key::Char('e') => {
-                if self.store.settings_category.get() != SettingsCategory::ModelSettings {
+                let cat = self.store.settings_category.get();
+                // MCP:e = 编辑选中 server（弹 McpEditDialog，写 PUT /config/mcp/{key}）。
+                if cat == SettingsCategory::McpServers {
+                    if !matches!(
+                        self.store.settings_focus_pane.get(),
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    ) {
+                        return false;
+                    }
+                    self.settings_open_edit_mcp();
+                    return true;
+                }
+                if cat != SettingsCategory::ModelSettings {
                     return false;
                 }
                 let focus = self.store.settings_focus_pane.get();
                 match focus {
                     SettingsFocusPane::Providers => {
-                        self.settings_enter_edit_provider();
+                        // 主路径：弹 ProviderEditDialog 编辑 provider
+                        // （Base URL/Protocol/API key 不再只读）。
+                        self.settings_open_edit_provider();
                         true
                     }
                     SettingsFocusPane::Details => {
-                        self.settings_open_edit_model();
+                        // 有选中 model → 编辑 model；无（空 provider / 未建立选中）
+                        // → 回退到编辑 provider 本身，与 Details 面板 "e: Edit"
+                        // hint 同语义（API key/Base URL 行的动作提示不再死路）。
+                        if self.store.settings_selected_model.get().is_some() {
+                            self.settings_open_edit_model();
+                        } else {
+                            self.settings_open_edit_provider();
+                        }
                         true
                     }
                     SettingsFocusPane::Categories => false,
+                }
+            }
+            // `E`（Providers 聚焦）：legacy in-place 编辑（Details pane 内嵌表单）。
+            // 主路径已迁到 ProviderEditDialog（`e`），此键保留原表单给习惯它的用户。
+            Key::Char('E') => {
+                if self.store.settings_category.get() != SettingsCategory::ModelSettings {
+                    return false;
+                }
+                if self.store.settings_focus_pane.get() != SettingsFocusPane::Providers {
+                    return false;
+                }
+                self.settings_enter_edit_provider();
+                true
+            }
+            // `x`：Skills 删 skill / MCP 删 server / Plugins 删 managed 条目
+            // （与 `d` 同一删除权威，木克土:输入变体复用同一权威）。
+            Key::Char('x') => {
+                let cat = self.store.settings_category.get();
+                if !matches!(
+                    self.store.settings_focus_pane.get(),
+                    SettingsFocusPane::Providers | SettingsFocusPane::Details
+                ) {
+                    return false;
+                }
+                match cat {
+                    SettingsCategory::Skills => {
+                        self.settings_confirm_delete_skill();
+                        true
+                    }
+                    SettingsCategory::McpServers => {
+                        self.settings_confirm_delete_mcp();
+                        true
+                    }
+                    SettingsCategory::Plugins => {
+                        self.settings_confirm_delete_plugin();
+                        true
+                    }
+                    _ => false,
                 }
             }
             Key::Char('d') => {
@@ -2115,6 +2649,24 @@ impl AppHandler {
                     )
                 {
                     self.toggle_settings_mcp(false);
+                    return true;
+                }
+                if cat == SettingsCategory::Skills
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    self.settings_confirm_delete_skill();
+                    return true;
+                }
+                if cat == SettingsCategory::Plugins
+                    && matches!(
+                        focus,
+                        SettingsFocusPane::Providers | SettingsFocusPane::Details
+                    )
+                {
+                    self.settings_confirm_delete_plugin();
                     return true;
                 }
                 if cat != SettingsCategory::ModelSettings {
@@ -2465,6 +3017,10 @@ mod tests {
             tools: 1,
             resources: 0,
             error: None,
+            transport: "local".into(),
+            command: Some("srv".into()),
+            url: None,
+            enabled: true,
         };
         h.store.settings_mcp.set(vec![row("alpha", "connected"), row("beta", "disconnected")]);
         // 列表第二行（i=1 → y=4）→ 选中 beta。
@@ -2499,6 +3055,44 @@ mod tests {
     }
 
     #[test]
+    fn tools_row_pill_click_and_t_key_route_to_toggle() {
+        use crate::store::types::{SettingsCategory, SettingsToolRow};
+        let mut h = mk_handler();
+        h.store.navigate_settings();
+        h.sidebar_visible = true;
+        h.terminal_h = 24;
+        h.store.settings_category.set(SettingsCategory::Tools);
+        let tool = |id: &str, family: &str, protected: bool| SettingsToolRow {
+            id: id.into(),
+            description: String::new(),
+            family: Some(family.into()),
+            protected,
+            disabled: false,
+        };
+        h.store.settings_tools.set(vec![tool("bash", "shell", false)]);
+        // 行尾开关 pill 区点击（x2=56，pill 区 = 列表栏末 9 列 x>=75；数据行 y=4）。
+        let ev = Event::Mouse(MouseEvent::new(77, 4, MouseEventKind::Down(MouseButton::Left)));
+        assert!(h.handle(&ev));
+        assert_eq!(h.store.settings_tools_selected.get(), 1);
+        assert!(
+            !h.store.toasts.get().is_empty(),
+            "pill 点击应路由到 toggle_settings_tool（api=None → toast）"
+        );
+        // `t` 键同权威：protected（facade/bridge）行被拦截并 toast 说明原因。
+        h.store
+            .settings_tools
+            .set(vec![tool("tool_catalog_call", "tool_catalog", true)]);
+        h.store.settings_tools_selected.set(1);
+        assert!(h.handle_settings_key(&Key::Char('t')));
+        let toasts = h.store.toasts.get();
+        assert!(
+            toasts.iter().any(|t| t.text.contains("facade/bridge")),
+            "protected 拦截 toast 缺失: {:?}",
+            toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn wheel_in_settings_moves_selection_not_session_scroll() {
         let mut h = mk_handler();
         goto_model_settings(
@@ -2516,7 +3110,6 @@ mod tests {
 
     #[test]
     fn model_edit_dialog_field_click_focuses() {
-        use crate::dialog::ModelEditDialog;
         let mut h = mk_handler();
         h.model_edit_dialog.open_add("p1");
         h.panel = Panel::ModelEdit;
@@ -2524,8 +3117,24 @@ mod tests {
         // Name 字段块（i=1 → y ∈ [7,11)）：点击 (20, 8)。
         let ev = Event::Mouse(MouseEvent::new(20, 8, MouseEventKind::Down(MouseButton::Left)));
         assert!(h.handle(&ev));
-        assert_eq!(h.model_edit_dialog.focus(), crate::dialog::ModelEditDialog::FIELDS[1]);
-        let _ = ModelEditDialog::FIELDS;
+        let expect = h.model_edit_dialog.field_at_block_index(1);
+        assert_eq!(Some(h.model_edit_dialog.focus()), expect);
+        assert!(expect.is_some());
+    }
+
+    #[test]
+    fn provider_edit_dialog_field_click_focuses() {
+        let mut h = mk_handler();
+        h.provider_edit_dialog.open_add();
+        h.panel = Panel::ProviderEdit;
+        h.provider_edit_rect = Some(revue::prelude::Rect::new(15, 2, 76, 24));
+        // BaseUrl 字段块（i=2 → y ∈ [11,15)）：点击 (20, 12)。
+        let ev = Event::Mouse(MouseEvent::new(20, 12, MouseEventKind::Down(MouseButton::Left)));
+        assert!(h.handle(&ev));
+        assert_eq!(
+            h.provider_edit_dialog.focus(),
+            crate::dialog::ProviderEditDialog::FIELDS[2]
+        );
     }
 
     #[test]

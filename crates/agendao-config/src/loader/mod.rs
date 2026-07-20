@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) use discovery::resolve_configured_path;
+pub use discovery::resolve_configured_path;
 pub use transforms::{
     deduplicate_plugins, get_plugin_name, load_config, update_config, update_global_config,
     write_config,
@@ -27,12 +27,13 @@ pub use workspace::{
 };
 
 use discovery::{
-    collect_agendao_directories, collect_plugin_roots, detect_worktree_stop, find_up,
-    get_managed_config_dir, load_agents_from_dir, load_commands_from_dir, load_modes_from_dir,
-    load_plugins_from_path, normalize_existing_path,
+    collect_agendao_directories, detect_worktree_stop, find_up, get_managed_config_dir,
+    load_agents_from_dir, load_commands_from_dir, load_modes_from_dir,
+    normalize_existing_path,
 };
 pub use discovery::{
-    collect_plugin_roots as get_plugin_roots, discover_web_plugins, WebPluginInfo,
+    collect_plugin_roots, collect_plugin_roots as get_plugin_roots, discover_web_plugins,
+    load_plugins_from_path, WebPluginInfo,
 };
 use file_ops::{
     get_global_config_paths, migrate_legacy_toml_config, parse_external_tool_catalog_jsonc,

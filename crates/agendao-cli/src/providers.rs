@@ -267,9 +267,19 @@ async fn load_plugin_auth_store(
         internal_token: String::new(),
     };
 
+    for name in config.plugin.keys() {
+        if !agendao_config::matching::plugin_load_allowed(config, name) {
+            tracing::debug!(
+                plugin = %name,
+                "plugin disabled via disabled_plugins, skipping load in CLI"
+            );
+        }
+    }
+
     let native_plugin_paths: Vec<(String, PathBuf)> = config
         .plugin
         .iter()
+        .filter(|(name, _)| agendao_config::matching::plugin_load_allowed(config, name))
         .filter_map(|(name, cfg)| {
             if !cfg.is_native() {
                 return None;
@@ -303,6 +313,7 @@ async fn load_plugin_auth_store(
         let specs: Vec<String> = config
             .plugin
             .iter()
+            .filter(|(name, _)| agendao_config::matching::plugin_load_allowed(config, name))
             .filter_map(|(name, cfg)| {
                 if cfg.is_native() {
                     return None;

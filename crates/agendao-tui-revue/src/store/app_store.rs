@@ -94,8 +94,22 @@ pub struct AppStore {
     pub settings_mcp_selected: Signal<usize>,
     /// Settings→Skills 分类:catalog + pending proposals 合并列表。
     pub settings_skills: Signal<Vec<SettingsSkillRow>>,
-    /// Skills 列表当前选中下标。
+    /// Skills 列表当前选中下标（`flatten_settings_skill_rows` 展开后的可见行下标，
+    /// 含类目头行——渲染/键盘/鼠标三方同源）。
     pub settings_skills_selected: Signal<usize>,
+    /// Skills 树状分组的折叠类目集合（key = 小写类目名，与 flatten 匹配口径一致；
+    /// 空集 = 全部展开）。与 session tree 折叠同范式：折叠态独立持有，不改源数据。
+    pub settings_skills_collapsed: Signal<HashSet<String>>,
+    /// Settings→Tools 分类：全量 tool 列表（含 disabled/protected 打标）。
+    pub settings_tools: Signal<Vec<SettingsToolRow>>,
+    /// Tools 列表当前选中下标（`flatten_settings_tool_rows` 展开后的可见行下标）。
+    pub settings_tools_selected: Signal<usize>,
+    /// Tools 树状分组的折叠类目集合（key = 小写 family 名，口径同 skills）。
+    pub settings_tools_collapsed: Signal<HashSet<String>>,
+    /// Settings→Plugins 分类：已安装插件列表（managed + discovered，打标）。
+    pub settings_plugins: Signal<Vec<SettingsPluginRow>>,
+    /// Plugins 列表当前选中下标。
+    pub settings_plugins_selected: Signal<usize>,
 }
 
 impl Default for AppStore {
@@ -138,6 +152,12 @@ impl AppStore {
             settings_mcp_selected: signal(0),
             settings_skills: signal(Vec::new()),
             settings_skills_selected: signal(0),
+            settings_skills_collapsed: signal(HashSet::new()),
+            settings_tools: signal(Vec::new()),
+            settings_tools_selected: signal(0),
+            settings_tools_collapsed: signal(HashSet::new()),
+            settings_plugins: signal(Vec::new()),
+            settings_plugins_selected: signal(0),
         }
     }
 
@@ -217,14 +237,16 @@ mod tests {
         assert_eq!(p, SettingsFocusPane::Categories);
     }
 
-    /// 六项分类均已落地(General / ModelSettings / Skills / MCP / Keybindings / About)。
+    /// 七项分类均已落地(General / ModelSettings / Skills / Tools / MCP / Keybindings / About)。
     #[test]
     fn settings_category_implementation_flags() {
         for cat in SettingsCategory::ALL {
             assert!(cat.is_implemented(), "{:?} should be implemented", cat);
         }
-        assert_eq!(SettingsCategory::ALL.len(), 6);
+        assert_eq!(SettingsCategory::ALL.len(), 8);
         assert_eq!(SettingsCategory::Skills.label(), "Skills");
+        assert_eq!(SettingsCategory::Tools.label(), "Tools");
+        assert_eq!(SettingsCategory::Plugins.label(), "Plugins");
         assert_eq!(SettingsCategory::McpServers.label(), "MCP Servers");
     }
 }

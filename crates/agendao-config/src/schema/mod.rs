@@ -100,6 +100,16 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_providers: Vec<String>,
 
+    /// Tool ids (or `family/*` category wildcards) removed from the tool
+    /// surface at registry build time. Facade/bridge tools (`tool_catalog_*`,
+    /// `skills_*`, `skill`, `skill_view`) are exempt and can never be disabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
+
+    /// Plugin names (or `prefix/*` wildcards) skipped at plugin load time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_plugins: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
@@ -778,6 +788,10 @@ pub struct SkillsConfig {
     pub paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub urls: Vec<String>,
+    /// Skill names (exact) or `category/*` wildcards filtered out of the skill
+    /// catalog at discovery time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hub: Option<SkillHubConfig>,
 }
@@ -1030,6 +1044,28 @@ pub struct ModelConfig {
     pub modalities: Option<ModelModalities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    /// Model-level reasoning effort: none/minimal/low/medium/high.
+    /// Validated at resolution time; invalid values are ignored with a warning.
+    #[serde(
+        default,
+        alias = "reasoningEffort",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_effort: Option<String>,
+    /// Request-level timeout in seconds for this model.
+    #[serde(
+        default,
+        alias = "timeoutSecs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timeout_secs: Option<u64>,
+    /// Streaming stall detection: declare the stream dead after N seconds without a chunk.
+    #[serde(
+        default,
+        alias = "streamStallTimeoutSecs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stream_stall_timeout_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

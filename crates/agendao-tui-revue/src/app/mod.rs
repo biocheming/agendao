@@ -12,7 +12,7 @@ mod keymap;
 mod dispatch_outcome;
 mod panel_dispatch;
 mod slash_action;
-mod provider_actions;
+pub(crate) mod provider_actions;
 mod settings_catalog_actions;
 pub(crate) mod settings_edit_state;
 
@@ -59,7 +59,7 @@ use crate::dialog::{
     PermissionDialog, QuestionDialog,
     ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
     SessionForkDialog, SessionExportDialog,
-    ModelEditDialog,
+    ModelEditDialog, McpEditDialog, PluginEditDialog, ProviderEditDialog,
 };
 use crate::input::{PromptInput, SlashPopup};
 use crate::dialog::backdrop::PromptGeom;
@@ -236,6 +236,12 @@ pub(crate) enum Panel {
     TaskList,
     /// Settings Details 内 m / e → 弹 model 添加/编辑 form dialog。
     ModelEdit,
+    /// Settings→MCP 内 a / e → 弹 MCP server 添加/编辑 form dialog。
+    McpEdit,
+    /// Settings→Plugins 内 a → 弹插件安装（file 类型）form dialog。
+    PluginEdit,
+    /// Settings→Providers 内 a / e → 弹 provider 添加/编辑 form dialog。
+    ProviderEdit,
 }
 
 /// Confirm-dialog outcome discriminator. `Panel::Confirm` only yields a bool;
@@ -262,6 +268,16 @@ pub(crate) enum PendingConfirm {
     DeleteProvider(String),
     /// Settings Details 内 model 'd':确认后调 client.delete_provider_model_config(provider, key)。
     DeleteProviderModel { provider_id: String, model_key: String },
+    /// Settings Skills 列表 'x'/'d':确认后调 client.manage_skill(Delete)
+    /// → server SkillGovernanceAuthority.delete_skill（土律·第四条单点权威）。
+    /// 仅 writable == true（项目 .agendao/skills 内）的 catalog skill 可到此。
+    DeleteSkill(String),
+    /// Settings→MCP 列表 'x':确认后调 client.delete_mcp_config(name)
+    /// （DELETE `/config/mcp/{key}`，土律·第四条单点权威）。
+    DeleteMcp(String),
+    /// Settings→Plugins 列表 'x'/'d':确认后调 client.delete_plugin_config(name)
+    /// （仅 managed 条目可到此；discovered 走 toast 指引目录删除）。
+    DeletePlugin(String),
 }
 
 /// Application state + event handler.
@@ -306,6 +322,16 @@ pub(crate) struct AppHandler {
     /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
     /// 走 client.put_provider_model_config / delete_provider_model_config 唯一写路径。
     pub(crate) model_edit_dialog: ModelEditDialog,
+    /// MCP server 添加/编辑 dialog(Settings→MCP 内 a/e 入口)。
+    /// 走 client.put_mcp_config 唯一写路径（PUT `/config/mcp/{key}`）。
+    pub(crate) mcp_edit_dialog: McpEditDialog,
+    /// 插件安装 dialog(Settings→Plugins 内 a 入口，file 类型 name+path)。
+    /// 走 client.put_plugin_config 唯一写路径（PUT `/config/plugin/{key}`）。
+    pub(crate) plugin_edit_dialog: PluginEditDialog,
+    /// Provider 添加/编辑 dialog(Settings→Providers 内 a/e 入口)。
+    /// submit 载荷即 `ProviderEditSubmission`，走 `submit_provider_edit` 唯一写路径
+    /// （与 in-place `settings_edit` 表单共享同一写入链路，土律·第四条）。
+    pub(crate) provider_edit_dialog: ProviderEditDialog,
     /// Settings Details pane 的 *in-place* 编辑态(金律·唯一成形权威 — 同一 Details
     /// 区段既是只读 view 又是编辑 form,无 modal dialog 第二窗口)。
     /// `active=false` 时所有 Settings 渲染走只读旧路径,active=true 时 Providers/Details
@@ -402,6 +428,12 @@ pub(crate) struct AppHandler {
     /// ModelEditDialog 渲染后发布的外框 Rect（绝对坐标，render 返回）。
     /// keymap 鼠标据此做字段聚焦命中；panel != ModelEdit 时每帧回落 None。
     pub(crate) model_edit_rect: Option<revue::prelude::Rect>,
+    /// McpEditDialog 渲染后发布的外框 Rect（同 model_edit_rect 语义）。
+    pub(crate) mcp_edit_rect: Option<revue::prelude::Rect>,
+    /// PluginEditDialog 渲染后发布的外框 Rect（同 model_edit_rect 语义）。
+    pub(crate) plugin_edit_rect: Option<revue::prelude::Rect>,
+    /// ProviderEditDialog 渲染后发布的外框 Rect（同 model_edit_rect 语义）。
+    pub(crate) provider_edit_rect: Option<revue::prelude::Rect>,
     /// ConfirmDialog 渲染后发布的外框 Rect（同构），供 y/n 按钮命中。
     pub(crate) confirm_rect: Option<revue::prelude::Rect>,
 }
@@ -675,6 +707,9 @@ impl AppHandler {
             recovery_list: RecoveryListDialog::new(),
             task_list: TaskListDialog::new(),
             model_edit_dialog: ModelEditDialog::new(),
+            mcp_edit_dialog: McpEditDialog::new(),
+            plugin_edit_dialog: PluginEditDialog::new(),
+            provider_edit_dialog: ProviderEditDialog::new(),
             settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
             spinner_tick: 0,
@@ -701,6 +736,9 @@ impl AppHandler {
             session_list_scrollbar_drag: None,
             pending_theme_vars: None,
             model_edit_rect: None,
+            mcp_edit_rect: None,
+            plugin_edit_rect: None,
+            provider_edit_rect: None,
             confirm_rect: None,
         }
     }
@@ -1069,6 +1107,7 @@ impl View for RootView {
                         self.store.show_thinking.get(),
                         Some(viewport_range),
                         inner_w,
+                        self.store.compact_density.get(),
                     );
                     for unit in units {
                         let is_cursor_unit = cursor_idx
@@ -1317,6 +1356,9 @@ impl View for RootView {
             Panel::Recovery => "recovery",
             Panel::TaskList => "tasks",
             Panel::ModelEdit => "modelEdit",
+            Panel::McpEdit => "mcpEdit",
+            Panel::PluginEdit => "pluginEdit",
+            Panel::ProviderEdit => "providerEdit",
             Panel::None => route.as_str(),
         };
         let dir = self.store.working_dir.get();
@@ -1468,6 +1510,9 @@ impl View for RootView {
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
         let geom = prompt_geometry(&route, ctx.area, h.sidebar_visible);
         let mut model_edit_rect: Option<revue::prelude::Rect> = None;
+        let mut mcp_edit_rect: Option<revue::prelude::Rect> = None;
+        let mut plugin_edit_rect: Option<revue::prelude::Rect> = None;
+        let mut provider_edit_rect: Option<revue::prelude::Rect> = None;
         let mut confirm_rect: Option<revue::prelude::Rect> = None;
         match h.panel {
             Panel::Slash => {
@@ -1503,11 +1548,17 @@ impl View for RootView {
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
             Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx); }
+            Panel::McpEdit => { mcp_edit_rect = h.mcp_edit_dialog.render(ctx); }
+            Panel::PluginEdit => { plugin_edit_rect = h.plugin_edit_dialog.render(ctx); }
+            Panel::ProviderEdit => { provider_edit_rect = h.provider_edit_dialog.render(ctx); }
             _ => {}
         }
         // 弹窗几何发布（render 后、借用于此处归还）——keymap 鼠标命中的唯一真相。
         drop(h);
         self.handler.borrow_mut().model_edit_rect = model_edit_rect;
+        self.handler.borrow_mut().mcp_edit_rect = mcp_edit_rect;
+        self.handler.borrow_mut().plugin_edit_rect = plugin_edit_rect;
+        self.handler.borrow_mut().provider_edit_rect = provider_edit_rect;
         self.handler.borrow_mut().confirm_rect = confirm_rect;
 
         // ── Toast overlay ─────────────────────────────────────────

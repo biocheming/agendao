@@ -596,6 +596,17 @@ impl ServerState {
         *self.providers.write().await = new_registry;
     }
 
+    /// Rebuild the tool registry against the current config so `disabled_tools`
+    /// changes take effect without a server restart. The swap happens in place
+    /// (`ToolRegistry::replace_with`), so sessions/tasks holding the same
+    /// `Arc<ToolRegistry>` observe the new tool set on their next lookup.
+    pub async fn rebuild_tool_registry(&self) {
+        let config = self.config_store.config();
+        let new_registry =
+            agendao_tool::create_default_registry_with_config(Some(&config)).await;
+        self.tool_registry.replace_with(new_registry).await;
+    }
+
     pub async fn refresh_resolved_context(&self) -> anyhow::Result<ResolvedWorkspaceContext> {
         let resolved = self.resolved_context_authority.resolve().await?;
         *self.resolved_context.write().await = resolved.clone();
@@ -931,9 +942,19 @@ async fn load_plugin_auth_store(
         internal_token: routes::internal_token().to_string(),
     };
 
+    for name in config.plugin.keys() {
+        if !agendao_config::matching::plugin_load_allowed(&config, name) {
+            tracing::debug!(
+                plugin = %name,
+                "plugin disabled via disabled_plugins, skipping load"
+            );
+        }
+    }
+
     let native_plugin_paths: Vec<(String, PathBuf)> = config
         .plugin
         .iter()
+        .filter(|(name, _)| agendao_config::matching::plugin_load_allowed(&config, name))
         .filter_map(|(name, cfg)| {
             if !cfg.is_native() {
                 return None;
@@ -965,6 +986,7 @@ async fn load_plugin_auth_store(
     let plugin_specs: Vec<String> = config
         .plugin
         .iter()
+        .filter(|(name, _)| agendao_config::matching::plugin_load_allowed(&config, name))
         .filter_map(|(name, cfg)| {
             if cfg.is_native() {
                 None

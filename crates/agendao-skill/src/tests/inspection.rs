@@ -529,3 +529,70 @@ Visible after mutation.
         .iter()
         .any(|skill| skill.name == "write-hook-skill"));
 }
+
+#[test]
+fn disabled_skills_are_filtered_from_catalog_by_name_and_category() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let skills_root = root.join(".agendao/skills");
+
+    write_directory_skill(&skills_root, "review", "review-skill", "review", "body", &[]);
+    write_directory_skill(&skills_root, "web/search", "web-search", "search", "body", &[]);
+    write_directory_skill(&skills_root, "web/fetch", "web-fetch", "fetch", "body", &[]);
+    write_directory_skill(&skills_root, "code/lint", "code-lint", "lint", "body", &[]);
+
+    let mut config = Config::default();
+    config.skills = Some(SkillsConfig {
+        disabled: vec!["review-skill".to_string(), "web/*".to_string()],
+        ..Default::default()
+    });
+    let authority = SkillAuthority::new(root, Some(Arc::new(ConfigStore::new(config))));
+
+    let names: Vec<String> = authority
+        .list_skill_meta(None)
+        .unwrap()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
+    // Discovery also sees user-level skill roots (~/.agents/skills etc.), so
+    // assert on presence/absence rather than exact equality.
+    assert!(names.contains(&"code-lint".to_string()));
+    assert!(!names.contains(&"review-skill".to_string()));
+    assert!(!names.contains(&"web-search".to_string()));
+    assert!(!names.contains(&"web-fetch".to_string()));
+
+    let web_category_skills: Vec<String> = authority
+        .list_skill_catalog(Some(&SkillFilter {
+            category: Some("web"),
+            ..Default::default()
+        }))
+        .unwrap()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(web_category_skills.is_empty());
+
+    // A disabled skill is no longer resolvable by name either.
+    assert!(authority.load_skill_for_inspection("review-skill", None).is_err());
+    assert!(authority.load_skill_for_inspection("code-lint", None).is_ok());
+}
+
+#[test]
+fn empty_disabled_list_leaves_catalog_untouched() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let skills_root = root.join(".agendao/skills");
+    write_directory_skill(&skills_root, "web/search", "web-search", "search", "body", &[]);
+
+    let mut config = Config::default();
+    config.skills = Some(SkillsConfig::default());
+    let authority = SkillAuthority::new(root, Some(Arc::new(ConfigStore::new(config))));
+
+    let names: Vec<String> = authority
+        .list_skill_meta(None)
+        .unwrap()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(names.contains(&"web-search".to_string()));
+}

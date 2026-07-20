@@ -29,6 +29,7 @@ use super::session::collect_skill_tree_validation;
 pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/", get(get_config).patch(patch_config))
+        .route("/disabled", put(put_disabled_config))
         .route("/validation", get(get_config_validation))
         .route("/providers", get(get_config_providers))
         .route(
@@ -45,6 +46,7 @@ pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
             "/plugin/{key}",
             put(put_plugin_config).delete(delete_plugin_config),
         )
+        .route("/plugins", get(get_plugin_list))
         .route("/mcp/{key}", put(put_mcp_config).delete(delete_mcp_config))
         .route(
             "/scheduler",
@@ -67,14 +69,59 @@ pub(crate) async fn patch_config(
     State(state): State<Arc<ServerState>>,
     Json(patch): Json<serde_json::Value>,
 ) -> Result<Json<AppConfig>> {
+    // disabled_tools 经 generic patch 写入时也要即时生效（重建 tool registry）。
+    let touches_disabled_tools = patch.get("disabled_tools").is_some();
     let updated = state
         .config_store
         .patch(patch)
         .map_err(|e| crate::ApiError::BadRequest(e.to_string()))?;
     state.rebuild_providers().await;
+    if touches_disabled_tools {
+        state.rebuild_tool_registry().await;
+    }
     state.config_store.invalidate_plugin_cache().await;
     broadcast_config_updated(state.as_ref());
     // Invalidate mode caches so next request rebuilds with new config
+    *crate::routes::AGENT_LIST_CACHE.write().await = None;
+    *crate::routes::MODE_LIST_CACHE.write().await = None;
+    Ok(Json((*updated).clone()))
+}
+
+/// PUT `/config/disabled`：整体替换 `disabled_tools` / `skills.disabled` /
+/// `disabled_plugins` 列表。
+///
+/// 与 `PATCH /config` 的关键差异：`Some(vec)` 允许空 vec **清空**列表——
+/// patch 的 merge 语义（`merge_vec_replace_if_non_empty`）无法表达清空，
+/// 而 Settings 启停开关需要能移除最后一个条目。`None`/缺省字段不动。
+/// tools 变更后重建 tool registry（即时生效，无需重启）。
+pub(crate) async fn put_disabled_config(
+    State(state): State<Arc<ServerState>>,
+    Json(update): Json<agendao_api::DisabledConfigUpdate>,
+) -> Result<Json<AppConfig>> {
+    let touches_tools = update.tools.is_some();
+    let updated = state
+        .config_store
+        .replace_with(|config| {
+            if let Some(tools) = &update.tools {
+                config.disabled_tools = tools.clone();
+            }
+            if let Some(skills) = &update.skills {
+                config
+                    .skills
+                    .get_or_insert_with(Default::default)
+                    .disabled = skills.clone();
+            }
+            if let Some(plugins) = &update.plugins {
+                config.disabled_plugins = plugins.clone();
+            }
+            Ok(())
+        })
+        .map_err(|e| crate::ApiError::BadRequest(e.to_string()))?;
+    if touches_tools {
+        state.rebuild_tool_registry().await;
+    }
+    state.config_store.invalidate_plugin_cache().await;
+    broadcast_config_updated(state.as_ref());
     *crate::routes::AGENT_LIST_CACHE.write().await = None;
     *crate::routes::MODE_LIST_CACHE.write().await = None;
     Ok(Json((*updated).clone()))
@@ -316,7 +363,7 @@ pub(crate) async fn delete_provider_model_config(
     finalize_config_change(&state, updated).await
 }
 
-async fn put_plugin_config(
+pub(crate) async fn put_plugin_config(
     State(state): State<Arc<ServerState>>,
     Path(key): Path<String>,
     Json(plugin): Json<PluginConfig>,
@@ -341,6 +388,9 @@ fn merge_model_config(existing: &mut ModelConfig, patch: ModelConfig) {
         tool_call,
         modalities,
         reasoning,
+        reasoning_effort,
+        timeout_secs,
+        stream_stall_timeout_secs,
         attachment,
         temperature,
         interleaved,
@@ -378,6 +428,15 @@ fn merge_model_config(existing: &mut ModelConfig, patch: ModelConfig) {
     }
     if let Some(value) = reasoning {
         existing.reasoning = Some(value);
+    }
+    if let Some(value) = reasoning_effort {
+        existing.reasoning_effort = Some(value);
+    }
+    if let Some(value) = timeout_secs {
+        existing.timeout_secs = Some(value);
+    }
+    if let Some(value) = stream_stall_timeout_secs {
+        existing.stream_stall_timeout_secs = Some(value);
     }
     if let Some(value) = attachment {
         existing.attachment = Some(value);
@@ -428,6 +487,7 @@ mod tests {
     use agendao_types::{
         ConfigPolicyValidationEffect, ConfigPolicyValidationOwner, ConfigPolicyValidationSeverity,
     };
+    use axum::{extract::State, Json};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -516,6 +576,88 @@ mod tests {
         let mut state = ServerState::new();
         state.config_store = Arc::new(ConfigStore::new(config));
         Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn plugin_list_entries_mark_managed_and_disabled() {
+        use agendao_config::PluginConfig;
+
+        let state = validation_state(Config {
+            plugin: HashMap::from([
+                (
+                    "alpha".to_string(),
+                    PluginConfig {
+                        plugin_type: "npm".to_string(),
+                        package: Some("alpha-pkg".to_string()),
+                        version: Some("1.2.3".to_string()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "beta".to_string(),
+                    PluginConfig {
+                        plugin_type: "file".to_string(),
+                        path: Some("/nonexistent/beta.ts".to_string()),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            disabled_plugins: vec!["alpha".to_string()],
+            ..Default::default()
+        });
+
+        let entries = super::build_plugin_list_entries(&state).await;
+        let alpha = entries
+            .iter()
+            .find(|e| e.name == "alpha")
+            .expect("alpha entry");
+        assert_eq!(alpha.source, "managed");
+        assert_eq!(alpha.origin, "config (declared)");
+        assert_eq!(alpha.version.as_deref(), Some("1.2.3"));
+        assert!(alpha.disabled, "disabled_plugins 精确名命中");
+
+        let beta = entries.iter().find(|e| e.name == "beta").expect("beta entry");
+        assert_eq!(beta.source, "managed");
+        assert!(!beta.disabled);
+    }
+
+    #[tokio::test]
+    async fn put_disabled_config_replaces_plugins_list() {
+        let state = validation_state(Config {
+            disabled_plugins: vec!["old".to_string()],
+            ..Default::default()
+        });
+        let Json(updated) = super::put_disabled_config(
+            State(state),
+            Json(agendao_api::DisabledConfigUpdate {
+                tools: None,
+                skills: None,
+                plugins: Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            }),
+        )
+        .await
+        .expect("put_disabled_config");
+        assert_eq!(updated.disabled_plugins, vec!["new-a", "new-b"]);
+    }
+
+    #[tokio::test]
+    async fn put_disabled_config_none_leaves_plugins_untouched() {
+        let state = validation_state(Config {
+            disabled_plugins: vec!["keep".to_string()],
+            ..Default::default()
+        });
+        let Json(updated) = super::put_disabled_config(
+            State(state),
+            Json(agendao_api::DisabledConfigUpdate {
+                tools: Some(vec![]),
+                skills: None,
+                plugins: None,
+            }),
+        )
+        .await
+        .expect("put_disabled_config");
+        assert_eq!(updated.disabled_plugins, vec!["keep"]);
+        assert!(updated.disabled_tools.is_empty());
     }
 
     #[tokio::test]
@@ -625,7 +767,7 @@ mod tests {
     }
 }
 
-async fn delete_plugin_config(
+pub(crate) async fn delete_plugin_config(
     State(state): State<Arc<ServerState>>,
     Path(key): Path<String>,
 ) -> Result<Json<AppConfig>> {
@@ -639,7 +781,7 @@ async fn delete_plugin_config(
     finalize_config_change(&state, updated).await
 }
 
-async fn put_mcp_config(
+pub(crate) async fn put_mcp_config(
     State(state): State<Arc<ServerState>>,
     Path(key): Path<String>,
     Json(mcp): Json<McpServerConfig>,
@@ -652,10 +794,20 @@ async fn put_mcp_config(
             Ok(())
         })
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
+    // 写后同步 runtime manager：启停/改配置即时生效（否则 manager 只增不改，
+    // 状态列表残留旧值）。cfg 取自 updated（写面唯一权威）。
+    #[cfg(feature = "mcp")]
+    if let Some(cfg) = updated
+        .mcp
+        .as_ref()
+        .and_then(|mcp_map| mcp_map.get(&key))
+    {
+        crate::routes::mcp::sync_manager_after_mcp_config_write(&key, Some(cfg)).await;
+    }
     finalize_config_change(&state, updated).await
 }
 
-async fn delete_mcp_config(
+pub(crate) async fn delete_mcp_config(
     State(state): State<Arc<ServerState>>,
     Path(key): Path<String>,
 ) -> Result<Json<AppConfig>> {
@@ -667,7 +819,119 @@ async fn delete_mcp_config(
             Ok(())
         })
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
+    // 同步摘除 runtime manager 条目（否则已删 server 仍在状态列表残留）。
+    #[cfg(feature = "mcp")]
+    crate::routes::mcp::sync_manager_after_mcp_config_write(&key, None).await;
     finalize_config_change(&state, updated).await
+}
+
+// ── Plugins 列表读面（GET `/config/plugins` / local_list_plugins）──
+
+async fn get_plugin_list(
+    State(state): State<Arc<ServerState>>,
+) -> Json<Vec<agendao_api::PluginListEntry>> {
+    Json(build_plugin_list_entries(&state).await)
+}
+
+/// 插件根目录的安装途径标签（渲染/命中同源：列表 detail 与删除提示共用）。
+/// 归类顺序与 `collect_plugin_roots` 的 roots 顺序一致：
+///   1. `~/.agendao/plugins`（尊重 AGENDAO_HOME）→ user 级
+///   2. 项目 `.agendao/plugins`（project_dir 之下、含 `.agendao` 组件）→ 项目级
+///   3. config `plugin_paths` 声明的解析路径 → external
+///   4. 其余（xdg 遗留等）→ 诚实展示原始路径
+fn plugin_root_label(
+    root: &std::path::Path,
+    project_dir: &std::path::Path,
+    plugin_path_roots: &[PathBuf],
+) -> String {
+    let home = agendao_util::agendao_home();
+    if root == home.join("plugins") || root == home.join("plugin") {
+        return "user (~/.agendao/plugins)".to_string();
+    }
+    if root.starts_with(project_dir)
+        && root.components().any(|c| c.as_os_str() == ".agendao")
+    {
+        return "project (.agendao/plugins)".to_string();
+    }
+    if plugin_path_roots.iter().any(|p| p == root) {
+        return "external (config plugin_paths)".to_string();
+    }
+    format!("external ({})", root.display())
+}
+
+/// 已安装插件全集 = config.plugin（managed）+ discovery 扫描（discovered）。
+/// 与 tool_catalog `build_tool_list_entries` 同范式：server 单点权威，
+/// HTTP 路由与 local-direct 短路共用。
+///
+/// managed/discovered 判别：discovery 扫描产出 (file stem key, 绝对路径) 集合；
+/// config.plugin 中 type=file 且 path 命中该集合的条目标 discovered（其真相在
+/// 目录里，删除要去对应目录），其余为 config 声明的 managed。
+pub(crate) async fn build_plugin_list_entries(
+    state: &Arc<ServerState>,
+) -> Vec<agendao_api::PluginListEntry> {
+    let config = state.config_store.config();
+    let project_dir = state
+        .config_store
+        .project_dir()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let plugin_path_roots: Vec<PathBuf> = config
+        .plugin_paths
+        .values()
+        .map(|raw| agendao_config::resolve_configured_path(&project_dir, raw))
+        .collect();
+
+    // discovered：key → (绝对路径, 安装途径标签)。先列的 root 优先（同 loader 合并序）。
+    let mut discovered: HashMap<String, (String, String)> = HashMap::new();
+    for root in agendao_config::collect_plugin_roots(&project_dir, &config.plugin_paths) {
+        let label = plugin_root_label(&root, &project_dir, &plugin_path_roots);
+        for spec in agendao_config::load_plugins_from_path(&root) {
+            let (key, cfg) = PluginConfig::from_file_spec(&spec);
+            if let Some(path) = cfg.path {
+                discovered.entry(key).or_insert((path, label.clone()));
+            }
+        }
+    }
+
+    let disabled = &config.disabled_plugins;
+    let mut entries: Vec<agendao_api::PluginListEntry> = Vec::new();
+    for (name, cfg) in &config.plugin {
+        let hit = discovered.get(name).filter(|(path, _)| {
+            cfg.plugin_type == "file" && cfg.path.as_deref() == Some(path.as_str())
+        });
+        let (source, origin) = match hit {
+            Some((_, label)) => ("discovered", label.clone()),
+            None => ("managed", "config (declared)".to_string()),
+        };
+        entries.push(agendao_api::PluginListEntry {
+            name: name.clone(),
+            plugin_type: cfg.plugin_type.clone(),
+            source: source.to_string(),
+            version: cfg.version.clone(),
+            path: cfg.path.clone(),
+            origin,
+            disabled: agendao_config::matching::matching_disabled_pattern(disabled, name)
+                .is_some(),
+        });
+    }
+    // discovery 扫到但不在 config.plugin 的条目（loader 合并会覆盖本情形，
+    // 防御性补齐，保持「扫描到即可见」的读面语义）。
+    for (name, (path, origin)) in &discovered {
+        if config.plugin.contains_key(name) {
+            continue;
+        }
+        entries.push(agendao_api::PluginListEntry {
+            name: name.clone(),
+            plugin_type: "file".to_string(),
+            source: "discovered".to_string(),
+            version: None,
+            path: Some(path.clone()),
+            origin: origin.clone(),
+            disabled: agendao_config::matching::matching_disabled_pattern(disabled, name)
+                .is_some(),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
 }
 
 #[derive(Debug, Serialize)]
