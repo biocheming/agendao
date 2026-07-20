@@ -2988,7 +2988,28 @@ async fn session_prompt_inner(
                 &task_provider,
                 Some(&task_model),
             );
-            assistant.add_text(format!("Provider error: {}", error));
+            let error_text = format!("Provider error: {}", error);
+            assistant.add_text(error_text.clone());
+            // 实时上屏:错误文本经 output block 广播,TUI/web 即时可见;
+            // 此前只落库,用户要下次启动才发现连接失败(静默失败)。
+            let error_output_hook = server_output_block_hook(task_state.clone());
+            emit_output_block_via_hook(
+                Some(&error_output_hook),
+                agendao_session::prompt::OutputBlockEvent {
+                    session_id: session_id.clone(),
+                    block: OutputBlock::Message(MessageBlock::full(
+                        OutputMessageRole::Assistant,
+                        error_text,
+                    )),
+                    id: Some(assistant.id.clone()),
+                    live_identity: Some(assistant_text_live_identity(
+                        &assistant.id,
+                        Some(assistant.id.clone()),
+                        LivePartPhase::Snapshot,
+                    )),
+                },
+            )
+            .await;
         }
         match tokio::time::timeout(Duration::from_secs(1), &mut update_task).await {
             Ok(joined) => {
