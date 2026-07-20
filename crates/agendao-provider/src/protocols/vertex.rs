@@ -119,6 +119,10 @@ impl VertexGeminiAdapter {
             max_output_tokens: request.max_tokens,
             temperature: request.temperature,
             top_p: request.top_p,
+            thinking_config: request
+                .reasoning_effort
+                .and_then(super::gemini_thinking_budget)
+                .map(|thinking_budget| super::GeminiThinkingConfig { thinking_budget }),
         };
 
         VertexRequest {
@@ -344,6 +348,8 @@ struct VertexGenerationConfig {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<super::GeminiThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -536,6 +542,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = VertexGeminiAdapter::convert_request(request);
@@ -549,5 +558,31 @@ mod tests {
                 if response.name == "call-1"
                     && response.response == json!({ "content": "[Tool execution was interrupted]" })
         ));
+    }
+
+    #[test]
+    fn typed_reasoning_effort_maps_to_thinking_budget() {
+        let mut request = ChatRequest::new("vertex-test", vec![Message::user("hi")]);
+        request.reasoning_effort = Some(crate::ReasoningEffort::High);
+        let converted = VertexGeminiAdapter::convert_request(request);
+        let body = serde_json::to_value(&converted).expect("vertex request should serialize");
+        assert_eq!(
+            body["generation_config"]["thinkingConfig"]["thinkingBudget"].as_u64(),
+            Some(24_576)
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_none_omits_thinking_config() {
+        let mut request = ChatRequest::new("vertex-test", vec![Message::user("hi")]);
+        request.reasoning_effort = Some(crate::ReasoningEffort::None);
+        let converted = VertexGeminiAdapter::convert_request(request);
+        let body = serde_json::to_value(&converted).expect("vertex request should serialize");
+        assert!(body["generation_config"]["thinkingConfig"].is_null());
+
+        let request = ChatRequest::new("vertex-test", vec![Message::user("hi")]);
+        let converted = VertexGeminiAdapter::convert_request(request);
+        let body = serde_json::to_value(&converted).expect("vertex request should serialize");
+        assert!(body["generation_config"]["thinkingConfig"].is_null());
     }
 }

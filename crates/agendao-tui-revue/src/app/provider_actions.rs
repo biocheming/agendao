@@ -2,7 +2,8 @@
 //! refresh providers signal。
 //!
 //! 道纪闭环(土律·第四条·单点权威 + 道纪·第七条·相生):
-//!   1. 木:`SettingsEditState`(in-place) / `ModelEditDialog` 收口 form 输入(api_key 含)
+//!   1. 木:`ProviderEditDialog` / `SettingsEditState`(in-place) / `ModelEditDialog`
+//!      收口 form 输入(api_key 含)
 //!   2. 火:`submit_provider_edit` / `submit_model_edit` 调 client.api 写入
 //!   3. 土:server `ConfigStore.replace_with` + `AuthManager.set` 唯一落盘
 //!   4. 金:写后立即 `refresh_providers_into_store` 回灌 store.providers
@@ -22,8 +23,10 @@ pub enum ProviderEditMode {
     Edit,
 }
 
-/// Provider 写入载荷(木 → 火 的唯一提交契约)。由 in-place Settings 编辑态
-/// (`SettingsEditState`)组装,经 `submit_provider_edit` 写入 client → server。
+/// Provider 写入载荷(木 → 火的唯一提交契约)。由 ProviderEditDialog（主路径，
+/// Settings→Providers 的 a/e 键）或 in-place Settings 编辑态
+/// (`SettingsEditState`，鼠标 "+ Add" / `E` 键)组装,经 `submit_provider_edit`
+/// 写入 client → server。
 pub struct ProviderEditSubmission {
     pub mode: ProviderEditMode,
     pub id: String,
@@ -131,7 +134,8 @@ impl AppHandler {
     /// server 端 PUT 是整体覆写,半空 ModelConfig 会丢字段(cost/reasoning/
     /// temperature 等)。Add 模式构造最小有效 ModelConfig;Edit 模式以
     /// `s.prefill`(open_edit 时 GET 到的原 ModelConfig 全量副本)为基底,
-    /// 只覆盖 form 4 字段,其余字段原样保留(土律·第十条·避免半空覆写)。
+    /// 只覆盖 form 暴露字段(id/name/context/output/effort/timeout/stall),
+    /// 其余字段原样保留(土律·第十条·避免半空覆写)。
     pub(crate) fn submit_model_edit(&mut self, s: ModelEditSubmission) {
         let Some(api) = self.api.as_ref() else {
             self.store.push_toast("No API bridge", ToastMsgVariant::Error);
@@ -150,6 +154,14 @@ impl AppHandler {
             input: prev_input,
             output: s.max_output_tokens,
         });
+        // reasoning effort:字段可见(reasoning 模型/Add)时按表单值覆写
+        // (`default` → None 清除显式设置);不可见时保留 prefill 原值不误清。
+        if s.reasoning_effort_visible {
+            model.reasoning_effort = s.reasoning_effort.clone();
+        }
+        // timeout / stream stall:表单留空 = 清除(None),与 context/output 同口径。
+        model.timeout_secs = s.timeout_secs;
+        model.stream_stall_timeout_secs = s.stream_stall_timeout_secs;
         let model: ModelConfig = model;
         match api.put_provider_model_config(&s.provider_id, &s.model_key, &model) {
             Ok(_) => {

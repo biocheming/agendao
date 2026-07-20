@@ -105,6 +105,7 @@ impl EthnopicAdapter {
             stream: request.stream,
             thinking: messages_thinking_config(
                 request.variant.as_deref(),
+                request.reasoning_effort,
                 max_tokens,
                 thinking_enabled,
             ),
@@ -456,11 +457,35 @@ enum MessagesThinking {
     },
 }
 
+fn thinking_budget_with_ceiling(target: u64, max_tokens: u64) -> Option<MessagesThinking> {
+    let ceiling = max_tokens.saturating_sub(1);
+    let budget_tokens = target.min(ceiling);
+    if budget_tokens == 0 {
+        return None;
+    }
+    Some(MessagesThinking::Enabled { budget_tokens })
+}
+
 fn messages_thinking_config(
     variant: Option<&str>,
+    reasoning_effort: Option<crate::ReasoningEffort>,
     max_tokens: u64,
     thinking_enabled: bool,
 ) -> Option<MessagesThinking> {
+    // Typed effort (per-model config) takes priority over the variant string.
+    // None = explicitly disable thinking; other levels map onto the existing
+    // budget ladder.
+    if let Some(effort) = reasoning_effort {
+        let target = match effort {
+            crate::ReasoningEffort::None => return None,
+            crate::ReasoningEffort::Minimal => 4_000,
+            crate::ReasoningEffort::Low => 8_000,
+            crate::ReasoningEffort::Medium => 16_000,
+            crate::ReasoningEffort::High => 31_999,
+        };
+        return thinking_budget_with_ceiling(target, max_tokens);
+    }
+
     if !thinking_enabled {
         return None;
     }
@@ -478,12 +503,7 @@ fn messages_thinking_config(
         16_000 // Default to high if no variant specified
     };
 
-    let ceiling = max_tokens.saturating_sub(1);
-    let budget_tokens = target.min(ceiling);
-    if budget_tokens == 0 {
-        return None;
-    }
-    Some(MessagesThinking::Enabled { budget_tokens })
+    thinking_budget_with_ceiling(target, max_tokens)
 }
 
 #[derive(Debug, Deserialize)]
@@ -589,6 +609,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
@@ -621,10 +644,64 @@ mod tests {
                 json!({"type": "disabled"}),
             )])),
             variant: Some("high".to_string()),
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
         assert!(converted.thinking.is_none());
+    }
+
+    #[test]
+    fn typed_reasoning_effort_maps_to_thinking_budget_ladder() {
+        for (effort, expected) in [
+            (crate::ReasoningEffort::Minimal, 4_000),
+            (crate::ReasoningEffort::Low, 8_000),
+            (crate::ReasoningEffort::Medium, 16_000),
+            (crate::ReasoningEffort::High, 31_999),
+        ] {
+            let mut request = ChatRequest::new("claude-test", vec![Message::user("hi")])
+                .with_max_tokens(64_000);
+            request.reasoning_effort = Some(effort);
+            let converted = EthnopicAdapter::convert_request(request);
+            match converted.thinking {
+                Some(MessagesThinking::Enabled { budget_tokens }) => {
+                    assert_eq!(
+                        budget_tokens, expected,
+                        "effort {effort} should map to budget {expected}"
+                    );
+                }
+                None => panic!("effort {effort} should enable thinking"),
+            }
+        }
+    }
+
+    #[test]
+    fn typed_reasoning_effort_none_disables_thinking() {
+        let mut request =
+            ChatRequest::new("claude-test", vec![Message::user("hi")]).with_max_tokens(64_000);
+        request.variant = Some("high".to_string());
+        request.reasoning_effort = Some(crate::ReasoningEffort::None);
+        let converted = EthnopicAdapter::convert_request(request);
+        assert!(
+            converted.thinking.is_none(),
+            "ReasoningEffort::None must disable thinking even with a variant set"
+        );
+    }
+
+    #[test]
+    fn typed_reasoning_effort_budget_clamps_below_max_tokens() {
+        let mut request =
+            ChatRequest::new("claude-test", vec![Message::user("hi")]).with_max_tokens(10_000);
+        request.reasoning_effort = Some(crate::ReasoningEffort::High);
+        let converted = EthnopicAdapter::convert_request(request);
+        match converted.thinking {
+            Some(MessagesThinking::Enabled { budget_tokens }) => {
+                assert_eq!(budget_tokens, 9_999);
+            }
+            None => panic!("thinking should still be enabled after clamping"),
+        }
     }
 
     #[test]
@@ -658,6 +735,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
@@ -720,6 +800,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
@@ -748,6 +831,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
@@ -795,6 +881,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);
@@ -828,6 +917,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = EthnopicAdapter::convert_request(request);

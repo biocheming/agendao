@@ -76,6 +76,12 @@ impl GitHubCopilotCloseAiAdapter {
     }
 
     fn convert_request(request: ChatRequest) -> CopilotRequest {
+        if request.reasoning_effort.is_some() {
+            tracing::debug!(
+                model = %request.model,
+                "github copilot chat-completions has no thinking concept; ignoring typed reasoning_effort"
+            );
+        }
         let messages: Vec<CopilotMessage> = sanitize_messages_for_text_protocol(&request.messages)
             .into_iter()
             .map(|msg| CopilotMessage {
@@ -775,6 +781,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = GitHubCopilotCloseAiAdapter::convert_request(request);
@@ -806,6 +815,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let options = GitHubCopilotCloseAiAdapter::responses_generate_options(

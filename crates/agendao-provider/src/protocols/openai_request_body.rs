@@ -274,7 +274,19 @@ pub(super) fn build_request_body(request: &ChatRequest) -> Result<Value, Provide
             }
         }
 
-        if let Some(effort) = openai_reasoning_effort(&request.model, request.variant.as_deref()) {
+        // Typed `reasoning_effort` (per-model config) takes priority over the
+        // variant-string whitelist. `ReasoningEffort::None` means "do not send
+        // the field at all", keeping the provider-side default.
+        if let Some(effort) = request.reasoning_effort {
+            if !matches!(effort, crate::ReasoningEffort::None) {
+                obj.insert(
+                    "reasoning_effort".to_string(),
+                    Value::String(effort.to_string()),
+                );
+            }
+        } else if let Some(effort) =
+            openai_reasoning_effort(&request.model, request.variant.as_deref())
+        {
             obj.insert(
                 "reasoning_effort".to_string(),
                 Value::String(effort.to_string()),
@@ -308,5 +320,79 @@ pub(super) fn openai_reasoning_effort(
         "high" => Some("high"),
         "max" | "xhigh" => Some("high"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ReasoningEffort;
+
+    fn body_for(request: ChatRequest) -> Value {
+        build_request_body(&request).expect("request body should build")
+    }
+
+    #[test]
+    fn typed_reasoning_effort_maps_to_wire_string() {
+        for (effort, expected) in [
+            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+        ] {
+            let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+            request.reasoning_effort = Some(effort);
+            let body = body_for(request);
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                Some(expected),
+                "effort {effort} should map to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_reasoning_effort_none_omits_field() {
+        let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+        request.reasoning_effort = Some(ReasoningEffort::None);
+        let body = body_for(request);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "ReasoningEffort::None must not send the field"
+        );
+    }
+
+    #[test]
+    fn typed_reasoning_effort_overrides_variant() {
+        let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+        request.variant = Some("high".to_string());
+        request.reasoning_effort = Some(ReasoningEffort::Low);
+        let body = body_for(request);
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("low")
+        );
+
+        // Typed None also suppresses the variant-derived value.
+        let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+        request.variant = Some("high".to_string());
+        request.reasoning_effort = Some(ReasoningEffort::None);
+        let body = body_for(request);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn variant_whitelist_still_applies_without_typed_effort() {
+        let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+        request.variant = Some("high".to_string());
+        let body = body_for(request);
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("high")
+        );
+
+        let request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
+        let body = body_for(request);
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

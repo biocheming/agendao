@@ -162,6 +162,9 @@ fn build_simple_request(
         stream: Some(false),
         provider_options: None,
         variant: options.variant.clone(),
+        reasoning_effort: None,
+        timeout_secs: None,
+        stream_stall_timeout_secs: None,
     }
 }
 
@@ -275,6 +278,9 @@ pub async fn execute_prompt_with_session<S: SessionStore>(
             stream: Some(false),
             provider_options: None,
             variant: options.variant.clone(),
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         // 5.3 Call provider
@@ -681,6 +687,9 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
         stream: Some(true),
         provider_options: None,
         variant: options.variant.clone(),
+        reasoning_effort: None,
+        timeout_secs: None,
+        stream_stall_timeout_secs: None,
     };
 
     let first_stream = provider
@@ -847,6 +856,9 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
                                     stream: Some(true),
                                     provider_options: None,
                                     variant: state.options.variant.clone(),
+                                    reasoning_effort: None,
+                                    timeout_secs: None,
+                                    stream_stall_timeout_secs: None,
                                 };
 
                                 match state.provider.chat_stream(request).await {

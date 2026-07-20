@@ -69,3 +69,26 @@ pub fn create_provider_adapter(adapter: ProviderRuntimeAdapter) -> Arc<dyn Provi
 pub fn create_provider_adapter_for_profile(profile: &ProviderProfile) -> Arc<dyn ProviderAdapter> {
     create_provider_adapter(ProviderRuntimeAdapter::from_profile(profile))
 }
+
+/// Google/Vertex thinking budget ladder for typed `ReasoningEffort`.
+///
+/// `ReasoningEffort::None` returns `None`: some Gemini models reject an
+/// explicit `thinkingBudget: 0`, so the field is simply omitted instead.
+#[cfg(feature = "http-transport")]
+pub(crate) fn gemini_thinking_budget(effort: crate::ReasoningEffort) -> Option<u64> {
+    match effort {
+        crate::ReasoningEffort::None => None,
+        crate::ReasoningEffort::Minimal => Some(1_024),
+        crate::ReasoningEffort::Low => Some(4_096),
+        crate::ReasoningEffort::Medium => Some(8_192),
+        crate::ReasoningEffort::High => Some(24_576),
+    }
+}
+
+/// Wire shape for `generationConfig.thinkingConfig` on Google/Vertex.
+#[cfg(feature = "http-transport")]
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct GeminiThinkingConfig {
+    #[serde(rename = "thinkingBudget")]
+    pub thinking_budget: u64,
+}

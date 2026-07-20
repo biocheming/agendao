@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use agendao_config::Config as AppConfig;
 use agendao_provider::models::ModelProvider;
+use agendao_provider::ReasoningEffort;
 
 use crate::{
     CompiledExecutionRequest, ExecutionCapabilities, ExecutionModelSpec, ExecutionTuningSpec,
@@ -84,6 +85,40 @@ fn capabilities_from_catalog(model: &agendao_provider::ModelsDevInfo) -> Executi
     }
 }
 
+/// Parse a per-model `reasoning_effort` config string. Invalid values are
+/// ignored with a warning so a typo cannot break request assembly.
+fn parse_reasoning_effort(
+    raw: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<ReasoningEffort> {
+    raw.and_then(|value| match value.parse::<ReasoningEffort>() {
+        Ok(effort) => Some(effort),
+        Err(_) => {
+            tracing::warn!(
+                provider = %provider_id,
+                model = %model_id,
+                value = %value,
+                "ignoring invalid model reasoning_effort (expected none/minimal/low/medium/high)"
+            );
+            None
+        }
+    })
+}
+
+/// Convert config model variants into option tables, skipping disabled ones.
+fn config_model_variants(
+    model: &agendao_config::ModelConfig,
+) -> Option<HashMap<String, HashMap<String, serde_json::Value>>> {
+    let variants = model.variants.as_ref()?;
+    let tables: HashMap<_, _> = variants
+        .iter()
+        .filter(|(_, variant)| !variant.disabled.unwrap_or(false))
+        .map(|(name, variant)| (name.clone(), variant.extra.clone()))
+        .collect();
+    (!tables.is_empty()).then_some(tables)
+}
+
 fn merge_model_spec(
     mut base: ExecutionModelSpec,
     provider: Option<&agendao_config::ProviderConfig>,
@@ -105,6 +140,31 @@ fn merge_model_spec(
         }
         if model_cfg.tool_call.is_some() {
             base.capabilities.tool_call = override_caps.tool_call;
+        }
+        if model_cfg.reasoning_effort.is_some() {
+            base.reasoning_effort = parse_reasoning_effort(
+                model_cfg.reasoning_effort.as_deref(),
+                &base.provider_id,
+                &base.model_id,
+            );
+        }
+        if model_cfg.timeout_secs.is_some() {
+            base.timeout_secs = model_cfg.timeout_secs;
+        }
+        if model_cfg.stream_stall_timeout_secs.is_some() {
+            base.stream_stall_timeout_secs = model_cfg.stream_stall_timeout_secs;
+        }
+        if let Some(variant_cfgs) = &model_cfg.variants {
+            // Config variants overlay catalog variants per key; a disabled
+            // config variant removes a catalog variant of the same name.
+            let base_variants = base.variants.get_or_insert_with(HashMap::new);
+            for (name, variant_cfg) in variant_cfgs {
+                if variant_cfg.disabled.unwrap_or(false) {
+                    base_variants.remove(name);
+                } else {
+                    base_variants.insert(name.clone(), variant_cfg.extra.clone());
+                }
+            }
         }
         if let Some(options) = model_cfg.options.clone() {
             base.options.extend(options);
@@ -130,6 +190,10 @@ fn spec_from_catalog(
             npm: None,
         }),
         options: model.options.clone(),
+        reasoning_effort: None,
+        timeout_secs: None,
+        stream_stall_timeout_secs: None,
+        variants: model.variants.clone(),
     }
 }
 
@@ -146,6 +210,14 @@ fn spec_from_config(
         capabilities: capabilities_from_config(model),
         provider: model_provider_from_config(provider, Some(model)),
         options: model.options.clone().unwrap_or_default(),
+        reasoning_effort: parse_reasoning_effort(
+            model.reasoning_effort.as_deref(),
+            provider_id,
+            model_id,
+        ),
+        timeout_secs: model.timeout_secs,
+        stream_stall_timeout_secs: model.stream_stall_timeout_secs,
+        variants: config_model_variants(model),
     }
 }
 
@@ -196,6 +268,10 @@ pub async fn resolve_request_execution_spec(
                     capabilities: ExecutionCapabilities::default(),
                     provider: model_provider_from_config(provider_cfg, None),
                     options: HashMap::new(),
+                    reasoning_effort: None,
+                    timeout_secs: None,
+                    stream_stall_timeout_secs: None,
+                    variants: None,
                 },
                 tuning: ExecutionTuningSpec {
                     max_tokens: context.max_tokens,
@@ -339,5 +415,116 @@ mod tests {
             spec.request_options.get("temperature_mode"),
             Some(&json!("fixed"))
         );
+    }
+
+    fn config_with_model_tuning(
+        reasoning_effort: Option<&str>,
+        timeout_secs: Option<u64>,
+        stream_stall_timeout_secs: Option<u64>,
+        variants: Option<HashMap<String, agendao_config::ModelVariantConfig>>,
+    ) -> AppConfig {
+        let model = agendao_config::ModelConfig {
+            name: Some("Test Model".to_string()),
+            reasoning: Some(true),
+            reasoning_effort: reasoning_effort.map(str::to_string),
+            timeout_secs,
+            stream_stall_timeout_secs,
+            variants,
+            provider: Some(agendao_config::ModelProviderConfig {
+                api: Some("https://example.test".to_string()),
+                npm: Some("@ai-sdk/openai-compatible".to_string()),
+            }),
+            ..Default::default()
+        };
+        let provider = agendao_config::ProviderConfig {
+            name: Some("zhipuai".to_string()),
+            models: Some(HashMap::from([("glm-5".to_string(), model)])),
+            ..Default::default()
+        };
+        AppConfig {
+            provider: Some(HashMap::from([("zhipuai".to_string(), provider)])),
+            ..Default::default()
+        }
+    }
+
+    fn test_context() -> ExecutionResolutionContext {
+        ExecutionResolutionContext {
+            session_id: "s1".to_string(),
+            provider_id: "zhipuai".to_string(),
+            model_id: "glm-5".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn request_spec_carries_model_level_tuning_fields() {
+        let config = config_with_model_tuning(Some("high"), Some(900), Some(25), None);
+        let spec = resolve_request_execution_spec(&config, &test_context()).await;
+        assert_eq!(spec.model.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(spec.model.timeout_secs, Some(900));
+        assert_eq!(spec.model.stream_stall_timeout_secs, Some(25));
+
+        let compiled = spec.compile();
+        assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(compiled.timeout_secs, Some(900));
+        assert_eq!(compiled.stream_stall_timeout_secs, Some(25));
+    }
+
+    #[tokio::test]
+    async fn request_spec_ignores_invalid_reasoning_effort() {
+        let config = config_with_model_tuning(Some("extreme"), None, None, None);
+        let spec = resolve_request_execution_spec(&config, &test_context()).await;
+        assert_eq!(spec.model.reasoning_effort, None);
+    }
+
+    #[tokio::test]
+    async fn request_spec_leaves_tuning_none_without_config() {
+        let config = config_with_model_tuning(None, None, None, None);
+        let spec = resolve_request_execution_spec(&config, &test_context()).await;
+        assert_eq!(spec.model.reasoning_effort, None);
+        assert_eq!(spec.model.timeout_secs, None);
+        assert_eq!(spec.model.stream_stall_timeout_secs, None);
+        let compiled = spec.compile();
+        assert_eq!(compiled.reasoning_effort, None);
+        assert_eq!(compiled.timeout_secs, None);
+        assert_eq!(compiled.stream_stall_timeout_secs, None);
+    }
+
+    #[tokio::test]
+    async fn request_spec_carries_config_variant_tables_and_skips_disabled() {
+        let variants = HashMap::from([
+            (
+                "low".to_string(),
+                agendao_config::ModelVariantConfig {
+                    disabled: None,
+                    extra: HashMap::from([("reasoningEffort".to_string(), json!("low"))]),
+                },
+            ),
+            (
+                "high".to_string(),
+                agendao_config::ModelVariantConfig {
+                    disabled: Some(true),
+                    extra: HashMap::from([("reasoningEffort".to_string(), json!("high"))]),
+                },
+            ),
+        ]);
+        let config = config_with_model_tuning(None, None, None, Some(variants));
+        let spec = resolve_request_execution_spec(
+            &config,
+            &ExecutionResolutionContext {
+                variant: Some("low".to_string()),
+                ..test_context()
+            },
+        )
+        .await;
+
+        let tables = spec.model.variants.as_ref().expect("variant tables");
+        assert!(tables.contains_key("low"));
+        assert!(!tables.contains_key("high"), "disabled variant skipped");
+
+        let compiled = spec.compile();
+        assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::Low));
+        let options = compiled.provider_options.expect("provider options");
+        assert_eq!(options.get("reasoningEffort"), Some(&json!("low")));
     }
 }

@@ -2,7 +2,7 @@ pub mod lifecycle;
 
 use std::collections::HashMap;
 
-use agendao_provider::{ChatRequest, Message, ToolDefinition};
+use agendao_provider::{ChatRequest, Message, ReasoningEffort, ToolDefinition};
 
 pub use lifecycle::*;
 
@@ -20,6 +20,9 @@ pub struct CompiledExecutionRequest {
     pub top_p: Option<f32>,
     pub variant: Option<String>,
     pub provider_options: Option<HashMap<String, serde_json::Value>>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub timeout_secs: Option<u64>,
+    pub stream_stall_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -40,6 +43,9 @@ pub struct ExecutionRequestDefaults {
     pub top_p: Option<f32>,
     pub variant: Option<String>,
     pub provider_options: Option<HashMap<String, serde_json::Value>>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub timeout_secs: Option<u64>,
+    pub stream_stall_timeout_secs: Option<u64>,
 }
 
 impl CompiledExecutionRequest {
@@ -79,6 +85,11 @@ impl CompiledExecutionRequest {
                 .provider_options
                 .clone()
                 .or_else(|| defaults.provider_options.clone()),
+            reasoning_effort: self.reasoning_effort.or(defaults.reasoning_effort),
+            timeout_secs: self.timeout_secs.or(defaults.timeout_secs),
+            stream_stall_timeout_secs: self
+                .stream_stall_timeout_secs
+                .or(defaults.stream_stall_timeout_secs),
         }
     }
 
@@ -109,6 +120,9 @@ impl CompiledExecutionRequest {
             stream,
             provider_options: self.provider_options.clone(),
             variant: self.variant.clone(),
+            reasoning_effort: self.reasoning_effort,
+            timeout_secs: self.timeout_secs,
+            stream_stall_timeout_secs: self.stream_stall_timeout_secs,
         }
     }
 }
@@ -129,6 +143,9 @@ impl ExecutionRequestContext {
             top_p: self.top_p,
             variant: self.variant.clone(),
             provider_options: self.provider_options.clone(),
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         })
     }
 
@@ -140,6 +157,9 @@ impl ExecutionRequestContext {
             top_p: self.top_p,
             variant: self.variant.clone(),
             provider_options: self.provider_options.clone(),
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         }
     }
 
@@ -178,6 +198,24 @@ impl ExecutionRequestDefaults {
         provider_options: Option<HashMap<String, serde_json::Value>>,
     ) -> Self {
         self.provider_options = provider_options;
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, reasoning_effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = reasoning_effort;
+        self
+    }
+
+    pub fn with_timeout_secs(mut self, timeout_secs: Option<u64>) -> Self {
+        self.timeout_secs = timeout_secs;
+        self
+    }
+
+    pub fn with_stream_stall_timeout_secs(
+        mut self,
+        stream_stall_timeout_secs: Option<u64>,
+    ) -> Self {
+        self.stream_stall_timeout_secs = stream_stall_timeout_secs;
         self
     }
 }
@@ -257,6 +295,9 @@ mod tests {
             top_p: Some(0.7),
             variant: None,
             provider_options: None,
+            reasoning_effort: Some(ReasoningEffort::High),
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let inherited = request.inherit_missing(
@@ -268,7 +309,10 @@ mod tests {
                 .with_provider_options(Some(HashMap::from([(
                     "thinking".to_string(),
                     json!(true),
-                )]))),
+                )])))
+                .with_reasoning_effort(Some(ReasoningEffort::Low))
+                .with_timeout_secs(Some(120))
+                .with_stream_stall_timeout_secs(Some(30)),
         );
 
         assert_eq!(inherited.max_tokens, Some(32));
@@ -282,6 +326,10 @@ mod tests {
                 .and_then(|options| options.get("thinking")),
             Some(&json!(true))
         );
+        // Explicit reasoning_effort preserved; absent timeouts filled from defaults.
+        assert_eq!(inherited.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(inherited.timeout_secs, Some(120));
+        assert_eq!(inherited.stream_stall_timeout_secs, Some(30));
     }
 
     #[test]
@@ -319,6 +367,9 @@ mod tests {
                 "thinking".to_string(),
                 json!({"enabled": true}),
             )])),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            timeout_secs: Some(300),
+            stream_stall_timeout_secs: Some(45),
         };
 
         let chat = compiled.to_chat_request(vec![], vec![], true);
@@ -328,6 +379,9 @@ mod tests {
         assert_eq!(chat.temperature, Some(0.42));
         assert_eq!(chat.top_p, Some(0.88));
         assert_eq!(chat.variant.as_deref(), Some("deep"));
+        assert_eq!(chat.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(chat.timeout_secs, Some(300));
+        assert_eq!(chat.stream_stall_timeout_secs, Some(45));
         assert_eq!(
             chat.provider_options
                 .as_ref()

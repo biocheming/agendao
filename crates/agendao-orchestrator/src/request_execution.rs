@@ -16,7 +16,7 @@ pub use agendao_execution_types::{
     CompiledExecutionRequest, ExecutionModelRef, ExecutionRequestContext, ExecutionRequestDefaults,
 };
 use agendao_provider::models::{ModelLimit, ModelProvider};
-use agendao_provider::ModelsDevInfo;
+use agendao_provider::{ModelsDevInfo, ReasoningEffort};
 
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionCapabilities {
@@ -34,6 +34,15 @@ pub struct ExecutionModelSpec {
     pub capabilities: ExecutionCapabilities,
     pub provider: ModelProvider,
     pub options: HashMap<String, serde_json::Value>,
+    /// Per-model typed reasoning effort from config (already validated).
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Per-model request-level timeout in seconds.
+    pub timeout_secs: Option<u64>,
+    /// Per-model streaming stall timeout in seconds.
+    pub stream_stall_timeout_secs: Option<u64>,
+    /// Explicit variant option tables (config model variants overlaid on catalog
+    /// variants). Used at compile time to merge the selected variant's options.
+    pub variants: Option<HashMap<String, HashMap<String, serde_json::Value>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,6 +78,20 @@ impl ResolvedExecutionSpec {
             }
         }
 
+        // Variant semantics: the selected variant name maps to a reasoning effort
+        // and (when a variant options table exists) contributes provider options.
+        // Existing request/model option keys always win over variant-contributed keys.
+        let variant = self.tuning.variant.as_deref();
+        if let Some(variant_options) = variant.and_then(|name| self.variant_options(name)) {
+            for (key, value) in variant_options {
+                compiled_options.entry(key).or_insert(value);
+            }
+        }
+        let reasoning_effort = self
+            .model
+            .reasoning_effort
+            .or_else(|| variant.and_then(|name| name.parse::<ReasoningEffort>().ok()));
+
         CompiledExecutionRequest {
             model_id: self.model.model_id.clone(),
             max_tokens: self.tuning.max_tokens,
@@ -76,7 +99,25 @@ impl ResolvedExecutionSpec {
             top_p: self.tuning.top_p,
             variant: self.tuning.variant.clone(),
             provider_options: (!compiled_options.is_empty()).then_some(compiled_options),
+            reasoning_effort,
+            timeout_secs: self.model.timeout_secs,
+            stream_stall_timeout_secs: self.model.stream_stall_timeout_secs,
         }
+    }
+
+    /// Look up the options table for a variant name: explicit (config/catalog)
+    /// tables take precedence over generated reasoning variants.
+    fn variant_options(&self, name: &str) -> Option<HashMap<String, serde_json::Value>> {
+        if let Some(explicit) = self
+            .model
+            .variants
+            .as_ref()
+            .and_then(|variants| variants.get(name))
+        {
+            return Some(explicit.clone());
+        }
+        agendao_provider::transform::variants(&self.to_models_dev_info())
+            .remove(name)
     }
 
     fn to_models_dev_info(&self) -> ModelsDevInfo {
@@ -102,7 +143,7 @@ impl ResolvedExecutionSpec {
             options: self.model.options.clone(),
             headers: None,
             provider: Some(self.model.provider.clone()),
-            variants: None,
+            variants: self.model.variants.clone(),
         }
     }
 }
@@ -158,6 +199,9 @@ mod tests {
             top_p: Some(0.7),
             variant: None,
             provider_options: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let inherited = request.inherit_missing(
@@ -169,7 +213,10 @@ mod tests {
                 .with_provider_options(Some(HashMap::from([(
                     "thinking".to_string(),
                     json!(true),
-                )]))),
+                )])))
+                .with_reasoning_effort(Some(ReasoningEffort::Low))
+                .with_timeout_secs(Some(120))
+                .with_stream_stall_timeout_secs(Some(30)),
         );
 
         assert_eq!(inherited.max_tokens, Some(32));
@@ -183,6 +230,9 @@ mod tests {
                 .and_then(|options| options.get("thinking")),
             Some(&json!(true))
         );
+        assert_eq!(inherited.reasoning_effort, Some(ReasoningEffort::Low));
+        assert_eq!(inherited.timeout_secs, Some(120));
+        assert_eq!(inherited.stream_stall_timeout_secs, Some(30));
     }
 
     #[test]
@@ -276,6 +326,9 @@ mod tests {
                 "thinking".to_string(),
                 json!({"enabled": true}),
             )])),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            timeout_secs: Some(300),
+            stream_stall_timeout_secs: Some(45),
         };
 
         let chat = compiled.to_chat_request(vec![], vec![], true);
@@ -292,6 +345,9 @@ mod tests {
                 .and_then(|o| o.get("thinking")),
             Some(&json!({"enabled": true}))
         );
+        assert_eq!(chat.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(chat.timeout_secs, Some(300));
+        assert_eq!(chat.stream_stall_timeout_secs, Some(45));
     }
 
     /// Invariant: inherit_missing is the single merge point for defaults.
@@ -352,6 +408,9 @@ mod tests {
             top_p: Some(0.2),
             variant: Some("v".to_string()),
             provider_options: Some(HashMap::from([("k".to_string(), json!("v"))])),
+            reasoning_effort: Some(ReasoningEffort::Minimal),
+            timeout_secs: Some(60),
+            stream_stall_timeout_secs: Some(15),
         };
 
         // Merge into an empty compiled request.
@@ -369,6 +428,15 @@ mod tests {
         assert!(
             compiled.provider_options.is_some(),
             "provider_options not propagated"
+        );
+        assert!(
+            compiled.reasoning_effort.is_some(),
+            "reasoning_effort not propagated"
+        );
+        assert!(compiled.timeout_secs.is_some(), "timeout_secs not propagated");
+        assert!(
+            compiled.stream_stall_timeout_secs.is_some(),
+            "stream_stall_timeout_secs not propagated"
         );
     }
 
@@ -394,5 +462,126 @@ mod tests {
         assert_eq!(changed_model.variant.as_deref(), Some("v1")); // variant preserved
         assert_eq!(changed_variant.model_id, "original"); // model preserved
         assert_eq!(changed_variant.variant.as_deref(), Some("v2"));
+    }
+
+    // ── Model-level tuning semantics (reasoning effort / timeouts / variants) ──
+
+    fn model_spec(
+        reasoning_effort: Option<ReasoningEffort>,
+        variants: Option<HashMap<String, HashMap<String, serde_json::Value>>>,
+    ) -> ExecutionModelSpec {
+        ExecutionModelSpec {
+            provider_id: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            display_name: "gpt-test".to_string(),
+            capabilities: ExecutionCapabilities {
+                reasoning: true,
+                ..Default::default()
+            },
+            provider: ModelProvider {
+                api: None,
+                npm: None,
+            },
+            options: HashMap::new(),
+            reasoning_effort,
+            timeout_secs: Some(600),
+            stream_stall_timeout_secs: Some(20),
+            variants,
+        }
+    }
+
+    fn spec_with_variant(
+        model: ExecutionModelSpec,
+        variant: Option<&str>,
+        request_options: HashMap<String, serde_json::Value>,
+    ) -> ResolvedExecutionSpec {
+        ResolvedExecutionSpec {
+            session_id: "s1".to_string(),
+            model,
+            tuning: ExecutionTuningSpec {
+                variant: variant.map(str::to_string),
+                ..Default::default()
+            },
+            request_options,
+        }
+    }
+
+    #[test]
+    fn compile_maps_variant_name_to_reasoning_effort() {
+        for (variant, expected) in [
+            ("low", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::Medium),
+            ("high", ReasoningEffort::High),
+        ] {
+            let compiled =
+                spec_with_variant(model_spec(None, None), Some(variant), HashMap::new()).compile();
+            assert_eq!(compiled.reasoning_effort, Some(expected), "variant {variant}");
+        }
+    }
+
+    #[test]
+    fn compile_prefers_explicit_model_reasoning_effort_over_variant() {
+        let compiled = spec_with_variant(
+            model_spec(Some(ReasoningEffort::Minimal), None),
+            Some("high"),
+            HashMap::new(),
+        )
+        .compile();
+        assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::Minimal));
+    }
+
+    #[test]
+    fn compile_leaves_reasoning_effort_none_without_config_or_known_variant() {
+        let compiled = spec_with_variant(model_spec(None, None), Some("deep"), HashMap::new())
+            .compile();
+        assert_eq!(compiled.reasoning_effort, None);
+
+        let compiled = spec_with_variant(model_spec(None, None), None, HashMap::new()).compile();
+        assert_eq!(compiled.reasoning_effort, None);
+    }
+
+    #[test]
+    fn compile_propagates_model_timeouts() {
+        let compiled = spec_with_variant(model_spec(None, None), None, HashMap::new()).compile();
+        assert_eq!(compiled.timeout_secs, Some(600));
+        assert_eq!(compiled.stream_stall_timeout_secs, Some(20));
+    }
+
+    #[test]
+    fn compile_merges_variant_options_preserving_existing_keys() {
+        let variants = Some(HashMap::from([(
+            "high".to_string(),
+            HashMap::from([
+                ("reasoningEffort".to_string(), json!("high")),
+                ("thinking".to_string(), json!({"budget": 16000})),
+            ]),
+        )]));
+        let request_options = HashMap::from([("reasoningEffort".to_string(), json!("low"))]);
+
+        let compiled = spec_with_variant(
+            model_spec(Some(ReasoningEffort::Low), variants),
+            Some("high"),
+            request_options,
+        )
+        .compile();
+
+        let options = compiled.provider_options.expect("provider options");
+        // Existing request option key wins over the variant-contributed key.
+        assert_eq!(options.get("reasoningEffort"), Some(&json!("low")));
+        // Absent keys are contributed by the variant table.
+        assert_eq!(options.get("thinking"), Some(&json!({"budget": 16000})));
+    }
+
+    #[test]
+    fn compile_uses_generated_variant_options_when_no_explicit_table() {
+        // gpt-test under @ai-sdk/openai generates low/high reasoningEffort variants.
+        let mut model = model_spec(None, None);
+        model.provider.npm = Some("@ai-sdk/openai".to_string());
+
+        let compiled = spec_with_variant(model, Some("high"), HashMap::new()).compile();
+
+        assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::High));
+        let options = compiled.provider_options.expect("provider options");
+        assert_eq!(options.get("reasoningEffort"), Some(&json!("high")));
     }
 }

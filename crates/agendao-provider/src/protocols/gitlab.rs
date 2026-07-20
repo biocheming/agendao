@@ -35,6 +35,12 @@ impl GitLabCloseAiAdapter {
     }
 
     fn convert_request(request: ChatRequest) -> GitLabRequest {
+        if request.reasoning_effort.is_some() {
+            tracing::debug!(
+                model = %request.model,
+                "gitlab duo chat has no thinking concept; ignoring typed reasoning_effort"
+            );
+        }
         let messages: Vec<GitLabMessage> = sanitize_messages_for_text_protocol(&request.messages)
             .into_iter()
             .map(|msg| GitLabMessage {
@@ -374,6 +380,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = GitLabCloseAiAdapter::convert_request(request);

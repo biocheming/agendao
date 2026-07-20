@@ -64,6 +64,10 @@ impl GeminiAdapter {
             generation_config: Some(GenerationConfig {
                 max_output_tokens: request.max_tokens,
                 temperature: request.temperature,
+                thinking_config: request
+                    .reasoning_effort
+                    .and_then(super::gemini_thinking_budget)
+                    .map(|thinking_budget| super::GeminiThinkingConfig { thinking_budget }),
             }),
         }
     }
@@ -236,6 +240,8 @@ struct GenerationConfig {
     max_output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<super::GeminiThinkingConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -370,6 +376,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = GeminiAdapter::convert_request(request);
@@ -398,6 +407,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let converted = GeminiAdapter::convert_request(request);
@@ -405,6 +417,48 @@ mod tests {
         assert_eq!(
             converted.contents[0].parts[0].text.as_deref(),
             Some("first\n\nsecond")
+        );
+    }
+
+    fn thinking_config_json(request: ChatRequest) -> serde_json::Value {
+        let converted = GeminiAdapter::convert_request(request);
+        let body = serde_json::to_value(&converted).expect("google request should serialize");
+        body["generation_config"]["thinkingConfig"].clone()
+    }
+
+    #[test]
+    fn typed_reasoning_effort_maps_to_thinking_budget() {
+        for (effort, expected) in [
+            (crate::ReasoningEffort::Minimal, 1_024u64),
+            (crate::ReasoningEffort::Low, 4_096),
+            (crate::ReasoningEffort::Medium, 8_192),
+            (crate::ReasoningEffort::High, 24_576),
+        ] {
+            let mut request = ChatRequest::new("gemini-test", vec![Message::user("hi")]);
+            request.reasoning_effort = Some(effort);
+            let config = thinking_config_json(request);
+            assert_eq!(
+                config["thinkingBudget"].as_u64(),
+                Some(expected),
+                "effort {effort} should map to thinkingBudget {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_none_omits_thinking_config() {
+        // Some Gemini models reject an explicit thinkingBudget of 0, so the
+        // field must be omitted entirely.
+        let mut request = ChatRequest::new("gemini-test", vec![Message::user("hi")]);
+        request.reasoning_effort = Some(crate::ReasoningEffort::None);
+        let config = thinking_config_json(request);
+        assert!(config.is_null(), "thinkingConfig must be omitted");
+
+        let request = ChatRequest::new("gemini-test", vec![Message::user("hi")]);
+        let config = thinking_config_json(request);
+        assert!(
+            config.is_null(),
+            "no typed effort must keep the body unchanged"
         );
     }
 }

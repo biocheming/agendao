@@ -816,6 +816,9 @@ mod tests {
                 json!({"type": "enabled"}),
             )])),
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -855,6 +858,9 @@ mod tests {
                 json!({"type": "enabled"}),
             )])),
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -904,6 +910,9 @@ mod tests {
                 json!({"type": "enabled"}),
             )])),
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -935,6 +944,9 @@ mod tests {
                 json!({"type": "enabled"}),
             )])),
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -964,6 +976,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -1000,6 +1015,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -1045,6 +1063,9 @@ mod tests {
                 json!({"type": "enabled"}),
             )])),
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
@@ -1620,6 +1641,9 @@ mod tests {
             top_p: None,
             stream: None,
             provider_options: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let options = responses_generate_options(&ProviderConfig::new("test", "", ""), &request);
@@ -1643,6 +1667,9 @@ mod tests {
             stream: None,
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         };
 
         let options = responses_generate_options(&ProviderConfig::new("openai", "", ""), &request);

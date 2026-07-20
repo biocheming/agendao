@@ -22,6 +22,55 @@ pub struct ChatRequest {
     pub provider_options: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip)]
     pub variant: Option<String>,
+    /// Typed reasoning effort resolved from per-model config or variant name.
+    /// Semantic-layer only: protocol adapters translate it in a later wave.
+    #[serde(skip)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Request-level timeout in seconds (per-model config override).
+    #[serde(skip)]
+    pub timeout_secs: Option<u64>,
+    /// Streaming stall detection: N seconds without a chunk means the stream is dead.
+    #[serde(skip)]
+    pub stream_stall_timeout_secs: Option<u64>,
+}
+
+/// Unified reasoning effort levels shared by config, variants, and protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        };
+        f.write_str(name)
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            other => Err(format!("unknown reasoning effort: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +442,9 @@ impl ChatRequest {
             stream: Some(true),
             provider_options: None,
             variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
         }
     }
 
@@ -486,5 +538,41 @@ mod tests {
             }
             other => panic!("expected parts content, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reasoning_effort_parses_known_levels_case_insensitively() {
+        assert_eq!("none".parse(), Ok(ReasoningEffort::None));
+        assert_eq!("minimal".parse(), Ok(ReasoningEffort::Minimal));
+        assert_eq!("low".parse(), Ok(ReasoningEffort::Low));
+        assert_eq!("Medium".parse(), Ok(ReasoningEffort::Medium));
+        assert_eq!(" HIGH ".parse(), Ok(ReasoningEffort::High));
+        assert!("max".parse::<ReasoningEffort>().is_err());
+        assert!("".parse::<ReasoningEffort>().is_err());
+    }
+
+    #[test]
+    fn reasoning_effort_display_roundtrips_through_fromstr() {
+        for effort in [
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ] {
+            assert_eq!(effort.to_string().parse(), Ok(effort));
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_value(ReasoningEffort::Medium).expect("serialize"),
+            json!("medium")
+        );
+        assert_eq!(
+            serde_json::from_value::<ReasoningEffort>(json!("high")).expect("deserialize"),
+            ReasoningEffort::High
+        );
     }
 }

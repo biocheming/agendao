@@ -20,6 +20,9 @@ pub mod mcp_list;
 pub mod recovery_list;
 pub mod task_list;
 pub mod model_edit;
+pub mod mcp_edit;
+pub mod plugin_edit;
+pub mod provider_edit;
 
 pub use confirm::ConfirmDialog;
 pub use help::HelpDialog;
@@ -39,3 +42,6 @@ pub use mcp_list::{McpListDialog, McpEntry, McpAction};
 pub use recovery_list::{RecoveryListDialog, RecoveryEntry, RecoveryAction};
 pub use task_list::{TaskListDialog, TaskEntry, TaskAction};
 pub use model_edit::{ModelEditDialog, ModelEditAction, ModelEditSubmission, ModelEditMode};
+pub use mcp_edit::{McpEditDialog, McpEditAction, McpEditSubmission, McpEditMode, McpTransport};
+pub use plugin_edit::{PluginEditDialog, PluginEditAction, PluginEditSubmission};
+pub use provider_edit::{ProviderEditDialog, ProviderEditAction};

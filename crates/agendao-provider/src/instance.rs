@@ -108,7 +108,20 @@ impl Provider for ProviderInstance {
             None
         };
 
-        let result = self.adapter.chat(&self.client, &self.config, request).await;
+        // Non-streaming requests get an optional per-request total timeout.
+        // Streaming requests deliberately never get one (a long stream would be
+        // killed mid-flight); use stream_stall_timeout_secs there instead.
+        let timeout_secs = request.timeout_secs;
+        let pending = self.adapter.chat(&self.client, &self.config, request);
+        let result = match timeout_secs {
+            Some(secs) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(secs), pending).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => Err(ProviderError::Timeout),
+                }
+            }
+            None => pending.await,
+        };
 
         if let Some(runtime) = &self.runtime {
             if runtime.is_preflight_enabled() {
@@ -139,10 +152,18 @@ impl Provider for ProviderInstance {
             None
         };
 
+        let stall_timeout_secs = request.stream_stall_timeout_secs;
         let result = self
             .adapter
             .chat_stream(&self.client, &self.config, request)
-            .await;
+            .await
+            .map(|stream| match stall_timeout_secs {
+                Some(secs) => crate::stream::with_stall_watchdog(
+                    stream,
+                    std::time::Duration::from_secs(secs),
+                ),
+                None => stream,
+            });
 
         if let Some(runtime) = &self.runtime {
             if runtime.is_preflight_enabled() {
@@ -156,5 +177,146 @@ impl Provider for ProviderInstance {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Choice, Message, StreamEvent};
+    use futures::StreamExt;
+
+    /// Adapter whose non-streaming chat hangs forever, to exercise the
+    /// per-request timeout wiring in `ProviderInstance::chat`.
+    struct HangingAdapter;
+
+    #[async_trait]
+    impl ProviderAdapter for HangingAdapter {
+        async fn chat(
+            &self,
+            _client: &Client,
+            _config: &ProviderConfig,
+            _request: ChatRequest,
+        ) -> Result<ChatResponse, ProviderError> {
+            futures::future::pending::<()>().await;
+            unreachable!("pending future never completes")
+        }
+
+        async fn chat_stream(
+            &self,
+            _client: &Client,
+            _config: &ProviderConfig,
+            _request: ChatRequest,
+        ) -> Result<StreamResult, ProviderError> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    /// Adapter whose stream yields one event, then goes idle forever.
+    struct IdleStreamAdapter;
+
+    #[async_trait]
+    impl ProviderAdapter for IdleStreamAdapter {
+        async fn chat(
+            &self,
+            _client: &Client,
+            _config: &ProviderConfig,
+            request: ChatRequest,
+        ) -> Result<ChatResponse, ProviderError> {
+            Ok(ChatResponse {
+                id: "stub".to_string(),
+                model: request.model,
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message::assistant("ok"),
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _client: &Client,
+            _config: &ProviderConfig,
+            _request: ChatRequest,
+        ) -> Result<StreamResult, ProviderError> {
+            let stream = futures::stream::once(async { Ok(StreamEvent::Start) })
+                .chain(futures::stream::pending());
+            Ok(Box::pin(stream))
+        }
+    }
+
+    fn instance_with(adapter: Arc<dyn ProviderAdapter>) -> ProviderInstance {
+        ProviderInstance::new(
+            "stub".to_string(),
+            "stub".to_string(),
+            ProviderConfig::new("stub", "http://localhost", "key"),
+            adapter,
+            HashMap::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn chat_without_timeout_secs_keeps_existing_behavior() {
+        let instance = instance_with(Arc::new(IdleStreamAdapter));
+        let response = instance
+            .chat(ChatRequest::new("m", vec![Message::user("hi")]))
+            .await
+            .expect("chat should succeed without a timeout configured");
+        assert_eq!(response.model, "m");
+    }
+
+    #[tokio::test]
+    async fn chat_timeout_secs_aborts_hanging_request() {
+        let instance = instance_with(Arc::new(HangingAdapter));
+        let mut request = ChatRequest::new("m", vec![Message::user("hi")]);
+        request.timeout_secs = Some(1);
+
+        let started = std::time::Instant::now();
+        let result = instance.chat(request).await;
+        assert!(
+            matches!(result, Err(ProviderError::Timeout)),
+            "hanging request must surface as ProviderError::Timeout"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "timeout should abort promptly"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_stream_stall_watchdog_terminates_idle_stream() {
+        let instance = instance_with(Arc::new(IdleStreamAdapter));
+        let mut request = ChatRequest::new("m", vec![Message::user("hi")]);
+        // Watchdog granularity is seconds; use 1s and an adapter that idles
+        // forever after the first event.
+        request.stream_stall_timeout_secs = Some(1);
+
+        let mut stream = instance
+            .chat_stream(request)
+            .await
+            .expect("stream should be created");
+        assert!(matches!(stream.next().await, Some(Ok(StreamEvent::Start))));
+        match stream.next().await {
+            Some(Err(ProviderError::StreamError(message))) => {
+                assert!(message.contains("stall timeout"));
+            }
+            other => panic!("expected stall StreamError, got: {other:?}"),
+        }
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_stream_without_stall_config_passes_events_through() {
+        let instance = instance_with(Arc::new(IdleStreamAdapter));
+        let request = ChatRequest::new("m", vec![Message::user("hi")]);
+
+        let mut stream = instance
+            .chat_stream(request)
+            .await
+            .expect("stream should be created");
+        assert!(matches!(stream.next().await, Some(Ok(StreamEvent::Start))));
+        // No watchdog configured: the stream simply pends; drop it here.
     }
 }

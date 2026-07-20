@@ -178,6 +178,33 @@ pub fn pipeline_to_stream_result(
     crate::bridge::bridge_streaming_events(pipeline_output)
 }
 
+/// Idle watchdog for streaming responses.
+///
+/// Wraps a stream and terminates it with a `StreamError` when no chunk/event
+/// arrives within `stall_timeout`. The timer resets on every received item, so
+/// only genuine stalls (not merely long streams) trip the watchdog.
+pub fn with_stall_watchdog(inner: StreamResult, stall_timeout: std::time::Duration) -> StreamResult {
+    Box::pin(stream::unfold(
+        (inner, false),
+        move |(mut inner, terminated)| async move {
+            if terminated {
+                return None;
+            }
+            match tokio::time::timeout(stall_timeout, inner.next()).await {
+                Ok(Some(item)) => Some((item, (inner, false))),
+                Ok(None) => None,
+                Err(_elapsed) => Some((
+                    Err(ProviderError::StreamError(format!(
+                        "stream stall timeout: no chunk/event received within {}s",
+                        stall_timeout.as_secs()
+                    ))),
+                    (inner, true),
+                )),
+            }
+        },
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OpenAISSEvent {
     #[serde(default)]
@@ -1086,5 +1113,81 @@ mod tests {
             end_count, 1,
             "existing ToolCallEnd should not be duplicated"
         );
+    }
+
+    /// A stream whose items arrive with the given per-item delays.
+    fn delayed_stream(delays: Vec<std::time::Duration>) -> StreamResult {
+        Box::pin(stream::unfold(
+            delays.into_iter(),
+            |mut delays| async move {
+                let delay = delays.next()?;
+                tokio::time::sleep(delay).await;
+                Some((
+                    Ok(StreamEvent::TextDelta("chunk".to_string())),
+                    delays,
+                ))
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn stall_watchdog_passes_through_events_within_timeout() {
+        let stream = delayed_stream(vec![
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+        ]);
+        let events =
+            collect_events(with_stall_watchdog(stream, std::time::Duration::from_secs(5))).await;
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .all(|event| matches!(event, StreamEvent::TextDelta(_))));
+    }
+
+    #[tokio::test]
+    async fn stall_watchdog_errors_and_terminates_after_idle_gap() {
+        // First chunk arrives quickly, then the stream goes idle far beyond
+        // the stall timeout.
+        let stream = delayed_stream(vec![
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(5),
+        ]);
+        let mut stream =
+            with_stall_watchdog(stream, std::time::Duration::from_millis(50));
+
+        let first = stream.next().await.expect("first chunk");
+        assert!(matches!(first, Ok(StreamEvent::TextDelta(_))));
+
+        let second = stream.next().await.expect("stall error item");
+        match second {
+            Err(ProviderError::StreamError(message)) => {
+                assert!(
+                    message.contains("stall timeout"),
+                    "error should mention stall timeout, got: {message}"
+                );
+            }
+            other => panic!("expected stall StreamError, got: {other:?}"),
+        }
+
+        // The stream is terminated after the stall error.
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stall_watchdog_idle_stream_errors_immediately_after_timeout() {
+        // A stream that never yields must produce the stall error, not hang.
+        let stream: StreamResult = Box::pin(futures::stream::pending());
+        let mut stream =
+            with_stall_watchdog(stream, std::time::Duration::from_millis(50));
+
+        match stream.next().await.expect("stall error item") {
+            Err(ProviderError::StreamError(message)) => {
+                assert!(message.contains("stall timeout"));
+            }
+            other => panic!("expected stall StreamError, got: {other:?}"),
+        }
+        assert!(stream.next().await.is_none());
     }
 }

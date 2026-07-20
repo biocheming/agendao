@@ -242,12 +242,15 @@ fn render_positioned_dialog(
                 .title(format!(" {} ", title))
                 .fg(border_color)
                 .child(
+                    // flex 内容 + 固定 footer：此前两个等权 child 均分高度,
+                    // 内容超半即被截尾(如 provider_edit 四字段丢最后一个)。
                     vstack().gap(1)
-                        .child(content)
-                        .child(
+                        .child_flex(content, 1.0)
+                        .child_sized(
                             Text::new(footer_hint)
                                 .fg(colors::FG_MUTED())
-                                .align(Alignment::Center)
+                                .align(Alignment::Center),
+                            1,
                         )
                 );
             revue::widget::positioned(dialog)
@@ -258,6 +261,22 @@ fn render_positioned_dialog(
                 .render(ctx);
         }
     }
+    // 实色不透字契约·第二道：positioned 内的 revue Text 以 `bg=None` 经
+    // `buffer.set` 整体替换 cell，会把 paint_modal_backdrop 预填的底色在
+    // 文字格上重新抹掉（与 `widget::bg_stack` 文档所述透字机理同源——
+    // model/provider 编辑弹窗「浮在内容上文字互相渗透」正是此因）。
+    // 渲染后再扫一遍对话框矩形，只给 bg 仍为 None 的 cell 补底色；
+    // 内容自带的 bg（如列表选中行高亮）不受影响。
+    for cy in (area.y + y)..(area.y + y + h) {
+        for cx in (area.x + fill_x)..(area.x + fill_x + fill_w) {
+            if let Some(cell) = ctx.buffer.get_mut(cx, cy) {
+                if cell.bg.is_none() {
+                    cell.bg = Some(fill_bg);
+                }
+            }
+        }
+    }
+
     // positioned 坐标相对 ctx.area 原点；鼠标命中用绝对屏幕坐标，此处换算后返回。
     revue::prelude::Rect::new(area.x + x, area.y + y, w, h)
 }
