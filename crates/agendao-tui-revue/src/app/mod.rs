@@ -371,6 +371,10 @@ pub(crate) struct AppHandler {
     /// Y-coordinate of the transcript area on screen (after header+divider).
     /// Used by mouse click handler to map click_y to transcript row.
     pub(crate) transcript_area_y: u16,
+    /// 内联 permission 块的屏幕命中矩形（render 后发布，与 sidebar_nav_hits
+    /// 同构）。None = 非 Session 路由或 dialog 不可见。keymap 左键点击命中
+    /// 资源区行范围时 toggle 折叠。
+    pub(crate) permission_hit: Option<crate::dialog::permission::PermissionBlockHit>,
 
     /// Absolute screen rect of the transcript scrollbar column,
     /// captured every frame by `RootView::render` and consumed by the
@@ -726,6 +730,7 @@ impl AppHandler {
             layout_dirty: false,
             transcript_viewport_h: 30, // overwritten on first render
             transcript_area_y: 3,      // after empty + header + divider
+            permission_hit: None,
             transcript_scrollbar_area: None,
             transcript_scrollbar_metrics: None,
             transcript_scrollbar_drag: None,
@@ -932,6 +937,10 @@ impl View for RootView {
         // Session header dir 点击命中区快照（None=非 Session 路由）。Session 分支算好后填，
         // publish 段（match 外）发布到 handler 供 keymap click 命中（与 sidebar_tab_y_snapshot 同构）。
         let mut dir_hit: Option<(u16, u16)> = None;
+        // 内联 permission 块命中矩形快照（None=非 Session 路由/不可见）。块位置随
+        // transcript 滚动而变，只能在渲染时（scroll_top 已知后）算绝对 y——与
+        // dir_hit 同模式，publish 段发布。
+        let mut perm_hit: Option<crate::dialog::permission::PermissionBlockHit> = None;
         match &route {
             Route::Home => {
                 // 极简首页：主区中间只放一个居中输入框（❯ 引导符由 PromptView 首行
@@ -1121,6 +1130,9 @@ impl View for RootView {
                         inner_w,
                         self.store.compact_density.get(),
                     );
+                    // 逐行记账 transcript 内容行数（unit 高 + 块间空行），
+                    // 供内联 permission 块算绝对屏幕 y（命中矩形发布）。
+                    let mut content_rows: u16 = 0;
                     for unit in units {
                         let is_cursor_unit = cursor_idx
                             .map(|c| c >= unit.base_index && c < unit.base_index + unit.block_span)
@@ -1172,19 +1184,28 @@ impl View for RootView {
                             .child_sized(inner, inner_w)
                             .child_sized(Text::new(" ".repeat(PAD as usize)), PAD);
                         transcript = transcript.child_sized(padded, unit.height);
+                        content_rows = content_rows.saturating_add(unit.height);
                         // 块间留白（1 行 BG_PRIMARY 空行）：井/气泡之间透气。不包
                         // BgStack——空行保持主背景。total_h 已同步 compact_density
                         // （transcript_total_height 同口径 gap）——紧凑模式跳过此空行。
                         if !self.store.compact_density.get() {
                             transcript = transcript.child_sized(Text::new(""), 1);
+                            content_rows = content_rows.saturating_add(1);
                         }
                     }
                     let status = h.active_session.run_status.get();
                     let mut extra_h: u16 = 0;
+                    // 内联 permission 块起始内容行（units 之后第一个追加块）。
+                    let perm_content_y = content_rows;
+                    let mut perm_blk: Option<(u16, Option<(u16, u16)>)> = None;
                     // 内联 permission/question（终端内联 CLI 风格）：
                     // transcript 流末尾顶格块，不浮不黑。
                     if h.permission_dialog.visible {
-                        if let Some(blk) = h.permission_dialog.render_inline() {
+                        if let Some(blk) = h.permission_dialog.render_inline(transcript_w) {
+                            perm_blk = Some((
+                                blk.height,
+                                h.permission_dialog.resource_row_range(transcript_w),
+                            ));
                             transcript = transcript.child_sized(blk.view, blk.height);
                             extra_h = extra_h.saturating_add(blk.height);
                         }
@@ -1216,6 +1237,19 @@ impl View for RootView {
                     // treats it as "rows back from bottom" so the latest
                     // message stays visible by default. Convert.
                     let scroll_top = max_offset.saturating_sub(user_offset);
+
+                    // 内联 permission 块命中矩形：绝对 y = transcript 区起始 y
+                    // （空行+header+divider=3，header 隐藏=1）+ 块起始内容行 -
+                    // scroll_top。permission 可见即 pinned 钉底，块总在视口内。
+                    if let Some((blk_h, res_rows)) = perm_blk {
+                        let transcript_y_abs: u16 = if show_header { 3 } else { 1 };
+                        let y = transcript_y_abs as i32 + perm_content_y as i32 - scroll_top as i32;
+                        perm_hit = Some(crate::dialog::permission::PermissionBlockHit {
+                            y_start: y.max(0) as u16,
+                            height: blk_h,
+                            resource_rows: res_rows,
+                        });
+                    }
 
                     let sv = crate::widget::scroll_view()
                         .with_content_height(total_h)
@@ -1475,6 +1509,8 @@ impl View for RootView {
         // Session tree 可点击导航命中发布（阴面记账 → keymap click 读）。无 sidebar
         // 或无会话时为空 Vec，点击不命中（水生木：会话树能回到"打开会话"输入动作）。
         self.handler.borrow_mut().sidebar_nav_hits = sidebar_nav_hits;
+        // 内联 permission 块命中矩形发布（None=非 Session 路由/不可见 → 点击不命中）。
+        self.handler.borrow_mut().permission_hit = perm_hit;
         // 终端总高：sidebar 底部用户栏 ⚙ 命中在 y = terminal_h - 1（sidebar 全高左列，
         // user_bar 是其最后一个 child_sized(...,1)）。同 sidebar_tab_y 模式发布。
         self.handler.borrow_mut().terminal_h = ctx.area.height;

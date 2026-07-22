@@ -38,6 +38,101 @@ impl PermissionType {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PermissionLifetime { Once, Turn, Session }
 
+/// 资源区折叠预览行数（与 transcript FoldState 的 FOLD_PREVIEW_LINES 同口径）。
+const RESOURCE_PREVIEW_LINES: usize = 3;
+/// 资源区缩进（"   "，3 列）。
+const RESOURCE_INDENT: usize = 3;
+
+/// 从 permission.upsert 的 input 提取可读资源（真实命令/路径/URL）。
+///
+/// 服务端 `permission_request_info`（agendao-server routes/permission.rs）
+/// 把 input 包成元信息封套 `{permission, scope_key, patterns: [...], metadata: {...}}`，
+/// 真实命令在 `metadata.command`（bash 工具 `with_metadata("command", ...)` 写入），
+/// 顶层不再有 command/path —— 旧的顶层直查因此永远落空。优先级：
+/// `metadata.command` → `metadata.path` → `metadata.url` → `patterns[0]`
+/// （注意复数 key、数组）→ 顶层 command/path/url/pattern/query/directory
+/// （兼容直传原始 input 的 server）→ 空串。
+pub(crate) fn extract_resource(input: &serde_json::Value) -> String {
+    let obj = match input.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    fn str_at(v: Option<&serde_json::Value>) -> Option<&str> {
+        v.and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+    }
+    if let Some(meta) = obj.get("metadata").and_then(|m| m.as_object()) {
+        for key in ["command", "path", "url"] {
+            if let Some(s) = str_at(meta.get(key)) {
+                return s.to_string();
+            }
+        }
+    }
+    if let Some(first) = obj
+        .get("patterns")
+        .and_then(|p| p.as_array())
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return first.to_string();
+    }
+    for key in ["command", "path", "url", "pattern", "query", "directory"] {
+        if let Some(s) = str_at(obj.get(key)) {
+            return s.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 按宽度把长资源文本（命令行）折成多行：先按空格词组贪心换行，
+/// 单个无空格超长 token 按宽度硬断，绝不溢出。
+pub(crate) fn wrap_resource_lines(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split('\n') {
+        let mut cur = String::new();
+        for word in raw.split(' ').filter(|w| !w.is_empty()) {
+            let chars: Vec<char> = word.chars().collect();
+            let mut rest: &[char] = &chars;
+            loop {
+                let cur_w = cur.chars().count();
+                let sep = if cur_w > 0 { 1 } else { 0 };
+                if cur_w + sep + rest.len() <= width {
+                    if sep == 1 {
+                        cur.push(' ');
+                    }
+                    cur.extend(rest.iter());
+                    break;
+                }
+                if cur_w == 0 {
+                    // 空行仍放不下 —— 超长 token 按宽度硬断。
+                    cur.extend(rest[..width].iter());
+                    out.push(std::mem::take(&mut cur));
+                    rest = &rest[width..];
+                } else {
+                    // 当前行放不下整个词 —— 换行后重试。
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+        }
+        out.push(std::mem::take(&mut cur));
+    }
+    out
+}
+
+/// 内联 permission 块的屏幕命中矩形（render 端发布，keymap 鼠标消费）。
+/// 内联块位置随 transcript 滚动而变，几何只能在渲染时确定——故由 render
+/// 计算绝对 y 并发布，鼠标命中直接消费，与 dir/sidebar 命中同模式。
+#[derive(Clone, Copy, Debug)]
+pub struct PermissionBlockHit {
+    /// 块首行的绝对屏幕 y。
+    pub y_start: u16,
+    /// 块总行数。
+    pub height: u16,
+    /// 资源区在块内的行范围（rel 起点, 行数），含折叠/展开 hint 行。
+    pub resource_rows: Option<(u16, u16)>,
+}
+
 #[derive(Clone)]
 pub struct PermissionRequest {
     pub id: String,
@@ -71,6 +166,9 @@ pub struct PermissionDialog {
     pub visible: bool,
     requests: Vec<PermissionRequest>,
     selected_lifetime: usize,
+    /// 资源区展开态按 head request id 记录 —— 队列头切换（allow/deny/新请求
+    /// 入队）后自动回到折叠，无需在每个 remove 点手动重置。
+    resource_expanded_for: Option<String>,
 }
 
 impl Default for PermissionDialog {
@@ -85,6 +183,7 @@ impl PermissionDialog {
             visible: false,
             requests: Vec::new(),
             selected_lifetime: 0,
+            resource_expanded_for: None,
         }
     }
 
@@ -113,6 +212,63 @@ impl PermissionDialog {
     }
 
     pub fn pending_count(&self) -> usize { self.requests.len() }
+
+    /// head request 的资源区当前是否展开。
+    fn resource_expanded(&self) -> bool {
+        self.requests.first().is_some_and(|r| {
+            self.resource_expanded_for.as_deref() == Some(r.id.as_str())
+        })
+    }
+
+    /// 展开/收起 head request 的资源区（Space 键与鼠标点击共用）。
+    pub fn toggle_resource_fold(&mut self) {
+        if let Some(head) = self.requests.first() {
+            let id = head.id.clone();
+            self.resource_expanded_for =
+                if self.resource_expanded_for.as_deref() == Some(id.as_str()) {
+                    None
+                } else {
+                    Some(id)
+                };
+        }
+    }
+
+    /// 资源区渲染计划（render 与鼠标命中同口径单点）：
+    /// `Some((待显示行, hint))`；资源为空或宽度内 ≤3 行时 hint 为 None。
+    fn resource_render_plan(&self, width: u16) -> Option<(Vec<String>, Option<String>)> {
+        let req = self.requests.first()?;
+        if req.resource.is_empty() {
+            return None;
+        }
+        let wrap_w = (width as usize).saturating_sub(RESOURCE_INDENT);
+        let lines = wrap_resource_lines(&req.resource, wrap_w);
+        let total = lines.len();
+        if total <= RESOURCE_PREVIEW_LINES {
+            return Some((lines, None));
+        }
+        if self.resource_expanded() {
+            Some((lines, Some("… Space/click to collapse".to_string())))
+        } else {
+            let shown: Vec<String> = lines.into_iter().take(RESOURCE_PREVIEW_LINES).collect();
+            Some((
+                shown,
+                Some(format!(
+                    "… +{} more lines · Space/click to expand",
+                    total - RESOURCE_PREVIEW_LINES
+                )),
+            ))
+        }
+    }
+
+    /// 资源区在块内的行范围（rel 起点, 行数），供 render 发布命中矩形。
+    /// 起点 = header(1) + message(0/1)。
+    pub(crate) fn resource_row_range(&self, width: u16) -> Option<(u16, u16)> {
+        let req = self.requests.first()?;
+        let (lines, hint) = self.resource_render_plan(width)?;
+        let start = 1 + u16::from(!req.message.is_empty());
+        let count = lines.len() as u16 + u16::from(hint.is_some());
+        Some((start, count))
+    }
 
     /// Handle a key. On allow/deny, return both the request id and the
     /// reply so the caller can route it back to the correct pending
@@ -179,6 +335,13 @@ impl PermissionDialog {
                 self.selected_lifetime = 0;
                 self.synth_enter()
             }
+            // Space 展开/收起资源区（长命令 3 行折叠 ↔ 全量）。dialog 无
+            // 行级 cursor（Enter 始终作用于 lifetime/deny 选项），故 Space
+            // 是唯一折叠键。
+            Key::Char(' ') => {
+                self.toggle_resource_fold();
+                None
+            }
             _ => None,
         }
     }
@@ -204,14 +367,15 @@ impl PermissionDialog {
     /// 块(`⏺ tool (label)` header + detail + ❯ allow/deny 选项),而非
     /// 居中浮层。
     ///
-    /// 返回 `None` 当不可见。鼠标 hit-test 故意省略:内联块的屏幕位置随
-    /// transcript 滚动而变,键盘是唯一可靠输入(土克水:编排可约束回流,
-    /// 但内联位置不固定时鼠标语义不可靠)。
+    /// 返回 `None` 当不可见。`width` = transcript 可用宽（内联块不走 PAD/
+    /// glyph 包装，顶格全宽）。资源区按宽度换行、折叠到 3 行预览 + hint
+    /// 行；鼠标命中不再省略——render 端发布 `PermissionBlockHit` 屏幕矩形，
+    /// keymap 点击资源区 toggle 折叠（位置随滚动变，几何只能渲染时确定）。
     ///
     /// 视觉风格(用户定调 2026-06-16):顶格 dot 式,像 ToolCall 块 ——
     /// permission 是流末尾的独立待决策块,语义中性,不暗示附属某 tool_call
     /// (agendao 的 permission 是 server 推的独立事件,无 tool_call 锚点)。
-    pub fn render_inline(&self) -> Option<BlockLayout> {
+    pub fn render_inline(&self, width: u16) -> Option<BlockLayout> {
         if !self.visible { return None; }
         let req = self.requests.first()?;
 
@@ -247,17 +411,22 @@ impl PermissionDialog {
         }
 
         // ── Resource: command / path / url (indent 3, muted italic) ──
-        if !req.resource.is_empty() {
-            let resource_preview = if req.resource.len() > 76 {
-                format!("{}…", &req.resource.chars().take(73).collect::<String>())
-            } else {
-                req.resource.clone()
-            };
-            content = content.child_sized(
-                Text::new(format!("   {}", resource_preview)).fg(colors::FG_MUTED()).italic(),
-                1,
-            );
-            height += 1;
+        // 按宽度换行；超 3 行折叠为预览 + "+N more lines" hint，Space/点击展开。
+        if let Some((lines, hint)) = self.resource_render_plan(width) {
+            for line in &lines {
+                content = content.child_sized(
+                    Text::new(format!("   {}", line)).fg(colors::FG_MUTED()).italic(),
+                    1,
+                );
+                height += 1;
+            }
+            if let Some(hint) = hint {
+                content = content.child_sized(
+                    Text::new(format!("   {}", hint)).fg(colors::FG_TRACE()),
+                    1,
+                );
+                height += 1;
+            }
         }
 
         // ── Risk tags (if any) ──
@@ -313,3 +482,172 @@ impl PermissionDialog {
 
 #[derive(Clone, Debug)]
 pub enum PermissionReply { AllowOnce, AllowTurn, AllowSession, Deny }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(resource: &str) -> PermissionRequest {
+        PermissionRequest {
+            id: "p1".into(),
+            tool: "bash".into(),
+            message: String::new(),
+            perm_type: PermissionType::Bash,
+            supported_lifetimes: vec![PermissionLifetime::Once],
+            permission_class: None,
+            scope_label: None,
+            risk_tags: vec![],
+            resource: resource.into(),
+        }
+    }
+
+    fn dialog_with(resource: &str) -> PermissionDialog {
+        let mut d = PermissionDialog::new();
+        d.add_request(req(resource));
+        d
+    }
+
+    // ── extract_resource 优先级链 ──
+
+    #[test]
+    fn extract_metadata_command_wins() {
+        let input = serde_json::json!({
+            "permission": "bash",
+            "patterns": ["cargo test"],
+            "metadata": {"command": "cargo test -p agendao -- --nocapture"}
+        });
+        assert_eq!(
+            extract_resource(&input),
+            "cargo test -p agendao -- --nocapture"
+        );
+    }
+
+    #[test]
+    fn extract_metadata_path_then_url() {
+        let input = serde_json::json!({"metadata": {"path": "/tmp/a.rs", "url": "http://x"}});
+        assert_eq!(extract_resource(&input), "/tmp/a.rs");
+        let input = serde_json::json!({"metadata": {"url": "http://x"}});
+        assert_eq!(extract_resource(&input), "http://x");
+    }
+
+    #[test]
+    fn extract_patterns_first_fallback() {
+        // 复数 key、数组（非字符串）。
+        let input = serde_json::json!({"patterns": ["src/**/*.rs", "docs/**"]});
+        assert_eq!(extract_resource(&input), "src/**/*.rs");
+    }
+
+    #[test]
+    fn extract_top_level_legacy() {
+        let input = serde_json::json!({"command": "ls -la"});
+        assert_eq!(extract_resource(&input), "ls -la");
+        let input = serde_json::json!({"directory": "/tmp"});
+        assert_eq!(extract_resource(&input), "/tmp");
+    }
+
+    #[test]
+    fn extract_empty_when_nothing_matches() {
+        assert_eq!(extract_resource(&serde_json::json!({})), "");
+        assert_eq!(
+            extract_resource(&serde_json::json!({"permission": "bash", "patterns": []})),
+            ""
+        );
+        assert_eq!(extract_resource(&serde_json::json!(null)), "");
+        // 空字符串不算命中。
+        assert_eq!(extract_resource(&serde_json::json!({"metadata": {"command": ""}})), "");
+    }
+
+    // ── wrap_resource_lines ──
+
+    #[test]
+    fn wrap_hard_breaks_single_long_token() {
+        let token = "a".repeat(25);
+        let lines = wrap_resource_lines(&token, 10);
+        assert_eq!(lines, vec!["a".repeat(10), "a".repeat(10), "a".repeat(5)]);
+        assert!(lines.iter().all(|l| l.chars().count() <= 10));
+    }
+
+    #[test]
+    fn wrap_word_wraps_and_preserves_short_lines() {
+        // 贪心词组换行 + 超长 token "agendao-tui-revue"(17) 按 15 硬断。
+        let lines = wrap_resource_lines("cargo test -p agendao-tui-revue --lib", 15);
+        assert_eq!(lines, vec!["cargo test -p", "agendao-tui-rev", "ue --lib"]);
+        assert!(wrap_resource_lines("short", 76) == vec!["short"]);
+    }
+
+    // ── 折叠 / 展开 ──
+
+    // width 12（wrap 宽 12-3=9）→ 折成 5 行：
+    // ["git", "commit -m", "abcdef", "ghijkl", "mnopqr"]
+    const LONG_CMD: &str = "git commit -m abcdef ghijkl mnopqr";
+
+    #[test]
+    fn collapsed_plan_shows_preview_plus_hint() {
+        let d = dialog_with(LONG_CMD);
+        let (lines, hint) = d.resource_render_plan(12).unwrap();
+        assert_eq!(lines.len(), RESOURCE_PREVIEW_LINES);
+        assert_eq!(hint.as_deref(), Some("… +2 more lines · Space/click to expand"));
+    }
+
+    #[test]
+    fn short_resource_has_no_hint() {
+        let d = dialog_with("ls -la");
+        let (lines, hint) = d.resource_render_plan(80).unwrap();
+        assert_eq!(lines, vec!["ls -la"]);
+        assert_eq!(hint, None);
+    }
+
+    #[test]
+    fn toggle_expands_and_collapses_back() {
+        let mut d = dialog_with(LONG_CMD);
+        let collapsed_h = d.render_inline(12).unwrap().height;
+        d.toggle_resource_fold();
+        let (lines, hint) = d.resource_render_plan(12).unwrap();
+        assert_eq!(lines.len(), 5, "展开态显示全部折行");
+        assert_eq!(hint.as_deref(), Some("… Space/click to collapse"));
+        let expanded_h = d.render_inline(12).unwrap().height;
+        assert!(expanded_h > collapsed_h, "展开态块更高");
+        d.toggle_resource_fold();
+        let (lines, _) = d.resource_render_plan(12).unwrap();
+        assert_eq!(lines.len(), RESOURCE_PREVIEW_LINES, "再点收回 3 行预览");
+        assert_eq!(d.render_inline(12).unwrap().height, collapsed_h);
+    }
+
+    #[test]
+    fn space_key_toggles_fold_without_reply() {
+        let mut d = dialog_with(LONG_CMD);
+        assert!(d.handle_key(&Key::Char(' ')).is_none());
+        assert!(d.resource_expanded());
+        assert!(d.handle_key(&Key::Char(' ')).is_none());
+        assert!(!d.resource_expanded());
+        // 折叠切换不消费队列。
+        assert_eq!(d.pending_count(), 1);
+    }
+
+    #[test]
+    fn expansion_resets_when_head_changes() {
+        let mut d = dialog_with(LONG_CMD);
+        d.toggle_resource_fold();
+        assert!(d.resource_expanded());
+        // deny head → 下一请求（或空队列）自动回折叠。
+        let _ = d.handle_key(&Key::Char('0'));
+        assert!(!d.resource_expanded());
+    }
+
+    #[test]
+    fn resource_row_range_offsets_past_header_and_message() {
+        let mut d = dialog_with(LONG_CMD);
+        // 无 message：起点 = header(1)。折叠 3 行 + hint 1 行 = 4。
+        assert_eq!(d.resource_row_range(12), Some((1, 4)));
+        // 有 message：起点后移 1。
+        d.requests[0].message = "Allow?".into();
+        assert_eq!(d.resource_row_range(12), Some((2, 4)));
+        // 展开：5 行 + hint 1 行 = 6。
+        d.toggle_resource_fold();
+        assert_eq!(d.resource_row_range(12), Some((2, 6)));
+        // 无资源：无命中区。
+        let d2 = dialog_with("");
+        assert_eq!(d2.resource_row_range(12), None);
+    }
+}

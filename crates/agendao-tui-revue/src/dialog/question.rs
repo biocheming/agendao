@@ -98,7 +98,8 @@ impl QuestionDialog {
 
     /// 内联成形:pending question 渲染成 transcript 流末尾顶格块
     /// (`? {text}` header + ❯ 单选 / ☑ 多选 选项)。无 modal 边框。
-    /// 鼠标 hit-test 省略(同 permission:内联位置随滚动变)。
+    /// 鼠标 hit-test 省略（permission 块已改为 render 发布命中矩形；
+    /// question 无折叠交互，仍只走键盘）。
     pub fn render_inline(&self) -> Option<BlockLayout> {
         if !self.visible { return None; }
         let req = self.requests.first()?;

@@ -697,16 +697,19 @@ impl AppHandler {
                                     _ => None,
                                 }).collect()
                             };
-                            // Extract resource from input JSON
-                            let resource = permission.input.as_object()
-                                .and_then(|obj| {
-                                    obj.get("command").or_else(|| obj.get("path"))
-                                        .or_else(|| obj.get("url")).or_else(|| obj.get("pattern"))
-                                        .or_else(|| obj.get("query")).or_else(|| obj.get("directory"))
-                                })
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            // Extract resource from input JSON. 服务端把 input
+                            // 包成元信息封套（真实命令在 metadata.command，兜底
+                            // patterns[0]）——提取链单点在 extract_resource。
+                            // 封套无命令细节（如 scope-only 授权）时退到授权目标
+                            // 摘要（"Command family: …"/scope label），保住可读性。
+                            let resource = {
+                                let r = crate::dialog::permission::extract_resource(&permission.input);
+                                if r.is_empty() {
+                                    permission.grant_target_summary.clone().unwrap_or_default()
+                                } else {
+                                    r
+                                }
+                            };
                             let req = PermissionRequest {
                                 id: permission.id.clone(),
                                 tool: permission.tool.clone(),
@@ -1201,17 +1204,62 @@ impl AppHandler {
                             // sidebar 含竖线列；sidebar 不显示时 sidebar_w=0，m.x>0 仍覆盖整宽
                             //（列 0 是 transcript 左气口，无 fold 命中，无害）。
                             let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+                            // ── 内联 permission 块命中（render 发布的 hit rect）──
+                            // 块在 transcript 流末尾、位置随滚动变，几何以 render 发布的
+                            // 绝对 y 为准（与 dir/sidebar 命中同模式）。命中资源区行范围
+                            // → toggle 折叠；块内其余行（header/选项/hint）消费不动作，
+                            // 避免落到 prompt focus。
+                            if m.x > sidebar_w {
+                                if let Some(hit) = self.permission_hit {
+                                    if m.y >= hit.y_start && m.y < hit.y_start.saturating_add(hit.height) {
+                                        if let Some((rs, rc)) = hit.resource_rows {
+                                            let rel = m.y - hit.y_start;
+                                            if rel >= rs && rel < rs.saturating_add(rc) {
+                                                self.permission_dialog.toggle_resource_fold();
+                                                self.layout_dirty = true;
+                                            }
+                                        }
+                                        return true;
+                                    }
+                                }
+                            }
                             if ty >= transcript_y && ty < transcript_y + transcript_h && m.x > sidebar_w {
                                 // Click is inside transcript area.
                                 // Compute which row in content space was clicked.
                                 let msgs = self.active_session.messages.get();
+                                // 宽度口径与 render 同源（原硬编码 80 与 inner_w 错位）。
+                                let transcript_w = self.terminal_w.saturating_sub(sidebar_w);
+                                let inner_w = transcript_w.saturating_sub(crate::app::PAD.saturating_mul(2));
+                                // extra_h 与 render 同口径：内联 permission/question/Sending
+                                // 块计入内容总高，且可见即 pinned 钉底（user_offset 强 0）——
+                                // 原口径漏算 extra_h，dialog 可见时行映射整体漂移。
+                                let mut extra_h: u16 = 0;
+                                if self.permission_dialog.visible {
+                                    if let Some(blk) = self.permission_dialog.render_inline(transcript_w) {
+                                        extra_h = extra_h.saturating_add(blk.height);
+                                    }
+                                }
+                                if self.question_dialog.visible {
+                                    if let Some(blk) = self.question_dialog.render_inline() {
+                                        extra_h = extra_h.saturating_add(blk.height);
+                                    }
+                                }
+                                if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
+                                    extra_h = extra_h.saturating_add(1);
+                                }
                                 // total_h 与渲染同口径（聚合）——原逐块 layout_block 算高
                                 // 与聚合渲染错位，是「连续结果区域点不准」的根因：
                                 // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
                                 // 屏幕位置对不上，点第 2 行命中第 5 块。
-                                let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), 80);
+                                let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w)
+                                    .saturating_add(extra_h);
                                 let max_offset = total_h.saturating_sub(transcript_h);
-                                let user_offset = self.active_session.scroll_offset.get().min(max_offset);
+                                let pinned = self.permission_dialog.visible || self.question_dialog.visible;
+                                let user_offset = if pinned {
+                                    0
+                                } else {
+                                    self.active_session.scroll_offset.get().min(max_offset)
+                                };
                                 let scroll_top = max_offset.saturating_sub(user_offset);
                                 let row_in_content = ty.saturating_sub(transcript_y) + scroll_top;
                                 // 视觉单元遍历（与渲染/total_h 同源）：unit.height 量高，
@@ -1220,7 +1268,8 @@ impl AppHandler {
                                 // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
                                 // row_owners 真实（否则点 ToolResult 子项错块），显式 None
                                 // 全量布局。
-                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, 80, self.store.compact_density.get());
+                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, inner_w, self.store.compact_density.get());
+                                let compact = self.store.compact_density.get();
                                 let mut acc: u16 = 0;
                                 let mut clicked_idx = None;
                                 for unit in &units {
@@ -1233,7 +1282,8 @@ impl AppHandler {
                                             .map(|offset| unit.base_index + offset);
                                         break;
                                     }
-                                    acc = block_end + 1; // +1 for gap between blocks
+                                    // 块间空行与 render 同口径：紧凑模式 0 间隔。
+                                    acc = block_end + if compact { 0 } else { 1 };
                                 }
                                 if let Some(idx) = clicked_idx {
                                     // 复用 cursor+toggle 闭环：组折叠时命中段首/ℹ/more 均
