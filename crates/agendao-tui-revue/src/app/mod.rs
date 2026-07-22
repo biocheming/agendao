@@ -341,6 +341,9 @@ pub(crate) struct AppHandler {
     pub(crate) panel: Panel,
     pub(crate) active_session: SessionStore,
     pub(crate) spinner_tick: u64,
+    /// 光标闪烁节拍：每个 Tick 单调递增（与运行态无关），`widget::blink::blink_visible`
+    /// 据此判相，驱动所有输入处块光标 600ms 量级闪烁。
+    pub(crate) blink_tick: u64,
     pub(crate) interrupt_pending: bool,
     /// 发 prompt 后置位；一轮结束（Idle）时由 Tick 分支消费一次——拉取服务端
     /// LLM 生成的 title 同步到 active_session.title，然后清除。闭合新建 session
@@ -542,7 +545,7 @@ fn build_session_info_strip(
 /// 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）的宽/x/垂直位置都从此
 /// 派生——唯一真相（土律），避免两处各自算居中/宽度而漂移。Home 的 y_top 与
 /// `home_center` 的 flex 3:2 分配逐行同源（revue `stack.rs` 用 `.round()`）。
-fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool) -> PromptGeom {
+fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool, prompt_input_rows: u16) -> PromptGeom {
     let sidebar = if sidebar_visible { SIDEBAR_WIDTH + 1 } else { 0 }; // +1 VLine
     let main_x = area.x + sidebar;
     let main_w = area.width.saturating_sub(sidebar);
@@ -552,17 +555,19 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool) -> PromptGe
             let content_h = area.height.saturating_sub(1);
             let w = HOME_INPUT_W.min(main_w);
             let x = main_x + main_w.saturating_sub(w) / 2;
-            // 下移：上 spacer flex 3、下 spacer flex 2；上 = round((content_h-2)*3/5)，
+            // 下移：上 spacer flex 3、下 spacer flex 2；上 = round((content_h-input_h)*3/5)，
             // 与 home_center 的 flex 分配同源（revue stack.rs 非 last flex 用 round）。
-            let upper = ((content_h.saturating_sub(2)) as f32 * 3.0 / 5.0).round() as u16;
+            let input_h = prompt_input_rows + 1; // 内容行 + 下边框(1)
+            let upper = ((content_h.saturating_sub(input_h)) as f32 * 3.0 / 5.0).round() as u16;
             PromptGeom { x, y_top: area.y + upper, w }
         }
         Route::Session { .. } => {
-            // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(3)，
-            // 输入区上沿 = height - 5（覆盖 hint 行,浮层锚定不遮输入区）。
+            // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(hint1+内容行+底线1)，
+            // 输入区上沿 = height - (prompt_bar_h + 2)（覆盖 hint 行,浮层锚定不遮输入区）。
+            let prompt_bar_h = prompt_input_rows + 2;
             PromptGeom {
                 x: main_x + PAD,
-                y_top: area.y + area.height.saturating_sub(5),
+                y_top: area.y + area.height.saturating_sub(prompt_bar_h + 2),
                 w: main_w.saturating_sub(PAD),
             }
         }
@@ -713,6 +718,7 @@ impl AppHandler {
             settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
             spinner_tick: 0,
+            blink_tick: 0,
             interrupt_pending: false,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
@@ -888,7 +894,15 @@ impl View for RootView {
         } else {
             attachments.len().min(3) as u16
         };
-        let transcript_viewport_h: u16 = ctx.area.height.saturating_sub(9 + attachment_h);
+        // 光标闪烁相（土律·单点：blink_tick 由 Tick 推进，blink_visible 判相）。
+        let cursor_blink_on = crate::widget::blink::blink_visible(h.blink_tick);
+        // 多行 prompt：内容自适应行数（封顶 MAX_VISIBLE_LINES，超出滚动条）。
+        // prompt_bar 高 = hint(1) + 内容行 + 底边框(1)。
+        let prompt_input_rows = h.prompt.visible_height();
+        let prompt_bar_h = prompt_input_rows + 2;
+        // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+ctx1+info1+status1=6）
+        // - prompt_bar(prompt_bar_h) - attachment_h。
+        let transcript_viewport_h: u16 = ctx.area.height.saturating_sub(6 + prompt_bar_h + attachment_h);
 
         // ── Content area ──
         let mut content_stack = vstack();
@@ -920,15 +934,13 @@ impl View for RootView {
         let mut dir_hit: Option<(u16, u16)> = None;
         match &route {
             Route::Home => {
-                // 极简首页：主区中间只放一个居中输入框（❯ 引导符 + Input 块光标 + 下边框），
-                // 不画倒角全框——边框权威归 Border（金律），Border::only_bottom() 只画底边。
-                let input_row = hstack().gap(1)
-                    .child_sized(Text::new("❯").fg(colors::E_TEAL()), 1)
-                    .child_flex(h.prompt.widget(), 1.0);
+                // 极简首页：主区中间只放一个居中输入框（❯ 引导符由 PromptView 首行
+                // 自绘 + 块光标 + 下边框），不画倒角全框——边框权威归 Border（金律），
+                // Border::only_bottom() 只画底边。多行自适应与 Session 同一权威。
                 let input_border = Border::only_bottom()
                     .fg(colors::BORDER())
                     .max_width(HOME_INPUT_W)
-                    .child(input_row);
+                    .child(h.prompt.view(cursor_blink_on));
                 // 水平居中（左右 flex 楔子）+ 垂直居中（上下 flex 楔子），不占满主区。
                 let centered = hstack().gap(0)
                     .child_flex(Text::new(""), 1.0)
@@ -936,7 +948,7 @@ impl View for RootView {
                     .child_flex(Text::new(""), 1.0);
                 let home_center = vstack().gap(0)
                     .child_flex(Text::new(""), 3.0)   // 上 spacer（3/5，给 SlashPopup 补全框让位）
-                    .child_sized(centered, 2)         // input 行(1) + 下边框(1)
+                    .child_sized(centered, prompt_input_rows + 1)  // 内容行 + 下边框(1)
                     .child_flex(Text::new(""), 2.0);  // 下 spacer（2/5）
                 content_stack = content_stack.child(home_center);
             }
@@ -1062,7 +1074,7 @@ impl View for RootView {
                     // scroll_offset; new messages auto-pin to the bottom
                     // ONLY when offset is 0, so reading old history
                     // doesn't get yanked back to the latest mid-read.
-                    let available = ctx.area.height.saturating_sub(9);
+                    let available = ctx.area.height.saturating_sub(6 + prompt_bar_h);
                     // total_h 与渲染/鼠标命中/cursor 滚动同口径（聚合），单点
                     // transcript_total_height——避免逐块高度与聚合渲染错位致命中/滚动失准。
                     let cursor_idx = h.active_session.transcript_cursor.get();
@@ -1239,6 +1251,7 @@ impl View for RootView {
                     &self.store,
                     ctx.area.height,
                     Some(&h.settings_edit),
+                    cursor_blink_on,
                 );
                 content_stack = content_stack.child_flex(settings, 1.0);
             }
@@ -1324,11 +1337,11 @@ impl View for RootView {
         } else {
             Border::only_bottom().fg(colors::BORDER())
         };
-        let input_widget = input_border.child(h.prompt.widget());
-        // hint: 1 row, only_bottom 输入框: 2 rows (content + 底线)。
+        let input_widget = input_border.child(h.prompt.view(cursor_blink_on));
+        // hint: 1 row, only_bottom 输入框: 内容行(自适应,封顶10) + 底线 1。
         let prompt_bar = vstack()
             .child_sized(hint_text, 1)
-            .child_sized(input_widget, 2);
+            .child_sized(input_widget, prompt_input_rows + 1);
 
         // ── 会话信息条（prompt 下方,status 上方）──
         // 上行/下行 token（session 累计）、cache、成本、context 使用进度条。
@@ -1421,7 +1434,7 @@ impl View for RootView {
                 .child_flex(content_stack, 1.0)
                 .child_sized(gutter(context_strip), 1)
                 .child_sized(gutter(attachment_strip), attachment_h)
-                .child_sized(gutter(prompt_bar), 3)   // hint (1) + only_bottom input (2)
+                .child_sized(gutter(prompt_bar), prompt_bar_h)   // hint(1) + 多行输入(自适应≤10) + 底线(1)
                 .child_sized(gutter(info_strip), 1)   // token + context 进度条
                 .child_sized(gutter(status_bar), 1),
             // Settings:仅 content_stack(SettingsScreen 全屏)+ 底部 status_bar;
@@ -1508,7 +1521,7 @@ impl View for RootView {
         // 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）共用同一输入框几何
         // ——prompt_geometry 唯一权威（土律）：宽=输入框宽、x 对齐输入框、贴输入框正上方。
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
-        let geom = prompt_geometry(&route, ctx.area, h.sidebar_visible);
+        let geom = prompt_geometry(&route, ctx.area, h.sidebar_visible, prompt_input_rows);
         let mut model_edit_rect: Option<revue::prelude::Rect> = None;
         let mut mcp_edit_rect: Option<revue::prelude::Rect> = None;
         let mut plugin_edit_rect: Option<revue::prelude::Rect> = None;
@@ -1547,10 +1560,10 @@ impl View for RootView {
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
-            Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx); }
-            Panel::McpEdit => { mcp_edit_rect = h.mcp_edit_dialog.render(ctx); }
-            Panel::PluginEdit => { plugin_edit_rect = h.plugin_edit_dialog.render(ctx); }
-            Panel::ProviderEdit => { provider_edit_rect = h.provider_edit_dialog.render(ctx); }
+            Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx, cursor_blink_on); }
+            Panel::McpEdit => { mcp_edit_rect = h.mcp_edit_dialog.render(ctx, cursor_blink_on); }
+            Panel::PluginEdit => { plugin_edit_rect = h.plugin_edit_dialog.render(ctx, cursor_blink_on); }
+            Panel::ProviderEdit => { provider_edit_rect = h.provider_edit_dialog.render(ctx, cursor_blink_on); }
             _ => {}
         }
         // 弹窗几何发布（render 后、借用于此处归还）——keymap 鼠标命中的唯一真相。

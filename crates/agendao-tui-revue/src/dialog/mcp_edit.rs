@@ -253,7 +253,7 @@ impl McpEditDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) -> Option<revue::prelude::Rect> {
+    pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;
         }
@@ -267,6 +267,7 @@ impl McpEditDialog {
             self.name_input.clone(),
             self.focus == McpEditField::Name,
             self.mode == McpEditMode::Edit, // Edit 时只读 hint
+            cursor_on,
         );
         let transport_field = field_choice(
             "Transport",
@@ -278,12 +279,14 @@ impl McpEditDialog {
             self.command_input.clone(),
             self.focus == McpEditField::Command,
             false,
+            cursor_on,
         );
         let url_field = field_input(
             "URL (remote transport)",
             self.url_input.clone(),
             self.focus == McpEditField::Url,
             false,
+            cursor_on,
         );
 
         let content = vstack()
@@ -325,6 +328,16 @@ impl McpEditDialog {
         McpEditField::Command,
         McpEditField::Url,
     ];
+
+    /// 鼠标点击定位光标到字段内字符位置（Transport 选择器无文本，忽略）。
+    pub(crate) fn set_cursor_at(&mut self, field: McpEditField, char_idx: usize) {
+        match field {
+            McpEditField::Name => self.name_input.set_cursor(char_idx),
+            McpEditField::Command => self.command_input.set_cursor(char_idx),
+            McpEditField::Url => self.url_input.set_cursor(char_idx),
+            McpEditField::Transport => {}
+        }
+    }
 }
 
 impl Default for McpEditDialog {
@@ -338,6 +351,7 @@ fn field_input(
     mut input: revue::widget::Input,
     focused: bool,
     readonly: bool,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let label_color = if readonly {
         colors::FG_MUTED()
@@ -353,7 +367,7 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly);
+    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {

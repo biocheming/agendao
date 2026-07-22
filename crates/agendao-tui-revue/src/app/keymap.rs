@@ -574,6 +574,10 @@ impl AppHandler {
     pub(crate) fn handle(&mut self, event: &Event) -> bool {
         match event {
             Event::Tick => {
+                // 光标闪烁节拍：相位翻转时强制重绘（blink_visible 半周期 600ms@50ms/tick）。
+                self.blink_tick = self.blink_tick.wrapping_add(1);
+                let blink_flipped = crate::widget::blink::blink_visible(self.blink_tick)
+                    != crate::widget::blink::blink_visible(self.blink_tick.wrapping_sub(1));
                 // Reset interrupt confirmation after 5s timeout
                 if self.interrupt_pending
                     && self.interrupt_time.elapsed().as_secs() > 5 {
@@ -807,7 +811,7 @@ impl AppHandler {
                     }
                 }
 
-                changed || matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) || self.interrupt_pending
+                changed || blink_flipped || matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) || self.interrupt_pending
             }
             Event::Key(key) => {
                 // Ctrl+B → toggle sidebar, Ctrl+P → command palette
@@ -824,6 +828,20 @@ impl AppHandler {
                         }
                         _ => {}
                     }
+                }
+                // Alt/Shift/Ctrl+Enter → prompt 换行（Enter 裸键保持发送）。
+                // Alt+Enter 是主通道：tmux/标准 xterm 下 S/C-Enter 常退化成
+                // 普通 Enter 或文本，无法独立送达；Alt+Enter 几乎处处以
+                // ESC+CR 可靠到达。S/C-Enter 保留为增强（能收到的终端照用）。
+                // 仅在 prompt 是活动输入时接管：panel 打开或 Settings 路由下
+                // Enter 变体仍归各自 panel/表单路由（不抢弹窗语义）。
+                if key.key == Key::Enter
+                    && (key.alt || key.shift || key.ctrl)
+                    && self.panel == Panel::None
+                    && !matches!(self.store.route.get(), Route::Settings)
+                {
+                    self.prompt.insert_newline();
+                    return true;
                 }
                 self.handle_key(&key.key)
             }
@@ -930,6 +948,12 @@ impl AppHandler {
                                 if in_x && m.y > rect.y && rel % 4 != 0 {
                                     if let Some(field) = self.model_edit_dialog.field_at_block_index(idx) {
                                         self.model_edit_dialog.set_focus(field);
+                                        // rel%4==2 = 输入行（label0/上框1/输入2/下框3）：
+                                        // 光标定位到点击字符（文本起点 = 外框1+字段框1 = rect.x+2）。
+                                        if rel % 4 == 2 && m.x >= rect.x + 2 {
+                                            self.model_edit_dialog
+                                                .set_cursor_at(field, (m.x - rect.x - 2) as usize);
+                                        }
                                         self.layout_dirty = true;
                                     }
                                 }
@@ -943,7 +967,12 @@ impl AppHandler {
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
                                 if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::McpEditDialog::FIELDS.len() {
-                                    self.mcp_edit_dialog.set_focus(crate::dialog::McpEditDialog::FIELDS[idx]);
+                                    let field = crate::dialog::McpEditDialog::FIELDS[idx];
+                                    self.mcp_edit_dialog.set_focus(field);
+                                    if rel % 4 == 2 && m.x >= rect.x + 2 {
+                                        self.mcp_edit_dialog
+                                            .set_cursor_at(field, (m.x - rect.x - 2) as usize);
+                                    }
                                     self.layout_dirty = true;
                                 }
                                 return true;
@@ -956,7 +985,12 @@ impl AppHandler {
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
                                 if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::PluginEditDialog::FIELDS.len() {
-                                    self.plugin_edit_dialog.set_focus(crate::dialog::PluginEditDialog::FIELDS[idx]);
+                                    let field = crate::dialog::PluginEditDialog::FIELDS[idx];
+                                    self.plugin_edit_dialog.set_focus(field);
+                                    if rel % 4 == 2 && m.x >= rect.x + 2 {
+                                        self.plugin_edit_dialog
+                                            .set_cursor_at(field, (m.x - rect.x - 2) as usize);
+                                    }
                                     self.layout_dirty = true;
                                 }
                                 return true;
@@ -969,7 +1003,12 @@ impl AppHandler {
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
                                 if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::ProviderEditDialog::FIELDS.len() {
-                                    self.provider_edit_dialog.set_focus(crate::dialog::ProviderEditDialog::FIELDS[idx]);
+                                    let field = crate::dialog::ProviderEditDialog::FIELDS[idx];
+                                    self.provider_edit_dialog.set_focus(field);
+                                    if rel % 4 == 2 && m.x >= rect.x + 2 {
+                                        self.provider_edit_dialog
+                                            .set_cursor_at(field, (m.x - rect.x - 2) as usize);
+                                    }
                                     self.layout_dirty = true;
                                 }
                                 return true;
@@ -1294,8 +1333,8 @@ impl AppHandler {
         // ── Transcript scrolling + cursor (PageUp/PageDown, Tab, Space) ──
         //
         // Dispatched BEFORE the prompt input so Space/Tab don't get
-        // swallowed by PromptInput's catch-all `_ => self.input.handle_key(key)`
-        // arm (prompt_input.rs:145). Without this re-order, Space is
+        // swallowed by PromptInput's catch-all `_ => self.editor.handle_key(key)`
+        // arm (prompt_input.rs `handle_key`). Without this re-order, Space is
         // inserted into the input as a literal space character and the
         // fold toggle never fires — which is why the previous test
         // session showed Tab moving the cursor bar to a thinking block
@@ -1895,6 +1934,20 @@ impl AppHandler {
                                 (self.settings_edit.protocol_idx + 1) % n.max(1);
                         } else {
                             self.settings_edit.focus = f;
+                            // value 行（块内第 2 行）点击文本字段 → 光标定位到
+                            // 点击字符（文本起点 = x3 + 2 缩进，与 field_block_editing 同源）。
+                            if rel % geo::EDIT_FIELD_BLOCK_STRIDE == 1 && m.x >= x3 + 2 {
+                                let char_idx = (m.x - x3 - 2) as usize;
+                                match f {
+                                    SettingsEditField::Name =>
+                                        self.settings_edit.name_input.set_cursor(char_idx),
+                                    SettingsEditField::BaseUrl =>
+                                        self.settings_edit.base_url_input.set_cursor(char_idx),
+                                    SettingsEditField::ApiKey =>
+                                        self.settings_edit.api_key_input.set_cursor(char_idx),
+                                    SettingsEditField::Protocol => {}
+                                }
+                            }
                         }
                         self.layout_dirty = true;
                         return true;
@@ -2827,6 +2880,30 @@ mod tests {
         let ev = Event::Mouse(MouseEvent::new(30, 23, MouseEventKind::Down(MouseButton::Left)));
         assert!(h.handle(&ev), "gear click should be consumed");
         assert!(matches!(h.store.route.get(), Route::Settings));
+    }
+
+    /// Alt+Enter → prompt 换行（tmux/xterm 主通道，ESC+CR 可靠送达）；
+    /// Shift/Ctrl+Enter 同样换行；裸 Enter 保持发送（不插换行）。
+    #[test]
+    fn alt_shift_ctrl_enter_insert_newline_bare_enter_sends() {
+        use revue::event::KeyEvent;
+        let mut h = mk_handler();
+        for c in "hi".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        // Alt+Enter → 换行
+        assert!(h.handle(&Event::Key(KeyEvent::alt(Key::Enter))));
+        assert_eq!(h.prompt.text(), "hi\n", "Alt+Enter 必须插入换行而非发送");
+        // Shift+Enter → 换行
+        let shift_enter = KeyEvent { key: Key::Enter, ctrl: false, alt: false, shift: true };
+        assert!(h.handle(&Event::Key(shift_enter)));
+        assert_eq!(h.prompt.text(), "hi\n\n");
+        // Ctrl+Enter → 换行
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Enter))));
+        assert_eq!(h.prompt.text(), "hi\n\n\n");
+        // 裸 Enter → 发送（echo 模式无 api，prompt 清空即提交语义发生）
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.prompt.text(), "", "裸 Enter 应提交并清空输入框");
     }
 
     /// Settings 分类栏点击：分类行 y=3+i、x ∈ [x_off, x_off+22)（sidebar 展开 x_off=33）。

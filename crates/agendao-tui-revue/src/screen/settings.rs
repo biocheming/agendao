@@ -56,6 +56,7 @@ impl SettingsScreen {
         store: &AppStore,
         pane_height: u16,
         edit_state: Option<&SettingsEditState>,
+        cursor_on: bool,
     ) -> revue::widget::Stack {
         let category = store.settings_category.get();
         let focus = store.settings_focus_pane.get();
@@ -68,7 +69,7 @@ impl SettingsScreen {
         //   - 其余占位分类:两栏,body = "coming soon"(诚实标注,土律·第十条)
         match category {
             SettingsCategory::ModelSettings => {
-                let body = build_model_settings_body(store, pane_height, edit_state, focus);
+                let body = build_model_settings_body(store, pane_height, edit_state, focus, cursor_on);
                 hstack().gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
@@ -137,6 +138,7 @@ fn build_model_settings_body(
     pane_height: u16,
     edit_state: Option<&SettingsEditState>,
     focus: SettingsFocusPane,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let providers = store.providers.get();
     let connected = store.providers_connected.get();
@@ -171,6 +173,7 @@ fn build_model_settings_body(
         focus == SettingsFocusPane::Details || editing_active,
         selected_model.as_deref(),
         edit_state,
+        cursor_on,
     );
 
     hstack().gap(0)
@@ -1541,6 +1544,7 @@ fn build_details_pane(
     focused: bool,
     selected_model: Option<&str>,
     edit_state: Option<&SettingsEditState>,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
     let editing_active = edit_state.is_some_and(|s| s.active);
@@ -1605,6 +1609,7 @@ fn build_details_pane(
             st.name_input.clone(),
             "",
             focused_field,
+            cursor_on,
         ))
     } else if editing_active {
         let st = edit_state.expect("editing_active");
@@ -1614,6 +1619,7 @@ fn build_details_pane(
             st.name_input.clone(),
             "",
             focused_field,
+            cursor_on,
         ))
     } else {
         None
@@ -1623,7 +1629,7 @@ fn build_details_pane(
     let base_field = if editing_active {
         let st = edit_state.expect("editing_active");
         let focused_field = st.focus == SettingsEditField::BaseUrl;
-        field_block_editing("Base URL", st.base_url_input.clone(), "", focused_field)
+        field_block_editing("Base URL", st.base_url_input.clone(), "", focused_field, cursor_on)
     } else {
         let p = provider_opt.expect("non-editing => provider_opt Some");
         let base_value = p
@@ -1661,7 +1667,7 @@ fn build_details_pane(
     let api_key_field = if editing_active {
         let st = edit_state.expect("editing_active");
         let focused_field = st.focus == SettingsEditField::ApiKey;
-        field_block_editing("API key", st.api_key_input.clone(), "", focused_field)
+        field_block_editing("API key", st.api_key_input.clone(), "", focused_field, cursor_on)
     } else {
         let api_key_hint = if focused { "e: Edit" } else { "" };
         field_block(
@@ -1786,6 +1792,7 @@ fn field_block_editing(
     input: Input,
     hint: &str,
     focused: bool,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let label_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
     let border_color = if focused { colors::E_AMBER() } else { colors::BORDER() };
@@ -1808,6 +1815,7 @@ fn field_block_editing(
     // SettingsEditState 保留原 Input 等下一次 handle_key 修改 buffer/cursor。
     let input_view = input
         .focused(focused)
+        .cursor_visible(cursor_on)
         .fg(colors::FG_PRIMARY());
     let bordered = Border::only_bottom()
         .fg(border_color)
@@ -1939,7 +1947,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         // 标题行应能命中(顶呼吸 1 行 + 标题在 y=1):"⚙ Preferences" 第一个非空字符。
         let cell = buf.get(2, 1).unwrap();
@@ -1963,7 +1971,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let any_content = (0..120).any(|x| buf.get(x, 1).map(|c| c.symbol != ' ').unwrap_or(false));
         assert!(any_content, "expected at least some text on title row");
@@ -1990,7 +1998,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2011,7 +2019,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2031,7 +2039,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2066,7 +2074,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2104,7 +2112,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2142,7 +2150,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2165,7 +2173,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2199,7 +2207,7 @@ mod tests {
         let mut buf = Buffer::new(120, 12);
         let area = Rect::new(0, 0, 120, 12);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 12, None);
+        let stack = SettingsScreen::build(&store, 12, None, true);
         stack.render(&mut ctx);
 
         // 收 6 行内容(从 y=3 起是数据行起点:顶呼吸 1 + 标题 1 + blank 1)。
@@ -2249,7 +2257,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))
@@ -2298,7 +2306,7 @@ mod tests {
         let mut buf = Buffer::new(120, 40);
         let area = Rect::new(0, 0, 120, 40);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let stack = SettingsScreen::build(&store, 40, None);
+        let stack = SettingsScreen::build(&store, 40, None, true);
         stack.render(&mut ctx);
         let merged: String = (0..40)
             .map(|y| collect_row(&buf, y, 120))

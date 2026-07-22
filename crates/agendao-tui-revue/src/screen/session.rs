@@ -644,7 +644,8 @@ pub(crate) fn layout_block_ctx(
         // ── Assistant Message ──
         // 终端原生风格：● 圆点（text 色）+ markdown，无 chip 标签。
         // RevueMarkdown 构造一次，height 与 view 共享。
-        TranscriptBlock::AssistantMsg { content, .. } => {
+        TranscriptBlock::AssistantMsg { content, fold, .. } => {
+            use crate::store::types::FoldState;
             // 符号清理（P1）：去 ● 前缀。角色锚点已由 app 层左竖线（紫）承担，
             // 无需块首再叠一个角色点（● 是纯角色冗余，别无折叠/状态/续接功能）。
             // markdown 直接顶格成形——呼应方案1（Carbon Obsidian）「AssistantMsg
@@ -657,10 +658,43 @@ pub(crate) fn layout_block_ctx(
                     view: vstack().child(Text::new("…").fg(colors::FG_MUTED())),
                 }
             } else {
-                let mut md = crate::markdown::RevueMarkdown::new();
-                md.set_content(content, text_width);
-                let lines = md.line_count().max(1);
-                BlockLayout { height: lines, view: md.as_stack() }
+                let total = content.lines().count();
+                match fold {
+                    // 全折：单行摘要（长回答默认 Truncated，此为第三态）。
+                    FoldState::Folded => BlockLayout {
+                        height: 1,
+                        view: vstack().child(
+                            Text::new(format!("answer · {} lines", total))
+                                .fg(colors::FG_MUTED()).italic(),
+                        ),
+                    },
+                    // 截断：前 N 行 markdown 预览 + "+M more lines" hint（点击/Space 展开）。
+                    // 不用 truncate_lines——它自带 "..." 后缀行，会与下方 hint 重复。
+                    FoldState::Truncated if total > FOLD_PREVIEW_LINES => {
+                        let preview = content
+                            .lines()
+                            .take(FOLD_PREVIEW_LINES)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let mut md = crate::markdown::RevueMarkdown::new();
+                        md.set_content(&preview, text_width);
+                        let lines = md.line_count().max(1);
+                        let view = vstack().gap(0)
+                            .child_sized(md.as_stack(), lines)
+                            .child_sized(
+                                Text::new(format!("  … +{} more lines", total - FOLD_PREVIEW_LINES))
+                                    .fg(colors::FG_MUTED()).italic(),
+                                1,
+                            );
+                        BlockLayout { height: lines + 1, view }
+                    }
+                    FoldState::Truncated | FoldState::Expanded => {
+                        let mut md = crate::markdown::RevueMarkdown::new();
+                        md.set_content(content, text_width);
+                        let lines = md.line_count().max(1);
+                        BlockLayout { height: lines, view: md.as_stack() }
+                    }
+                }
             }
         }
 
@@ -1127,15 +1161,42 @@ mod layout_tests {
 
     #[test]
     fn assistant_msg_empty_is_one_row() {
-        let b = TranscriptBlock::AssistantMsg { id: "a".into(), content: String::new() };
+        let b = TranscriptBlock::AssistantMsg { id: "a".into(), content: String::new(), fold: FoldState::Expanded };
         // ● 与 … 同行（hstack，单行）；修复旧版 ● 占 3 行的 height↔view 漂移。
         assert_eq!(blk(b).height, 1);
     }
 
     #[test]
     fn assistant_msg_with_content_at_least_two_rows() {
-        let b = TranscriptBlock::AssistantMsg { id: "a".into(), content: "# hi\nbody".into() };
+        let b = TranscriptBlock::AssistantMsg { id: "a".into(), content: "# hi\nbody".into(), fold: FoldState::Expanded };
         assert!(blk(b).height >= 2);
+    }
+
+    #[test]
+    fn assistant_msg_truncated_previews_three_lines_plus_hint() {
+        // 长回答默认 Truncated：3 行预览（markdown 行数）+ 1 行 "+M more lines" hint。
+        // 与「同预览内容 Expanded」对比，不钉死 markdown 内部行数口径。
+        let truncated = blk(TranscriptBlock::AssistantMsg {
+            id: "a".into(),
+            content: "l1\nl2\nl3\nl4\nl5".into(),
+            fold: FoldState::Truncated,
+        });
+        let preview_only = blk(TranscriptBlock::AssistantMsg {
+            id: "b".into(),
+            content: "l1\nl2\nl3".into(),
+            fold: FoldState::Expanded,
+        });
+        assert_eq!(truncated.height, preview_only.height + 1);
+    }
+
+    #[test]
+    fn assistant_msg_folded_is_one_row() {
+        let b = TranscriptBlock::AssistantMsg {
+            id: "a".into(),
+            content: "l1\nl2\nl3\nl4\nl5".into(),
+            fold: FoldState::Folded,
+        };
+        assert_eq!(blk(b).height, 1);
     }
 
     #[test]
@@ -1194,6 +1255,7 @@ mod layout_tests {
             v.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{}", turn),
                 content: format!("# header turn {}\nbody line 1\nbody line 2", turn),
+                fold: FoldState::Expanded,
             });
             v.push(TranscriptBlock::ToolCall {
                 id: format!("c{}_1", turn),
@@ -1279,6 +1341,7 @@ mod layout_tests {
             msgs.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{i}"),
                 content: format!("answer {i}"),
+                fold: FoldState::Expanded,
             });
         }
         let text_width: u16 = 100;

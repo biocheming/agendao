@@ -366,7 +366,7 @@ impl ModelEditDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) -> Option<revue::prelude::Rect> {
+    pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;
         }
@@ -385,21 +385,24 @@ impl ModelEditDialog {
                     self.id_input.clone(),
                     focused,
                     self.mode == ModelEditMode::Edit, // Edit 时 readonly hint
+                    cursor_on,
                 ),
                 ModelEditField::Name => {
-                    field_input("Display Name", self.name_input.clone(), focused, false)
+                    field_input("Display Name", self.name_input.clone(), focused, false, cursor_on)
                 }
                 ModelEditField::ContextWindow => field_input(
                     "Context Window (tokens)",
                     self.context_input.clone(),
                     focused,
                     false,
+                    cursor_on,
                 ),
                 ModelEditField::MaxOutputTokens => field_input(
                     "Max Output Tokens (optional)",
                     self.max_output_input.clone(),
                     focused,
                     false,
+                    cursor_on,
                 ),
                 ModelEditField::ReasoningEffort => field_choice(
                     "Reasoning effort",
@@ -411,12 +414,14 @@ impl ModelEditDialog {
                     self.timeout_input.clone(),
                     focused,
                     false,
+                    cursor_on,
                 ),
                 ModelEditField::StreamStallSecs => field_input(
                     "Stream stall timeout (secs, optional)",
                     self.stall_input.clone(),
                     focused,
                     false,
+                    cursor_on,
                 ),
             };
             content = content.child_sized(block, 4);
@@ -453,6 +458,19 @@ impl ModelEditDialog {
     pub(crate) fn field_at_block_index(&self, idx: usize) -> Option<ModelEditField> {
         visible_fields(self.reasoning_visible).get(idx).copied()
     }
+
+    /// 鼠标点击定位光标到字段内字符位置（choice 字段无文本，忽略）。
+    pub(crate) fn set_cursor_at(&mut self, field: ModelEditField, char_idx: usize) {
+        match field {
+            ModelEditField::Id => self.id_input.set_cursor(char_idx),
+            ModelEditField::Name => self.name_input.set_cursor(char_idx),
+            ModelEditField::ContextWindow => self.context_input.set_cursor(char_idx),
+            ModelEditField::MaxOutputTokens => self.max_output_input.set_cursor(char_idx),
+            ModelEditField::TimeoutSecs => self.timeout_input.set_cursor(char_idx),
+            ModelEditField::StreamStallSecs => self.stall_input.set_cursor(char_idx),
+            ModelEditField::ReasoningEffort => {}
+        }
+    }
 }
 
 impl Default for ModelEditDialog {
@@ -475,6 +493,7 @@ fn field_input(
     mut input: revue::widget::Input,
     focused: bool,
     readonly: bool,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let label_color = if readonly {
         colors::FG_MUTED()
@@ -490,7 +509,7 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly);
+    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {

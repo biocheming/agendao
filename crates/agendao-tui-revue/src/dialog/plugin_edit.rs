@@ -119,7 +119,7 @@ impl PluginEditDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) -> Option<revue::prelude::Rect> {
+    pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;
         }
@@ -127,11 +127,13 @@ impl PluginEditDialog {
             "Name (config key)",
             self.name_input.clone(),
             self.focus == PluginEditField::Name,
+            cursor_on,
         );
         let path_field = field_input(
             "Path (file plugin entry .ts/.js/.mjs)",
             self.path_input.clone(),
             self.focus == PluginEditField::Path,
+            cursor_on,
         );
         let content = vstack()
             .gap(0)
@@ -160,6 +162,14 @@ impl PluginEditDialog {
     /// 全部字段（渲染顺序）：鼠标按行块反查字段用。
     pub(crate) const FIELDS: [PluginEditField; 2] =
         [PluginEditField::Name, PluginEditField::Path];
+
+    /// 鼠标点击定位光标到字段内字符位置。
+    pub(crate) fn set_cursor_at(&mut self, field: PluginEditField, char_idx: usize) {
+        match field {
+            PluginEditField::Name => self.name_input.set_cursor(char_idx),
+            PluginEditField::Path => self.path_input.set_cursor(char_idx),
+        }
+    }
 }
 
 impl Default for PluginEditDialog {
@@ -172,6 +182,7 @@ fn field_input(
     label: &str,
     mut input: revue::widget::Input,
     focused: bool,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let label_color = if focused {
         colors::E_AMBER()
@@ -183,7 +194,7 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused);
+    input = input.focused(focused).cursor_visible(cursor_on);
     vstack()
         .gap(0)
         .child_sized(Text::new(format!(" {}", label)).fg(label_color), 1)

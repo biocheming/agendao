@@ -131,11 +131,11 @@ impl SessionStore {
     pub fn push_assistant_delta(&self, block_id: &str, text: &str) {
         self.messages.update(|msgs| {
             match msgs.last_mut() {
-                Some(TranscriptBlock::AssistantMsg { id, content }) if id == block_id => {
+                Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
                     content.push_str(text);
                 }
                 _ => msgs.push(TranscriptBlock::AssistantMsg {
-                    id: block_id.into(), content: text.into(),
+                    id: block_id.into(), content: text.into(), fold: FoldState::Truncated,
                 }),
             }
         });
@@ -179,7 +179,7 @@ impl SessionStore {
         let new_segment = self.take_stream_segment("m", block_id);
         self.messages.update(|msgs| {
             match msgs.last_mut() {
-                Some(TranscriptBlock::AssistantMsg { id, content }) if id == block_id => {
+                Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
                     if new_segment {
                         content.push_str(text);
                     } else {
@@ -187,7 +187,7 @@ impl SessionStore {
                     }
                 }
                 _ => msgs.push(TranscriptBlock::AssistantMsg {
-                    id: block_id.into(), content: text.into(),
+                    id: block_id.into(), content: text.into(), fold: FoldState::Truncated,
                 }),
             }
         });
@@ -341,7 +341,8 @@ impl SessionStore {
             TranscriptBlock::UserPrompt { fold, .. }
             | TranscriptBlock::Thinking { fold, .. }
             | TranscriptBlock::ToolResult { fold, .. }
-            | TranscriptBlock::TodoList { fold, .. },
+            | TranscriptBlock::TodoList { fold, .. }
+            | TranscriptBlock::AssistantMsg { fold, .. },
         ) = new_msgs.get_mut(block_idx)
         {
             *fold = fold.next();
@@ -447,10 +448,9 @@ impl SessionStore {
     // cursor row stays in view (mirroring how vim handles long files).
 
     /// Move cursor to the previous foldable block, wrapping at the top.
-    /// "Foldable" today means UserPrompt / Thinking / ToolResult — the
-    /// only blocks whose `toggle_fold` actually flips state. Cursor
-    /// skips assistant text and tool-call rows since fold is a no-op
-    /// for those.
+    /// "Foldable" today means UserPrompt / Thinking / ToolResult /
+    /// AssistantMsg — the blocks whose `toggle_fold` actually flips
+    /// state. Cursor skips tool-call rows since fold is a no-op there.
     pub fn cursor_prev_foldable(&self) {
         let msgs = self.messages.get();
         let mut idx = self.transcript_cursor.get().unwrap_or(msgs.len());
@@ -486,6 +486,7 @@ impl SessionStore {
             TranscriptBlock::UserPrompt { .. }
             | TranscriptBlock::Thinking { .. }
             | TranscriptBlock::ToolResult { .. }
+            | TranscriptBlock::AssistantMsg { .. }
         )
     }
 
@@ -953,6 +954,28 @@ mod tests {
         s.toggle_fold(0);
         match &s.messages.get()[0] {
             TranscriptBlock::UserPrompt { fold, .. } => assert_eq!(*fold, FoldState::Truncated),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn toggle_fold_assistant_msg_cycles_and_is_foldable() {
+        let s = SessionStore::new();
+        s.push_assistant_delta("a1", "l1\nl2\nl3\nl4\nl5");
+        // 长回答默认 Truncated（3 行预览）；toggle → Expanded → Folded → Truncated。
+        match &s.messages.get()[0] {
+            TranscriptBlock::AssistantMsg { fold, .. } => assert_eq!(*fold, FoldState::Truncated),
+            _ => panic!(),
+        }
+        assert!(SessionStore::is_foldable(&s.messages.get()[0]));
+        s.toggle_fold(0);
+        match &s.messages.get()[0] {
+            TranscriptBlock::AssistantMsg { fold, .. } => assert_eq!(*fold, FoldState::Expanded),
+            _ => panic!(),
+        }
+        s.toggle_fold(0);
+        match &s.messages.get()[0] {
+            TranscriptBlock::AssistantMsg { fold, .. } => assert_eq!(*fold, FoldState::Folded),
             _ => panic!(),
         }
     }

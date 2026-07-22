@@ -239,7 +239,7 @@ impl ProviderEditDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext) -> Option<revue::prelude::Rect> {
+    pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;
         }
@@ -253,6 +253,7 @@ impl ProviderEditDialog {
             self.name_input.clone(),
             self.focus == ProviderEditField::Name,
             self.mode == ProviderEditMode::Edit, // Edit 时只读 hint
+            cursor_on,
         );
         let protocol_field = field_choice(
             "Protocol",
@@ -264,6 +265,7 @@ impl ProviderEditDialog {
             self.base_url_input.clone(),
             self.focus == ProviderEditField::BaseUrl,
             false,
+            cursor_on,
         );
         let key_label = match self.mode {
             ProviderEditMode::Add => "API key",
@@ -274,6 +276,7 @@ impl ProviderEditDialog {
             self.api_key_input.clone(),
             self.focus == ProviderEditField::ApiKey,
             false,
+            cursor_on,
         );
 
         let content = vstack()
@@ -315,6 +318,16 @@ impl ProviderEditDialog {
         ProviderEditField::BaseUrl,
         ProviderEditField::ApiKey,
     ];
+
+    /// 鼠标点击定位光标到字段内字符位置（Protocol 选择器无文本，忽略）。
+    pub(crate) fn set_cursor_at(&mut self, field: ProviderEditField, char_idx: usize) {
+        match field {
+            ProviderEditField::Name => self.name_input.set_cursor(char_idx),
+            ProviderEditField::BaseUrl => self.base_url_input.set_cursor(char_idx),
+            ProviderEditField::ApiKey => self.api_key_input.set_cursor(char_idx),
+            ProviderEditField::Protocol => {}
+        }
+    }
 }
 
 impl Default for ProviderEditDialog {
@@ -328,6 +341,7 @@ fn field_input(
     mut input: revue::widget::Input,
     focused: bool,
     readonly: bool,
+    cursor_on: bool,
 ) -> revue::widget::Stack {
     let label_color = if readonly {
         colors::FG_MUTED()
@@ -343,7 +357,7 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly);
+    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {

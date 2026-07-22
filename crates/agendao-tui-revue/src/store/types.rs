@@ -93,6 +93,8 @@ pub enum TranscriptBlock {
     AssistantMsg {
         id: String,
         content: String,
+        /// 长回答默认 Truncated（3 行预览 + hint），Space/点击展开。
+        fold: FoldState,
     },
     ImageRef {
         id: String,
@@ -181,12 +183,23 @@ impl TranscriptBlock {
             | TranscriptBlock::CompactionHint { .. }
             | TranscriptBlock::SystemNotice { .. }
             | TranscriptBlock::ImageRef { .. } => 1,
-            TranscriptBlock::AssistantMsg { content, .. } => {
+            TranscriptBlock::AssistantMsg { content, fold, .. } => {
                 // Rough estimate: role label + body lines. The renderer's
                 // exact height (which walks markdown segments + tables)
                 // is close enough for auto-scroll math — a row or two of
                 // difference won't change the "is cursor visible" answer.
-                if content.is_empty() { 2 } else { content.lines().count().max(1) as u16 + 1 }
+                let total = content.lines().count();
+                match fold {
+                    FoldState::Folded => 1,
+                    FoldState::Truncated => {
+                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                        (body + extra).max(1)
+                    }
+                    FoldState::Expanded => {
+                        if content.is_empty() { 2 } else { total.max(1) as u16 + 1 }
+                    }
+                }
             }
         }
     }

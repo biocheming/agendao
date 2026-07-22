@@ -1,3 +1,5 @@
+#git
+.github/workflows
 #agendao example
 agendao.jsonc
 .agendao/
