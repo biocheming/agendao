@@ -48,6 +48,12 @@ pub struct SessionStore {
     /// 仅作事件流状态（writer = telemetry::event_handler）。
     pub stream_new_segments: Signal<std::collections::HashSet<String>>,
 
+    /// 会话级 diff 汇总（`FrontendEvent::DiffReplaced`，replace 语义——每轮
+    /// 结束下发的全量集合直接替换，不累加）。空 Vec = 无未决改动（角标隐藏）。
+    pub diff_summary: Signal<Vec<DiffStat>>,
+    /// diff 角标逐文件明细展开态（点击角标 toggle；writer = keymap 鼠标）。
+    pub diff_detail_open: Signal<bool>,
+
     // ── 火：运行时 ──
     pub active_tools: Signal<Vec<ActiveTool>>,
 
@@ -82,6 +88,8 @@ impl SessionStore {
             active_tools: signal(Vec::new()),
             attachments: signal(Vec::new()),
             stream_new_segments: signal(std::collections::HashSet::new()),
+            diff_summary: signal(Vec::new()),
+            diff_detail_open: signal(false),
         }
     }
 
@@ -105,6 +113,8 @@ impl SessionStore {
         self.session_model.set(None);
         self.active_tools.update(|t| t.clear());
         self.stream_new_segments.update(|s| s.clear());
+        self.diff_summary.update(|d| d.clear());
+        self.diff_detail_open.set(false);
     }
 
     // ── 消息追加（金：EventBus → messages）──
@@ -257,10 +267,14 @@ impl SessionStore {
     /// 用户按 Space 展开看详情。兑现「工具是背景动作、默认不霸屏」
     /// （kimi/方案1/现代 AI TUI 共识）——原注释承诺「避免挤出屏幕」，但
     /// Truncated 并未真正兑现，Folded 才是。
-    pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool) {
+    ///
+    /// 例外：`diff` 预览（edit/write/apply_patch）默认 Truncated——diff 就是
+    /// 用户要审阅的本体（3 行预览 + hint），不是背景噪音。
+    pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool, diff: Option<DiffPreview>) {
         self.messages.update(|msgs| {
+            let fold = if diff.is_some() { FoldState::Truncated } else { FoldState::Folded };
             let block = TranscriptBlock::ToolResult {
-                id: id.into(), name: name.into(), result: result.into(), is_error, fold: FoldState::Folded,
+                id: id.into(), name: name.into(), result: result.into(), is_error, fold, diff,
             };
             // 插到对应 ToolCall 之后（同 tool_call_id），让调用与结果紧邻配对显示，
             // 而非 append 末尾——避免 LLM 并行发起多个 tool 时调用与结果割裂
@@ -376,6 +390,21 @@ impl SessionStore {
 
     pub fn set_mcp_lsp(&self, mcp_connected: usize, mcp_total: usize, lsp_active: Vec<String>) {
         self.mcp_lsp.set(McpLspInfo { mcp_connected, mcp_total, lsp_active });
+    }
+
+    /// `FrontendEvent::DiffReplaced` 落地（replace 语义：全量替换，不累加）。
+    /// 空集合 = 本轮无未决改动——角标隐藏，顺带收起明细（无内容可展开）。
+    pub fn set_diff_summary(&self, diffs: Vec<DiffStat>) {
+        if diffs.is_empty() {
+            self.diff_detail_open.set(false);
+        }
+        self.diff_summary.set(diffs);
+    }
+
+    /// diff 角标点击：toggle 逐文件明细（keymap 鼠标唯一写路径）。
+    pub fn toggle_diff_detail(&self) {
+        let next = !self.diff_detail_open.get();
+        self.diff_detail_open.set(next);
     }
 
     // ── 火：运行时 ──
@@ -844,7 +873,7 @@ mod tests {
         }
         for i in 1..=5 {
             s.upsert_tool_call(&format!("t{i}"), "read", "", ToolPhase::Done);
-            s.push_tool_result(&format!("t{i}"), "read", &format!("out{i}"), false);
+            s.push_tool_result(&format!("t{i}"), "read", &format!("out{i}"), false, None);
         }
         let msgs = s.messages.get();
         assert_eq!(msgs.len(), 10);
@@ -865,10 +894,48 @@ mod tests {
     fn tool_result_without_call_appends() {
         // 找不到对应 ToolCall（事件乱序）时 fallback append 末尾，不丢结果。
         let s = SessionStore::new();
-        s.push_tool_result("orphan", "read", "out", false);
+        s.push_tool_result("orphan", "read", "out", false, None);
         let msgs = s.messages.get();
         assert_eq!(msgs.len(), 1);
         assert!(matches!(msgs[0], TranscriptBlock::ToolResult { .. }));
+    }
+
+    /// diff 预览默认 Truncated（可审阅本体），普通结果保持 Folded（不霸屏）。
+    /// set_diff_summary 是 replace 语义；空集合收起明细。
+    #[test]
+    fn diff_result_defaults_truncated_and_summary_replaces() {
+        let s = SessionStore::new();
+        s.push_tool_result("t1", "edit", "", false, Some(DiffPreview {
+            text: "+a\n-b".into(), truncated: false,
+        }));
+        s.push_tool_result("t2", "read", "out", false, None);
+        let msgs = s.messages.get();
+        match &msgs[0] {
+            TranscriptBlock::ToolResult { fold, diff, .. } => {
+                assert_eq!(*fold, FoldState::Truncated);
+                assert!(diff.is_some());
+            }
+            _ => panic!("expected ToolResult"),
+        }
+        match &msgs[1] {
+            TranscriptBlock::ToolResult { fold, diff, .. } => {
+                assert_eq!(*fold, FoldState::Folded);
+                assert!(diff.is_none());
+            }
+            _ => panic!("expected ToolResult"),
+        }
+
+        s.set_diff_summary(vec![
+            DiffStat { path: "a.rs".into(), additions: 1, deletions: 2 },
+        ]);
+        assert_eq!(s.diff_summary.get().len(), 1);
+        s.set_diff_summary(vec![
+            DiffStat { path: "b.rs".into(), additions: 3, deletions: 0 },
+            DiffStat { path: "c.rs".into(), additions: 0, deletions: 1 },
+        ]);
+        let summary = s.diff_summary.get();
+        assert_eq!(summary.len(), 2, "replace 而非累加");
+        assert_eq!(summary[0].path, "b.rs");
     }
 
     /// 统计 messages 中 Thinking block 的数量。
@@ -1015,7 +1082,7 @@ mod tests {
         s.push_user_message("u1", "hello");
         s.push_assistant_delta("a1", "hi there");
         s.upsert_tool_call("t1", "read", "{\"path\":\"f\"}", ToolPhase::Starting);
-        s.push_tool_result("t1", "read", "ok", false);
+        s.push_tool_result("t1", "read", "ok", false, None);
 
         let text = s.transcript_to_text();
         assert!(text.contains("User: hello\n"));
@@ -1036,7 +1103,7 @@ mod tests {
     fn cursor_user_prompt_hits_only_user_blocks() {
         let s = SessionStore::new();
         s.push_user_message("u1", "edit me");
-        s.push_tool_result("t1", "read", "out", false);
+        s.push_tool_result("t1", "read", "out", false, None);
 
         // 无 cursor → None
         assert_eq!(s.cursor_user_prompt(), None);

@@ -42,6 +42,12 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             // web schema; previously we only read `text` and missed
             // results entirely.
             let detail = block.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+            // Unified diff preview (edit/write/apply_patch) rides in
+            // `display.preview = {kind:"diff", text, truncated}`
+            // (agent_presenter.rs:807-811). Parse once here; only the tool
+            // `done` branch consumes it. Missing/non-diff preview → None,
+            // the block falls back to plain `detail` text as before.
+            let diff_preview = parse_diff_preview(block);
             let bid = id.as_deref().unwrap_or("");
 
             // Server emits phases per agendao_command::agent_presenter::phase_to_web:
@@ -120,14 +126,16 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                             // Server emits the tool result as a separate
                             // `done`-phase block carrying detail; preserve
                             // it as a ToolResult so users can read what the
-                            // tool produced.
-                            if !detail.is_empty() {
-                                session.push_tool_result(bid, name, detail, false);
+                            // tool produced. A diff preview (edit/write/
+                            // apply_patch) also justifies a ToolResult even
+                            // when `detail` is empty — the diff IS the result.
+                            if !detail.is_empty() || diff_preview.is_some() {
+                                session.push_tool_result(bid, name, detail, false, diff_preview);
                             }
                         }
                         Some("error") => {
                             session.upsert_tool_call(bid, name, "", ToolPhase::Done);
-                            session.push_tool_result(bid, name, detail, true);
+                            session.push_tool_result(bid, name, detail, true, None);
                         }
                         _ => {}
                     }
@@ -313,8 +321,42 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             Some(session_id.clone())
         }
 
-        FrontendEvent::DiffReplaced { session_id, .. } => Some(session_id.clone()),
+        FrontendEvent::DiffReplaced { session_id, diffs } => {
+            // Replace 语义：每轮结束下发全量集合，直接替换（不累加）。
+            session.set_diff_summary(
+                diffs
+                    .iter()
+                    .map(|d| DiffStat {
+                        path: d.path.clone(),
+                        additions: d.additions,
+                        deletions: d.deletions,
+                    })
+                    .collect(),
+            );
+            Some(session_id.clone())
+        }
     }
+}
+
+/// 从 output block 的 `display.preview` 提取 unified diff 预览。
+/// 仅 kind=="diff" 且 text 非空时返回 Some；其余（缺 display/缺 preview/
+/// 其它 kind/空文本）一律 None —— 调用方回退 `detail` 纯文本旧路径。
+fn parse_diff_preview(block: &serde_json::Value) -> Option<DiffPreview> {
+    let preview = block.get("display")?.get("preview")?;
+    if preview.get("kind").and_then(|k| k.as_str()) != Some("diff") {
+        return None;
+    }
+    let text = preview.get("text").and_then(|t| t.as_str()).unwrap_or("");
+    if text.is_empty() {
+        return None;
+    }
+    Some(DiffPreview {
+        text: text.to_string(),
+        truncated: preview
+            .get("truncated")
+            .and_then(|t| t.as_bool())
+            .unwrap_or(false),
+    })
 }
 
 #[cfg(test)]
@@ -435,5 +477,118 @@ mod tests {
             }
             _ => panic!("expected Thinking"),
         }
+    }
+
+    fn tool_done_block(id: &str, name: &str, detail: &str, preview: serde_json::Value) -> FrontendEvent {
+        FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({
+                "kind": "tool", "name": name, "phase": "done",
+                "detail": detail, "display": { "preview": preview },
+            }),
+            id: Some(id.into()),
+            live_identity: None,
+        }
+    }
+
+    /// kind=="diff" 的 display.preview 落地为 ToolResult.diff 载荷（diff 即本体，
+    /// detail 为空也必须出块）；diff 块默认 Truncated（3 行预览可审阅）。
+    #[test]
+    fn tool_done_diff_preview_lands_on_tool_result() {
+        let session = SessionStore::new();
+        let diff_text = "@@ -1,2 +1,2 @@\n-old\n+new\n ctx";
+        apply_frontend_event(
+            &tool_done_block("t1", "edit", "", serde_json::json!({
+                "kind": "diff", "text": diff_text, "truncated": true,
+            })),
+            &session,
+        );
+        let msgs = session.messages.get();
+        let result = msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. }))
+            .expect("detail 为空但 diff 存在，必须出 ToolResult");
+        match result {
+            TranscriptBlock::ToolResult { diff, fold, .. } => {
+                let d = diff.as_ref().expect("diff 载荷必须落地");
+                assert_eq!(d.text, diff_text);
+                assert!(d.truncated, "truncated 标记必须透传");
+                assert_eq!(*fold, FoldState::Truncated, "diff 块默认 3 行预览");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 非 diff kind 的 preview（如 text/image）不消费，回退 detail 纯文本旧路径。
+    #[test]
+    fn tool_done_non_diff_preview_falls_back_to_detail() {
+        let session = SessionStore::new();
+        apply_frontend_event(
+            &tool_done_block("t1", "read", "file body", serde_json::json!({
+                "kind": "text", "text": "whatever", "truncated": false,
+            })),
+            &session,
+        );
+        let msgs = session.messages.get();
+        match msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. })) {
+            Some(TranscriptBlock::ToolResult { result, diff, fold, .. }) => {
+                assert_eq!(result, "file body");
+                assert!(diff.is_none(), "非 diff preview 不得落地");
+                assert_eq!(*fold, FoldState::Folded, "无 diff 保持默认 Folded");
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    /// 缺 display/preview 的 done 块：行为与旧版一致（detail → ToolResult）。
+    #[test]
+    fn tool_done_without_preview_unchanged() {
+        let session = SessionStore::new();
+        apply_frontend_event(
+            &FrontendEvent::OutputBlockAppended {
+                session_id: "s1".into(),
+                block: serde_json::json!({
+                    "kind": "tool", "name": "bash", "phase": "done", "detail": "ok",
+                }),
+                id: Some("t1".into()),
+                live_identity: None,
+            },
+            &session,
+        );
+        let msgs = session.messages.get();
+        match msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. })) {
+            Some(TranscriptBlock::ToolResult { result, diff, .. }) => {
+                assert_eq!(result, "ok");
+                assert!(diff.is_none());
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    /// DiffReplaced 存取 + replace 语义：第二次下发全量替换（不累加）；
+    /// 空集合表示无未决改动。
+    #[test]
+    fn diff_replaced_replaces_summary() {
+        use agendao_server_core::runtime_events::DiffEntry;
+        let session = SessionStore::new();
+        let ev = |diffs: Vec<DiffEntry>| FrontendEvent::DiffReplaced {
+            session_id: "s1".into(),
+            diffs,
+        };
+        let entry = |path: &str, a: u64, d: u64| DiffEntry {
+            path: path.into(), additions: a, deletions: d,
+        };
+        apply_frontend_event(&ev(vec![entry("a.rs", 3, 1), entry("b.rs", 2, 0)]), &session);
+        assert_eq!(session.diff_summary.get().len(), 2);
+        // replace：新一轮只剩 1 个文件，不得残留 a/b。
+        apply_frontend_event(&ev(vec![entry("c.rs", 5, 2)]), &session);
+        let summary = session.diff_summary.get();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].path, "c.rs");
+        assert_eq!(summary[0].additions, 5);
+        assert_eq!(summary[0].deletions, 2);
+        // 空集合：清空 + 收起明细。
+        session.diff_detail_open.set(true);
+        apply_frontend_event(&ev(vec![]), &session);
+        assert!(session.diff_summary.get().is_empty());
+        assert!(!session.diff_detail_open.get(), "无 diff 时明细必须收起");
     }
 }

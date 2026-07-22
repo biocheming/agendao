@@ -423,6 +423,9 @@ pub(crate) struct AppHandler {
     pub(crate) header_y: u16,
     pub(crate) header_dir_x: u16,
     pub(crate) header_dir_w: u16,
+    /// Diff 汇总角标命中区（绝对 x, y, w；render 后发布，与 header dir 同模式）。
+    /// None = 非 Session 路由或无未决 diff（点击不命中）。
+    pub(crate) diff_badge_hit: Option<(u16, u16, u16)>,
     /// Active drag on the session-list dialog's scrollbar. The
     /// dialog uses its own `selected: usize` as the cursor; the
     /// drag state is just a remembered y origin so Drag events
@@ -476,10 +479,15 @@ fn gutter(content: impl View + 'static) -> revue::widget::Stack {
 /// Session 底部信息条：`↑1.2k ↓456  cache 89r/11m  ctx ▓▓▓▓▓░░░░░ 42% (85k)  $0.003`。
 /// token/成本为 session 累计（投影权威）;context 为最新 turn 占用百分比（非累计）。
 /// 全部数据来自 SessionProjectionReplaced,无第二真相（水律·回流可观测）。
+///
+/// `diffs` 非空时尾部追加 diff 汇总角标（`📝 N files +X -Y`，`DiffReplaced`
+/// 会话级汇总）。返回角标在 strip 内容区内的 (x, w)——渲染层据此发布鼠标
+/// 命中区（点击展开逐文件明细），None = 无角标不命中。
 fn build_session_info_strip(
     tokens: &crate::store::types::TokenUsage,
     ctx_pct: u8,
-) -> revue::widget::Stack {
+    diffs: &[crate::store::types::DiffStat],
+) -> (revue::widget::Stack, Option<(u16, u16)>) {
     // 段 = (文本, 颜色)；宽度在构造处按字符数算（Bar 段 ▓/░ 均单宽,口径一致）。
     let mut spans: Vec<(String, revue::prelude::Color)> = Vec::new();
     if tokens.total > 0 {
@@ -537,12 +545,30 @@ fn build_session_info_strip(
             ));
         }
     }
+    // Diff 汇总角标（DiffReplaced，会话级、replace 语义）。跨文件合计：
+    // 文件数 muted / 增行绿 / 删行红。记录角标起点 x 供点击命中。
+    let mut badge_geom: Option<(u16, u16)> = None;
+    if !diffs.is_empty() {
+        let adds: u64 = diffs.iter().map(|d| d.additions).sum();
+        let dels: u64 = diffs.iter().map(|d| d.deletions).sum();
+        let badge_x: u16 = spans.iter().map(|(t, _)| t.chars().count() as u16).sum();
+        // 📝 是双宽 emoji：chars 计数比渲染格数少 1，emoji 后多留一个空格
+        // 补齐（宽口径 = chars 计数，命中/截断才不偏 1 列）。
+        let head = format!("  📝  {} files", diffs.len());
+        let add = format!(" +{}", adds);
+        let del = format!(" -{}", dels);
+        let badge_w = (head.chars().count() + add.chars().count() + del.chars().count()) as u16;
+        spans.push((head, colors::FG_MUTED()));
+        spans.push((add, colors::ACCENT_GREEN()));
+        spans.push((del, colors::ACCENT_RED()));
+        badge_geom = Some((badge_x, badge_w));
+    }
     let mut row = hstack().gap(0);
     for (text, color) in spans {
         let w = text.chars().count() as u16;
         row = row.child_sized(Text::new(text).fg(color), w);
     }
-    row.child_flex(Text::new(""), 1.0)
+    (row.child_flex(Text::new(""), 1.0), badge_geom)
 }
 
 /// 当前路由输入框的屏幕几何（绝对坐标），返回 [`crate::dialog::backdrop::PromptGeom`]。
@@ -744,6 +770,7 @@ impl AppHandler {
             header_y: 1, // 顶端空行后（Session 路由固定；Home 不渲染 header）
             header_dir_x: 0,
             header_dir_w: 0,
+            diff_badge_hit: None,
             session_list_scrollbar_drag: None,
             pending_theme_vars: None,
             model_edit_rect: None,
@@ -1380,9 +1407,18 @@ impl View for RootView {
         // ── 会话信息条（prompt 下方,status 上方）──
         // 上行/下行 token（session 累计）、cache、成本、context 使用进度条。
         // 数据全部来自 SessionProjectionReplaced 投影（水律·回流可观测）。
+        // 尾部附 diff 汇总角标（DiffReplaced）；badge_geom = 角标绝对 (x, y, w)，
+        // publish 到 handler 供 keymap 点击命中（与 header dir 命中同模式）。
         let tokens = h.active_session.token_usage.get();
         let ctx_pct = h.active_session.context_pct.get();
-        let info_strip = build_session_info_strip(&tokens, ctx_pct);
+        let diff_summary = h.active_session.diff_summary.get();
+        let diff_detail_open = h.active_session.diff_detail_open.get();
+        let (info_strip, badge_offset) = build_session_info_strip(&tokens, ctx_pct, &diff_summary);
+        let diff_badge_geom: Option<(u16, u16, u16)> = badge_offset.map(|(bx, bw)| {
+            let page_x: u16 = if h.sidebar_visible { SIDEBAR_WIDTH + 1 } else { 0 };
+            let badge_y = ctx.area.height.saturating_sub(2); // info_strip 行 = status_bar 上一行
+            (page_x + PAD + bx, badge_y, bw)
+        });
 
         // ── Status bar ──
         let panel_label = match h.panel {
@@ -1522,6 +1558,11 @@ impl View for RootView {
         self.handler.borrow_mut().header_y = if show_header_now { 1 } else { 0 };
         self.handler.borrow_mut().header_dir_x = dir_x_snap;
         self.handler.borrow_mut().header_dir_w = dir_w_snap;
+        // Diff 角标命中区 publish（仅 Session 路由；无 diff 时 geom 为 None 不命中）。
+        self.handler.borrow_mut().diff_badge_hit = match &route {
+            Route::Session { .. } => diff_badge_geom,
+            _ => None,
+        };
         // Drain the transcript scrollbar's per-frame publish into the
         // handler so the next mouse event can hit-test arrow clicks
         // and thumb drags. The publish slot is None when the session
@@ -1683,6 +1724,60 @@ impl View for RootView {
                 .width(w + 2)
                 .height(3)
                 .render(ctx);
+        }
+
+        // ── Diff 角标逐文件明细（click-to-reveal，与 dir tooltip 同范式）─────────────
+        // 点击 info_strip 的 📝 角标 → keymap toggle session.diff_detail_open；
+        // 此处按 diff_summary 展开每文件 `path +a -d`（path 正文色 / +a 绿 / -d 红），
+        // 画在角标上方（footer 区只向上有空间）。超 10 文件折一行 "+M more"。
+        if diff_detail_open && !diff_summary.is_empty() {
+            if let Some((badge_x, badge_y, _)) = diff_badge_geom {
+                const MAX_FILES: usize = 10;
+                let shown = diff_summary.len().min(MAX_FILES);
+                let mut lines = vstack().gap(0);
+                let mut rows: u16 = 0;
+                let mut max_w: u16 = 10;
+                for d in diff_summary.iter().take(shown) {
+                    let path_disp = if d.path.chars().count() > 40 {
+                        format!("…{}", d.path.chars().skip(d.path.chars().count() - 39).collect::<String>())
+                    } else {
+                        d.path.clone()
+                    };
+                    let add = format!(" +{}", d.additions);
+                    let del = format!(" -{}", d.deletions);
+                    let path_w = path_disp.chars().count() as u16;
+                    let add_w = add.chars().count() as u16;
+                    max_w = max_w.max(path_w + add_w + del.chars().count() as u16);
+                    lines = lines.child_sized(
+                        hstack().gap(0)
+                            .child_sized(Text::new(path_disp).fg(colors::FG_SECONDARY()), path_w)
+                            .child_sized(Text::new(add).fg(colors::ACCENT_GREEN()), add_w)
+                            .child_flex(Text::new(del).fg(colors::ACCENT_RED()), 1.0),
+                        1,
+                    );
+                    rows += 1;
+                }
+                if diff_summary.len() > shown {
+                    lines = lines.child_sized(
+                        Text::new(format!("  … +{} more files", diff_summary.len() - shown))
+                            .fg(colors::FG_MUTED()).italic(),
+                        1,
+                    );
+                    rows += 1;
+                }
+                let w = max_w.min(ctx.area.width.saturating_sub(4));
+                let x = badge_x.min(ctx.area.width.saturating_sub(w + 2));
+                let y = badge_y.saturating_sub(rows + 2);
+                let detail_widget = Border::rounded()
+                    .fg(colors::FG_MUTED())
+                    .child(lines);
+                revue::widget::positioned(detail_widget)
+                    .x(x as i16)
+                    .y(y as i16)
+                    .width(w + 2)
+                    .height(rows + 2)
+                    .render(ctx);
+            }
         }
     }
 }

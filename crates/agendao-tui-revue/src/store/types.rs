@@ -44,6 +44,27 @@ impl FoldState {
     }
 }
 
+/// Unified diff preview attached to a tool result (edit/write/apply_patch).
+/// Carried by the wire block's `display.preview = {kind:"diff", text, truncated}`
+/// (agent_presenter.rs) — the TUI renders it with ± line coloring instead of
+/// the plain `detail` text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffPreview {
+    pub text: String,
+    /// Server already truncated the diff text (preview cap) — the UI must
+    /// say so, otherwise users read a partial diff as complete.
+    pub truncated: bool,
+}
+
+/// One file's diff stat from `FrontendEvent::DiffReplaced` (session-level
+/// summary, replace semantics — each event carries the full current set).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    pub path: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
 #[derive(Clone, Debug)]
 pub enum TranscriptBlock {
     UserPrompt {
@@ -69,6 +90,10 @@ pub enum TranscriptBlock {
         result: String,
         is_error: bool,
         fold: FoldState,
+        /// edit/write/apply_patch 的 unified diff 预览（`display.preview`，
+        /// kind=="diff"）。Some 时渲染层以 diff 文本为 body（± 行着色），
+        /// `result`（detail 摘要）退居序列化/复制用途。
+        diff: Option<DiffPreview>,
     },
     SkillActivated {
         id: String,
@@ -150,18 +175,24 @@ impl TranscriptBlock {
             TranscriptBlock::ToolCall { params, .. } => {
                 if params.is_empty() { 1 } else { 2 }
             }
-            TranscriptBlock::ToolResult { result, fold, .. } => {
+            TranscriptBlock::ToolResult { result, fold, diff, .. } => {
+                // body 口径与 screen/session.rs 的 ToolResult 分支同源：diff 预览
+                // 存在时 body = diff 文本；server-truncated 恒多一行截断标注。
+                let total = diff
+                    .as_ref()
+                    .map(|d| d.text.lines().count())
+                    .unwrap_or_else(|| result.lines().count());
+                let server_truncated = diff.as_ref().map(|d| d.truncated).unwrap_or(false);
                 match fold {
                     FoldState::Folded => 1,
                     FoldState::Truncated => {
-                        let total = result.lines().count();
                         let body = FOLD_PREVIEW_LINES.min(total) as u16;
-                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                        let extra = if total > FOLD_PREVIEW_LINES || server_truncated { 1 } else { 0 };
                         1 + body + extra
                     }
                     FoldState::Expanded => {
-                        let lines = result.lines().count().clamp(1, 20) as u16;
-                        let extra = if result.lines().count() > 20 { 1 } else { 0 };
+                        let lines = total.clamp(1, 20) as u16;
+                        let extra = if total > 20 || server_truncated { 1 } else { 0 };
                         1 + lines + extra
                     }
                 }

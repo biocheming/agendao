@@ -38,6 +38,7 @@ import {
   type ToolOutputBlock,
 } from "../../lib/history";
 import { SchedulerStageCard } from "./SchedulerStageCard";
+import { DiffView } from "./DiffView";
 import { toolActivityLabel } from "../../lib/toolLabels";
 import { sanitizeAssistantDisplayText } from "../../lib/blockPresentation";
 import { compactText, excerptText, normalizeValue } from "../../lib/stagePresentation";
@@ -468,10 +469,16 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
             <div className="roc-section-label">
               {previewKind === "diff" ? "Preview" : previewKind === "code" ? "Output" : "Detail"}
             </div>
-            <StructuredText value={previewText} className="text-muted-foreground" />
-            {previewTruncated ? (
-              <p className="text-[11px] leading-5 text-muted-foreground">Preview truncated.</p>
-            ) : null}
+            {previewKind === "diff" ? (
+              <DiffView text={previewText} truncated={previewTruncated} />
+            ) : (
+              <>
+                <StructuredText value={previewText} className="text-muted-foreground" />
+                {previewTruncated ? (
+                  <p className="text-[11px] leading-5 text-muted-foreground">Preview truncated.</p>
+                ) : null}
+              </>
+            )}
           </div>
         ) : null}
         {hasStructuredObject ? (

@@ -31,6 +31,7 @@ import { CompactionContinuityCard } from "./CompactionContinuityCard";
 import { ReadOnlyDiagnosticCard } from "./ReadOnlyDiagnosticCard";
 import { StructuredDataView } from "./StructuredDataView";
 import type { OutputField } from "../../lib/history";
+import { DiffView } from "../chat/DiffView";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
 
@@ -489,12 +490,18 @@ export function ExecutionActivityPanel({
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">
               {previewLabel}
             </p>
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-xs leading-relaxed text-muted-foreground">
-              {previewText}
-            </pre>
-            {entry.preview?.truncated ? (
-              <p className="text-[11px] text-muted-foreground">{t("execution.previewTruncated")}</p>
-            ) : null}
+            {entry.preview?.kind === "diff" ? (
+              <DiffView text={previewText} truncated={Boolean(entry.preview?.truncated)} />
+            ) : (
+              <>
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-xs leading-relaxed text-muted-foreground">
+                  {previewText}
+                </pre>
+                {entry.preview?.truncated ? (
+                  <p className="text-[11px] text-muted-foreground">{t("execution.previewTruncated")}</p>
+                ) : null}
+              </>
+            )}
           </div>
         ) : null}
         <p className="text-xs text-muted-foreground">

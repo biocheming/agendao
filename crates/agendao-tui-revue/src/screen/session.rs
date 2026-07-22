@@ -11,6 +11,47 @@ use crate::theme::colors;
 
 const FOLD_PREVIEW_LINES: usize = 3;
 
+/// ToolResult 的可见 body：diff 预览（edit/write/apply_patch）优先，
+/// 否则 detail 纯文本。layout 与 group layout 共用（金律：口径单点）。
+pub(crate) fn tool_result_body<'a>(result: &'a str, diff: &'a Option<DiffPreview>) -> &'a str {
+    diff.as_ref().map(|d| d.text.as_str()).unwrap_or(result)
+}
+
+/// Unified diff 行级着色（对齐 CLI `render_diff_preview` 口径）：
+/// `+` 增行绿 / `-` 删行红 / `@@` hunk 头青 / `diff `、`index `、`---`、`+++`
+/// 头行 muted / 上下文行默认正文色。`---`/`+++` 必须先于单字符前缀判定。
+pub(crate) fn diff_line_color(line: &str) -> Color {
+    if line.starts_with("+++")
+        || line.starts_with("---")
+        || line.starts_with("diff ")
+        || line.starts_with("index ")
+    {
+        colors::FG_MUTED()
+    } else if line.starts_with('+') {
+        colors::ACCENT_GREEN()
+    } else if line.starts_with('-') {
+        colors::ACCENT_RED()
+    } else if line.starts_with("@@") {
+        colors::ACCENT_CYAN()
+    } else {
+        colors::FG_SECONDARY()
+    }
+}
+
+/// ToolResult body 的折叠 hint（"+M more lines" / 服务端截断标注）。
+/// `total` = body 总行数，`limit` = 本次实际渲染的行数。
+/// 返回 None = 无需 hint 行（body 已完整且未被服务端截断）。
+pub(crate) fn tool_result_hint(total: usize, limit: usize, server_truncated: bool) -> Option<String> {
+    let suffix = if server_truncated { " · server-truncated" } else { "" };
+    if total > limit {
+        Some(format!("  … +{} more lines{}", total - limit, suffix))
+    } else if server_truncated {
+        Some(format!("  … server-truncated"))
+    } else {
+        None
+    }
+}
+
 /// 某类 block 的语义强调色——左竖线锚点色（app/mod.rs 渲染循环里每块左侧的
 /// `▌`/`▎`），让竖线颜色反映该块角色。方案1（Carbon Obsidian）蓝本：角色
 /// 区分靠竖线色相、不靠明度差（避免色块拼接显脏）。
@@ -200,14 +241,16 @@ pub(crate) fn layout_tool_result_group(
     // 各项：每条 ToolResult 一行；cursor 项 ▶ 高亮。仅展开模式才 per-block 展开
     // 详情。每行同步 push row_owners——行结构单点（渲染与命中同源）。
     for (offset, block) in blocks.iter().enumerate().take(shown) {
-        if let TranscriptBlock::ToolResult { name, result, is_error, fold, .. } = block {
+        if let TranscriptBlock::ToolResult { name, result, is_error, fold, diff, .. } = block {
             let is_cursor = cursor_idx == Some(base_index + offset);
             let (icon, _) = status_icon(if *is_error {
                 Status::ResultError
             } else {
                 Status::ResultOk
             });
-            let total_lines = result.lines().count();
+            // body 口径与单块 layout 同源：diff 预览优先于 detail。
+            let body = tool_result_body(result, diff);
+            let total_lines = body.lines().count();
             let name_display = if name.len() > 24 {
                 format!("{}…", &name.chars().take(21).collect::<String>())
             } else {
@@ -221,20 +264,27 @@ pub(crate) fn layout_tool_result_group(
             } else {
                 colors::FG_TRACE()
             };
+            let kind_label = if diff.is_some() { "diff" } else { "result" };
             let line = format!(
-                "{:>2}. {} {} {} · {} lines",
-                offset + 1, marker, icon, name_display, total_lines
+                "{:>2}. {} {} {} {} · {} lines",
+                offset + 1, marker, icon, kind_label, name_display, total_lines
             );
             stack = stack.child_sized(Text::new(line).fg(item_color), 1);
             height += 1;
             row_owners.push(Some(offset));
 
-            // 展开项：详情行也归该项。
+            // 展开项：详情行也归该项。diff 块按行前缀 ±/@@ 着色。
             if !collapsed && matches!(fold, FoldState::Expanded) {
-                let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
-                for body_line in result.lines().take(20) {
+                for body_line in body.lines().take(20) {
+                    let line_color = if *is_error {
+                        colors::ACCENT_RED()
+                    } else if diff.is_some() {
+                        diff_line_color(body_line)
+                    } else {
+                        colors::FG_SECONDARY()
+                    };
                     stack = stack.child_sized(
-                        Text::new(format!("    {}", body_line)).fg(body_color),
+                        Text::new(format!("    {}", body_line)).fg(line_color),
                         1,
                     );
                     height += 1;
@@ -797,9 +847,14 @@ pub(crate) fn layout_block_ctx(
         // ── Tool Result ──
         // 符号归一（Gemini 第三轮）：去 ⎿ indented_prefix。引导符 ┊ 在 app 层统一加，
         // 深井左缩进 6 提供层级。header 直接 "result · name · N lines · icon"。
-        TranscriptBlock::ToolResult { name, result, is_error, fold, .. } => {
+        // diff 预览（edit/write/apply_patch）：body 换为 unified diff 文本，行级 ±
+        // 着色（diff_line_color），chip 标签改 "diff"；preview.truncated 时 hint
+        // 注明 server-truncated（部分 diff 不得读作完整）。
+        TranscriptBlock::ToolResult { name, result, is_error, fold, diff, .. } => {
             use crate::store::types::FoldState;
-            let total_lines = result.lines().count();
+            let body = tool_result_body(result, diff);
+            let server_truncated = diff.as_ref().map(|d| d.truncated).unwrap_or(false);
+            let total_lines = body.lines().count();
             let (icon, accent) = crate::widget::status_icon::status_icon(
                 if *is_error {
                     crate::widget::status_icon::Status::ResultError
@@ -807,47 +862,55 @@ pub(crate) fn layout_block_ctx(
                     crate::widget::status_icon::Status::ResultOk
                 }
             );
+            let kind_label = if diff.is_some() { "diff" } else { "result" };
             let name_display = if name.len() > 20 {
                 format!("{}…", &name.chars().take(17).collect::<String>())
             } else {
                 name.clone()
             };
             let name_w = name_display.chars().count() as u16 + 3;
+            // body 行着色：error 恒红；diff 按行前缀 ±/@@ 分类；普通 detail 统一正文色。
+            let line_color = |line: &str| {
+                if *is_error {
+                    colors::ACCENT_RED()
+                } else if diff.is_some() {
+                    diff_line_color(line)
+                } else {
+                    colors::FG_SECONDARY()
+                }
+            };
+            let header = || {
+                hstack().gap(0)
+                    .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
+                    .child_sized(Text::new(kind_label).fg(colors::E_AMBER()).italic(), 6)
+                    .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
+            };
             match fold {
                 FoldState::Folded => BlockLayout {
                     height: 1,
                     view: vstack().child(
-                        hstack().gap(0)
-                            .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
-                            .child_flex(
-                                Text::new(format!(" · {} lines", total_lines))
-                                    .fg(colors::FG_MUTED()),
-                                1.0,
-                            ),
+                        header().child_flex(
+                            Text::new(format!(" · {} lines", total_lines))
+                                .fg(colors::FG_MUTED()),
+                            1.0,
+                        ),
                     ),
                 },
                 FoldState::Truncated => {
-                    let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
                     let limit = FOLD_PREVIEW_LINES.min(total_lines);
+                    let hint = tool_result_hint(total_lines, limit, server_truncated);
                     let mut stack = vstack().gap(0).child_sized(
-                        hstack().gap(0)
-                            .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
-                            .child_flex(Text::new(""), 1.0),
+                        header().child_flex(Text::new(""), 1.0),
                         1,
                     );
                     let mut height = 1u16;
-                    for line in result.lines().take(limit) {
-                        stack = stack.child_sized(Text::new(line.to_string()).fg(body_color), 1);
+                    for line in body.lines().take(limit) {
+                        stack = stack.child_sized(Text::new(line.to_string()).fg(line_color(line)), 1);
                         height += 1;
                     }
-                    if total_lines > limit {
+                    if let Some(hint) = hint {
                         stack = stack.child_sized(
-                            Text::new(format!("  … +{} more lines", total_lines - limit))
-                                .fg(colors::FG_MUTED()).italic(),
+                            Text::new(hint).fg(colors::FG_MUTED()).italic(),
                             1,
                         );
                         height += 1;
@@ -855,25 +918,20 @@ pub(crate) fn layout_block_ctx(
                     BlockLayout { height, view: stack }
                 }
                 FoldState::Expanded => {
-                    let body_color = if *is_error { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
                     let view_lines = total_lines.min(20);
+                    let hint = tool_result_hint(total_lines, view_lines, server_truncated);
                     let mut stack = vstack().gap(0).child_sized(
-                        hstack().gap(0)
-                            .child_sized(Text::new(format!("{} ", icon)).fg(accent), 2)
-                            .child_sized(Text::new("result").fg(colors::E_AMBER()).italic(), 6)
-                            .child_sized(Text::new(format!(" · {}", name_display)).fg(colors::FG_PRIMARY()), name_w)
-                            .child_flex(Text::new(""), 1.0),
+                        header().child_flex(Text::new(""), 1.0),
                         1,
                     );
                     let mut height = 1u16;
-                    for line in result.lines().take(view_lines) {
-                        stack = stack.child_sized(Text::new(line.to_string()).fg(body_color), 1);
+                    for line in body.lines().take(view_lines) {
+                        stack = stack.child_sized(Text::new(line.to_string()).fg(line_color(line)), 1);
                         height += 1;
                     }
-                    if total_lines > view_lines {
+                    if let Some(hint) = hint {
                         stack = stack.child_sized(
-                            Text::new(format!("  … +{} more lines", total_lines - view_lines))
-                                .fg(colors::FG_MUTED()).italic(),
+                            Text::new(hint).fg(colors::FG_MUTED()).italic(),
                             1,
                         );
                         height += 1;
@@ -1011,7 +1069,7 @@ fn truncate_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use crate::store::types::{FoldState, TodoItem, TodoStatus, ToolPhase};
+    use crate::store::types::{DiffPreview, FoldState, TodoItem, TodoStatus, ToolPhase};
 
     fn blk(b: TranscriptBlock) -> BlockLayout { layout_block(&b, 0) }
 
@@ -1022,6 +1080,7 @@ mod layout_tests {
             result: result.into(),
             is_error: false,
             fold,
+            diff: None,
         }
     }
 
@@ -1220,9 +1279,83 @@ mod layout_tests {
     fn tool_result_folded_is_one_row() {
         let b = TranscriptBlock::ToolResult {
             id: "r".into(), name: "read".into(), result: "out".into(),
-            is_error: false, fold: FoldState::Folded,
+            is_error: false, fold: FoldState::Folded, diff: None,
         };
         assert_eq!(blk(b).height, 1);
+    }
+
+    // ── diff 预览渲染（edit/write/apply_patch）─────────────────────────────
+
+    fn diff_tr(result: &str, diff_text: &str, truncated: bool, fold: FoldState) -> TranscriptBlock {
+        TranscriptBlock::ToolResult {
+            id: "t".into(),
+            name: "edit".into(),
+            result: result.into(),
+            is_error: false,
+            fold,
+            diff: Some(DiffPreview { text: diff_text.into(), truncated }),
+        }
+    }
+
+    /// 行级着色分类（对齐 CLI render_diff_preview 口径）：+ 绿 / - 红 / @@ 青 /
+    /// diff/index/---/+++ 头行 muted / 上下文行正文色。---/+++ 必须先于单字符前缀。
+    #[test]
+    fn diff_line_color_classifies_by_prefix() {
+        assert_eq!(diff_line_color("+added"), colors::ACCENT_GREEN());
+        assert_eq!(diff_line_color("-removed"), colors::ACCENT_RED());
+        assert_eq!(diff_line_color("@@ -1,2 +1,2 @@"), colors::ACCENT_CYAN());
+        assert_eq!(diff_line_color("--- a/f.rs"), colors::FG_MUTED());
+        assert_eq!(diff_line_color("+++ b/f.rs"), colors::FG_MUTED());
+        assert_eq!(diff_line_color("diff --git a/f b/f"), colors::FG_MUTED());
+        assert_eq!(diff_line_color("index abc..def 100644"), colors::FG_MUTED());
+        assert_eq!(diff_line_color(" context"), colors::FG_SECONDARY());
+        assert_eq!(diff_line_color(""), colors::FG_SECONDARY());
+    }
+
+    /// diff 块 body = diff 文本（非 detail）：>3 行时 Truncated = header(1) +
+    /// 3 预览行 + 1 hint；高度与 store 层 height() 估计同口径。
+    #[test]
+    fn diff_result_truncated_previews_three_lines_plus_hint() {
+        let diff = "@@ -1,5 +1,5 @@\n-a\n+b\n-c\n+d\n ctx";
+        let b = diff_tr("detail 不应成为 body", diff, false, FoldState::Truncated);
+        assert_eq!(blk(b.clone()).height, 5, "header + 3 预览 + hint");
+        assert_eq!(b.height(), 5, "store height() 必须与 layout 同口径");
+    }
+
+    /// diff 行数 ≤3 且无服务端截断：无 hint 行。
+    #[test]
+    fn diff_result_short_no_hint() {
+        let b = diff_tr("", "+a\n-b", false, FoldState::Truncated);
+        assert_eq!(blk(b.clone()).height, 3, "header + 2 body，无 hint");
+        assert_eq!(b.height(), 3);
+    }
+
+    /// preview.truncated=true：即使 body 行数 ≤ 预览上限也要标注 server-truncated
+    /// （部分 diff 不得读作完整），Expanded 同样标注。
+    #[test]
+    fn diff_result_server_truncated_always_hints() {
+        let b = diff_tr("", "+a\n-b", true, FoldState::Truncated);
+        assert_eq!(blk(b.clone()).height, 4, "header + 2 body + server-truncated 标注");
+        assert_eq!(b.height(), 4);
+        let b2 = diff_tr("", "+a\n-b", true, FoldState::Expanded);
+        assert_eq!(blk(b2.clone()).height, 4, "Expanded 同样标注");
+        assert_eq!(b2.height(), 4);
+        // hint 文案单测（tool_result_hint 为唯一成形点）。
+        assert_eq!(tool_result_hint(2, 2, true).as_deref(), Some("  … server-truncated"));
+        assert_eq!(
+            tool_result_hint(6, 3, true).as_deref(),
+            Some("  … +3 more lines · server-truncated")
+        );
+        assert_eq!(tool_result_hint(2, 2, false), None);
+    }
+
+    /// Expanded 超 20 行：20 行 body + more-lines hint（带截断后缀）。
+    #[test]
+    fn diff_result_expanded_caps_at_20_lines() {
+        let diff: String = (0..30).map(|i| format!("+line{i}")).collect::<Vec<_>>().join("\n");
+        let b = diff_tr("", &diff, false, FoldState::Expanded);
+        assert_eq!(blk(b.clone()).height, 22, "header + 20 body + hint");
+        assert_eq!(b.height(), 22);
     }
 
     #[test]
@@ -1266,11 +1399,11 @@ mod layout_tests {
             // 连续 ToolResult → 触发聚合井
             v.push(TranscriptBlock::ToolResult {
                 id: format!("r{}_1", turn), name: "read".into(), result: "x".into(),
-                is_error: false, fold: FoldState::Folded,
+                is_error: false, fold: FoldState::Folded, diff: None,
             });
             v.push(TranscriptBlock::ToolResult {
                 id: format!("r{}_2", turn), name: "read".into(), result: "y".into(),
-                is_error: false, fold: FoldState::Folded,
+                is_error: false, fold: FoldState::Folded, diff: None,
             });
         }
         v
