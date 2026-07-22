@@ -997,6 +997,8 @@ impl AppHandler {
                             }
                         }
                         // ProviderEdit：同 ModelEdit 口径（4 字段 × 4 行块）。
+                        // API key 输入行右缘 2 列 = 眼睛命中区（◌/◉）：点击切换
+                        // 明文/掩码，不移动光标（与 F2 共用 toggle 唯一开关）。
                         if self.panel == crate::app::Panel::ProviderEdit {
                             if let Some(rect) = self.provider_edit_rect {
                                 let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
@@ -1005,7 +1007,12 @@ impl AppHandler {
                                 if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::ProviderEditDialog::FIELDS.len() {
                                     let field = crate::dialog::ProviderEditDialog::FIELDS[idx];
                                     self.provider_edit_dialog.set_focus(field);
-                                    if rel % 4 == 2 && m.x >= rect.x + 2 {
+                                    let eye_hit = field == crate::dialog::ProviderEditField::ApiKey
+                                        && rel % 4 == 2
+                                        && m.x + 4 >= rect.x + rect.width;
+                                    if eye_hit {
+                                        self.provider_edit_dialog.toggle_api_key_visibility();
+                                    } else if rel % 4 == 2 && m.x >= rect.x + 2 {
                                         self.provider_edit_dialog
                                             .set_cursor_at(field, (m.x - rect.x - 2) as usize);
                                     }

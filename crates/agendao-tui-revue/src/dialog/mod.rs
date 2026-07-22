@@ -45,3 +45,4 @@ pub use model_edit::{ModelEditDialog, ModelEditAction, ModelEditSubmission, Mode
 pub use mcp_edit::{McpEditDialog, McpEditAction, McpEditSubmission, McpEditMode, McpTransport};
 pub use plugin_edit::{PluginEditDialog, PluginEditAction, PluginEditSubmission};
 pub use provider_edit::{ProviderEditDialog, ProviderEditAction};
+pub(crate) use provider_edit::ProviderEditField;
