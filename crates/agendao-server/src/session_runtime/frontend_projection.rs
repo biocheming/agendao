@@ -37,8 +37,8 @@
 
 use std::sync::Arc;
 
-use agendao_server_core::frontend_events::FrontendEvent;
-use agendao_server_core::runtime_events::{ServerEvent, ToolCallPhase};
+use agendao_server_core::frontend_events::{FrontendBusEvent, FrontendEvent};
+use agendao_server_core::runtime_events::{ServerBusEvent, ServerEvent, ToolCallPhase};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::session_runtime::projection_authority::build_session_projection_fields;
@@ -46,16 +46,17 @@ use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-/// Serialize and broadcast a FrontendEvent on the frontend event bus.
-pub(crate) fn broadcast_frontend_event(bus: &broadcast::Sender<String>, event: &FrontendEvent) {
-    match serde_json::to_string(event) {
-        Ok(json) => {
-            let _ = bus.send(json);
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to serialize FrontendEvent for broadcast");
-        }
-    }
+/// Broadcast a FrontendEvent on the frontend event bus.
+///
+/// The event is shared with all subscribers through `Arc` — in-process
+/// subscribers (direct bridge) consume the typed event with no JSON round
+/// trip; the JSON wire text is materialized lazily (at most once) when a
+/// network-boundary (SSE) subscriber demands it.
+pub(crate) fn broadcast_frontend_event(
+    bus: &broadcast::Sender<Arc<FrontendBusEvent>>,
+    event: FrontendEvent,
+) {
+    let _ = bus.send(Arc::new(FrontendBusEvent::new(event)));
 }
 
 /// Project a single ServerEvent into zero or more FrontendEvents.
@@ -240,8 +241,8 @@ fn session_update_source_projects_nothing(source: &str) -> bool {
 /// This is the canonical wiring point: one subscriber, one projector,
 /// all transports downstream consume from `frontend_bus`.
 pub(crate) fn spawn_frontend_projector(
-    event_bus: broadcast::Sender<String>,
-    frontend_bus: broadcast::Sender<String>,
+    event_bus: broadcast::Sender<Arc<ServerBusEvent>>,
+    frontend_bus: broadcast::Sender<Arc<FrontendBusEvent>>,
     telemetry: Arc<RuntimeTelemetryAuthority>,
     sessions: Arc<Mutex<agendao_session::SessionManager>>,
 ) -> tokio::task::JoinHandle<()> {
@@ -250,13 +251,14 @@ pub(crate) fn spawn_frontend_projector(
         loop {
             match rx.recv().await {
                 Ok(payload) => {
-                    let event = match serde_json::from_str::<ServerEvent>(&payload) {
-                        Ok(e) => e,
-                        Err(_) => continue,
+                    // Raw (non-ServerEvent) payloads have no typed projection —
+                    // this preserves the old `from_str` failure → skip semantics.
+                    let Some(event) = payload.as_event() else {
+                        continue;
                     };
                     let frontend_events =
-                        project_server_event(telemetry.as_ref(), &sessions, &event).await;
-                    for fe in &frontend_events {
+                        project_server_event(telemetry.as_ref(), &sessions, event).await;
+                    for fe in frontend_events {
                         broadcast_frontend_event(&frontend_bus, fe);
                     }
                 }
@@ -953,5 +955,153 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    // ── Bus pipeline: typed, zero JSON round trip ──────────────────────
+
+    /// End-to-end over both buses: a typed ServerEvent goes in on the
+    /// event_bus, the projector emits a typed FrontendBusEvent on the
+    /// frontend_bus, and no JSON text is materialized anywhere in-process.
+    #[tokio::test]
+    async fn projector_pipeline_is_typed_and_zero_json() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let (event_tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
+        let (frontend_tx, _) = broadcast::channel::<Arc<FrontendBusEvent>>(16);
+        let mut frontend_rx = frontend_tx.subscribe();
+
+        let handle = spawn_frontend_projector(event_tx.clone(), frontend_tx, telemetry, sessions);
+
+        let source = Arc::new(ServerBusEvent::event(ServerEvent::OutputBlock {
+            session_id: "ses_1".into(),
+            block: serde_json::json!({"kind": "message", "text": "hello"}),
+            id: Some("msg_1".into()),
+            live_identity: None,
+        }));
+        event_tx
+            .send(Arc::clone(&source))
+            .expect("send to event bus");
+
+        let projected =
+            tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
+                .await
+                .expect("projected event within timeout")
+                .expect("frontend bus open");
+
+        match projected.event() {
+            FrontendEvent::OutputBlockAppended {
+                session_id,
+                block,
+                id,
+                ..
+            } => {
+                assert_eq!(session_id, "ses_1");
+                assert_eq!(block["text"], "hello");
+                assert_eq!(id.as_deref(), Some("msg_1"));
+            }
+            other => panic!("expected OutputBlockAppended, got {:?}", other),
+        }
+
+        // 探针断言:整条进程内链路(event_bus → projector → frontend_bus)
+        // 不允许物化任何 JSON 文本。
+        assert!(
+            !source.is_json_materialized(),
+            "projector must consume the typed event without a JSON round trip"
+        );
+        assert!(
+            !projected.is_json_materialized(),
+            "projector must publish a typed envelope without serializing"
+        );
+
+        handle.abort();
+    }
+
+    /// The projector preserves bus order: events arrive on frontend_bus in
+    /// exactly the order their source events were sent on event_bus.
+    #[tokio::test]
+    async fn projector_pipeline_preserves_event_order() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let (event_tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
+        let (frontend_tx, _) = broadcast::channel::<Arc<FrontendBusEvent>>(16);
+        let mut frontend_rx = frontend_tx.subscribe();
+
+        let handle = spawn_frontend_projector(event_tx.clone(), frontend_tx, telemetry, sessions);
+
+        for i in 0..5 {
+            event_tx
+                .send(Arc::new(ServerBusEvent::event(ServerEvent::OutputBlock {
+                    session_id: "ses_1".into(),
+                    block: serde_json::json!({"kind": "message", "text": format!("chunk-{i}")}),
+                    id: Some(format!("msg_{i}")),
+                    live_identity: None,
+                })))
+                .expect("send to event bus");
+        }
+
+        for i in 0..5 {
+            let projected =
+                tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
+                    .await
+                    .expect("projected event within timeout")
+                    .expect("frontend bus open");
+            match projected.event() {
+                FrontendEvent::OutputBlockAppended { block, id, .. } => {
+                    assert_eq!(block["text"], format!("chunk-{i}"));
+                    assert_eq!(id.as_deref(), Some(format!("msg_{i}").as_str()));
+                }
+                other => panic!("expected OutputBlockAppended, got {:?}", other),
+            }
+        }
+
+        handle.abort();
+    }
+
+    /// Raw (non-ServerEvent) payloads are skipped by the projector — the
+    /// same semantics as the old `from_str` parse-failure path.
+    #[tokio::test]
+    async fn projector_skips_raw_payloads() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let (event_tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
+        let (frontend_tx, _) = broadcast::channel::<Arc<FrontendBusEvent>>(16);
+        let mut frontend_rx = frontend_tx.subscribe();
+
+        let handle = spawn_frontend_projector(event_tx.clone(), frontend_tx, telemetry, sessions);
+
+        event_tx
+            .send(Arc::new(ServerBusEvent::raw(
+                "{\"type\":\"tui.request\"}".to_string(),
+            )))
+            .expect("send raw payload");
+        event_tx
+            .send(Arc::new(ServerBusEvent::event(ServerEvent::ConfigUpdated)))
+            .expect("send typed payload");
+
+        // ConfigUpdated projects to zero frontend events as well, so send one
+        // event that DOES project to prove the raw payload was skipped (not
+        // merely unprojected).
+        event_tx
+            .send(Arc::new(ServerBusEvent::event(ServerEvent::OutputBlock {
+                session_id: "ses_1".into(),
+                block: serde_json::json!({"kind": "message", "text": "after-raw"}),
+                id: None,
+                live_identity: None,
+            })))
+            .expect("send typed output block");
+
+        let projected =
+            tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
+                .await
+                .expect("projected event within timeout")
+                .expect("frontend bus open");
+        match projected.event() {
+            FrontendEvent::OutputBlockAppended { block, .. } => {
+                assert_eq!(block["text"], "after-raw");
+            }
+            other => panic!("expected OutputBlockAppended, got {:?}", other),
+        }
+
+        handle.abort();
     }
 }

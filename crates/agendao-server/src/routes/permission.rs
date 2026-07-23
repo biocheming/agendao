@@ -646,7 +646,7 @@ mod tests {
         for _ in 0..4 {
             let raw = rx.recv().await.expect("pending lifecycle event");
             let json: serde_json::Value =
-                serde_json::from_str(&raw).expect("pending lifecycle json");
+                serde_json::from_str(raw.json()).expect("pending lifecycle json");
             match json["type"].as_str() {
                 Some("permission.requested") => {
                     assert_eq!(json["permissionID"], permission_id);
@@ -695,7 +695,7 @@ mod tests {
         for _ in 0..6 {
             let raw = rx.recv().await.expect("resolved lifecycle event");
             let json: serde_json::Value =
-                serde_json::from_str(&raw).expect("resolved lifecycle json");
+                serde_json::from_str(raw.json()).expect("resolved lifecycle json");
             match json["type"].as_str() {
                 Some("permission.resolved") => {
                     assert_eq!(json["permissionID"], permission_id);

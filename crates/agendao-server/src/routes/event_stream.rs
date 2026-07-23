@@ -1,5 +1,6 @@
 use super::*;
-use agendao_server_core::frontend_events::FrontendEvent;
+use agendao_server_core::frontend_events::FrontendBusEvent;
+use agendao_server_core::runtime_events::ServerBusEvent;
 use crate::session_runtime::frontend_subscription::{
     frontend_event_passes_subscription_caps, frontend_event_session_id,
 };
@@ -33,7 +34,7 @@ pub(super) async fn event_stream(
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
 
 pub(crate) fn stream_server_events(
-    mut rx: broadcast::Receiver<String>,
+    mut rx: broadcast::Receiver<std::sync::Arc<ServerBusEvent>>,
     session_filter: Option<String>,
     subscription: agendao_api::ResolvedFrontendSubscription,
     event_bus_telemetry: Option<std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>>,
@@ -92,12 +93,21 @@ pub(crate) fn stream_server_events(
                 tokio::select! {
                     recv = rx.recv() => {
                         match recv {
-                            Ok(raw) => {
-                                if let Some(next) = parse_server_event(&raw) {
-                                    if !matches_filter(&next) {
+                            Ok(bus) => {
+                                if let Some(event) = bus.as_event() {
+                                    if !matches_filter(event) {
                                         continue;
                                     }
-                                    let next = snapshot_coalescer.coalesce(next);
+                                    // 非 OutputBlock 事件不被 coalesce/merge 变换,
+                                    // 可复用发布侧共享的预序列化文本(字节与
+                                    // 重新 serialize 完全一致),避免每个 SSE
+                                    // 订阅者各自序列化一份。
+                                    let reusable = (!matches!(
+                                        event,
+                                        ServerEvent::OutputBlock { .. }
+                                    ))
+                                    .then(|| bus.clone());
+                                    let next = snapshot_coalescer.coalesce(event.clone());
                                     if !subscribable(&next) {
                                         continue;
                                     }
@@ -115,11 +125,15 @@ pub(crate) fn stream_server_events(
                                     if is_mergeable_output_delta(&next) {
                                         pending = Some(next);
                                         pending_due_at = Some(tokio::time::Instant::now() + delay);
-                                    } else if send_server_event_json(&tx, &next).await.is_err() {
+                                    } else if send_typed_or_shared(&tx, &next, reusable.as_deref())
+                                        .await
+                                        .is_err()
+                                    {
                                         break;
                                     }
                                 } else {
-                                    if !raw_matches_filter(&raw) {
+                                    let raw = bus.json();
+                                    if !raw_matches_filter(raw) {
                                         continue;
                                     }
                                     if let Some(flushed) = pending.take() {
@@ -174,23 +188,30 @@ pub(crate) fn stream_server_events(
                 }
             } else {
                 match rx.recv().await {
-                    Ok(raw) => {
-                        if let Some(event) = parse_server_event(&raw) {
-                            if !matches_filter(&event) {
+                    Ok(bus) => {
+                        if let Some(event) = bus.as_event() {
+                            if !matches_filter(event) {
                                 continue;
                             }
-                            let event = snapshot_coalescer.coalesce(event);
+                            let reusable =
+                                (!matches!(event, ServerEvent::OutputBlock { .. }))
+                                    .then(|| bus.clone());
+                            let event = snapshot_coalescer.coalesce(event.clone());
                             if !subscribable(&event) {
                                 continue;
                             }
                             if is_mergeable_output_delta(&event) {
                                 pending = Some(event);
                                 pending_due_at = Some(tokio::time::Instant::now() + delay);
-                            } else if send_server_event_json(&tx, &event).await.is_err() {
+                            } else if send_typed_or_shared(&tx, &event, reusable.as_deref())
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         } else {
-                            if !raw_matches_filter(&raw) {
+                            let raw = bus.json();
+                            if !raw_matches_filter(raw) {
                                 continue;
                             }
                             if send_raw_server_event(&tx, raw).await.is_err() {
@@ -209,7 +230,7 @@ pub(crate) fn stream_server_events(
 }
 
 pub(crate) fn stream_frontend_events(
-    mut rx: broadcast::Receiver<String>,
+    mut rx: broadcast::Receiver<std::sync::Arc<FrontendBusEvent>>,
     session_filter: Option<String>,
     subscription: agendao_api::ResolvedFrontendSubscription,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
@@ -220,18 +241,20 @@ pub(crate) fn stream_frontend_events(
         let skipped_count = std::sync::atomic::AtomicU64::new(0);
         loop {
             match rx.recv().await {
-                Ok(raw) => {
-                    if !frontend_raw_matches_filter(&raw, session_filter.as_deref()) {
-                        continue;
+                Ok(bus) => {
+                    // 类型安全的进程内总线:session 过滤与订阅能力检查都直接
+                    // 在 typed 事件上做,发送时复用发布侧共享的预序列化文本。
+                    let event = bus.event();
+                    if let Some(filter) = session_filter.as_deref() {
+                        if frontend_event_session_id(event) != Some(filter) {
+                            continue;
+                        }
                     }
-                    let Ok(event) = serde_json::from_str::<FrontendEvent>(&raw) else {
-                        continue;
-                    };
-                    if !frontend_event_passes_subscription_caps(&event, &caps) {
+                    if !frontend_event_passes_subscription_caps(event, &caps) {
                         skipped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
-                    if send_raw_server_event(&tx, raw).await.is_err() {
+                    if send_raw_server_event(&tx, bus.json()).await.is_err() {
                         break;
                     }
                 }
@@ -424,20 +447,6 @@ fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
     0
 }
 
-fn parse_server_event(raw: &str) -> Option<ServerEvent> {
-    serde_json::from_str(raw).ok()
-}
-
-fn frontend_raw_matches_filter(raw: &str, session_filter: Option<&str>) -> bool {
-    let Some(filter) = session_filter else {
-        return true;
-    };
-    let Ok(event) = serde_json::from_str::<FrontendEvent>(raw) else {
-        return false;
-    };
-    frontend_event_session_id(&event) == Some(filter)
-}
-
 pub(super) fn event_passes_subscription_caps(
     event: &ServerEvent,
     caps: &agendao_api::FrontendSubscriptionCapabilities,
@@ -609,11 +618,24 @@ pub(super) fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerE
 
 async fn send_raw_server_event(
     tx: &mpsc::Sender<std::result::Result<Event, Infallible>>,
-    raw: String,
+    raw: &str,
 ) -> std::result::Result<(), ()> {
     tx.send(Ok(Event::default().data(raw)))
         .await
         .map_err(|_| ())
+}
+
+/// Send a typed event, reusing the publisher-side shared pre-serialized wire
+/// text when the event is known to pass through coalesce/merge unchanged.
+async fn send_typed_or_shared(
+    tx: &mpsc::Sender<std::result::Result<Event, Infallible>>,
+    event: &ServerEvent,
+    shared: Option<&ServerBusEvent>,
+) -> std::result::Result<(), ()> {
+    if let Some(bus) = shared {
+        return send_raw_server_event(tx, bus.json()).await;
+    }
+    send_server_event_json(tx, event).await
 }
 
 async fn send_server_event_json(
@@ -623,5 +645,5 @@ async fn send_server_event_json(
     let Some(json) = event.to_json_string() else {
         return Ok(());
     };
-    send_raw_server_event(tx, json).await
+    send_raw_server_event(tx, &json).await
 }

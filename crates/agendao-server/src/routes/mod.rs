@@ -1542,8 +1542,10 @@ mod tests {
     /// with CLI-tier subscription, then asserts the delta is filtered.
     #[tokio::test]
     async fn cli_stream_filters_first_event_in_pending_is_none_path() {
+        use agendao_server_core::runtime_events::ServerBusEvent;
+        use std::sync::Arc;
         use tokio::sync::broadcast;
-        let (tx, _) = broadcast::channel::<String>(16);
+        let (tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
         let rx = tx.subscribe();
 
         let cli_sub = agendao_api::ResolvedFrontendSubscription::from_tier(
@@ -1551,37 +1553,40 @@ mod tests {
         );
         let sse = super::stream_server_events(rx, None, cli_sub, None);
 
+        let send_typed = |value: serde_json::Value, what: &str| {
+            let event = serde_json::from_value::<ServerEvent>(value).expect("typed server event");
+            tx.send(Arc::new(ServerBusEvent::event(event)))
+                .unwrap_or_else(|_| panic!("send {what}"));
+        };
+
         // First event: a non-mergeable Usage — hits the pending.is_none()
         // direct-send path. With CLI tier, it must be filtered.
-        tx.send(
+        send_typed(
             serde_json::json!({
                 "type": "usage", "sessionID": "sess-1",
                 "prompt_tokens": 10, "completion_tokens": 20
-            })
-            .to_string(),
-        )
-        .expect("send usage");
+            }),
+            "usage",
+        );
 
         // Second event: a message delta — mergeable, would enter pending
         // buffer. With CLI tier, must be filtered.
-        tx.send(
+        send_typed(
             serde_json::json!({
                 "type": "output_block", "sessionID": "sess-1", "id": "block-1",
                 "block": { "kind": "message", "phase": "delta", "text": "hello" }
-            })
-            .to_string(),
-        )
-        .expect("send message delta");
+            }),
+            "message delta",
+        );
 
         // Third event: session.updated — must pass for CLI tier.
-        tx.send(
+        send_typed(
             serde_json::json!({
                 "type": "session.updated", "sessionID": "sess-1",
                 "source": "turn.final"
-            })
-            .to_string(),
-        )
-        .expect("send session.updated");
+            }),
+            "session.updated",
+        );
 
         // Close the broadcast channel so the SSE stream task exits and the
         // body completes. Without this, to_bytes blocks forever on the live stream.
@@ -1610,8 +1615,10 @@ mod tests {
 
     #[tokio::test]
     async fn full_tier_stream_debounces_coalesced_snapshots_in_pending_path() {
+        use agendao_server_core::runtime_events::ServerBusEvent;
+        use std::sync::Arc;
         use tokio::sync::broadcast;
-        let (tx, _) = broadcast::channel::<String>(16);
+        let (tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
         let rx = tx.subscribe();
 
         let full_sub = agendao_api::ResolvedFrontendSubscription::from_tier(
@@ -1619,7 +1626,13 @@ mod tests {
         );
         let sse = super::stream_server_events(rx, None, full_sub, None);
 
-        tx.send(
+        let send_typed = |value: serde_json::Value, what: &str| {
+            let event = serde_json::from_value::<ServerEvent>(value).expect("typed server event");
+            tx.send(Arc::new(ServerBusEvent::event(event)))
+                .unwrap_or_else(|_| panic!("send {what}"));
+        };
+
+        send_typed(
             serde_json::json!({
                 "type": "output_block",
                 "sessionID": "sess-1",
@@ -1632,12 +1645,11 @@ mod tests {
                     "phase": "append",
                     "legacy_block_id": "block-1"
                 }
-            })
-            .to_string(),
-        )
-        .expect("send first delta");
+            }),
+            "first delta",
+        );
 
-        tx.send(
+        send_typed(
             serde_json::json!({
                 "type": "output_block",
                 "sessionID": "sess-1",
@@ -1650,10 +1662,9 @@ mod tests {
                     "phase": "append",
                     "legacy_block_id": "block-1"
                 }
-            })
-            .to_string(),
-        )
-        .expect("send second delta");
+            }),
+            "second delta",
+        );
 
         drop(tx);
 

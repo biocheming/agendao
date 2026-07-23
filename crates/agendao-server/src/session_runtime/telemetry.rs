@@ -9,7 +9,7 @@ use agendao_server_core::runtime_control::{
     RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
 };
 use agendao_server_core::runtime_events::{
-    DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent,
+    DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerBusEvent, ServerEvent,
 };
 use agendao_server_core::runtime_state::{
     InterruptTarget, RuntimeProtocolUpdate, RuntimeStateStore, SessionRuntimeState,
@@ -24,7 +24,7 @@ use agendao_types::{ControlInputKind, ControlInputPhase};
 use agendao_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
 
 pub(crate) struct RuntimeTelemetryAuthority {
-    event_bus: broadcast::Sender<String>,
+    event_bus: broadcast::Sender<Arc<ServerBusEvent>>,
     event_bus_telemetry: Option<Arc<EventBusTelemetry>>,
     runtime_state: Arc<RuntimeStateStore>,
     runtime_control: Arc<RuntimeControlRegistry>,
@@ -34,7 +34,7 @@ pub(crate) struct RuntimeTelemetryAuthority {
 
 impl RuntimeTelemetryAuthority {
     pub(crate) fn new(
-        event_bus: broadcast::Sender<String>,
+        event_bus: broadcast::Sender<Arc<ServerBusEvent>>,
         event_bus_telemetry: Option<Arc<EventBusTelemetry>>,
     ) -> Self {
         let runtime_state = Arc::new(RuntimeStateStore::new());
@@ -910,32 +910,33 @@ impl RuntimeTelemetryAuthority {
 
     async fn record_transportable_stage_event(
         stage_event_log: Arc<StageEventLog>,
-        event_bus: &broadcast::Sender<String>,
+        event_bus: &broadcast::Sender<Arc<ServerBusEvent>>,
         event_bus_telemetry: Option<&EventBusTelemetry>,
         session_id: &str,
         event: StageEvent,
     ) {
         if let Some(transport) = ServerEvent::from_stage_event(&event) {
-            Self::broadcast_server_event_payload(event_bus, event_bus_telemetry, &transport);
+            Self::broadcast_server_event_payload(event_bus, event_bus_telemetry, transport);
         }
         stage_event_log.record(session_id, event).await;
     }
 
+    /// Push a typed ServerEvent onto the in-process bus. The event is shared
+    /// with subscribers through `Arc`; the JSON wire text is materialized
+    /// lazily (at most once) at the network boundary.
     fn broadcast_server_event_payload(
-        event_bus: &broadcast::Sender<String>,
+        event_bus: &broadcast::Sender<Arc<ServerBusEvent>>,
         event_bus_telemetry: Option<&EventBusTelemetry>,
-        event: &ServerEvent,
+        event: ServerEvent,
     ) {
-        if let Some(payload) = event.to_json_string() {
-            let receiver_count = event_bus.receiver_count();
-            if event_bus.send(payload).is_err() {
-                tracing::warn!("failed to broadcast runtime telemetry event (no active receivers)");
-                if let Some(telemetry) = event_bus_telemetry {
-                    telemetry.record_send_error();
-                }
-            } else if let Some(telemetry) = event_bus_telemetry {
-                telemetry.record_send(receiver_count);
+        let receiver_count = event_bus.receiver_count();
+        if event_bus.send(Arc::new(ServerBusEvent::event(event))).is_err() {
+            tracing::warn!("failed to broadcast runtime telemetry event (no active receivers)");
+            if let Some(telemetry) = event_bus_telemetry {
+                telemetry.record_send_error();
             }
+        } else if let Some(telemetry) = event_bus_telemetry {
+            telemetry.record_send(receiver_count);
         }
     }
 
@@ -961,7 +962,7 @@ impl RuntimeTelemetryAuthority {
         Self::broadcast_server_event_payload(
             &self.event_bus,
             self.event_bus_telemetry.as_deref(),
-            &event,
+            event,
         );
     }
 
@@ -1033,7 +1034,7 @@ mod tests {
     }
 
     async fn recv_session_status_payload(
-        rx: &mut broadcast::Receiver<String>,
+        rx: &mut broadcast::Receiver<Arc<ServerBusEvent>>,
         wait: Duration,
     ) -> Option<String> {
         let deadline = tokio::time::Instant::now() + wait;
@@ -1044,8 +1045,8 @@ mod tests {
             }
             let remaining = deadline.saturating_duration_since(now);
             match timeout(remaining, rx.recv()).await {
-                Ok(Ok(payload)) if payload.contains("\"type\":\"session.status\"") => {
-                    return Some(payload);
+                Ok(Ok(payload)) if payload.json().contains("\"type\":\"session.status\"") => {
+                    return Some(payload.json().to_string());
                 }
                 Ok(Ok(_)) => continue,
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,

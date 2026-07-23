@@ -481,6 +481,100 @@ impl ServerEvent {
     }
 }
 
+/// In-process payload of the canonical ServerEvent bus.
+///
+/// The event bus is an in-process typed channel: a publisher pushes one typed
+/// `ServerEvent` (or a raw non-ServerEvent JSON payload such as `tui.request`)
+/// and every subscriber shares it through `Arc` — in-process subscribers
+/// (frontend projector, direct bridge) see the typed event directly with no
+/// JSON round trip.
+///
+/// The canonical JSON wire text is materialized lazily on first demand and
+/// then shared by every network-boundary (SSE) subscriber of the same event,
+/// so each event is serialized at most once per process instead of once per
+/// subscriber.
+#[derive(Debug)]
+pub enum ServerBusEvent {
+    /// Typed ServerEvent with lazily-shared JSON wire text.
+    Event(ServerBusEnvelope),
+    /// Raw JSON payload that is not a `ServerEvent` (e.g. `tui.request`).
+    Raw(String),
+}
+
+/// Typed ServerEvent plus its lazily-materialized, shareable JSON wire text.
+#[derive(Debug)]
+pub struct ServerBusEnvelope {
+    event: ServerEvent,
+    json: std::sync::OnceLock<String>,
+}
+
+impl ServerBusEvent {
+    pub fn event(event: ServerEvent) -> Self {
+        Self::Event(ServerBusEnvelope::new(event))
+    }
+
+    pub fn raw(json: String) -> Self {
+        Self::Raw(json)
+    }
+
+    /// Typed event for in-process consumers; `None` for raw payloads.
+    ///
+    /// Raw payloads are exactly the ones that previously failed
+    /// `serde_json::from_str::<ServerEvent>` on the subscriber side, so
+    /// returning `None` here preserves the old fallback semantics.
+    pub fn as_event(&self) -> Option<&ServerEvent> {
+        match self {
+            Self::Event(envelope) => Some(envelope.event()),
+            Self::Raw(_) => None,
+        }
+    }
+
+    /// Canonical JSON wire text — byte-identical to
+    /// `serde_json::to_string` of the typed event, serialized at most once
+    /// and shared by all consumers of this envelope.
+    pub fn json(&self) -> &str {
+        match self {
+            Self::Event(envelope) => envelope.json(),
+            Self::Raw(raw) => raw.as_str(),
+        }
+    }
+
+    /// Test probe: `true` once the JSON wire text has been materialized.
+    /// In-process-only pipelines must leave this `false`.
+    pub fn is_json_materialized(&self) -> bool {
+        match self {
+            Self::Event(envelope) => envelope.is_json_materialized(),
+            Self::Raw(_) => true,
+        }
+    }
+}
+
+impl ServerBusEnvelope {
+    pub fn new(event: ServerEvent) -> Self {
+        Self {
+            event,
+            json: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn event(&self) -> &ServerEvent {
+        &self.event
+    }
+
+    pub fn json(&self) -> &str {
+        self.json.get_or_init(|| {
+            serde_json::to_string(&self.event).unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to serialize ServerEvent for wire broadcast");
+                String::new()
+            })
+        })
+    }
+
+    pub fn is_json_materialized(&self) -> bool {
+        self.json.get().is_some()
+    }
+}
+
 /// Reconcile reason — categorises every `session.updated` / `SessionReconcile`
 /// emit site so we can measure which paths still drive full refreshes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,13 +613,64 @@ impl ReconcileReason {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent, ToolCallPhase};
+    use super::{
+        DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerBusEvent, ServerEvent,
+        ToolCallPhase,
+    };
     use agendao_command_render::output_blocks::{OutputBlock, StatusBlock};
     use agendao_stage_protocol::{telemetry_event_names, StageEvent};
     use agendao_types::{
         ControlInputKind, ControlInputPhase, LiveMessagePartIdentity, LiveMessagePartKind,
         LivePartPhase, ASSISTANT_TEXT_MAIN_PART_KEY,
     };
+
+    // ── ServerBusEvent: lazy shared JSON wire text ─────────────────────
+
+    fn sample_bus_event() -> ServerBusEvent {
+        ServerBusEvent::event(ServerEvent::SessionUpdated {
+            session_id: "ses_1".to_string(),
+            source: "turn.final".to_string(),
+        })
+    }
+
+    #[test]
+    fn typed_bus_event_starts_unmaterialized() {
+        let bus = sample_bus_event();
+        assert!(!bus.is_json_materialized());
+        assert!(matches!(
+            bus.as_event(),
+            Some(ServerEvent::SessionUpdated { .. })
+        ));
+    }
+
+    #[test]
+    fn bus_event_json_matches_direct_serialization_byte_for_byte() {
+        let bus = sample_bus_event();
+        let expected = serde_json::to_string(bus.as_event().unwrap()).expect("direct json");
+        assert_eq!(bus.json(), expected);
+    }
+
+    #[test]
+    fn bus_event_json_is_serialized_once_and_shared() {
+        let bus = sample_bus_event();
+        let first = bus.json() as *const str;
+        let second = bus.json() as *const str;
+        assert!(
+            bus.is_json_materialized(),
+            "json() must materialize the wire text"
+        );
+        assert_eq!(
+            first, second,
+            "repeated json() must return the same allocation (serialize once, share)"
+        );
+    }
+
+    #[test]
+    fn raw_bus_event_has_no_typed_event_and_passes_json_through() {
+        let bus = ServerBusEvent::raw("{\"type\":\"tui.request\"}".to_string());
+        assert!(bus.as_event().is_none());
+        assert_eq!(bus.json(), "{\"type\":\"tui.request\"}");
+    }
 
     #[test]
     fn server_event_serializes_output_block_wrapper() {

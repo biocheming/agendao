@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agendao_server_core::frontend_events::FrontendEvent;
+use agendao_server_core::frontend_events::{FrontendBusEvent, FrontendEvent};
 use agendao_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +44,15 @@ pub fn spawn_direct_event_bus(
     rx
 }
 
+/// Recover an owned FrontendEvent from the shared bus envelope. In-process
+/// consumers never touch the JSON wire text.
+fn into_owned_event(bus: Arc<FrontendBusEvent>) -> FrontendEvent {
+    match Arc::try_unwrap(bus) {
+        Ok(envelope) => envelope.into_event(),
+        Err(shared) => shared.event().clone(),
+    }
+}
+
 async fn direct_event_subscription_loop(
     state: &Arc<ServerState>,
     session_id: &str,
@@ -57,16 +66,18 @@ async fn direct_event_subscription_loop(
         tokio::select! {
             _ = cancel.cancelled() => break,
             recv = event_rx.recv() => {
-                let Ok(event_json) = recv else {
+                let Ok(bus) = recv else {
                     break;
                 };
-                let Ok(frontend_event) = serde_json::from_str::<FrontendEvent>(&event_json) else {
+                // 类型安全的进程内通道:直接在 borrowed 事件上做 session 过滤,
+                // 只有命中的事件才取回 owned 值进入 coalesce —— 不再像旧实现
+                // 那样先全文 JSON parse 再过滤丢弃。
+                if frontend_event_session_id(bus.event()) != Some(session_id) {
                     continue;
-                };
-                if frontend_event_session_id(&frontend_event) == Some(session_id) {
-                    let frontend_event = coalesce_live_output_block(frontend_event, &mut live_output_accum);
-                    let _ = tx.send(frontend_event);
                 }
+                let frontend_event =
+                    coalesce_live_output_block(into_owned_event(bus), &mut live_output_accum);
+                let _ = tx.send(frontend_event);
             }
         }
     }
@@ -84,13 +95,11 @@ async fn direct_event_bus_loop(
         tokio::select! {
             _ = cancel.cancelled() => break,
             recv = event_rx.recv() => {
-                let Ok(event_json) = recv else {
+                let Ok(bus) = recv else {
                     break;
                 };
-                let Ok(frontend_event) = serde_json::from_str::<FrontendEvent>(&event_json) else {
-                    continue;
-                };
-                let frontend_event = coalesce_live_output_block(frontend_event, &mut live_output_accum);
+                let frontend_event =
+                    coalesce_live_output_block(into_owned_event(bus), &mut live_output_accum);
                 let _ = tx.send(frontend_event);
             }
         }
@@ -257,8 +266,10 @@ fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    use agendao_server_core::frontend_events::FrontendEvent;
+    use agendao_server_core::frontend_events::{FrontendBusEvent, FrontendEvent};
     use agendao_server_core::runtime_events::ToolCallPhase;
     use agendao_types::{
         LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase,
@@ -604,5 +615,194 @@ mod tests {
              (allocated {allocated} bytes; inherent floor {inherent_floor} bytes; \
              old merge+clone+json! implementation ≈ 3× floor)"
         );
+    }
+
+    // ── Bus-level: typed transport, filter/order/content/coalesce ──────
+
+    fn bus_envelope(event: FrontendEvent) -> Arc<FrontendBusEvent> {
+        Arc::new(FrontendBusEvent::new(event))
+    }
+
+    fn tool_upsert(session_id: &str, tool_call_id: &str) -> FrontendEvent {
+        FrontendEvent::ToolCallUpsert {
+            session_id: session_id.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: "bash".to_string(),
+            phase: ToolCallPhase::Start,
+        }
+    }
+
+    /// 等 bridge 任务完成订阅后再发送,避免 broadcast 的"发送时无接收者则
+    /// 丢弃"语义造成测试竞态。
+    async fn wait_bridge_subscribed(state: &crate::ServerState, receivers_before: usize) {
+        for _ in 0..1000 {
+            if state.frontend_bus.receiver_count() > receivers_before {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("direct bridge did not subscribe to frontend_bus in time");
+    }
+
+    /// direct bridge 的 session 过滤、事件顺序与事件内容在 typed 传输下
+    /// 逐字节不变;其它 session 的事件在 borrowed 阶段即被过滤(零克隆)。
+    #[tokio::test]
+    async fn direct_event_loop_filters_session_and_preserves_order_and_content() {
+        let state = Arc::new(crate::ServerState::new());
+        let receivers_before = state.frontend_bus.receiver_count();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut rx = super::spawn_direct_event_loop(
+            Arc::clone(&state),
+            "ses_a".to_string(),
+            cancel.clone(),
+        );
+        wait_bridge_subscribed(&state, receivers_before).await;
+
+        let envelopes = vec![
+            bus_envelope(tool_upsert("ses_a", "tc_1")),
+            bus_envelope(tool_upsert("ses_b", "tc_2")),
+            bus_envelope(FrontendEvent::OutputBlockAppended {
+                session_id: "ses_a".to_string(),
+                block: serde_json::json!({"kind": "message", "text": "hello"}),
+                id: Some("msg_1".to_string()),
+                live_identity: None,
+            }),
+        ];
+        for envelope in &envelopes {
+            state
+                .frontend_bus
+                .send(Arc::clone(envelope))
+                .expect("send to frontend bus");
+        }
+
+        let first = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first event within timeout")
+            .expect("channel open");
+        match first {
+            FrontendEvent::ToolCallUpsert {
+                session_id,
+                tool_call_id,
+                ..
+            } => {
+                assert_eq!(session_id, "ses_a");
+                assert_eq!(tool_call_id, "tc_1");
+            }
+            other => panic!("expected ToolCallUpsert, got {:?}", other),
+        }
+
+        let second = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("second event within timeout")
+            .expect("channel open");
+        match second {
+            FrontendEvent::OutputBlockAppended {
+                session_id, block, ..
+            } => {
+                assert_eq!(session_id, "ses_a");
+                assert_eq!(block["text"], "hello");
+            }
+            other => panic!("expected OutputBlockAppended, got {:?}", other),
+        }
+
+        // ses_b 的事件必须被过滤,没有第三条。
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .is_err(),
+            "events for other sessions must be filtered out"
+        );
+
+        // 探针:整条 direct 链路不允许物化 JSON 文本。
+        for envelope in &envelopes {
+            assert!(
+                !envelope.is_json_materialized(),
+                "direct bridge must not materialize JSON in-process"
+            );
+        }
+        cancel.cancel();
+    }
+
+    /// 全总线变体不过滤 session,顺序与内容不变,且 live output 的
+    /// coalesce 语义经 typed 传输后逐字节不变。
+    #[tokio::test]
+    async fn direct_event_bus_forwards_all_sessions_with_coalesce_intact() {
+        let state = Arc::new(crate::ServerState::new());
+        let receivers_before = state.frontend_bus.receiver_count();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut rx = super::spawn_direct_event_bus(Arc::clone(&state), cancel.clone());
+        wait_bridge_subscribed(&state, receivers_before).await;
+
+        let identity = || LiveMessagePartIdentity {
+            message_id: "msg_1".to_string(),
+            part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
+            part_kind: LiveMessagePartKind::AssistantText,
+            phase: LivePartPhase::Append,
+            legacy_block_id: None,
+        };
+        let live_chunk = |session: &str, text: &str| FrontendEvent::OutputBlockAppended {
+            session_id: session.to_string(),
+            block: serde_json::json!({"kind": "message", "phase": "delta", "text": text}),
+            id: Some("msg_1".to_string()),
+            live_identity: Some(identity()),
+        };
+
+        let envelopes = vec![
+            bus_envelope(live_chunk("ses_a", "hel")),
+            bus_envelope(tool_upsert("ses_b", "tc_9")),
+            bus_envelope(live_chunk("ses_a", "lo")),
+        ];
+        for envelope in &envelopes {
+            state
+                .frontend_bus
+                .send(Arc::clone(envelope))
+                .expect("send to frontend bus");
+        }
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(
+                tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    .await
+                    .expect("event within timeout")
+                    .expect("channel open"),
+            );
+        }
+
+        // 顺序:ses_a chunk-1 → ses_b upsert → ses_a chunk-2。
+        let FrontendEvent::OutputBlockAppended { block, .. } = &received[0] else {
+            panic!("expected output block");
+        };
+        assert_eq!(block["text"], "hel");
+        assert_eq!(block["phase"], "full");
+
+        assert!(matches!(
+            &received[1],
+            FrontendEvent::ToolCallUpsert { session_id, .. } if session_id == "ses_b"
+        ));
+
+        let FrontendEvent::OutputBlockAppended {
+            block,
+            live_identity,
+            ..
+        } = &received[2]
+        else {
+            panic!("expected output block");
+        };
+        assert_eq!(block["text"], "hello");
+        assert_eq!(block["phase"], "full");
+        assert_eq!(
+            live_identity.as_ref().map(|identity| identity.phase),
+            Some(LivePartPhase::Snapshot),
+            "coalesced frame must carry Snapshot phase"
+        );
+
+        for envelope in &envelopes {
+            assert!(
+                !envelope.is_json_materialized(),
+                "direct bridge must not materialize JSON in-process"
+            );
+        }
+        cancel.cancel();
     }
 }

@@ -38,9 +38,7 @@ pub(crate) async fn send_sse_server_event(
 }
 
 pub(crate) fn broadcast_server_event(state: &ServerState, event: &ServerEvent) {
-    if let Some(payload) = event.to_json_string() {
-        state.broadcast(&payload);
-    }
+    state.broadcast_event(event.clone());
 }
 
 pub(crate) fn broadcast_output_block_event(state: &ServerState, event: &OutputBlockEvent) {
@@ -122,7 +120,7 @@ mod tests {
 
             let payload = rx.recv().await.expect("session.updated payload");
             let value: serde_json::Value =
-                serde_json::from_str(&payload).expect("valid json payload");
+                serde_json::from_str(payload.json()).expect("valid json payload");
             assert_eq!(value["type"], "session.updated");
             assert_eq!(value["sessionID"], "session-1");
             assert_eq!(value["source"], "turn.final");

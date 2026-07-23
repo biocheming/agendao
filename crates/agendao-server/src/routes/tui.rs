@@ -266,8 +266,8 @@ async fn enqueue_tui_request(state: &Arc<ServerState>, path: &str, body: serde_j
     drop(queue);
     TUI_REQUEST_NOTIFY.notify_one();
 
-    state.broadcast(
-        &serde_json::json!({
+    state.broadcast_raw(
+        serde_json::json!({
             "type": "tui.request",
             "path": path,
             "body": body,
@@ -674,7 +674,7 @@ mod tests {
         for _ in 0..10 {
             let raw = rx.recv().await.expect("question lifecycle event");
             let json: serde_json::Value =
-                serde_json::from_str(&raw).expect("question lifecycle json");
+                serde_json::from_str(raw.json()).expect("question lifecycle json");
 
             match json["type"].as_str() {
                 Some("question.created") => {

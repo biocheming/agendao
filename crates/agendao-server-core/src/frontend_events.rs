@@ -167,9 +167,116 @@ pub enum FrontendEvent {
     },
 }
 
+/// In-process payload of the canonical FrontendEvent bus.
+///
+/// The frontend bus is an in-process typed channel: the single projector
+/// publishes one typed `FrontendEvent` and every subscriber shares it through
+/// `Arc` — in-process subscribers (direct bridge for TUI / Unix socket) see
+/// the typed event directly with no JSON round trip.
+///
+/// The canonical JSON wire text is materialized lazily on first demand and
+/// then shared by every network-boundary (SSE) subscriber of the same event,
+/// so each event is serialized at most once per process instead of once per
+/// subscriber — and zero times when only in-process subscribers exist.
+#[derive(Debug)]
+pub struct FrontendBusEvent {
+    event: FrontendEvent,
+    json: std::sync::OnceLock<String>,
+}
+
+impl FrontendBusEvent {
+    pub fn new(event: FrontendEvent) -> Self {
+        Self {
+            event,
+            json: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn event(&self) -> &FrontendEvent {
+        &self.event
+    }
+
+    pub fn into_event(self) -> FrontendEvent {
+        self.event
+    }
+
+    /// Canonical JSON wire text — byte-identical to
+    /// `serde_json::to_string` of the typed event, serialized at most once
+    /// and shared by all consumers of this envelope.
+    pub fn json(&self) -> &str {
+        self.json.get_or_init(|| {
+            serde_json::to_string(&self.event).unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to serialize FrontendEvent for wire broadcast");
+                String::new()
+            })
+        })
+    }
+
+    /// Test probe: `true` once the JSON wire text has been materialized.
+    /// In-process-only pipelines must leave this `false`.
+    pub fn is_json_materialized(&self) -> bool {
+        self.json.get().is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── FrontendBusEvent: lazy shared JSON wire text ───────────────────
+
+    fn sample_bus_event() -> FrontendBusEvent {
+        FrontendBusEvent::new(FrontendEvent::OutputBlockAppended {
+            session_id: "ses_1".into(),
+            block: serde_json::json!({"kind": "message", "text": "hello"}),
+            id: Some("msg_1".into()),
+            live_identity: None,
+        })
+    }
+
+    #[test]
+    fn bus_event_starts_unmaterialized() {
+        let bus = sample_bus_event();
+        assert!(!bus.is_json_materialized());
+        assert!(matches!(
+            bus.event(),
+            FrontendEvent::OutputBlockAppended { .. }
+        ));
+    }
+
+    #[test]
+    fn bus_event_json_matches_direct_serialization_byte_for_byte() {
+        let bus = sample_bus_event();
+        let expected = serde_json::to_string(bus.event()).expect("direct json");
+        assert_eq!(bus.json(), expected);
+    }
+
+    #[test]
+    fn bus_event_json_is_serialized_once_and_shared() {
+        let bus = sample_bus_event();
+        let first = bus.json() as *const str;
+        let second = bus.json() as *const str;
+        assert!(
+            bus.is_json_materialized(),
+            "json() must materialize the wire text"
+        );
+        assert_eq!(
+            first, second,
+            "repeated json() must return the same allocation (serialize once, share)"
+        );
+    }
+
+    #[test]
+    fn bus_event_into_event_recovers_typed_event() {
+        let bus = sample_bus_event();
+        match bus.into_event() {
+            FrontendEvent::OutputBlockAppended { session_id, block, .. } => {
+                assert_eq!(session_id, "ses_1");
+                assert_eq!(block["text"], "hello");
+            }
+            other => panic!("expected OutputBlockAppended, got {:?}", other),
+        }
+    }
 
     #[test]
     fn session_runtime_replaced_roundtrip() {

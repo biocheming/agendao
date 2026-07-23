@@ -42,7 +42,7 @@ use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::steering::SessionSteeringQueueStore;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 use agendao_server_core::runtime_control::RuntimeControlRegistry;
-use agendao_server_core::runtime_events::EventBusTelemetry;
+use agendao_server_core::runtime_events::{EventBusTelemetry, ServerBusEvent, ServerEvent};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
 
@@ -260,11 +260,11 @@ pub struct ServerState {
     // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
-    pub(crate) event_bus: broadcast::Sender<String>,
+    pub(crate) event_bus: broadcast::Sender<Arc<ServerBusEvent>>,
     /// Canonical bus for projected FrontendEvents. All transports (SSE, Unix,
     /// Direct) consume from this bus once wired. Populated by the single
     /// FrontendProjector subscriber.
-    pub(crate) frontend_bus: broadcast::Sender<String>,
+    pub(crate) frontend_bus: broadcast::Sender<Arc<agendao_server_core::frontend_events::FrontendBusEvent>>,
     /// Guards `ensure_frontend_projector()`: `true` once the background
     /// projector task has been spawned. The guard tracks projector lifecycle
     /// directly, independent of downstream transport subscriber count.
@@ -599,9 +599,25 @@ impl ServerState {
         Ok(state)
     }
 
-    pub fn broadcast(&self, event: &str) {
+    /// Broadcast a typed ServerEvent on the in-process event bus.
+    ///
+    /// The event is shared with all subscribers through `Arc` with no JSON
+    /// round trip; the JSON wire text is materialized lazily (and at most
+    /// once) when a network-boundary subscriber demands it.
+    pub fn broadcast_event(&self, event: ServerEvent) {
+        self.send_on_event_bus(ServerBusEvent::event(event));
+    }
+
+    /// Broadcast a raw (non-ServerEvent) JSON payload on the event bus.
+    /// Reserved for wire payloads that are not part of the ServerEvent
+    /// contract (e.g. `tui.request`).
+    pub fn broadcast_raw(&self, raw: String) {
+        self.send_on_event_bus(ServerBusEvent::raw(raw));
+    }
+
+    fn send_on_event_bus(&self, payload: ServerBusEvent) {
         let receiver_count = self.event_bus.receiver_count();
-        if self.event_bus.send(event.to_string()).is_err() {
+        if self.event_bus.send(Arc::new(payload)).is_err() {
             tracing::warn!("failed to broadcast server event (no active receivers)");
             if let Some(ref telemetry) = self.event_bus_telemetry {
                 telemetry.record_send_error();
