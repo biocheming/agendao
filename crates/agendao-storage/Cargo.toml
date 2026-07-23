@@ -23,6 +23,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 sqlx = { workspace = true }
 dirs = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

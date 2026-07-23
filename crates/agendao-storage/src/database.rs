@@ -113,8 +113,16 @@ impl Database {
     async fn run_migrations(&self) -> Result<(), DatabaseError> {
         info!("Running database migrations");
 
+        // DDL 收进单个事务：26 条 CREATE/ALTER 各自隐式提交会产生 26 次
+        // fsync，是启动数据库阶段的主要 IO 开销；合并后一次提交即可。
+        // ALTER ADD COLUMN 的 "duplicate column" 容错语义保持不变。
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
         for migration in crate::schema::ALL_MIGRATIONS {
-            match sqlx::query(migration).execute(&self.pool).await {
+            match sqlx::query(migration).execute(&mut *tx).await {
                 Ok(_) => {}
                 Err(e) => {
                     let msg = e.to_string();
@@ -127,9 +135,26 @@ impl Database {
                 }
             }
         }
+        tx.commit()
+            .await
+            .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
 
-        self.repair_shifted_message_payload_rows().await?;
-        self.run_tool_call_input_data_migration().await?;
+        // 一次性数据修复用 PRAGMA user_version 门控：此前每次启动都对 messages
+        // 全表（可达百 MB）做 SELECT + 逐行 JSON 反序列化，是启动数据库阶段
+        // 的主要开销。修复幂等，跑过一次即置版标记，后续启动直接跳过。
+        let user_version: i64 =
+            sqlx::query_scalar("PRAGMA user_version")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        if user_version < 1 {
+            self.repair_shifted_message_payload_rows().await?;
+            self.run_tool_call_input_data_migration().await?;
+            sqlx::query("PRAGMA user_version = 1")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        }
 
         Ok(())
     }

@@ -1339,6 +1339,53 @@ pub struct SessionRepository {
     pool: SqlitePool,
 }
 
+/// 按可用核心数把行分片，用 scoped threads 并行执行 JSON 解析（metadata 等
+/// 大列是大库启动恢复的主要 CPU 开销）。行之间无依赖，保持原查询结果序。
+/// 行数太少时直接单线程，避免线程创建开销反噬。
+fn parse_session_rows_parallel(rows: Vec<SessionRow>) -> Vec<Session> {
+    const MIN_ROWS_FOR_PARALLEL: usize = 32;
+
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    if rows.len() < MIN_ROWS_FOR_PARALLEL || parallelism < 2 {
+        return rows.into_iter().map(|r| r.into_session()).collect();
+    }
+
+    let chunk_size = rows.len().div_ceil(parallelism);
+    let mut chunks: Vec<Vec<SessionRow>> = Vec::new();
+    let mut iter = rows.into_iter();
+    loop {
+        let chunk: Vec<SessionRow> = iter.by_ref().take(chunk_size).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        chunks.push(chunk);
+    }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .into_iter()
+                        .map(|row| row.into_session())
+                        .collect::<Vec<Session>>()
+                })
+            })
+            .collect();
+        let mut sessions = Vec::new();
+        for handle in handles {
+            match handle.join() {
+                Ok(parsed) => sessions.extend(parsed),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        sessions
+    })
+}
+
 impl SessionRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -1488,7 +1535,13 @@ impl SessionRepository {
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?,
         };
 
-        Ok(rows.into_iter().map(|r| r.into_session()).collect())
+        // 解析（metadata/summary_diffs 等 JSON 列）是纯 CPU 工作，大库下单线程
+        // 要数百 ms 以上；按核心数分片并行解析。行之间无依赖，保持原结果序。
+        let sessions = tokio::task::spawn_blocking(move || parse_session_rows_parallel(rows))
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("session parse task join: {e}")))?;
+
+        Ok(sessions)
     }
 
     pub async fn update(&self, session: &Session) -> Result<(), DatabaseError> {

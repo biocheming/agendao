@@ -1658,11 +1658,15 @@ impl SessionManager {
     /// Update a session
     pub fn update(&mut self, session: Session) {
         let id = session.record().id.clone();
-        self.sessions.insert(id, session.clone());
-        self.events.push(SessionEvent::Updated {
-            info: Self::summarize_session(&session),
-        });
-        self.publish_session_event(&SESSION_UPDATED_EVENT, &session);
+        self.sessions.insert(id.clone(), session);
+        // 借回 map 中的副本发事件,避免为事件再深拷贝一次完整会话
+        // (流式期每个 update tick 调用,大会话下整份 clone 代价显著)。
+        let Some(stored) = self.sessions.get(&id) else {
+            return;
+        };
+        let info = Self::summarize_session(stored);
+        self.events.push(SessionEvent::Updated { info });
+        self.publish_session_event(&SESSION_UPDATED_EVENT, stored);
     }
 
     /// Restore a session into the in-memory manager without emitting manager events.

@@ -205,7 +205,11 @@ use crate::system::SystemPrompt;
 use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager};
 
 const MAX_STEPS: u32 = 100;
-const STREAM_UPDATE_INTERVAL_MS: u64 = 120;
+// 流式期 session 快照节流间隔。每次触发都会对完整会话做 clone 并驱动
+// 持久化 worker,1.1M token 会话下 120ms 意味着每秒 8 次数 MB 级深拷贝;
+// 提高到 1s 后上屏流式输出(走独立的 output_block 通道,不受此节流)不受影响,
+// 仅降低 session 状态镜像/落库频率。终态(每步结束/循环结束)仍强制 emit。
+const STREAM_UPDATE_INTERVAL_MS: u64 = 1000;
 
 /// Returns `true` when the finish reason indicates the conversation turn is
 /// complete (i.e. not a tool-use continuation or unknown state).

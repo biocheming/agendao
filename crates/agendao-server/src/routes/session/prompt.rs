@@ -16,6 +16,7 @@ use agendao_types::{
     SessionContinuityTurn, SessionMessage,
 };
 use agendao_util::util::format::truncate_chars;
+use agendao_storage::{MessageRepository, SessionRepository};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -275,6 +276,141 @@ pub(crate) fn persist_verified_external_adapter_binding(
             VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY.to_string(),
             value,
         );
+    }
+}
+
+// ============================================================================
+// Streaming persistence worker (incremental, watermark-based)
+// ============================================================================
+
+/// Job handed to the coalescing persistence worker.
+enum PersistJob {
+    /// Mid-stream snapshot: persist incrementally (changed messages only).
+    Incremental(agendao_session::Session),
+    /// Terminal snapshot: full flush (session row + every message + stale-row
+    /// cleanup). `None` means the worker should flush the last snapshot it
+    /// already drained.
+    Final(Option<agendao_session::Session>),
+}
+
+/// Convert any pending incremental snapshot into a terminal job, or queue a
+/// retained-flush marker when the worker already drained the latest snapshot.
+async fn queue_final_persist_job(latest: &Arc<tokio::sync::Mutex<Option<PersistJob>>>) {
+    let mut guard = latest.lock().await;
+    let job = match guard.take() {
+        Some(PersistJob::Incremental(snapshot)) => PersistJob::Final(Some(snapshot)),
+        Some(job @ PersistJob::Final(_)) => job,
+        None => PersistJob::Final(None),
+    };
+    *guard = Some(job);
+}
+
+/// Watermark of which messages have already been persisted, index-aligned with
+/// the session's message list.
+#[derive(Default)]
+struct MessagePersistWatermark {
+    persisted_ids: Vec<String>,
+}
+
+impl MessagePersistWatermark {
+    /// Returns the sub-slice of `messages` that must be (re-)upserted to bring
+    /// storage up to date. Does not advance the watermark — call
+    /// [`Self::commit`] once the planned upserts succeeded.
+    ///
+    /// Messages are append-mostly: during streaming only the tail message
+    /// changes and everything before it is already stored, so we re-upsert the
+    /// last persisted message plus everything appended after it. When the
+    /// persisted prefix no longer matches (compaction / revert / prune rewrote
+    /// history) or the list shrank, fall back to re-upserting every message;
+    /// stale rows left behind by a shrink are deleted by the terminal full
+    /// flush (`flush_with_messages`).
+    fn plan_upserts<'m>(
+        &self,
+        messages: &'m [agendao_types::SessionMessage],
+    ) -> &'m [agendao_types::SessionMessage] {
+        let common = self.persisted_ids.len().min(messages.len());
+        let prefix_intact = messages.len() >= self.persisted_ids.len()
+            && self.persisted_ids[..common]
+                .iter()
+                .zip(messages[..common].iter())
+                .all(|(persisted_id, message)| *persisted_id == message.id);
+        let start = if prefix_intact {
+            self.persisted_ids.len().saturating_sub(1)
+        } else {
+            0
+        };
+        &messages[start..]
+    }
+
+    /// Advance the watermark after the planned upserts succeeded.
+    fn commit(&mut self, messages: &[agendao_types::SessionMessage]) {
+        self.persisted_ids.clear();
+        self.persisted_ids
+            .extend(messages.iter().map(|message| message.id.clone()));
+    }
+}
+
+/// Coalescing persistence worker: drains the latest queued snapshot and writes
+/// it to storage.
+///
+/// Mid-stream snapshots are persisted incrementally — the session row (cheap;
+/// carries usage/title/metadata) plus only the messages the watermark flags as
+/// new or still-streaming. The terminal job performs a full
+/// `flush_with_messages` so the stored state matches a complete sync
+/// (including deletion of messages dropped by compaction/revert), then the
+/// worker exits.
+async fn run_session_persist_worker(
+    latest: Arc<tokio::sync::Mutex<Option<PersistJob>>>,
+    notify: Arc<Notify>,
+    session_repo: Option<SessionRepository>,
+    message_repo: Option<MessageRepository>,
+) {
+    let mut watermark = MessagePersistWatermark::default();
+    // Last drained snapshot, kept so a terminal `Final(None)` job can still
+    // flush when the last update arrived while this worker was processing it.
+    let mut retained: Option<agendao_types::Session> = None;
+    loop {
+        notify.notified().await;
+        let job = latest.lock().await.take();
+        let Some(job) = job else { continue };
+        match job {
+            PersistJob::Incremental(snapshot) => {
+                let mut record = snapshot.into_record();
+                let messages = std::mem::take(&mut record.messages);
+                if let (Some(session_repo), Some(message_repo)) = (&session_repo, &message_repo) {
+                    if let Err(e) = session_repo.upsert(&record).await {
+                        tracing::warn!(session_id = %record.id, %e, "incremental session upsert failed");
+                    }
+                    let mut all_persisted = true;
+                    for message in watermark.plan_upserts(&messages) {
+                        if let Err(e) = message_repo.upsert(message).await {
+                            all_persisted = false;
+                            tracing::warn!(message_id = %message.id, %e, "incremental message upsert failed");
+                        }
+                    }
+                    if all_persisted {
+                        watermark.commit(&messages);
+                    }
+                }
+                if session_repo.is_some() {
+                    record.messages = messages;
+                    retained = Some(record);
+                }
+            }
+            PersistJob::Final(pending) => {
+                let target = pending
+                    .map(agendao_session::Session::into_record)
+                    .or_else(|| retained.take());
+                if let (Some(record), Some(session_repo)) = (target, &session_repo) {
+                    let mut stored = record;
+                    let messages = std::mem::take(&mut stored.messages);
+                    if let Err(e) = session_repo.flush_with_messages(&stored, &messages).await {
+                        tracing::warn!(session_id = %stored.id, %e, "final session flush failed");
+                    }
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -2667,7 +2803,7 @@ async fn session_prompt_inner(
         let update_message_repo = task_state.message_repo.clone();
 
         // Coalescing persistence worker — only persists the latest snapshot, not every tick.
-        let persist_latest: Arc<tokio::sync::Mutex<Option<agendao_session::Session>>> =
+        let persist_latest: Arc<tokio::sync::Mutex<Option<PersistJob>>> =
             Arc::new(tokio::sync::Mutex::new(None));
         let persist_notify = Arc::new(Notify::new());
         let persist_worker = {
@@ -2675,55 +2811,32 @@ async fn session_prompt_inner(
             let notify = persist_notify.clone();
             let s_repo = update_session_repo.clone();
             let m_repo = update_message_repo.clone();
-            tokio::spawn(async move {
-                loop {
-                    notify.notified().await;
-                    // Drain: grab the latest snapshot, leaving None.
-                    let snapshot = latest.lock().await.take();
-                    let Some(snapshot) = snapshot else { continue };
-                    if let (Some(s_repo), Some(m_repo)) = (&s_repo, &m_repo) {
-                        match serde_json::to_value(&snapshot) {
-                            Ok(val) => {
-                                match serde_json::from_value::<agendao_types::Session>(val) {
-                                    Ok(mut stored) => {
-                                        let messages = std::mem::take(&mut stored.messages);
-                                        if let Err(e) = s_repo.upsert(&stored).await {
-                                            tracing::warn!(session_id = %stored.id, %e, "incremental session upsert failed");
-                                        }
-                                        for msg in messages {
-                                            if let Err(e) = m_repo.upsert(&msg).await {
-                                                tracing::warn!(message_id = %msg.id, %e, "incremental message upsert failed");
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(session_id = %snapshot.id, %e, "incremental persist: failed to deserialize session snapshot");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(session_id = %snapshot.id, %e, "incremental persist: failed to serialize session snapshot");
-                            }
-                        }
-                    }
-                }
-            })
+            tokio::spawn(
+                async move { run_session_persist_worker(latest, notify, s_repo, m_repo).await },
+            )
         };
 
-        let mut update_task = tokio::spawn(async move {
-            while let Some(snapshot) = update_rx.recv().await {
-                {
-                    let mut sessions = update_state.sessions.lock().await;
-                    sessions.update(snapshot.clone());
-                }
+        let mut update_task = tokio::spawn({
+            let persist_latest = persist_latest.clone();
+            let persist_notify = persist_notify.clone();
+            async move {
+                while let Some(snapshot) = update_rx.recv().await {
+                    {
+                        let mut sessions = update_state.sessions.lock().await;
+                        sessions.update(snapshot.clone());
+                    }
 
-                *persist_latest.lock().await = Some(snapshot);
+                    *persist_latest.lock().await = Some(PersistJob::Incremental(snapshot));
+                    persist_notify.notify_one();
+                }
+                // Channel closed: the prompt run ended. Convert any pending snapshot
+                // into a terminal job so the worker performs a full flush.
+                queue_final_persist_job(&persist_latest).await;
                 persist_notify.notify_one();
             }
-            persist_notify.notify_one();
         });
         // Keep persist_worker handle at this scope so the outer timeout path can abort it.
-        let persist_worker_handle = persist_worker;
+        let mut persist_worker_handle = persist_worker;
         let update_hook: agendao_session::SessionUpdateHook = Arc::new(move |snapshot| {
             let _ = update_tx.send(snapshot.clone());
         });
@@ -3023,12 +3136,21 @@ async fn session_prompt_inner(
                 );
             }
         }
-        // Always clean up the persist worker — it may still be alive if update_task was aborted.
-        // Give it a brief window to flush the last queued snapshot, then abort.
-        if !persist_worker_handle.is_finished() {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+        // Terminal full flush: guarantee the worker drains a Final job even when
+        // update_task was aborted before queueing one, then wait for the worker to
+        // finish instead of aborting it mid-write after a fixed sleep.
+        queue_final_persist_job(&persist_latest).await;
+        persist_notify.notify_one();
+        match tokio::time::timeout(Duration::from_secs(5), &mut persist_worker_handle).await {
+            Ok(_) => {}
+            Err(_) => {
+                persist_worker_handle.abort();
+                tracing::warn!(
+                    session_id = %session_id,
+                    "timed out waiting for final session persist flush; aborted worker"
+                );
+            }
         }
-        persist_worker_handle.abort();
 
         let latest_assistant_message_id = session
             .messages
@@ -3143,6 +3265,272 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Streaming persist worker: watermark planning + incremental/final flush
+    // ------------------------------------------------------------------
+
+    fn persist_test_message(id: &str) -> agendao_types::SessionMessage {
+        agendao_types::SessionMessage {
+            id: id.to_string(),
+            session_id: "sess".to_string(),
+            role: agendao_types::MessageRole::User,
+            parts: vec![],
+            created_at: chrono::Utc::now(),
+            metadata: Default::default(),
+            usage: None,
+            finish: None,
+        }
+    }
+
+    fn planned_ids(planned: &[agendao_types::SessionMessage]) -> Vec<&str> {
+        planned.iter().map(|message| message.id.as_str()).collect()
+    }
+
+    #[test]
+    fn watermark_first_pass_plans_everything_and_tracks_ids() {
+        let mut watermark = MessagePersistWatermark::default();
+        let batch = vec![persist_test_message("a"), persist_test_message("b")];
+
+        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["a", "b"]);
+        // Watermark does not advance before commit.
+        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["a", "b"]);
+
+        watermark.commit(&batch);
+        assert_eq!(
+            watermark.persisted_ids,
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn watermark_append_only_plans_tail_plus_new_messages() {
+        let mut watermark = MessagePersistWatermark::default();
+        let batch = vec![persist_test_message("a"), persist_test_message("b")];
+        watermark.plan_upserts(&batch);
+        watermark.commit(&batch);
+
+        // Append-only growth: re-upsert the possibly-still-streaming tail "b"
+        // plus the newly appended "c" — the unchanged "a" is skipped.
+        let batch = vec![
+            persist_test_message("a"),
+            persist_test_message("b"),
+            persist_test_message("c"),
+        ];
+        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["b", "c"]);
+        watermark.commit(&batch);
+        assert_eq!(
+            watermark.persisted_ids,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+
+        // No growth: only the tail is re-planned.
+        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["c"]);
+    }
+
+    #[test]
+    fn watermark_falls_back_to_full_upsert_when_history_rewritten() {
+        let mut watermark = MessagePersistWatermark::default();
+        let batch = vec![persist_test_message("a"), persist_test_message("b")];
+        watermark.plan_upserts(&batch);
+        watermark.commit(&batch);
+
+        // Prefix rewritten in place (compaction/revert): full re-plan.
+        let rewritten = vec![persist_test_message("a"), persist_test_message("x")];
+        assert_eq!(planned_ids(watermark.plan_upserts(&rewritten)), vec!["a", "x"]);
+
+        // History shrank (prune): full re-plan of what remains.
+        let shrunk = vec![persist_test_message("a")];
+        assert_eq!(planned_ids(watermark.plan_upserts(&shrunk)), vec!["a"]);
+        watermark.commit(&shrunk);
+        assert_eq!(watermark.persisted_ids, vec!["a".to_string()]);
+
+        // Empty history: nothing to upsert, watermark resets.
+        let empty: Vec<agendao_types::SessionMessage> = vec![];
+        assert!(watermark.plan_upserts(&empty).is_empty());
+        watermark.commit(&empty);
+        assert!(watermark.persisted_ids.is_empty());
+        assert!(watermark.plan_upserts(&empty).is_empty());
+    }
+
+    #[tokio::test]
+    async fn queue_final_persist_job_converts_pending_and_handles_empty() {
+        use tokio::sync::Mutex;
+
+        // Pending incremental snapshot becomes the terminal snapshot.
+        let latest = Arc::new(Mutex::new(Some(PersistJob::Incremental(
+            agendao_session::Session::new("proj", "/tmp"),
+        ))));
+        queue_final_persist_job(&latest).await;
+        let queued = persist_job_name(latest.lock().await.as_ref());
+        assert_eq!(queued, "Final(Some)");
+
+        // A queued final job is left untouched.
+        queue_final_persist_job(&latest).await;
+        let queued = persist_job_name(latest.lock().await.as_ref());
+        assert_eq!(queued, "Final(Some)");
+
+        // Nothing pending: queue a retained-flush marker.
+        let latest = Arc::new(Mutex::new(None));
+        queue_final_persist_job(&latest).await;
+        let queued = persist_job_name(latest.lock().await.as_ref());
+        assert_eq!(queued, "Final(None)");
+    }
+
+    fn persist_job_name(job: Option<&PersistJob>) -> &'static str {
+        match job {
+            Some(PersistJob::Incremental(_)) => "Incremental",
+            Some(PersistJob::Final(Some(_))) => "Final(Some)",
+            Some(PersistJob::Final(None)) => "Final(None)",
+            None => "None",
+        }
+    }
+
+    async fn wait_for_persisted_messages(message_repo: &MessageRepository, session_id: &str, len: usize) {
+        for _ in 0..200 {
+            let messages = message_repo
+                .list_for_session(session_id)
+                .await
+                .expect("list messages");
+            if messages.len() == len {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for {len} persisted messages");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persist_worker_incremental_ticks_then_final_full_flush() {
+        let db = agendao_storage::Database::in_memory()
+            .await
+            .expect("in-memory database");
+        let session_repo = SessionRepository::new(db.pool().clone());
+        let message_repo = MessageRepository::new(db.pool().clone());
+
+        let latest = Arc::new(tokio::sync::Mutex::new(None));
+        let notify = Arc::new(Notify::new());
+        let worker = tokio::spawn(run_session_persist_worker(
+            latest.clone(),
+            notify.clone(),
+            Some(session_repo.clone()),
+            Some(message_repo.clone()),
+        ));
+
+        // Tick 1: user message + a still-streaming assistant message.
+        let mut session = agendao_session::Session::new("proj", "/tmp");
+        let session_id = session.id.clone();
+        session.push_message(agendao_session::SessionMessage::user(
+            session_id.clone(),
+            "hi",
+        ));
+        let mut assistant = agendao_session::SessionMessage::assistant(session_id.clone());
+        assistant.add_text("partial");
+        session.push_message(assistant);
+        let assistant_id = session.messages[1].id.clone();
+
+        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        notify.notify_one();
+        wait_for_persisted_messages(&message_repo, &session_id, 2).await;
+
+        // Tick 2: the tail streams more text and a new message is appended.
+        session.messages_mut()[1].add_text(" more");
+        session.push_message(agendao_session::SessionMessage::user(
+            session_id.clone(),
+            "followup",
+        ));
+        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        notify.notify_one();
+        wait_for_persisted_messages(&message_repo, &session_id, 3).await;
+
+        // The streamed tail content must have been re-upserted incrementally.
+        let stored = message_repo
+            .list_for_session(&session_id)
+            .await
+            .expect("list messages");
+        let tail = stored
+            .iter()
+            .find(|message| message.id == assistant_id)
+            .expect("assistant message persisted");
+        let tail_text: String = tail
+            .parts
+            .iter()
+            .filter_map(|part| match &part.part_type {
+                agendao_types::PartType::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(tail_text.contains("partial"), "tail text persisted: {tail_text}");
+
+        // Terminal: history rewritten (compaction-like) — final job must flush
+        // everything and delete stale rows the incremental path never touched.
+        session.messages_mut().clear();
+        session.push_message(agendao_session::SessionMessage::user(
+            session_id.clone(),
+            "compacted summary",
+        ));
+        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        queue_final_persist_job(&latest).await;
+        notify.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+            .await
+            .expect("worker should exit after final flush")
+            .expect("worker join");
+
+        let stored = message_repo
+            .list_for_session(&session_id)
+            .await
+            .expect("list messages");
+        assert_eq!(stored.len(), 1, "stale messages deleted by final flush");
+        assert!(session_repo
+            .get(&session_id)
+            .await
+            .expect("get session")
+            .is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persist_worker_final_without_pending_flushes_retained_snapshot() {
+        let db = agendao_storage::Database::in_memory()
+            .await
+            .expect("in-memory database");
+        let session_repo = SessionRepository::new(db.pool().clone());
+        let message_repo = MessageRepository::new(db.pool().clone());
+
+        let latest = Arc::new(tokio::sync::Mutex::new(None));
+        let notify = Arc::new(Notify::new());
+        let worker = tokio::spawn(run_session_persist_worker(
+            latest.clone(),
+            notify.clone(),
+            Some(session_repo.clone()),
+            Some(message_repo.clone()),
+        ));
+
+        let mut session = agendao_session::Session::new("proj", "/tmp");
+        let session_id = session.id.clone();
+        session.push_message(agendao_session::SessionMessage::user(
+            session_id.clone(),
+            "hi",
+        ));
+        *latest.lock().await = Some(PersistJob::Incremental(session));
+        notify.notify_one();
+        wait_for_persisted_messages(&message_repo, &session_id, 1).await;
+
+        // Nothing pending anymore: Final(None) must flush the retained copy and
+        // the worker must exit cleanly.
+        queue_final_persist_job(&latest).await;
+        notify.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+            .await
+            .expect("worker should exit after final flush")
+            .expect("worker join");
+
+        let stored = message_repo
+            .list_for_session(&session_id)
+            .await
+            .expect("list messages");
+        assert_eq!(stored.len(), 1);
     }
 
     #[test]
