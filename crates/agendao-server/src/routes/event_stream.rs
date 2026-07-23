@@ -348,17 +348,21 @@ impl LiveSnapshotCoalescer {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let accumulated = if identity.phase == agendao_types::LivePartPhase::Append {
-            self.accum.entry(key.clone()).or_default().push_str(text);
-            self.accum[&key].clone()
+        // 原地更新累积缓冲（append 追加 / snapshot 就地归并），每个 chunk 只做
+        // O(chunk) 增量工作；仅为即将发出的 full 帧克隆一次全文（full 帧本身必须
+        // 携带累积全文，这一次拷贝是线上契约的下界）。旧实现每 chunk 做
+        // clone + serde_json::json! 两份全文拷贝，随回答长度呈 O(n²) 总量。
+        let entry = self.accum.entry(key).or_default();
+        if identity.phase == agendao_types::LivePartPhase::Append {
+            entry.reserve(text.len());
+            entry.push_str(text);
         } else {
-            let merged = merge_snapshot_text(self.accum.get(&key).map(String::as_str), text);
-            self.accum.insert(key, merged.clone());
-            merged
-        };
+            merge_snapshot_text_in_place(entry, text);
+        }
+        let accumulated = entry.clone();
 
         if let Some(obj) = block.as_object_mut() {
-            obj.insert(coalesce_field.to_string(), serde_json::json!(accumulated));
+            obj.insert(coalesce_field.to_string(), serde_json::Value::String(accumulated));
             obj.insert("phase".to_string(), serde_json::json!("full"));
         }
         if let Some(ref telemetry) = self.telemetry {
@@ -377,32 +381,34 @@ impl LiveSnapshotCoalescer {
     }
 }
 
-fn merge_snapshot_text(existing: Option<&str>, incoming: &str) -> String {
-    let Some(existing) = existing.filter(|value| !value.is_empty()) else {
-        return incoming.to_string();
-    };
+/// 原地版快照归并：逐字节等价于旧的"分配新 String 返回"版本
+/// （`merged` 在所有分支下都以 `existing` 为前缀或与 `existing` 相同，
+/// 因此只需 append 增量即可，无需每 chunk 重分配全文）。
+///
+/// 三态语义保持不变：
+///   - 累积快照：incoming 以 existing 为前缀 → 追加增量（等价于替换为 incoming）。
+///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
+///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接（existing 原样保留，仅追加尾部）。
+pub(super) fn merge_snapshot_text_in_place(existing: &mut String, incoming: &str) {
     if incoming.is_empty() {
-        return existing.to_string();
+        return;
     }
-    if incoming.starts_with(existing) {
-        return incoming.to_string();
+    if existing.is_empty() {
+        existing.reserve(incoming.len());
+        existing.push_str(incoming);
+        return;
+    }
+    if incoming.starts_with(existing.as_str()) {
+        existing.push_str(&incoming[existing.len()..]);
+        return;
     }
     if existing.starts_with(incoming) {
-        return existing.to_string();
+        return;
     }
 
     let overlap = suffix_prefix_overlap(existing, incoming);
-    if overlap > 0 {
-        let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
-        merged.push_str(existing);
-        merged.push_str(&incoming[overlap..]);
-        return merged;
-    }
-
-    let mut merged = String::with_capacity(existing.len() + incoming.len());
-    merged.push_str(existing);
-    merged.push_str(incoming);
-    merged
+    existing.reserve(incoming.len() - overlap);
+    existing.push_str(&incoming[overlap..]);
 }
 
 fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {

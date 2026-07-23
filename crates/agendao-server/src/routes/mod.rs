@@ -1678,4 +1678,294 @@ mod tests {
             "intermediate snapshot must not be flushed separately; got:\n{text}"
         );
     }
+
+    /// 旧的分配式参考实现（golden，逐字节保留修复前行为），仅用于等价性断言。
+    fn reference_merge_snapshot_text(existing: Option<&str>, incoming: &str) -> String {
+        let Some(existing) = existing.filter(|value| !value.is_empty()) else {
+            return incoming.to_string();
+        };
+        if incoming.is_empty() {
+            return existing.to_string();
+        }
+        if incoming.starts_with(existing) {
+            return incoming.to_string();
+        }
+        if existing.starts_with(incoming) {
+            return existing.to_string();
+        }
+        let max = existing.len().min(incoming.len());
+        let mut overlap = 0;
+        for size in (1..=max).rev() {
+            if existing.is_char_boundary(existing.len() - size)
+                && incoming.is_char_boundary(size)
+                && existing[existing.len() - size..] == incoming[..size]
+            {
+                overlap = size;
+                break;
+            }
+        }
+        if overlap > 0 {
+            let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
+            merged.push_str(existing);
+            merged.push_str(&incoming[overlap..]);
+            return merged;
+        }
+        let mut merged = String::with_capacity(existing.len() + incoming.len());
+        merged.push_str(existing);
+        merged.push_str(incoming);
+        merged
+    }
+
+    /// 确定性伪随机 op 流生成器（不依赖外部 crates）。
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn pick<'a>(&mut self, xs: &'a [&'a str]) -> &'a str {
+            xs[(self.next() as usize) % xs.len()]
+        }
+    }
+
+    const COALESCE_FRAGS: [&str; 8] = ["The", " answer", " is", " ", "ab", "你好", "，", "x"];
+
+    fn coalesce_snapshot_event(text: &str, msg_id: &str, part_key: &str) -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "full", "text": text }),
+            live_identity: Some(agendao_types::LiveMessagePartIdentity {
+                message_id: msg_id.to_string(),
+                part_key: part_key.to_string(),
+                part_kind: agendao_types::LiveMessagePartKind::AssistantText,
+                phase: agendao_types::LivePartPhase::Snapshot,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
+        }
+    }
+
+    #[test]
+    fn merge_snapshot_text_in_place_matches_reference_byte_for_byte() {
+        let mut rng = Lcg(0x5EED_5EED_5EED_5EED);
+        let mut in_place = String::new();
+        let mut reference = String::new();
+        // truth 是"线上真实全文"，用于构造逼真的累积/陈旧/重叠 incoming。
+        let mut truth = String::new();
+
+        for step in 0..600 {
+            let incoming = match rng.next() % 6 {
+                // 累积快照：incoming 以现有内容为前缀。
+                0 => {
+                    truth.push_str(rng.pick(&COALESCE_FRAGS));
+                    truth.clone()
+                }
+                // 陈旧/重复快照：incoming 是现有内容的前缀。
+                1 => {
+                    let keep = (rng.next() as usize) % (truth.len() + 1);
+                    let mut boundary = 0;
+                    for (idx, _) in truth.char_indices() {
+                        if idx <= keep {
+                            boundary = idx;
+                        }
+                    }
+                    truth[..boundary].to_string()
+                }
+                // 重叠片段。
+                2 => {
+                    let tail = rng.pick(&COALESCE_FRAGS);
+                    let head = rng.pick(&COALESCE_FRAGS);
+                    truth.push_str(head);
+                    format!("{tail}{head}")
+                }
+                // 不相干片段：无前缀关系，退化为拼接。
+                3 => {
+                    let frag = rng.pick(&COALESCE_FRAGS);
+                    truth.push_str(frag);
+                    frag.to_string()
+                }
+                // 空快照：no-op。
+                4 => String::new(),
+                // 完整重复（incoming == 现有内容）。
+                _ => truth.clone(),
+            };
+            merge_snapshot_text_in_place(&mut in_place, &incoming);
+            reference = reference_merge_snapshot_text(Some(&reference), &incoming);
+            assert_eq!(
+                in_place, reference,
+                "step {step}: in-place merge diverged from reference (incoming={incoming:?})"
+            );
+        }
+        assert!(!in_place.is_empty(), "op stream must exercise real merges");
+    }
+
+    /// coalescer 级 golden：混合 Append delta / Snapshot 累积 / 陈旧 / 重叠 /
+    /// 片段 / End 重置的 op 流，逐帧断言发出的 full 快照文本与参考模型
+    /// 逐字节一致，且 phase 语义不变（block "full" + identity Snapshot）。
+    #[test]
+    fn coalescer_emitted_frames_match_reference_model_byte_for_byte() {
+        let mut rng = Lcg(0xABCD_EF01_2345_6789);
+        let mut c = LiveSnapshotCoalescer::new();
+        let mut reference = String::new();
+        let mut truth = String::new();
+        let part_key = agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY;
+
+        for step in 0..400 {
+            let event = match rng.next() % 8 {
+                // Append delta：累积器纯追加。
+                0 | 1 | 2 => {
+                    let frag = rng.pick(&COALESCE_FRAGS);
+                    truth.push_str(frag);
+                    reference.push_str(frag);
+                    coalesce_delta(frag, "msg-1", part_key)
+                }
+                // 累积快照。
+                3 | 4 => {
+                    truth.push_str(rng.pick(&COALESCE_FRAGS));
+                    let incoming = truth.clone();
+                    reference = reference_merge_snapshot_text(Some(&reference), &incoming);
+                    coalesce_snapshot_event(&incoming, "msg-1", part_key)
+                }
+                // 陈旧快照（前一截前缀，按 char 边界截断）。
+                5 => {
+                    let mut cut = truth.len() / 2;
+                    while !truth.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    let incoming = truth[..cut].to_string();
+                    reference = reference_merge_snapshot_text(Some(&reference), &incoming);
+                    coalesce_snapshot_event(&incoming, "msg-1", part_key)
+                }
+                // 重叠片段快照。
+                6 => {
+                    let tail = rng.pick(&COALESCE_FRAGS);
+                    let head = rng.pick(&COALESCE_FRAGS);
+                    truth.push_str(head);
+                    let incoming = format!("{tail}{head}");
+                    reference = reference_merge_snapshot_text(Some(&reference), &incoming);
+                    coalesce_snapshot_event(&incoming, "msg-1", part_key)
+                }
+                // End：清零累积器，pass-through，不发 full 帧。
+                _ => {
+                    reference.clear();
+                    truth.clear();
+                    let end = ServerEvent::OutputBlock {
+                        session_id: "sess-1".to_string(),
+                        id: Some("block-1".to_string()),
+                        block: serde_json::json!({ "kind": "message", "phase": "end" }),
+                        live_identity: Some(agendao_types::LiveMessagePartIdentity {
+                            message_id: "msg-1".to_string(),
+                            part_key: part_key.to_string(),
+                            part_kind: agendao_types::LiveMessagePartKind::AssistantText,
+                            phase: agendao_types::LivePartPhase::End,
+                            legacy_block_id: Some("block-1".to_string()),
+                        }),
+                    };
+                    let out = c.coalesce(end);
+                    assert!(
+                        c.accum.is_empty(),
+                        "step {step}: End must clear accumulated state"
+                    );
+                    assert_eq!(
+                        snapshot_block_text(&out),
+                        None,
+                        "step {step}: End frame passes through without coalesced text"
+                    );
+                    continue;
+                }
+            };
+
+            let out = c.coalesce(event);
+            assert_eq!(
+                snapshot_block_text(&out),
+                Some(reference.clone()),
+                "step {step}: emitted full snapshot diverged from reference model"
+            );
+            assert_eq!(
+                snapshot_phase(&out),
+                Some(agendao_types::LivePartPhase::Snapshot),
+                "step {step}: emitted frame must carry Snapshot phase"
+            );
+        }
+    }
+
+    /// 分配量级断言（Append 流）：full 帧契约要求每帧携带累积全文，因此
+    /// 每帧一次全文拷贝（Σ frame_len）是下界；旧实现为 clone + json! 两份
+    /// （≈2× 下界）。新实现必须压在 1.5× 下界以内。
+    #[test]
+    fn coalescer_append_stream_allocates_one_frame_copy_per_chunk() {
+        const CHUNKS: usize = 400;
+        const CHUNK: &str = "abcdefghijklmnopqrstuvwxy"; // 25 bytes
+        let events: Vec<ServerEvent> = (0..CHUNKS)
+            .map(|_| coalesce_delta(CHUNK, "msg-1", agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY))
+            .collect();
+        // 每帧一次全文拷贝的下界：Σ i*25。
+        let inherent_floor: usize = (1..=CHUNKS).sum::<usize>() * CHUNK.len();
+
+        let guard = crate::test_alloc::AllocGuard::start();
+        let mut c = LiveSnapshotCoalescer::new();
+        let mut last = None;
+        for event in events {
+            last = Some(c.coalesce(event));
+        }
+        let allocated = guard.bytes();
+        drop(guard);
+
+        assert_eq!(
+            snapshot_block_text(&last.expect("final frame")).map(|s| s.len()),
+            Some(CHUNKS * CHUNK.len())
+        );
+        assert!(
+            allocated < inherent_floor * 3 / 2,
+            "append coalescing must allocate ~1 frame copy per chunk \
+             (allocated {allocated} bytes; inherent floor {inherent_floor} bytes; \
+             old clone+json! implementation ≈ 2× floor)"
+        );
+    }
+
+    /// 分配量级断言（Snapshot 流）：旧实现每帧 merge 分配 + clone 入累积器
+    /// + json! 共三份全文（≈3× 下界）；原地归并 + 单次克隆必须压在
+    /// 1.5× 下界以内。
+    #[test]
+    fn coalescer_snapshot_stream_allocates_one_frame_copy_per_chunk() {
+        const CHUNKS: usize = 400;
+        const CHUNK: &str = "abcdefghijklmnopqrstuvwxy"; // 25 bytes
+        let mut truth = String::new();
+        let events: Vec<ServerEvent> = (0..CHUNKS)
+            .map(|_| {
+                truth.push_str(CHUNK);
+                coalesce_snapshot_event(
+                    &truth,
+                    "msg-1",
+                    agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+                )
+            })
+            .collect();
+        let inherent_floor: usize = (1..=CHUNKS).sum::<usize>() * CHUNK.len();
+
+        let guard = crate::test_alloc::AllocGuard::start();
+        let mut c = LiveSnapshotCoalescer::new();
+        let mut last = None;
+        for event in events {
+            last = Some(c.coalesce(event));
+        }
+        let allocated = guard.bytes();
+        drop(guard);
+
+        assert_eq!(
+            snapshot_block_text(&last.expect("final frame")).map(|s| s.len()),
+            Some(CHUNKS * CHUNK.len())
+        );
+        assert!(
+            allocated < inherent_floor * 3 / 2,
+            "snapshot coalescing must allocate ~1 frame copy per chunk \
+             (allocated {allocated} bytes; inherent floor {inherent_floor} bytes; \
+             old merge+clone+json! implementation ≈ 3× floor)"
+        );
+    }
 }

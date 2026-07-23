@@ -193,7 +193,7 @@ impl SessionStore {
                     if new_segment {
                         content.push_str(text);
                     } else {
-                        *content = merge_snapshot_text(content, text);
+                        merge_snapshot_text_in_place(content, text);
                     }
                 }
                 _ => msgs.push(TranscriptBlock::AssistantMsg {
@@ -232,7 +232,7 @@ impl SessionStore {
                     if new_segment {
                         content.push_str(text);
                     } else {
-                        *content = merge_snapshot_text(content, text);
+                        merge_snapshot_text_in_place(content, text);
                     }
                     return;
                 }
@@ -716,39 +716,38 @@ impl SessionStore {
     }
 }
 
-/// 快照合并（与服务端 `merge_snapshot_text` 同口径——routes/event_stream.rs 与
-/// session_runtime/direct_bridge.rs 两处副本的第三种消费方副本）。
+/// 快照归并（与服务端 `merge_snapshot_text_in_place` 同口径——
+/// routes/event_stream.rs 与 session_runtime/direct_bridge.rs 两处副本的
+/// 第三种消费方副本），原地增量更新版本。
+///
+/// 逐字节等价于旧的"分配新 String 返回"版本：`merged` 在所有分支下都以
+/// `existing` 为前缀或与 `existing` 相同，因此只需 append 增量即可，
+/// 无需每 chunk 重分配全文（旧实现 10KB 回答 × 500 chunk ≈ 5MB 重分配）。
 ///
 /// `full` 快照的 text 在两种线上形态下都正确：
-///   - 累积快照：incoming 以 existing 为前缀 → 取 incoming（替换）。
+///   - 累积快照：incoming 以 existing 为前缀 → 追加增量（等价于取 incoming 替换）。
 ///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
-///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接。
-fn merge_snapshot_text(existing: &str, incoming: &str) -> String {
-    if existing.is_empty() {
-        return incoming.to_string();
-    }
+///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接（仅追加尾部）。
+fn merge_snapshot_text_in_place(existing: &mut String, incoming: &str) {
     if incoming.is_empty() {
-        return existing.to_string();
+        return;
     }
-    if incoming.starts_with(existing) {
-        return incoming.to_string();
+    if existing.is_empty() {
+        existing.reserve(incoming.len());
+        existing.push_str(incoming);
+        return;
+    }
+    if incoming.starts_with(existing.as_str()) {
+        existing.push_str(&incoming[existing.len()..]);
+        return;
     }
     if existing.starts_with(incoming) {
-        return existing.to_string();
+        return;
     }
 
     let overlap = suffix_prefix_overlap(existing, incoming);
-    if overlap > 0 {
-        let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
-        merged.push_str(existing);
-        merged.push_str(&incoming[overlap..]);
-        return merged;
-    }
-
-    let mut merged = String::with_capacity(existing.len() + incoming.len());
-    merged.push_str(existing);
-    merged.push_str(incoming);
-    merged
+    existing.reserve(incoming.len() - overlap);
+    existing.push_str(&incoming[overlap..]);
 }
 
 fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
@@ -768,29 +767,217 @@ fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
 mod tests {
     use super::*;
 
+    /// 旧的分配式参考实现（golden，逐字节保留修复前行为），仅用于等价性断言。
+    fn reference_merge_snapshot_text(existing: &str, incoming: &str) -> String {
+        if existing.is_empty() {
+            return incoming.to_string();
+        }
+        if incoming.is_empty() {
+            return existing.to_string();
+        }
+        if incoming.starts_with(existing) {
+            return incoming.to_string();
+        }
+        if existing.starts_with(incoming) {
+            return existing.to_string();
+        }
+        let overlap = suffix_prefix_overlap(existing, incoming);
+        if overlap > 0 {
+            let mut merged = String::with_capacity(existing.len() + incoming.len() - overlap);
+            merged.push_str(existing);
+            merged.push_str(&incoming[overlap..]);
+            return merged;
+        }
+        let mut merged = String::with_capacity(existing.len() + incoming.len());
+        merged.push_str(existing);
+        merged.push_str(incoming);
+        merged
+    }
+
+    fn merge_via_in_place(existing: &str, incoming: &str) -> String {
+        let mut merged = existing.to_string();
+        merge_snapshot_text_in_place(&mut merged, incoming);
+        merged
+    }
+
+    /// 确定性伪随机 op 流：覆盖 append 增量、累积快照、陈旧快照、重叠片段、
+    /// 不相干片段、空快照全部分支，逐步断言原地实现与参考实现逐字节一致。
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn pick<'a>(&mut self, xs: &'a [&'a str]) -> &'a str {
+            xs[(self.next() as usize) % xs.len()]
+        }
+    }
+
+    const MERGE_FRAGS: [&str; 8] = ["The", " answer", " is", " ", "ab", "你好", "，", "x"];
+
     #[test]
     fn merge_snapshot_handles_cumulative_and_fragment_streams() {
         // 累积快照（Bug B 形态）：替换而非拼接
         let mut acc = String::new();
         for snap in ["The", "The answer to", "The answer to 1+1 is 2"] {
-            acc = merge_snapshot_text(&acc, snap);
+            merge_snapshot_text_in_place(&mut acc, snap);
         }
         assert_eq!(acc, "The answer to 1+1 is 2");
 
         // 逐 chunk 片段（无前缀关系时退化为拼接——段内混合内容的兜底）
         let mut acc = String::new();
         for frag in ["R", "ust is", " a systems", " language"] {
-            acc = merge_snapshot_text(&acc, frag);
+            merge_snapshot_text_in_place(&mut acc, frag);
         }
         assert_eq!(acc, "Rust is a systems language");
 
         // 重叠去重
-        assert_eq!(merge_snapshot_text("Rust is", "is a"), "Rust is a");
+        assert_eq!(merge_via_in_place("Rust is", "is a"), "Rust is a");
         // 陈旧快照去重
-        assert_eq!(merge_snapshot_text("The answer", "The"), "The answer");
+        assert_eq!(merge_via_in_place("The answer", "The"), "The answer");
         // 注意：逐 token 片段流（如 "1","+","1"）不靠 merge 拼接——片段携带
         // per-chunk `start`，由 apply_assistant_snapshot 的分段追加负责
         // （见 event_handler::tests::fragment_full_snapshots_append_after_each_start）。
+    }
+
+    #[test]
+    fn merge_snapshot_in_place_matches_reference_byte_for_byte() {
+        let mut rng = Lcg(0x5EED_5EED_5EED_5EED);
+        let mut in_place = String::new();
+        let mut reference = String::new();
+        // truth 是"线上真实全文"，用于构造逼真的累积/陈旧/重叠 incoming。
+        let mut truth = String::new();
+
+        for step in 0..600 {
+            let incoming = match rng.next() % 6 {
+                // 累积快照：incoming 以现有内容为前缀。
+                0 => {
+                    truth.push_str(rng.pick(&MERGE_FRAGS));
+                    truth.clone()
+                }
+                // 陈旧/重复快照：incoming 是现有内容的前缀。
+                1 => {
+                    let keep = (rng.next() as usize) % (truth.len() + 1);
+                    let mut boundary = 0;
+                    for (idx, _) in truth.char_indices() {
+                        if idx <= keep {
+                            boundary = idx;
+                        }
+                    }
+                    truth[..boundary].to_string()
+                }
+                // 重叠片段：现有内容的最后一个片段 + 新片段。
+                2 => {
+                    let tail = rng.pick(&MERGE_FRAGS);
+                    let head = rng.pick(&MERGE_FRAGS);
+                    truth.push_str(head);
+                    format!("{tail}{head}")
+                }
+                // 不相干片段：无前缀关系，退化为拼接。
+                3 => {
+                    let frag = rng.pick(&MERGE_FRAGS);
+                    truth.push_str(frag);
+                    frag.to_string()
+                }
+                // 空快照：no-op。
+                4 => String::new(),
+                // 完整替换（incoming == 现有内容）。
+                _ => truth.clone(),
+            };
+            merge_snapshot_text_in_place(&mut in_place, &incoming);
+            reference = reference_merge_snapshot_text(&reference, &incoming);
+            assert_eq!(
+                in_place, reference,
+                "step {step}: in-place merge diverged from reference (incoming={incoming:?})"
+            );
+        }
+        assert!(!in_place.is_empty(), "op stream must exercise real merges");
+    }
+
+    /// 分配量级断言：600 帧累积快照（最终 ~数 KB）下，原地归并只做
+    /// O(chunk) 增量追加，总分配应限制在最终文本量的常数倍内；
+    /// 旧的"每帧分配全文"实现同口径下为 Σ frame_len ≈ 百 KB 级（O(n²)）。
+    #[test]
+    fn merge_snapshot_in_place_allocates_linear_not_quadratic() {
+        const CHUNKS: usize = 400;
+        const CHUNK: &str = "abcdefghijklmnopqrstuvwxy"; // 25 bytes
+        // 预先构造好输入帧（不计入测量）：第 i 帧是长度 i*25 的累积快照。
+        let mut frames = Vec::with_capacity(CHUNKS);
+        let mut truth = String::new();
+        for _ in 0..CHUNKS {
+            truth.push_str(CHUNK);
+            frames.push(truth.clone());
+        }
+        // 旧实现的分配下界：每帧分配一次合并结果，Σ i*25 = 2_005_000 bytes。
+        let quadratic_reference: usize = (1..=CHUNKS).sum::<usize>() * CHUNK.len();
+
+        let guard = crate::test_alloc::AllocGuard::start();
+        let mut acc = String::new();
+        for frame in &frames {
+            merge_snapshot_text_in_place(&mut acc, frame);
+        }
+        let allocated = guard.bytes();
+        drop(guard);
+
+        assert_eq!(acc.len(), CHUNKS * CHUNK.len());
+        assert!(
+            allocated < quadratic_reference / 20,
+            "in-place merge must be ~O(n) (allocated {allocated} bytes; \
+             quadratic reference {quadratic_reference} bytes)"
+        );
+    }
+
+    /// store 级 golden：full 快照流经 apply_assistant_snapshot 的最终内容与
+    /// 参考归并模型逐字节一致；`start` 标记的新段仍为追加语义（分段不变）。
+    #[test]
+    fn apply_assistant_snapshot_matches_reference_model() {
+        let mut rng = Lcg(0xC0FF_EE11_2233_4455);
+        let s = SessionStore::new();
+        let block_id = "msg-golden";
+        let mut reference = String::new();
+        // truth 是"线上真实全文"，用于构造逼真的累积/重叠 incoming。
+        let mut truth = String::new();
+
+        for step in 0..400 {
+            let new_segment = rng.next() % 10 == 0;
+            if new_segment {
+                s.mark_stream_segment_start("m", block_id);
+            }
+            let incoming = match rng.next() % 4 {
+                // 累积快照。
+                0 => {
+                    truth.push_str(rng.pick(&MERGE_FRAGS));
+                    truth.clone()
+                }
+                // 不相干片段。
+                1 => rng.pick(&MERGE_FRAGS).to_string(),
+                // 重复快照（incoming == 现有全文）。
+                2 => truth.clone(),
+                // 重叠片段。
+                _ => {
+                    let tail = rng.pick(&MERGE_FRAGS);
+                    let head = rng.pick(&MERGE_FRAGS);
+                    truth.push_str(head);
+                    format!("{tail}{head}")
+                }
+            };
+            s.apply_assistant_snapshot(block_id, &incoming);
+            if new_segment {
+                reference.push_str(&incoming);
+            } else {
+                reference = reference_merge_snapshot_text(&reference, &incoming);
+            }
+            let msgs = s.messages.get();
+            let Some(TranscriptBlock::AssistantMsg { content, .. }) = msgs.last() else {
+                panic!("step {step}: expected assistant block");
+            };
+            assert_eq!(content, &reference, "step {step}: store content diverged");
+        }
     }
 
     /// reset_for_new_session 必须清空对话运行态(messages/session_id/title/scroll/cursor),
