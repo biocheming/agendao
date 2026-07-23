@@ -17,6 +17,10 @@
 use ratatui_markdown::markdown::MarkdownRenderer;
 use revue::prelude::Color as RevueColor;
 use revue::render::{Cell, Modifier};
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::hash::Hasher;
+use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;
 
 // ── Color conversion ──────────────────────────────────────────
@@ -160,12 +164,107 @@ pub fn lines_to_cell_grid(lines: &[ratatui::text::Line], max_width: u16) -> (Vec
     (grid, row_count)
 }
 
+// ── Render cache ─────────────────────────────────────────────
+//
+// `MarkdownRenderer::parse` + `render` are pure: the output `Vec<Line>`
+// depends only on (text, width) — `NoopTheme` is constant and the parser
+// is width-independent (width only affects `render`'s wrapping).  During
+// streaming the TUI re-renders at ~20fps and rebuilds the view tree every
+// frame, so the same (often large) markdown text was parsed+rendered
+// dozens of times per second.  This thread-local LRU memoizes the final
+// rendered lines keyed by content hash + width: identical text renders
+// once, streaming appends change the hash and naturally re-render.
+//
+// thread_local (not a global Mutex): the TUI is single-threaded, so this
+// avoids locking entirely; tests get an isolated cache per test thread.
+
+/// Max cached (text, width) entries.  A transcript rarely shows more than
+/// a handful of distinct markdown blocks in the viewport; 64 leaves ample
+/// headroom while bounding memory (each entry holds its rendered lines).
+const RENDER_CACHE_CAP: usize = 64;
+
+/// Cache key: hash of the markdown text + normalized render width.
+type CacheKey = (u64, u16);
+
+struct CacheEntry {
+    /// Original text, kept to verify hash hits (guard against collisions).
+    text: Arc<str>,
+    /// Rendered output, shared with every consumer via `Arc`.
+    lines: Arc<Vec<ratatui::text::Line<'static>>>,
+}
+
+struct RenderCache {
+    map: HashMap<CacheKey, CacheEntry>,
+    /// Recency order, front = least recently used.
+    lru: VecDeque<CacheKey>,
+    /// Total parse+render executions (misses).  Test instrumentation.
+    misses: u64,
+}
+
+thread_local! {
+    static RENDER_CACHE: RefCell<RenderCache> = RefCell::new(RenderCache {
+        map: HashMap::new(),
+        lru: VecDeque::new(),
+        misses: 0,
+    });
+}
+
+fn hash_text(text: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write(text.as_bytes());
+    h.finish()
+}
+
+/// Parse + render `text` at `width`, memoized by content hash.
+///
+/// Returns a shared `Arc` — cache hits cost one hash + map lookup, no
+/// re-parse and no line cloning.
+fn render_lines_cached(text: &Arc<str>, width: u16) -> Arc<Vec<ratatui::text::Line<'static>>> {
+    let width = width.max(20);
+    let key = (hash_text(text), width);
+    RENDER_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let hit = c.map.get(&key).and_then(|entry| {
+            (entry.text.as_ref() == text.as_ref()).then(|| Arc::clone(&entry.lines))
+        });
+        if let Some(lines) = hit {
+            // Refresh recency (n ≤ 64, linear reposition is fine).
+            if let Some(pos) = c.lru.iter().position(|k| *k == key) {
+                let k = c.lru.remove(pos).unwrap();
+                c.lru.push_back(k);
+            }
+            return lines;
+        }
+        c.misses += 1;
+        let renderer = MarkdownRenderer::new(width as usize);
+        let blocks = renderer.parse(text);
+        let lines = Arc::new(renderer.render(&blocks, &NoopTheme));
+        if c.map.len() >= RENDER_CACHE_CAP {
+            if let Some(evict) = c.lru.pop_front() {
+                c.map.remove(&evict);
+            }
+        }
+        c.lru.push_back(key);
+        c.map.insert(key, CacheEntry { text: Arc::clone(text), lines: Arc::clone(&lines) });
+        lines
+    })
+}
+
+/// (misses, cached entries) — test instrumentation.
+#[cfg(test)]
+fn render_cache_stats() -> (u64, usize) {
+    RENDER_CACHE.with(|c| {
+        let c = c.borrow();
+        (c.misses, c.map.len())
+    })
+}
+
 // ── Markdown render helper ────────────────────────────────────
 
 /// Stores markdown text; renders lazily at whatever width the
 /// layout provides when `View::render` is called.
 pub struct RevueMarkdown {
-    text: String,
+    text: Arc<str>,
     /// Estimate row count at a typical width for height calculations.
     est_rows: u16,
 }
@@ -178,19 +277,17 @@ impl Default for RevueMarkdown {
 
 impl RevueMarkdown {
     pub fn new() -> Self {
-        Self { text: String::new(), est_rows: 0 }
+        Self { text: Arc::from(""), est_rows: 0 }
     }
 
     /// Store the markdown text. 行数估算在**实际内容宽**上进行——
     /// 此前固定 100 cols 估算,窄于估算宽的实际渲染会把超出 est_rows
     /// 的换行行裁掉（长单行文本,如 provider 错误 JSON,在窄终端被静默截断）。
     pub fn set_content(&mut self, markdown_text: &str, width: u16) {
-        self.text = markdown_text.to_string();
-        // 用调用方给定的真实内容宽（transcript inner_w）估算,与渲染同口径。
-        let renderer = MarkdownRenderer::new(width.max(20) as usize);
-        let blocks = renderer.parse(&self.text);
-        let lines = renderer.render(&blocks, &NoopTheme);
-        self.est_rows = lines.len() as u16;
+        self.text = Arc::from(markdown_text);
+        // 用调用方给定的真实内容宽（transcript inner_w）估算,与渲染同口径；
+        // 走缓存——同文本同宽重复估算（每帧重建 view 树）不再重复 parse。
+        self.est_rows = render_lines_cached(&self.text, width).len() as u16;
     }
 
     /// Rough row count (estimated at 100 cols). The actual row count
@@ -201,7 +298,7 @@ impl RevueMarkdown {
 
     /// Build a Stack that lazily renders at the actual layout width.
     pub fn as_stack(&self) -> revue::widget::Stack {
-        let text = self.text.clone();
+        let text = Arc::clone(&self.text);
         let rows = self.est_rows;
         let widget = MarkdownCellView { text };
         revue::widget::vstack().child_sized(widget, rows)
@@ -213,7 +310,7 @@ impl RevueMarkdown {
 use revue::widget::traits::{RenderContext as RevueRenderCtx, View};
 
 struct MarkdownCellView {
-    text: String,
+    text: Arc<str>,
 }
 
 impl View for MarkdownCellView {
@@ -224,9 +321,9 @@ impl View for MarkdownCellView {
         if w < 2 || h == 0 { return; }
 
         // Render at the actual available width — adaptive!
-        let renderer = MarkdownRenderer::new(w);
-        let blocks = renderer.parse(&self.text);
-        let lines = renderer.render(&blocks, &NoopTheme);
+        // Cached by (text hash, width): identical text re-renders at 20fps
+        // during streaming cost a hash + lookup instead of a full parse.
+        let lines = render_lines_cached(&self.text, area.width);
 
         for (y, line) in lines.iter().enumerate() {
             if y as u16 >= h { break; }
@@ -355,4 +452,69 @@ mod tests {
         assert!(cells[0].bg.is_some(), "main cell should carry bg");
         assert!(cells[1].bg.is_some(), "continuation should also carry bg");
     }
+
+    // ── Render cache ──────────────────────────────────────────
+    // 每个测试跑在独立线程 → thread_local 缓存天然隔离，无需手动清空。
+
+    #[test]
+    fn cache_hit_renders_identical_text_once() {
+        let text: Arc<str> = Arc::from("# Title\n\nsome **bold** body");
+        let (misses_before, _) = render_cache_stats();
+        let a = render_lines_cached(&text, 80);
+        let b = render_lines_cached(&text, 80);
+        let (misses_after, _) = render_cache_stats();
+        assert_eq!(misses_after - misses_before, 1, "same text+width must parse once");
+        assert!(Arc::ptr_eq(&a, &b), "cache hit must share the same Arc");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cache_miss_on_text_change_and_width_change() {
+        let mut text: Arc<str> = Arc::from("streaming chunk 1");
+        let (m0, _) = render_cache_stats();
+        render_lines_cached(&text, 80);
+        // 流式追加 → 内容变 → 重新 parse。
+        text = Arc::from("streaming chunk 1 + appended");
+        render_lines_cached(&text, 80);
+        // 同文本不同宽 → wrap 结果不同 → 重新 parse。
+        render_lines_cached(&text, 40);
+        let (m1, _) = render_cache_stats();
+        assert_eq!(m1 - m0, 3, "text change and width change must each re-parse");
+    }
+
+    #[test]
+    fn cache_evicts_lru_beyond_capacity() {
+        let (m0, _) = render_cache_stats();
+        // 插入 CAP+10 个不同文本 → 只保留最近 CAP 条。
+        for i in 0..(RENDER_CACHE_CAP + 10) {
+            let text: Arc<str> = Arc::from(format!("unique entry number {}", i));
+            render_lines_cached(&text, 80);
+        }
+        let (m1, entries) = render_cache_stats();
+        assert_eq!(m1 - m0, (RENDER_CACHE_CAP + 10) as u64);
+        assert!(entries <= RENDER_CACHE_CAP, "cache must not grow past cap");
+        // 最早的条目已被逐出：再次渲染会 miss。
+        let evicted: Arc<str> = Arc::from("unique entry number 0");
+        render_lines_cached(&evicted, 80);
+        let (m2, _) = render_cache_stats();
+        assert_eq!(m2 - m1, 1, "evicted entry must re-parse");
+        // 最近的条目仍在：命中不 miss。
+        let recent: Arc<str> = Arc::from(format!("unique entry number {}", RENDER_CACHE_CAP + 9));
+        render_lines_cached(&recent, 80);
+        let (m3, _) = render_cache_stats();
+        assert_eq!(m3 - m2, 0, "most-recent entry must still hit");
+    }
+
+    #[test]
+    fn revue_markdown_est_rows_matches_cached_render() {
+        let mut md = RevueMarkdown::new();
+        md.set_content("# H\n\n- a\n- b\n", 80);
+        assert!(md.line_count() >= 4, "heading + 2 list items ≥ 4 rows");
+        // 同文本再次 set_content（每帧重建 view 树的路径）不重复 parse。
+        let (m0, _) = render_cache_stats();
+        md.set_content("# H\n\n- a\n- b\n", 80);
+        let (m1, _) = render_cache_stats();
+        assert_eq!(m1 - m0, 0, "re-set of identical content must hit cache");
+    }
 }
+
