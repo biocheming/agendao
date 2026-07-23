@@ -618,6 +618,7 @@ impl AppHandler {
         // ── 完整启动初始化 ──
         if let Some(ref api) = a {
             tracing::info!("starting initialization: API bridge present");
+            let mut phase_start = std::time::Instant::now();
 
             // 1. 工作区配置
             match api.get_workspace_context() {
@@ -630,6 +631,8 @@ impl AppHandler {
                 }
                 Err(e) => tracing::error!(%e, "init: workspace_context FAILED"),
             }
+            tracing::info!(target: "agendao::startup", phase = "tui_workspace_context", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
+            phase_start = std::time::Instant::now();
 
             // 2. 模型列表
             match api.get_all_providers() {
@@ -675,6 +678,8 @@ impl AppHandler {
                 }
                 Err(e) => tracing::error!(%e, "init: get_all_providers FAILED"),
             }
+            tracing::info!(target: "agendao::startup", phase = "tui_providers", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
+            phase_start = std::time::Instant::now();
 
             // 3. Agent 列表
             match api.list_agents() {
@@ -687,6 +692,8 @@ impl AppHandler {
                 }
                 Err(e) => tracing::error!(%e, "init: list_agents FAILED"),
             }
+            tracing::info!(target: "agendao::startup", phase = "tui_agents", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
+            phase_start = std::time::Instant::now();
 
             // 4. 执行模式
             match api.list_execution_modes() {
@@ -700,6 +707,8 @@ impl AppHandler {
                 }
                 Err(e) => tracing::error!(%e, "init: list_execution_modes FAILED"),
             }
+            tracing::info!(target: "agendao::startup", phase = "tui_modes", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
+            phase_start = std::time::Instant::now();
 
             // 5. 会话列表（按 cwd 过滤，与 /sessions 对话框语义一致）
             let cwd = s.working_dir.get();
@@ -716,6 +725,7 @@ impl AppHandler {
                 }
                 Err(e) => tracing::error!(%e, "init: list_sessions FAILED"),
             }
+            tracing::info!(target: "agendao::startup", phase = "tui_sessions", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
         } else {
             tracing::error!("init: NO API BRIDGE — all data will be empty. Check local server creation.");
         }

@@ -46,6 +46,19 @@ use agendao_server_core::runtime_events::EventBusTelemetry;
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
 
+/// 启动阶段计时日志（可选诊断）。统一打到 `agendao::startup` target，
+/// 用 `RUST_LOG=agendao::startup=info` 即可看到各阶段耗时，默认 warn 级别零开销。
+macro_rules! startup_timing {
+    ($phase:expr, $start:expr) => {
+        tracing::info!(
+            target: "agendao::startup",
+            phase = $phase,
+            elapsed_ms = $start.elapsed().as_millis() as u64,
+            "startup phase done"
+        )
+    };
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerRuntimeOptions {
     pub port: u16,
@@ -403,12 +416,22 @@ impl ServerState {
         server_url: String,
         workspace_root: PathBuf,
     ) -> anyhow::Result<Self> {
+        let startup_begin = std::time::Instant::now();
+        let mut phase_start = startup_begin;
         let workspace_root = normalize_workspace_root(workspace_root);
+
+        // SQLite 打开 + 迁移（~数百 ms 的 IO/DDL）与后续 plugin/catalog 阶段
+        // 互不依赖，提前 spawn 让它们在后台并行推进。
+        let db_spawn_start = std::time::Instant::now();
+        let db_handle = tokio::spawn(Database::new());
+
         let mut state = Self::new_for_workspace(workspace_root.clone());
         let auth_manager = Arc::new(AuthManager::load_from_file(&auth_data_dir()).await);
         state.auth_manager = auth_manager.clone();
+        startup_timing!("auth_load", phase_start);
 
         // Load config and convert providers to bootstrap format
+        phase_start = std::time::Instant::now();
         let config_store = match agendao_config::ConfigStore::from_project_dir(&workspace_root) {
             Ok(store) => Arc::new(store),
             Err(error) => {
@@ -425,14 +448,23 @@ impl ServerState {
         ));
 
         // Plugin bootstrap needs config_store for refresh_agent_cache
-        load_plugin_auth_store(
-            &server_url,
-            auth_manager.clone(),
-            &config_store,
-            &workspace_root,
-        )
-        .await;
-        let auth_store = auth_manager.list().await;
+        startup_timing!("config_load", phase_start);
+
+        // 插件子进程引导（内建 auth 插件 spawn 等）与 models catalog 加载、
+        // 后台的 database_open 互不依赖，先 spawn 并行推进；在读取 auth_store
+        // 前 join，保持「registry 构建能看到插件写入的 auth 状态」这一既有语义。
+        let plugin_spawn_start = std::time::Instant::now();
+        let plugin_handle = {
+            let server_url = server_url.clone();
+            let auth_manager = auth_manager.clone();
+            let config_store = config_store.clone();
+            let workspace_root = workspace_root.clone();
+            tokio::spawn(async move {
+                load_plugin_auth_store(&server_url, auth_manager, &config_store, &workspace_root)
+                    .await;
+            })
+        };
+        phase_start = std::time::Instant::now();
         let bootstrap_config = {
             let config = config_store.config();
             bootstrap_config_from_config(&config)
@@ -453,10 +485,19 @@ impl ServerState {
                 }
             }
         }
+        startup_timing!("models_catalog", phase_start);
+        if let Err(error) = plugin_handle.await {
+            tracing::warn!(%error, "plugin bootstrap task failed to join");
+        }
+        startup_timing!("plugin_bootstrap", plugin_spawn_start);
+        phase_start = std::time::Instant::now();
+        let auth_store = auth_manager.list().await;
 
         state.providers = Arc::new(tokio::sync::RwLock::new(
             create_registry_from_bootstrap_config(&bootstrap_config, &auth_store),
         ));
+        startup_timing!("provider_registry_build", phase_start);
+        phase_start = std::time::Instant::now();
         state.config_store = config_store.clone();
         state.user_state = user_state;
         state.resolved_context_authority = resolved_context_authority.clone();
@@ -469,6 +510,8 @@ impl ServerState {
             Some(config_store.clone()),
         ));
         let _ = state.refresh_resolved_context().await;
+        startup_timing!("resolved_context", phase_start);
+        phase_start = std::time::Instant::now();
 
         // Load task category registry from configured path
         let category_registry = if let Some(path) = config_store.resolved_task_category_path().await
@@ -506,8 +549,13 @@ impl ServerState {
         state.tool_registry = Arc::new(
             agendao_tool::create_default_registry_with_config(Some(&config_store.config())).await,
         );
+        startup_timing!("tool_registry", phase_start);
         state.external_tool_catalogs = Arc::new(external_tool_catalogs);
-        let db = Database::new().await?;
+        let db = db_handle
+            .await
+            .map_err(|error| anyhow::anyhow!("database open task failed to join: {}", error))??;
+        startup_timing!("database_open", db_spawn_start);
+        phase_start = std::time::Instant::now();
         let pool = db.pool().clone();
         let memory_repo = Arc::new(MemoryRepository::new(pool.clone()));
         let memory_authority = Arc::new(
@@ -541,6 +589,8 @@ impl ServerState {
         state.session_repo = Some(SessionRepository::new(pool.clone()));
         state.message_repo = Some(MessageRepository::new(pool));
         state.load_sessions_from_storage().await?;
+        startup_timing!("sessions_restore", phase_start);
+        startup_timing!("total", startup_begin);
         // Spawn background recheck/wake loop, cancelled when ServerState is dropped.
         crate::session_runtime::recheck_loop::spawn_recheck_wake_loop(
             state.runtime_telemetry.clone(),
@@ -628,10 +678,13 @@ impl ServerState {
         let mut dehydrated = self.dehydrated_sessions.write().await;
 
         for stored in stored_sessions {
-            let session: agendao_session::Session =
-                serde_json::from_value(serde_json::to_value(&stored)?)?;
+            // `stored` 已是 agendao_types::Session（即 SessionRecord），直接包裹，
+            // 避免逐会话 serde 往返（to_value/from_value 对含大 metadata 的会话
+            // 是纯 CPU 浪费，大库下占启动恢复耗时的大头）。
+            let id = stored.id.clone();
+            let session: agendao_session::Session = agendao_session::Session::from(stored);
             manager.restore(session);
-            dehydrated.insert(stored.id);
+            dehydrated.insert(id);
         }
 
         Ok(())
@@ -924,6 +977,7 @@ async fn load_plugin_auth_store(
 ) {
     let config = (*config_store.config()).clone();
 
+    let phase_start = std::time::Instant::now();
     let loader = match PluginLoader::new() {
         Ok(loader) => Arc::new(loader),
         Err(error) => {
@@ -931,6 +985,7 @@ async fn load_plugin_auth_store(
             return;
         }
     };
+    startup_timing!("plugin_loader_new", phase_start);
     init_global(loader.hook_system());
     agendao_plugin::set_global_loader(loader.clone());
 
@@ -1002,6 +1057,8 @@ async fn load_plugin_auth_store(
     if let Err(error) = loader.load_builtins(&context).await {
         tracing::warn!(%error, "failed to load builtin auth plugins");
     }
+    startup_timing!("plugin_builtins_spawn", phase_start);
+    let phase_start = std::time::Instant::now();
 
     if !plugin_specs.is_empty() {
         if let Err(error) = loader.load_all(&plugin_specs, &context).await {
@@ -1009,11 +1066,14 @@ async fn load_plugin_auth_store(
             return;
         }
     }
+    startup_timing!("plugin_specs_load", phase_start);
+    let phase_start = std::time::Instant::now();
 
     let _any_custom_fetch = refresh_plugin_auth_state(&loader, auth_manager.clone()).await;
     routes::set_plugin_loader(loader.clone());
     routes::refresh_agent_cache(config_store).await;
     spawn_plugin_idle_monitor(loader);
+    startup_timing!("plugin_auth_state", phase_start);
 }
 
 fn resolve_native_plugin_path(cwd: &std::path::Path, raw_path: &str) -> PathBuf {
