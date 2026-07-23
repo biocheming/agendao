@@ -1192,6 +1192,23 @@ impl AppHandler {
                                 return true;
                             }
 
+                            // ── Diff 汇总角标点击：toggle 逐文件明细 ──
+                            // 角标在 footer info_strip 行（📝 N files +X -Y），命中区由
+                            // render 发布（diff_badge_hit）。命中 toggle 明细浮层；点该行
+                            // 角标外位置收起（与 header dir tooltip 同模式）。该行无其它
+                            // 交互，统一消费避免落到 prompt focus。
+                            if let Some((bx, by, bw)) = self.diff_badge_hit {
+                                if m.y == by {
+                                    if m.x >= bx && m.x < bx.saturating_add(bw) {
+                                        self.active_session.toggle_diff_detail();
+                                    } else if self.active_session.diff_detail_open.get() {
+                                        self.active_session.diff_detail_open.set(false);
+                                    }
+                                    self.layout_dirty = true;
+                                    return true;
+                                }
+                            }
+
                             let ty = m.y;
                             let transcript_y = self.transcript_area_y;
                             let transcript_h = self.transcript_viewport_h;
@@ -2891,6 +2908,7 @@ pub(crate) fn eager_load_session_messages(
                                     tr.title.as_deref().unwrap_or("tool"),
                                     &tr.content,
                                     tr.is_error,
+                                    None,
                                 );
                             }
                         }
