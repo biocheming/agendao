@@ -793,7 +793,10 @@ impl AppHandler {
                         }
                         FrontendEvent::QuestionRemoved { .. } => { changed = true; }
                         _ => {
-                            changed |= apply_frontend_event(fe, &self.active_session).is_some();
+                            if apply_frontend_event(fe, &self.active_session).is_some() {
+                                self.transcript_dirty = true;
+                                changed = true;
+                            }
                         }
                     }
                 }

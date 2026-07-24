@@ -73,6 +73,23 @@ use crate::store::types::{RunStatus, ToolPhase};
 use crate::theme::colors;
 use crate::transport;
 
+/// 区域失效（"哪里脏画哪里"）：按元素 id 把对应 DOM 节点 `state.dirty`
+/// 置真，框架 `collect_dirty_regions` 便只重画该区域，替代全屏
+/// `request_redraw()`。节点不存在（首帧/结构未建）时返回 false，
+/// 调用方应回退全屏重绘。
+fn mark_region_dirty(app: &mut App, region_id: &str) -> bool {
+    use revue::prelude::Query as _;
+    let tree = app.dom_renderer().tree_mut();
+    let found = tree.get_by_id(region_id).map(|node| (node.id, node.state.clone()));
+    if let Some((dom_id, mut state)) = found {
+        state.dirty = true;
+        tree.set_state(dom_id, state);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn run_app() -> anyhow::Result<()> { run_app_with_config(AppConfig::default()) }
 
 pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
@@ -191,6 +208,8 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         let handled = h.handle(event);
         let layout_dirty = h.layout_dirty;
         h.layout_dirty = false;
+        let transcript_dirty = h.transcript_dirty;
+        h.transcript_dirty = false;
         // 主题切换的 CSS 面交接：slash_action 经 apply_theme 换好色板后把
         // `:root` 变量留在 pending 槽（它拿不到 &mut App），此处收口应用。
         let theme_vars = h.pending_theme_vars.take();
@@ -205,10 +224,13 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             due
         };
         if handled && tick_redraw_due {
-            // Force a full redraw (revue's DOM dirty-region tracking
-            // doesn't detect Input widget state changes, so we can't
-            // rely on per-cell diffs after a handled event).
-            app.request_redraw();
+            // 区域失效优先：transcript 内容变（流式/消息）只把 transcript
+            // 节点 mark dirty，框架只重画该区域；其余情况（结构/对话框/
+            // 输入/主题）回退全屏 request_redraw（语义不变）。
+            let region_marked = transcript_dirty && mark_region_dirty(app, "transcript");
+            if !region_marked {
+                app.request_redraw();
+            }
             // The DOM incremental update only refreshes nodes that
             // changed in the structural sense (added/removed/re-typed).
             // When fold state changes, the OUTER tree shape is the same
@@ -353,6 +375,10 @@ pub(crate) struct AppHandler {
     pub(crate) panel: Panel,
     pub(crate) active_session: SessionStore,
     pub(crate) spinner_tick: u64,
+    /// transcript 内容本帧已变（流式 chunk/消息/工具结果落地时置真）：
+    /// 事件循环据此只把 transcript 节点 mark dirty（区域重画），
+    /// 替代全屏 request_redraw。
+    pub(crate) transcript_dirty: bool,
     /// 最近事件活动时间：任何 FrontendEvent/发送回执到达都会刷新。
     /// run_status 卡在 Running（如流挂死）时，超过阈值无活动即停止
     /// 20fps 强制重绘（陈旧 Running 刹车），有活动即自愈。
@@ -774,6 +800,7 @@ impl AppHandler {
             settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
             spinner_tick: 0,
+            transcript_dirty: false,
             last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
@@ -869,6 +896,12 @@ pub(crate) struct TranscriptScrollbarPublish {
 }
 
 impl View for ScrollableTranscript {
+    /// 元素 id（区域失效定位用）：内容变化时经 `mark_region_dirty` 只把
+    /// 这个节点弄脏，框架的增量渲染就只重画 transcript 区而非全屏。
+    fn id(&self) -> Option<&str> {
+        Some("transcript")
+    }
+
     fn render(&self, ctx: &mut RenderContext) {
         use revue::layout::Rect;
         let area = ctx.area;
