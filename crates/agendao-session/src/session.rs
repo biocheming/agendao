@@ -1223,7 +1223,10 @@ pub struct SessionRow {
 // ============================================================================
 
 pub struct SessionManager {
-    sessions: HashMap<String, Session>,
+    // 会话本体以 Arc 共享存储：流式快照、持久化 worker、订阅者读取可持有
+    // 同一份 `Arc<Session>`，避免每个 update tick 的整份深拷贝。写入走
+    // `Arc::make_mut` 写时复制——仅在 Arc 被共享时才拷贝一次。
+    sessions: HashMap<String, Arc<Session>>,
     events: Vec<SessionEvent>,
     bus: Option<Arc<Bus>>,
 }
@@ -1312,7 +1315,7 @@ impl SessionManager {
     ) -> Session {
         let session = Session::new(project_id, directory);
         self.sessions
-            .insert(session.record().id.clone(), session.clone());
+            .insert(session.record().id.clone(), Arc::new(session.clone()));
         self.events.push(SessionEvent::Created {
             info: Self::summarize_session(&session),
         });
@@ -1442,7 +1445,7 @@ impl SessionManager {
             }
         }
 
-        self.sessions.insert(forked_id, forked.clone());
+        self.sessions.insert(forked_id, Arc::new(forked.clone()));
         self.events.push(SessionEvent::Created {
             info: Self::summarize_session(&forked),
         });
@@ -1453,7 +1456,7 @@ impl SessionManager {
     /// Set share info and publish session.updated.
     pub fn share(&mut self, session_id: &str, url: impl Into<String>) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.set_share(SessionShare { url: url.into() });
             session.clone()
         };
@@ -1467,7 +1470,7 @@ impl SessionManager {
     /// Clear share info and publish session.updated.
     pub fn unshare(&mut self, session_id: &str) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.clear_share();
             session.clone()
         };
@@ -1481,7 +1484,7 @@ impl SessionManager {
     /// Set archived time and publish session.updated.
     pub fn set_archived(&mut self, session_id: &str, time: Option<i64>) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.set_archived(time);
             session.clone()
         };
@@ -1499,7 +1502,7 @@ impl SessionManager {
         permission: PermissionRuleset,
     ) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.set_permission(permission);
             session.clone()
         };
@@ -1513,7 +1516,7 @@ impl SessionManager {
     /// Set revert info and publish session.updated.
     pub fn set_revert(&mut self, session_id: &str, revert: SessionRevert) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.set_revert(revert);
             session.clone()
         };
@@ -1527,7 +1530,7 @@ impl SessionManager {
     /// Clear revert info and publish session.updated.
     pub fn clear_revert(&mut self, session_id: &str) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.clear_revert();
             session.clone()
         };
@@ -1541,7 +1544,7 @@ impl SessionManager {
     /// Set summary and publish session.updated.
     pub fn set_summary(&mut self, session_id: &str, summary: SessionSummary) -> Option<Session> {
         let updated = {
-            let session = self.sessions.get_mut(session_id)?;
+            let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
             session.set_summary(summary);
             session.clone()
         };
@@ -1573,17 +1576,27 @@ impl SessionManager {
 
     /// Get a session by ID
     pub fn get(&self, id: &str) -> Option<&Session> {
-        self.sessions.get(id)
+        self.sessions.get(id).map(Arc::as_ref)
+    }
+
+    /// Get a shared handle to a session by ID.
+    ///
+    /// 读取方（序列化、广播、持久化）可持有该 Arc 而不深拷贝整份会话。
+    pub fn get_shared(&self, id: &str) -> Option<Arc<Session>> {
+        self.sessions.get(id).cloned()
     }
 
     /// Get a mutable session by ID
+    ///
+    /// 内部经 `Arc::make_mut` 写时复制：仅当该会话仍被其他句柄共享时
+    /// 才深拷贝一次，否则原地修改。
     pub fn get_mut(&mut self, id: &str) -> Option<&mut Session> {
-        self.sessions.get_mut(id)
+        self.sessions.get_mut(id).map(Arc::make_mut)
     }
 
     /// List all sessions
     pub fn list(&self) -> Vec<&Session> {
-        self.sessions.values().collect()
+        self.sessions.values().map(Arc::as_ref).collect()
     }
 
     /// List sessions with filters
@@ -1611,6 +1624,7 @@ impl SessionManager {
                 }
                 true
             })
+            .map(Arc::as_ref)
             .collect()
     }
 
@@ -1619,6 +1633,7 @@ impl SessionManager {
         self.sessions
             .values()
             .filter(|s| s.record().parent_id.as_deref() == Some(parent_id))
+            .map(Arc::as_ref)
             .collect()
     }
 
@@ -1634,6 +1649,8 @@ impl SessionManager {
         }
 
         let session = self.sessions.remove(id)?;
+        // 共享句柄仍存活时退化为一次深拷贝；独占时直接取出，零拷贝。
+        let session = Arc::try_unwrap(session).unwrap_or_else(|shared| (*shared).clone());
         self.events.push(SessionEvent::Deleted {
             info: Self::summarize_session(&session),
         });
@@ -1657,6 +1674,14 @@ impl SessionManager {
 
     /// Update a session
     pub fn update(&mut self, session: Session) {
+        self.update_shared(Arc::new(session));
+    }
+
+    /// Update a session from a shared snapshot without deep-cloning it.
+    ///
+    /// 流式热路径入口：调用方持有的 `Arc<Session>` 直接存入 manager，
+    /// 同一 Arc 可同时被持久化 worker / 订阅者持有，零额外拷贝。
+    pub fn update_shared(&mut self, session: Arc<Session>) {
         let id = session.record().id.clone();
         self.sessions.insert(id.clone(), session);
         // 借回 map 中的副本发事件,避免为事件再深拷贝一次完整会话
@@ -1674,7 +1699,7 @@ impl SessionManager {
     /// replayable lifecycle events for every restored session.
     pub fn restore(&mut self, session: Session) {
         let id = session.record().id.clone();
-        self.sessions.insert(id, session);
+        self.sessions.insert(id, Arc::new(session));
     }
 
     /// Get events (and clear them)
@@ -1698,7 +1723,7 @@ impl SessionManager {
 
     /// Update a message in a session and publish Bus event
     pub fn update_message(&mut self, session_id: &str, msg: SessionMessage) -> Option<()> {
-        let session = self.sessions.get_mut(session_id)?;
+        let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
         session.update_message(msg.clone());
         self.publish_message_event(&MESSAGE_UPDATED_EVENT, &msg);
         Some(())
@@ -1706,7 +1731,7 @@ impl SessionManager {
 
     /// Remove a message from a session and publish Bus event
     pub fn remove_message(&mut self, session_id: &str, message_id: &str) -> Option<SessionMessage> {
-        let session = self.sessions.get_mut(session_id)?;
+        let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
         let msg = session.remove_message(message_id)?;
         self.publish_event(
             &MESSAGE_REMOVED_EVENT,
@@ -1725,7 +1750,7 @@ impl SessionManager {
         message_id: &str,
         part: MessagePart,
     ) -> Option<()> {
-        let session = self.sessions.get_mut(session_id)?;
+        let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
         session.update_part(message_id, part.clone());
         self.publish_part_event(&PART_UPDATED_EVENT, &part);
         Some(())
@@ -1738,7 +1763,7 @@ impl SessionManager {
         message_id: &str,
         part_id: &str,
     ) -> Option<MessagePart> {
-        let session = self.sessions.get_mut(session_id)?;
+        let session = Arc::make_mut(self.sessions.get_mut(session_id)?);
         let part = session.remove_part(message_id, part_id)?;
         self.publish_event(
             &PART_REMOVED_EVENT,
@@ -2659,5 +2684,142 @@ mod tests {
         assert_eq!(event.properties["sessionID"], "session-1");
         assert_eq!(event.properties["arguments"][0], "--fast");
         assert_eq!(event.properties["messageID"], "message-1");
+    }
+
+    // ── Arc-shared session storage (streaming hot path) ──────────────────
+
+    /// `update_shared` must store the exact Arc it was given — the manager,
+    /// the persist worker, and any reader all hold the same allocation with
+    /// zero deep copies.
+    #[test]
+    fn update_shared_stores_the_same_arc_allocation() {
+        let mut manager = SessionManager::new();
+        let mut session = Session::new("project-1", "/tmp");
+        session.push_message(SessionMessage::user(session.id.clone(), "hello"));
+        let shared = Arc::new(session);
+        let id = shared.record().id.clone();
+
+        manager.update_shared(shared.clone());
+
+        let stored = manager.get_shared(&id).expect("session stored");
+        assert!(
+            Arc::ptr_eq(&stored, &shared),
+            "manager must hold the same Arc allocation, not a deep copy"
+        );
+        // Borrowed reads observe the same content.
+        let borrowed = manager.get(&id).expect("borrowed session");
+        assert_eq!(borrowed.record().messages.len(), 1);
+        assert_eq!(borrowed.record().id, id);
+    }
+
+    /// A snapshot Arc held by a reader must stay untouched when the manager
+    /// later replaces the session with a newer streaming snapshot — and the
+    /// replacement must again share (not copy) the new Arc.
+    #[test]
+    fn update_shared_replacement_keeps_prior_snapshot_alive() {
+        let mut manager = SessionManager::new();
+        let mut first = Session::new("project-1", "/tmp");
+        first.push_message(SessionMessage::user(first.id.clone(), "turn 1"));
+        let id = first.record().id.clone();
+        let first_shared = Arc::new(first);
+        manager.update_shared(first_shared.clone());
+
+        let mut second_snapshot = (*first_shared).clone();
+        second_snapshot.push_message(SessionMessage::assistant(id.clone()));
+        let second_shared = Arc::new(second_snapshot);
+        manager.update_shared(second_shared.clone());
+
+        // The new snapshot is shared as-is.
+        let stored = manager.get_shared(&id).expect("session stored");
+        assert!(Arc::ptr_eq(&stored, &second_shared));
+        assert_eq!(stored.record().messages.len(), 2);
+        // The prior snapshot held by a "persist worker" is unchanged.
+        assert_eq!(first_shared.record().messages.len(), 1);
+    }
+
+    /// Mutating through `get_mut` while a snapshot Arc is still shared must
+    /// copy-on-write exactly once: the shared snapshot keeps the old content,
+    /// the manager serves the mutated content, and further in-place mutations
+    /// while exclusive do not disturb any (now dropped) sharing.
+    #[test]
+    fn get_mut_copy_on_write_preserves_shared_snapshot() {
+        let mut manager = SessionManager::new();
+        let mut session = Session::new("project-1", "/tmp");
+        session.push_message(SessionMessage::user(session.id.clone(), "before"));
+        let id = session.record().id.clone();
+        let snapshot = Arc::new(session);
+        manager.update_shared(snapshot.clone());
+
+        // Simulated persist worker still holding the snapshot.
+        let held_by_worker = snapshot.clone();
+        assert_eq!(Arc::strong_count(&snapshot), 3);
+
+        {
+            let session = manager.get_mut(&id).expect("session");
+            session.insert_metadata("key", serde_json::json!("value"));
+        }
+
+        // Copy-on-write: the manager now holds a *different* allocation …
+        let stored = manager.get_shared(&id).expect("session stored");
+        assert!(
+            !Arc::ptr_eq(&stored, &snapshot),
+            "make_mut must clone-on-write when the Arc is shared"
+        );
+        // … with the mutation applied …
+        assert_eq!(
+            stored.record().metadata.get("key"),
+            Some(&serde_json::json!("value"))
+        );
+        // … while the shared snapshot is byte-identical to before.
+        assert!(held_by_worker.record().metadata.get("key").is_none());
+        assert_eq!(held_by_worker.record().messages.len(), 1);
+        assert_eq!(Arc::strong_count(&snapshot), 2);
+    }
+
+    /// `get_mut` on an exclusively-held session must mutate in place (no
+    /// copy): the stored Arc allocation stays the same.
+    #[test]
+    fn get_mut_exclusive_mutates_in_place() {
+        let mut manager = SessionManager::new();
+        let session = Session::new("project-1", "/tmp");
+        let id = session.record().id.clone();
+        let shared = Arc::new(session);
+        manager.update_shared(shared.clone());
+        drop(shared);
+
+        // 注意：get_shared 会临时抬高引用计数，取裸指针后立即释放，
+        // 保证 get_mut 时 Arc 是独占的。
+        let before_ptr = Arc::as_ptr(&manager.get_shared(&id).expect("session stored"));
+        {
+            let session = manager.get_mut(&id).expect("session");
+            session.insert_metadata("key", serde_json::json!(1));
+        }
+        let after = manager.get_shared(&id).expect("session stored");
+        assert!(
+            before_ptr == Arc::as_ptr(&after),
+            "exclusive make_mut must not re-allocate"
+        );
+    }
+
+    /// Owned `update` and shared `update_shared` must produce byte-identical
+    /// observable state (serialized form), keeping the legacy entry point a
+    /// pure wrapper.
+    #[test]
+    fn update_and_update_shared_produce_identical_state() {
+        let build = || {
+            let mut session = Session::new("project-1", "/tmp");
+            session.push_message(SessionMessage::user(session.id.clone(), "hello"));
+            session
+        };
+        let mut owned_manager = SessionManager::new();
+        let mut shared_manager = SessionManager::new();
+        let session = build();
+        let id = session.record().id.clone();
+        owned_manager.update(session.clone());
+        shared_manager.update_shared(Arc::new(session));
+
+        let owned_json = serde_json::to_value(owned_manager.get(&id).unwrap()).unwrap();
+        let shared_json = serde_json::to_value(shared_manager.get(&id).unwrap()).unwrap();
+        assert_eq!(owned_json, shared_json);
     }
 }

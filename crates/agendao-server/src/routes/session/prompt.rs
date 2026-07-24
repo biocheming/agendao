@@ -286,11 +286,14 @@ pub(crate) fn persist_verified_external_adapter_binding(
 /// Job handed to the coalescing persistence worker.
 enum PersistJob {
     /// Mid-stream snapshot: persist incrementally (changed messages only).
-    Incremental(agendao_session::Session),
+    ///
+    /// 以 `Arc<Session>` 共享：同一份快照同时存入 SessionManager 与持久化
+    /// worker，不再为每个 tick 各深拷贝一份。
+    Incremental(Arc<agendao_session::Session>),
     /// Terminal snapshot: full flush (session row + every message + stale-row
     /// cleanup). `None` means the worker should flush the last snapshot it
     /// already drained.
-    Final(Option<agendao_session::Session>),
+    Final(Option<Arc<agendao_session::Session>>),
 }
 
 /// Convert any pending incremental snapshot into a terminal job, or queue a
@@ -368,44 +371,47 @@ async fn run_session_persist_worker(
     let mut watermark = MessagePersistWatermark::default();
     // Last drained snapshot, kept so a terminal `Final(None)` job can still
     // flush when the last update arrived while this worker was processing it.
-    let mut retained: Option<agendao_types::Session> = None;
+    // 以 Arc 保留：与 SessionManager 共享同一份会话本体，零拷贝。
+    let mut retained: Option<Arc<agendao_session::Session>> = None;
     loop {
         notify.notified().await;
         let job = latest.lock().await.take();
         let Some(job) = job else { continue };
         match job {
             PersistJob::Incremental(snapshot) => {
-                let mut record = snapshot.into_record();
-                let messages = std::mem::take(&mut record.messages);
+                // 只借用快照：`upsert` 只绑定会话行字段（不序列化 messages），
+                // `plan_upserts` 只读消息切片，因此无需消费/克隆整份会话。
+                let record = snapshot.record();
                 if let (Some(session_repo), Some(message_repo)) = (&session_repo, &message_repo) {
-                    if let Err(e) = session_repo.upsert(&record).await {
+                    if let Err(e) = session_repo.upsert(record).await {
                         tracing::warn!(session_id = %record.id, %e, "incremental session upsert failed");
                     }
                     let mut all_persisted = true;
-                    for message in watermark.plan_upserts(&messages) {
+                    for message in watermark.plan_upserts(&record.messages) {
                         if let Err(e) = message_repo.upsert(message).await {
                             all_persisted = false;
                             tracing::warn!(message_id = %message.id, %e, "incremental message upsert failed");
                         }
                     }
                     if all_persisted {
-                        watermark.commit(&messages);
+                        watermark.commit(&record.messages);
                     }
                 }
                 if session_repo.is_some() {
-                    record.messages = messages;
-                    retained = Some(record);
+                    retained = Some(snapshot);
                 }
             }
             PersistJob::Final(pending) => {
-                let target = pending
-                    .map(agendao_session::Session::into_record)
-                    .or_else(|| retained.take());
-                if let (Some(record), Some(session_repo)) = (target, &session_repo) {
-                    let mut stored = record;
-                    let messages = std::mem::take(&mut stored.messages);
-                    if let Err(e) = session_repo.flush_with_messages(&stored, &messages).await {
-                        tracing::warn!(session_id = %stored.id, %e, "final session flush failed");
+                let target = pending.or_else(|| retained.take());
+                if let (Some(session), Some(session_repo)) = (target, &session_repo) {
+                    // `flush_with_messages` 的会话行绑定同样忽略 `messages`
+                    // 字段，直接以借用传入整份 record + 消息切片。
+                    let record = session.record();
+                    if let Err(e) = session_repo
+                        .flush_with_messages(record, &record.messages)
+                        .await
+                    {
+                        tracing::warn!(session_id = %record.id, %e, "final session flush failed");
                     }
                 }
                 break;
@@ -2797,7 +2803,7 @@ async fn session_prompt_inner(
         }
 
         let (update_tx, mut update_rx) =
-            tokio::sync::mpsc::unbounded_channel::<agendao_session::Session>();
+            tokio::sync::mpsc::unbounded_channel::<Arc<agendao_session::Session>>();
         let update_state = task_state.clone();
         let update_session_repo = task_state.session_repo.clone();
         let update_message_repo = task_state.message_repo.clone();
@@ -2823,7 +2829,9 @@ async fn session_prompt_inner(
                 while let Some(snapshot) = update_rx.recv().await {
                     {
                         let mut sessions = update_state.sessions.lock().await;
-                        sessions.update(snapshot.clone());
+                        // Arc 共享：manager 与持久化 worker 持有同一份会话本体，
+                        // 每个 tick 只在 hook 处深拷贝一次。
+                        sessions.update_shared(snapshot.clone());
                     }
 
                     *persist_latest.lock().await = Some(PersistJob::Incremental(snapshot));
@@ -2838,7 +2846,8 @@ async fn session_prompt_inner(
         // Keep persist_worker handle at this scope so the outer timeout path can abort it.
         let mut persist_worker_handle = persist_worker;
         let update_hook: agendao_session::SessionUpdateHook = Arc::new(move |snapshot| {
-            let _ = update_tx.send(snapshot.clone());
+            // 每个流式 tick 唯一的一次深拷贝；下游 manager / persist 全部共享此 Arc。
+            let _ = update_tx.send(Arc::new(snapshot.clone()));
         });
         let compaction_lifecycle_hook = Some(compaction_lifecycle_status_hook(
             task_state.clone(),
@@ -3354,9 +3363,9 @@ mod tests {
         use tokio::sync::Mutex;
 
         // Pending incremental snapshot becomes the terminal snapshot.
-        let latest = Arc::new(Mutex::new(Some(PersistJob::Incremental(
+        let latest = Arc::new(Mutex::new(Some(PersistJob::Incremental(Arc::new(
             agendao_session::Session::new("proj", "/tmp"),
-        ))));
+        )))));
         queue_final_persist_job(&latest).await;
         let queued = persist_job_name(latest.lock().await.as_ref());
         assert_eq!(queued, "Final(Some)");
@@ -3425,7 +3434,7 @@ mod tests {
         session.push_message(assistant);
         let assistant_id = session.messages[1].id.clone();
 
-        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
         notify.notify_one();
         wait_for_persisted_messages(&message_repo, &session_id, 2).await;
 
@@ -3435,7 +3444,7 @@ mod tests {
             session_id.clone(),
             "followup",
         ));
-        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
         notify.notify_one();
         wait_for_persisted_messages(&message_repo, &session_id, 3).await;
 
@@ -3465,7 +3474,7 @@ mod tests {
             session_id.clone(),
             "compacted summary",
         ));
-        *latest.lock().await = Some(PersistJob::Incremental(session.clone()));
+        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
         queue_final_persist_job(&latest).await;
         notify.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), worker)
@@ -3508,7 +3517,7 @@ mod tests {
             session_id.clone(),
             "hi",
         ));
-        *latest.lock().await = Some(PersistJob::Incremental(session));
+        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session)));
         notify.notify_one();
         wait_for_persisted_messages(&message_repo, &session_id, 1).await;
 

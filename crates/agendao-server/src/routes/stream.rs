@@ -300,20 +300,21 @@ pub(crate) async fn stream_message(
 
     tokio::spawn(async move {
         let stream_tx = tx;
-        let (update_tx, mut update_rx) = tokio::sync::mpsc::unbounded_channel::<Session>();
+        let (update_tx, mut update_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<Session>>();
         let update_state = stream_state.clone();
         let mut update_task = tokio::spawn(async move {
             while let Some(snapshot) = update_rx.recv().await {
                 {
                     let mut sessions = update_state.sessions.lock().await;
-                    sessions.update(snapshot.clone());
+                    // Arc 共享：每个流式 tick 只在 hook 处深拷贝一次。
+                    sessions.update_shared(snapshot.clone());
                 }
             }
         });
 
         let update_hook_tx = update_tx.clone();
         let update_hook: agendao_session::SessionUpdateHook = Arc::new(move |snapshot| {
-            let _ = update_hook_tx.send(snapshot.clone());
+            let _ = update_hook_tx.send(Arc::new(snapshot.clone()));
         });
 
         let prompt_runner = agendao_session::SessionPrompt::new(Arc::new(RwLock::new(
@@ -482,7 +483,7 @@ pub(crate) async fn stream_message(
                 Some(&stream_model_id),
             );
             assistant.add_text(format!("Provider error: {}", error));
-            let _ = update_tx.send(session.clone());
+            let _ = update_tx.send(Arc::new(session.clone()));
             let message_id = session
                 .messages
                 .iter()

@@ -87,7 +87,7 @@ const BUILD_SWITCH: &str = r#"The user has approved your plan and wants you to e
 - Report progress to the user"#;
 
 pub fn insert_reminders(
-    messages: &[SessionMessage],
+    mut messages: Vec<SessionMessage>,
     agent_name: &str,
     was_plan: bool,
 ) -> Vec<SessionMessage> {
@@ -95,9 +95,8 @@ pub fn insert_reminders(
         .iter()
         .rposition(|m| matches!(m.role, MessageRole::User));
 
+    // 就地修改传入的 Vec：无 reminder 需要插入时原样返回，零克隆。
     if let Some(idx) = last_user_idx {
-        let mut messages = messages.to_vec();
-
         if agent_name == "plan" {
             let reminder_text = PROMPT_PLAN.to_string();
             messages[idx].parts.push(crate::MessagePart {
@@ -125,11 +124,9 @@ pub fn insert_reminders(
                 message_id: None,
             });
         }
-
-        messages
-    } else {
-        messages.to_vec()
     }
+
+    messages
 }
 
 pub fn was_plan_agent(messages: &[SessionMessage]) -> bool {

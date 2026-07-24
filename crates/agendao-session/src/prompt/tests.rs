@@ -982,7 +982,7 @@ impl Tool for AlwaysInvalidArgsTool {
 #[test]
 fn insert_reminders_adds_plan_prompt_for_plan_agent() {
     let messages = vec![SessionMessage::user("ses_test", "plan this")];
-    let output = insert_reminders(&messages, "plan", false);
+    let output = insert_reminders(messages, "plan", false);
     let last = output.last().unwrap();
     let injected = last
         .parts
@@ -1001,7 +1001,7 @@ fn insert_reminders_adds_build_switch_after_plan() {
     let mut user = SessionMessage::user("ses_test", "execute this");
     user.metadata
         .insert("agent".to_string(), serde_json::json!("plan"));
-    let output = insert_reminders(&[user], "build", true);
+    let output = insert_reminders(vec![user], "build", true);
     let last = output.last().unwrap();
     let injected = last
         .parts

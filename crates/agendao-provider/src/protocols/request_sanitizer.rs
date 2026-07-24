@@ -1,5 +1,7 @@
 use agendao_types::SanitizerAction;
 
+use std::borrow::Cow;
+
 use crate::{Content, ContentPart, Message, Role};
 
 const INTERRUPTED_TOOL_RESULT_TEXT: &str = "[Tool execution was interrupted]";
@@ -18,6 +20,127 @@ pub fn sanitize_messages_for_protocol(
     options: SanitizerOptions,
 ) -> Vec<Message> {
     sanitize_messages_for_protocol_with_actions(messages, options, None)
+}
+
+/// Sanitize an owned message list, reusing it untouched when the pass would
+/// be a no-op.
+///
+/// 稳态（无协议违规）下零克隆：扫描判定 sanitize 不会改变任何内容时直接
+/// 原样返回输入 Vec；只有真的需要修复时才走逐条克隆的完整路径。
+pub fn sanitize_messages_for_protocol_owned(
+    messages: Vec<Message>,
+    options: SanitizerOptions,
+) -> Vec<Message> {
+    if sanitize_is_noop(&messages, options) {
+        return messages;
+    }
+    sanitize_messages_for_protocol_with_actions(&messages, options, None)
+}
+
+/// [`sanitize_messages_for_protocol_owned`] variant that also records actions.
+pub fn sanitize_messages_for_protocol_owned_with_actions(
+    messages: Vec<Message>,
+    options: SanitizerOptions,
+    actions_out: Option<&mut Vec<SanitizerAction>>,
+) -> Vec<Message> {
+    if sanitize_is_noop(&messages, options) {
+        // no-op 路径上不可能产生任何 action（所有 action 都挂在修复分支上）。
+        return messages;
+    }
+    sanitize_messages_for_protocol_with_actions(&messages, options, actions_out)
+}
+
+/// Conservative scan: `true` only when the full sanitize pass is guaranteed
+/// to return byte-identical messages and record zero actions.
+///
+/// Mirrors `sanitize_messages_for_protocol_with_actions` branch-for-branch;
+/// any doubt returns `false` and callers fall back to the cloning path, so a
+/// false negative is impossible and a false positive only costs the legacy
+/// clone.
+fn sanitize_is_noop(messages: &[Message], options: SanitizerOptions) -> bool {
+    let mut pending: Vec<&str> = Vec::new();
+    let mut seen_tool_use_ids: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+
+    for message in messages {
+        match message.role {
+            Role::System | Role::User => {
+                // flush_pending would inject a synthetic placeholder / record
+                // an orphaned-result action.
+                if !pending.is_empty() {
+                    return false;
+                }
+            }
+            Role::Assistant => {
+                if !pending.is_empty() {
+                    return false;
+                }
+                if is_empty_or_whitespace_assistant(message) {
+                    return false;
+                }
+                if options.drop_thinking_only_assistant && is_thinking_only_assistant(message) {
+                    return false;
+                }
+                if trailing_invalid_thinking_cutoff(message).is_some() {
+                    return false;
+                }
+                let Content::Parts(parts) = &message.content else {
+                    // Text assistant: no tool_use ids; replaces pending with
+                    // an empty set (already verified empty above).
+                    continue;
+                };
+                let mut ids: Vec<&str> = Vec::new();
+                for part in parts {
+                    if let Some(tool_use) = &part.tool_use {
+                        // Intra-message or cross-message duplicate → dedup
+                        // rewrite would change the output.
+                        if !seen_tool_use_ids.insert(tool_use.id.as_str())
+                            || ids.contains(&tool_use.id.as_str())
+                        {
+                            return false;
+                        }
+                        ids.push(tool_use.id.as_str());
+                    }
+                }
+                pending = ids;
+            }
+            Role::Tool => {
+                // Content::Text is either dropped (empty) or re-emitted as a
+                // User message — always structural.
+                let Content::Parts(parts) = &message.content else {
+                    return false;
+                };
+                if parts.is_empty() {
+                    // Rebuilt message would be dropped entirely.
+                    return false;
+                }
+                // The rebuilt `Message::tool_parts(..)` drops these fields.
+                if message.cache_control.is_some() || message.provider_options.is_some() {
+                    return false;
+                }
+                for part in parts {
+                    let Some(tool_result) = &part.tool_result else {
+                        // Non-tool_result parts are re-emitted as User text or
+                        // silently dropped — always structural.
+                        return false;
+                    };
+                    match pending
+                        .iter()
+                        .position(|pending_id| *pending_id == tool_result.tool_use_id)
+                    {
+                        Some(index) => {
+                            pending.remove(index);
+                        }
+                        // Orphan tool_result would be dropped.
+                        None => return false,
+                    }
+                }
+            }
+        }
+    }
+
+    // Trailing flush_pending must not inject anything.
+    pending.is_empty()
 }
 
 /// Sanitize messages and record every cleanup action into the supplied vector.
@@ -69,11 +192,19 @@ pub fn sanitize_messages_for_protocol_with_actions(
                     record(SanitizerAction::ThinkingOnlyAssistant);
                     continue;
                 }
-                // Strip trailing invalid thinking blocks from otherwise valid messages.
-                let (cleaned, trailing_stripped) = strip_trailing_invalid_thinking(message);
-                if trailing_stripped {
-                    record(SanitizerAction::TrailingInvalidThinkingBlock);
-                }
+                // Strip trailing invalid thinking blocks from otherwise valid
+                // messages. Cow：无需 strip 时保持借用，避免一次全消息克隆。
+                let cleaned: Cow<'_, Message> = match trailing_invalid_thinking_cutoff(message) {
+                    Some(cutoff) => {
+                        record(SanitizerAction::TrailingInvalidThinkingBlock);
+                        let mut cleaned = message.clone();
+                        if let Content::Parts(ref mut cleaned_parts) = cleaned.content {
+                            cleaned_parts.truncate(cutoff);
+                        }
+                        Cow::Owned(cleaned)
+                    }
+                    None => Cow::Borrowed(message),
+                };
                 // Detect and resolve duplicate tool_use IDs.
                 let ids = assistant_tool_use_ids(&cleaned);
                 // Step 1: intra-message duplicates — remove the duplicate part entirely.
@@ -90,15 +221,15 @@ pub fn sanitize_messages_for_protocol_with_actions(
                         }
                     }
                 }
-                let mut deduped = if has_intra_dupes {
-                    deduplicate_tool_use_ids_in_message(&cleaned)
+                let deduped: Cow<'_, Message> = if has_intra_dupes {
+                    Cow::Owned(deduplicate_tool_use_ids_in_message(&cleaned))
                 } else {
                     cleaned
                 };
                 // Step 2: cross-message duplicates — rewrite the duplicate ID to a
                 // unique suffix so the provider never sees the same id twice.
-                deduped = rewrite_cross_message_duplicate_ids(
-                    &deduped,
+                let deduped = rewrite_cross_message_duplicate_ids(
+                    deduped,
                     &mut seen_tool_use_ids,
                     &mut dedup_rewrites,
                     &mut dedup_suffix,
@@ -106,14 +237,17 @@ pub fn sanitize_messages_for_protocol_with_actions(
                 );
                 let deduped_ids = assistant_tool_use_ids(&deduped);
                 pending_tool_use_ids = deduped_ids;
-                sanitized.push(deduped);
+                sanitized.push(deduped.into_owned());
             }
             Role::Tool => {
                 // Rewrite tool_result IDs that reference deduplicated tool_use IDs.
+                // 无重写时直接借用原消息，不再无条件整份克隆。
+                let rewritten;
                 let message = if !dedup_rewrites.is_empty() {
-                    rewrite_tool_result_ids(message, &dedup_rewrites)
+                    rewritten = rewrite_tool_result_ids(message, &dedup_rewrites);
+                    &rewritten
                 } else {
-                    message.clone()
+                    message
                 };
                 let (tool_result_parts, text_parts) =
                     sanitize_tool_message_content(&message.content, &mut pending_tool_use_ids);
@@ -322,50 +456,61 @@ fn is_compaction_placeholder_text(text: &str) -> bool {
         || trimmed.starts_with("[trimmed")
 }
 
-/// Strip trailing thinking/reasoning blocks from an assistant message.
-/// Returns `(cleaned_message, was_stripped)`.
-fn strip_trailing_invalid_thinking(message: &Message) -> (Message, bool) {
+/// If the assistant message ends with invalid trailing thinking/reasoning
+/// blocks, return the truncate point (just past the last meaningful part).
+/// `None` when no strip is needed — shared by the cloning strip path and the
+/// no-op scan so both make the exact same decision.
+fn trailing_invalid_thinking_cutoff(message: &Message) -> Option<usize> {
     let Content::Parts(parts) = &message.content else {
-        return (message.clone(), false);
+        return None;
     };
-    let last_meaningful = parts.iter().rposition(|p| {
+    let last_idx = parts.iter().rposition(|p| {
         !matches!(p.content_type.as_str(), "reasoning" | "thinking")
             && (p.tool_use.is_some()
                 || p.image_url.is_some()
                 || p.text.as_ref().is_some_and(|t| !t.trim().is_empty()))
-    });
-    let Some(last_idx) = last_meaningful else {
-        return (message.clone(), false);
-    };
+    })?;
     let has_trailing_thinking = parts[last_idx + 1..]
         .iter()
         .any(|p| matches!(p.content_type.as_str(), "reasoning" | "thinking"));
-    if !has_trailing_thinking {
-        return (message.clone(), false);
-    }
-    let mut cleaned = message.clone();
-    if let Content::Parts(ref mut cleaned_parts) = cleaned.content {
-        cleaned_parts.truncate(last_idx + 1);
-    }
-    (cleaned, true)
+    has_trailing_thinking.then_some(last_idx + 1)
 }
 
 /// Rewrite tool_use IDs that have already been seen in previous messages.
 /// Each duplicate gets a `--dedup-N` suffix so the provider never encounters
 /// the same tool_use id twice in one request.
-fn rewrite_cross_message_duplicate_ids(
-    message: &Message,
+///
+/// Cow：无重复 id（稳态）时保持借用并仅登记 seen，避免整份克隆。
+fn rewrite_cross_message_duplicate_ids<'m>(
+    message: Cow<'m, Message>,
     seen_ids: &mut std::collections::HashSet<String>,
     rewrites: &mut std::collections::HashMap<String, String>,
     suffix: &mut u64,
     record: &mut dyn FnMut(SanitizerAction),
-) -> Message {
-    let Content::Parts(_parts) = &message.content else {
-        return message.clone();
-    };
-    let mut rewritten = message.clone();
+) -> Cow<'m, Message> {
+    {
+        let Content::Parts(parts) = &message.content else {
+            return message;
+        };
+        // 只读预扫描：任何 id 已出现（跨消息或本消息内重复）才需要克隆重写。
+        let mut fresh: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let needs_rewrite = parts.iter().any(|part| {
+            part.tool_use.as_ref().is_some_and(|tool_use| {
+                seen_ids.contains(tool_use.id.as_str()) || !fresh.insert(tool_use.id.as_str())
+            })
+        });
+        if !needs_rewrite {
+            for part in parts {
+                if let Some(tool_use) = &part.tool_use {
+                    seen_ids.insert(tool_use.id.clone());
+                }
+            }
+            return message;
+        }
+    }
+    let mut rewritten = message.into_owned();
     let Content::Parts(ref mut rewritten_parts) = rewritten.content else {
-        return rewritten;
+        return Cow::Owned(rewritten);
     };
     for part in rewritten_parts.iter_mut() {
         if let Some(ref mut tool_use) = part.tool_use {
@@ -386,7 +531,7 @@ fn rewrite_cross_message_duplicate_ids(
             }
         }
     }
-    rewritten
+    Cow::Owned(rewritten)
 }
 
 /// Apply dedup rewrites to tool_result's tool_use_id fields.
@@ -989,5 +1134,134 @@ mod tests {
         assert!(tool_result_ids.contains(&"dup-x"));
         assert!(tool_result_ids.contains(&"dup-x--dedup-1"));
         assert!(tool_result_ids.contains(&"dup-x--dedup-2"));
+    }
+
+    // ── Owned fast path (zero-copy steady state) ─────────────────────────
+
+    fn assert_messages_json_eq(left: &[Message], right: &[Message]) {
+        let left = serde_json::to_value(left).expect("serialize left");
+        let right = serde_json::to_value(right).expect("serialize right");
+        assert_eq!(left, right);
+    }
+
+    /// A clean conversation needs no repairs: the owned entry point must
+    /// return the input untouched (same content, zero recorded actions).
+    #[test]
+    fn sanitize_owned_returns_clean_conversation_unchanged() {
+        let messages = vec![
+            Message::system("system prompt"),
+            Message::user("first question"),
+            Message::assistant_parts(vec![
+                ContentPart::text("let me check"),
+                ContentPart::tool_use("call-1", "read", json!({"file_path": "a.txt"})),
+            ]),
+            Message::tool_parts(vec![ContentPart::tool_result("call-1", "file body", None)]),
+            Message::assistant("final answer"),
+        ];
+        let golden = messages.clone();
+
+        let mut actions = Vec::new();
+        let sanitized = sanitize_messages_for_protocol_owned_with_actions(
+            messages,
+            SanitizerOptions::default(),
+            Some(&mut actions),
+        );
+
+        assert!(actions.is_empty(), "clean input must record no actions");
+        assert_messages_json_eq(&sanitized, &golden);
+        assert!(sanitize_is_noop(&sanitized, SanitizerOptions::default()));
+    }
+
+    /// The owned fast path must produce byte-identical output and identical
+    /// actions to the legacy cloning path when repairs ARE needed.
+    #[test]
+    fn sanitize_owned_matches_borrowed_path_on_dirty_input() {
+        let messages = vec![
+            Message::user("go"),
+            // duplicate tool_use ids across messages + an unanswered call
+            Message::assistant_parts(vec![
+                ContentPart::text("working"),
+                ContentPart::tool_use("dup-x", "read", json!({})),
+                ContentPart::reasoning("trailing hidden thinking"),
+            ]),
+            Message::assistant_parts(vec![ContentPart::tool_use("dup-x", "write", json!({}))]),
+            Message::tool_parts(vec![
+                ContentPart::tool_result("dup-x", "done", None),
+                ContentPart::tool_result("orphan-call", "no caller", None),
+            ]),
+        ];
+
+        assert!(!sanitize_is_noop(&messages, SanitizerOptions::default()));
+
+        let mut borrowed_actions = Vec::new();
+        let borrowed = sanitize_messages_for_protocol_with_actions(
+            &messages,
+            SanitizerOptions::default(),
+            Some(&mut borrowed_actions),
+        );
+
+        let mut owned_actions = Vec::new();
+        let owned = sanitize_messages_for_protocol_owned_with_actions(
+            messages,
+            SanitizerOptions::default(),
+            Some(&mut owned_actions),
+        );
+
+        assert_messages_json_eq(&owned, &borrowed);
+        assert_eq!(owned_actions, borrowed_actions);
+        assert!(!owned_actions.is_empty(), "dirty input must record actions");
+        // Sanitization is a fixed point: the repaired output is no-op clean.
+        assert!(sanitize_is_noop(&owned, SanitizerOptions::default()));
+    }
+
+    /// A tool message carrying cache_control/provider_options is rebuilt by
+    /// the sanitizer (those fields are dropped), so the no-op scan must not
+    /// short-circuit it.
+    #[test]
+    fn sanitize_noop_scan_rejects_tool_message_with_extra_fields() {
+        let mut message =
+            Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]);
+        message.cache_control = Some(crate::CacheControl::ephemeral());
+        let messages = vec![
+            Message::assistant_parts(vec![ContentPart::tool_use("call-1", "read", json!({}))]),
+            message,
+        ];
+
+        assert!(!sanitize_is_noop(&messages, SanitizerOptions::default()));
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
+        // Rebuilt tool message drops cache_control.
+        let tool = sanitized
+            .iter()
+            .find(|m| matches!(m.role, Role::Tool))
+            .expect("tool message");
+        assert!(tool.cache_control.is_none());
+        // Owned path agrees with the borrowed path.
+        let owned = sanitize_messages_for_protocol_owned(messages, SanitizerOptions::default());
+        assert_messages_json_eq(&owned, &sanitized);
+    }
+
+    /// An unanswered tool_use triggers a synthetic placeholder (or a strict
+    /// mode action): never a no-op, and owned/borrowed outputs must agree in
+    /// both policies.
+    #[test]
+    fn sanitize_owned_matches_borrowed_for_interrupted_tool_call() {
+        let messages = vec![
+            Message::user("run"),
+            Message::assistant_parts(vec![ContentPart::tool_use("call-9", "bash", json!({}))]),
+            Message::user("next turn"),
+        ];
+
+        for options in [
+            SanitizerOptions::default(),
+            SanitizerOptions {
+                skip_synthetic_repair: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!sanitize_is_noop(&messages, options));
+            let borrowed = sanitize_messages_for_protocol(&messages, options);
+            let owned = sanitize_messages_for_protocol_owned(messages.clone(), options);
+            assert_messages_json_eq(&owned, &borrowed);
+        }
     }
 }

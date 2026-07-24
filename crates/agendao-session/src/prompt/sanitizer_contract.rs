@@ -11,7 +11,7 @@
 //! - All four paths funnel through the same stage dispatch.
 
 use agendao_provider::protocols::request_sanitizer::{
-    sanitize_messages_for_protocol_with_actions, SanitizerOptions,
+    sanitize_messages_for_protocol_owned_with_actions, SanitizerOptions,
 };
 use agendao_provider::Message as ProviderMessage;
 use agendao_tool::{append_structured_repair_event, repair_event_builder, Metadata};
@@ -91,6 +91,17 @@ pub fn sanitize_with_contract(
     policy: RepairPolicy,
     repair_metadata: &mut Metadata,
 ) -> (Vec<ProviderMessage>, SanitizerTelemetry) {
+    sanitize_with_contract_owned(messages.to_vec(), stage, policy, repair_metadata)
+}
+
+/// Owned variant of [`sanitize_with_contract`]: 稳态（无需修复）下输入 Vec
+/// 原样返回，整份消息零克隆；只有真的发生修复才走逐条克隆路径。
+pub fn sanitize_with_contract_owned(
+    messages: Vec<ProviderMessage>,
+    stage: SanitizerStage,
+    policy: RepairPolicy,
+    repair_metadata: &mut Metadata,
+) -> (Vec<ProviderMessage>, SanitizerTelemetry) {
     let count_before = messages.len();
     let mut telemetry = SanitizerTelemetry::new(stage);
     telemetry.message_count_before = count_before;
@@ -101,8 +112,11 @@ pub fn sanitize_with_contract(
     };
 
     let mut actions = Vec::new();
-    let sanitized =
-        sanitize_messages_for_protocol_with_actions(messages, options, Some(&mut actions));
+    let sanitized = sanitize_messages_for_protocol_owned_with_actions(
+        messages,
+        options,
+        Some(&mut actions),
+    );
 
     telemetry.message_count_after = sanitized.len();
 
@@ -151,8 +165,11 @@ pub fn sanitize_with_contract_quiet(
         skip_synthetic_repair: matches!(policy, RepairPolicy::Strict),
     };
     let mut actions = Vec::new();
-    let sanitized =
-        sanitize_messages_for_protocol_with_actions(messages, options, Some(&mut actions));
+    let sanitized = sanitize_messages_for_protocol_owned_with_actions(
+        messages.to_vec(),
+        options,
+        Some(&mut actions),
+    );
 
     if !actions.is_empty() {
         tracing::debug!(

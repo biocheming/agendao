@@ -2275,7 +2275,7 @@ impl SessionPrompt {
         let mut prompt_messages = filtered_messages;
         if let Some(agent) = agent_name {
             let was_plan = super::was_plan_agent(&prompt_messages);
-            prompt_messages = super::insert_reminders(&prompt_messages, agent, was_plan);
+            prompt_messages = super::insert_reminders(prompt_messages, agent, was_plan);
         }
 
         let output_projection_policy_hash =
@@ -2288,7 +2288,7 @@ impl SessionPrompt {
             &surface_inputs.few_shots,
         )?;
         let (mut chat_messages, request_boundary_hygiene_summary) =
-            Self::apply_request_boundary_hygiene_with_summary(&chat_messages);
+            Self::apply_request_boundary_hygiene_with_summary(chat_messages);
         apply_caching(&mut chat_messages, provider_type);
         Ok(PreparedChatMessages {
             prompt_messages,
@@ -2984,8 +2984,8 @@ impl SessionPrompt {
             // P1.2: Policy gates whether synthetic repairs are injected.
             let repair_policy =
                 crate::compaction::effective_repair_policy(prompt_ctx.config_store.as_deref());
-            let (sanitized, _telemetry) = super::sanitizer_contract::sanitize_with_contract(
-                &chat_messages,
+            let (sanitized, _telemetry) = super::sanitizer_contract::sanitize_with_contract_owned(
+                chat_messages,
                 sanitizer_stage,
                 repair_policy,
                 &mut session.record_mut().metadata,

@@ -189,15 +189,17 @@ impl SessionPrompt {
                 // Backward-compat: old sessions may carry tool_result parts on
                 // assistant messages. Split those into a synthetic tool-role
                 // message using shared constructors (P1 replay authority).
+                // 只收集引用：后续转换函数直接从 &MessagePart 构造 ContentPart，
+                // 避免先整体克隆一层 part 再逐字段克隆的双重复制。
                 let mut assistant_parts = Vec::new();
                 let mut tool_parts = Vec::new();
                 for part in &msg.parts {
                     if matches!(part.part_type, PartType::ToolResult { .. }) {
                         if Self::is_model_visible_part(part) {
-                            tool_parts.push(part.clone());
+                            tool_parts.push(part);
                         }
                     } else if Self::is_model_visible_part(part) {
-                        assistant_parts.push(part.clone());
+                        assistant_parts.push(part);
                     }
                 }
 
@@ -213,7 +215,6 @@ impl SessionPrompt {
                 .parts
                 .iter()
                 .filter(|part| Self::is_model_visible_part(part))
-                .cloned()
                 .collect();
             if visible_parts.is_empty() {
                 continue;
@@ -249,7 +250,7 @@ impl SessionPrompt {
     }
 
     pub(super) fn apply_request_boundary_hygiene_with_summary(
-        messages: &[Message],
+        messages: Vec<Message>,
     ) -> (Vec<Message>, RequestBoundaryHygieneSummary) {
         type PartKey = (usize, usize);
         type PendingCall = (PartKey, String);
@@ -295,6 +296,41 @@ impl SessionPrompt {
                 }
                 Role::System | Role::User => {}
             }
+        }
+
+        // 稳态快路径：扫描阶段已确定不会有任何 part 被丢弃/压缩，且
+        // `rebuild_hygiene_message` 也不会做结构性改写（空 parts 丢弃、
+        // 纯文本 assistant 合并为 Content::Text）时，原样返回输入 Vec，
+        // 整份消息零克隆。
+        let would_change = messages.iter().enumerate().any(|(message_idx, message)| {
+            let Content::Parts(parts) = &message.content else {
+                return false;
+            };
+            if parts.is_empty() {
+                return true;
+            }
+            if matches!(message.role, Role::Assistant)
+                && parts.iter().all(|part| part.content_type == "text")
+            {
+                return true;
+            }
+            parts.iter().enumerate().any(|(part_idx, part)| {
+                let key = (message_idx, part_idx);
+                match message.role {
+                    Role::Assistant => {
+                        part.tool_use.is_some() && !matched_tool_calls.contains(&key)
+                    }
+                    Role::Tool => part.tool_result.as_ref().is_some_and(|tool_result| {
+                        !matched_tool_results.contains(&key)
+                            || tool_result.content.chars().count()
+                                > REQUEST_BOUNDARY_TOOL_RESULT_MAX_CHARS
+                    }),
+                    Role::System | Role::User => false,
+                }
+            })
+        });
+        if !would_change {
+            return (messages, summary);
         }
 
         let sanitized = messages
@@ -448,7 +484,7 @@ impl SessionPrompt {
     /// for orchestrator-pathed messages.
     /// `Content::Text` is only emitted for text-only assistant turns; any turn
     /// with tool calls, reasoning, or attachments uses `Content::Parts`.
-    fn visible_provider_parts(parts: &[crate::MessagePart]) -> Vec<ContentPart> {
+    fn visible_provider_parts(parts: &[&crate::MessagePart]) -> Vec<ContentPart> {
         let mut reasoning = Vec::new();
         let mut text = Vec::new();
         let mut tool_uses = Vec::new();
@@ -528,7 +564,7 @@ impl SessionPrompt {
 
     /// Build an assistant replay message using the shared provider constructor.
     /// Preserves reasoning before text before tool_use ordering.
-    fn build_assistant_replay_message(parts: &[crate::MessagePart]) -> Option<Message> {
+    fn build_assistant_replay_message(parts: &[&crate::MessagePart]) -> Option<Message> {
         let provider_parts = Self::visible_provider_parts(parts);
         // If all parts are text-only, emit Content::Text for backward compat.
         let has_non_text = parts
@@ -556,14 +592,14 @@ impl SessionPrompt {
     /// Structured tool results stay in `Role::Tool`. Any remaining synthetic
     /// text/file context is downgraded to a normal user-context message so it
     /// does not depend on protocol-specific `Role::Tool` fallback behavior.
-    fn build_tool_replay_messages(parts: &[crate::MessagePart]) -> Vec<Message> {
+    fn build_tool_replay_messages(parts: &[&crate::MessagePart]) -> Vec<Message> {
         let mut tool_result_parts = Vec::new();
         let mut context_parts = Vec::new();
 
         for part in parts {
             match part.part_type {
-                PartType::ToolResult { .. } => tool_result_parts.push(part.clone()),
-                _ => context_parts.push(part.clone()),
+                PartType::ToolResult { .. } => tool_result_parts.push(*part),
+                _ => context_parts.push(*part),
             }
         }
 
@@ -648,7 +684,7 @@ impl SessionPrompt {
             || text.starts_with("[tool result collapsed before compaction:")
     }
 
-    pub(super) fn parts_to_content(parts: &[crate::MessagePart]) -> Content {
+    pub(super) fn parts_to_content(parts: &[&crate::MessagePart]) -> Content {
         let has_parts = parts
             .iter()
             .any(|p| !matches!(p.part_type, PartType::Text { .. }));
@@ -2564,7 +2600,7 @@ mod tests {
     #[test]
     fn parts_to_content_preserves_audio_file_parts() {
         let now = chrono::Utc::now();
-        let content = SessionPrompt::parts_to_content(&[crate::MessagePart {
+        let part = crate::MessagePart {
             id: "prt_audio".to_string(),
             part_type: PartType::File {
                 url: "data:audio/wav;base64,UklGRg==".to_string(),
@@ -2573,7 +2609,8 @@ mod tests {
             },
             created_at: now,
             message_id: None,
-        }]);
+        };
+        let content = SessionPrompt::parts_to_content(&[&part]);
 
         let Content::Parts(parts) = content else {
             panic!("expected structured content");
@@ -2590,7 +2627,7 @@ mod tests {
 
     #[test]
     fn parts_to_content_replays_tool_call_from_raw_shape() {
-        let content = SessionPrompt::parts_to_content(&[crate::MessagePart {
+        let part = crate::MessagePart {
             id: "prt_tool".to_string(),
             part_type: PartType::ToolCall {
                 id: "call_1".to_string(),
@@ -2602,7 +2639,8 @@ mod tests {
             },
             created_at: chrono::Utc::now(),
             message_id: None,
-        }]);
+        };
+        let content = SessionPrompt::parts_to_content(&[&part]);
 
         let Content::Parts(parts) = content else {
             panic!("expected structured content");
@@ -3830,7 +3868,7 @@ mod tests {
 
         let messages = SessionPrompt::build_chat_messages(&[tool], None, &[]).expect("build");
         let (messages, summary) =
-            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(messages);
 
         assert!(
             messages.is_empty(),
@@ -3853,7 +3891,7 @@ mod tests {
 
         let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).expect("build");
         let (messages, summary) =
-            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(messages);
 
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0].role, Role::Assistant));
@@ -3877,7 +3915,7 @@ mod tests {
         let messages = SessionPrompt::build_chat_messages(&[assistant, tool.clone()], None, &[])
             .expect("build");
         let (messages, summary) =
-            SessionPrompt::apply_request_boundary_hygiene_with_summary(&messages);
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(messages);
 
         assert_eq!(messages.len(), 2);
         match &messages[1].content {
@@ -3900,6 +3938,35 @@ mod tests {
         assert_eq!(summary.dropped_orphan_tool_results, 0);
         assert_eq!(summary.dropped_dangling_tool_calls, 0);
         assert_eq!(summary.compressed_tool_results, 1);
+    }
+
+    /// Steady-state fast path: a conversation with every tool call answered
+    /// and nothing over the size cap must come back byte-identical with an
+    /// empty summary (and the owned input is returned untouched).
+    #[test]
+    fn request_boundary_hygiene_noop_returns_identical_messages() {
+        let mut assistant = SessionMessage::assistant("ses_test");
+        assistant.add_text("checking the file");
+        assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        let mut tool = SessionMessage::tool("ses_test");
+        tool.add_tool_result("call-1", "short result", false);
+        let mut closing = SessionMessage::assistant("ses_test");
+        closing.add_text("done");
+
+        let messages =
+            SessionPrompt::build_chat_messages(&[assistant, tool, closing], None, &[])
+                .expect("build");
+        let golden = serde_json::to_value(&messages).expect("serialize golden");
+
+        let (messages, summary) =
+            SessionPrompt::apply_request_boundary_hygiene_with_summary(messages);
+
+        assert!(summary.actions.is_empty());
+        assert_eq!(summary.dropped_orphan_tool_results, 0);
+        assert_eq!(summary.dropped_dangling_tool_calls, 0);
+        assert_eq!(summary.compressed_tool_results, 0);
+        let after = serde_json::to_value(&messages).expect("serialize after");
+        assert_eq!(after, golden, "no-op hygiene pass must be byte-identical");
     }
 
     // P1 replay authority: raw tool call input must be preserved in replay.
