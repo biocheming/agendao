@@ -179,7 +179,14 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     }
     let view = RootView { store, handler };
 
+    // Tick 驱动的重绘限频：流式期 chunk 每 50ms 涌入，changed 恒真会把
+    // 全帧 rebuild+diff+draw 拉到 20fps（实测渲染路径占 CPU 近四成）。
+    // 合并到 ~10fps（100ms）——文本更新仍流畅，渲染工作量直接减半；
+    // 键鼠事件不限（输入响应不滞后）。spinner 帧（~75ms）基本保真。
+    let mut last_tick_redraw = std::time::Instant::now();
+
     app.run(view, move |event, view, app| {
+        let is_tick = matches!(event, revue::runtime::event::Event::Tick);
         let mut h = view.handler.borrow_mut();
         let handled = h.handle(event);
         let layout_dirty = h.layout_dirty;
@@ -192,7 +199,14 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             app.dom_renderer().stylesheet_mut().variables.extend(vars);
             app.request_redraw();
         }
-        if handled {
+        // Tick 限频门：距上次 Tick 重绘不足 100ms 就跳过本帧（内容已在
+        // store 更新，下一允许帧合并画出）。
+        let tick_redraw_due = !is_tick || {
+            let due = last_tick_redraw.elapsed().as_millis() >= 100;
+            if due { last_tick_redraw = std::time::Instant::now(); }
+            due
+        };
+        if handled && tick_redraw_due {
             // Force a full redraw (revue's DOM dirty-region tracking
             // doesn't detect Input widget state changes, so we can't
             // rely on per-cell diffs after a handled event).
