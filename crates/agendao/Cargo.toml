@@ -66,6 +66,7 @@ path = "src/bin/agendao-product-serve.rs"
 required-features = ["product-serve-bin"]
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 agendao-util = { path = "../agendao-util" }
 agendao-cli = { path = "../agendao-cli", optional = true, default-features = false }
 agendao-client = { path = "../agendao-client", optional = true }

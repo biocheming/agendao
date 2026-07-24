@@ -67,6 +67,10 @@ pub fn repair_event_builder(
     RepairEventBuilder::new(kind, layer, tool)
 }
 
+/// 修复事件在 session metadata 中的保留上限（环形，超出丢弃最旧）。
+/// 50 条 × ~1KB ≈ 50KB/会话，足以覆盖最近修复轨迹而不致无界膨胀。
+const MAX_TOOL_REPAIR_EVENTS: usize = 50;
+
 // ── Append helpers ──────────────────────────────────────────────────────
 
 /// Append a loose event map to metadata. Still works; delegates to
@@ -98,6 +102,13 @@ pub fn append_tool_repair_event(metadata: &mut Metadata, event: Value) {
             .or_insert_with(|| Value::Array(Vec::new()));
         if let Some(items) = events.as_array_mut() {
             items.push(event);
+            // 环形上限：修复事件只保留最近 N 条——长会话高频 orphan/repair
+            // 场景下此前无界追加，驻留在规范 Session 里被每次深拷贝/持久化
+            // 反复放大（内存膨胀因素之一）。
+            let overflow = items.len().saturating_sub(MAX_TOOL_REPAIR_EVENTS);
+            if overflow > 0 {
+                items.drain(..overflow);
+            }
         }
     }
 }
