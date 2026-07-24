@@ -224,10 +224,15 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             due
         };
         if handled && tick_redraw_due {
-            // 区域失效优先：transcript 内容变（流式/消息）只把 transcript
-            // 节点 mark dirty，框架只重画该区域；其余情况（结构/对话框/
-            // 输入/主题）回退全屏 request_redraw（语义不变）。
-            let region_marked = transcript_dirty && mark_region_dirty(app, "transcript");
+            // 区域失效优先：streaming 时内容/sidebar token/prompt spinner
+            // 都会变，标这三个区域（header/status 带与背景不重画）；
+            // 其余情况（结构/对话框/主题/首帧）回退全屏 request_redraw。
+            let region_marked = transcript_dirty && {
+                let t = mark_region_dirty(app, "transcript");
+                let s = mark_region_dirty(app, "sidebar");
+                let p = mark_region_dirty(app, "prompt");
+                t && s && p
+            };
             if !region_marked {
                 app.request_redraw();
             }
@@ -1464,6 +1469,7 @@ impl View for RootView {
         let input_widget = input_border.child(h.prompt.view(cursor_blink_on));
         // hint: 1 row, only_bottom 输入框: 内容行(自适应,封顶10) + 底线 1。
         let prompt_bar = vstack()
+            .element_id("prompt")           // 区域失效定位（输入/spinner 变只重画此条）
             .child_sized(hint_text, 1)
             .child_sized(input_widget, prompt_input_rows + 1);
 

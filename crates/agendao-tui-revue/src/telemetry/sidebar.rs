@@ -89,6 +89,7 @@ impl SessionSidebar {
         // gap(0) + 显式空行 child：每处间距独立可控（土律：编排单点）。
         // 紧贴（0 行）：轨道↔详情、Session Tree↔分隔、分隔↔graph；其余 1 行。
         let sidebar = vstack().gap(0)
+            .element_id("sidebar")          // 区域失效定位（token/tree 变只重画此列）
             .child_sized(Text::new(""), 2)              // 顶端 2 行空白（呼吸感）
             .child_sized(logo_view, logo_h)
             .child_sized(Text::new(""), 1)              // logo↔分隔 1 行
