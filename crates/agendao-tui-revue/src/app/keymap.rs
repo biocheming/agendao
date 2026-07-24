@@ -574,6 +574,11 @@ impl AppHandler {
 /// 无任何事件，即判定流挂死，停止 20fps 强制重绘与 spinner 推进。
 const RUNNING_STALE_SECS: u64 = 30;
 
+/// spinner 动画降速因子：重绘只在帧号真正前进时触发（变化驱动），
+/// 帧时长 = 50ms tick × 该值 = 150ms（~6.7fps，墨韵 8 帧仍连贯），
+/// 取代此前"Running 即每 tick 强制重绘"的频率驱动。
+pub(crate) const SPINNER_FRAME_DIV: u64 = 3;
+
 impl AppHandler {
     pub(crate) fn handle(&mut self, event: &Event) -> bool {
         match event {
@@ -594,6 +599,14 @@ impl AppHandler {
                     self.active_session.run_status.get(),
                     RunStatus::Running | RunStatus::Sending
                 ) && self.last_activity.elapsed().as_secs() >= RUNNING_STALE_SECS;
+                // spinner 帧翻转检测（变化驱动，非频率驱动）：动画按
+                // SPINNER_FRAME_DIV 降速，只在帧号真正前进时才需要重绘；
+                // 配合内容事件(changed)与 blink_flipped，全部重绘都有真实原因。
+                let spinner_flipped = matches!(
+                    self.active_session.run_status.get(),
+                    RunStatus::Running | RunStatus::Sending
+                ) && (self.spinner_tick / SPINNER_FRAME_DIV)
+                    != (self.spinner_tick.wrapping_sub(1) / SPINNER_FRAME_DIV);
                 // Advance spinner when running
                 if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) && !running_stale {
                     self.spinner_tick = self.spinner_tick.wrapping_add(1);
@@ -829,7 +842,7 @@ impl AppHandler {
                     }
                 }
 
-                changed || blink_flipped || (matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) && !running_stale) || self.interrupt_pending
+                changed || blink_flipped || (spinner_flipped && !running_stale) || self.interrupt_pending
             }
             Event::Key(key) => {
                 // Ctrl+B → toggle sidebar, Ctrl+P → command palette

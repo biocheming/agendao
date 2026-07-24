@@ -179,10 +179,10 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     }
     let view = RootView { store, handler };
 
-    // Tick 驱动的重绘限频：流式期 chunk 每 50ms 涌入，changed 恒真会把
-    // 全帧 rebuild+diff+draw 拉到 20fps（实测渲染路径占 CPU 近四成）。
-    // 合并到 ~10fps（100ms）——文本更新仍流畅，渲染工作量直接减半；
-    // 键鼠事件不限（输入响应不滞后）。spinner 帧（~75ms）基本保真。
+    // 渲染速率上限（仅 Tick 源）：触发全是变化驱动（keymap 里内容事件/
+    // spinner 帧翻转/blink 翻转），但流式期 chunk 每 50ms 都是"变化"，
+    // 不加帽仍会 20fps 全帧重绘。Tick 源合并到 ~10fps；键鼠不限（输入
+    // 响应不滞后）。
     let mut last_tick_redraw = std::time::Instant::now();
 
     app.run(view, move |event, view, app| {
@@ -199,8 +199,6 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             app.dom_renderer().stylesheet_mut().variables.extend(vars);
             app.request_redraw();
         }
-        // Tick 限频门：距上次 Tick 重绘不足 100ms 就跳过本帧（内容已在
-        // store 更新，下一允许帧合并画出）。
         let tick_redraw_due = !is_tick || {
             let due = last_tick_redraw.elapsed().as_millis() >= 100;
             if due { last_tick_redraw = std::time::Instant::now(); }
@@ -1401,7 +1399,10 @@ impl View for RootView {
             let mut line = hstack().gap(0);
             if is_running {
                 // 墨晕帧（·∘○◉●◉○∘·）：墨滴入水晕开再收,传"运行中"。
-                let frame = crate::widget::spinner::ink_frame(h.spinner_tick);
+                // 帧号按 SPINNER_FRAME_DIV 降速（与 keymap 的帧翻转检测同源）。
+                let frame = crate::widget::spinner::ink_frame(
+                    h.spinner_tick / crate::app::keymap::SPINNER_FRAME_DIV,
+                );
                 line = line
                     .child_sized(Text::new(format!(" {}", frame)).fg(crate::widget::spinner::ink_color()), 2)
                     .child_flex(Text::new(&hint).fg(colors::FG_MUTED()), 1.0);
