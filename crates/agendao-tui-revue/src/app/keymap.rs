@@ -570,6 +570,10 @@ impl AppHandler {
     }
 }
 
+/// 陈旧 Running 阈值（秒）：run_status 卡在 Running/Sending 且超过该时长
+/// 无任何事件，即判定流挂死，停止 20fps 强制重绘与 spinner 推进。
+const RUNNING_STALE_SECS: u64 = 30;
+
 impl AppHandler {
     pub(crate) fn handle(&mut self, event: &Event) -> bool {
         match event {
@@ -583,8 +587,15 @@ impl AppHandler {
                     && self.interrupt_time.elapsed().as_secs() > 5 {
                         self.interrupt_pending = false;
                     }
+                // 陈旧 Running 判定：run_status 卡在 Running/Sending 且超时无活动
+                // （典型：流挂死，run 永不结束）。此时停止 20fps 强制重绘与
+                // spinner 推进（冻帧=诚实的停滞态），活动恢复即自愈。
+                let running_stale = matches!(
+                    self.active_session.run_status.get(),
+                    RunStatus::Running | RunStatus::Sending
+                ) && self.last_activity.elapsed().as_secs() >= RUNNING_STALE_SECS;
                 // Advance spinner when running
-                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) {
+                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) && !running_stale {
                     self.spinner_tick = self.spinner_tick.wrapping_add(1);
                 }
                 // Garbage-collect expired toasts so the Vec doesn't grow
@@ -605,6 +616,10 @@ impl AppHandler {
                 // ── 水：drain 本地发送回执（dispatch 后台 task 投递）──
                 // 与服务端 FrontendEvent 严格分离（见 dispatch_outcome.rs）。
                 let outcomes = self.dispatch_outcomes.drain();
+                // 活动刷新：任何服务端事件或发送回执都算"仍在工作"的证据
+                if !events.is_empty() || !outcomes.is_empty() {
+                    self.last_activity = std::time::Instant::now();
+                }
                 for oc in &outcomes {
                     // 仅处理当前 active_session（单 active 模型；用户切走后的
                     // 陈旧回执忽略，防误改当前会话状态）。
@@ -814,7 +829,7 @@ impl AppHandler {
                     }
                 }
 
-                changed || blink_flipped || matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) || self.interrupt_pending
+                changed || blink_flipped || (matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) && !running_stale) || self.interrupt_pending
             }
             Event::Key(key) => {
                 // Ctrl+B → toggle sidebar, Ctrl+P → command palette

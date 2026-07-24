@@ -20,6 +20,12 @@ pub struct ProviderInstance {
     provider_profile_fingerprint: Option<ProviderProfileFingerprint>,
 }
 
+/// 流式 stall 看门狗兜底值（秒）：per-model `stream_stall_timeout_secs` 未配置时启用。
+/// 取 120s 是宽松兜底——reasoning 模型思考间隙可能较长，但"连接挂死"
+/// （TCP 活着但永无数据）与"模型慢"在该尺度下无法区分，宁可选宁长勿短；
+/// 需要更短的用户可在 Model Settings 里按模型下调。
+const DEFAULT_STREAM_STALL_TIMEOUT_SECS: u64 = 120;
+
 impl ProviderInstance {
     pub fn new(
         id: String,
@@ -152,7 +158,12 @@ impl Provider for ProviderInstance {
             None
         };
 
-        let stall_timeout_secs = request.stream_stall_timeout_secs;
+        // 流式 stall 看门狗默认开启：per-model 配置可覆盖，未配置时用宽松
+        // 兜底值。此前默认 None = 连接挂起（连上但无数据）会永远等待——
+        // run 永不结束，TUI 侧 20fps 重绘空转烧 CPU（实测空闲 ~18%）。
+        let stall_timeout_secs = request
+            .stream_stall_timeout_secs
+            .or(Some(DEFAULT_STREAM_STALL_TIMEOUT_SECS));
         let result = self
             .adapter
             .chat_stream(&self.client, &self.config, request)

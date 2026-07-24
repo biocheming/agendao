@@ -341,6 +341,10 @@ pub(crate) struct AppHandler {
     pub(crate) panel: Panel,
     pub(crate) active_session: SessionStore,
     pub(crate) spinner_tick: u64,
+    /// 最近事件活动时间：任何 FrontendEvent/发送回执到达都会刷新。
+    /// run_status 卡在 Running（如流挂死）时，超过阈值无活动即停止
+    /// 20fps 强制重绘（陈旧 Running 刹车），有活动即自愈。
+    pub(crate) last_activity: std::time::Instant,
     /// 光标闪烁节拍：每个 Tick 单调递增（与运行态无关），`widget::blink::blink_visible`
     /// 据此判相，驱动所有输入处块光标 600ms 量级闪烁。
     pub(crate) blink_tick: u64,
@@ -758,6 +762,7 @@ impl AppHandler {
             settings_edit: settings_edit_state::SettingsEditState::new(),
             panel: Panel::None,
             spinner_tick: 0,
+            last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
             title_refresh_pending: false,
