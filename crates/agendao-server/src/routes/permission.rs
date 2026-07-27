@@ -372,33 +372,51 @@ pub(crate) async fn request_permission(
         },
     };
 
-    {
-        let mut engine = PERMISSION_ENGINE.lock().await;
-        match engine.ask(info.clone()).await {
-            Ok(AskOutcome::Granted) => return Ok(()),
-            Ok(AskOutcome::Pending) => {
-                // Matcher miss: no existing grant covered this request, so it entered pending.
-                // Increment miss_count for the telemetry read model to explain WHY.
-                let mut sessions = state.sessions.lock().await;
-                if let Some(session) = sessions.get_mut(&session_id) {
-                    let current = session
-                        .record()
-                        .metadata
-                        .get("last_permission_miss_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    session.insert_metadata(
-                        "last_permission_miss_count".to_string(),
-                        serde_json::json!(current + 1),
-                    );
-                }
+    // Phase 1: in-memory fast path (grant hits / rulesets) under the engine lock.
+    let precheck = {
+        let engine = PERMISSION_ENGINE.lock().await;
+        engine.evaluate_ask(&info, &[])
+    };
+
+    let outcome = match precheck {
+        Ok(Some(outcome)) => Ok(outcome),
+        Err(err) => Err(err),
+        Ok(None) => {
+            // Phase 2: plugin hook runs WITHOUT the global engine lock, so a
+            // slow plugin cannot serialize permission checks of other sessions.
+            let hook_status = agendao_permission::run_ask_hook(&info).await;
+            // Phase 3: commit the hook outcome (pending insert / grant) under
+            // the lock; commit_ask re-checks grants raced in during phase 2.
+            let mut engine = PERMISSION_ENGINE.lock().await;
+            engine.commit_ask(info.clone(), &hook_status)
+        }
+    };
+
+    match outcome {
+        Ok(AskOutcome::Granted) => return Ok(()),
+        Ok(AskOutcome::Pending) => {
+            // Matcher miss: no existing grant covered this request, so it entered pending.
+            // Increment miss_count for the telemetry read model to explain WHY.
+            // Sessions lock is taken outside the engine lock (no lock nesting).
+            let mut sessions = state.sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                let current = session
+                    .record()
+                    .metadata
+                    .get("last_permission_miss_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                session.insert_metadata(
+                    "last_permission_miss_count".to_string(),
+                    serde_json::json!(current + 1),
+                );
             }
-            Err(_) => {
-                return Err(agendao_tool::ToolError::PermissionDenied(format!(
-                    "Permission rejected for {}",
-                    request.permission
-                )));
-            }
+        }
+        Err(_) => {
+            return Err(agendao_tool::ToolError::PermissionDenied(format!(
+                "Permission rejected for {}",
+                request.permission
+            )));
         }
     }
 
@@ -433,7 +451,8 @@ pub(crate) async fn request_permission(
         &state,
         &session_id,
         crate::session_runtime::events::ReconcileReason::Permission,
-    );
+    )
+    .await;
 
     let wait_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
     PERMISSION_WAITERS.lock().await.remove(&permission_id);
@@ -482,7 +501,8 @@ pub(crate) async fn request_permission(
                 &state,
                 &session_id,
                 crate::session_runtime::events::ReconcileReason::Permission,
-            );
+            )
+            .await;
             Err(agendao_tool::ToolError::ExecutionError(
                 "Permission response channel closed".to_string(),
             ))
@@ -502,7 +522,8 @@ pub(crate) async fn request_permission(
                 &state,
                 &session_id,
                 crate::session_runtime::events::ReconcileReason::Permission,
-            );
+            )
+            .await;
             Err(agendao_tool::ToolError::PermissionDenied(
                 "Permission request timed out".to_string(),
             ))
@@ -598,7 +619,8 @@ pub(crate) async fn reply_permission(
         &state,
         &session_id,
         crate::session_runtime::events::ReconcileReason::Permission,
-    );
+    )
+    .await;
     Ok(Json(true))
 }
 

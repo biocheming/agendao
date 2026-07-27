@@ -510,13 +510,80 @@ impl PermissionEngine {
         info: PermissionInfo,
         rulesets: &[PermissionRuleset],
     ) -> Result<AskOutcome, PermissionError> {
-        let session_id = info.session_id.clone();
-        let permission_id = info.id.clone();
+        if let Some(outcome) = self.evaluate_ask(&info, rulesets)? {
+            return Ok(outcome);
+        }
+        // Runs while `&mut self` is borrowed but touches no engine state, so
+        // callers holding the engine in a lock should prefer the split
+        // evaluate_ask/run_ask_hook/commit_ask flow to avoid holding that
+        // lock across the plugin hook await.
+        let status = run_ask_hook(&info).await;
+        self.commit_ask(info, &status)
+    }
+
+    /// Fast, purely in-memory phase of `ask`: grant hits and ruleset
+    /// evaluation only. Returns `Ok(Some(outcome))` when the request is
+    /// decided without plugins, `Ok(None)` when the plugin hook phase must
+    /// run, and `Err` when a ruleset denies the request.
+    pub fn evaluate_ask(
+        &self,
+        info: &PermissionInfo,
+        rulesets: &[PermissionRuleset],
+    ) -> Result<Option<AskOutcome>, PermissionError> {
         let patterns = Self::patterns(info.pattern.as_ref());
 
         if matches!(info.permission_class, Some(PermissionClass::InspectRead)) {
-            return Ok(AskOutcome::Granted);
+            return Ok(Some(AskOutcome::Granted));
         }
+
+        if self.is_approved(
+            &info.session_id,
+            info.permission_class,
+            info.scope_key.as_deref(),
+            info.matcher_kind,
+            info.matcher_key.as_deref(),
+            info.origin_tool.as_deref(),
+            info.pattern.as_ref(),
+            &info.permission_type,
+        ) {
+            return Ok(Some(AskOutcome::Granted));
+        }
+
+        if self.is_turn_approved(
+            &info.session_id,
+            info.permission_class,
+            info.scope_key.as_deref(),
+            info.matcher_kind,
+            info.matcher_key.as_deref(),
+            info.origin_tool.as_deref(),
+            info.pattern.as_ref(),
+            &info.permission_type,
+        ) {
+            return Ok(Some(AskOutcome::Granted));
+        }
+
+        match evaluate_permission_patterns(&info.permission_type, &patterns, rulesets) {
+            PermissionAction::Allow => Ok(Some(AskOutcome::Granted)),
+            PermissionAction::Deny => Err(PermissionError::Rejected {
+                session_id: info.session_id.clone(),
+                permission_id: info.id.clone(),
+                tool_call_id: info.call_id.clone(),
+            }),
+            PermissionAction::Ask => Ok(None),
+        }
+    }
+
+    /// Commit phase of `ask`, to be called after [`run_ask_hook`] resolved the
+    /// hook status (without holding the engine lock). Grants are re-checked
+    /// here so a grant raced in during the hook phase still wins over
+    /// registering a duplicate pending entry.
+    pub fn commit_ask(
+        &mut self,
+        info: PermissionInfo,
+        hook_status: &str,
+    ) -> Result<AskOutcome, PermissionError> {
+        let session_id = info.session_id.clone();
+        let permission_id = info.id.clone();
 
         if self.is_approved(
             &session_id,
@@ -527,11 +594,7 @@ impl PermissionEngine {
             info.origin_tool.as_deref(),
             info.pattern.as_ref(),
             &info.permission_type,
-        ) {
-            return Ok(AskOutcome::Granted);
-        }
-
-        if self.is_turn_approved(
+        ) || self.is_turn_approved(
             &session_id,
             info.permission_class,
             info.scope_key.as_deref(),
@@ -544,41 +607,7 @@ impl PermissionEngine {
             return Ok(AskOutcome::Granted);
         }
 
-        match evaluate_permission_patterns(&info.permission_type, &patterns, rulesets) {
-            PermissionAction::Allow => return Ok(AskOutcome::Granted),
-            PermissionAction::Deny => {
-                return Err(PermissionError::Rejected {
-                    session_id: session_id.clone(),
-                    permission_id: permission_id.clone(),
-                    tool_call_id: info.call_id.clone(),
-                });
-            }
-            PermissionAction::Ask => {}
-        }
-
-        // Plugin hook: permission.ask — plugins may decide "ask" | "deny" | "allow".
-        let mut hook_ctx = HookContext::new(HookEvent::PermissionAsk)
-            .with_session(&session_id)
-            .with_data("permission_type", serde_json::json!(&info.permission_type))
-            .with_data("permission_id", serde_json::json!(&permission_id))
-            .with_data("permission", serde_json::json!(&info))
-            .with_data("status", serde_json::json!("ask"));
-        if let Some(call_id) = &info.call_id {
-            hook_ctx = hook_ctx.with_data("call_id", serde_json::json!(call_id));
-        }
-
-        let mut status = "ask".to_string();
-        let hook_outputs = agendao_plugin::trigger_collect(hook_ctx).await;
-        for output in hook_outputs {
-            let Some(payload) = output.payload.as_ref() else {
-                continue;
-            };
-            if let Some(next_status) = extract_permission_status(payload) {
-                status = next_status;
-            }
-        }
-
-        match status.as_str() {
+        match hook_status {
             "allow" => return Ok(AskOutcome::Granted),
             "deny" => {
                 return Err(PermissionError::Rejected {
@@ -701,6 +730,34 @@ impl Default for PermissionEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Plugin hook phase of `ask` (`permission.ask`): plugins may decide
+/// "ask" | "deny" | "allow". Borrows no engine state, so callers can run it
+/// without holding the engine lock; a slow plugin hook then no longer
+/// serializes unrelated permission checks.
+pub async fn run_ask_hook(info: &PermissionInfo) -> String {
+    let mut hook_ctx = HookContext::new(HookEvent::PermissionAsk)
+        .with_session(&info.session_id)
+        .with_data("permission_type", serde_json::json!(&info.permission_type))
+        .with_data("permission_id", serde_json::json!(&info.id))
+        .with_data("permission", serde_json::json!(&info))
+        .with_data("status", serde_json::json!("ask"));
+    if let Some(call_id) = &info.call_id {
+        hook_ctx = hook_ctx.with_data("call_id", serde_json::json!(call_id));
+    }
+
+    let mut status = "ask".to_string();
+    let hook_outputs = agendao_plugin::trigger_collect(hook_ctx).await;
+    for output in hook_outputs {
+        let Some(payload) = output.payload.as_ref() else {
+            continue;
+        };
+        if let Some(next_status) = extract_permission_status(payload) {
+            status = next_status;
+        }
+    }
+    status
 }
 
 fn extract_permission_status(payload: &serde_json::Value) -> Option<String> {
@@ -1025,5 +1082,103 @@ mod tests {
         assert!(wildcard_match("foo/bar/baz", "*/baz"));
         assert!(wildcard_match("foo/bar/baz", "*bar*"));
         assert!(!wildcard_match("foo", "bar"));
+    }
+
+    fn hook_test_info(id: &str, session_id: &str) -> PermissionInfo {
+        PermissionInfo {
+            id: id.to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("ls".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:ls".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:ls".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: session_id.to_string(),
+            message_id: "msg_test".to_string(),
+            call_id: None,
+            message: "Execute ls command".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_ask_honors_grant_raced_in_during_hook_phase() {
+        let mut engine = PermissionEngine::new();
+        let info = hook_test_info("per_race", "ses_race");
+
+        // Fast path cannot decide: the hook phase must run.
+        assert!(matches!(engine.evaluate_ask(&info, &[]), Ok(None)));
+
+        // While the hook runs without the engine lock, a concurrent respond
+        // grants the same permission scope.
+        engine.grant(
+            "ses_race",
+            Some(PermissionClass::DangerousExec),
+            Some("cmd:ls"),
+            Some(PermissionMatcherKind::StructuredFamily),
+            Some("cmd:ls"),
+            Some("bash"),
+            "bash",
+            info.pattern.as_ref(),
+        );
+
+        // The commit phase must observe the grant instead of registering a
+        // duplicate pending entry.
+        assert!(matches!(
+            engine.commit_ask(info, "ask"),
+            Ok(AskOutcome::Granted)
+        ));
+        assert!(engine.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_ask_is_not_blocked_while_hook_phase_is_in_flight() {
+        use std::sync::Arc;
+        use tokio::sync::{oneshot, Mutex};
+
+        let engine = Arc::new(Mutex::new(PermissionEngine::new()));
+        let (hook_started_tx, hook_started_rx) = oneshot::channel::<()>();
+        let (hook_release_tx, hook_release_rx) = oneshot::channel::<()>();
+
+        let engine_a = engine.clone();
+        let task_a = tokio::spawn(async move {
+            let info_a = hook_test_info("per_a", "ses_a");
+            {
+                let engine = engine_a.lock().await;
+                assert!(matches!(engine.evaluate_ask(&info_a, &[]), Ok(None)));
+            }
+            // Simulate a slow plugin hook running WITHOUT the engine lock.
+            hook_started_tx.send(()).unwrap();
+            hook_release_rx.await.unwrap();
+            let mut engine = engine_a.lock().await;
+            engine.commit_ask(info_a, "ask").unwrap()
+        });
+
+        hook_started_rx.await.unwrap();
+
+        // While A sits in its hook phase, B completes a full evaluate+commit
+        // cycle without waiting for A's hook to finish.
+        let outcome_b = {
+            let mut engine = engine.lock().await;
+            let info_b = hook_test_info("per_b", "ses_b");
+            assert!(matches!(engine.evaluate_ask(&info_b, &[]), Ok(None)));
+            engine.commit_ask(info_b, "ask").unwrap()
+        };
+        assert!(matches!(outcome_b, AskOutcome::Pending));
+
+        hook_release_tx.send(()).unwrap();
+        let outcome_a = task_a.await.unwrap();
+        assert!(matches!(outcome_a, AskOutcome::Pending));
+
+        // Distinct permission ids both register; no entry is lost.
+        assert_eq!(engine.lock().await.list().len(), 2);
     }
 }
