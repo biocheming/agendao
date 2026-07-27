@@ -498,7 +498,10 @@ async fn stream_frontend_events_to_writer(
 ) {
     use tokio::io::AsyncWriteExt;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_bus(Arc::clone(state), cancel);
+    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_bus(
+        Arc::clone(state),
+        cancel.clone(),
+    );
     while let Some(event) = rx.recv().await {
         if let Some(filter) = session_id {
             if frontend_event_session_id(&event) != Some(filter) {
@@ -518,6 +521,9 @@ async fn stream_frontend_events_to_writer(
             break;
         }
     }
+    // 客户端断开或 bridge 结束时停掉后台 bridge 任务,避免它作为僵尸订阅
+    // 永久挂在 frontend_bus 上。
+    cancel.cancel();
 }
 
 fn to_rpc_internal_error(error: anyhow::Error) -> JsonRpcError {

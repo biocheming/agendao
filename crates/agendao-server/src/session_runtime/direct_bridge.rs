@@ -77,7 +77,11 @@ async fn direct_event_subscription_loop(
                 }
                 let frontend_event =
                     coalesce_live_output_block(into_owned_event(bus), &mut live_output_accum);
-                let _ = tx.send(frontend_event);
+                // 接收端已 drop（前端断开）:继续运行只会作为僵尸订阅挂在
+                // bus 上,立即退出。
+                if tx.send(frontend_event).is_err() {
+                    break;
+                }
             }
         }
     }
@@ -100,7 +104,9 @@ async fn direct_event_bus_loop(
                 };
                 let frontend_event =
                     coalesce_live_output_block(into_owned_event(bus), &mut live_output_accum);
-                let _ = tx.send(frontend_event);
+                if tx.send(frontend_event).is_err() {
+                    break;
+                }
             }
         }
     }
@@ -806,5 +812,33 @@ mod tests {
             );
         }
         cancel.cancel();
+    }
+
+    /// 客户端断开（rx 被 drop）后,bus bridge 任务必须在下一个事件到达时
+    /// 退出并退订 frontend_bus,不再作为僵尸订阅累积。
+    #[tokio::test]
+    async fn direct_event_bus_task_exits_after_receiver_dropped() {
+        let state = Arc::new(crate::ServerState::new());
+        let receivers_before = state.frontend_bus.receiver_count();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let rx = super::spawn_direct_event_bus(Arc::clone(&state), cancel);
+        wait_bridge_subscribed(&state, receivers_before).await;
+
+        // 模拟客户端断开:writer 循环退出,rx 被 drop。
+        drop(rx);
+
+        // 下一个事件触发 send 失败,bridge 任务必须退出并退订。
+        state
+            .frontend_bus
+            .send(bus_envelope(tool_upsert("ses_a", "tc_1")))
+            .expect("send to frontend bus");
+
+        for _ in 0..1000 {
+            if state.frontend_bus.receiver_count() == receivers_before {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("bridge task did not exit after receiver was dropped");
     }
 }
