@@ -908,7 +908,8 @@ impl<'a> LoopSink for SessionStepSink<'a> {
             &mut metadata_map,
             &artifacts_root,
             self.tool_result_budget,
-        );
+        )
+        .await;
         let (attachments, _) = SessionPrompt::extract_tool_attachments_from_metadata(
             &mut metadata_map,
             &self.session.id,

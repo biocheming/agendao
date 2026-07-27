@@ -129,6 +129,10 @@ pub(super) async fn consume_remote_sse(
     let mut current_event: Option<String> = None;
     let mut current_data: Vec<String> = Vec::new();
     let mut semantic_state = RemoteSemanticRenderState::new();
+    // Detected once per stream: `detect()` does an is_terminal check plus a
+    // terminal-width ioctl, which is wasteful per SSE event. Trade-off: a
+    // terminal resize mid-stream no longer updates the render width.
+    let style = CliStyle::detect();
 
     loop {
         let Some(chunk) = StreamExt::next(&mut stream).await else {
@@ -138,8 +142,10 @@ pub(super) async fn consume_remote_sse(
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         while let Some(pos) = buffer.find('\n') {
-            let mut line = buffer[..pos].to_string();
-            buffer = buffer[pos + 1..].to_string();
+            // Drain the consumed line in place instead of re-copying the
+            // whole remaining buffer per line.
+            let mut line: String = buffer.drain(..=pos).collect();
+            line.pop(); // trailing '\n'
             if line.ends_with('\r') {
                 line.pop();
             }
@@ -152,6 +158,7 @@ pub(super) async fn consume_remote_sse(
                     session_id,
                     &format,
                     &mut semantic_state,
+                    &style,
                     current_event.take(),
                     data,
                 )
@@ -175,6 +182,7 @@ pub(super) async fn consume_remote_sse(
             session_id,
             &format,
             &mut semantic_state,
+            &style,
             current_event.take(),
             current_data.join("\n"),
         )
@@ -196,6 +204,7 @@ async fn dispatch_remote_sse_event(
     session_id: &str,
     format: &RunOutputFormat,
     semantic_state: &mut RemoteSemanticRenderState,
+    style: &CliStyle,
     event_name: Option<String>,
     data: String,
 ) -> anyhow::Result<()> {
@@ -254,7 +263,6 @@ async fn dispatch_remote_sse_event(
             if matches!(block, OutputBlock::Reasoning(_)) && !show_thinking.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let style = CliStyle::detect();
             let block_id = parsed.get("id").and_then(|value| value.as_str());
             semantic_state
                 .accumulator
@@ -269,7 +277,7 @@ async fn dispatch_remote_sse_event(
                 semantic_state,
                 &block,
                 transcript_identity.or(live_identity.as_ref()),
-                &style,
+                style,
                 show_thinking.load(Ordering::SeqCst),
             );
             remote_emit_transcript(semantic_state)?;

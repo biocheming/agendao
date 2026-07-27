@@ -45,7 +45,7 @@ impl Bus {
     }
 
     pub async fn publish(&self, def: &BusEventDef, properties: serde_json::Value) {
-        tracing::info!(event_type = def.event_type, "publishing event");
+        tracing::debug!(event_type = def.event_type, "publishing event");
 
         let event = BusEvent {
             event_type: def.event_type.to_string(),

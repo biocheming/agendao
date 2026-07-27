@@ -174,7 +174,6 @@ impl Tool for WebFetchTool {
             metadata.insert("url".to_string(), serde_json::json!(url));
             metadata.insert("mimeType".to_string(), serde_json::json!(mime));
             metadata.insert("size".to_string(), serde_json::json!(bytes.len()));
-            metadata.insert("data".to_string(), serde_json::json!(data_url));
             metadata.insert(
                 "attachment".to_string(),
                 serde_json::json!({
@@ -182,7 +181,6 @@ impl Tool for WebFetchTool {
                     "mimeType": mime,
                     "url": url,
                     "size": bytes.len(),
-                    "data": data_url
                 }),
             );
             return Ok(ToolResult {

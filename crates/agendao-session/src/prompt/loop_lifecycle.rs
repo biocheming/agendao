@@ -1366,7 +1366,7 @@ impl SessionPrompt {
         session.add_synthetic_user_message(LENGTH_CONTINUATION_PROMPT, &[]);
     }
 
-    pub(super) fn append_stream_tool_results_as_message(
+    pub(super) async fn append_stream_tool_results_as_message(
         session: &mut Session,
         session_id: &str,
         stream_tool_results: Vec<super::StreamToolResultEntry>,
@@ -1387,7 +1387,8 @@ impl SessionPrompt {
                     .as_deref()
                     .and_then(|cfg| cfg.runtime_budget.as_ref()),
             ),
-        );
+        )
+        .await;
 
         let mut tool_msg = SessionMessage::tool(session_id.to_string());
         for (tool_call_id, content, is_error, title, metadata, attachments) in stream_tool_results {
@@ -3344,7 +3345,8 @@ impl SessionPrompt {
                 &session_id,
                 step_output.stream_tool_results,
                 self.config_store.as_deref(),
-            );
+            )
+            .await;
 
             let has_tool_calls = session
                 .messages

@@ -155,8 +155,12 @@ impl LiveSemanticConsumer {
         }
 
         if identity.phase == LivePartPhase::End {
-            if let Some(final_text) = previous.or_else(|| self.state.last_texts.get(&slot).cloned())
-            {
+            let final_text =
+                previous.or_else(|| self.state.last_texts.get(&slot).cloned());
+            // The part is finalized; drop its accumulated full text so the map
+            // does not grow unboundedly over a long-running session.
+            self.state.last_texts.remove(&slot);
+            if let Some(final_text) = final_text {
                 if final_text.is_empty() && text.is_empty() {
                     return SemanticAction::NoOp;
                 }
@@ -193,13 +197,10 @@ impl LiveSemanticConsumer {
         }
 
         if identity.phase == LivePartPhase::End {
+            // The part is finalized; drop its accumulated full text so the map
+            // does not grow unboundedly over a long-running session.
             SemanticAction::ReplaceTextFull {
-                text: self
-                    .state
-                    .last_texts
-                    .get(&slot)
-                    .cloned()
-                    .unwrap_or_default(),
+                text: self.state.last_texts.remove(&slot).unwrap_or_default(),
             }
         } else {
             SemanticAction::NoOp
@@ -221,8 +222,12 @@ impl LiveSemanticConsumer {
         }
 
         if identity.phase == LivePartPhase::End {
-            if let Some(final_text) = previous.or_else(|| self.state.last_texts.get(&slot).cloned())
-            {
+            let final_text =
+                previous.or_else(|| self.state.last_texts.get(&slot).cloned());
+            // The part is finalized; drop its accumulated full text so the map
+            // does not grow unboundedly over a long-running session.
+            self.state.last_texts.remove(&slot);
+            if let Some(final_text) = final_text {
                 if final_text.is_empty() && text.is_empty() {
                     return SemanticAction::NoOp;
                 }
@@ -257,13 +262,10 @@ impl LiveSemanticConsumer {
         }
         if identity.phase == LivePartPhase::End {
             self.state.reasoning_key = None;
+            // The part is finalized; drop its accumulated full text so the map
+            // does not grow unboundedly over a long-running session.
             SemanticAction::ReplaceReasoningFull {
-                text: self
-                    .state
-                    .last_texts
-                    .get(&slot)
-                    .cloned()
-                    .unwrap_or_default(),
+                text: self.state.last_texts.remove(&slot).unwrap_or_default(),
             }
         } else {
             SemanticAction::NoOp

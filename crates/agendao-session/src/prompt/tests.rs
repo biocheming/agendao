@@ -155,8 +155,8 @@ fn methodology_candidate_record(
     }
 }
 
-#[test]
-fn large_tool_result_is_governed_into_preview_and_artifact() {
+#[tokio::test]
+async fn large_tool_result_is_governed_into_preview_and_artifact() {
     let dir = tempdir().expect("tempdir");
     let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
     let mut metadata = std::collections::HashMap::new();
@@ -169,7 +169,8 @@ fn large_tool_result_is_governed_into_preview_and_artifact() {
         &mut metadata,
         &artifacts_root,
         ToolResultBudget::legacy(),
-    );
+    )
+    .await;
 
     assert!(governed.degraded);
     assert!(governed
@@ -188,8 +189,8 @@ fn large_tool_result_is_governed_into_preview_and_artifact() {
     );
 }
 
-#[test]
-fn small_tool_result_is_not_governed() {
+#[tokio::test]
+async fn small_tool_result_is_not_governed() {
     let dir = tempdir().expect("tempdir");
     let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
     let mut metadata = std::collections::HashMap::new();
@@ -201,7 +202,8 @@ fn small_tool_result_is_not_governed() {
         &mut metadata,
         &artifacts_root,
         ToolResultBudget::legacy(),
-    );
+    )
+    .await;
 
     assert!(!governed.degraded);
     assert_eq!(governed.output, "short tool output");
@@ -209,8 +211,8 @@ fn small_tool_result_is_not_governed() {
     assert!(!metadata.contains_key("tool_result_governed"));
 }
 
-#[test]
-fn append_stream_tool_results_as_message_preserves_governed_preview() {
+#[tokio::test]
+async fn append_stream_tool_results_as_message_preserves_governed_preview() {
     let dir = tempdir().expect("tempdir");
     let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
     let session_id = session.id.clone();
@@ -223,7 +225,8 @@ fn append_stream_tool_results_as_message_preserves_governed_preview() {
         &mut metadata,
         &artifacts_root,
         ToolResultBudget::legacy(),
-    );
+    )
+    .await;
     let stream_results = vec![(
         "call-1".to_string(),
         governed.output.clone(),
@@ -238,7 +241,8 @@ fn append_stream_tool_results_as_message_preserves_governed_preview() {
         &session_id,
         stream_results,
         None,
-    );
+    )
+    .await;
 
     let tool_message = session
         .record()
@@ -268,8 +272,8 @@ fn append_stream_tool_results_as_message_preserves_governed_preview() {
     );
 }
 
-#[test]
-fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering() {
+#[tokio::test]
+async fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering() {
     let dir = tempdir().expect("tempdir");
     let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
     let session_id = session.id.clone();
@@ -305,7 +309,8 @@ fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering
         &session_id,
         stream_results,
         None,
-    );
+    )
+    .await;
 
     let tool_message = session
         .record()
@@ -341,8 +346,8 @@ fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering
     );
 }
 
-#[test]
-fn append_stream_tool_results_as_message_reads_runtime_budget_from_config_store() {
+#[tokio::test]
+async fn append_stream_tool_results_as_message_reads_runtime_budget_from_config_store() {
     let dir = tempdir().expect("tempdir");
     let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
     let session_id = session.id.clone();
@@ -371,7 +376,8 @@ fn append_stream_tool_results_as_message_reads_runtime_budget_from_config_store(
         &session_id,
         stream_results,
         Some(&config_store),
-    );
+    )
+    .await;
 
     let tool_message = session
         .record()

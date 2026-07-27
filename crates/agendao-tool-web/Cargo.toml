@@ -9,7 +9,7 @@ license.workspace = true
 agendao-config = { path = "../agendao-config" }
 agendao-tool-core = { path = "../agendao-tool-core" }
 agendao-util = { path = "../agendao-util" }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 reqwest = { workspace = true, features = ["charset", "http2", "json", "system-proxy"] }
 url = { workspace = true }
 regex = { workspace = true }

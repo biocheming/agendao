@@ -194,7 +194,7 @@ fn first_matching_file_in_dir(dir: &Path, candidates: &[&str]) -> Option<PathBuf
     None
 }
 
-fn resolve_for_file_candidates(
+async fn resolve_for_file_candidates(
     file_path: &Path,
     project_root: &Path,
     candidates: &[&str],
@@ -210,7 +210,7 @@ fn resolve_for_file_candidates(
             let canonical = normalize(&found);
             let key = canonical.to_string_lossy().to_string();
             if canonical != target && seen.insert(key.clone()) {
-                if let Ok(content) = std::fs::read_to_string(&found) {
+                if let Ok(content) = tokio::fs::read_to_string(&found).await {
                     if !content.trim().is_empty() {
                         let file_name = found
                             .file_name()
@@ -244,16 +244,16 @@ fn resolve_for_file_candidates(
 /// while walking from the file's directory up to `project_root`, collect the
 /// first matching instruction file in each directory (`AGENTS.md`,
 /// `CONTEXT.md`), skipping duplicates and the target file itself.
-pub fn resolve_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
-    resolve_for_file_candidates(file_path, project_root, PROJECT_FILES)
+pub async fn resolve_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
+    resolve_for_file_candidates(file_path, project_root, PROJECT_FILES).await
 }
 
 /// Resolve per-file instruction context specifically from `AGENTS.md`.
 ///
 /// This is used by file-read flows to mimic TS behavior where reading a file
 /// should consult nearby AGENTS instructions in the same directory hierarchy.
-pub fn resolve_agents_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
-    resolve_for_file_candidates(file_path, project_root, &[AGENTS_MD])
+pub async fn resolve_agents_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
+    resolve_for_file_candidates(file_path, project_root, &[AGENTS_MD]).await
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +286,11 @@ impl InstructionLoader {
 
         // 1. Workspace-local instruction files (current project dir only)
         if !is_project_config_disabled() {
-            result.extend(self.load_project_instructions(project_dir));
+            result.extend(self.load_project_instructions(project_dir).await);
         }
 
         // 2. Global instruction files
-        result.extend(self.load_global_instructions());
+        result.extend(self.load_global_instructions().await);
 
         // 3. Config-specified instructions (files, globs, URLs)
         result.extend(
@@ -304,7 +304,7 @@ impl InstructionLoader {
     ///
     /// Session ownership lives at the selected workspace root, so project-level
     /// instructions must not inherit from arbitrary parent directories.
-    fn load_project_instructions(&mut self, project_dir: &Path) -> Vec<InstructionFile> {
+    async fn load_project_instructions(&mut self, project_dir: &Path) -> Vec<InstructionFile> {
         let project_dir = normalize(project_dir);
         let mut result = Vec::new();
 
@@ -317,7 +317,7 @@ impl InstructionLoader {
             if self.loaded.contains(&key) {
                 continue;
             }
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
                 self.loaded.insert(key.clone());
                 let source = instruction_source_from_filename(file);
                 result.push(InstructionFile {
@@ -332,7 +332,7 @@ impl InstructionLoader {
         result
     }
     /// Load global instruction files (first existing file wins).
-    fn load_global_instructions(&mut self) -> Vec<InstructionFile> {
+    async fn load_global_instructions(&mut self) -> Vec<InstructionFile> {
         let mut result = Vec::new();
         for path in global_files() {
             let key = normalize(&path).to_string_lossy().to_string();
@@ -340,7 +340,7 @@ impl InstructionLoader {
                 continue;
             }
             if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     self.loaded.insert(key.clone());
                     result.push(InstructionFile {
                         path: key.clone(),
@@ -375,7 +375,7 @@ impl InstructionLoader {
                 if self.loaded.contains(&key) {
                     continue;
                 }
-                if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     self.loaded.insert(key.clone());
                     result.push(InstructionFile {
                         path: key.clone(),
@@ -470,10 +470,10 @@ impl InstructionLoader {
     // -----------------------------------------------------------------------
 
     /// Load instruction files from a single directory (original API).
-    pub fn load_from_directory(dir: &Path) -> Vec<InstructionFile> {
+    pub async fn load_from_directory(dir: &Path) -> Vec<InstructionFile> {
         let mut instructions = Vec::new();
 
-        if let Ok(content) = std::fs::read_to_string(dir.join(AGENTS_MD)) {
+        if let Ok(content) = tokio::fs::read_to_string(dir.join(AGENTS_MD)).await {
             instructions.push(InstructionFile {
                 path: AGENTS_MD.to_string(),
                 content,
@@ -481,7 +481,7 @@ impl InstructionLoader {
             });
         }
 
-        if let Ok(content) = std::fs::read_to_string(dir.join(CONTEXT_MD)) {
+        if let Ok(content) = tokio::fs::read_to_string(dir.join(CONTEXT_MD)).await {
             instructions.push(InstructionFile {
                 path: CONTEXT_MD.to_string(),
                 content,
@@ -489,7 +489,7 @@ impl InstructionLoader {
             });
         }
 
-        if let Ok(content) = std::fs::read_to_string(dir.join(CURSOR_MD)) {
+        if let Ok(content) = tokio::fs::read_to_string(dir.join(CURSOR_MD)).await {
             instructions.push(InstructionFile {
                 path: CURSOR_MD.to_string(),
                 content,
@@ -498,7 +498,7 @@ impl InstructionLoader {
         }
 
         let copilot_path = dir.join(".github").join("copilot-instructions.md");
-        if let Ok(content) = std::fs::read_to_string(&copilot_path) {
+        if let Ok(content) = tokio::fs::read_to_string(&copilot_path).await {
             instructions.push(InstructionFile {
                 path: COPILOT_MD.to_string(),
                 content,
@@ -575,17 +575,17 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_load_from_directory_finds_agents_md() {
+    #[tokio::test]
+    async fn test_load_from_directory_finds_agents_md() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agent instructions").unwrap();
-        let files = InstructionLoader::load_from_directory(tmp.path());
+        let files = InstructionLoader::load_from_directory(tmp.path()).await;
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "agent instructions");
     }
 
-    #[test]
-    fn test_load_from_directory_finds_multiple() {
+    #[tokio::test]
+    async fn test_load_from_directory_finds_multiple() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
         fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
@@ -596,7 +596,7 @@ mod tests {
             "copilot",
         )
         .unwrap();
-        let files = InstructionLoader::load_from_directory(tmp.path());
+        let files = InstructionLoader::load_from_directory(tmp.path()).await;
         assert_eq!(files.len(), 4);
     }
     #[test]
@@ -640,14 +640,14 @@ mod tests {
         assert_eq!(normalize(&root), normalize(&repo));
     }
 
-    #[test]
-    fn test_deduplication() {
+    #[tokio::test]
+    async fn test_deduplication() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
 
         let mut loader = InstructionLoader::new();
-        let files1 = loader.load_project_instructions(tmp.path());
-        let files2 = loader.load_project_instructions(tmp.path());
+        let files1 = loader.load_project_instructions(tmp.path()).await;
+        let files2 = loader.load_project_instructions(tmp.path()).await;
         assert_eq!(files1.len(), 1);
         assert_eq!(files2.len(), 0); // deduped
     }
@@ -692,21 +692,21 @@ mod tests {
             .all(|path| path.file_name().and_then(|name| name.to_str()) == Some(AGENTS_MD)));
     }
 
-    #[test]
-    fn test_project_files_first_match_wins() {
+    #[tokio::test]
+    async fn test_project_files_first_match_wins() {
         // If AGENTS.md exists, CONTEXT.md should not be loaded
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
         fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
 
         let mut loader = InstructionLoader::new();
-        let files = loader.load_project_instructions(tmp.path());
+        let files = loader.load_project_instructions(tmp.path()).await;
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "agents");
     }
 
-    #[test]
-    fn test_load_project_instructions_does_not_inherit_parent_directory_files() {
+    #[tokio::test]
+    async fn test_load_project_instructions_does_not_inherit_parent_directory_files() {
         let tmp = TempDir::new().unwrap();
         let parent = tmp.path().join("parent");
         let child = parent.join("child");
@@ -714,12 +714,12 @@ mod tests {
         fs::write(parent.join(AGENTS_MD), "parent agents").unwrap();
 
         let mut loader = InstructionLoader::new();
-        let files = loader.load_project_instructions(&child);
+        let files = loader.load_project_instructions(&child).await;
         assert!(files.is_empty());
     }
 
-    #[test]
-    fn test_resolve_for_file_finds_same_directory_agents() {
+    #[tokio::test]
+    async fn test_resolve_for_file_finds_same_directory_agents() {
         let tmp = TempDir::new().unwrap();
         let project_root = tmp.path().join("repo");
         let src_dir = project_root.join("src");
@@ -728,13 +728,13 @@ mod tests {
         let file_path = src_dir.join("main.rs");
         fs::write(&file_path, "fn main() {}").unwrap();
 
-        let instructions = resolve_for_file(&file_path, &project_root);
+        let instructions = resolve_for_file(&file_path, &project_root).await;
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].content.contains("follow src rules"));
     }
 
-    #[test]
-    fn test_resolve_for_file_walks_up_to_project_root() {
+    #[tokio::test]
+    async fn test_resolve_for_file_walks_up_to_project_root() {
         let tmp = TempDir::new().unwrap();
         let project_root = tmp.path().join("repo");
         let nested_dir = project_root.join("src/deep");
@@ -744,14 +744,14 @@ mod tests {
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
-        let instructions = resolve_for_file(&file_path, &project_root);
+        let instructions = resolve_for_file(&file_path, &project_root).await;
         assert_eq!(instructions.len(), 2);
         assert!(instructions[0].content.contains("src rules"));
         assert!(instructions[1].content.contains("root rules"));
     }
 
-    #[test]
-    fn test_resolve_for_file_skips_target_instruction_file_itself() {
+    #[tokio::test]
+    async fn test_resolve_for_file_skips_target_instruction_file_itself() {
         let tmp = TempDir::new().unwrap();
         let project_root = tmp.path().join("repo");
         let nested_dir = project_root.join("nested");
@@ -760,14 +760,14 @@ mod tests {
         let target = nested_dir.join(AGENTS_MD);
         fs::write(&target, "should be skipped").unwrap();
 
-        let instructions = resolve_for_file(&target, &project_root);
+        let instructions = resolve_for_file(&target, &project_root).await;
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].content.contains("root rules"));
         assert!(!instructions[0].content.contains("should be skipped"));
     }
 
-    #[test]
-    fn test_resolve_agents_for_file_ignores_non_agents_candidates() {
+    #[tokio::test]
+    async fn test_resolve_agents_for_file_ignores_non_agents_candidates() {
         let tmp = TempDir::new().unwrap();
         let project_root = tmp.path().join("repo");
         let nested_dir = project_root.join("src/deep");
@@ -777,14 +777,14 @@ mod tests {
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
-        let instructions = resolve_agents_for_file(&file_path, &project_root);
+        let instructions = resolve_agents_for_file(&file_path, &project_root).await;
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].content.contains("root agents"));
         assert!(!instructions[0].content.contains("src context"));
     }
 
-    #[test]
-    fn test_resolve_agents_for_file_walks_up_agents_chain() {
+    #[tokio::test]
+    async fn test_resolve_agents_for_file_walks_up_agents_chain() {
         let tmp = TempDir::new().unwrap();
         let project_root = tmp.path().join("repo");
         let nested_dir = project_root.join("src/deep");
@@ -794,7 +794,7 @@ mod tests {
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
-        let instructions = resolve_agents_for_file(&file_path, &project_root);
+        let instructions = resolve_agents_for_file(&file_path, &project_root).await;
         assert_eq!(instructions.len(), 2);
         assert!(instructions[0].content.contains("src agents"));
         assert!(instructions[1].content.contains("root agents"));

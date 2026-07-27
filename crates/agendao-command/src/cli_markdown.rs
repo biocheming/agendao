@@ -576,7 +576,10 @@ impl<'a> MarkdownRenderer<'a> {
                     let mut visible = String::new();
                     let mut visible_w = 0usize;
                     for ch in cell.chars() {
-                        let ch_w = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
+                        // `width` returns None for control chars; the old
+                        // `UnicodeWidthStr::width` on a single-char string
+                        // yielded 0 for those, so `unwrap_or(0)` is equivalent.
+                        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
                         if visible_w + ch_w > budget {
                             break;
                         }

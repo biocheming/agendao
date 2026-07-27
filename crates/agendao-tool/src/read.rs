@@ -15,6 +15,9 @@ use crate::{
 const DEFAULT_READ_LIMIT: usize = 2000;
 const MAX_LINE_LENGTH: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
+/// Number of leading bytes inspected by the binary-file sniff. Matches the
+/// window `is_binary` has always checked (previously over the whole file).
+const BINARY_SNIFF_BYTES: usize = 4096;
 const DESCRIPTION: &str = include_str!("read.txt");
 
 const INSTRUCTION_FILES: &[&str] = &[
@@ -265,13 +268,12 @@ impl Tool for ReadTool {
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
-        let content = fs::read(&path)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
-
         let mime = detect_mime(&path);
 
         if is_image_mime(&mime) || mime == "application/pdf" {
+            let content = fs::read(&path)
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
             let outcome = tool_access::record_tool_access(
                 &ctx.session_id,
                 ToolAccessKey::Read {
@@ -290,7 +292,9 @@ impl Tool for ReadTool {
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
-        if is_binary(&content) {
+        let head = read_file_head(&path, BINARY_SNIFF_BYTES).await?;
+
+        if is_binary(&head) {
             return Err(ToolError::BinaryFile(path.display().to_string()));
         }
 
@@ -310,7 +314,7 @@ impl Tool for ReadTool {
         let mut result = read_file_content(
             &path,
             &path_str,
-            &content,
+            metadata.len(),
             offset,
             limit,
             title,
@@ -596,49 +600,90 @@ fn read_directory(
     })
 }
 
+async fn read_file_head(path: &Path, max_bytes: usize) -> Result<Vec<u8>, ToolError> {
+    use tokio::io::AsyncReadExt;
+
+    let file = fs::File::open(path)
+        .await
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+    let mut head = Vec::new();
+    file.take(max_bytes as u64)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+    Ok(head)
+}
+
+/// Stream the file line by line, collecting only the [offset, offset+limit)
+/// window instead of loading the whole file into memory. Line counting still
+/// scans to EOF so `total_lines` matches the previous whole-file behavior.
 async fn read_file_content(
     path: &Path,
     path_str: &str,
-    content: &[u8],
+    file_size: u64,
     offset: usize,
     limit: usize,
     title: String,
     project_root: &str,
 ) -> Result<ToolResult, ToolError> {
-    let text = String::from_utf8_lossy(content);
-    let lines: Vec<&str> = text.lines().collect();
+    use tokio::io::AsyncBufReadExt;
 
-    if offset > lines.len() {
-        return Err(ToolError::InvalidArguments(format!(
-            "Offset {} is out of range (file has {} lines)",
-            offset,
-            lines.len()
-        )));
-    }
+    let file = fs::File::open(path)
+        .await
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+    let mut reader = tokio::io::BufReader::new(file);
 
     let start = offset.saturating_sub(1);
+    let mut total_lines: usize = 0;
     let mut result_lines: Vec<String> = Vec::new();
     let mut bytes = 0;
     let mut truncated_by_bytes = false;
     let mut truncated_by_line = false;
 
-    for (i, line_text) in lines
-        .iter()
-        .enumerate()
-        .take(std::cmp::min(lines.len(), start + limit))
-        .skip(start)
-    {
-        let (line, line_was_truncated) = truncate_line_for_output(line_text, MAX_LINE_LENGTH);
+    let mut raw_line: Vec<u8> = Vec::new();
+    loop {
+        raw_line.clear();
+        let read = reader
+            .read_until(b'\n', &mut raw_line)
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+        if read == 0 {
+            break;
+        }
+        // Match `str::lines()`: strip the trailing '\n' and then '\r'.
+        if raw_line.last() == Some(&b'\n') {
+            raw_line.pop();
+            if raw_line.last() == Some(&b'\r') {
+                raw_line.pop();
+            }
+        }
+
+        let i = total_lines;
+        total_lines += 1;
+
+        if i < start || i >= start + limit || truncated_by_bytes {
+            continue;
+        }
+
+        let line_text = String::from_utf8_lossy(&raw_line);
+        let (line, line_was_truncated) = truncate_line_for_output(&line_text, MAX_LINE_LENGTH);
         truncated_by_line |= line_was_truncated;
 
         let size = line.len() + if result_lines.is_empty() { 0 } else { 1 };
         if bytes + size > MAX_BYTES {
             truncated_by_bytes = true;
-            break;
+            continue;
         }
 
         result_lines.push(format!("{}: {}", i + 1, line));
         bytes += size;
+    }
+
+    if offset > total_lines {
+        return Err(ToolError::InvalidArguments(format!(
+            "Offset {} is out of range (file has {} lines)",
+            offset, total_lines
+        )));
     }
 
     let preview = result_lines
@@ -647,7 +692,6 @@ async fn read_file_content(
         .cloned()
         .collect::<Vec<_>>()
         .join("\n");
-    let total_lines = lines.len();
     let last_read_line = start + result_lines.len();
     let has_more_lines = total_lines > last_read_line;
     let truncated = has_more_lines || truncated_by_bytes || truncated_by_line;
@@ -674,7 +718,7 @@ async fn read_file_content(
     let mut output = format!(
         "<path>{}</path>\n<type>file</type>\n<size>{}</size>\n<total-lines>{}</total-lines>\n<content>\n{}{}\n</content>",
         path.display(),
-        content.len(),
+        file_size,
         total_lines,
         result_lines.join("\n"),
         truncation_msg
@@ -708,7 +752,7 @@ async fn read_file_content(
             m.insert("truncated".into(), serde_json::json!(truncated));
             m.insert("filepath".into(), serde_json::json!(path_str));
             m.insert("loaded".into(), serde_json::json!(loaded_files));
-            m.insert("size".into(), serde_json::json!(content.len()));
+            m.insert("size".into(), serde_json::json!(file_size));
             m.insert("total_lines".into(), serde_json::json!(total_lines));
             m
         },
@@ -876,18 +920,22 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_content_truncates_multibyte_lines_without_panicking() {
-        let path = Path::new("/tmp/utf8-long-line.md");
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("utf8-long-line.md");
         let long_line = "教".repeat(MAX_LINE_LENGTH + 50);
-        let content = long_line.into_bytes();
+        let file_size = long_line.len() as u64;
+        fs::write(&path, long_line.as_bytes())
+            .await
+            .expect("write utf8 file");
 
         let result = read_file_content(
-            path,
+            &path,
             &path.display().to_string(),
-            &content,
+            file_size,
             1,
             10,
             "utf8-long-line.md".to_string(),
-            "/tmp",
+            dir.path().to_string_lossy().as_ref(),
         )
         .await
         .expect("utf8 truncation should succeed");

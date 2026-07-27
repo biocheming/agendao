@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::header,
+    http::{header, HeaderValue},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -524,13 +524,18 @@ async fn download_file(
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "download.bin".to_string());
 
+    let content_disposition =
+        HeaderValue::from_str(&format!("attachment; filename=\"{}\"", filename)).map_err(|e| {
+            ApiError::BadRequest(format!("Invalid filename for Content-Disposition: {}", e))
+        })?;
+
     Ok((
         [
-            (header::CONTENT_TYPE, "application/octet-stream"),
             (
-                header::CONTENT_DISPOSITION,
-                Box::leak(format!("attachment; filename=\"{}\"", filename).into_boxed_str()),
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
             ),
+            (header::CONTENT_DISPOSITION, content_disposition),
         ],
         Body::from(bytes),
     ))

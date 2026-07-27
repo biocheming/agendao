@@ -57,7 +57,7 @@ pub type GovernedStreamToolResultEntry = (
     Option<Vec<serde_json::Value>>,
 );
 
-pub fn govern_tool_result_output(
+pub async fn govern_tool_result_output(
     session_id: &str,
     tool_call_id: &str,
     output: String,
@@ -86,6 +86,7 @@ pub fn govern_tool_result_output(
             .and_then(|value| value.as_str())
             .unwrap_or("text/plain"),
     )
+    .await
     .ok();
     let preview: String = output.chars().take(budget.preview_chars).collect();
     let governed = build_governed_preview(
@@ -134,7 +135,7 @@ pub fn govern_tool_result_output(
     }
 }
 
-pub fn govern_tool_result_batch(
+pub async fn govern_tool_result_batch(
     session_id: &str,
     stream_tool_results: Vec<GovernedStreamToolResultEntry>,
     artifacts_root: &Path,
@@ -189,7 +190,8 @@ pub fn govern_tool_result_batch(
             &mut metadata_map,
             artifacts_root,
             budget,
-        );
+        )
+        .await;
         current_total = current_total
             .saturating_sub(content.chars().count())
             .saturating_add(governed.governed_chars);
@@ -211,7 +213,7 @@ pub fn govern_tool_result_batch(
     out.into_iter().map(|(_, entry)| entry).collect()
 }
 
-fn persist_large_tool_result(
+async fn persist_large_tool_result(
     artifacts_root: &Path,
     session_id: &str,
     tool_call_id: &str,
@@ -219,12 +221,12 @@ fn persist_large_tool_result(
     content_type: &str,
 ) -> std::io::Result<String> {
     let dir = artifacts_root.join(session_id).join("tool-results");
-    std::fs::create_dir_all(&dir)?;
+    tokio::fs::create_dir_all(&dir).await?;
     let ext = extension_for_content_type(content_type);
     let ts = timestamp_ms();
     let filename = format!("{tool_call_id}-{ts}.{ext}");
     let path = dir.join(filename);
-    std::fs::write(&path, output)?;
+    tokio::fs::write(&path, output).await?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -272,8 +274,8 @@ pub fn default_tool_result_artifacts_root(worktree: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn small_output_passes_through_unchanged() {
+    #[tokio::test]
+    async fn small_output_passes_through_unchanged() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut metadata = HashMap::new();
         let governed = govern_tool_result_output(
@@ -283,15 +285,16 @@ mod tests {
             &mut metadata,
             dir.path(),
             ToolResultBudget::legacy(),
-        );
+        )
+        .await;
         assert!(!governed.degraded);
         assert_eq!(governed.output, "short output");
         assert!(governed.artifact_path.is_none());
         assert!(!metadata.contains_key("tool_result_governed"));
     }
 
-    #[test]
-    fn large_output_is_persisted_and_previewed() {
+    #[tokio::test]
+    async fn large_output_is_persisted_and_previewed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut metadata = HashMap::new();
         let large = "x".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 1024);
@@ -302,7 +305,8 @@ mod tests {
             &mut metadata,
             dir.path(),
             ToolResultBudget::legacy(),
-        );
+        )
+        .await;
         assert!(governed.degraded);
         assert!(governed
             .output
@@ -327,8 +331,8 @@ mod tests {
         assert!(governed.output.contains("Do not pass it to `webfetch` or `browser_session`"));
     }
 
-    #[test]
-    fn large_batch_governs_largest_results_first_without_reordering() {
+    #[tokio::test]
+    async fn large_batch_governs_largest_results_first_without_reordering() {
         let dir = tempfile::tempdir().expect("tempdir");
         let batch = vec![
             (
@@ -358,7 +362,8 @@ mod tests {
         ];
 
         let governed =
-            govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy());
+            govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy())
+                .await;
         assert_eq!(governed.len(), 3);
         assert_eq!(governed[0].0, "call-1");
         assert_eq!(governed[1].0, "call-2");

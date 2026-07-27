@@ -808,27 +808,32 @@ fn render_terminal_stream_block_legacy_semantic(
                 }
             }
             TerminalAssistantSegment::Reasoning { part_index, text } => {
-                let mut emit_start = false;
-                let entry = state.legacy.part_states.entry(part_index).or_insert(
-                    TerminalSemanticPartState::Reasoning {
-                        started: false,
-                        emitted_text: String::new(),
-                    },
-                );
-                let TerminalSemanticPartState::Reasoning {
-                    started,
-                    emitted_text,
-                } = entry
-                else {
-                    continue;
+                // First borrow: read flags and extract only the delta suffix
+                // (owned), avoiding a full-text clone per chunk.
+                let (emit_start, delta) = {
+                    let entry = state.legacy.part_states.entry(part_index).or_insert(
+                        TerminalSemanticPartState::Reasoning {
+                            started: false,
+                            emitted_text: String::new(),
+                        },
+                    );
+                    let TerminalSemanticPartState::Reasoning {
+                        started,
+                        emitted_text,
+                    } = entry
+                    else {
+                        continue;
+                    };
+                    (
+                        !*started,
+                        text.strip_prefix(emitted_text.as_str())
+                            .map(str::to_string),
+                    )
                 };
-                if !*started {
-                    emit_start = true;
-                }
-                let prior_text = emitted_text.clone();
                 if emit_start {
                     out.push_str(&render_semantic_reasoning_start(state, style));
                 }
+                // Second borrow: write back the new state.
                 let entry = state.legacy.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::Reasoning {
                         started: false,
@@ -845,13 +850,13 @@ fn render_terminal_stream_block_legacy_semantic(
                 if emit_start {
                     *started = true;
                 }
-                if let Some(delta) = text.strip_prefix(&prior_text) {
+                if let Some(delta) = delta {
                     if delta.is_empty() {
                         continue;
                     }
                     out.push_str(&render_terminal_stream_block_with_state(
                         &mut state.boundary,
-                        &OutputBlock::Reasoning(OutputReasoningBlock::delta(delta)),
+                        &OutputBlock::Reasoning(OutputReasoningBlock::delta(&delta)),
                         style,
                     ));
                     *emitted_text = text;

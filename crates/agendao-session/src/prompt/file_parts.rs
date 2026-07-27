@@ -241,11 +241,11 @@ impl SessionPrompt {
             read_args
         ));
         msg.add_text(text);
-        Self::inject_instruction_prompt(msg, &file_path, Path::new(project_root));
+        Self::inject_instruction_prompt(msg, &file_path, Path::new(project_root)).await;
         msg.add_file(raw_url.to_string(), filename.to_string(), mime.to_string());
     }
 
-    pub(super) fn inject_instruction_prompt(
+    pub(super) async fn inject_instruction_prompt(
         msg: &mut SessionMessage,
         file_path: &Path,
         project_root: &Path,
@@ -253,7 +253,8 @@ impl SessionPrompt {
         let mut loaded = Self::loaded_instruction_paths(msg);
         let mut prompt_chunks = Vec::new();
 
-        for instruction in crate::instruction::resolve_agents_for_file(file_path, project_root) {
+        for instruction in crate::instruction::resolve_agents_for_file(file_path, project_root).await
+        {
             if loaded.insert(instruction.path.clone()) {
                 prompt_chunks.push(format!(
                     "Instructions from: {}\n{}",

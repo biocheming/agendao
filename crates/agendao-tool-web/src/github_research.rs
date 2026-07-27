@@ -1331,9 +1331,8 @@ impl GitHubResearchTool {
         }
 
         let default_branch = self
-            .fetch_repo_metadata(&input.repo, ctx)
-            .await?
-            .default_branch;
+            .default_branch_for_local_op(input, &repo_dir, true, ctx)
+            .await?;
         let remote_url = remote_url_for_repo(&input.repo, ctx);
         self.sync_local_repo(&repo_dir, &remote_url, input, &default_branch, true, ctx)
             .await
@@ -1347,7 +1346,7 @@ impl GitHubResearchTool {
     ) -> Result<LocalRepoState, ToolError> {
         ensure_git_available()?;
         let repo_root = local_repo_root(ctx);
-        fs::create_dir_all(&repo_root).map_err(|e| {
+        tokio::fs::create_dir_all(&repo_root).await.map_err(|e| {
             ToolError::ExecutionError(format!(
                 "Failed to create github_research cache root {}: {}",
                 repo_root.display(),
@@ -1357,15 +1356,14 @@ impl GitHubResearchTool {
 
         let repo_dir = repo_root.join(repo_cache_key(&input.repo, input.local_alias.as_deref()));
         let remote_url = remote_url_for_repo(&input.repo, ctx);
-        let default_branch = self
-            .fetch_repo_metadata(&input.repo, ctx)
-            .await?
-            .default_branch;
         let existed = is_git_repo_dir(&repo_dir);
+        let default_branch = self
+            .default_branch_for_local_op(input, &repo_dir, existed, ctx)
+            .await?;
 
         if !existed {
             if repo_dir.exists() {
-                fs::remove_dir_all(&repo_dir).map_err(|e| {
+                tokio::fs::remove_dir_all(&repo_dir).await.map_err(|e| {
                     ToolError::ExecutionError(format!(
                         "Failed to reset non-git cache directory {}: {}",
                         repo_dir.display(),
@@ -1381,6 +1379,55 @@ impl GitHubResearchTool {
             .await
     }
 
+    /// Resolve the default branch for local git operations.
+    ///
+    /// When the cached clone already exists and the caller pinned an explicit
+    /// ref (branch or sha), the GitHub metadata request is skipped: the
+    /// default branch is then only used for display, so it is read from the
+    /// cached clone's `origin/HEAD` instead. The API is only queried when the
+    /// default branch actually has to be resolved (fresh clone, no explicit
+    /// ref, or a clone without `origin/HEAD`).
+    async fn default_branch_for_local_op(
+        &self,
+        input: &GitHubResearchInput,
+        repo_dir: &Path,
+        repo_cached: bool,
+        ctx: &ToolContext,
+    ) -> Result<String, ToolError> {
+        if repo_cached && has_explicit_ref(input) {
+            if let Some(branch) = self.local_origin_head(repo_dir, ctx).await {
+                return Ok(branch);
+            }
+        }
+        Ok(self
+            .fetch_repo_metadata(&input.repo, ctx)
+            .await?
+            .default_branch)
+    }
+
+    /// Read the cached clone's `origin/HEAD` (`origin/main` -> `main`) without
+    /// hitting the network. Returns `None` when the clone does not record one.
+    async fn local_origin_head(&self, repo_dir: &Path, ctx: &ToolContext) -> Option<String> {
+        let output = self
+            .run_git(
+                vec![
+                    "symbolic-ref".to_string(),
+                    "--short".to_string(),
+                    "refs/remotes/origin/HEAD".to_string(),
+                ],
+                Some(repo_dir),
+                ctx,
+            )
+            .await
+            .ok()?;
+        let branch = output.trim().strip_prefix("origin/")?.trim();
+        if branch.is_empty() {
+            None
+        } else {
+            Some(branch.to_string())
+        }
+    }
+
     async fn clone_repo_into(
         &self,
         repo_dir: &Path,
@@ -1390,7 +1437,7 @@ impl GitHubResearchTool {
         ctx: &ToolContext,
     ) -> Result<(), ToolError> {
         if let Some(parent) = repo_dir.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 ToolError::ExecutionError(format!(
                     "Failed to create cache parent {}: {}",
                     parent.display(),
@@ -2235,6 +2282,18 @@ fn normalized_local_alias(alias: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Whether the caller pinned an explicit git ref (branch or sha), in which
+/// case the default branch does not need to be resolved from the GitHub API.
+fn has_explicit_ref(input: &GitHubResearchInput) -> bool {
+    input
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .is_some()
+        || normalized_optional_sha(input.sha.as_deref()).is_some()
+}
+
 fn encode_repo_path(path: &str) -> String {
     normalize_repo_path(path)
         .split('/')
@@ -2789,6 +2848,9 @@ pub fn beta() {}
             &["remote", "add", "origin", bare.to_string_lossy().as_ref()],
         );
         git_fixture_run(&source, &["push", "origin", "main", "--tags"]);
+        // Point the bare remote's HEAD at main so clones record
+        // refs/remotes/origin/HEAD deterministically (like a real GitHub remote).
+        git_fixture_run(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         (root, source, bare)
     }
 
@@ -3132,6 +3194,43 @@ pub fn gamma() {}
             second.head_sha,
             git_fixture_output(&source, &["rev-parse", "HEAD"])
         );
+    }
+
+    #[tokio::test]
+    async fn cached_repo_with_explicit_ref_skips_metadata_prefetch() {
+        let (root, _source, bare) = create_bare_remote_fixture();
+        let cache_root = root.path().join("cache");
+        let tool = GitHubResearchTool::new();
+        let mut ctx = test_tool_context_with_repo_overrides(
+            root.path(),
+            "owner/repo",
+            &bare,
+            &cache_root,
+            "main",
+        );
+        let mut input = base_input(GitHubResearchOperation::CloneRepo);
+        input.local_alias = Some("fixture-skip-prefetch".to_string());
+        input.branch = Some("main".to_string());
+
+        let first = tool
+            .ensure_local_repo(&input, &ctx)
+            .await
+            .expect("first clone should succeed");
+        assert!(!first.reused_cache);
+        assert_eq!(first.default_branch, "main");
+
+        // Drop the default-branch override: a metadata prefetch would now hit
+        // the real GitHub API and fail offline, so a successful cached sync
+        // proves the prefetch was skipped and the default branch came from
+        // the clone's origin/HEAD.
+        ctx.extra.remove("github_research_default_branch_overrides");
+
+        let second = tool
+            .ensure_local_repo(&input, &ctx)
+            .await
+            .expect("cached sync should not prefetch repo metadata");
+        assert!(second.reused_cache);
+        assert_eq!(second.default_branch, "main");
     }
 
     #[tokio::test]

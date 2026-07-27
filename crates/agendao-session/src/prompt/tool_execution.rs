@@ -740,7 +740,8 @@ impl SessionPrompt {
                     &mut gov_metadata,
                     &artifacts_root,
                     options.tool_result_budget,
-                );
+                )
+                .await;
 
                 Self::push_tool_result_part(
                     &mut msg,
