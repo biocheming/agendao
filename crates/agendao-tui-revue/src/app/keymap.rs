@@ -827,6 +827,13 @@ impl AppHandler {
                     }
                 }
 
+                // blink 相位翻转只影响 prompt 条内的块光标显隐：标 prompt 区
+                // dirty（区域失效），替代此前 handled=true 触发的 600ms 一次
+                // 全屏重绘。面板/对话框开着时光标可能在其输入框里（edit 系
+                // dialog 也吃 cursor_blink_on），不标区，走全屏重绘兜底。
+                if blink_flipped && self.panel == Panel::None {
+                    self.prompt_dirty = true;
+                }
                 changed || blink_flipped || (spinner_flipped && !running_stale) || self.interrupt_pending
             }
             Event::Key(key) => {

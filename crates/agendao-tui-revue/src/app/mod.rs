@@ -210,6 +210,8 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         h.layout_dirty = false;
         let transcript_dirty = h.transcript_dirty;
         h.transcript_dirty = false;
+        let prompt_dirty = h.prompt_dirty;
+        h.prompt_dirty = false;
         // 主题切换的 CSS 面交接：slash_action 经 apply_theme 换好色板后把
         // `:root` 变量留在 pending 槽（它拿不到 &mut App），此处收口应用。
         let theme_vars = h.pending_theme_vars.take();
@@ -227,11 +229,17 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             // 区域失效优先：streaming 时内容/sidebar token/prompt spinner
             // 都会变，标这三个区域（header/status 带与背景不重画）；
             // 其余情况（结构/对话框/主题/首帧）回退全屏 request_redraw。
-            let region_marked = transcript_dirty && {
+            let region_marked = if transcript_dirty {
                 let t = mark_region_dirty(app, "transcript");
                 let s = mark_region_dirty(app, "sidebar");
                 let p = mark_region_dirty(app, "prompt");
                 t && s && p
+            } else if prompt_dirty {
+                // blink 翻转只有 prompt 条内块光标显隐变化，单区失效即可；
+                // 节点不存在（Home/Settings 无 prompt 条）时回退全屏。
+                mark_region_dirty(app, "prompt")
+            } else {
+                false
             };
             if !region_marked {
                 app.request_redraw();
@@ -384,6 +392,10 @@ pub(crate) struct AppHandler {
     /// 事件循环据此只把 transcript 节点 mark dirty（区域重画），
     /// 替代全屏 request_redraw。
     pub(crate) transcript_dirty: bool,
+    /// 光标 blink 相位本帧翻转且无面板/对话框打开（keymap Tick 置真）：
+    /// 事件循环据此只把 prompt 条（块光标所在）mark dirty，替代 600ms
+    /// 一次的全屏重绘。
+    pub(crate) prompt_dirty: bool,
     /// 最近事件活动时间：任何 FrontendEvent/发送回执到达都会刷新。
     /// run_status 卡在 Running（如流挂死）时，超过阈值无活动即停止
     /// 20fps 强制重绘（陈旧 Running 刹车），有活动即自愈。
@@ -806,6 +818,7 @@ impl AppHandler {
             panel: Panel::None,
             spinner_tick: 0,
             transcript_dirty: false,
+            prompt_dirty: false,
             last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
@@ -985,6 +998,8 @@ impl View for RootView {
         // the Home route's full height.
         // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+ctx1+prompt4+status1=9）- attachment_h。
         // attachments 提前至此：attachment_h 与布局层、attachment_strip 共用此 borrow（避免重复 get + 重复计算）。
+        // 注：保持 get() 克隆——read() guard 会借用 h 直至 render 末尾，与下方
+        // drop(h) 冲突；attachments 通常为空/极小，克隆代价可忽略。
         let attachments = h.active_session.attachments.get();
         let attachment_h: u16 = if attachments.is_empty() {
             0
@@ -1015,7 +1030,7 @@ impl View for RootView {
             let cache = h.active_session.cache_stats.get();
             let price = h.active_session.pricing.get();
             let ctx_pct = h.active_session.context_pct.get();
-            let trees = h.active_session.sidebar_trees.get();
+            let trees = h.active_session.sidebar_trees.read(); // 零拷贝读 guard
             let mcp = h.active_session.mcp_lsp.get();
             let tools = h.active_session.active_tools.get();
             let active_sid = h.active_session.get_session_id();
@@ -1134,7 +1149,10 @@ impl View for RootView {
                     dir_hit = None;
                 }
 
-                let msgs = h.active_session.messages.get();
+                // 零拷贝读（read guard，Deref 到 Vec<TranscriptBlock>）：
+                // get() 是 guard.clone()，每帧深克隆整条 transcript。
+                // 渲染只读、guard 生命周期限于本分支，无写路径冲突。
+                let msgs = h.active_session.messages.read();
 
                 // Build transcript + optional sidebar.
                 //
