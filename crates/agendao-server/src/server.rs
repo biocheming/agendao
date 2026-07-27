@@ -834,15 +834,17 @@ impl ServerState {
         Ok(())
     }
 
-    /// 增量持久化：只 flush 指定的单个 session（`create_session` 专用）。
+    /// 增量持久化：只 flush 指定的单个 session。
     ///
     /// `sync_sessions_to_storage` 是全量同步——clone + 序列化 + DB upsert +
     /// telemetry/memory ingest **全部** sessions。sessions 数量大时它是
-    /// `create_session` 的主要耗时（实测 121 sessions ≈ 1.4s，几乎全部花在
-    /// 重复 flush 未变更的 session 上）。create 只新增一个 session、不删除
-    /// 任何 session，因此 stale 清理与其他 session 的重复 flush 都是冗余：
-    /// 这里只持久化新 session，create 降到亚毫秒级。其他变更点（messages /
-    /// prompt / fork）仍在各自路径调全量 `sync_sessions_to_storage`，互不影响。
+    /// 单点变更路径的主要耗时（实测 121 sessions ≈ 1.4s，几乎全部花在
+    /// 重复 flush 未变更的 session 上）。只新增/变更单个 session、不删除
+    /// 任何 session 时，stale 清理与其他 session 的重复 flush 都是冗余。
+    /// 调用方持有 session 引用时用本函数（如 `create_session`）；只有
+    /// session id 时用 `flush_session_to_storage`（另带懒加载守卫）。
+    /// 全量 `sync_sessions_to_storage` 仍保留给删除/启动恢复等需要
+    /// stale 清理的路径。
     pub async fn sync_session_to_storage(
         &self,
         session: &agendao_session::Session,

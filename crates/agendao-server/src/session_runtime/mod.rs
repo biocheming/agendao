@@ -242,7 +242,8 @@ impl SessionSchedulerLifecycleHook {
                 self.state.as_ref(),
                 self.session_id.clone(),
                 ReconcileReason::Topology,
-            );
+            )
+            .await;
         }
 
         if let (Some(execution_id), Some(patch)) = (execution_id, runtime_patch) {
@@ -694,7 +695,7 @@ where
         .runtime_telemetry
         .refresh_stage_summary_from_message(session_id, &message_snapshot)
         .await;
-    broadcast_session_reconcile(state, session_id.to_string(), ReconcileReason::Topology);
+    broadcast_session_reconcile(state, session_id.to_string(), ReconcileReason::Topology).await;
     Some(result)
 }
 

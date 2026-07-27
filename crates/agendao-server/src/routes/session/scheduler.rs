@@ -2487,7 +2487,8 @@ pub async fn run_local_scheduler_prompt(
                 state.as_ref(),
                 session_id.clone(),
                 ReconcileReason::StatusChange,
-            );
+            )
+            .await;
             set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
 
             if let Some(output_hook) = output_hook {
@@ -2795,7 +2796,8 @@ pub async fn run_local_scheduler_prompt(
         state.as_ref(),
         session_id.clone(),
         ReconcileReason::TurnFinal,
-    );
+    )
+    .await;
     set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
 
     if let Some(output_hook) = output_hook {

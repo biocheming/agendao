@@ -257,7 +257,8 @@ pub(crate) async fn stream_message(
         state.as_ref(),
         session_id.clone(),
         ReconcileReason::StatusChange,
-    );
+    )
+    .await;
 
     let resolved_tool_surface = agendao_session::merge_external_tool_catalogs(
         agendao_session::resolve_tool_surface(state.tool_registry.as_ref()).await,
@@ -524,7 +525,8 @@ pub(crate) async fn stream_message(
             stream_state.as_ref(),
             stream_session_id.clone(),
             ReconcileReason::TurnFinal,
-        );
+        )
+        .await;
 
         if let Err(err) = stream_state
             .flush_session_to_storage(&stream_session_id)

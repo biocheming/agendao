@@ -89,7 +89,7 @@ use super::scheduler::{
     SessionSchedulerToolExecutor,
 };
 use super::session_crud::{
-    compaction_lifecycle_status_hook, persist_sessions_if_enabled, resolved_session_directory,
+    compaction_lifecycle_status_hook, persist_session_if_enabled, resolved_session_directory,
     set_session_run_status, IdleGuard,
 };
 use super::telemetry::persist_session_telemetry_metadata;
@@ -2023,8 +2023,9 @@ async fn session_prompt_inner(
                         state.as_ref(),
                         id.clone(),
                         ReconcileReason::StatusChange,
-                    );
-                    persist_sessions_if_enabled(&state).await;
+                    )
+                    .await;
+                    persist_session_if_enabled(&state, &id).await;
                     return Ok(Json(serde_json::json!({
                         "status": "awaiting_user",
                         "session_id": id,
@@ -2053,10 +2054,10 @@ async fn session_prompt_inner(
             }
         }
         if pending_command_cleared {
-            broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
+            broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
         }
-        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
-        persist_sessions_if_enabled(&state).await;
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
+        persist_session_if_enabled(&state, &id).await;
         return Ok(Json(serde_json::json!({
             "status": "accepted",
             "ok": true,
@@ -2248,11 +2249,11 @@ async fn session_prompt_inner(
         }
     }
     if pending_command_cleared {
-        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
-        persist_sessions_if_enabled(&state).await;
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
+        persist_session_if_enabled(&state, &id).await;
     }
     if persisted_external_adapter_binding {
-        persist_sessions_if_enabled(&state).await;
+        persist_session_if_enabled(&state, &id).await;
     }
     let output_block_hook: Option<agendao_session::prompt::OutputBlockHook> =
         Some(server_output_block_hook(task_state.clone()));
@@ -2452,8 +2453,9 @@ async fn session_prompt_inner(
                         task_state.as_ref(),
                         session_id.clone(),
                         ReconcileReason::StatusChange,
-                    );
-                    persist_sessions_if_enabled(&task_state).await;
+                    )
+                    .await;
+                    persist_session_if_enabled(&task_state, &session_id).await;
                     return;
                 }
             };
@@ -2479,7 +2481,8 @@ async fn session_prompt_inner(
                 task_state.as_ref(),
                 session_id.clone(),
                 ReconcileReason::StatusChange,
-            );
+            )
+            .await;
 
             let agent_registry = Arc::new(AgentRegistry::from_config(&task_config));
 
@@ -2776,7 +2779,8 @@ async fn session_prompt_inner(
                 task_state.as_ref(),
                 session_id.clone(),
                 ReconcileReason::StatusChange,
-            );
+            )
+            .await;
             if let Some(output_hook) = output_block_hook.clone() {
                 if !assistant_text.trim().is_empty() {
                     emit_output_block_via_hook(
@@ -2798,7 +2802,7 @@ async fn session_prompt_inner(
                     .await;
                 }
             }
-            persist_sessions_if_enabled(&task_state).await;
+            persist_session_if_enabled(&task_state, &session_id).await;
             return;
         }
 
@@ -3179,7 +3183,7 @@ async fn session_prompt_inner(
             sessions.update(session.clone());
         }
         let reconcile_reason = reconcile_reason_for_stream_termination(&session);
-        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason);
+        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason).await;
         // Normal path reached — defuse the guard so we handle cleanup explicitly.
         _idle_guard.defuse();
         set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;

@@ -77,7 +77,7 @@ pub(crate) fn sse_output_block_hook(
     })
 }
 
-pub(crate) fn broadcast_session_reconcile(
+pub(crate) async fn broadcast_session_reconcile(
     state: &ServerState,
     session_id: impl Into<String>,
     reason: ReconcileReason,
@@ -91,10 +91,12 @@ pub(crate) fn broadcast_session_reconcile(
             source: source.to_string(),
         },
     );
-    let telemetry = state.runtime_telemetry.clone();
-    tokio::spawn(async move {
-        telemetry.record_session_updated(&session_id, source).await;
-    });
+    // In-memory stage-log write only; record inline instead of spawning a task
+    // per reconcile (this is a high-frequency path).
+    state
+        .runtime_telemetry
+        .record_session_updated(&session_id, source)
+        .await;
 }
 
 pub(crate) fn broadcast_config_updated(state: &ServerState) {
@@ -116,7 +118,7 @@ mod tests {
             let state = ServerState::new();
             let mut rx = state.event_bus.subscribe();
 
-            broadcast_session_reconcile(&state, "session-1", ReconcileReason::TurnFinal);
+            broadcast_session_reconcile(&state, "session-1", ReconcileReason::TurnFinal).await;
 
             let payload = rx.recv().await.expect("session.updated payload");
             let value: serde_json::Value =

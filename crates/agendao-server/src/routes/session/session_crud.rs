@@ -371,6 +371,17 @@ pub(super) async fn persist_sessions_if_enabled(state: &Arc<ServerState>) {
     }
 }
 
+/// 单 session 增量持久化：只 flush 指定 session（`flush_session_to_storage`
+/// 自带懒加载守卫，dehydrated 会话只写元数据行）。只改动了单个已知 session
+/// 的调用点应使用本函数，避免全量 `sync_sessions_to_storage` 的写放大
+/// （clone + 序列化 + 全量 flush 所有 session）。错误处理语义与
+/// `persist_sessions_if_enabled` 一致：记录日志、不向调用方传播。
+pub(super) async fn persist_session_if_enabled(state: &Arc<ServerState>, session_id: &str) {
+    if let Err(err) = state.flush_session_to_storage(session_id).await {
+        tracing::error!("failed to sync session to storage: {}", err);
+    }
+}
+
 pub(crate) fn resolved_session_directory(raw: &str, workspace_root: &FsPath) -> String {
     let trimmed = raw.trim();
     let candidate = if trimmed.is_empty() || trimmed == "." {
@@ -705,7 +716,7 @@ pub(super) async fn update_session(
     }
     let info = session_to_info(session);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -734,6 +745,8 @@ pub(super) async fn delete_session(
             .clear_session_runtime(session_id)
             .await;
     }
+    // 保留全量 sync：delete 移除了整棵 session 树，必须靠全量同步清理库中
+    // 已不存在的 stale session/message 行——单 session flush 感知不到删除。
     persist_sessions_if_enabled(&state).await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -834,7 +847,7 @@ pub(super) async fn fork_session(
             )),
             SessionForkError::InvalidRequest(message) => ApiError::BadRequest(message),
         })?;
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &forked.id).await;
     Ok(Json(session_to_info(&forked)))
 }
 
@@ -848,7 +861,7 @@ pub(super) async fn share_session(
         .share(&id, share_url.clone())
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(SessionShareInfo { url: share_url }))
 }
 
@@ -861,7 +874,7 @@ pub(super) async fn unshare_session(
         .unshare(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(serde_json::json!({ "unshared": true })))
 }
 
@@ -883,7 +896,7 @@ pub(super) async fn archive_session(
         session_to_info(session)
     };
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -901,8 +914,8 @@ pub(super) async fn set_session_title(
     sessions.update(updated.clone());
     let info = session_to_info(&updated);
     drop(sessions);
-    broadcast_session_reconcile(state.as_ref(), id, ReconcileReason::MetadataChange);
-    persist_sessions_if_enabled(&state).await;
+    broadcast_session_reconcile(state.as_ref(), &id, ReconcileReason::MetadataChange).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -924,7 +937,7 @@ pub(super) async fn set_session_permission(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1510,7 +1523,7 @@ pub(super) async fn set_session_summary(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1537,7 +1550,7 @@ pub(super) async fn session_revert(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1551,7 +1564,7 @@ pub(super) async fn clear_session_revert(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1578,8 +1591,8 @@ pub(super) async fn start_compaction(
         agendao_session::compact_session_now_with_focus_result(session, req.focus.as_deref());
     drop(sessions);
     set_session_run_status(&state, &id, SessionRunStatus::Idle).await;
-    broadcast_session_reconcile(state.as_ref(), &id, ReconcileReason::MetadataChange);
-    persist_sessions_if_enabled(&state).await;
+    broadcast_session_reconcile(state.as_ref(), &id, ReconcileReason::MetadataChange).await;
+    persist_session_if_enabled(&state, &id).await;
     Ok(Json(CompactResponse {
         success: outcome.success(),
         message: outcome.message(req.focus.as_deref()),
@@ -1646,7 +1659,7 @@ pub(super) async fn update_part(
     };
     session.touch();
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &session_id).await;
 
     Ok(Json(serde_json::json!({
         "updated": true,
@@ -1672,7 +1685,7 @@ pub(super) async fn execute_shell(
     assistant.add_text(format!("Shell command queued: {}", req.command));
     let assistant_id = assistant.id.clone();
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
 
     Ok(Json(serde_json::json!({
         "executed": true,
@@ -1722,7 +1735,7 @@ pub(super) async fn execute_command(
         .unwrap_or_default();
     sessions.publish_command_executed(&req.command, &id, arguments, &assistant_id);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
 
     Ok(Json(serde_json::json!({
         "executed": true,
@@ -1859,7 +1872,7 @@ pub(super) async fn prompt_async(
     let assistant = session.add_assistant_message();
     let assistant_id = assistant.id.clone();
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &id).await;
 
     Ok(Json(serde_json::json!({
         "status": "queued",

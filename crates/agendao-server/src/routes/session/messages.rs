@@ -21,7 +21,7 @@ use agendao_multimodal::{
     MultimodalDisplaySummary, PersistedMultimodalExplain, SessionPartAdapter,
 };
 
-use super::session_crud::persist_sessions_if_enabled;
+use super::session_crud::persist_session_if_enabled;
 
 const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
 
@@ -801,7 +801,7 @@ pub(super) async fn send_message(
         &mut pending_questions,
     );
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &session_id).await;
     Ok(Json(info))
 }
 
@@ -988,7 +988,7 @@ pub(super) async fn delete_message(
         .ok_or_else(|| ApiError::SessionNotFound(session_id.clone()))?;
     session.remove_message(&msg_id);
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &session_id).await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -1100,7 +1100,7 @@ pub(super) async fn add_message_part(
     message.parts.push(part);
     session.touch();
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &session_id).await;
 
     Ok(Json(serde_json::json!({
         "added": true,
@@ -1129,7 +1129,7 @@ pub(super) async fn delete_part(
     }
     session.touch();
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
+    persist_session_if_enabled(&state, &session_id).await;
 
     Ok(Json(serde_json::json!({
         "deleted": true,

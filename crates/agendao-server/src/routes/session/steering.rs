@@ -191,7 +191,8 @@ pub async fn submit_session_steering(
         state.as_ref(),
         owner_session_id.clone(),
         ReconcileReason::Steering,
-    );
+    )
+    .await;
 
     Ok(Json(SubmitSteeringResponse {
         id: steer_id,
