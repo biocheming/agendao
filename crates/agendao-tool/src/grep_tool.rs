@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use ignore::WalkBuilder;
 use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use walkdir::WalkDir;
 
 use crate::tool_access::{
     self, search_block_message, search_warning_message, ToolAccessKey, ToolAccessOutcome,
@@ -156,88 +156,105 @@ impl Tool for GrepTool {
             .as_ref()
             .and_then(|g| glob::Pattern::new(g).ok());
 
-        let mut matches: Vec<GrepMatch> = Vec::new();
-        let mut has_errors = false;
-        let limit = 100;
+        // The walk + line scan is synchronous and can take seconds on large
+        // trees, so run it on a blocking thread instead of the async worker.
+        let scan_base_dir = base_dir.to_path_buf();
+        let scan = tokio::task::spawn_blocking(move || {
+            let mut matches: Vec<GrepMatch> = Vec::new();
+            let mut has_errors = false;
+            let limit = 100;
 
-        for entry in WalkDir::new(base_dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_entry(|e| {
-                if include_hidden {
-                    true
-                } else {
-                    let name = e.file_name().to_string_lossy();
-                    !name.starts_with('.')
-                }
-            })
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
+            let mut walker = WalkBuilder::new(&scan_base_dir);
+            walker
+                .hidden(!include_hidden)
+                .git_ignore(true)
+                .follow_links(true);
 
-            if let Some(ref gp) = glob_pattern {
-                let rel_path = path.strip_prefix(base_dir).unwrap_or(path);
-                if !gp.matches(&rel_path.to_string_lossy()) {
+            // Collect at most `limit + 1` matches: the extra one only tells us
+            // the result was truncated, then the walk stops early.
+            'walk: for entry in walker.build().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let is_file = entry
+                    .file_type()
+                    .map(|ft| ft.is_file())
+                    .unwrap_or_else(|| path.is_file());
+                if !is_file {
                     continue;
                 }
-            }
 
-            let mtime = path
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-
-            if let Ok(file) = File::open(path) {
-                let reader = BufReader::new(file);
-                let path_str = path.to_string_lossy().to_string();
-
-                for (line_num, line_result) in reader.lines().enumerate() {
-                    if let Ok(line) = line_result {
-                        if regex.is_match(&line) {
-                            let truncated_line = if line.len() > MAX_LINE_LENGTH {
-                                format!(
-                                    "{}...",
-                                    line.chars().take(MAX_LINE_LENGTH).collect::<String>()
-                                )
-                            } else {
-                                line.clone()
-                            };
-
-                            matches.push(GrepMatch {
-                                path: path_str.clone(),
-                                mtime,
-                                line_num: line_num + 1,
-                                line_text: truncated_line,
-                            });
-                        }
+                if let Some(ref gp) = glob_pattern {
+                    let rel_path = path.strip_prefix(&scan_base_dir).unwrap_or(path);
+                    if !gp.matches(&rel_path.to_string_lossy()) {
+                        continue;
                     }
                 }
-            } else {
-                has_errors = true;
+
+                let mtime = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                match File::open(path) {
+                    Ok(file) => {
+                        let reader = BufReader::new(file);
+                        let path_str = path.to_string_lossy().to_string();
+
+                        for (line_num, line_result) in reader.lines().enumerate() {
+                            if let Ok(line) = line_result {
+                                if regex.is_match(&line) {
+                                    let truncated_line = if line.len() > MAX_LINE_LENGTH {
+                                        format!(
+                                            "{}...",
+                                            line.chars().take(MAX_LINE_LENGTH).collect::<String>()
+                                        )
+                                    } else {
+                                        line.clone()
+                                    };
+
+                                    matches.push(GrepMatch {
+                                        path: path_str.clone(),
+                                        mtime,
+                                        line_num: line_num + 1,
+                                        line_text: truncated_line,
+                                    });
+
+                                    if matches.len() > limit {
+                                        break 'walk;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => has_errors = true,
+                }
             }
-        }
+
+            (matches, has_errors)
+        });
+
+        let (mut matches, has_errors) = scan
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("grep scan failed: {}", e)))?;
 
         matches.sort_by(|a, b| b.mtime.cmp(&a.mtime));
 
-        let total_matches = matches.len();
+        let limit = 100;
         let truncated = matches.len() > limit;
+        matches.truncate(limit);
+        let total_matches = matches.len();
 
         let title = format!("grep '{}'", pattern);
         let output = if total_matches == 0 {
             format!("No matches found for pattern '{}'", pattern)
         } else {
-            let mut output_lines = vec![format!(
-                "Found {} matches{}",
-                total_matches,
-                if truncated {
-                    format!(" (showing first {})", limit)
-                } else {
-                    String::new()
-                }
-            )];
+            let mut output_lines = if truncated {
+                // The walk stops at `limit` matches, so the true total is
+                // unknown; report it as a lower bound.
+                vec![format!("Found more than {} matches (showing first {})", limit, limit)]
+            } else {
+                vec![format!("Found {} matches", total_matches)]
+            };
 
             let display_matches: Vec<&GrepMatch> = matches.iter().take(limit).collect();
             let mut current_file = "";
@@ -256,8 +273,8 @@ impl Tool for GrepTool {
             if truncated {
                 output_lines.push(String::new());
                 output_lines.push(format!(
-                    "(Results truncated: showing {} of {} matches ({} hidden). Consider using a more specific path or pattern.)",
-                    limit, total_matches, total_matches - limit
+                    "(Results truncated: showing first {} matches. Consider using a more specific path or pattern.)",
+                    limit
                 ));
             }
 
@@ -378,6 +395,77 @@ mod tests {
             ToolError::ExecutionError(message) => assert!(message.contains("BLOCKED")),
             other => panic!("unexpected error: {other}"),
         }
+        clear_tool_access_tracker(session_id);
+    }
+
+    #[tokio::test]
+    async fn grep_skips_gitignored_and_hidden_files() {
+        let session_id = "grep-tool-ignore-rules";
+        clear_tool_access_tracker(session_id);
+        let dir = tempdir().expect("tempdir");
+        // An (empty) `.git` directory marks the tempdir as a git repo so
+        // WalkBuilder applies .gitignore rules.
+        std::fs::create_dir(dir.path().join(".git")).expect("create .git");
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").expect("write .gitignore");
+        std::fs::create_dir_all(dir.path().join("target")).expect("create target");
+        std::fs::write(dir.path().join("target/ignored.txt"), "TODO: ignored\n")
+            .expect("write ignored file");
+        std::fs::write(dir.path().join("kept.txt"), "TODO: kept\n").expect("write kept file");
+        std::fs::write(dir.path().join(".hidden.txt"), "TODO: hidden\n").expect("write hidden file");
+
+        let tool = GrepTool::new();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "pattern": "TODO",
+                    "path": dir.path().display().to_string()
+                }),
+                ToolContext::new(
+                    session_id.to_string(),
+                    "message-ignore-1".to_string(),
+                    dir.path().display().to_string(),
+                ),
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(
+            result.output.contains("kept.txt"),
+            "kept.txt should match: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("ignored.txt"),
+            "gitignored files should be skipped: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("hidden"),
+            "hidden files should be skipped by default: {}",
+            result.output
+        );
+
+        // `hidden: true` opts back into searching dotfiles.
+        let with_hidden = tool
+            .execute(
+                serde_json::json!({
+                    "pattern": "TODO",
+                    "path": dir.path().display().to_string(),
+                    "hidden": true
+                }),
+                ToolContext::new(
+                    session_id.to_string(),
+                    "message-ignore-2".to_string(),
+                    dir.path().display().to_string(),
+                ),
+            )
+            .await
+            .expect("grep with hidden should succeed");
+        assert!(
+            with_hidden.output.contains(".hidden.txt"),
+            "hidden: true should search dotfiles: {}",
+            with_hidden.output
+        );
         clear_tool_access_tracker(session_id);
     }
 }
