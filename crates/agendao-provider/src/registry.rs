@@ -31,21 +31,33 @@ impl ModelsRegistry {
     }
 
     pub async fn get_provider(&self, provider_id: &str) -> Option<ModelsProviderInfo> {
-        let data = self.get().await;
-        data.get(provider_id).cloned()
+        self.authority
+            .map_snapshot(|snapshot| snapshot.data.get(provider_id).cloned())
+            .await
     }
 
     pub async fn get_model(&self, provider_id: &str, model_id: &str) -> Option<CatalogModelInfo> {
-        let data = self.get().await;
-        data.get(provider_id)
-            .and_then(|provider| provider.models.get(model_id).cloned())
+        self.authority
+            .map_snapshot(|snapshot| {
+                snapshot
+                    .data
+                    .get(provider_id)
+                    .and_then(|provider| provider.models.get(model_id))
+                    .cloned()
+            })
+            .await
     }
 
     pub async fn list_models_for_provider(&self, provider_id: &str) -> Vec<CatalogModelInfo> {
-        let data = self.get().await;
-        data.get(provider_id)
-            .map(|provider| provider.models.values().cloned().collect())
-            .unwrap_or_default()
+        self.authority
+            .map_snapshot(|snapshot| {
+                snapshot
+                    .data
+                    .get(provider_id)
+                    .map(|provider| provider.models.values().cloned().collect())
+                    .unwrap_or_default()
+            })
+            .await
     }
 
     pub async fn get_with_customization(&self, enable_experimental: bool) -> ModelsData {

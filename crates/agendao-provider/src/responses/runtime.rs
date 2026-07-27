@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -398,7 +399,7 @@ impl OpenAIResponsesLanguageModel {
         let headers = self.build_headers("text/event-stream");
         let request_body = serde_json::to_string(&prepared.body)
             .map_err(|e| ProviderError::InvalidRequest(format!("failed to encode body: {}", e)))?;
-        let text_stream: Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>> =
+        let text_stream: Pin<Box<dyn Stream<Item = Result<Bytes, ProviderError>> + Send>> =
             if let Some(proxy) = get_custom_fetch_proxy(&self.config.provider) {
                 let response = proxy
                     .fetch_stream(CustomFetchRequest {
@@ -417,7 +418,7 @@ impl OpenAIResponsesLanguageModel {
                         status_code: response.status,
                     });
                 }
-                response.stream
+                Box::pin(response.stream.map(|result| result.map(Bytes::from)))
             } else {
                 let client = self.config.client.clone().unwrap_or_default();
                 let mut request = client.post(url);
@@ -444,7 +445,7 @@ impl OpenAIResponsesLanguageModel {
                     response
                         .bytes_stream()
                         .map(|chunk_result| match chunk_result {
-                            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).to_string()),
+                            Ok(bytes) => Ok(bytes),
                             Err(err) => Err(ProviderError::StreamError(err.to_string())),
                         }),
                 )
@@ -480,8 +481,8 @@ impl OpenAIResponsesLanguageModel {
             let mut stream_state = StreamChunkState::default();
 
             while let Some(chunk_result) = text_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(text) => text,
+                let bytes = match chunk_result {
+                    Ok(bytes) => bytes,
                     Err(err) => {
                         if let Err(send_error) = tx.send(Err(err)).await {
                             tracing::debug!(
@@ -492,6 +493,7 @@ impl OpenAIResponsesLanguageModel {
                         return;
                     }
                 };
+                let chunk = String::from_utf8_lossy(&bytes);
                 buffer.push_str(&chunk);
 
                 while let Some(frame) = drain_next_sse_frame(&mut buffer) {

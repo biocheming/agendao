@@ -44,19 +44,21 @@ impl SseDecoder {
         let delimiter = self.delimiter.clone();
         let prefix = self.prefix.clone();
         let done_signal = self.done_signal.clone();
+        let done_with_space = format!("data: {done_signal}");
+        let done_without_space = format!("data:{done_signal}");
         let delimiter_len = delimiter.len();
 
         let sse_stream = stream::unfold((input, String::new()), move |(mut input, mut buf)| {
             let delimiter = delimiter.clone();
             let prefix = prefix.clone();
             let done_signal = done_signal.clone();
+            let done_with_space = done_with_space.clone();
+            let done_without_space = done_without_space.clone();
 
             async move {
                 let is_done = |raw: &str| {
                     let t = raw.trim();
-                    t == done_signal
-                        || t == format!("data: {done_signal}")
-                        || t == format!("data:{done_signal}")
+                    t == done_signal || t == done_with_space || t == done_without_space
                 };
                 let extract_data_line = |frame: &str| -> Option<String> {
                     // SSE frames may contain multiple lines (e.g. "event:xxx\ndata:{...}").
@@ -89,11 +91,7 @@ impl SseDecoder {
                     if let Some(idx) = buf.find(&delimiter) {
                         let frame = buf[..idx].to_string();
                         let rest_start = idx + delimiter_len;
-                        buf = if rest_start <= buf.len() {
-                            buf[rest_start..].to_string()
-                        } else {
-                            String::new()
-                        };
+                        buf.drain(..rest_start);
 
                         if is_done(&frame) {
                             return None;

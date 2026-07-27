@@ -427,6 +427,10 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
         if select_copilot_route(&request.model) == CopilotRoute::Responses {
             let response_model = Self::responses_model(&request.model, config, client);
             let options = Self::responses_generate_options(&request, config);
+            // Share the request between the primary path and the fallback via
+            // Arc so the happy path pays no deep clone; the fallback unwraps
+            // the Arc (cloning only if a reference is still held).
+            let request = std::sync::Arc::new(request);
             let request_for_primary = request.clone();
             let model_for_log = request.model.clone();
             let client_for_fallback = client.clone();
@@ -452,6 +456,8 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
                         error = %err,
                         "Copilot responses generate failed, falling back to chat completions"
                     );
+                    let request = std::sync::Arc::try_unwrap(request)
+                        .unwrap_or_else(|request| (*request).clone());
                     Self::chat_completions_chat(
                         &client_for_fallback,
                         &config_for_fallback,

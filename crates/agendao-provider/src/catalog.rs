@@ -98,6 +98,21 @@ impl ModelCatalogAuthority {
         self.snapshot().await.data
     }
 
+    /// Run `f` against the cached snapshot under a read lock, loading the
+    /// snapshot first if necessary. Lets callers clone just the entries they
+    /// need instead of the whole (multi-MB) catalogue.
+    pub async fn map_snapshot<T>(&self, f: impl FnOnce(&CatalogSnapshot) -> T) -> T {
+        if self.snapshot.read().await.is_none() {
+            // Cold path: populate the cache via the normal load/refresh flow.
+            let _ = self.snapshot().await;
+        }
+        let guard = self.snapshot.read().await;
+        let snapshot = guard
+            .as_ref()
+            .expect("catalog snapshot must be populated after load");
+        f(snapshot)
+    }
+
     pub async fn refresh(&self, force: bool) -> CatalogSnapshot {
         self.refresh_with_result(force).await.snapshot
     }

@@ -367,6 +367,23 @@ pub trait ProviderDriver: Send + Sync + std::fmt::Debug {
     /// Parse a single SSE data line into a streaming event.
     fn parse_stream_event(&self, data: &str) -> Result<Option<StreamingEvent>, DriverError>;
 
+    /// Parse an SSE payload that has already been decoded into a JSON value.
+    ///
+    /// The default implementation serializes the value back to a string and
+    /// delegates to [`ProviderDriver::parse_stream_event`], so existing
+    /// drivers keep working unchanged. Drivers whose parser is
+    /// `serde_json`-based should override this to consume the value directly
+    /// and avoid the serialize + re-parse round trip on every stream chunk.
+    fn parse_stream_value(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<Option<StreamingEvent>, DriverError> {
+        let data = serde_json::to_string(value).map_err(|error| {
+            DriverError::StreamParse(format!("failed to serialize stream event: {}", error))
+        })?;
+        self.parse_stream_event(&data)
+    }
+
     /// Capabilities this driver supports.
     fn supported_capabilities(&self) -> &[Capability];
 

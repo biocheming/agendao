@@ -249,52 +249,80 @@ fn tool_messages_to_openai(content: &crate::Content) -> Vec<Value> {
 }
 
 pub(super) fn build_request_body(request: &ChatRequest) -> Result<Value, ProviderError> {
-    let mut value =
-        serde_json::to_value(request).map_err(|e| ProviderError::InvalidRequest(e.to_string()))?;
+    // Build the top-level object field by field: `messages` is converted
+    // exactly once, and every other field is serialized exactly once (the
+    // previous implementation ran `to_value(request)` on the whole
+    // ChatRequest, cloned the message list, then overwrote "messages").
+    fn field_value<T: serde::Serialize>(value: &T) -> Result<Value, ProviderError> {
+        serde_json::to_value(value).map_err(|e| ProviderError::InvalidRequest(e.to_string()))
+    }
 
-    if let Value::Object(obj) = &mut value {
-        let mut prompt = request.messages.clone();
-        if let Some(system) = &request.system {
-            let has_system = prompt.iter().any(|m| matches!(m.role, Role::System));
-            if !has_system {
-                prompt.insert(0, Message::system(system.clone()));
-            }
+    let mut obj = Map::new();
+    obj.insert("model".to_string(), field_value(&request.model)?);
+
+    // Only the rare "prepend a system prompt" path needs an owned copy of the
+    // message list; otherwise convert the borrowed slice directly.
+    let needs_system_prepend = request.system.is_some()
+        && !request
+            .messages
+            .iter()
+            .any(|m| matches!(m.role, Role::System));
+    let messages = if needs_system_prepend {
+        let mut prompt = Vec::with_capacity(request.messages.len() + 1);
+        prompt.push(Message::system(
+            request.system.clone().expect("system checked above"),
+        ));
+        prompt.extend(request.messages.iter().cloned());
+        to_openai_compatible_chat_messages(&prompt)
+    } else {
+        to_openai_compatible_chat_messages(&request.messages)
+    };
+    obj.insert("messages".to_string(), Value::Array(messages));
+
+    if let Some(max_tokens) = request.max_tokens {
+        obj.insert("max_tokens".to_string(), Value::from(max_tokens));
+    }
+    if let Some(temperature) = request.temperature {
+        obj.insert("temperature".to_string(), field_value(&temperature)?);
+    }
+    if let Some(top_p) = request.top_p {
+        obj.insert("top_p".to_string(), field_value(&top_p)?);
+    }
+    // `system` is folded into `messages` above and never sent as its own key.
+    if let Some(tools) = &request.tools {
+        obj.insert("tools".to_string(), field_value(tools)?);
+    }
+    if let Some(stream) = request.stream {
+        obj.insert("stream".to_string(), Value::Bool(stream));
+    }
+
+    // Match TS SDK behavior: provider options are spread into the request
+    // body, so provider-specific fields remain top-level keys.
+    if let Some(opts) = &request.provider_options {
+        for (k, v) in opts {
+            obj.entry(k.clone()).or_insert_with(|| v.clone());
         }
-        obj.insert(
-            "messages".to_string(),
-            Value::Array(to_openai_compatible_chat_messages(&prompt)),
-        );
-        obj.remove("system");
+    }
 
-        // Match TS SDK behavior: provider options are spread into the request
-        // body, so provider-specific fields remain top-level keys.
-        if let Some(Value::Object(opts)) = obj.remove("provider_options") {
-            for (k, v) in opts {
-                obj.entry(k).or_insert(v);
-            }
-        }
-
-        // Typed `reasoning_effort` (per-model config) takes priority over the
-        // variant-string whitelist. `ReasoningEffort::None` means "do not send
-        // the field at all", keeping the provider-side default.
-        if let Some(effort) = request.reasoning_effort {
-            if !matches!(effort, crate::ReasoningEffort::None) {
-                obj.insert(
-                    "reasoning_effort".to_string(),
-                    Value::String(effort.to_string()),
-                );
-            }
-        } else if let Some(effort) =
-            openai_reasoning_effort(&request.model, request.variant.as_deref())
-        {
+    // Typed `reasoning_effort` (per-model config) takes priority over the
+    // variant-string whitelist. `ReasoningEffort::None` means "do not send
+    // the field at all", keeping the provider-side default.
+    if let Some(effort) = request.reasoning_effort {
+        if !matches!(effort, crate::ReasoningEffort::None) {
             obj.insert(
                 "reasoning_effort".to_string(),
                 Value::String(effort.to_string()),
             );
         }
+    } else if let Some(effort) = openai_reasoning_effort(&request.model, request.variant.as_deref())
+    {
+        obj.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.to_string()),
+        );
     }
 
-    Ok(value)
+    Ok(Value::Object(obj))
 }
 
 pub(super) fn openai_reasoning_effort(

@@ -57,7 +57,31 @@ struct McpContent {
     text: String,
 }
 
-pub struct CodeSearchTool;
+pub struct CodeSearchTool {
+    client: Client,
+}
+
+impl CodeSearchTool {
+    pub fn new() -> Self {
+        let client = match Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(%error, "failed to build codesearch HTTP client, using reqwest default client");
+                Client::new()
+            }
+        };
+        Self { client }
+    }
+}
+
+impl Default for CodeSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for CodeSearchTool {
@@ -107,12 +131,7 @@ impl Tool for CodeSearchTool {
         let tokens_num = params.tokens_num.clamp(1000, 50000);
         let query = params.query.clone();
 
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = self.client.clone();
 
         let request = McpRequest {
             jsonrpc: "2.0".to_string(),

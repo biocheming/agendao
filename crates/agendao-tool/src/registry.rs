@@ -870,7 +870,7 @@ pub async fn create_default_registry_with_config(
     #[cfg(feature = "web-tools")]
     register_builtin_tool(
         &registry,
-        agendao_tool_web::CodeSearchTool,
+        agendao_tool_web::CodeSearchTool::new(),
         "web_research",
         Some("code_search"),
         &["web", "code", "search"],

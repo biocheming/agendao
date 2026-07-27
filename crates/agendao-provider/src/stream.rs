@@ -579,16 +579,13 @@ pub async fn decode_sse_stream(
     let delimiter = "\n\n";
     let delimiter_len = delimiter.len();
     let prefix = "data: ";
-    let done_signal = "[DONE]";
 
     let sse_stream = stream::unfold(
         (input, String::new()),
         move |(mut input, mut buf)| async move {
             let is_done = |s: &str| -> bool {
                 let t = s.trim();
-                t == done_signal
-                    || t == format!("data: {}", done_signal)
-                    || t == format!("data:{}", done_signal)
+                t == "[DONE]" || t == "data: [DONE]" || t == "data:[DONE]"
             };
 
             let parse_payload = |raw: &str| -> Option<serde_json::Value> {
@@ -618,11 +615,7 @@ pub async fn decode_sse_stream(
                 if let Some(idx) = buf.find(delimiter) {
                     let frame = buf[..idx].to_string();
                     let rest_start = idx + delimiter_len;
-                    buf = if rest_start <= buf.len() {
-                        buf[rest_start..].to_string()
-                    } else {
-                        String::new()
-                    };
+                    buf.drain(..rest_start);
 
                     if is_done(&frame) {
                         return None;

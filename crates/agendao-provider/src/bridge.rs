@@ -425,34 +425,22 @@ impl ProviderAdapter for DriverBasedAdapter {
         let json_stream = crate::stream::decode_sse_stream(bytes_stream).await?;
 
         // Use driver to parse JSON → StreamingEvent, then bridge → StreamEvent.
-        // NOTE: driver.parse_stream_event() takes &str, so we serialize the Value.
-        // This is acceptable for the generic path; specialized protocol-family
-        // implementations use their own more efficient Value-based parsers.
+        // `decode_sse_stream` already yields parsed `Value`s, so we hand them
+        // to `parse_stream_value`; drivers that override it consume the value
+        // directly without a serialize + re-parse round trip per chunk.
         let driver = self.driver.clone();
         let stream = json_stream.filter_map(move |result| {
             let driver = driver.clone();
             async move {
                 match result {
-                    Ok(value) => {
-                        let data = match serde_json::to_string(&value) {
-                            Ok(data) => data,
-                            Err(error) => {
-                                tracing::error!(%error, value = ?value, "failed to serialize provider stream event");
-                                return Some(Err(ProviderError::StreamError(format!(
-                                    "failed to serialize provider stream event: {}",
-                                    error
-                                ))));
-                            }
-                        };
-                        match driver.parse_stream_event(&data) {
-                            Ok(Some(streaming_event)) => {
-                                let events = streaming_event_to_stream_events(streaming_event);
-                                Some(Ok(events))
-                            }
-                            Ok(None) => None,
-                            Err(e) => Some(Err(ProviderError::StreamError(e.to_string()))),
+                    Ok(value) => match driver.parse_stream_value(&value) {
+                        Ok(Some(streaming_event)) => {
+                            let events = streaming_event_to_stream_events(streaming_event);
+                            Some(Ok(events))
                         }
-                    }
+                        Ok(None) => None,
+                        Err(e) => Some(Err(ProviderError::StreamError(e.to_string()))),
+                    },
                     Err(e) => Some(Err(e)),
                 }
             }

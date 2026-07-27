@@ -271,17 +271,22 @@ impl BrowserSessionTool {
         .await?;
 
         let snapshot = fetch_page(&session, target_url.clone(), &ctx).await?;
+        // Build output/metadata from the snapshot first, then move it into
+        // session state — avoids cloning the full (potentially multi-MB)
+        // snapshot, and keeps the full HTML out of the persisted metadata.
+        let output = render_visit_output(&snapshot);
+        let page_meta = page_metadata(&snapshot);
+        let page_url = snapshot.url.clone();
         {
             let mut state = session.state.write().await;
-            state.history.push(snapshot.url.clone());
-            state.current_page = Some(snapshot.clone());
+            state.history.push(page_url.clone());
+            state.current_page = Some(snapshot);
         }
         let session_view = session.view().await;
-        let output = render_visit_output(&snapshot);
         let mut metadata = session_metadata("visit", &session_view);
-        metadata.insert("page".to_string(), serde_json::to_value(&snapshot).unwrap());
+        metadata.insert("page".to_string(), page_meta);
         Ok(ToolResult {
-            title: format!("Browser Visit: {}", snapshot.url),
+            title: format!("Browser Visit: {}", page_url),
             output,
             metadata,
             truncated: false,
@@ -298,7 +303,7 @@ impl BrowserSessionTool {
         })?;
         let output = render_page(page, &input.format)?;
         let mut metadata = session_metadata("read", &session_view);
-        metadata.insert("page".to_string(), serde_json::to_value(page).unwrap());
+        metadata.insert("page".to_string(), page_metadata(page));
         metadata.insert("format".to_string(), serde_json::json!(input.format));
         Ok(ToolResult {
             title: format!("Browser Read: {}", page.url),
@@ -663,6 +668,23 @@ fn session_metadata(operation: &str, session: &BrowserSessionView) -> Metadata {
         serde_json::to_value(session).unwrap(),
     );
     metadata
+}
+
+/// Summary of a page snapshot for `ToolResult` metadata.
+///
+/// The full HTML body (up to several MB) lives only in session state; the
+/// metadata — which is persisted with the session transcript — carries just
+/// the small identifying fields plus the HTML size for debugging.
+fn page_metadata(page: &BrowserPageSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "url": page.url,
+        "status": page.status,
+        "content_type": page.content_type,
+        "title": page.title,
+        "links": page.links,
+        "fetched_at": page.fetched_at,
+        "html_bytes": page.html.len(),
+    })
 }
 
 fn extract_links(html: &str, current_url: &Url) -> Vec<BrowserLink> {

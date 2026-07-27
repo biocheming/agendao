@@ -579,6 +579,10 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
 
         let response_model = responses_model(client, config, &request.model);
         let options = responses_generate_options(config, &request);
+        // Share the request between the primary path and the fallback via Arc
+        // so the happy path pays no deep clone; the fallback path unwraps the
+        // Arc (cloning only in the unlikely case a reference is still held).
+        let request = std::sync::Arc::new(request);
         let request_for_primary = request.clone();
         let model_for_log = request.model.clone();
         let client_for_fallback = client.clone();
@@ -604,6 +608,8 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
                     error = %err,
                     "Responses generate failed, falling back to chat-completions"
                 );
+                let request = std::sync::Arc::try_unwrap(request)
+                    .unwrap_or_else(|request| (*request).clone());
                 chat_completions_chat(&client_for_fallback, &config_for_fallback, request).await
             },
         )
