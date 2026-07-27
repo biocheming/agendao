@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../i18n/I18nProvider";
 import {
   runtimeSurfaceDebugDetail,
@@ -8,7 +8,7 @@ import {
 } from "../../lib/display";
 import type { RuntimeSurfaceOutputBlock } from "../../lib/history";
 import { cn } from "../../lib/utils";
-import type { SessionRuntimeSurface } from "../../store/types";
+import { useRuntimeSurface } from "../../hooks/useRuntimeSurface";
 
 export type RuntimeSurfaceTab = "queue" | "session" | "inspect";
 
@@ -73,30 +73,97 @@ function RuntimeSurfaceList({
   );
 }
 
+// Self-contained: subscribes the (streaming-high-frequency) runtime surface
+// store slice here instead of App, so per-SSE-event appends only re-render
+// this leaf, not the whole workbench tree.
 export function RuntimeSurfaceSection({
-  activeRuntimeSurfaceTab,
-  currentRuntimeSurface,
-  hasCurrentRuntimeSurface,
-  hasRuntimeSurfaceContent,
-  runtimeSurfaceExpanded,
-  runtimeSurfaceSummary,
-  runtimeSurfaceTabs,
   selectedSessionId,
-  setRuntimeSurfaceExpanded,
-  setRuntimeSurfaceTab,
 }: {
-  activeRuntimeSurfaceTab: RuntimeSurfaceTabView;
-  currentRuntimeSurface: SessionRuntimeSurface;
-  hasCurrentRuntimeSurface: boolean;
-  hasRuntimeSurfaceContent: boolean;
-  runtimeSurfaceExpanded: boolean;
-  runtimeSurfaceSummary: string;
-  runtimeSurfaceTabs: RuntimeSurfaceTabView[];
   selectedSessionId: string | null;
-  setRuntimeSurfaceExpanded: Dispatch<SetStateAction<boolean>>;
-  setRuntimeSurfaceTab: Dispatch<SetStateAction<RuntimeSurfaceTab>>;
 }) {
   const { t } = useI18n();
+  const { currentRuntimeSurface, hasCurrentRuntimeSurface } = useRuntimeSurface();
+  const [runtimeSurfaceExpanded, setRuntimeSurfaceExpanded] = useState(false);
+  const [runtimeSurfaceTab, setRuntimeSurfaceTab] = useState<RuntimeSurfaceTab>("queue");
+
+  const runtimeSurfaceTabs = useMemo<RuntimeSurfaceTabView[]>(
+    () => [
+      {
+        key: "queue" as const,
+        label: t("app.runtimeSurfaceQueue"),
+        count: currentRuntimeSurface.queueItems.length,
+        blocks: currentRuntimeSurface.queueItems,
+      },
+      {
+        key: "session" as const,
+        label: t("app.runtimeSurfaceSessionEvents"),
+        count: currentRuntimeSurface.sessionEvents.length,
+        blocks: currentRuntimeSurface.sessionEvents,
+      },
+      {
+        key: "inspect" as const,
+        label: t("app.runtimeSurfaceInspect"),
+        count: currentRuntimeSurface.inspectItems.length,
+        blocks: currentRuntimeSurface.inspectItems,
+      },
+    ],
+    [
+      currentRuntimeSurface.inspectItems,
+      currentRuntimeSurface.queueItems,
+      currentRuntimeSurface.sessionEvents,
+      t,
+    ],
+  );
+  const hasRuntimeSurfaceContent = Boolean(currentRuntimeSurface.banner)
+    || runtimeSurfaceTabs.some((tab) => tab.count > 0);
+  const activeRuntimeSurfaceTab = useMemo(
+    () =>
+      runtimeSurfaceTabs.find((tab) => tab.key === runtimeSurfaceTab)
+      ?? runtimeSurfaceTabs.find((tab) => tab.count > 0)
+      ?? runtimeSurfaceTabs[0],
+    [runtimeSurfaceTab, runtimeSurfaceTabs],
+  );
+  const runtimeSurfaceSummary = useMemo(() => {
+    if (currentRuntimeSurface.banner?.trim()) {
+      return currentRuntimeSurface.banner.trim().split("\n")[0] ?? currentRuntimeSurface.banner.trim();
+    }
+    const firstQueue = currentRuntimeSurface.queueItems[0];
+    if (firstQueue) {
+      return t("app.runtimeSurfaceQueueSummary", {
+        count: currentRuntimeSurface.queueItems.length,
+        label: runtimeSurfaceLabel(firstQueue),
+      });
+    }
+    const firstSessionEvent = currentRuntimeSurface.sessionEvents[0];
+    if (firstSessionEvent) {
+      return t("app.runtimeSurfaceSessionSummary", {
+        count: currentRuntimeSurface.sessionEvents.length,
+        label: runtimeSurfaceLabel(firstSessionEvent),
+      });
+    }
+    const firstInspect = currentRuntimeSurface.inspectItems[0];
+    if (firstInspect) {
+      return t("app.runtimeSurfaceInspectSummary", {
+        count: currentRuntimeSurface.inspectItems.length,
+        label: runtimeSurfaceLabel(firstInspect),
+      });
+    }
+    return t("app.runtimeSurfaceIdle");
+  }, [currentRuntimeSurface.banner, currentRuntimeSurface.inspectItems, currentRuntimeSurface.queueItems, currentRuntimeSurface.sessionEvents, t]);
+
+  useEffect(() => {
+    if (!hasRuntimeSurfaceContent) {
+      setRuntimeSurfaceExpanded(false);
+      return;
+    }
+    const preferredTab = runtimeSurfaceTabs.find((tab) => tab.count > 0)?.key ?? "queue";
+    setRuntimeSurfaceTab((current) => {
+      if (runtimeSurfaceTabs.some((tab) => tab.key === current && tab.count > 0)) {
+        return current;
+      }
+      return preferredTab;
+    });
+  }, [hasRuntimeSurfaceContent, runtimeSurfaceTabs]);
 
   if (!selectedSessionId || !hasCurrentRuntimeSurface || !hasRuntimeSurfaceContent) {
     return null;

@@ -19,7 +19,7 @@ import {
   SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { MessageResponse } from "../ai-elements/message";
 import {
   feedAttachedSessionId,
@@ -64,8 +64,11 @@ interface MessageCardProps {
   message: FeedMessage;
   highlighted?: boolean;
   selected?: boolean;
-  activeStageId?: string | null;
-  activeToolCallId?: string | null;
+  // Per-card booleans pre-computed by the parent so a change of the global
+  // active stage/tool-call only re-renders the cards whose state flips
+  // (keeps memo(MessageCard) effective during streaming).
+  activeStage?: boolean;
+  activeToolCall?: boolean;
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
   onEditAndResend?: (message: FeedMessage) => Promise<void> | void;
   onToggleSelected?: (message: FeedMessage) => void;
@@ -75,7 +78,7 @@ interface MessageCardProps {
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
   onAbortStage?: (stageId: string) => void;
-  stageAbortingId?: string | null;
+  stageAborting?: boolean;
 }
 
 function formatClock(ts?: number) {
@@ -405,27 +408,44 @@ function InfoBlock({ message }: { message: MultimodalInfoOutputBlock }) {
 }
 
 function ToolBlock({ message, active }: { message: ToolOutputBlock; active: boolean }) {
-  // Phase W2/W5: prefer live_identity for live tool cards, then fall back to
-  // the persisted history marker injected by buildFeedFromHistory() so history
-  // rebuild preserves TOOL RUNNING / TOOL RESULT semantics.
-  const metadataPartKind =
-    typeof message.metadata?.agendao_web_history_part_kind === "string"
-      ? message.metadata.agendao_web_history_part_kind
-      : null;
-  const partKind = message.live_identity?.part_kind ?? metadataPartKind;
-  const isRunning = partKind === "tool_call";
-  const isResult = partKind === "tool_result";
-  const label = isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL";
-  const iconColor = isRunning ? "text-(--ds-fire)" : isResult ? "text-(--ds-ok)" : "";
+  // P2-3: tool presentation is centralized in lib/toolPresentation.ts.
+  // Memoized per message object identity — during streaming only the updated
+  // card re-runs these (the memoized MessageCard skips unchanged messages).
+  const {
+    label,
+    iconColor,
+    summary,
+    toolTitle,
+    fields,
+    previewText,
+    previewKind,
+    previewTruncated,
+    compatDetail,
+  } = useMemo(() => {
+    // Phase W2/W5: prefer live_identity for live tool cards, then fall back to
+    // the persisted history marker injected by buildFeedFromHistory() so history
+    // rebuild preserves TOOL RUNNING / TOOL RESULT semantics.
+    const metadataPartKind =
+      typeof message.metadata?.agendao_web_history_part_kind === "string"
+        ? message.metadata.agendao_web_history_part_kind
+        : null;
+    const partKind = message.live_identity?.part_kind ?? metadataPartKind;
+    const isRunning = partKind === "tool_call";
+    const isResult = partKind === "tool_result";
+    const { previewText, previewKind, previewTruncated } = toolDisplayPreview(message);
+    return {
+      label: isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL",
+      iconColor: isRunning ? "text-(--ds-fire)" : isResult ? "text-(--ds-ok)" : "",
+      summary: toolDisplaySummary(message),
+      toolTitle: toolActivityLabel(toolDisplayRawLabelKey(message)),
+      fields: toolDisplayFields(message),
+      previewText,
+      previewKind,
+      previewTruncated,
+      compatDetail: toolCompatDetail(message),
+    };
+  }, [message]);
 
-  // P2-3: tool presentation is centralized in lib/toolPresentation.ts
-  const summary = toolDisplaySummary(message);
-  const rawLabelKey = toolDisplayRawLabelKey(message);
-  const toolTitle = toolActivityLabel(rawLabelKey);
-  const fields = toolDisplayFields(message);
-  const { previewText, previewKind, previewTruncated } = toolDisplayPreview(message);
-
-  const compatDetail = toolCompatDetail(message);
   const hasStructuredObject =
     message.structured !== null &&
     message.structured !== undefined &&
@@ -492,22 +512,25 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
   );
 }
 
-export function MessageCard({
+export const MessageCard = memo(function MessageCard({
   message,
   highlighted = false,
   selected = false,
-  activeStageId = null,
-  activeToolCallId = null,
+  activeStage = false,
+  activeToolCall = false,
   onCopyMessageLink,
   onEditAndResend,
   onToggleSelected,
   onNavigateStage,
   onNavigateAttachedSession,
   onAbortStage,
-  stageAbortingId = null,
+  stageAborting = false,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
-  const displayText = sanitizeAssistantDisplayText(message.text ?? "", message.kind, message.role);
+  const displayText = useMemo(
+    () => sanitizeAssistantDisplayText(message.text ?? "", message.kind, message.role),
+    [message.text, message.kind, message.role],
+  );
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(displayText);
@@ -519,11 +542,11 @@ export function MessageCard({
     return (
       <SchedulerStageCard
         message={message}
-        highlighted={highlighted || Boolean(activeStageId && message.stage_id === activeStageId)}
+        highlighted={highlighted || activeStage}
         onNavigateStage={onNavigateStage}
         onNavigateAttachedSession={onNavigateAttachedSession}
         onAbortStage={onAbortStage}
-        stageAborting={Boolean(message.stage_id && stageAbortingId === message.stage_id)}
+        stageAborting={stageAborting}
       />
     );
   }
@@ -541,7 +564,7 @@ export function MessageCard({
     return (
       <ToolBlock
         message={message}
-        active={Boolean(activeToolCallId && message.tool_call_id === activeToolCallId)}
+        active={activeToolCall}
       />
     );
   }
@@ -553,6 +576,8 @@ export function MessageCard({
   const role = message.role ?? "assistant";
   const isUser = role === "user";
   const roleLabel = isUser ? "USER" : "ASSIST";
+  // These only re-run when the memoized card actually re-renders (message or
+  // display-relevant props changed), so plain derivation is enough here.
   const clock = formatClock(message.ts);
   const summary = readableSummary(message);
   const stageId = feedStageId(message);
@@ -566,9 +591,7 @@ export function MessageCard({
     cacheDiagnosticLabel ? `cache ${cacheDiagnosticLabel}` : null,
     toolCallId ? `tool ${toolCallId}` : null,
   ]);
-  const active =
-    Boolean(activeStageId && stageId === activeStageId) ||
-    Boolean(activeToolCallId && toolCallId === activeToolCallId);
+  const active = activeStage || activeToolCall;
   const canEditAndResend = Boolean(isUser && onEditAndResend && message.anchorId && displayText.trim());
 
   return (
@@ -744,4 +767,4 @@ export function MessageCard({
       ) : null}
     </article>
   );
-}
+});

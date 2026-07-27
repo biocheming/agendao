@@ -75,8 +75,9 @@ export function usePromptSubmission({
   );
 
   // Slash command path: POST /session/{id}/command. The server persists the
-  // "/name args" user message itself; the streaming toggle re-triggers history
-  // reload so the persisted messages (and the "Command queued" ack) show up.
+  // "/name args" user message itself; the streaming reset (true→false edge)
+  // re-triggers a history reconcile so the persisted messages (and the
+  // "Command queued" ack) show up.
   const submitSlashCommand = useCallback(
     async (submission: SlashCommandSubmission) => {
       let sessionId = selectedSessionId;

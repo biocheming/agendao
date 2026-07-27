@@ -172,6 +172,12 @@ export function webSocketUrl(path: string): string {
   return url.toString();
 }
 
+/// 默认请求超时：防止挂起的连接把 UI 操作（删除会话、上传、历史加载）卡死。
+/// 走 `api()` 的都是短请求（流式输出走 SSE 裸 fetch，不经此路径），30s 对
+/// 本地服务的大历史/上传也足够宽裕；调用方自带 signal 时用 AbortSignal.any
+/// 合并，不会误杀 caller 的取消语义。
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export async function api(path: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type") && options.body) {
@@ -181,7 +187,9 @@ export async function api(path: string, options: RequestInit = {}): Promise<Resp
   if (serverPassword && !headers.has("Authorization") && !headers.has("X-AGENDAO-Server-Password")) {
     headers.set("Authorization", `Bearer ${serverPassword}`);
   }
-  const response = await fetch(apiUrl(path), { ...options, headers });
+  const timeoutSignal = AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+  const response = await fetch(apiUrl(path), { ...options, headers, signal });
   if (!response.ok) {
     throw new Error(await response.text());
   }

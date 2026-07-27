@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageCard } from "./MessageCard";
 import { useI18n } from "../../i18n/I18nProvider";
 import {
@@ -8,10 +8,12 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "../ai-elements/conversation";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import { Button } from "../ui/button";
 import { Shimmer } from "../ai-elements/shimmer";
 import { BrainCircuitIcon, ChevronUpIcon, Layers2, LoaderCircleIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { FeedMessage } from "../../lib/history";
+import { feedStageId, feedToolCallId } from "../../lib/history";
 import type { SessionTelemetrySnapshotRecord } from "../../lib/sessionActivity";
 import { withSyntheticCompactionMessage } from "../../lib/contextCompaction";
 import { useAgendaoStore } from "../../store";
@@ -40,6 +42,22 @@ interface ConversationFeedPanelProps {
   ) => void;
   onAbortStage?: (stageId: string) => void;
   stageAbortingId?: string | null;
+}
+
+// Bridges the StickToBottom scroll container into feedRef so conversation
+// jump and the load-earlier scroll anchor can measure/scroll the real
+// scroller. Scroll-follow itself is owned by StickToBottom — no forced
+// scrollTop writes here (they fight the library and yank users back to the
+// bottom while reading history).
+function FeedScrollContainerBridge({ feedRef }: { feedRef: RefObject<HTMLDivElement | null> }) {
+  const { scrollRef } = useStickToBottomContext();
+  useEffect(() => {
+    feedRef.current = (scrollRef.current as HTMLDivElement | null) ?? null;
+    return () => {
+      feedRef.current = null;
+    };
+  }, [feedRef, scrollRef]);
+  return null;
 }
 
 function FeedLoadingState() {
@@ -185,12 +203,6 @@ export function ConversationFeedPanel({
     feedRef.current.scrollTop += feedRef.current.scrollHeight - previousHeight;
   }, [feedRef, visibleCount]);
 
-  // Sync feedRef to the Conversation scroll container
-  useEffect(() => {
-    if (!feedRef.current) return;
-    feedRef.current.scrollTop = feedRef.current.scrollHeight;
-  }, [feedRef, messages]);
-
   const timelineMessages = withSyntheticCompactionMessage(messages, {
     sessionId,
     runStatus: telemetry?.runtime?.run_status,
@@ -203,14 +215,15 @@ export function ConversationFeedPanel({
   const visibleMessages =
     hiddenCount > 0 ? timelineMessages.slice(-safeVisibleCount) : timelineMessages;
 
-  const handleLoadEarlier = () => {
+  const handleLoadEarlier = useCallback(() => {
     if (hiddenCount === 0) return;
     revealAnchorHeightRef.current = feedRef.current?.scrollHeight ?? null;
     setVisibleCount((current) => Math.min(timelineMessages.length, current + LOAD_MORE_MESSAGES_STEP));
-  };
+  }, [feedRef, hiddenCount, timelineMessages.length]);
 
   return (
     <Conversation className="h-full min-w-0 overflow-x-hidden border-0 bg-transparent">
+      <FeedScrollContainerBridge feedRef={feedRef} />
       <ConversationContent className="mx-auto w-full max-w-[88rem] px-4 pb-6 pt-3 md:px-5 md:pb-7 md:pt-3.5">
         {historyLoading && messages.length === 0 ? <FeedLoadingState /> : null}
         {!historyLoading && messages.length === 0 ? (
@@ -314,23 +327,30 @@ export function ConversationFeedPanel({
               historyLoading={historyLoading}
               onLoadEarlier={handleLoadEarlier}
             />
-            {visibleMessages.map((message) => (
-              <MessageCard
-                key={message.feedId}
-                message={message}
-                highlighted={highlightedFeedId === message.feedId || Boolean(message.anchorId && highlightedMessageIds?.has(message.anchorId))}
-                selected={Boolean(message.anchorId && selectedMessageIds?.has(message.anchorId))}
-                activeStageId={activeStageId}
-                activeToolCallId={activeToolCallId}
-                onCopyMessageLink={onCopyMessageLink}
-                onEditAndResend={onEditAndResendMessage}
-                onToggleSelected={onToggleMessageSelected}
-                onNavigateStage={onNavigateStage}
-                onNavigateAttachedSession={onNavigateAttachedSession}
-                onAbortStage={onAbortStage}
-                stageAbortingId={stageAbortingId}
-              />
-            ))}
+            {visibleMessages.map((message) => {
+              // Pre-compute per-card booleans so a change of the global
+              // active stage/tool-call/aborting id only re-renders the cards
+              // whose state actually flips (memo(MessageCard) shallow-compare).
+              const stageId = feedStageId(message);
+              const toolCallId = feedToolCallId(message);
+              return (
+                <MessageCard
+                  key={message.feedId}
+                  message={message}
+                  highlighted={highlightedFeedId === message.feedId || Boolean(message.anchorId && highlightedMessageIds?.has(message.anchorId))}
+                  selected={Boolean(message.anchorId && selectedMessageIds?.has(message.anchorId))}
+                  activeStage={Boolean(activeStageId && stageId === activeStageId)}
+                  activeToolCall={Boolean(activeToolCallId && toolCallId === activeToolCallId)}
+                  onCopyMessageLink={onCopyMessageLink}
+                  onEditAndResend={onEditAndResendMessage}
+                  onToggleSelected={onToggleMessageSelected}
+                  onNavigateStage={onNavigateStage}
+                  onNavigateAttachedSession={onNavigateAttachedSession}
+                  onAbortStage={onAbortStage}
+                  stageAborting={Boolean(stageId && stageAbortingId === stageId)}
+                />
+              );
+            })}
             {streaming ? (
               <div className="roc-panel flex items-center gap-3 px-3.5 py-2.5">
                 <div className="flex size-9 items-center justify-center rounded-2xl border border-border/45 bg-background/78">

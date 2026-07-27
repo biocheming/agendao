@@ -44,10 +44,12 @@ export function useSessionRegistry({
     if (pendingSessionRefreshTimerRef.current !== null) {
       return;
     }
+    // 500ms coalescing window (was 120ms): session.updated bursts during a
+    // turn collapse into one full list refetch instead of several.
     pendingSessionRefreshTimerRef.current = window.setTimeout(() => {
       pendingSessionRefreshTimerRef.current = null;
       void refreshSessionsFromServer();
-    }, 120);
+    }, 500);
   }, [refreshSessionsFromServer]);
 
   useEffect(() => clearPendingSessionRefresh, [clearPendingSessionRefresh]);

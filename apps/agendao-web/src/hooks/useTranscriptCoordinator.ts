@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import { buildWebSessionUrl, readWebSessionRoute } from "../lib/webSessionUrl";
 import type { FeedMessage, MessageRecord, OutputBlock } from "../lib/history";
 import {
@@ -53,10 +53,17 @@ export function useTranscriptCoordinator({
   const setQuestion = useAgendaoStore((s) => s.setQuestion);
   const setQuestionAnswers = useAgendaoStore((s) => s.setQuestionAnswers);
   const setBanner = useAgendaoStore((s) => s.setBanner);
-  const sessionBreadcrumbs = useAgendaoStore((s) => s.sessionBreadcrumbs);
-  const currentBreadcrumbProvenanceFor = useAgendaoStore((s) => s.currentBreadcrumbProvenanceFor);
   const streaming = useAgendaoStore((s) => s.streaming);
   const showThinking = useAgendaoStore((s) => s.showThinking);
+
+  // H6a: `streaming` only selects the merge strategy inside
+  // rebuildFeedFromHistory (live blocks are pruned against history once
+  // streaming ends). Read it through a ref so the history-load effect below
+  // is not re-triggered by every streaming toggle.
+  const streamingRef = useRef(streaming);
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
 
   const {
     clearPendingOutputBlockFlush,
@@ -72,7 +79,7 @@ export function useTranscriptCoordinator({
     setMessages,
   } = useTranscriptFeedState({
     maxPendingOutputBlocks,
-    sessionIds: sessions.map((session) => session.id),
+    sessionIds: useMemo(() => sessions.map((session) => session.id), [sessions]),
     showThinking,
   });
 
@@ -185,10 +192,12 @@ export function useTranscriptCoordinator({
     setSelectedMessageIds(new Set());
   }, [clearTranscriptFeed, selectedSessionId, setSelectedMessageIds]);
 
+  // Debug handle for browser smoke scripts. Registered ONCE with lazy
+  // getters: the per-message map/slice/serialize only runs when a tool
+  // actually reads a field — previously this effect depended on `messages`
+  // and re-serialized the whole transcript on every streaming rAF flush.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const selectedLiveBlocks = selectedSessionId ? (liveBlocksRef.current[selectedSessionId] ?? []) : [];
-    const pendingVisible = selectedSessionId ? (pendingOutputBlocksRef.current[selectedSessionId] ?? []) : [];
     (
       window as Window & {
         __agendaoWebDebug?: {
@@ -220,41 +229,61 @@ export function useTranscriptCoordinator({
         };
       }
     ).__agendaoWebDebug = {
-      selectedSessionId,
-      showThinking,
-      breadcrumbs: sessionBreadcrumbs.map((crumb) => ({
-        sessionId: crumb.sessionId,
-        title: crumb.title,
-        viaLabel: crumb.viaLabel ?? null,
-        viaStageId: crumb.viaStageId ?? null,
-        viaToolCallId: crumb.viaToolCallId ?? null,
-      })),
-      breadcrumbProvenance: currentBreadcrumbProvenanceFor(selectedSessionId),
-      messages: messages.map((message) => ({
-        kind: message.kind,
-        id: message.id,
-        tool_call_id: feedToolCallIdFromMessage(message),
-        text: message.text?.slice(0, 160),
-      })),
-      liveBlocks: selectedLiveBlocks.map((block) => ({
-        kind: block.kind,
-        id: block.id,
-        tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
-        text: block.text?.slice(0, 160),
-        detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
-        part_key: block.live_identity?.part_key,
-        part_kind: block.live_identity?.part_kind,
-      })),
-      pendingVisible: pendingVisible.map((block) => ({
-        kind: block.kind,
-        id: block.id,
-        tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
-        text: block.text?.slice(0, 160),
-        detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
-        part_key: block.live_identity?.part_key,
-        part_kind: block.live_identity?.part_kind,
-      })),
+      get selectedSessionId() {
+        return useAgendaoStore.getState().selectedSessionId;
+      },
+      get showThinking() {
+        return useAgendaoStore.getState().showThinking;
+      },
+      get breadcrumbs() {
+        return useAgendaoStore.getState().sessionBreadcrumbs.map((crumb) => ({
+          sessionId: crumb.sessionId,
+          title: crumb.title,
+          viaLabel: crumb.viaLabel ?? null,
+          viaStageId: crumb.viaStageId ?? null,
+          viaToolCallId: crumb.viaToolCallId ?? null,
+        }));
+      },
+      get breadcrumbProvenance() {
+        const store = useAgendaoStore.getState();
+        return store.currentBreadcrumbProvenanceFor(store.selectedSessionId);
+      },
+      get messages() {
+        return useAgendaoStore.getState().messages.map((message) => ({
+          kind: message.kind,
+          id: message.id,
+          tool_call_id: feedToolCallIdFromMessage(message),
+          text: message.text?.slice(0, 160),
+        }));
+      },
+      get liveBlocks() {
+        const sessionId = useAgendaoStore.getState().selectedSessionId;
+        const selectedLiveBlocks = sessionId ? (liveBlocksRef.current[sessionId] ?? []) : [];
+        return selectedLiveBlocks.map((block) => ({
+          kind: block.kind,
+          id: block.id,
+          tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
+          text: block.text?.slice(0, 160),
+          detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
+          part_key: block.live_identity?.part_key,
+          part_kind: block.live_identity?.part_kind,
+        }));
+      },
+      get pendingVisible() {
+        const sessionId = useAgendaoStore.getState().selectedSessionId;
+        const pendingVisible = sessionId ? (pendingOutputBlocksRef.current[sessionId] ?? []) : [];
+        return pendingVisible.map((block) => ({
+          kind: block.kind,
+          id: block.id,
+          tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
+          text: block.text?.slice(0, 160),
+          detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
+          part_key: block.live_identity?.part_key,
+          part_kind: block.live_identity?.part_kind,
+        }));
+      },
       injectRuntimeSurface: ({ banner = null, queueItems = [], sessionEvents = [], inspectItems = [] }) => {
+        const selectedSessionId = useAgendaoStore.getState().selectedSessionId;
         if (!selectedSessionId) return false;
         const store = useAgendaoStore.getState();
         store.setRuntimeSurfaceBanner(selectedSessionId, banner);
@@ -285,15 +314,19 @@ export function useTranscriptCoordinator({
         return true;
       },
     };
-  }, [
-    currentBreadcrumbProvenanceFor,
-    liveBlocksRef,
-    messages,
-    pendingOutputBlocksRef,
-    selectedSessionId,
-    sessionBreadcrumbs,
-    showThinking,
-  ]);
+  }, [liveBlocksRef, pendingOutputBlocksRef]);
+
+  const fetchSessionHistory = useCallback(
+    async (sessionId: string): Promise<MessageRecord[] | null> => {
+      try {
+        return await apiJson<MessageRecord[]>(`/session/${sessionId}/message`);
+      } catch (error) {
+        setBanner(`Failed to load messages: ${formatError(error)}`);
+        return null;
+      }
+    },
+    [apiJson, formatError, setBanner],
+  );
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -310,17 +343,13 @@ export function useTranscriptCoordinator({
     const loadHistory = async () => {
       setHistoryLoading(true);
       try {
-        const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
-        if (cancelled) return;
+        const history = await fetchSessionHistory(selectedSessionId);
+        if (cancelled || !history) return;
         rebuildFeedFromHistory({
           history,
           sessionId: selectedSessionId,
-          streaming,
+          streaming: streamingRef.current,
         });
-      } catch (error) {
-        if (!cancelled) {
-          setBanner(`Failed to load messages: ${formatError(error)}`);
-        }
       } finally {
         if (!cancelled) {
           setHistoryLoading(false);
@@ -333,14 +362,40 @@ export function useTranscriptCoordinator({
       cancelled = true;
     };
   }, [
-    apiJson,
-    formatError,
+    fetchSessionHistory,
     rebuildFeedFromHistory,
     selectedSessionId,
     setBanner,
     setHistoryLoading,
-    streaming,
   ]);
+
+  // H6a: final-consistency reconcile. The streaming true→false edge used to
+  // re-run the full history-load effect above (it had `streaming` in its
+  // deps); slash commands rely on that reload to surface the persisted
+  // "/name args" message and the command ack (see usePromptSubmission).
+  // Keep a single reload on the falling edge only, so a turn costs one
+  // history fetch instead of two.
+  const wasStreamingRef = useRef(streaming);
+  useEffect(() => {
+    const wasStreaming = wasStreamingRef.current;
+    wasStreamingRef.current = streaming;
+    if (!wasStreaming || streaming) return;
+    if (!selectedSessionId || isOptimisticSessionId(selectedSessionId)) return;
+    const sessionId = selectedSessionId;
+    let cancelled = false;
+    void (async () => {
+      const history = await fetchSessionHistory(sessionId);
+      if (cancelled || !history) return;
+      rebuildFeedFromHistory({
+        history,
+        sessionId,
+        streaming: streamingRef.current,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchSessionHistory, rebuildFeedFromHistory, selectedSessionId, streaming]);
 
   useServerEventStream({
     applyLiveExecutionOutputBlock,

@@ -97,22 +97,28 @@ export function useSchedulerNavigation({
     [sessionForId],
   );
 
+  // Depend on the stable members, not the whole executionActivity return
+  // object (recreated every App render) — otherwise navigateToStage changes
+  // identity on every render and defeats memo(MessageCard).
+  const executionNodes = executionActivity.executionNodes;
+  const setSelectedExecutionId = executionActivity.setSelectedExecutionId;
+  const patchActivityFilters = executionActivity.patchActivityFilters;
   const focusStageInActivity = useCallback(
     (stageId: string, preferredExecutionId?: string | null) => {
       if (!stageId.trim()) return;
       const matchingNode =
         (preferredExecutionId
-          ? executionActivity.executionNodes.find((node) => node.id === preferredExecutionId)
+          ? executionNodes.find((node) => node.id === preferredExecutionId)
           : null) ||
-        executionActivity.executionNodes.find((node) => node.stage_id === stageId) ||
-        executionActivity.executionNodes.find((node) => node.id === stageId) ||
+        executionNodes.find((node) => node.stage_id === stageId) ||
+        executionNodes.find((node) => node.id === stageId) ||
         null;
       if (matchingNode) {
-        executionActivity.setSelectedExecutionId(matchingNode.id);
+        setSelectedExecutionId(matchingNode.id);
       }
-      executionActivity.patchActivityFilters({ stageId, executionId: "" });
+      patchActivityFilters({ stageId, executionId: "" });
     },
-    [executionActivity],
+    [executionNodes, patchActivityFilters, setSelectedExecutionId],
   );
 
   const currentTrail = useCallback(() => {

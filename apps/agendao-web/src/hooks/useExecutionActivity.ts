@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OutputBlock, ToolOutputBlock } from "../lib/history";
+import { useAgendaoStore } from "../store";
 import {
   canonicalLiveExecutionStatus,
   type LiveExecutionEntry,
@@ -38,8 +39,6 @@ interface UseExecutionActivityOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   onError: (message: string) => void;
   onInfo: (message: string) => void;
-  statusLine?: string;
-  latestRuntimeError?: string | null;
   awaitingUser?: boolean;
   pendingPermission?: boolean;
 }
@@ -197,11 +196,13 @@ export function useExecutionActivity({
   apiJson,
   onError,
   onInfo,
-  statusLine = "ready",
-  latestRuntimeError = null,
   awaitingUser = false,
   pendingPermission = false,
 }: UseExecutionActivityOptions) {
+  // Streaming-high-frequency store fields subscribed here (leaf hook) instead
+  // of App, so per-SSE-event status changes don't re-render the whole tree.
+  const statusLine = useAgendaoStore((s) => s.statusLine);
+  const latestRuntimeError = useAgendaoStore((s) => s.latestRuntimeError);
   const [telemetry, setTelemetry] = useState<SessionTelemetrySnapshotRecord | null>(null);
   const [insights, setInsights] = useState<SessionInsightsRecord | null>(null);
   const [activityEvents, setActivityEvents] = useState<ActivityEventRecord[]>([]);

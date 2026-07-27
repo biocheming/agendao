@@ -5,7 +5,6 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { ComposerSection } from "./components/composer/ComposerSection";
 import { ConversationFeedPanel } from "./components/chat/ConversationFeedPanel";
@@ -15,7 +14,6 @@ import { InteractionOverlays } from "./components/overlays/InteractionOverlays";
 import { BannerNotice } from "./components/chat/BannerNotice";
 import {
   RuntimeSurfaceSection,
-  type RuntimeSurfaceTab,
 } from "./components/execution/RuntimeSurfaceSection";
 import { loadWebPlugins } from "./web-plugin-loader";
 import { api, apiJson } from "./lib/api";
@@ -27,7 +25,6 @@ import {
   pushRecentModel,
   readRuntimeBudgetNumber,
   resolveActiveModelRef,
-  runtimeSurfaceLabel,
   workspaceRecentModelScope,
   type PromptPart,
 } from "./lib/display";
@@ -36,7 +33,6 @@ import { useExecutionActivity } from "./hooks/useExecutionActivity";
 import { useInteractionReplies } from "./hooks/useInteractionReplies";
 import { useMultimodalComposer } from "./hooks/useMultimodalComposer";
 import { usePromptSubmission } from "./hooks/usePromptSubmission";
-import { useRuntimeSurface } from "./hooks/useRuntimeSurface";
 import { useSchedulerNavigation } from "./hooks/useSchedulerNavigation";
 import { useSessionCoordinator } from "./hooks/useSessionCoordinator";
 import { useTerminalSessions } from "./hooks/useTerminalSessions";
@@ -127,8 +123,6 @@ export default function App() {
   const setShowThinking = useAgendaoStore((s) => s.setShowThinking);
   const route = useAgendaoStore((s) => s.route);
   const setRoute = useAgendaoStore((s) => s.setRoute);
-  const statusLine = useAgendaoStore((s) => s.statusLine);
-  const latestRuntimeError = useAgendaoStore((s) => s.latestRuntimeError);
   const setBanner = useAgendaoStore((s) => s.setBanner);
   const deletingSessions = useAgendaoStore((s) => s.deletingSessions);
   const question = useAgendaoStore((s) => s.question);
@@ -184,13 +178,6 @@ export default function App() {
       readRuntimeBudgetNumber(workspaceContext?.config, "web_max_pending_output_blocks", 256),
     [workspaceContext?.config],
   );
-
-  const {
-    currentRuntimeSurface,
-    hasCurrentRuntimeSurface,
-  } = useRuntimeSurface();
-  const [runtimeSurfaceExpanded, setRuntimeSurfaceExpanded] = useState(false);
-  const [runtimeSurfaceTab, setRuntimeSurfaceTab] = useState<RuntimeSurfaceTab>("queue");
 
   // P2-3: viewport budget for rendered messages. When exceeded, only the most
   // recent messages are rendered. Full transcript is preserved in state.
@@ -312,90 +299,10 @@ export default function App() {
     apiJson,
     onError: setBanner,
     onInfo: setBanner,
-    statusLine,
-    latestRuntimeError,
     awaitingUser: Boolean(question),
     pendingPermission: Boolean(permission),
   });
   const sessionUsage = executionActivity.sessionUsage ?? currentSession?.telemetry?.usage ?? null;
-  const runtimeSurfaceTabs = useMemo(
-    () => [
-      {
-        key: "queue" as const,
-        label: t("app.runtimeSurfaceQueue"),
-        count: currentRuntimeSurface.queueItems.length,
-        blocks: currentRuntimeSurface.queueItems,
-      },
-      {
-        key: "session" as const,
-        label: t("app.runtimeSurfaceSessionEvents"),
-        count: currentRuntimeSurface.sessionEvents.length,
-        blocks: currentRuntimeSurface.sessionEvents,
-      },
-      {
-        key: "inspect" as const,
-        label: t("app.runtimeSurfaceInspect"),
-        count: currentRuntimeSurface.inspectItems.length,
-        blocks: currentRuntimeSurface.inspectItems,
-      },
-    ],
-    [
-      currentRuntimeSurface.inspectItems,
-      currentRuntimeSurface.queueItems,
-      currentRuntimeSurface.sessionEvents,
-      t,
-    ],
-  );
-  const hasRuntimeSurfaceContent = Boolean(currentRuntimeSurface.banner)
-    || runtimeSurfaceTabs.some((tab) => tab.count > 0);
-  const activeRuntimeSurfaceTab = useMemo(
-    () =>
-      runtimeSurfaceTabs.find((tab) => tab.key === runtimeSurfaceTab)
-      ?? runtimeSurfaceTabs.find((tab) => tab.count > 0)
-      ?? runtimeSurfaceTabs[0],
-    [runtimeSurfaceTab, runtimeSurfaceTabs],
-  );
-  const runtimeSurfaceSummary = useMemo(() => {
-    if (currentRuntimeSurface.banner?.trim()) {
-      return currentRuntimeSurface.banner.trim().split("\n")[0] ?? currentRuntimeSurface.banner.trim();
-    }
-    const firstQueue = currentRuntimeSurface.queueItems[0];
-    if (firstQueue) {
-      return t("app.runtimeSurfaceQueueSummary", {
-        count: currentRuntimeSurface.queueItems.length,
-        label: runtimeSurfaceLabel(firstQueue),
-      });
-    }
-    const firstSessionEvent = currentRuntimeSurface.sessionEvents[0];
-    if (firstSessionEvent) {
-      return t("app.runtimeSurfaceSessionSummary", {
-        count: currentRuntimeSurface.sessionEvents.length,
-        label: runtimeSurfaceLabel(firstSessionEvent),
-      });
-    }
-    const firstInspect = currentRuntimeSurface.inspectItems[0];
-    if (firstInspect) {
-      return t("app.runtimeSurfaceInspectSummary", {
-        count: currentRuntimeSurface.inspectItems.length,
-        label: runtimeSurfaceLabel(firstInspect),
-      });
-    }
-    return t("app.runtimeSurfaceIdle");
-  }, [currentRuntimeSurface.banner, currentRuntimeSurface.inspectItems, currentRuntimeSurface.queueItems, currentRuntimeSurface.sessionEvents, t]);
-
-  useEffect(() => {
-    if (!hasRuntimeSurfaceContent) {
-      setRuntimeSurfaceExpanded(false);
-      return;
-    }
-    const preferredTab = runtimeSurfaceTabs.find((tab) => tab.count > 0)?.key ?? "queue";
-    setRuntimeSurfaceTab((current) => {
-      if (runtimeSurfaceTabs.some((tab) => tab.key === current && tab.count > 0)) {
-        return current;
-      }
-      return preferredTab;
-    });
-  }, [hasRuntimeSurfaceContent, runtimeSurfaceTabs]);
   const effectiveRightPanelWidth = useMemo(() => {
     if (workspacePanelTab === "preview") return Math.max(rightResize.width, 640);
     if (workspacePanelTab === "insights") return Math.max(rightResize.width, 460);
@@ -443,6 +350,16 @@ export default function App() {
     preferencesReadyRef,
     provisionExternalAdapterSession,
   });
+  // Stable callback — memo(MessageCard) only pays off if props keep reference
+  // identity across App re-renders (editAndResendMessage depends on this).
+  const handlePrimeComposerFromPrompt = useCallback(
+    (text: string) => {
+      setComposer(text);
+      setAttachments([]);
+      setSelectedAttachmentIndex(null);
+    },
+    [setAttachments, setComposer, setSelectedAttachmentIndex],
+  );
   const {
     conversationJump,
     copyMessageLink,
@@ -465,11 +382,7 @@ export default function App() {
     formatError,
     maxPendingOutputBlocks,
     onConfigUpdated: reloadProvidersAndModes,
-    onPrimeComposerFromPrompt: (text) => {
-      setComposer(text);
-      setAttachments([]);
-      setSelectedAttachmentIndex(null);
-    },
+    onPrimeComposerFromPrompt: handlePrimeComposerFromPrompt,
     refreshExecutionActivity,
     scheduleSessionRefresh,
   });
@@ -563,6 +476,18 @@ export default function App() {
     refreshSessions,
     setMessages,
   });
+  // Stable callbacks for ConversationFeedPanel/MessageCard — memo(MessageCard)
+  // only pays off if these props keep reference identity across App re-renders.
+  const abortSchedulerStage = executionActivity.abortSchedulerStage;
+  const handleAbortStage = useCallback(
+    (stageId: string) => {
+      void abortSchedulerStage(stageId);
+    },
+    [abortSchedulerStage],
+  );
+  const handleClearSelectedMessages = useCallback(() => {
+    setSelectedMessageIds(new Set());
+  }, [setSelectedMessageIds]);
   const {
     permissionStatusLabel,
     permissionStatusTone,
@@ -802,18 +727,7 @@ export default function App() {
           </div>
           <BannerNotice />
 
-          <RuntimeSurfaceSection
-            activeRuntimeSurfaceTab={activeRuntimeSurfaceTab}
-            currentRuntimeSurface={currentRuntimeSurface}
-            hasCurrentRuntimeSurface={hasCurrentRuntimeSurface}
-            hasRuntimeSurfaceContent={hasRuntimeSurfaceContent}
-            runtimeSurfaceExpanded={runtimeSurfaceExpanded}
-            runtimeSurfaceSummary={runtimeSurfaceSummary}
-            runtimeSurfaceTabs={runtimeSurfaceTabs}
-            selectedSessionId={selectedSessionId}
-            setRuntimeSurfaceExpanded={setRuntimeSurfaceExpanded}
-            setRuntimeSurfaceTab={setRuntimeSurfaceTab}
-          />
+          <RuntimeSurfaceSection selectedSessionId={selectedSessionId} />
 
           {selectedSessionId ? (
             <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
@@ -849,11 +763,11 @@ export default function App() {
             onCopySelectedMessageLink={copySelectedMessageLink}
             onCopySelectedMessagesMarkdown={copySelectedMessagesMarkdown}
             onEditAndResendMessage={editAndResendMessage}
-            onClearSelectedMessages={() => setSelectedMessageIds(new Set())}
+            onClearSelectedMessages={handleClearSelectedMessages}
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
             onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
-            onAbortStage={(stageId) => void executionActivity.abortSchedulerStage(stageId)}
+            onAbortStage={handleAbortStage}
             stageAbortingId={executionActivity.stageAbortingId}
           />
 
@@ -918,20 +832,18 @@ export default function App() {
           </div>
 
           {terminalOpen ? (
-            <div className="shrink-0 px-4 pb-5 md:px-5">
-              <div className="w-full overflow-hidden rounded-2xl border border-border/35 bg-sidebar shadow-sm">
-                <div
-                  className={terminalResize.handleClassName}
-                  onMouseDown={terminalResize.handleMouseDown}
-                  title={t("app.resizeTerminal")}
+            <div className="shrink-0 border-t border-border/40 bg-background">
+              <div
+                className={terminalResize.handleClassName}
+                onMouseDown={terminalResize.handleMouseDown}
+                title={t("app.resizeTerminal")}
+              />
+              <div className="min-h-0 overflow-hidden" style={{ height: terminalResize.height }}>
+                <DeferredTerminalPanel
+                  expanded={terminalOpen}
+                  onExpand={() => setTerminalOpen(true)}
+                  terminal={terminalSessions}
                 />
-                <div className="min-h-0 overflow-hidden" style={{ height: terminalResize.height }}>
-                  <DeferredTerminalPanel
-                    expanded={terminalOpen}
-                    onExpand={() => setTerminalOpen(true)}
-                    terminal={terminalSessions}
-                  />
-                </div>
               </div>
             </div>
           ) : null}

@@ -318,6 +318,22 @@ html[data-theme="cobalt"] {
     background: oklch(from var(--destructive) l c h / 5%);
   }
 
+  /* 新挂载的消息/详情卡片轻微上浮淡入（复用既有 roc-fade-rise，reduced-motion
+     已在下方媒体查询统一关闭）——流式期间新块出现不再硬跳变。 */
+  .roc-message-card,
+  .roc-detail-card {
+    animation: roc-fade-rise 0.28s ease-out;
+  }
+
+  /* 长会话滚动性能：屏外卡片跳过布局/绘制，contain-intrinsic-size 的 auto
+     让浏览器记住真实高度，滚动条位置与回滚不漂移。 */
+  [data-testid="message-card"],
+  [data-testid="transcript-block"],
+  [data-testid="scheduler-stage-card"] {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 160px;
+  }
+
   .roc-message-meta-row {
     @apply mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between;
   }
@@ -1023,7 +1039,8 @@ html[data-theme="cobalt"] {
   /* ─── Terminal ───────────────────────────────────────────────────── */
 
   .roc-terminal-viewport {
-    @apply h-full min-h-[10rem] rounded-lg border border-border/30 bg-background p-3;
+    /* 全宽嵌入式终端面：无边框无圆角，仅留 8px 内边距让文字不贴边 */
+    @apply h-full min-h-[10rem] bg-background p-2;
   }
 
   /* ─── Precise radius scale (Craft Agents-inspired) ───────────────── */
@@ -1368,9 +1385,6 @@ html[data-theme="cobalt"] {
 /* Terminal viewport xterm styling */
 .terminal-viewport .xterm {
   height: 100%;
-}
-.terminal-viewport .xterm-viewport {
-  border-radius: 0.5rem;
 }
 
 /* Custom scrollbar */

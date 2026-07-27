@@ -48,21 +48,22 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ terminal }: TerminalPanelProps) {
   const {
-    activeBuffer,
     activeSession,
     createSession,
     creating,
     enabled,
+    getBuffer,
     loading,
     resizeSession,
     sendInput,
+    sessionId,
     sessions,
+    subscribeOutput,
   } = terminal;
   const theme = useAgendaoStore((s) => s.theme);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const renderedBufferRef = useRef("");
   const renderedSessionIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
 
@@ -70,10 +71,16 @@ export function TerminalPanel({ terminal }: TerminalPanelProps) {
     activeSessionIdRef.current = activeSession?.id ?? null;
   }, [activeSession]);
 
+  // Auto-create at most once per chat session per mount: without a chat
+  // session the server rejects PTY creation (session_id is required), and a
+  // failed attempt must not retrigger this effect in a tight retry loop.
+  const autoCreateAttemptedForRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!enabled || loading || creating || sessions.length > 0) return;
+    if (!enabled || loading || creating || sessions.length > 0 || !sessionId) return;
+    if (autoCreateAttemptedForRef.current === sessionId) return;
+    autoCreateAttemptedForRef.current = sessionId;
     void createSession();
-  }, [createSession, creating, enabled, loading, sessions.length]);
+  }, [createSession, creating, enabled, loading, sessionId, sessions.length]);
 
   // 主题切换时热更新（xterm.options.theme 支持运行时赋值）。
   useEffect(() => {
@@ -129,65 +136,43 @@ export function TerminalPanel({ terminal }: TerminalPanelProps) {
       xterm.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
-      renderedBufferRef.current = "";
       renderedSessionIdRef.current = null;
     };
   }, [resizeSession, sendInput]);
 
+  // Stream output straight into xterm: the hook buffers scrollback in refs
+  // and notifies subscribers per WS chunk, so this effect only re-runs when
+  // the ACTIVE SESSION changes (snapshot replay), never per chunk — no React
+  // re-render and no full-buffer startsWith diff on the output hot path.
   useEffect(() => {
     const xterm = xtermRef.current;
     if (!xterm) return;
 
-    if (!activeSession) {
-      if (renderedSessionIdRef.current || renderedBufferRef.current) {
-        xterm.reset();
-      }
-      renderedSessionIdRef.current = null;
-      renderedBufferRef.current = "";
-      return;
-    }
-
-    const sessionId = activeSession.id;
-    const buffer = activeBuffer;
-    const switchingSessions = renderedSessionIdRef.current !== sessionId;
-
-    if (switchingSessions) {
+    const sessionId = activeSession?.id ?? null;
+    renderedSessionIdRef.current = sessionId;
+    if (!sessionId) {
       xterm.reset();
-      if (buffer) {
-        xterm.write(buffer);
-      }
-      renderedSessionIdRef.current = sessionId;
-      renderedBufferRef.current = buffer;
-      fitAddonRef.current?.fit();
-      void resizeSession(sessionId, xterm.cols, xterm.rows);
-      xterm.focus();
       return;
     }
 
-    const previous = renderedBufferRef.current;
-    if (!buffer) {
-      if (previous) {
-        xterm.reset();
-      }
-      renderedBufferRef.current = "";
-      return;
+    // subscribe → snapshot → replay is synchronous, so no WS chunk can slip
+    // between the snapshot and the subscription (no gaps, no duplicates).
+    const unsubscribe = subscribeOutput(sessionId, (chunk) => {
+      xterm.write(chunk);
+    });
+    const snapshot = getBuffer(sessionId);
+    xterm.reset();
+    if (snapshot) {
+      xterm.write(snapshot);
     }
-
-    if (buffer.startsWith(previous)) {
-      const delta = buffer.slice(previous.length);
-      if (delta) {
-        xterm.write(delta);
-      }
-    } else {
-      xterm.reset();
-      xterm.write(buffer);
-    }
-
-    renderedBufferRef.current = buffer;
-  }, [activeBuffer, activeSession, resizeSession]);
+    fitAddonRef.current?.fit();
+    void resizeSession(sessionId, xterm.cols, xterm.rows);
+    xterm.focus();
+    return unsubscribe;
+  }, [activeSession, getBuffer, resizeSession, subscribeOutput]);
 
   return (
-    <div className="h-full min-h-0 bg-transparent p-2" data-testid="terminal-panel">
+    <div className="h-full min-h-0 bg-transparent" data-testid="terminal-panel">
       <div
         ref={viewportRef}
         data-testid="terminal-viewport"
