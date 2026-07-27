@@ -5,7 +5,9 @@ use agendao_config::WorkspaceMode;
 use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
 use agendao_stage_protocol::StageSummary;
 use agendao_state::UserStateAuthority;
-use agendao_storage::{MemoryRepository, MemoryRepositoryFilter, MemoryRetrievalLogEntry};
+use agendao_storage::{
+    memory_record_signature, MemoryRepository, MemoryRepositoryFilter, MemoryRetrievalLogEntry,
+};
 use agendao_types::{
     MemoryCardView, MemoryConflictResponse, MemoryConsolidationRequest,
     MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
@@ -509,16 +511,14 @@ impl MemoryAuthority {
         let now = chrono::Utc::now().timestamp_millis();
         let summary = summarize_tool_output(observation.output);
         let tool_name = observation.tool_name.trim();
-        let record = MemoryRecord {
-            id: hashed_record_id(
-                "mem_tool",
-                &[
-                    observation.session_id,
-                    observation.tool_call_id,
-                    tool_name,
-                    if observation.is_error { "error" } else { "ok" },
-                ],
-            ),
+        // Content-addressed id: identical tool-result observations (same
+        // scope/title/summary/triggers/facts — exactly what the validation
+        // engine's canonical signature dedups on) map to a single record that
+        // is upserted in place. The per-call tool_call_id stays in the
+        // evidence row instead of making every tool call a new
+        // memory_records row that grows the table without bound.
+        let mut record = MemoryRecord {
+            id: MemoryRecordId(String::new()),
             kind: if tool_name.eq_ignore_ascii_case("skill_manage") {
                 MemoryKind::MethodologyCandidate
             } else if observation.is_error {
@@ -574,6 +574,8 @@ impl MemoryAuthority {
             linked_skill_name: None,
             validation_status: MemoryValidationStatus::Pending,
         };
+        let signature = memory_record_signature(&record);
+        record.id = MemoryRecordId(format!("mem_tool_{}", &signature[..24]));
 
         Ok(Some(self.persist_candidate_record(record, &context).await?))
     }
@@ -838,13 +840,16 @@ impl MemoryAuthority {
         let Some(repository) = &self.repository else {
             return Ok(record);
         };
-        repository.upsert_record(&record).await?;
         if let Some(validation_engine) = &self.validation_engine {
+            // validate_and_apply persists the validated record itself (single
+            // transaction with the validation run and conflicts); a separate
+            // pre-validation upsert would only duplicate that write.
             return Ok(validation_engine
                 .validate_and_apply(&record, context)
                 .await?
                 .record);
         }
+        repository.upsert_record(&record).await?;
         Ok(record)
     }
 
@@ -856,13 +861,13 @@ impl MemoryAuthority {
         let Some(repository) = &self.repository else {
             return Ok(record);
         };
-        repository.upsert_record(&record).await?;
         if let Some(validation_engine) = &self.validation_engine {
             return Ok(validation_engine
                 .validate_and_apply(&record, context)
                 .await?
                 .record);
         }
+        repository.upsert_record(&record).await?;
         Ok(record)
     }
 
@@ -882,25 +887,29 @@ impl MemoryAuthority {
         let now = chrono::Utc::now().timestamp_millis();
 
         if let Some(tool_call_id) = observation.tool_call_id {
-            let exact_record_id = hashed_record_id(
-                "mem_tool",
-                &[observation.session_id, tool_call_id, "skill_manage", "ok"],
-            );
-            if let Some(record) = repository.get_record(&exact_record_id.0).await? {
-                let updated = self
-                    .persist_record(
-                        apply_skill_linkage_to_record(
-                            record,
-                            observation,
-                            &action,
-                            &normalized_skill_name,
-                            now,
-                        ),
-                        context,
-                    )
-                    .await?;
-                seen_ids.insert(updated.id.0.clone());
-                linked.push(updated);
+            // The tool-result candidate carries the originating tool_call_id
+            // in its evidence row; resolving via evidence keeps this lookup
+            // independent of the record id derivation scheme.
+            let exact_record_id = repository
+                .find_record_id_by_tool_call_evidence(tool_call_id)
+                .await?;
+            if let Some(record_id) = exact_record_id {
+                if let Some(record) = repository.get_record(&record_id).await? {
+                    let updated = self
+                        .persist_record(
+                            apply_skill_linkage_to_record(
+                                record,
+                                observation,
+                                &action,
+                                &normalized_skill_name,
+                                now,
+                            ),
+                            context,
+                        )
+                        .await?;
+                    seen_ids.insert(updated.id.0.clone());
+                    linked.push(updated);
+                }
             }
         }
 
@@ -2157,6 +2166,84 @@ mod tests {
             .expect("snapshot should build");
         assert_eq!(snapshot.items.len(), 1);
         assert_eq!(snapshot.items[0].card.id, result.id);
+    }
+
+    #[tokio::test]
+    async fn identical_tool_observations_dedup_into_one_record() {
+        let dir = TestDir::new("agendao_memory_tool_dedup");
+        let db = Database::in_memory().await.expect("db should initialize");
+        let repository = Arc::new(MemoryRepository::new(db.pool().clone()));
+        let authority = authority_with_repository(&dir.path, false, repository.clone());
+
+        let first = authority
+            .ingest_tool_result_observation(&ToolMemoryObservation {
+                session_id: "ses_1",
+                tool_call_id: "call_1",
+                tool_name: "cargo_test",
+                stage_id: Some("stage_1"),
+                output: "all tests passed",
+                is_error: false,
+            })
+            .await
+            .expect("ingest should succeed")
+            .expect("candidate should persist");
+
+        // Same content from a later tool call (even another session):
+        // updates the existing record in place instead of adding a row.
+        let second = authority
+            .ingest_tool_result_observation(&ToolMemoryObservation {
+                session_id: "ses_2",
+                tool_call_id: "call_2",
+                tool_name: "cargo_test",
+                stage_id: Some("stage_1"),
+                output: "all tests passed",
+                is_error: false,
+            })
+            .await
+            .expect("ingest should succeed")
+            .expect("candidate should persist");
+
+        assert_eq!(first.id, second.id);
+
+        let context = authority
+            .resolve_context()
+            .await
+            .expect("context should resolve");
+        let records = repository
+            .list_records(Some(&MemoryRepositoryFilter {
+                workspace_identity: Some(context.workspace_key.clone()),
+                limit: Some(50),
+                ..MemoryRepositoryFilter::default()
+            }))
+            .await
+            .expect("records should list");
+        assert_eq!(
+            records.len(),
+            1,
+            "identical observations must not grow memory_records"
+        );
+
+        // The evidence row tracks the most recent tool call.
+        let resolved = repository
+            .find_record_id_by_tool_call_evidence("call_2")
+            .await
+            .expect("evidence lookup should succeed");
+        assert_eq!(resolved.as_deref(), Some(first.id.0.as_str()));
+
+        // Different content still produces a separate record.
+        let third = authority
+            .ingest_tool_result_observation(&ToolMemoryObservation {
+                session_id: "ses_2",
+                tool_call_id: "call_3",
+                tool_name: "cargo_test",
+                stage_id: Some("stage_1"),
+                output: "test suite failed: 1 failed",
+                is_error: true,
+            })
+            .await
+            .expect("ingest should succeed")
+            .expect("candidate should persist");
+        assert_ne!(third.id, first.id);
     }
 
     #[tokio::test]

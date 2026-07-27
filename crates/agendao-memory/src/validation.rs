@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
-use agendao_storage::{MemoryConflictRecord, MemoryRepository, MemoryRepositoryFilter};
+use agendao_storage::{
+    memory_record_signature, MemoryConflictRecord, MemoryRepository, MemoryRepositoryFilter,
+};
 use agendao_types::{
     MemoryKind, MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus, MemoryValidationReport,
     MemoryValidationStatus,
@@ -132,52 +134,82 @@ impl MemoryValidationEngine {
             issues.push("unsafe_content:prompt_injection_like_content".to_string());
         }
 
+        let candidate_signature = memory_record_signature(&candidate);
+        let candidate_fact_map = normalized_fact_map(&candidate.normalized_facts);
+        let candidate_context_terms =
+            context_terms(&candidate.trigger_conditions, &candidate.normalized_facts);
+
+        let mut conflicts = Vec::new();
+
+        // Duplicate detection: indexed equality lookup on the persisted
+        // canonical signature instead of scanning every peer row and hashing
+        // each one in memory.
+        let duplicate_statuses = [
+            MemoryStatus::Candidate,
+            MemoryStatus::Validated,
+            MemoryStatus::Consolidated,
+        ];
+        let duplicate_peer_ids = self
+            .repository
+            .find_record_ids_by_signature(
+                &candidate_signature,
+                candidate.workspace_identity.as_deref(),
+                &context.allowed_scopes,
+                &duplicate_statuses,
+            )
+            .await?;
+        let mut duplicate_ids = HashSet::new();
+        for peer_id in duplicate_peer_ids {
+            if peer_id == candidate.id.0 {
+                continue;
+            }
+            failed = true;
+            issues.push(format!("dedup:duplicate_of={}", peer_id));
+            conflicts.push(build_conflict(
+                &candidate.id,
+                &MemoryRecordId(peer_id.clone()),
+                "duplicate",
+                "Canonical memory signature matches an existing record.",
+                now,
+            ));
+            duplicate_ids.insert(peer_id);
+        }
+
+        // Contradiction scan: lightweight peer projection (id/status/facts
+        // only) so the query skips the evidence lookup and unrelated JSON
+        // columns. Peers already flagged as duplicates are skipped here,
+        // matching the previous single-pass `continue` semantics.
         let peers = self
             .repository
-            .list_records(Some(&MemoryRepositoryFilter {
+            .list_validation_peers(Some(&MemoryRepositoryFilter {
                 workspace_identity: candidate.workspace_identity.clone(),
                 scopes: context.allowed_scopes.clone(),
-                statuses: vec![
-                    MemoryStatus::Candidate,
-                    MemoryStatus::Validated,
-                    MemoryStatus::Consolidated,
-                ],
+                statuses: duplicate_statuses.to_vec(),
                 limit: Some(500),
                 ..MemoryRepositoryFilter::default()
             }))
             .await?;
 
-        let mut conflicts = Vec::new();
-        let candidate_signature = canonical_signature(&candidate);
-        let candidate_fact_map = normalized_fact_map(&candidate);
-        let candidate_context_terms = context_terms(&candidate);
-
         for peer in peers {
-            if peer.id == candidate.id || peer.status == MemoryStatus::Rejected {
-                continue;
-            }
-
-            if canonical_signature(&peer) == candidate_signature {
-                failed = true;
-                issues.push(format!("dedup:duplicate_of={}", peer.id.0));
-                conflicts.push(build_conflict(
-                    &candidate.id,
-                    &peer.id,
-                    "duplicate",
-                    "Canonical memory signature matches an existing record.",
-                    now,
-                ));
-                continue;
-            }
-
-            if contradiction_exists(&candidate_fact_map, &normalized_fact_map(&peer))
-                && !candidate_context_terms.is_disjoint(&context_terms(&peer))
+            if peer.id == candidate.id.0
+                || duplicate_ids.contains(&peer.id)
+                || peer.status == MemoryStatus::Rejected
             {
+                continue;
+            }
+
+            if contradiction_exists(
+                &candidate_fact_map,
+                &normalized_fact_map(&peer.normalized_facts),
+            ) && !candidate_context_terms.is_disjoint(&context_terms(
+                &peer.trigger_conditions,
+                &peer.normalized_facts,
+            )) {
                 warning = true;
-                issues.push(format!("contradiction:conflicts_with={}", peer.id.0));
+                issues.push(format!("contradiction:conflicts_with={}", peer.id));
                 conflicts.push(build_conflict(
                     &candidate.id,
-                    &peer.id,
+                    &MemoryRecordId(peer.id.clone()),
                     "contradiction",
                     "Overlapping context has conflicting normalized facts.",
                     now,
@@ -231,12 +263,8 @@ impl MemoryValidationEngine {
         context: &ResolvedMemoryContext,
     ) -> Result<MemoryValidationOutcome> {
         let outcome = self.validate_record(record, context).await?;
-        self.repository.upsert_record(&outcome.record).await?;
         self.repository
-            .record_validation_run(&outcome.report)
-            .await?;
-        self.repository
-            .replace_conflicts_for_memory(&outcome.record.id.0, &outcome.conflicts)
+            .apply_validation_outcome(&outcome.record, &outcome.report, &outcome.conflicts)
             .await?;
         Ok(outcome)
     }
@@ -406,30 +434,9 @@ fn skill_feedback_word_matches(word: &str) -> bool {
     )
 }
 
-fn canonical_signature(record: &MemoryRecord) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(scope_label(&record.scope).as_bytes());
-    hasher.update([0]);
-    hasher.update(record.title.trim().to_ascii_lowercase().as_bytes());
-    hasher.update([0]);
-    hasher.update(record.summary.trim().to_ascii_lowercase().as_bytes());
-    hasher.update([0]);
-
-    for value in sorted_lowercase(&record.trigger_conditions) {
-        hasher.update(value.as_bytes());
-        hasher.update([0]);
-    }
-    for value in sorted_lowercase(&record.normalized_facts) {
-        hasher.update(value.as_bytes());
-        hasher.update([0]);
-    }
-
-    format!("{:x}", hasher.finalize())
-}
-
-fn normalized_fact_map(record: &MemoryRecord) -> BTreeMap<String, String> {
+fn normalized_fact_map(facts: &[String]) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
-    for fact in &record.normalized_facts {
+    for fact in facts {
         if let Some((key, value)) = fact.split_once('=') {
             map.insert(
                 key.trim().to_ascii_lowercase(),
@@ -440,12 +447,12 @@ fn normalized_fact_map(record: &MemoryRecord) -> BTreeMap<String, String> {
     map
 }
 
-fn context_terms(record: &MemoryRecord) -> BTreeSet<String> {
+fn context_terms(trigger_conditions: &[String], facts: &[String]) -> BTreeSet<String> {
     let mut terms = BTreeSet::new();
-    for trigger in &record.trigger_conditions {
+    for trigger in trigger_conditions {
         terms.insert(trigger.trim().to_ascii_lowercase());
     }
-    for fact in &record.normalized_facts {
+    for fact in facts {
         if let Some((key, _)) = fact.split_once('=') {
             terms.insert(key.trim().to_ascii_lowercase());
         } else {
@@ -488,16 +495,6 @@ fn build_conflict(
         detail: detail.to_string(),
         detected_at,
     }
-}
-
-fn sorted_lowercase(values: &[String]) -> Vec<String> {
-    let mut items: Vec<String> = values
-        .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect();
-    items.sort();
-    items
 }
 
 fn scope_label(scope: &MemoryScope) -> &'static str {

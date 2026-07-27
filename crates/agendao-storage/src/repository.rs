@@ -2,7 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use sqlx::{FromRow, Row, SqlitePool};
+use sha2::{Digest, Sha256};
+use sqlx::{FromRow, Row, SqliteConnection, SqlitePool};
 
 use agendao_types::{
     MemoryConflictView, MemoryConsolidationRun, MemoryEvidenceRef, MemoryKind, MemoryRecord,
@@ -72,8 +73,9 @@ const MEMORY_RECORD_UPSERT_SQL: &str = r#"
 INSERT INTO memory_records (
     id, kind, scope, status, title, summary, trigger_conditions, normalized_facts, boundaries,
     confidence, source_session_id, workspace_identity, created_at, updated_at,
-    last_validated_at, expires_at, derived_skill_name, linked_skill_name, validation_status
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    last_validated_at, expires_at, derived_skill_name, linked_skill_name, validation_status,
+    signature
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     kind = excluded.kind,
     scope = excluded.scope,
@@ -92,8 +94,64 @@ ON CONFLICT(id) DO UPDATE SET
     expires_at = excluded.expires_at,
     derived_skill_name = excluded.derived_skill_name,
     linked_skill_name = excluded.linked_skill_name,
-    validation_status = excluded.validation_status
+    validation_status = excluded.validation_status,
+    signature = excluded.signature
 "#;
+
+/// Canonical content signature of a memory record (SHA-256 hex over scope,
+/// title, summary and the sorted/lowercased trigger conditions and normalized
+/// facts). Two records with the same signature are considered duplicates by
+/// the validation engine; the value is persisted in `memory_records.signature`
+/// so duplicate candidates can be found with an indexed equality lookup.
+pub fn memory_record_signature(record: &MemoryRecord) -> String {
+    memory_record_signature_parts(
+        memory_scope_to_str(&record.scope),
+        &record.title,
+        &record.summary,
+        &record.trigger_conditions,
+        &record.normalized_facts,
+    )
+}
+
+/// Signature computation over raw column values; used by the storage-layer
+/// backfill migration that fills `signature` for rows written before the
+/// column existed.
+pub(crate) fn memory_record_signature_parts(
+    scope_label: &str,
+    title: &str,
+    summary: &str,
+    trigger_conditions: &[String],
+    normalized_facts: &[String],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(scope_label.as_bytes());
+    hasher.update([0]);
+    hasher.update(title.trim().to_ascii_lowercase().as_bytes());
+    hasher.update([0]);
+    hasher.update(summary.trim().to_ascii_lowercase().as_bytes());
+    hasher.update([0]);
+
+    for value in sorted_lowercase(trigger_conditions) {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    for value in sorted_lowercase(normalized_facts) {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+
+    format!("{:x}", hasher.finalize())
+}
+
+fn sorted_lowercase(values: &[String]) -> Vec<String> {
+    let mut items: Vec<String> = values
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect();
+    items.sort();
+    items
+}
 
 fn serialize_json_for_db<T: Serialize>(context: &str, field: &str, value: &T) -> Option<String> {
     match serde_json::to_string(value) {
@@ -121,6 +179,25 @@ pub struct MemoryRepositoryFilter {
     pub derived_skill_name: Option<String>,
     pub linked_skill_name: Option<String>,
     pub limit: Option<i64>,
+}
+
+/// Lightweight projection of a memory record used by the validation engine's
+/// contradiction scan. Carries only the fields the scan reads so the query
+/// skips the evidence lookup and unrelated JSON columns.
+#[derive(Debug, Clone)]
+pub struct MemoryValidationPeer {
+    pub id: String,
+    pub status: MemoryStatus,
+    pub trigger_conditions: Vec<String>,
+    pub normalized_facts: Vec<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct MemoryValidationPeerRow {
+    id: String,
+    status: String,
+    trigger_conditions: Option<String>,
+    normalized_facts: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,41 +507,160 @@ impl MemoryRepository {
             .await
             .map_err(|e| DatabaseError::TransactionError(e.to_string()))?;
 
-        bind_memory_record_upsert(sqlx::query(MEMORY_RECORD_UPSERT_SQL), record)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-
-        sqlx::query("DELETE FROM memory_evidence WHERE memory_id = ?")
-            .bind(&record.id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-
-        for (index, evidence) in record.evidence_refs.iter().enumerate() {
-            sqlx::query(
-                r#"
-                INSERT INTO memory_evidence (
-                    memory_id, evidence_index, session_id, message_id, tool_call_id, stage_id, note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                "#,
-            )
-            .bind(&record.id.0)
-            .bind(index as i64)
-            .bind(&evidence.session_id)
-            .bind(&evidence.message_id)
-            .bind(&evidence.tool_call_id)
-            .bind(&evidence.stage_id)
-            .bind(&evidence.note)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-        }
+        upsert_record_with(&mut tx, record).await?;
 
         tx.commit()
             .await
             .map_err(|e| DatabaseError::TransactionError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Persist the outcome of a validation pass — updated record (with
+    /// evidence), validation run report and conflict rows — in a single
+    /// transaction instead of three separate ones.
+    pub async fn apply_validation_outcome(
+        &self,
+        record: &MemoryRecord,
+        report: &MemoryValidationReport,
+        conflicts: &[MemoryConflictRecord],
+    ) -> Result<(), DatabaseError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DatabaseError::TransactionError(e.to_string()))?;
+
+        upsert_record_with(&mut tx, record).await?;
+        record_validation_run_with(&mut tx, report).await?;
+        replace_conflicts_for_memory_with(&mut tx, &record.id.0, conflicts).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DatabaseError::TransactionError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Find ids of records whose canonical signature equals `signature`.
+    /// Indexed equality lookup used by the validation engine for duplicate
+    /// detection; `workspace_identity`/`scopes`/`statuses` mirror the filter
+    /// semantics of `list_records` (workspace filter only applies when `Some`).
+    pub async fn find_record_ids_by_signature(
+        &self,
+        signature: &str,
+        workspace_identity: Option<&str>,
+        scopes: &[MemoryScope],
+        statuses: &[MemoryStatus],
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut sql = String::from("SELECT id FROM memory_records WHERE signature = ?");
+        if workspace_identity.is_some() {
+            sql.push_str(" AND workspace_identity = ?");
+        }
+        if !scopes.is_empty() {
+            sql.push_str(" AND scope IN (");
+            sql.push_str(&repeat_placeholders(scopes.len()));
+            sql.push(')');
+        }
+        if !statuses.is_empty() {
+            sql.push_str(" AND status IN (");
+            sql.push_str(&repeat_placeholders(statuses.len()));
+            sql.push(')');
+        }
+
+        let mut query = sqlx::query_scalar::<_, String>(&sql).bind(signature);
+        if let Some(workspace_identity) = workspace_identity {
+            query = query.bind(workspace_identity);
+        }
+        for scope in scopes {
+            query = query.bind(memory_scope_to_str(scope));
+        }
+        for status in statuses {
+            query = query.bind(memory_status_to_str(status));
+        }
+
+        query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryError(e.to_string()))
+    }
+
+    /// Lightweight peer listing for the validation engine's contradiction
+    /// scan: same filtering as `list_records`, but returns only the columns
+    /// the scan reads and skips the per-record evidence lookup.
+    pub async fn list_validation_peers(
+        &self,
+        filter: Option<&MemoryRepositoryFilter>,
+    ) -> Result<Vec<MemoryValidationPeer>, DatabaseError> {
+        let filter = filter.cloned().unwrap_or_default();
+        let mut sql = String::from(
+            r#"SELECT id, status, trigger_conditions, normalized_facts
+               FROM memory_records
+               WHERE 1 = 1"#,
+        );
+
+        if !filter.scopes.is_empty() {
+            sql.push_str(" AND scope IN (");
+            sql.push_str(&repeat_placeholders(filter.scopes.len()));
+            sql.push(')');
+        }
+        if !filter.kinds.is_empty() {
+            sql.push_str(" AND kind IN (");
+            sql.push_str(&repeat_placeholders(filter.kinds.len()));
+            sql.push(')');
+        }
+        if !filter.statuses.is_empty() {
+            sql.push_str(" AND status IN (");
+            sql.push_str(&repeat_placeholders(filter.statuses.len()));
+            sql.push(')');
+        }
+        if filter.workspace_identity.is_some() {
+            sql.push_str(" AND workspace_identity = ?");
+        }
+        sql.push_str(" ORDER BY updated_at DESC LIMIT ?");
+
+        let mut query = sqlx::query_as::<_, MemoryValidationPeerRow>(&sql);
+        for scope in &filter.scopes {
+            query = query.bind(memory_scope_to_str(scope));
+        }
+        for kind in &filter.kinds {
+            query = query.bind(memory_kind_to_str(kind));
+        }
+        for status in &filter.statuses {
+            query = query.bind(memory_status_to_str(status));
+        }
+        if let Some(workspace_identity) = filter.workspace_identity.as_deref() {
+            query = query.bind(workspace_identity);
+        }
+        query = query.bind(filter.limit.unwrap_or(100));
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| MemoryValidationPeer {
+                id: row.id,
+                status: string_to_memory_status(&row.status),
+                trigger_conditions: parse_json_vec(row.trigger_conditions),
+                normalized_facts: parse_json_vec(row.normalized_facts),
+            })
+            .collect())
+    }
+
+    /// Resolve the memory record carrying evidence for a given tool call.
+    /// Used to link skill_write observations back to the tool-result
+    /// candidate without relying on the record id derivation scheme.
+    pub async fn find_record_id_by_tool_call_evidence(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<Option<String>, DatabaseError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT memory_id FROM memory_evidence WHERE tool_call_id = ? LIMIT 1",
+        )
+        .bind(tool_call_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))
     }
 
     pub async fn get_record(&self, id: &str) -> Result<Option<MemoryRecord>, DatabaseError> {
@@ -485,7 +681,9 @@ impl MemoryRepository {
         let Some(row) = row else {
             return Ok(None);
         };
-        let evidence = self.load_evidence_map(std::slice::from_ref(&row.id)).await?;
+        let evidence = self
+            .load_evidence_map(std::slice::from_ref(&row.id))
+            .await?;
         Ok(Some(row.into_record(
             evidence.get(id).cloned().unwrap_or_default(),
         )))
@@ -597,29 +795,12 @@ impl MemoryRepository {
         &self,
         report: &MemoryValidationReport,
     ) -> Result<(), DatabaseError> {
-        let run_id = validation_run_id(report);
-        let issues = serde_json::to_string(&report.issues)
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-        sqlx::query(
-            r#"
-            INSERT INTO memory_validation_runs (run_id, memory_id, status, issues, checked_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(run_id) DO UPDATE SET
-                memory_id = excluded.memory_id,
-                status = excluded.status,
-                issues = excluded.issues,
-                checked_at = excluded.checked_at
-            "#,
-        )
-        .bind(run_id)
-        .bind(report.record_id.as_ref().map(|id| id.0.as_str()))
-        .bind(memory_validation_status_to_str(&report.status))
-        .bind(issues)
-        .bind(report.checked_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-        Ok(())
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
+        record_validation_run_with(&mut conn, report).await
     }
 
     pub async fn latest_validation_report(
@@ -948,37 +1129,7 @@ impl MemoryRepository {
             .await
             .map_err(|e| DatabaseError::TransactionError(e.to_string()))?;
 
-        sqlx::query("DELETE FROM memory_conflicts WHERE left_memory_id = ? OR right_memory_id = ?")
-            .bind(memory_id)
-            .bind(memory_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-
-        for conflict in conflicts {
-            sqlx::query(
-                r#"
-                INSERT INTO memory_conflicts (
-                    id, left_memory_id, right_memory_id, conflict_kind, detail, detected_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    left_memory_id = excluded.left_memory_id,
-                    right_memory_id = excluded.right_memory_id,
-                    conflict_kind = excluded.conflict_kind,
-                    detail = excluded.detail,
-                    detected_at = excluded.detected_at
-                "#,
-            )
-            .bind(&conflict.id)
-            .bind(&conflict.left_memory_id)
-            .bind(&conflict.right_memory_id)
-            .bind(&conflict.conflict_kind)
-            .bind(&conflict.detail)
-            .bind(conflict.detected_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
-        }
+        replace_conflicts_for_memory_with(&mut tx, memory_id, conflicts).await?;
 
         tx.commit()
             .await
@@ -1070,6 +1221,113 @@ impl MemoryRepository {
     }
 }
 
+async fn upsert_record_with(
+    conn: &mut SqliteConnection,
+    record: &MemoryRecord,
+) -> Result<(), DatabaseError> {
+    bind_memory_record_upsert(sqlx::query(MEMORY_RECORD_UPSERT_SQL), record)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+
+    sqlx::query("DELETE FROM memory_evidence WHERE memory_id = ?")
+        .bind(&record.id.0)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+
+    for (index, evidence) in record.evidence_refs.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO memory_evidence (
+                memory_id, evidence_index, session_id, message_id, tool_call_id, stage_id, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&record.id.0)
+        .bind(index as i64)
+        .bind(&evidence.session_id)
+        .bind(&evidence.message_id)
+        .bind(&evidence.tool_call_id)
+        .bind(&evidence.stage_id)
+        .bind(&evidence.note)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+async fn record_validation_run_with(
+    conn: &mut SqliteConnection,
+    report: &MemoryValidationReport,
+) -> Result<(), DatabaseError> {
+    let run_id = validation_run_id(report);
+    let issues = serde_json::to_string(&report.issues)
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+    sqlx::query(
+        r#"
+        INSERT INTO memory_validation_runs (run_id, memory_id, status, issues, checked_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+            memory_id = excluded.memory_id,
+            status = excluded.status,
+            issues = excluded.issues,
+            checked_at = excluded.checked_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(report.record_id.as_ref().map(|id| id.0.as_str()))
+    .bind(memory_validation_status_to_str(&report.status))
+    .bind(issues)
+    .bind(report.checked_at)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+    Ok(())
+}
+
+async fn replace_conflicts_for_memory_with(
+    conn: &mut SqliteConnection,
+    memory_id: &str,
+    conflicts: &[MemoryConflictRecord],
+) -> Result<(), DatabaseError> {
+    sqlx::query("DELETE FROM memory_conflicts WHERE left_memory_id = ? OR right_memory_id = ?")
+        .bind(memory_id)
+        .bind(memory_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+
+    for conflict in conflicts {
+        sqlx::query(
+            r#"
+            INSERT INTO memory_conflicts (
+                id, left_memory_id, right_memory_id, conflict_kind, detail, detected_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                left_memory_id = excluded.left_memory_id,
+                right_memory_id = excluded.right_memory_id,
+                conflict_kind = excluded.conflict_kind,
+                detail = excluded.detail,
+                detected_at = excluded.detected_at
+            "#,
+        )
+        .bind(&conflict.id)
+        .bind(&conflict.left_memory_id)
+        .bind(&conflict.right_memory_id)
+        .bind(&conflict.conflict_kind)
+        .bind(&conflict.detail)
+        .bind(conflict.detected_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
 fn bind_memory_record_upsert<'q>(
     query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     record: &'q MemoryRecord,
@@ -1106,6 +1364,7 @@ fn bind_memory_record_upsert<'q>(
         .bind(&record.derived_skill_name)
         .bind(&record.linked_skill_name)
         .bind(memory_validation_status_to_str(&record.validation_status))
+        .bind(memory_record_signature(record))
 }
 
 fn bind_session_upsert<'q>(
@@ -3043,6 +3302,170 @@ mod tests {
         assert_eq!(loaded.title, record.title);
         assert_eq!(loaded.normalized_facts, record.normalized_facts);
         assert_eq!(loaded.evidence_refs, record.evidence_refs);
+    }
+
+    #[tokio::test]
+    async fn memory_repository_finds_records_by_signature() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = MemoryRepository::new(db.pool().clone());
+        // Same content under two ids -> same canonical signature
+        // (make_memory_record embeds the id in the title, so align it).
+        let mut first = make_memory_record("mem_sig_a", MemoryScope::WorkspaceShared);
+        first.title = "Shared signature title".to_string();
+        let mut second = make_memory_record("mem_sig_b", MemoryScope::WorkspaceShared);
+        second.title = "Shared signature title".to_string();
+        // Different content -> different signature.
+        let mut other = make_memory_record("mem_sig_c", MemoryScope::WorkspaceShared);
+        other.title = "Shared signature title".to_string();
+        other.summary = "A different observation".to_string();
+
+        repo.upsert_record(&first).await.unwrap();
+        repo.upsert_record(&second).await.unwrap();
+        repo.upsert_record(&other).await.unwrap();
+
+        let signature = memory_record_signature(&first);
+        assert_eq!(signature, memory_record_signature(&second));
+        assert_ne!(signature, memory_record_signature(&other));
+
+        let ids = repo
+            .find_record_ids_by_signature(
+                &signature,
+                Some("ws:test"),
+                &[MemoryScope::WorkspaceShared],
+                &[MemoryStatus::Candidate],
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"mem_sig_a".to_string()));
+        assert!(ids.contains(&"mem_sig_b".to_string()));
+
+        // Filters are honored: wrong workspace and wrong status both miss.
+        let wrong_workspace = repo
+            .find_record_ids_by_signature(
+                &signature,
+                Some("ws:other"),
+                &[MemoryScope::WorkspaceShared],
+                &[MemoryStatus::Candidate],
+            )
+            .await
+            .unwrap();
+        assert!(wrong_workspace.is_empty());
+        let wrong_status = repo
+            .find_record_ids_by_signature(
+                &signature,
+                Some("ws:test"),
+                &[MemoryScope::WorkspaceShared],
+                &[MemoryStatus::Validated],
+            )
+            .await
+            .unwrap();
+        assert!(wrong_status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_repository_applies_validation_outcome_atomically() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = MemoryRepository::new(db.pool().clone());
+        let mut record = make_memory_record("mem_outcome", MemoryScope::WorkspaceShared);
+        record.status = MemoryStatus::Validated;
+        record.validation_status = MemoryValidationStatus::Passed;
+        // The conflict rows reference memory_records via foreign keys, so the
+        // other side must exist.
+        repo.upsert_record(&make_memory_record(
+            "mem_other",
+            MemoryScope::WorkspaceShared,
+        ))
+        .await
+        .unwrap();
+        let report = MemoryValidationReport {
+            record_id: Some(record.id.clone()),
+            status: MemoryValidationStatus::Passed,
+            issues: vec![],
+            checked_at: 300,
+        };
+        let conflicts = vec![MemoryConflictRecord {
+            id: "mem_conflict_test".to_string(),
+            left_memory_id: record.id.0.clone(),
+            right_memory_id: "mem_other".to_string(),
+            conflict_kind: "contradiction".to_string(),
+            detail: "test conflict".to_string(),
+            detected_at: 300,
+        }];
+
+        repo.apply_validation_outcome(&record, &report, &conflicts)
+            .await
+            .unwrap();
+
+        let loaded = repo
+            .get_record("mem_outcome")
+            .await
+            .unwrap()
+            .expect("record should persist");
+        assert_eq!(loaded.status, MemoryStatus::Validated);
+        let latest = repo
+            .latest_validation_report("mem_outcome")
+            .await
+            .unwrap()
+            .expect("validation run should persist");
+        assert_eq!(latest.status, MemoryValidationStatus::Passed);
+        let stored_conflicts = repo.list_conflicts_for_memory("mem_outcome").await.unwrap();
+        assert_eq!(stored_conflicts.len(), 1);
+        assert_eq!(stored_conflicts[0].conflict_kind, "contradiction");
+
+        // A second outcome replaces the conflict set instead of appending.
+        repo.apply_validation_outcome(&record, &report, &[])
+            .await
+            .unwrap();
+        assert!(repo
+            .list_conflicts_for_memory("mem_outcome")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_repository_lists_validation_peers_without_evidence() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = MemoryRepository::new(db.pool().clone());
+        let record = make_memory_record("mem_peer", MemoryScope::WorkspaceShared);
+        repo.upsert_record(&record).await.unwrap();
+
+        let peers = repo
+            .list_validation_peers(Some(&MemoryRepositoryFilter {
+                workspace_identity: Some("ws:test".to_string()),
+                scopes: vec![MemoryScope::WorkspaceShared],
+                statuses: vec![MemoryStatus::Candidate],
+                limit: Some(500),
+                ..MemoryRepositoryFilter::default()
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].id, "mem_peer");
+        assert_eq!(peers[0].status, MemoryStatus::Candidate);
+        assert_eq!(peers[0].trigger_conditions, record.trigger_conditions);
+        assert_eq!(peers[0].normalized_facts, record.normalized_facts);
+    }
+
+    #[tokio::test]
+    async fn memory_repository_resolves_record_by_tool_call_evidence() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = MemoryRepository::new(db.pool().clone());
+        let record = make_memory_record("mem_evidence_lookup", MemoryScope::WorkspaceShared);
+        repo.upsert_record(&record).await.unwrap();
+
+        let found = repo
+            .find_record_id_by_tool_call_evidence("call_1")
+            .await
+            .unwrap();
+        assert_eq!(found.as_deref(), Some("mem_evidence_lookup"));
+        assert!(repo
+            .find_record_id_by_tool_call_evidence("call_missing")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

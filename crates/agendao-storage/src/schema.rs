@@ -188,7 +188,10 @@ CREATE TABLE IF NOT EXISTS memory_records (
     expires_at INTEGER,
     derived_skill_name TEXT,
     linked_skill_name TEXT,
-    validation_status TEXT NOT NULL DEFAULT 'pending'
+    validation_status TEXT NOT NULL DEFAULT 'pending',
+    -- Canonical content signature (SHA-256 hex) used for indexed duplicate
+    -- detection; see agendao_storage::memory_record_signature.
+    signature TEXT
 );
 "#;
 
@@ -338,6 +341,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_records_status ON memory_records(status);
 CREATE INDEX IF NOT EXISTS idx_memory_records_updated ON memory_records(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_records_workspace ON memory_records(workspace_identity);
 CREATE INDEX IF NOT EXISTS idx_memory_records_session ON memory_records(source_session_id);
+CREATE INDEX IF NOT EXISTS idx_memory_records_signature ON memory_records(signature);
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory ON memory_evidence(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_validation_runs_memory ON memory_validation_runs(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_log_session ON memory_retrieval_log(session_id);
@@ -392,6 +396,11 @@ pub const ADD_SESSIONS_USAGE_CACHE_MISS_COLUMN: &str =
     "ALTER TABLE sessions ADD COLUMN usage_cache_miss_tokens INTEGER DEFAULT 0";
 pub const ADD_MESSAGES_TOKENS_CACHE_MISS_COLUMN: &str =
     "ALTER TABLE messages ADD COLUMN tokens_cache_miss INTEGER DEFAULT 0";
+/// Add canonical signature column to memory_records for existing databases.
+/// New databases get it from CREATE TABLE; this handles upgrades. Rows written
+/// before this column existed are backfilled by a user_version-gated migration.
+pub const ADD_MEMORY_RECORDS_SIGNATURE_COLUMN: &str =
+    "ALTER TABLE memory_records ADD COLUMN signature TEXT";
 
 /// All migration statements to run
 pub const ALL_MIGRATIONS: &[&str] = &[
@@ -411,8 +420,6 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_MEMORY_RULE_HITS_TABLE,
     CREATE_EXTERNAL_ADAPTER_REPLAY_TABLE,
     CREATE_SKILL_EVOLUTION_PROPOSALS_TABLE,
-    CREATE_INDEXES,
-    CREATE_SKILL_EVOLUTION_PROPOSALS_INDEXES,
     ADD_MESSAGES_FINISH_COLUMN,
     ADD_SESSIONS_METADATA_COLUMN,
     ADD_MESSAGES_METADATA_COLUMN,
@@ -420,4 +427,10 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     ADD_MESSAGES_TOKENS_CONTEXT_COLUMN,
     ADD_SESSIONS_USAGE_CACHE_MISS_COLUMN,
     ADD_MESSAGES_TOKENS_CACHE_MISS_COLUMN,
+    // 必须在 CREATE_INDEXES 之前：旧库靠这条 ALTER 补 signature 列，
+    // 而 CREATE_INDEXES 里有引用该列的 idx_memory_records_signature。
+    // 若顺序颠倒，老库升级时索引创建引用不存在的列，启动会卡死。
+    ADD_MEMORY_RECORDS_SIGNATURE_COLUMN,
+    CREATE_INDEXES,
+    CREATE_SKILL_EVOLUTION_PROPOSALS_INDEXES,
 ];

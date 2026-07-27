@@ -142,11 +142,10 @@ impl Database {
         // 一次性数据修复用 PRAGMA user_version 门控：此前每次启动都对 messages
         // 全表（可达百 MB）做 SELECT + 逐行 JSON 反序列化，是启动数据库阶段
         // 的主要开销。修复幂等，跑过一次即置版标记，后续启动直接跳过。
-        let user_version: i64 =
-            sqlx::query_scalar("PRAGMA user_version")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
         if user_version < 1 {
             self.repair_shifted_message_payload_rows().await?;
             self.run_tool_call_input_data_migration().await?;
@@ -156,6 +155,71 @@ impl Database {
                 .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
         }
 
+        // v2：回填 memory_records.signature。该列由 ALL_MIGRATIONS 中的
+        // ALTER 添加（旧库）或 CREATE TABLE 自带（新库）；这里一次性为列
+        // 出现前写入的行计算 canonical signature，幂等且只跑一次。
+        if user_version < 2 {
+            self.backfill_memory_record_signatures().await?;
+            sqlx::query("PRAGMA user_version = 2")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    async fn backfill_memory_record_signatures(&self) -> Result<(), DatabaseError> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            r#"SELECT id, scope, title, summary, trigger_conditions, normalized_facts
+                   FROM memory_records
+                   WHERE signature IS NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        for (id, scope, title, summary, trigger_conditions, normalized_facts) in rows {
+            let trigger_conditions: Vec<String> = trigger_conditions
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default();
+            let normalized_facts: Vec<String> = normalized_facts
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default();
+            let signature = crate::repository::memory_record_signature_parts(
+                &scope,
+                &title,
+                &summary,
+                &trigger_conditions,
+                &normalized_facts,
+            );
+            sqlx::query("UPDATE memory_records SET signature = ? WHERE id = ?")
+                .bind(signature)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
         Ok(())
     }
 
@@ -403,6 +467,121 @@ fn sanitize_tool_call_input_for_storage(tool_name: &str, input: &Value) -> (Valu
 #[cfg(test)]
 mod tests {
     use super::sanitize_tool_call_input_for_storage;
+
+    #[tokio::test]
+    async fn migrations_upgrade_legacy_db_without_signature_column() {
+        // 复现 2026-07 启动卡死的场景：老库的 memory_records 没有 signature 列。
+        // signature 索引在 CREATE_INDEXES 批里，若 ALTER 排在它之后，老库升级
+        // 时索引创建引用不存在的列（sqlx 多语句批下表现为挂起而非报错）。
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE memory_records (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'candidate',
+                title TEXT NOT NULL, summary TEXT NOT NULL,
+                trigger_conditions TEXT, normalized_facts TEXT,
+                boundaries TEXT, confidence REAL,
+                source_session_id TEXT, workspace_identity TEXT,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                last_validated_at INTEGER, expires_at INTEGER,
+                derived_skill_name TEXT, linked_skill_name TEXT,
+                validation_status TEXT NOT NULL DEFAULT 'pending'
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let db = super::Database { pool };
+        db.run_migrations().await.expect("migrations should succeed");
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('memory_records')")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert!(columns.iter().any(|c| c == "signature"));
+        let index: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_memory_records_signature'",
+        )
+        .fetch_optional(db.pool())
+        .await
+        .unwrap();
+        assert!(index.is_some());
+        let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert!(user_version >= 2);
+    }
+
+    #[tokio::test]
+    async fn memory_signature_backfill_fills_null_rows_and_is_idempotent() {
+        let db = crate::Database::in_memory()
+            .await
+            .expect("db should initialize");
+
+        // Fresh databases run the v2 migration gate during initialization.
+        let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert!(user_version >= 2);
+
+        // Simulate a row written before the signature column existed.
+        sqlx::query(
+            r#"INSERT INTO memory_records (
+                id, kind, scope, status, title, summary,
+                trigger_conditions, normalized_facts,
+                created_at, updated_at, validation_status, signature
+            ) VALUES (
+                'mem_legacy', 'pattern', 'workspace_shared', 'candidate',
+                'Legacy title', 'Legacy summary for backfill',
+                '["tool:x"]', '["a=1"]',
+                1, 2, 'pending', NULL
+            )"#,
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        db.backfill_memory_record_signatures().await.unwrap();
+
+        let signature: Option<String> =
+            sqlx::query_scalar("SELECT signature FROM memory_records WHERE id = 'mem_legacy'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let expected = crate::repository::memory_record_signature_parts(
+            "workspace_shared",
+            "Legacy title",
+            "Legacy summary for backfill",
+            &["tool:x".to_string()],
+            &["a=1".to_string()],
+        );
+        assert_eq!(signature.as_deref(), Some(expected.as_str()));
+
+        // Idempotent: rows that already carry a signature are left untouched.
+        sqlx::query("UPDATE memory_records SET signature = 'sentinel' WHERE id = 'mem_legacy'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        db.backfill_memory_record_signatures().await.unwrap();
+        let signature: Option<String> =
+            sqlx::query_scalar("SELECT signature FROM memory_records WHERE id = 'mem_legacy'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(signature.as_deref(), Some("sentinel"));
+    }
 
     #[test]
     fn sanitize_tool_call_input_for_storage_recovers_jsonish() {
