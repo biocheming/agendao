@@ -27,7 +27,6 @@ members = [
     "crates/agendao-skill",
     "crates/agendao-storage",
     "crates/agendao-storage-core",
-    "crates/agendao-storage-sqlite",
     "crates/agendao-tool-core",
     "crates/agendao-tool",
     "crates/agendao-tool-web",

@@ -160,9 +160,8 @@ sequenceDiagram
 | 模块 | 功能 |
 |------|------|
 | `agendao-memory` | memory consolidation（**遗忘**：合并/衰减/过期）；retrieval 回流；rule hits |
-| `agendao-storage` | facade + repositories（session/message/artifact/telemetry） |
+| `agendao-storage` | facade + repositories（session/message/artifact/telemetry）；sqlite 装配与迁移 |
 | `agendao-storage-core` | StorageBackend trait |
-| `agendao-storage-sqlite` | sqlite 装配与迁移（repository 实现尚为桩，已建档） |
 
 ### 金 · 同源与收敛
 

@@ -5,13 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-[features]
-default = ["sqlite"]
-sqlite = ["dep:agendao-storage-sqlite"]
-
 [dependencies]
 agendao-storage-core = { path = "../agendao-storage-core" }
-agendao-storage-sqlite = { path = "../agendao-storage-sqlite", optional = true }
 agendao-types = { path = "../agendao-types" }
 agendao-util = { path = "../agendao-util" }
 serde = { workspace = true }

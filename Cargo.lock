@@ -668,7 +668,6 @@ name = "agendao-storage"
 version = "2026.6.10"
 dependencies = [
  "agendao-storage-core",
- "agendao-storage-sqlite",
  "agendao-types",
  "agendao-util",
  "anyhow",
@@ -676,6 +675,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -691,18 +691,6 @@ dependencies = [
  "async-trait",
  "serde",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "agendao-storage-sqlite"
-version = "2026.6.10"
-dependencies = [
- "agendao-storage-core",
- "async-trait",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
