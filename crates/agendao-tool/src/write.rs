@@ -7,8 +7,6 @@ use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
 
 #[cfg(feature = "lsp")]
 const MAX_DIAGNOSTICS_PER_FILE: usize = 20;
-#[cfg(feature = "lsp")]
-const MAX_PROJECT_DIAGNOSTICS_FILES: usize = 5;
 
 pub struct WriteTool {
     directory: PathBuf,
@@ -280,7 +278,6 @@ async fn get_lsp_diagnostics_impl(
     lsp_registry: Arc<agendao_lsp::LspClientRegistry>,
 ) -> String {
     use agendao_lsp::detect_language;
-    use std::collections::HashMap;
 
     let language = detect_language(path);
     let clients = lsp_registry.list().await;
@@ -305,102 +302,44 @@ async fn get_lsp_diagnostics_impl(
         }
     }
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for this file's diagnostics event instead of a fixed sleep;
+    // reaching the bound is not an error.
+    client
+        .wait_diagnostics_for(path, agendao_lsp::DIAGNOSTICS_WAIT_TIMEOUT)
+        .await;
 
-    // Collect all diagnostics from all files the LSP knows about
-    let all_diagnostics = client.get_all_diagnostics().await;
+    let diagnostics = client.get_diagnostics(path).await;
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .collect();
 
-    let normalized_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut output = String::new();
-    let mut project_diagnostics_count = 0;
-
-    // First pass: the written file itself
-    for (file, diagnostics) in &all_diagnostics {
-        let file_canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
-        if file_canonical != normalized_path {
-            continue;
-        }
-
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
-            .collect();
-
-        if errors.is_empty() {
-            continue;
-        }
-
-        let total = errors.len();
-        let limited: Vec<_> = errors.into_iter().take(MAX_DIAGNOSTICS_PER_FILE).collect();
-        let suffix = if limited.len() < total {
-            format!("\n... and {} more", total - limited.len())
-        } else {
-            String::new()
-        };
-
-        let lines: Vec<String> = limited
-            .iter()
-            .map(|d| {
-                let line = d.range.start.line + 1;
-                format!("  Line {}: {}", line, d.message)
-            })
-            .collect();
-
-        output.push_str(&format!(
-            "LSP errors detected in this file, please fix:\n<diagnostics file=\"{}\">\n{}{}\n</diagnostics>",
-            path.display(),
-            lines.join("\n"),
-            suffix
-        ));
+    if errors.is_empty() {
+        return String::new();
     }
 
-    // Second pass: up to MAX_PROJECT_DIAGNOSTICS_FILES other files
-    for (file, diagnostics) in &all_diagnostics {
-        if project_diagnostics_count >= MAX_PROJECT_DIAGNOSTICS_FILES {
-            break;
-        }
+    let total = errors.len();
+    let limited: Vec<_> = errors.into_iter().take(MAX_DIAGNOSTICS_PER_FILE).collect();
+    let suffix = if limited.len() < total {
+        format!("\n... and {} more", total - limited.len())
+    } else {
+        String::new()
+    };
 
-        let file_canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
-        if file_canonical == normalized_path {
-            continue;
-        }
+    let lines: Vec<String> = limited
+        .iter()
+        .map(|d| {
+            let line = d.range.start.line + 1;
+            format!("  Line {}: {}", line, d.message)
+        })
+        .collect();
 
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
-            .collect();
-
-        if errors.is_empty() {
-            continue;
-        }
-
-        project_diagnostics_count += 1;
-
-        let total = errors.len();
-        let limited: Vec<_> = errors.into_iter().take(MAX_DIAGNOSTICS_PER_FILE).collect();
-        let suffix = if limited.len() < total {
-            format!("\n... and {} more", total - limited.len())
-        } else {
-            String::new()
-        };
-
-        let lines: Vec<String> = limited
-            .iter()
-            .map(|d| {
-                let line = d.range.start.line + 1;
-                format!("  Line {}: {}", line, d.message)
-            })
-            .collect();
-
-        output.push_str(&format!(
-            "\n\nLSP errors detected in other files:\n<diagnostics file=\"{}\">\n{}{}\n</diagnostics>",
-            file.display(),
-            lines.join("\n"),
-            suffix
-        ));
-    }
-
-    output
+    format!(
+        "LSP errors detected in this file, please fix:\n<diagnostics file=\"{}\">\n{}{}\n</diagnostics>",
+        path.display(),
+        lines.join("\n"),
+        suffix
+    )
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use lsp_types::{
     ClientCapabilities, Diagnostic, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -141,6 +142,18 @@ pub struct LspServerConfig {
 
 type PendingResponseTx = tokio::sync::oneshot::Sender<Result<Value, LspError>>;
 type PendingResponses = Arc<RwLock<HashMap<u64, PendingResponseTx>>>;
+
+/// Timeout for a single LSP request. Language servers can hang; without a
+/// bound a `request()` would wait forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Upper bound for event-driven diagnostics waits.
+///
+/// Replaces the previous fixed 100–200 ms sleeps: servers usually publish
+/// diagnostics within a few hundred milliseconds, but cold starts can take
+/// longer. Reaching the bound is not an error — callers proceed with
+/// whatever diagnostics are available.
+pub const DIAGNOSTICS_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct LspClient {
     root: PathBuf,
@@ -340,10 +353,27 @@ impl LspClient {
             params: Some(params),
         };
 
-        let mut stdin = self.stdin.lock().await;
-        codec::write_frame(&mut *stdin, &request).await?;
+        // Hold the stdin lock only for the write, not while waiting.
+        let write_result = {
+            let mut stdin = self.stdin.lock().await;
+            codec::write_frame(&mut *stdin, &request).await
+        };
+        if let Err(e) = write_result {
+            self.pending_responses.write().await.remove(&id);
+            return Err(e.into());
+        }
 
-        rx.await.map_err(|_| LspError::Timeout)?
+        let result = match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result,
+            // Sender dropped (reader task ended) or deadline elapsed.
+            Ok(Err(_)) | Err(_) => Err(LspError::Timeout),
+        };
+
+        // Remove the pending entry so a late response is dropped instead of
+        // leaking in the map.
+        self.pending_responses.write().await.remove(&id);
+
+        result
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), LspError> {
@@ -433,6 +463,36 @@ impl LspClient {
 
     pub fn subscribe(&self) -> broadcast::Receiver<LspEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Wait until a `publishDiagnostics` notification for `path` arrives, or
+    /// `timeout` elapses. Returns `true` if the event was observed.
+    ///
+    /// Best-effort: reaching the timeout is not an error, callers proceed
+    /// with whatever diagnostics are available.
+    pub async fn wait_diagnostics_for(&self, path: &Path, timeout: Duration) -> bool {
+        let mut rx = self.subscribe();
+        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        tokio::time::timeout(timeout, async {
+            loop {
+                match rx.recv().await {
+                    Ok(LspEvent::Diagnostics { path: event_path, .. }) => {
+                        let event_path = event_path
+                            .canonicalize()
+                            .unwrap_or_else(|_| event_path.clone());
+                        if event_path == target {
+                            return true;
+                        }
+                    }
+                    // Keep waiting through lagged events.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn goto_definition(
@@ -955,12 +1015,13 @@ impl LspClientRegistry {
         }
 
         if wait_for_diagnostics && !matching.is_empty() {
-            // Give LSP servers a moment to produce diagnostics.
-            // The TS version uses client.waitForDiagnostics which listens
-            // for a publishDiagnostics notification. We approximate this
-            // with a short sleep, since the broadcast-based event system
-            // already stores diagnostics as they arrive.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Event-driven: wait for this file's publishDiagnostics instead
+            // of a fixed sleep. Reaching the bound is not an error.
+            for client in &matching {
+                client
+                    .wait_diagnostics_for(path, DIAGNOSTICS_WAIT_TIMEOUT)
+                    .await;
+            }
         }
 
         Ok(())

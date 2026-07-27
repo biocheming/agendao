@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -11,6 +12,13 @@ use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
 
 use crate::protocol::{JsonRpcMessage, JsonRpcRequest};
 use crate::McpClientError;
+
+/// Bound on the HTTP send/response-header phase of MCP POSTs.
+///
+/// reqwest applies no total timeout by default, so a hung server could block
+/// a POST forever. Response bodies stay unbounded: long tool calls stream
+/// progress frames and are governed by the client's own request timeout.
+const HTTP_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Transport trait
@@ -197,10 +205,10 @@ impl McpTransport for HttpTransport {
             McpClientError::ProtocolError(format!("Failed to serialize request: {}", e))
         })?;
 
-        let resp =
-            builder.body(body).send().await.map_err(|e| {
-                McpClientError::TransportError(format!("HTTP request failed: {}", e))
-            })?;
+        let resp = tokio::time::timeout(HTTP_SEND_TIMEOUT, builder.body(body).send())
+            .await
+            .map_err(|_| McpClientError::Timeout)?
+            .map_err(|e| McpClientError::TransportError(format!("HTTP request failed: {}", e)))?;
 
         if !resp.status().is_success() {
             return Err(McpClientError::TransportError(format!(
@@ -378,10 +386,9 @@ impl McpTransport for SseTransport {
             McpClientError::ProtocolError(format!("Failed to serialize request: {}", e))
         })?;
 
-        let resp = builder
-            .body(body)
-            .send()
+        let resp = tokio::time::timeout(HTTP_SEND_TIMEOUT, builder.body(body).send())
             .await
+            .map_err(|_| McpClientError::Timeout)?
             .map_err(|e| McpClientError::TransportError(format!("HTTP POST failed: {}", e)))?;
 
         if !resp.status().is_success() {

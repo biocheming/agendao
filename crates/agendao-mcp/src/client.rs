@@ -1,15 +1,18 @@
 use agendao_core::bus::{Bus, BusEventDef};
 use chrono::Utc;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::oauth::McpOAuthManager;
 use crate::protocol::*;
 use crate::tool::McpToolRegistry;
 use crate::transport::{HttpTransport, McpTransport, SseTransport, StdioTransport};
+
+/// Maximum number of log lines retained per server in the registry.
+const MAX_LOG_LINES_PER_SERVER: usize = 100;
 
 // ---------------------------------------------------------------------------
 // McpStatus – mirrors the TS discriminated union `MCP.Status`
@@ -122,7 +125,7 @@ enum RegistryConnectionConfig {
 
 pub struct McpClient {
     server_name: String,
-    transport: Mutex<Option<Box<dyn McpTransport>>>,
+    transport: Mutex<Option<Arc<dyn McpTransport>>>,
     request_id: AtomicU64,
     initialized: RwLock<bool>,
     capabilities: RwLock<Option<ServerCapabilities>>,
@@ -132,10 +135,50 @@ pub struct McpClient {
     oauth_manager: RwLock<Option<Arc<McpOAuthManager>>>,
     bus: Option<Arc<Bus>>,
     /// Set to true when a `notifications/tools/list_changed` is received.
-    tools_changed: std::sync::atomic::AtomicBool,
+    tools_changed: Arc<AtomicBool>,
+    /// Pending requests awaiting a response, dispatched by the reader task.
+    pending: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<JsonRpcMessage>>>>,
+    /// Background task that reads from the transport and dispatches messages.
+    reader_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 pub static MCP_TOOLS_CHANGED_EVENT: BusEventDef = BusEventDef::new("mcp.tools.changed");
+
+/// Handle a server notification received by the background reader task.
+async fn handle_notification(
+    server_name: &str,
+    tools_changed: &AtomicBool,
+    notif: JsonRpcNotification,
+) {
+    match notif.method.as_str() {
+        "notifications/tools/list_changed" => {
+            tracing::info!(
+                server = %server_name,
+                "MCP server tools changed, flagging for reload"
+            );
+            tools_changed.store(true, Ordering::SeqCst);
+        }
+        "notifications/resources/list_changed" => {
+            tracing::debug!(
+                server = %server_name,
+                "MCP server resources changed (not yet handled)"
+            );
+        }
+        "notifications/prompts/list_changed" => {
+            tracing::debug!(
+                server = %server_name,
+                "MCP server prompts changed (not yet handled)"
+            );
+        }
+        other => {
+            tracing::debug!(
+                server = %server_name,
+                method = other,
+                "Unhandled MCP notification"
+            );
+        }
+    }
+}
 
 impl McpClient {
     pub fn new(server_name: String, tool_registry: Arc<McpToolRegistry>) -> Self {
@@ -150,7 +193,9 @@ impl McpClient {
             status: RwLock::new(McpStatus::Disabled),
             oauth_manager: RwLock::new(None),
             bus: None,
-            tools_changed: std::sync::atomic::AtomicBool::new(false),
+            tools_changed: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            reader_task: Mutex::new(None),
         }
     }
 
@@ -235,10 +280,7 @@ impl McpClient {
 
     async fn connect_stdio_inner(&self, config: McpServerConfig) -> Result<(), McpClientError> {
         let transport = StdioTransport::new(&config.command, &config.args, config.env).await?;
-        {
-            let mut t = self.transport.lock().await;
-            *t = Some(Box::new(transport));
-        }
+        self.set_transport(Arc::new(transport)).await;
         self.initialize().await?;
         self.load_tools().await?;
         Ok(())
@@ -290,10 +332,7 @@ impl McpClient {
         }
 
         let transport = HttpTransport::new(url, Some(merged_headers));
-        {
-            let mut t = self.transport.lock().await;
-            *t = Some(Box::new(transport));
-        }
+        self.set_transport(Arc::new(transport)).await;
         self.initialize().await?;
         self.load_tools().await?;
         Ok(())
@@ -340,10 +379,7 @@ impl McpClient {
 
         let transport = SseTransport::new(url, Some(merged_headers));
         transport.connect().await?;
-        {
-            let mut t = self.transport.lock().await;
-            *t = Some(Box::new(transport));
-        }
+        self.set_transport(Arc::new(transport)).await;
         self.initialize().await?;
         self.load_tools().await?;
         Ok(())
@@ -354,46 +390,82 @@ impl McpClient {
     async fn next_id(&self) -> u64 {
         self.request_id.fetch_add(1, Ordering::SeqCst) + 1
     }
+
+    /// Install a transport and start its background reader task.
+    async fn set_transport(&self, transport: Arc<dyn McpTransport>) {
+        if let Some(handle) = self.reader_task.lock().await.take() {
+            handle.abort();
+        }
+        {
+            let mut guard = self.transport.lock().await;
+            *guard = Some(transport.clone());
+        }
+        let handle = self.spawn_reader(transport);
+        *self.reader_task.lock().await = Some(handle);
+    }
+
+    /// Spawn the background reader task — the sole caller of `receive()` on
+    /// the transport. It dispatches responses to pending requests by id and
+    /// forwards progress notifications so in-flight requests can extend
+    /// their deadline. Because `receive()` no longer runs under the
+    /// transport lock, concurrent requests (and `close()`) do not serialize
+    /// behind a single receive loop, and out-of-order responses are routed
+    /// to the right waiter instead of being dropped.
+    fn spawn_reader(&self, transport: Arc<dyn McpTransport>) -> tokio::task::JoinHandle<()> {
+        let pending = self.pending.clone();
+        let server_name = self.server_name.clone();
+        let tools_changed = self.tools_changed.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match transport.receive().await {
+                    Ok(Some(JsonRpcMessage::Response(resp))) => {
+                        let tx = pending.lock().await.remove(&resp.id);
+                        if let Some(tx) = tx {
+                            let _ = tx.send(JsonRpcMessage::Response(resp));
+                        } else {
+                            tracing::debug!(
+                                server = %server_name,
+                                id = resp.id,
+                                "MCP response for unknown or timed-out request, dropping"
+                            );
+                        }
+                    }
+                    Ok(Some(JsonRpcMessage::Notification(notif))) => {
+                        if McpClient::is_progress_notification(&notif) {
+                            let senders: Vec<_> =
+                                pending.lock().await.values().cloned().collect();
+                            for tx in senders {
+                                let _ = tx.send(JsonRpcMessage::Notification(notif.clone()));
+                            }
+                        }
+                        handle_notification(&server_name, &tools_changed, notif).await;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::debug!(
+                            server = %server_name,
+                            error = %e,
+                            "MCP reader task terminating after transport error"
+                        );
+                        break;
+                    }
+                }
+            }
+
+            // Connection closed or failed: drop all pending senders so
+            // waiters fail fast instead of hanging until their timeout.
+            pending.lock().await.clear();
+        })
+    }
+
     async fn send_request(
         &self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<JsonRpcResponse, McpClientError> {
-        let id = self.next_id().await;
-        let request = JsonRpcRequest::new(id, method, params);
-
-        // Send under the lock, then release it.
-        {
-            let guard = self.transport.lock().await;
-            let transport = guard.as_ref().ok_or(McpClientError::NotInitialized)?;
-            transport.send(&request).await?;
-        }
-
-        // Re-acquire for receive.
-        let guard = self.transport.lock().await;
-        let transport = guard.as_ref().ok_or(McpClientError::NotInitialized)?;
-
-        let response = loop {
-            match transport.receive().await? {
-                Some(JsonRpcMessage::Response(resp)) if resp.id == id => break resp,
-                Some(JsonRpcMessage::Notification(notif)) => {
-                    self.handle_notification(notif).await;
-                    continue;
-                }
-                Some(_) => continue,
-                None => {
-                    return Err(McpClientError::TransportError(
-                        "Connection closed".to_string(),
-                    ));
-                }
-            }
-        };
-
-        if let Some(error) = response.error {
-            return Err(McpClientError::ServerError(error.message));
-        }
-
-        Ok(response)
+        self.send_request_with_progress_timeout(method, params, self.timeout_ms)
+            .await
     }
 
     async fn send_request_with_progress_timeout(
@@ -405,40 +477,50 @@ impl McpClient {
         let id = self.next_id().await;
         let request = JsonRpcRequest::new(id, method, params);
 
-        {
+        // Register the pending request before sending so the reader task can
+        // dispatch the response as soon as it arrives.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        self.pending.lock().await.insert(id, tx);
+
+        // Hold the transport lock only for the send.
+        let send_result = {
             let guard = self.transport.lock().await;
-            let transport = guard.as_ref().ok_or(McpClientError::NotInitialized)?;
-            transport.send(&request).await?;
+            match guard.as_ref() {
+                Some(transport) => transport.send(&request).await,
+                None => Err(McpClientError::NotInitialized),
+            }
+        };
+        if let Err(e) = send_result {
+            self.pending.lock().await.remove(&id);
+            return Err(e);
         }
 
-        let guard = self.transport.lock().await;
-        let transport = guard.as_ref().ok_or(McpClientError::NotInitialized)?;
         let timeout_duration = Duration::from_millis(timeout_ms);
         let mut deadline = tokio::time::Instant::now() + timeout_duration;
 
-        let response = loop {
-            let message = match tokio::time::timeout_at(deadline, transport.receive()).await {
-                Ok(result) => result?,
-                Err(_) => return Err(McpClientError::Timeout),
+        let result = loop {
+            let message = match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(message)) => message,
+                // Reader task ended and dropped the senders: connection is gone.
+                Ok(None) => {
+                    break Err(McpClientError::TransportError(
+                        "Connection closed".to_string(),
+                    ))
+                }
+                Err(_) => break Err(McpClientError::Timeout),
             };
 
             match message {
-                Some(JsonRpcMessage::Response(resp)) if resp.id == id => break resp,
-                Some(JsonRpcMessage::Notification(notif)) => {
-                    if Self::is_progress_notification(&notif) {
-                        deadline = tokio::time::Instant::now() + timeout_duration;
-                    }
-                    self.handle_notification(notif).await;
-                    continue;
+                JsonRpcMessage::Response(resp) if resp.id == id => break Ok(resp),
+                JsonRpcMessage::Notification(notif) if Self::is_progress_notification(&notif) => {
+                    deadline = tokio::time::Instant::now() + timeout_duration;
                 }
-                Some(_) => continue,
-                None => {
-                    return Err(McpClientError::TransportError(
-                        "Connection closed".to_string(),
-                    ));
-                }
+                _ => {}
             }
         };
+
+        self.pending.lock().await.remove(&id);
+        let response = result?;
 
         if let Some(error) = response.error {
             return Err(McpClientError::ServerError(error.message));
@@ -480,35 +562,9 @@ impl McpClient {
     }
 
     /// Handle a server notification received during request/response.
+    #[cfg(test)]
     async fn handle_notification(&self, notif: JsonRpcNotification) {
-        match notif.method.as_str() {
-            "notifications/tools/list_changed" => {
-                tracing::info!(
-                    server = %self.server_name,
-                    "MCP server tools changed, flagging for reload"
-                );
-                self.tools_changed.store(true, Ordering::SeqCst);
-            }
-            "notifications/resources/list_changed" => {
-                tracing::debug!(
-                    server = %self.server_name,
-                    "MCP server resources changed (not yet handled)"
-                );
-            }
-            "notifications/prompts/list_changed" => {
-                tracing::debug!(
-                    server = %self.server_name,
-                    "MCP server prompts changed (not yet handled)"
-                );
-            }
-            other => {
-                tracing::debug!(
-                    server = %self.server_name,
-                    method = other,
-                    "Unhandled MCP notification"
-                );
-            }
-        }
+        handle_notification(&self.server_name, &self.tools_changed, notif).await;
     }
 
     fn is_progress_notification(notif: &JsonRpcNotification) -> bool {
@@ -610,11 +666,19 @@ impl McpClient {
     }
 
     pub async fn close(&self) -> Result<(), McpClientError> {
+        if let Some(handle) = self.reader_task.lock().await.take() {
+            handle.abort();
+        }
+
         let mut transport = self.transport.lock().await;
         if let Some(t) = transport.as_ref() {
             t.close().await?;
         }
         *transport = None;
+        drop(transport);
+
+        // Fail any in-flight requests still waiting on a response.
+        self.pending.lock().await.clear();
 
         self.tool_registry.clear_server(&self.server_name).await;
         self.set_status(McpStatus::Disabled).await;
@@ -688,12 +752,13 @@ impl McpClientRegistry {
 
     async fn log_event(&self, name: &str, message: impl Into<String>) {
         let line = format!("[{}] {}", Utc::now().to_rfc3339(), message.into());
-        self.logs
-            .write()
-            .await
-            .entry(name.to_string())
-            .or_default()
-            .push(line);
+        let mut logs = self.logs.write().await;
+        let entries = logs.entry(name.to_string()).or_default();
+        entries.push(line);
+        if entries.len() > MAX_LOG_LINES_PER_SERVER {
+            let excess = entries.len() - MAX_LOG_LINES_PER_SERVER;
+            entries.drain(..excess);
+        }
     }
 
     // -- Client management ---------------------------------------------------
@@ -980,10 +1045,7 @@ mod tests {
             ),
         ]);
 
-        {
-            let mut guard = client.transport.lock().await;
-            *guard = Some(Box::new(transport));
-        }
+        client.set_transport(Arc::new(transport)).await;
 
         let result = client
             .call_tool("slow-tool", Some(serde_json::json!({ "q": "value" })))
@@ -992,6 +1054,63 @@ mod tests {
 
         assert_eq!(result.content.len(), 1);
         assert_eq!(result.content[0].text.as_deref(), Some("ok"));
+    }
+
+    fn response(id: u64) -> JsonRpcResponse {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: Some(serde_json::json!({ "ok": true })),
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_request_times_out_when_server_is_silent() {
+        let tool_registry = Arc::new(McpToolRegistry::new());
+        let client = McpClient::new("test-server".to_string(), tool_registry).with_timeout(30);
+
+        // The response arrives long after the 30ms request timeout.
+        let transport = MockTransport::new(vec![(
+            Duration::from_millis(200),
+            Some(JsonRpcMessage::Response(response(1))),
+        )]);
+        client.set_transport(Arc::new(transport)).await;
+
+        let err = client
+            .send_request("tools/list", None)
+            .await
+            .expect_err("request should time out when the server is too slow");
+        assert!(matches!(err, McpClientError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_receive_out_of_order_responses() {
+        let tool_registry = Arc::new(McpToolRegistry::new());
+        let client =
+            McpClient::new("test-server".to_string(), tool_registry).with_timeout(1000);
+
+        // Response for the second request arrives before the first one's.
+        // With a shared receive loop the first waiter would drop it.
+        let transport = MockTransport::new(vec![
+            (
+                Duration::from_millis(30),
+                Some(JsonRpcMessage::Response(response(2))),
+            ),
+            (
+                Duration::from_millis(10),
+                Some(JsonRpcMessage::Response(response(1))),
+            ),
+        ]);
+        client.set_transport(Arc::new(transport)).await;
+
+        let (r1, r2) = tokio::join!(
+            client.send_request("tools/list", None),
+            client.send_request("resources/read", None),
+        );
+
+        assert_eq!(r1.expect("request 1 should complete").id, 1);
+        assert_eq!(r2.expect("request 2 should complete").id, 2);
     }
 
     #[tokio::test]
@@ -1024,10 +1143,7 @@ mod tests {
             Some(JsonRpcMessage::Response(response)),
         )]);
 
-        {
-            let mut guard = client.transport.lock().await;
-            *guard = Some(Box::new(transport));
-        }
+        client.set_transport(Arc::new(transport)).await;
 
         client
             .handle_notification(JsonRpcNotification {

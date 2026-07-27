@@ -387,7 +387,11 @@ async fn get_lsp_diagnostics_impl_with_meta(
                     );
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Wait for this file's diagnostics event instead of a fixed
+                // sleep; reaching the bound is not an error.
+                client
+                    .wait_diagnostics_for(path, agendao_lsp::DIAGNOSTICS_WAIT_TIMEOUT)
+                    .await;
 
                 let diagnostics = client.get_diagnostics(path).await;
                 let errors: Vec<_> = diagnostics
