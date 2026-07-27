@@ -93,6 +93,13 @@ pub(crate) async fn project_server_event(
             }]
         }
 
+        ServerEvent::TodoUpdated { session_id, todos } => {
+            vec![FrontendEvent::TodoReplaced {
+                session_id: session_id.clone(),
+                todos: todos.clone(),
+            }]
+        }
+
         // ── Tool lifecycle: upsert into active tool set ─────────────────
         ServerEvent::ToolCallLifecycle {
             session_id,
@@ -215,10 +222,12 @@ pub(crate) async fn project_server_event(
         // ── Internal / telemetry-only events (no frontend projection) ────
         ServerEvent::Usage { .. }
         | ServerEvent::Error { .. }
-        | ServerEvent::ControlInputTransition { .. }
-        | ServerEvent::ConfigUpdated => {
+        | ServerEvent::ControlInputTransition { .. } => {
             vec![]
         }
+
+        // ── Global config changes: pass through to all frontends ────────
+        ServerEvent::ConfigUpdated => vec![FrontendEvent::ConfigUpdated],
     }
 }
 
@@ -577,6 +586,52 @@ mod tests {
         }
     }
 
+    // ── Todo passthrough ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn todo_updated_passthrough() {
+        let telemetry = test_telemetry();
+        let event = ServerEvent::TodoUpdated {
+            session_id: "ses_1".into(),
+            todos: vec![agendao_types::TodoInfo {
+                content: "write tests".into(),
+                status: "in_progress".into(),
+                priority: "high".into(),
+            }],
+        };
+        let result = project_server_event(&telemetry, &test_sessions(), &event).await;
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            FrontendEvent::TodoReplaced { session_id, todos } => {
+                assert_eq!(session_id, "ses_1");
+                assert_eq!(todos.len(), 1);
+                assert_eq!(todos[0].content, "write tests");
+                assert_eq!(todos[0].status, "in_progress");
+            }
+            other => panic!("expected TodoReplaced, got {:?}", other),
+        }
+    }
+
+    // ── Config passthrough ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn config_updated_passthrough() {
+        let telemetry = test_telemetry();
+        let result = project_server_event(&telemetry, &test_sessions(), &ServerEvent::ConfigUpdated).await;
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(result[0], FrontendEvent::ConfigUpdated),
+            "expected ConfigUpdated, got {:?}",
+            result[0]
+        );
+        // Global event: no session scope, so session-filtered extraction
+        // yields None and unfiltered transports (web SSE) forward it.
+        assert_eq!(
+            crate::session_runtime::frontend_subscription::frontend_event_session_id(&result[0]),
+            None
+        );
+    }
+
     // ── Tool lifecycle ─────────────────────────────────────────────────
 
     #[tokio::test]
@@ -668,14 +723,6 @@ mod tests {
     }
 
     // ── Non-frontend events produce empty vec ──────────────────────────
-
-    #[tokio::test]
-    async fn config_updated_produces_no_frontend_events() {
-        let telemetry = test_telemetry();
-        let result =
-            project_server_event(&telemetry, &test_sessions(), &ServerEvent::ConfigUpdated).await;
-        assert!(result.is_empty());
-    }
 
     #[tokio::test]
     async fn usage_event_produces_no_frontend_events() {
@@ -1075,10 +1122,15 @@ mod tests {
             )))
             .expect("send raw payload");
         event_tx
-            .send(Arc::new(ServerBusEvent::event(ServerEvent::ConfigUpdated)))
+            .send(Arc::new(ServerBusEvent::event(ServerEvent::Usage {
+                session_id: Some("ses_1".into()),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                message_id: None,
+            })))
             .expect("send typed payload");
 
-        // ConfigUpdated projects to zero frontend events as well, so send one
+        // Usage projects to zero frontend events as well, so send one
         // event that DOES project to prove the raw payload was skipped (not
         // merely unprojected).
         event_tx

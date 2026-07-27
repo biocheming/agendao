@@ -271,6 +271,13 @@ pub enum ServerEvent {
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         diff: Vec<DiffEntry>,
     },
+    #[serde(rename = "todo.updated")]
+    TodoUpdated {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        todos: Vec<agendao_types::TodoInfo>,
+    },
 }
 
 impl ServerEvent {
@@ -312,7 +319,8 @@ impl ServerEvent {
             | Self::ControlInputTransition { session_id, .. }
             | Self::ToolCallLifecycle { session_id, .. }
             | Self::TopologyChanged { session_id, .. }
-            | Self::DiffUpdated { session_id, .. } => Some(session_id),
+            | Self::DiffUpdated { session_id, .. }
+            | Self::TodoUpdated { session_id, .. } => Some(session_id),
             Self::AttachedSessionAttached { parent_id, .. }
             | Self::AttachedSessionDetached { parent_id, .. } => Some(parent_id),
             Self::Usage {
@@ -343,6 +351,7 @@ impl ServerEvent {
             Self::AttachedSessionAttached { .. } => "attached_session.attached",
             Self::AttachedSessionDetached { .. } => "attached_session.detached",
             Self::DiffUpdated { .. } => "diff.updated",
+            Self::TodoUpdated { .. } => "todo.updated",
         }
     }
 
@@ -463,6 +472,10 @@ impl ServerEvent {
             telemetry_event_names::DIFF_UPDATED => Some(Self::DiffUpdated {
                 session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
                 diff: serde_json::from_value(event.payload.get("diff")?.clone()).ok()?,
+            }),
+            telemetry_event_names::TODO_UPDATED => Some(Self::TodoUpdated {
+                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
+                todos: serde_json::from_value(event.payload.get("todos")?.clone()).ok()?,
             }),
             telemetry_event_names::ATTACHED_SESSION_ATTACHED => {
                 Some(Self::AttachedSessionAttached {

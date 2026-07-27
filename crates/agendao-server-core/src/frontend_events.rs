@@ -152,6 +152,25 @@ pub enum FrontendEvent {
         diffs: Vec<DiffEntry>,
     },
 
+    // ── Todo ─────────────────────────────────────────────────────────
+
+    /// Todo list has changed — replace the entire todo view.
+    /// Emitted on: todowrite tool invocation (TodoManager update).
+    #[serde(rename = "todo.replaced")]
+    TodoReplaced {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        todos: Vec<agendao_types::TodoInfo>,
+    },
+
+    // ── Config ───────────────────────────────────────────────────────────
+
+    /// Global configuration has changed — frontends should reload
+    /// config-derived state (providers, modes, settings). Global event with
+    /// no session scope.
+    #[serde(rename = "config.updated")]
+    ConfigUpdated,
+
     // ── Output ───────────────────────────────────────────────────────
 
     /// An output block has been appended to the session transcript.

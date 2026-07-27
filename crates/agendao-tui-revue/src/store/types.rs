@@ -8,7 +8,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TodoStatus { Pending, InProgress, Completed, Cancelled }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,

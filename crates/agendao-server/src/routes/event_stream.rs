@@ -487,6 +487,7 @@ pub(super) fn event_passes_subscription_caps(
         | ServerEvent::AttachedSessionAttached { .. }
         | ServerEvent::AttachedSessionDetached { .. }
         | ServerEvent::DiffUpdated { .. }
+        | ServerEvent::TodoUpdated { .. }
         | ServerEvent::ControlInputTransition { .. } => true,
     }
 }

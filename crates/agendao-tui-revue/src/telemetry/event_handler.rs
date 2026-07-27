@@ -335,6 +335,37 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             );
             Some(session_id.clone())
         }
+
+        FrontendEvent::TodoReplaced { session_id, todos } => {
+            // Replace 语义：todowrite 全量下发。内容无变化时 push_todo_list
+            // 返回 false —— 不触 Signal、不标脏、不重绘。
+            let items: Vec<TodoItem> = todos
+                .iter()
+                .map(|t| TodoItem {
+                    content: t.content.clone(),
+                    status: todo_status_from_str(&t.status),
+                })
+                .collect();
+            if session.push_todo_list("todos", items, None) {
+                Some(session_id.clone())
+            } else {
+                None
+            }
+        }
+        // Global config change: the TUI reads config through its own
+        // authorities on demand; no transcript region to invalidate here.
+        FrontendEvent::ConfigUpdated => None,
+    }
+}
+
+/// Map a wire status string to the store TodoStatus (same mapping as the
+/// one-shot REST fetch in keymap::eager_load_session_messages).
+pub fn todo_status_from_str(status: &str) -> TodoStatus {
+    match status {
+        "completed" | "done" => TodoStatus::Completed,
+        "in_progress" => TodoStatus::InProgress,
+        "cancelled" | "canceled" => TodoStatus::Cancelled,
+        _ => TodoStatus::Pending,
     }
 }
 
@@ -590,5 +621,49 @@ mod tests {
         apply_frontend_event(&ev(vec![]), &session);
         assert!(session.diff_summary.get().is_empty());
         assert!(!session.diff_detail_open.get(), "无 diff 时明细必须收起");
+    }
+
+    /// TodoReplaced：落地 TodoList 块；内容无变化时返回 None（不触发重绘），
+    /// 内容变化时返回 Some 并替换块内容。
+    #[test]
+    fn todo_replaced_applies_and_dedups() {
+        let session = SessionStore::new();
+        let ev = |todos: Vec<agendao_types::TodoInfo>| FrontendEvent::TodoReplaced {
+            session_id: "s1".into(),
+            todos,
+        };
+        let todo = |content: &str, status: &str| agendao_types::TodoInfo {
+            content: content.into(),
+            status: status.into(),
+            priority: "medium".into(),
+        };
+
+        // 首次下发：落地 + Some。
+        let applied = apply_frontend_event(&ev(vec![todo("task a", "in_progress")]), &session);
+        assert!(applied.is_some(), "首次下发必须标脏");
+        let msgs = session.messages.get();
+        match msgs.last() {
+            Some(TranscriptBlock::TodoList { items, .. }) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].content, "task a");
+                assert_eq!(items[0].status, TodoStatus::InProgress);
+            }
+            other => panic!("expected TodoList, got {:?}", other),
+        }
+
+        // 相同内容重发：None（不触发重绘）。
+        let applied = apply_frontend_event(&ev(vec![todo("task a", "in_progress")]), &session);
+        assert!(applied.is_none(), "内容无变化不得标脏");
+
+        // 内容变化：Some + 替换。
+        let applied = apply_frontend_event(&ev(vec![todo("task a", "completed")]), &session);
+        assert!(applied.is_some(), "内容变化必须标脏");
+        let msgs = session.messages.get();
+        match msgs.last() {
+            Some(TranscriptBlock::TodoList { items, .. }) => {
+                assert_eq!(items[0].status, TodoStatus::Completed);
+            }
+            other => panic!("expected TodoList, got {:?}", other),
+        }
     }
 }

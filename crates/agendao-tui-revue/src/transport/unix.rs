@@ -61,6 +61,8 @@ fn event_session_id_short(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::PermissionRemoved { session_id, .. }
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
+        | FrontendEvent::TodoReplaced { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
+        FrontendEvent::ConfigUpdated => None,
     }
 }

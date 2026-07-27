@@ -1,10 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { apiUrl, parseSSE, serverPasswordAuthHeaders } from "../lib/api";
 import type { OutputBlock } from "../lib/history";
-import { applyOutputBlock, shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
+import { shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
 import {
   permissionInteractionFromEvent,
-  questionInteractionFromEvent,
+  questionInteractionFromInfo,
 } from "../lib/interaction";
 import { useAgendaoStore } from "../store";
 
@@ -59,14 +59,7 @@ export function useServerEventStream({
   scheduleSessionRefresh,
 }: UseServerEventStreamOptions) {
   const appendRuntimeSurfaceBlock = useAgendaoStore((s) => s.appendRuntimeSurfaceBlock);
-  const setMessages = useAgendaoStore((s) => s.setMessages);
   const setRuntimeSurfaceBanner = useAgendaoStore((s) => s.setRuntimeSurfaceBanner);
-  const showThinking = useAgendaoStore((s) => s.showThinking);
-  const showThinkingRef = useRef(showThinking);
-
-  useEffect(() => {
-    showThinkingRef.current = showThinking;
-  }, [showThinking]);
 
   useEffect(() => {
     let active = true;
@@ -114,73 +107,64 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "error" && eventSessionId === selectedSessionId) {
-        flushPendingOutputBlocks();
-        store.setLatestRuntimeError(String(event.error ?? "Unknown error"));
-        setMessages((current) =>
-          applyOutputBlock(
-            current,
-            {
-              kind: "status",
-              tone: "error",
-              text: String(event.error ?? "Unknown error"),
-            },
-            showThinkingRef.current,
-          ),
-        );
-        store.setStreaming(false);
-        store.setStatusLine("error");
-        return;
-      }
-
-      if (type === "session.updated") {
-        const source = typeof event.source === "string" ? event.source : "";
-        if (source !== "topology") {
-          scheduleSessionRefresh();
-        }
-        return;
-      }
-
       if (type === "config.updated") {
         onConfigUpdated();
         return;
       }
 
-      if (type === "session.status" && eventSessionId === selectedSessionId) {
+      // Canonical web-tier status event: the server projects every
+      // ServerEvent::SessionStatus into `session.runtime.replaced` on the
+      // frontend bus (see crates/agendao-server/src/session_runtime/
+      // frontend_projection.rs). It is also the sidebar-refresh trigger —
+      // the legacy `session.updated` vocabulary never reaches this channel.
+      if (type === "session.runtime.replaced" && eventSessionId === selectedSessionId) {
         flushPendingOutputBlocks();
-        const rawStatus = event.status;
-        const statusCandidate =
-          typeof rawStatus === "string"
-            ? rawStatus
-            : rawStatus && typeof rawStatus === "object" && "type" in rawStatus
-              ? String((rawStatus as { type?: unknown }).type ?? "")
-              : String(rawStatus ?? "");
-        const status = statusCandidate === "retry" ? "retrying" : statusCandidate;
-        if (status === "idle" || status === "complete" || status === "error") {
+        scheduleSessionRefresh();
+        const runtime = event.runtime as Record<string, unknown> | undefined;
+        const rawStatus = typeof runtime?.run_status === "string" ? runtime.run_status : "";
+        if (rawStatus === "idle") {
           store.setStreaming(false);
-          store.setStatusLine(status || "idle");
-          if (status !== "error") {
-            store.setLatestRuntimeError(null);
-          }
-        } else if (status === "compacting" || status === "retrying") {
+          store.setStatusLine("idle");
+          store.setLatestRuntimeError(null);
+        } else if (rawStatus === "waiting_on_user") {
+          store.setStreaming(false);
+          store.setStatusLine("awaiting_user");
+          store.setLatestRuntimeError(null);
+        } else if (rawStatus === "running" || rawStatus === "waiting_on_tool") {
           store.setStreaming(true);
-          store.setStatusLine(status);
+          store.setStatusLine("running");
+          store.setLatestRuntimeError(null);
+        } else if (rawStatus === "compacting") {
+          store.setStreaming(true);
+          store.setStatusLine("compacting");
           store.setLatestRuntimeError(null);
         }
         return;
       }
 
-      if (type === "question.created" && eventSessionId === selectedSessionId) {
+      // Topology/stage snapshots replace the legacy `execution.topology.changed`
+      // vocabulary; refresh the activity panel when a topology is present.
+      if (type === "session.projection.replaced" && eventSessionId === selectedSessionId) {
+        if (event.topology) {
+          void refreshExecutionActivity(eventSessionId);
+        }
+        return;
+      }
+
+      // Canonical web-tier question events (payload `question` is QuestionInfo).
+      if (type === "question.upsert" && eventSessionId === selectedSessionId) {
         flushPendingOutputBlocks();
-        store.setQuestion(questionInteractionFromEvent(event, eventSessionId));
+        const question = event.question as Parameters<typeof questionInteractionFromInfo>[0];
+        store.setQuestion(questionInteractionFromInfo(question));
         store.setQuestionAnswers({});
+        store.setQuestionSubmitting(false);
         store.setStreaming(false);
         store.setStatusLine("awaiting_user");
         store.setLatestRuntimeError(null);
         return;
       }
 
-      if (type === "question.resolved" && eventSessionId === selectedSessionId) {
+      if (type === "question.removed" && eventSessionId === selectedSessionId) {
         store.setQuestion(null);
         store.setQuestionAnswers({});
         store.setQuestionSubmitting(false);
@@ -190,13 +174,14 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "execution.topology.changed" && eventSessionId === selectedSessionId) {
-        void refreshExecutionActivity(eventSessionId);
-        return;
-      }
-
-      if (type === "permission.requested" && eventSessionId === selectedSessionId) {
-        store.setPermission(permissionInteractionFromEvent(event, eventSessionId));
+      // Canonical web-tier contract: the server projects PermissionRequested
+      // into `permission.upsert` (payload `permission` is PermissionRequestInfo,
+      // same shape as the legacy `info`), so both paths converge here.
+      if (type === "permission.upsert" && eventSessionId === selectedSessionId) {
+        const info = (event.permission ?? {}) as Record<string, unknown>;
+        store.setPermission(
+          permissionInteractionFromEvent({ permissionID: info.id, info }, eventSessionId),
+        );
         store.setPermissionSubmitting(false);
         store.setPermissionSubmitError(null);
         store.setPermissionSubmitStartedAt(null);
@@ -207,7 +192,7 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "permission.resolved") {
+      if (type === "permission.resolved" || type === "permission.removed") {
         const resolvedPermissionId = String(event.permissionID ?? "");
         let resolvedCurrentPermission = false;
         store.setPermission((current) => {
@@ -267,7 +252,6 @@ export function useServerEventStream({
     refreshExecutionActivity,
     scheduleSessionRefresh,
     appendRuntimeSurfaceBlock,
-    setMessages,
     setRuntimeSurfaceBanner,
   ]);
 }

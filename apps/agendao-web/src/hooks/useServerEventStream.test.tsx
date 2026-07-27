@@ -108,28 +108,29 @@ describe("useServerEventStream", () => {
     unmount();
   });
 
-  it("handles error and permission lifecycle events by updating streaming state and interaction state", async () => {
+  it("applies web-tier question.upsert / question.removed events to the interaction state", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";
+    let removed = false;
     const parseSSESpy = vi.spyOn(apiModule, "parseSSE").mockImplementation(async (_response, onEvent) => {
-      onEvent("message", {
-        type: "permission.requested",
-        session_id: "session-1",
-        permissionID: "perm-1",
-        info: {
-          message: "Need approval",
-          permission_class: "workspace_write",
-        },
-      });
-      onEvent("message", {
-        type: "permission.resolved",
-        permissionID: "perm-1",
-      });
-      onEvent("message", {
-        type: "error",
-        session_id: "session-1",
-        error: "boom",
-      });
+      if (!removed) {
+        onEvent("message", {
+          type: "question.upsert",
+          sessionID: "session-1",
+          question: {
+            id: "q-1",
+            session_id: "session-1",
+            questions: ["Proceed with the refactor?"],
+            options: [["Yes", "No"]],
+          },
+        });
+      } else {
+        onEvent("message", {
+          type: "question.removed",
+          sessionID: "session-1",
+          questionID: "q-1",
+        });
+      }
       throw abortError;
     });
 
@@ -160,14 +161,157 @@ describe("useServerEventStream", () => {
       expect(parseSSESpy).toHaveBeenCalled();
     });
 
-    const state = useAgendaoStore.getState();
+    const upserted = useAgendaoStore.getState();
     expect(flushPendingOutputBlocks).toHaveBeenCalled();
-    expect(state.permission).toBeNull();
-    expect(state.permissionSubmitCompletedAt).not.toBeNull();
-    expect(state.latestRuntimeError).toBe("boom");
-    expect(state.streaming).toBe(false);
-    expect(state.statusLine).toBe("reconnecting");
-    expect(state.permissionSubmitting).toBe(false);
+    expect(upserted.question?.request_id).toBe("q-1");
+    expect(upserted.question?.questions).toHaveLength(1);
+    expect(upserted.streaming).toBe(false);
+
+    // Second connection round delivers question.removed: the turn continues.
+    removed = true;
+    await waitFor(
+      () => {
+        expect(useAgendaoStore.getState().question).toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    expect(useAgendaoStore.getState().streaming).toBe(true);
+
+    unmount();
+  });
+
+  it("applies web-tier permission.upsert / permission.removed events to the interaction state", async () => {
+    const abortError = new Error("aborted");
+    abortError.name = "AbortError";
+    let removed = false;
+    const parseSSESpy = vi.spyOn(apiModule, "parseSSE").mockImplementation(async (_response, onEvent) => {
+      if (!removed) {
+        onEvent("message", {
+          type: "permission.upsert",
+          sessionID: "session-1",
+          permission: {
+            id: "perm-pty-1",
+            session_id: "session-1",
+            tool: "pty",
+            permission_class: "dangerous_exec",
+            supported_lifetimes: ["once"],
+            input: {
+              patterns: ["/bin/bash"],
+              metadata: { command: "/bin/bash" },
+            },
+            message: "Start terminal command `/bin/bash`",
+          },
+        });
+      } else {
+        onEvent("message", {
+          type: "permission.removed",
+          sessionID: "session-1",
+          permissionID: "perm-pty-1",
+          reply: "once",
+        });
+      }
+      throw abortError;
+    });
+
+    globalThis.fetch = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.signal?.aborted) {
+        throw abortError;
+      }
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    const { unmount } = renderHook(() =>
+      useServerEventStream({
+        applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        clearPendingOutputBlockFlush: vi.fn<() => void>(),
+        clearPendingSessionRefresh: vi.fn<() => void>(),
+        flushPendingOutputBlocks: vi.fn<() => void>(),
+        onConfigUpdated: vi.fn<() => void>(),
+        queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
+        refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
+        scheduleSessionRefresh: vi.fn<() => void>(),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(parseSSESpy).toHaveBeenCalled();
+    });
+
+    const upserted = useAgendaoStore.getState();
+    expect(upserted.permission?.permission_id).toBe("perm-pty-1");
+    expect(upserted.permission?.permission).toBe("pty");
+    expect(upserted.permission?.permission_class).toBe("dangerous_exec");
+    expect(upserted.permission?.command).toBe("/bin/bash");
+    expect(upserted.permission?.supported_lifetimes).toEqual(["once"]);
+
+    // Second connection round delivers permission.removed for the same id.
+    removed = true;
+    useAgendaoStore.getState().setStatusLine("running");
+    await waitFor(
+      () => {
+        expect(useAgendaoStore.getState().permission).toBeNull();
+      },
+      { timeout: 5000 },
+    );
+
+    unmount();
+  });
+
+  it("clears streaming on session.runtime.replaced idle and re-arms on running", async () => {
+    const abortError = new Error("aborted");
+    abortError.name = "AbortError";
+    let phase: "idle" | "running" = "idle";
+    const parseSSESpy = vi.spyOn(apiModule, "parseSSE").mockImplementation(async (_response, onEvent) => {
+      onEvent("message", {
+        type: "session.runtime.replaced",
+        sessionID: "session-1",
+        runtime: {
+          session_id: "session-1",
+          run_status: phase,
+        },
+      });
+      throw abortError;
+    });
+
+    globalThis.fetch = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.signal?.aborted) {
+        throw abortError;
+      }
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    useAgendaoStore.setState({ streaming: true, statusLine: "running" });
+
+    const { unmount } = renderHook(() =>
+      useServerEventStream({
+        applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        clearPendingOutputBlockFlush: vi.fn<() => void>(),
+        clearPendingSessionRefresh: vi.fn<() => void>(),
+        flushPendingOutputBlocks: vi.fn<() => void>(),
+        onConfigUpdated: vi.fn<() => void>(),
+        queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
+        refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
+        scheduleSessionRefresh: vi.fn<() => void>(),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(parseSSESpy).toHaveBeenCalled();
+    });
+    // statusLine is overwritten by the reconnect cycle after the mocked
+    // stream aborts; the streaming flag is the stable assertion here.
+    expect(useAgendaoStore.getState().streaming).toBe(false);
+
+    // Reconnect round delivers a running snapshot: streaming re-arms.
+    phase = "running";
+    await waitFor(
+      () => {
+        expect(useAgendaoStore.getState().streaming).toBe(true);
+      },
+      { timeout: 5000 },
+    );
 
     unmount();
   });

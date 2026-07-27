@@ -800,30 +800,12 @@ impl AppHandler {
                         }
                     }
                 }
-                // ── Poll todos when running ──
-                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) {
-                    if let Some(ref api) = self.api {
-                        if let Some(ref sid) = self.active_session.session_id.get() {
-                            if let Ok(todos) = api.get_session_todos(sid) {
-                                if !todos.is_empty() {
-                                    let items: Vec<crate::store::types::TodoItem> = todos.iter().map(|t| {
-                                        crate::store::types::TodoItem {
-                                            content: t.content.clone(),
-                                            status: match t.status.as_str() {
-                                                "completed" | "done" => crate::store::types::TodoStatus::Completed,
-                                                "in_progress" => crate::store::types::TodoStatus::InProgress,
-                                                "cancelled" | "canceled" => crate::store::types::TodoStatus::Cancelled,
-                                                _ => crate::store::types::TodoStatus::Pending,
-                                            },
-                                        }
-                                    }).collect();
-                                    self.active_session.push_todo_list("todos", items, None);
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
+                // Todos are event-driven: the server emits
+                // FrontendEvent::TodoReplaced on every todowrite (see
+                // session_runtime), applied via apply_frontend_event above.
+                // The initial list is fetched once in
+                // eager_load_session_messages on session open — no per-tick
+                // polling on the UI thread.
 
                 // ── 消费 title_refresh_pending：一轮结束后刷新一次 title ──
                 // dispatch 发 prompt 时置位；Idle 时从权威 get_session 拉取服务端
@@ -2887,6 +2869,21 @@ pub(crate) fn eager_load_session_messages(
     // 这里从权威（get_session）拉取同步，闭合状态所有权（阴面唯一真相 → 阳面渲染）。
     if let Ok(info) = api.get_session(session_id) {
         active_session.title.set(info.title);
+    }
+    // 一次性播种 todo 列表（土律·第四条单点权威）：打开/切换会话时从权威
+    // REST 端点拉一次；此后的增量由 FrontendEvent::TodoReplaced 事件驱动，
+    // 不再轮询。
+    if let Ok(todos) = api.get_session_todos(session_id) {
+        if !todos.is_empty() {
+            let items: Vec<crate::store::types::TodoItem> = todos
+                .iter()
+                .map(|t| crate::store::types::TodoItem {
+                    content: t.content.clone(),
+                    status: crate::telemetry::event_handler::todo_status_from_str(&t.status),
+                })
+                .collect();
+            active_session.push_todo_list("todos", items, None);
+        }
     }
     match api.get_messages(session_id) {
         Ok(msgs) => {

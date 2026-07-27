@@ -23,6 +23,7 @@ pub mod telemetry_event_names {
     pub const TOOL_COMPLETED: &str = "tool.completed";
     pub const EXECUTION_TOPOLOGY_CHANGED: &str = "execution.topology.changed";
     pub const DIFF_UPDATED: &str = "diff.updated";
+    pub const TODO_UPDATED: &str = "todo.updated";
     pub const ATTACHED_SESSION_ATTACHED: &str = "attached_session.attached";
     pub const ATTACHED_SESSION_DETACHED: &str = "attached_session.detached";
 }

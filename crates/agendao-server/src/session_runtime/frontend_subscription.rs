@@ -10,7 +10,9 @@ pub(crate) fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::PermissionRemoved { session_id, .. }
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
+        | FrontendEvent::TodoReplaced { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
+        FrontendEvent::ConfigUpdated => None,
     }
 }
 
@@ -48,6 +50,8 @@ pub(crate) fn frontend_event_passes_subscription_caps(
         | FrontendEvent::PermissionUpsert { .. }
         | FrontendEvent::PermissionRemoved { .. }
         | FrontendEvent::ToolCallUpsert { .. }
-        | FrontendEvent::DiffReplaced { .. } => true,
+        | FrontendEvent::DiffReplaced { .. }
+        | FrontendEvent::TodoReplaced { .. } => true,
+        FrontendEvent::ConfigUpdated => true,
     }
 }

@@ -321,12 +321,24 @@ impl SessionStore {
 
     /// Push or update a todo list block.  Deduplicates by `block_id`:
     /// replaces the last TodoList with the same id, otherwise appends.
+    ///
+    /// Returns `true` when the visible content actually changed. When the
+    /// incoming items are identical to the current block's, the Signal is
+    /// left untouched (no dirty marking, no redraw) — callers key redraws
+    /// off this flag.
     pub fn push_todo_list(
         &self,
         block_id: &str,
         items: Vec<crate::store::types::TodoItem>,
         summary: Option<crate::store::types::TodoSummary>,
-    ) {
+    ) -> bool {
+        // No-op fast path: identical items in the existing block — skip the
+        // Signal write entirely so no redraw is triggered.
+        if let Some(TranscriptBlock::TodoList { id, items: old, .. }) = self.messages.get().last() {
+            if id == block_id && *old == items {
+                return false;
+            }
+        }
         self.messages.update(|msgs| {
             // Replace existing TodoList with same id, or append
             if let Some(TranscriptBlock::TodoList { id, .. }) = msgs.last() {
@@ -344,6 +356,7 @@ impl SessionStore {
                 summary,
             });
         });
+        true
     }
 
     // ── 消息折叠 ──

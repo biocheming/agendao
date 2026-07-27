@@ -968,14 +968,20 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         .await;
 
         // Populate the TodoManager when a todowrite tool is invoked so the
-        // /session/{id}/todo endpoint returns live data.
+        // /session/{id}/todo endpoint returns live data. The TodoUpdated
+        // ServerEvent drives the frontend todo view (TUI subscribes via
+        // todo.replaced) — no polling needed.
         if tool_name.eq_ignore_ascii_case("todowrite")
             || tool_name.eq_ignore_ascii_case("todo_write")
         {
             if let Some(todos) = extract_todo_items_from_args(tool_args) {
                 self.state
                     .todo_manager
-                    .update(&self.session_id, todos)
+                    .update(&self.session_id, todos.clone())
+                    .await;
+                self.state
+                    .runtime_telemetry
+                    .todo_updated(&self.session_id, &todos)
                     .await;
             }
         }

@@ -616,6 +616,23 @@ impl RuntimeTelemetryAuthority {
         .await;
     }
 
+    pub(crate) async fn todo_updated(&self, session_id: &str, todos: &[agendao_types::TodoInfo]) {
+        self.record_stage_event(
+            session_id,
+            StageEvent::new(
+                EventScope::Session,
+                None,
+                None,
+                telemetry_event_names::TODO_UPDATED,
+                serde_json::json!({
+                    "sessionID": session_id,
+                    "todos": todos,
+                }),
+            ),
+        )
+        .await;
+    }
+
     pub(crate) async fn record_session_updated(&self, session_id: &str, source: &str) {
         self.record_stage_event(
             session_id,
