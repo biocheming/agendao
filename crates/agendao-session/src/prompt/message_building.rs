@@ -27,7 +27,7 @@ use super::{
     CONTEXT_COMPACTION_RECORD_METADATA_KEY,
 };
 use agendao_types::{
-    tool_call_replay_input, tool_call_replay_text, ContextCompactionBackoffSummary,
+    tool_call_replay_input, tool_call_replay_text_len, ContextCompactionBackoffSummary,
     FewShotSurfaceItem, LightweightTrimSummary, RequestBoundaryHygieneActionKind,
     RequestBoundaryHygieneActionSummary, RequestBoundaryHygieneSummary,
     SessionContinuityCompactionSummary, SessionContinuityDependency,
@@ -659,7 +659,7 @@ impl SessionPrompt {
                     content.len() + title.as_ref().map_or(0, |t| t.len())
                 }
                 PartType::ToolCall { input, raw, .. } => {
-                    tool_call_replay_text(input, raw.as_deref()).map_or(0, |value| value.len())
+                    tool_call_replay_text_len(input, raw.as_deref())
                 }
                 PartType::Reasoning { text } => text.len(),
                 _ => 0,
@@ -757,6 +757,25 @@ impl SessionPrompt {
             .collect();
 
         Content::Parts(content_parts)
+    }
+
+    /// Borrowing variant of [`Self::filter_compacted_messages`]: when no
+    /// compaction part exists (the common per-step case) the full history is
+    /// returned as a borrowed slice with zero copying; only a compacted history
+    /// materializes an owned `Vec`. Selection semantics are identical.
+    pub(super) fn filter_compacted_messages_cow(
+        messages: &[SessionMessage],
+    ) -> std::borrow::Cow<'_, [SessionMessage]> {
+        let has_compaction = messages.iter().any(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part.part_type, PartType::Compaction { .. }))
+        });
+        if !has_compaction {
+            return std::borrow::Cow::Borrowed(messages);
+        }
+        std::borrow::Cow::Owned(Self::filter_compacted_messages(messages))
     }
 
     pub(super) fn filter_compacted_messages(messages: &[SessionMessage]) -> Vec<SessionMessage> {

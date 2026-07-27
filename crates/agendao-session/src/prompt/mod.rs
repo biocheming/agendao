@@ -188,7 +188,7 @@ use agendao_skill::{
 };
 use agendao_types::SkillRuntimeCompositionHintKind;
 use agendao_types::{
-    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text,
+    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text_len,
     ContextCompactionAssessmentSummary, ContextCompactionBackoffSummary,
     ContextCompactionDecisionTrace, ContextCompactionInstalledDiagnostics,
     ContextCompactionLifecycleStatus, ContextCompactionLifecycleSummary, ContextCompactionSummary,
@@ -1548,7 +1548,7 @@ pub fn govern_pre_dispatch_session_context(
 }
 
 pub fn estimate_current_context_tokens(messages: &[SessionMessage]) -> Option<u64> {
-    let filtered = SessionPrompt::filter_compacted_messages(messages);
+    let filtered = SessionPrompt::filter_compacted_messages_cow(messages);
     latest_prompt_input_tokens(&filtered).or_else(|| estimate_tail_content_tokens(&filtered))
 }
 
@@ -1573,7 +1573,7 @@ pub fn explain_session_context(
         .iter()
         .filter(|message| SessionPrompt::is_model_visible_message(message))
         .count();
-    let filtered = SessionPrompt::filter_compacted_messages(&record.messages);
+    let filtered = SessionPrompt::filter_compacted_messages_cow(&record.messages);
     let message_with_parts =
         SessionPrompt::to_message_with_parts(&filtered, provider_id, model_id, &record.directory);
     let api_view_messages = crate::message_v2::to_model_messages(
@@ -1988,7 +1988,7 @@ fn estimate_tail_content_tokens(messages: &[SessionMessage]) -> Option<u64> {
                 content.len() + title.as_ref().map_or(0, |title| title.len())
             }
             PartType::ToolCall { input, raw, .. } => {
-                tool_call_replay_text(input, raw.as_deref()).map_or(0, |value| value.len())
+                tool_call_replay_text_len(input, raw.as_deref())
             }
             PartType::Reasoning { text } => text.len(),
             PartType::File {

@@ -289,6 +289,38 @@ fn provider_message_context_char_len(message: &agendao_provider::Message) -> usi
     }
 }
 
+/// Incremental cache for the request-view body-char total.
+///
+/// Conversation history is append-only between checkpoint mutations, so the
+/// per-message char length (which serializes tool-call inputs to JSON) is
+/// computed once per message and reused on later steps. The two checkpoint
+/// mutation paths (compaction / replacement) must call [`Self::invalidate`].
+#[derive(Default)]
+struct RequestViewCharCache {
+    message_lens: Vec<usize>,
+    total: usize,
+}
+
+impl RequestViewCharCache {
+    fn body_chars(&mut self, messages: &[agendao_provider::Message]) -> usize {
+        if messages.len() < self.message_lens.len() {
+            // History shrank outside a tracked mutation; drop stale entries.
+            self.invalidate();
+        }
+        for message in &messages[self.message_lens.len()..] {
+            let len = provider_message_context_char_len(message);
+            self.message_lens.push(len);
+            self.total += len;
+        }
+        self.total
+    }
+
+    fn invalidate(&mut self) {
+        self.message_lens.clear();
+        self.total = 0;
+    }
+}
+
 fn is_checkpoint_summary_message(message: &agendao_provider::Message) -> bool {
     matches!(
         (&message.role, &message.content),
@@ -297,8 +329,11 @@ fn is_checkpoint_summary_message(message: &agendao_provider::Message) -> bool {
     )
 }
 
-fn request_view_metrics(messages: &[agendao_provider::Message]) -> RequestViewMetrics {
-    let body_chars: usize = messages.iter().map(provider_message_context_char_len).sum();
+fn request_view_metrics(
+    messages: &[agendao_provider::Message],
+    char_cache: &mut RequestViewCharCache,
+) -> RequestViewMetrics {
+    let body_chars = char_cache.body_chars(messages);
     let system_prefix_messages = messages
         .iter()
         .take_while(|message| matches!(message.role, agendao_provider::Role::System))
@@ -351,8 +386,12 @@ impl StepCheckpointCollector {
         }
     }
 
-    fn snapshot(&mut self, messages: &[agendao_provider::Message]) -> StepCheckpointSnapshot {
-        let current_view = request_view_metrics(messages);
+    fn snapshot(
+        &mut self,
+        messages: &[agendao_provider::Message],
+        char_cache: &mut RequestViewCharCache,
+    ) -> StepCheckpointSnapshot {
+        let current_view = request_view_metrics(messages, char_cache);
         let previous_view = self.assessments.last().cloned();
         self.assessments.push(current_view.clone());
         StepCheckpointSnapshot {
@@ -413,11 +452,12 @@ async fn run_step_checkpoint_cycle<S: LoopSink>(
     end_boundary: &StepBoundary,
     step_usage: Option<&StepUsage>,
     strict: bool,
+    char_cache: &mut RequestViewCharCache,
 ) -> Result<(), LoopError> {
     let mut checkpoint_collector =
         StepCheckpointCollector::new(policy.checkpoint_governance.max_assessments);
     loop {
-        let checkpoint = checkpoint_collector.snapshot(conversation.messages());
+        let checkpoint = checkpoint_collector.snapshot(conversation.messages(), char_cache);
         let default_directive = policy.checkpoint_governance.default_directive(
             model_context_limits,
             step_usage,
@@ -470,7 +510,8 @@ async fn run_step_checkpoint_cycle<S: LoopSink>(
                     );
                     break;
                 };
-                let after = request_view_metrics(conversation.messages());
+                char_cache.invalidate();
+                let after = request_view_metrics(conversation.messages(), char_cache);
                 checkpoint_collector.record_compaction(before, after, focus, reason, &compacted);
             }
             StepCheckpointDirective::ReplaceRequestView { messages, reason } => {
@@ -488,7 +529,8 @@ async fn run_step_checkpoint_cycle<S: LoopSink>(
                 }
                 let before = checkpoint.current_view.clone();
                 conversation.replace_messages(messages);
-                let after = request_view_metrics(conversation.messages());
+                char_cache.invalidate();
+                let after = request_view_metrics(conversation.messages(), char_cache);
                 checkpoint_collector.record_replacement(before, after, reason);
             }
         }
@@ -524,6 +566,13 @@ pub async fn run_loop<S: LoopSink>(
     let mut total_tool_calls: u32 = 0;
     let mut content = String::new();
     let model_context_limits = model.context_limits();
+    // Tool definitions are fixed for the lifetime of a single run_loop call in
+    // all current dispatcher implementations, so fetch schemas once instead of
+    // regenerating them (with hook-payload clones) on every step.
+    let mut cached_tool_defs: Option<Vec<agendao_provider::ToolDefinition>> = None;
+    // Incremental request-view char metrics: history is append-only between
+    // checkpoint mutations, so per-message lengths are computed once.
+    let mut char_cache = RequestViewCharCache::default();
 
     // Global dedup set (only used when policy.tool_dedup == Global).
     let mut global_executed_ids: HashSet<String> = HashSet::new();
@@ -554,11 +603,9 @@ pub async fn run_loop<S: LoopSink>(
             .map_err(|e| LoopError::SinkError(e.to_string()))?;
 
         // ── Build request and call model ──────────────────────────────
-        let tool_defs = tools.list_definitions().await;
-        let req = LoopRequest {
-            messages: conversation.messages().to_vec(),
-            tools: tool_defs,
-        };
+        if cached_tool_defs.is_none() {
+            cached_tool_defs = Some(tools.list_definitions().await);
+        }
 
         // ── Consume stream: normalize → dispatch to sink ─────────────
         let mut step_content = String::new();
@@ -576,7 +623,14 @@ pub async fn run_loop<S: LoopSink>(
             had_error = false;
             let mut saw_visible_stream_output = false;
 
-            let raw_stream = model.call_stream(req.clone()).await?;
+            // Build the request per attempt: the first (and normally only)
+            // attempt moves it into `call_stream` without a second full-history
+            // deep copy; only the rare initial-stream retry rebuilds it.
+            let req = LoopRequest {
+                messages: conversation.messages().to_vec(),
+                tools: cached_tool_defs.clone().unwrap_or_default(),
+            };
+            let raw_stream = model.call_stream(req).await?;
             // Wrap with assemble_tool_calls to normalize Start+Delta→End.
             let mut stream = agendao_provider::assemble_tool_calls(raw_stream);
 
@@ -763,6 +817,7 @@ pub async fn run_loop<S: LoopSink>(
                 &end_boundary,
                 step_usage.as_ref(),
                 false,
+                &mut char_cache,
             )
             .await?;
 
@@ -916,6 +971,7 @@ pub async fn run_loop<S: LoopSink>(
             &end_boundary,
             step_usage.as_ref(),
             true,
+            &mut char_cache,
         )
         .await?;
     }

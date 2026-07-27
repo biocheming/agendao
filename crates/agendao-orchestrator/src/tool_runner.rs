@@ -48,16 +48,29 @@ impl ToolRunner {
         call: ToolCallInput,
         exec_ctx: &ExecutionContext,
     ) -> ToolCallOutput {
-        let available = self.executor.list_ids().await;
-        let repaired_name =
-            Self::repair_tool_call_name(&call.name, &available).unwrap_or(call.name.clone());
-
+        // Fast path: execute under the name the model provided. Only when
+        // that fails do we pay for `list_ids()` to look for a case-variant
+        // repair, instead of allocating the full tool id list on every call.
         let result = self
             .executor
-            .execute(&repaired_name, call.arguments, exec_ctx)
+            .execute(&call.name, call.arguments.clone(), exec_ctx)
             .await;
 
-        Self::to_output(&call.id, &repaired_name, result)
+        let error = match result {
+            Ok(output) => return Self::to_output(&call.id, &call.name, Ok(output)),
+            Err(error) => error,
+        };
+
+        let available = self.executor.list_ids().await;
+        if let Some(repaired_name) = Self::repair_tool_call_name(&call.name, &available) {
+            let retry = self
+                .executor
+                .execute(&repaired_name, call.arguments, exec_ctx)
+                .await;
+            return Self::to_output(&call.id, &repaired_name, retry);
+        }
+
+        Self::to_output(&call.id, &call.name, Err(error))
     }
 
     fn to_output(
