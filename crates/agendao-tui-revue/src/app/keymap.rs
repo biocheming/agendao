@@ -647,7 +647,14 @@ impl AppHandler {
                         dispatch_outcome::DispatchOutcome::Sent { status, .. } => {
                             if status == "queued" || status == "awaiting_user" {
                                 self.active_session.run_status.set(RunStatus::Running);
-                            } else if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
+                            }
+                            // U10：server 口径的排队回执 → 计数，prompt hint
+                            // 显示 "Queued (n)"（计数直读 server status，不猜）。
+                            if status == "queued" {
+                                self.queued_prompts = self.queued_prompts.saturating_add(1);
+                            } else if !matches!(status.as_str(), "awaiting_user")
+                                && matches!(self.active_session.run_status.get(), RunStatus::Sending)
+                            {
                                 // 同步整轮回执（"accepted"）：local_prompt 与 HTTP
                                 // session_prompt 都是整轮跑完才返回，回执到达即本轮
                                 // 已结束。正常路径轮末 SessionRuntimeReplaced(Idle)
@@ -661,10 +668,13 @@ impl AppHandler {
                             }
                             // status 其他值且事件流已接管：等服务端 FrontendEvent 经
                             // event_bus 驱动状态机，此处不抢。
+                            // 发送成功 → 清除陈旧重试留存（U10：避免上一次
+                            // 失败的 Ctrl+R 在新一轮成功后误重发旧文）。
+                            self.last_failed_prompt = None;
                             self.title_refresh_pending = true;
                             changed = true;
                         }
-                        dispatch_outcome::DispatchOutcome::Failed { user_msg_id, error, .. } => {
+                        dispatch_outcome::DispatchOutcome::Failed { user_msg_id, error, prompt_text, .. } => {
                             // 回收乐观消息（生命周期对称：push ↔ remove），不留
                             // "幽灵 user prompt"误导用户以为已发送。
                             self.active_session.remove_user_message(user_msg_id);
@@ -675,10 +685,21 @@ impl AppHandler {
                             self.active_session
                                 .run_status
                                 .set(RunStatus::Error(error.clone()));
-                            self.store.push_toast(
-                                &format!("Send failed: {}", error),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
+                            // U10：一键重试——留存原文，toast 指路 Ctrl+R。
+                            // 裸 'r' 不可用：prompt 独占字母键，会抢正常输入。
+                            // 空 prompt_text（shell 失败）= 不可重试，不指路。
+                            if prompt_text.is_empty() {
+                                self.store.push_toast(
+                                    &format!("Send failed: {}", error),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                            } else {
+                                self.last_failed_prompt = Some(prompt_text.clone());
+                                self.store.push_toast(
+                                    &format!("Send failed: {} — Ctrl+R to retry", error),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                            }
                             changed = true;
                         }
                         dispatch_outcome::DispatchOutcome::ShellSent { command, .. } => {
@@ -696,6 +717,13 @@ impl AppHandler {
                             changed = true;
                         }
                     }
+                }
+                // U10：轮次落定（Idle）→ 排队计数归零（新一轮从 0 计；
+                // hint 只在运行态渲染，此处是唯一的计数重置点——土律·单点）。
+                if matches!(self.active_session.run_status.get(), RunStatus::Idle)
+                    && self.queued_prompts > 0
+                {
+                    self.queued_prompts = 0;
                 }
                 // ── 水：drain 非 prompt 异步操作回执（U6：测连接等）──
                 for oc in self.app_ops.drain() {
@@ -1123,6 +1151,16 @@ impl AppHandler {
                             // U8：Ctrl+O → 重开首个待决策项（⏸ 角标的键盘
                             // 等价物；无 pending 时不消费，落回普通路由）。
                             if self.reopen_first_pending() {
+                                return true;
+                            }
+                        }
+                        Key::Char('r') => {
+                            // U10：Ctrl+R → 重发最近一次发送失败的 prompt
+                            // （toast 文案与此同源）。裸 'r' 不可用：prompt
+                            // 独占字母键，会抢正常输入。take 清空——重试再
+                            // 失败时 Failed 回执会重新留存原文。
+                            if let Some(text) = self.last_failed_prompt.take() {
+                                self.dispatch(text);
                                 return true;
                             }
                         }
@@ -2219,6 +2257,7 @@ impl AppHandler {
             let sid_c = sid.clone();
             let mid_c = mid.clone();
             let text_c = text.clone();
+            let text_retry = text.clone();
             api.handle().spawn(async move {
                 let r = api_c
                     .send_prompt_with_async(&sid_c, text_c, agent, scheduler_profile, model, None)
@@ -2232,6 +2271,7 @@ impl AppHandler {
                         session_id: sid_c,
                         user_msg_id: mid_c,
                         error: format!("{e}"),
+                        prompt_text: text_retry,
                     }),
                 };
             });
@@ -2503,6 +2543,10 @@ impl AppHandler {
                         session_id: sid_c,
                         user_msg_id: mid_c,
                         error: format!("{e}"),
+                        // shell 失败不提供 Ctrl+R 重试：重试走 prompt 通道会把
+                        // 命令当 prompt 发给模型。空串 = 不可重试（Failed 分支
+                        // 据此不落 last_failed_prompt）。
+                        prompt_text: String::new(),
                     }),
                 };
             });
@@ -4903,4 +4947,162 @@ mod tests {
         assert!(h.quit_requested);
         assert!(h.store.exiting.get());
     }
+
+    // ── U10：排队计数与一键重试 ──
+
+    /// server 回执 "queued" → queued_prompts 累加（server 口径计数）。
+    #[test]
+    fn queued_receipt_increments_counter() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.active_session.run_status.set(RunStatus::Sending);
+        let tx = h.dispatch_outcomes.sender();
+        tx.send(dispatch_outcome::DispatchOutcome::Sent {
+            session_id: "s".into(),
+            status: "queued".into(),
+        })
+        .unwrap();
+        tx.send(dispatch_outcome::DispatchOutcome::Sent {
+            session_id: "s".into(),
+            status: "queued".into(),
+        })
+        .unwrap();
+        h.handle(&Event::Tick);
+        assert_eq!(h.queued_prompts, 2, "两个 queued 回执各计一次");
+        assert!(
+            matches!(h.active_session.run_status.get(), RunStatus::Running),
+            "queued 回执推进到 Running"
+        );
+    }
+
+    /// run_status 回 Idle 时 Tick 归零排队计数（本轮跑完队列即消化）。
+    #[test]
+    fn queued_counter_resets_on_idle() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.queued_prompts = 3;
+        h.active_session.run_status.set(RunStatus::Idle);
+        h.handle(&Event::Tick);
+        assert_eq!(h.queued_prompts, 0);
+    }
+
+    /// 陈旧会话的 queued 回执不计数（单 active 模型防串扰）。
+    #[test]
+    fn queued_receipt_from_stale_session_ignored() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("current");
+        h.dispatch_outcomes
+            .sender()
+            .send(dispatch_outcome::DispatchOutcome::Sent {
+                session_id: "other".into(),
+                status: "queued".into(),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert_eq!(h.queued_prompts, 0);
+    }
+
+    /// Failed 回执留存原文 + toast 指路 Ctrl+R。
+    #[test]
+    fn failed_receipt_stores_retryable_prompt() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.active_session.push_user_message("m1", "hello");
+        h.dispatch_outcomes
+            .sender()
+            .send(dispatch_outcome::DispatchOutcome::Failed {
+                session_id: "s".into(),
+                user_msg_id: "m1".into(),
+                error: "boom".into(),
+                prompt_text: "hello".into(),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert_eq!(h.last_failed_prompt.as_deref(), Some("hello"));
+        let toasts = h.store.toasts.get();
+        assert!(
+            toasts.iter().any(|t| t.text.contains("Ctrl+R")),
+            "toast 指路 Ctrl+R 重试：{:?}",
+            toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// shell 失败（空 prompt_text）不可重试：不落 last_failed_prompt，
+    /// toast 不指路 Ctrl+R。
+    #[test]
+    fn failed_shell_receipt_is_not_retryable() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.dispatch_outcomes
+            .sender()
+            .send(dispatch_outcome::DispatchOutcome::Failed {
+                session_id: "s".into(),
+                user_msg_id: "m1".into(),
+                error: "boom".into(),
+                prompt_text: String::new(),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.last_failed_prompt.is_none());
+        let toasts = h.store.toasts.get();
+        assert!(toasts.iter().all(|t| !t.text.contains("Ctrl+R")));
+    }
+
+    /// 发送成功清除陈旧失败原文（防误重发上一轮的旧文）。
+    #[test]
+    fn successful_send_clears_stale_failed_prompt() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.last_failed_prompt = Some("old failure".into());
+        h.dispatch_outcomes
+            .sender()
+            .send(dispatch_outcome::DispatchOutcome::Sent {
+                session_id: "s".into(),
+                status: "accepted".into(),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.last_failed_prompt.is_none());
+    }
+
+    /// U10：short_err 截断——首行 24 字符封顶，超长补 …，多行只取首行。
+    #[test]
+    fn short_err_truncates_to_first_line_24_chars() {
+        assert_eq!(crate::app::short_err("boom"), "boom");
+        let long = "x".repeat(40);
+        let got = crate::app::short_err(&long);
+        assert_eq!(got.chars().count(), 25, "24 字符 + …");
+        assert!(got.ends_with('…'));
+        assert_eq!(crate::app::short_err("first line\nsecond line"), "first line");
+    }
+
+    /// Ctrl+R 重试：take 清空留存原文并重发同一 prompt（乐观消息再上屏）。
+    #[test]
+    fn ctrl_r_redispatches_last_failed_prompt() {
+        let mut h = mk_handler();
+        h.last_failed_prompt = Some("retry me".into());
+        let consumed = h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('r'))));
+        assert!(consumed, "有待重试原文时 Ctrl+R 被消费");
+        assert!(h.last_failed_prompt.is_none(), "take 清空，不双发");
+        let msgs = h.active_session.messages.get();
+        assert!(
+            msgs.iter().any(|m| matches!(
+                m,
+                crate::store::types::TranscriptBlock::UserPrompt { content, .. }
+                    if content == "retry me"
+            )),
+            "重试把原文作为 user 消息乐观上屏（无 api 时 echo 路径还会补一条 \
+             助手回声，故按内容断言而非条数）"
+        );
+    }
+
+    /// 无失败原文时 Ctrl+R 不拦截（落回普通路由，不吞键）。
+    #[test]
+    fn ctrl_r_without_failed_prompt_is_noop() {
+        let mut h = mk_handler();
+        let before = h.active_session.messages.get().len();
+        h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('r'))));
+        assert_eq!(h.active_session.messages.get().len(), before, "不误发");
+    }
+
 }

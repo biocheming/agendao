@@ -22,10 +22,13 @@ pub enum DispatchOutcome {
     },
     /// `send_prompt_with` 失败。dispatch 已乐观 push 的 user message
     /// 需在 Tick drain 回收（生命周期对称：push ↔ remove）。
+    /// `prompt_text` 是原始输入（U10：Ctrl+R 重试要重发同一 prompt，
+    /// 乐观消息回收后文本唯一来源就是这里）。
     Failed {
         session_id: String,
         user_msg_id: String,
         error: String,
+        prompt_text: String,
     },
     /// `execute_shell` 成功（`!command` shell 输入）。shell 不是 LLM 轮次，
     /// 回执到达即本轮结束：run_status 复位 Idle、补渲染 assistant

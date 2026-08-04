@@ -91,6 +91,20 @@ fn mark_region_dirty(app: &mut App, region_id: &str) -> bool {
     }
 }
 
+/// U10：header Error 详情截断——状态芯片宽度有限，取首行前 24 字符，
+/// 超长补 …；全文在 transcript 的 Failed notice 里可查。
+pub(crate) fn short_err(e: &str) -> String {
+    const MAX: usize = 24;
+    let first = e.lines().next().unwrap_or("").trim();
+    let mut chars = first.chars();
+    let prefix: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_some() {
+        format!("{}…", prefix)
+    } else {
+        prefix
+    }
+}
+
 pub fn run_app() -> anyhow::Result<()> { run_app_with_config(AppConfig::default()) }
 
 pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
@@ -415,6 +429,13 @@ pub(crate) struct AppHandler {
     /// 据此判相，驱动所有输入处块光标 600ms 量级闪烁。
     pub(crate) blink_tick: u64,
     pub(crate) interrupt_pending: bool,
+    /// U10：运行期排队 prompt 计数——server 回执 Sent{status:"queued"}
+    /// 累加（server 口径，不猜），run_status 回 Idle 时 Tick 归零。
+    /// prompt hint 据此显示 "Queued (n) — will send when current run finishes"。
+    pub(crate) queued_prompts: u32,
+    /// U10：最近一次发送失败的原始 prompt 文本（Failed 回执留存，
+    /// Ctrl+R 重试 take 消费；发送成功即清除防误重发旧文）。
+    pub(crate) last_failed_prompt: Option<String>,
     /// U4：agendao 自控退出通道。revue（第三方库，不可改）只对 Ctrl+C 无条件
     /// quit；q 双击、/exit 的退出收口于此——keymap/slash_action 置位，run 循环
     /// 读旗后调 `app.quit()`（AppHandler 拿不到 &mut App，旗标是唯一出口）。
@@ -862,6 +883,8 @@ impl AppHandler {
             last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
+            queued_prompts: 0,
+            last_failed_prompt: None,
             quit_requested: false,
             quit_armed_at: None,
             quit_armed_via_q: false,
@@ -1167,19 +1190,24 @@ impl View for RootView {
                 }
                 // Run status indicator pinned to the right via a flex spacer.
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
-                    RunStatus::Running => (Some(" ● Running"), colors::ACCENT_GREEN()),
+                    RunStatus::Running => (Some(" ● Running".to_string()), colors::ACCENT_GREEN()),
                     // U9：压缩相位独立可辨（◍ 琥珀，区别于 Running 的 ● 绿）。
-                    RunStatus::Compacting => (Some(" ◍ Compacting"), colors::E_AMBER()),
-                    RunStatus::Sending => (Some(" ○ Sending"), colors::ACCENT_YELLOW()),
-                    RunStatus::WaitingUser => (Some(" ⏸ Waiting"), colors::ACCENT_YELLOW()),
-                    RunStatus::Error(_) => (Some(" ✕ Error"), colors::ACCENT_RED()),
+                    RunStatus::Compacting => (Some(" ◍ Compacting".to_string()), colors::E_AMBER()),
+                    RunStatus::Sending => (Some(" ○ Sending".to_string()), colors::ACCENT_YELLOW()),
+                    RunStatus::WaitingUser => (Some(" ⏸ Waiting".to_string()), colors::ACCENT_YELLOW()),
+                    // U10：Error 带截断详情——GUI 惯例状态栏错误可读出原因，
+                    // 全文仍在 transcript 的 Failed notice 里。
+                    RunStatus::Error(e) => (
+                        Some(format!(" ✕ {}", short_err(e))),
+                        colors::ACCENT_RED(),
+                    ),
                     RunStatus::Idle => (None, colors::FG_MUTED()),
                 };
                 // Spacer flex grows to push the status to the right edge.
                 header = header.child_flex(Text::new(""), 1.0);
                 if let Some(s) = status_text {
                     let w = s.chars().count() as u16 + 1;
-                    header = header.child_sized(Text::new(s).fg(status_color), w);
+                    header = header.child_sized(Text::new(&s).fg(status_color), w);
                 }
 
                 // 顶部留白：header 上方 1 行空行（page_inner 首 child 前的呼吸感；header 不再顶窗口边）。
@@ -1533,6 +1561,17 @@ impl View for RootView {
                     format!("{} · still waiting…", hint)
                 } else {
                     hint.clone()
+                };
+                // U10：server 口径的排队计数（Sent{status:"queued"} 累加，
+                // Tick 于 run_status 回 Idle 时归零），入队可见即 GUI 的
+                // "已收到，稍后处理"反馈。
+                let hint = if h.queued_prompts > 0 {
+                    format!(
+                        "{} · Queued ({}) — will send when current run finishes",
+                        hint, h.queued_prompts
+                    )
+                } else {
+                    hint
                 };
                 line = line
                     .child_sized(Text::new(format!(" {}", frame)).fg(frame_color), 2)
