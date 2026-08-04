@@ -423,17 +423,10 @@ impl AppHandler {
             UiActionId::CopySession => {
                 // Part 2: 与 /export 复用同一序列化（土律），但不开 dialog——
                 // 直接 OSC52 写终端剪贴板（A4 helper）。
+                // U18①：copy_with_fallback——OSC52 失败兜底临时文件 + 路径 toast。
                 let text = self.active_session.transcript_to_text();
-                match crate::dialog::clipboard::copy(&text) {
-                    Ok(()) => self.store.push_toast(
-                        "Transcript copied to clipboard",
-                        crate::store::types::ToastMsgVariant::Success,
-                    ),
-                    Err(e) => self.store.push_toast(
-                        &format!("Clipboard write failed: {}", e),
-                        crate::store::types::ToastMsgVariant::Error,
-                    ),
-                }
+                let r = crate::dialog::clipboard::copy_with_fallback(&text);
+                self.toast_copy_outcome(r, "Transcript copied to clipboard");
             }
             UiActionId::CompactSession => {
                 // F10：`/compact <focus>` 的 focus 由 sync_slash_from_text 暂存。

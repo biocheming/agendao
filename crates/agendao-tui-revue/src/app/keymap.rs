@@ -1828,6 +1828,77 @@ impl AppHandler {
         }
     }
 
+    /// U18③：当前视口可见块的纯文本（"复制当前屏"——单块 'c' 与全量
+    /// /copy 之间的中间档）。可见范围换算与点击命中/渲染同源
+    /// （build_render_units 高度 + 块间 gap 同口径）；与视口相交的视觉
+    /// 单元其**全部**属主块计入（聚合深井整组进入——用户看到的是组的
+    /// 一部分，复制整组比截半块更可用）。逐块成形走 block_to_text
+    /// 单点权威。
+    fn visible_transcript_text(&self) -> String {
+        let msgs = self.active_session.messages.get();
+        if msgs.is_empty() {
+            return String::new();
+        }
+        let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+        let inner_w = self
+            .terminal_w
+            .saturating_sub(sidebar_w)
+            .saturating_sub(crate::app::PAD.saturating_mul(2));
+        let compact = self.store.compact_density.get();
+        let show_thinking = self.store.show_thinking.get();
+        let total_h = crate::screen::transcript_total_height(&msgs, show_thinking, compact, inner_w);
+        let max_offset = total_h.saturating_sub(self.transcript_viewport_h);
+        let user_offset = self.active_session.scroll_offset.get().min(max_offset);
+        let scroll_top = max_offset.saturating_sub(user_offset);
+        let visible_end = scroll_top.saturating_add(self.transcript_viewport_h);
+        let units = crate::screen::build_render_units(
+            &msgs, None, 0, show_thinking, None, inner_w, compact,
+        );
+        // BTreeSet：块索引去重且保 transcript 顺序。
+        let mut seen = std::collections::BTreeSet::new();
+        let mut acc: u16 = 0;
+        for unit in &units {
+            let block_end = acc.saturating_add(unit.height);
+            if block_end > scroll_top && acc < visible_end {
+                for owner in unit.row_owners.iter().flatten() {
+                    seen.insert(unit.base_index + owner);
+                }
+            }
+            // 块间空行与点击命中/render 同口径：紧凑模式 0 间隔。
+            acc = block_end.saturating_add(if compact { 0 } else { 1 });
+        }
+        let mut text = String::new();
+        for idx in seen {
+            if let Some(block) = msgs.get(idx) {
+                text.push_str(&crate::store::session_store::block_to_text(block));
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    /// U18①：copy_with_fallback 回流统一成形——Clipboard=Success(ok_msg)，
+    /// FileFallback=Warning(临时文件路径)，Err=Error(两层失败原因)。
+    pub(crate) fn toast_copy_outcome(
+        &mut self,
+        result: std::io::Result<crate::dialog::clipboard::CopyOutcome>,
+        ok_msg: &str,
+    ) {
+        use crate::dialog::clipboard::CopyOutcome;
+        use crate::store::types::ToastMsgVariant;
+        match result {
+            Ok(CopyOutcome::Clipboard) => self.store.push_toast(ok_msg, ToastMsgVariant::Success),
+            Ok(CopyOutcome::FileFallback(path)) => self.store.push_toast(
+                &format!("Clipboard unavailable — saved to {}", path.display()),
+                ToastMsgVariant::Warning,
+            ),
+            Err(e) => self.store.push_toast(
+                &format!("Copy failed: {e}"),
+                ToastMsgVariant::Error,
+            ),
+        }
+    }
+
     fn handle_key(&mut self, key: &Key) -> bool {
         // ── Panel/Overlay routing: delegated to route_panel_key (panel_dispatch.rs) ──
         if self.route_panel_key(key) {
@@ -1958,20 +2029,31 @@ impl AppHandler {
                 Key::Char('c') if self.prompt.text().is_empty()
                     && self.active_session.transcript_cursor.get().is_some() => {
                     match self.active_session.cursor_block_to_text() {
-                        Some(text) => match crate::dialog::clipboard::copy(&text) {
-                            Ok(()) => self.store.push_toast(
-                                "Block copied to clipboard",
-                                crate::store::types::ToastMsgVariant::Success,
-                            ),
-                            Err(e) => self.store.push_toast(
-                                &format!("Clipboard write failed: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            ),
-                        },
+                        // U18①：copy_with_fallback——OSC52 失败兜底临时文件。
+                        Some(text) => {
+                            let r = crate::dialog::clipboard::copy_with_fallback(&text);
+                            self.toast_copy_outcome(r, "Block copied to clipboard");
+                        }
                         None => self.store.push_toast(
                             "Nothing to copy at cursor",
                             crate::store::types::ToastMsgVariant::Warning,
                         ),
+                    }
+                    return true;
+                }
+                // U18③：'C' (Shift-c) = 复制当前屏——单块 'c' 与全量 /copy
+                // 的中间档（任意选区的本批替身，选区基建见 Backlog）。
+                // 只需 prompt 空：复制的是视口内容而非选中块，无需 cursor。
+                Key::Char('C') if self.prompt.text().is_empty() => {
+                    let text = self.visible_transcript_text();
+                    if text.is_empty() {
+                        self.store.push_toast(
+                            "Nothing on screen to copy",
+                            crate::store::types::ToastMsgVariant::Warning,
+                        );
+                    } else {
+                        let r = crate::dialog::clipboard::copy_with_fallback(&text);
+                        self.toast_copy_outcome(r, "Screen copied to clipboard");
                     }
                     return true;
                 }
@@ -5416,5 +5498,60 @@ mod tests {
             8,
             "无弹窗滚轮滚 transcript（scroll_up = +3）"
         );
+    }
+
+    /// U18③：'C' 复制当前屏——视口可见块序列化进剪贴板（OSC52），成功 toast。
+    #[test]
+    fn shift_c_copies_visible_screen() {
+        let mut h = mk_session_handler();
+        h.terminal_w = 80;
+        h.transcript_viewport_h = 20;
+        h.active_session.push_user_message("u1", "hello screen");
+        h.active_session.push_assistant_delta("a1", "visible reply");
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('C')))));
+        let toasts = h.store.toasts.get();
+        assert!(
+            toasts.iter().any(|t| t.text.contains("Screen copied")),
+            "'C' 成功 toast: {toasts:?}"
+        );
+    }
+
+    /// U18②：'c' 在 TodoList 块上不再 "Nothing to copy"——全 13 变体
+    /// 均可读序列化（原 6 变体死端）。
+    #[test]
+    fn c_on_todo_block_copies() {
+        let mut h = mk_session_handler();
+        h.active_session.push_todo_list(
+            "todo1",
+            vec![crate::store::types::TodoItem {
+                content: "task one".into(),
+                status: crate::store::types::TodoStatus::Pending,
+            }],
+            None,
+        );
+        h.active_session.transcript_cursor.set(Some(0));
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('c')))));
+        let toasts = h.store.toasts.get();
+        assert!(
+            toasts.iter().any(|t| t.text.contains("Block copied")),
+            "TodoList 块可复制: {toasts:?}"
+        );
+        assert!(!toasts.iter().any(|t| t.text.contains("Nothing to copy")));
+    }
+
+    /// U18③：visible_transcript_text 只收与视口相交的块——底部在、
+    /// 顶部已滚出的不进复制文本（几何与点击命中同源）。
+    #[test]
+    fn visible_transcript_text_follows_scroll() {
+        let mut h = mk_session_handler();
+        h.terminal_w = 80;
+        h.transcript_viewport_h = 3;
+        for i in 0..10 {
+            h.active_session
+                .push_user_message(&format!("u{i}"), &format!("msg-{i}"));
+        }
+        let text = h.visible_transcript_text();
+        assert!(text.contains("msg-9"), "底部块在视口内: {text:?}");
+        assert!(!text.contains("msg-0"), "顶部块已滚出视口: {text:?}");
     }
 }

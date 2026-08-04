@@ -707,31 +707,14 @@ impl SessionStore {
     /// 避免两处各自实现"User: " / "Assistant: " / "Tool: name(params)" /
     /// "Result [name]: " 的格式漂移（金的成形语法在这里**只能有一份**）。
     ///
-    /// 未支持 block（Thinking、StatusEvent 等）跳过——与
-    /// keymap.rs:902-922 原内联版同义，作为重构基线保留行为不变。
+    /// U18② 起逐块成形委托 `block_to_text`（全 13 变体覆盖，含 Thinking
+    /// ——重构基线的"Thinking 跳过"是有意改变：思考内容可读、可复制）。
     pub fn transcript_to_text(&self) -> String {
         let msgs = self.messages.get();
         let mut text = String::new();
         for b in msgs.iter() {
-            match b {
-                TranscriptBlock::UserPrompt { content, .. } => {
-                    text.push_str("User: ");
-                    text.push_str(content);
-                    text.push('\n');
-                }
-                TranscriptBlock::AssistantMsg { content, .. } => {
-                    text.push_str("Assistant: ");
-                    text.push_str(content);
-                    text.push('\n');
-                }
-                TranscriptBlock::ToolCall { name, params, .. } => {
-                    text.push_str(&format!("Tool: {}({})\n", name, params));
-                }
-                TranscriptBlock::ToolResult { name, result, .. } => {
-                    text.push_str(&format!("Result [{}]: {}\n", name, result));
-                }
-                _ => {}
-            }
+            text.push_str(&block_to_text(b));
+            text.push('\n');
         }
         text
     }
@@ -755,34 +738,64 @@ impl SessionStore {
 
     /// 取光标当前 block 的文本表示，用于 'c' 单块复制（OSC52 → 终端剪贴板）。
     ///
-    /// 复用 `transcript_to_text` 的成形契约（User: / Assistant: / Tool: / Result:
-    /// 前缀），额外支持 Thinking（cursor 在思考块时用户主动按 'c' 复制是合理
-    /// 意图；不污染全 transcript 默认序列化）。不支持的 block（SkillActivated
-    /// / TodoList / StageUpdate / CompactionHint / SystemNotice / ImageRef）
-    /// 返回 None，调用方负责 toast 提示「Nothing to copy at cursor」——避免
-    /// 无声失败（道纪第十条：唯一查询权威）。
+    /// U18② 起逐块成形委托 `block_to_text`（与全量序列化同一权威）——
+    /// 全 13 变体覆盖，'c' 不再对 SkillActivated /
+    /// TodoList / StageUpdate 等报 "Nothing to copy"；None 只剩"无
+    /// cursor / cursor 超界"两种（调用方 toast 的语义不变）。
     pub fn cursor_block_to_text(&self) -> Option<String> {
         let cursor = self.transcript_cursor.get()?;
         let msgs = self.messages.get();
-        let block = msgs.get(cursor)?;
-        match block {
-            TranscriptBlock::UserPrompt { content, .. } => {
-                Some(format!("User: {}", content))
-            }
-            TranscriptBlock::AssistantMsg { content, .. } => {
-                Some(format!("Assistant: {}", content))
-            }
-            TranscriptBlock::ToolCall { name, params, .. } => {
-                Some(format!("Tool: {}({})", name, params))
-            }
-            TranscriptBlock::ToolResult { name, result, .. } => {
-                Some(format!("Result [{}]: {}", name, result))
-            }
-            TranscriptBlock::Thinking { content, .. } => {
-                Some(format!("Thinking: {}", content))
-            }
-            _ => None,
+        msgs.get(cursor).map(block_to_text)
+    }
+}
+
+/// 土律：单个 TranscriptBlock → 纯文本的**唯一**成形权威（U18②）。
+///
+/// `transcript_to_text`（/copy 全量、/export）、`cursor_block_to_text`
+/// （'c' 单块）、keymap 的 visible_transcript_text（'C' 当前屏）三处
+/// 共用——"User: " / "Tool: name(params)" 等成形语法只有一份（金的
+/// 成形语法不可漂移）。
+///
+/// match 无通配臂：新增 TranscriptBlock 变体时编译错强制在这里做出
+/// 序列化决定（金：新增块的成形不许逃逸审查）。
+pub fn block_to_text(block: &TranscriptBlock) -> String {
+    match block {
+        TranscriptBlock::UserPrompt { content, .. } => format!("User: {content}"),
+        TranscriptBlock::AssistantMsg { content, .. } => format!("Assistant: {content}"),
+        TranscriptBlock::ToolCall { name, params, .. } => format!("Tool: {name}({params})"),
+        TranscriptBlock::ToolResult { name, result, .. } => {
+            format!("Result [{name}]: {result}")
         }
+        TranscriptBlock::Thinking { content, .. } => format!("Thinking: {content}"),
+        TranscriptBlock::SkillActivated { name, .. } => format!("Skill: {name}"),
+        TranscriptBlock::TodoList { items, .. } => {
+            let mut out = String::from("Todo:");
+            for item in items {
+                // 对齐 render 的状态记号：✓ 完成 / ▶ 进行 / ✗ 取消 / 空 待办，
+                // 纯文本用 markdown task-list 方言（[x]/[~]/[-]/[ ]）。
+                let mark = match item.status {
+                    TodoStatus::Completed => "x",
+                    TodoStatus::InProgress => "~",
+                    TodoStatus::Cancelled => "-",
+                    TodoStatus::Pending => " ",
+                };
+                out.push_str(&format!("\n- [{mark}] {}", item.content));
+            }
+            out
+        }
+        TranscriptBlock::StageUpdate { name, status, metadata, .. } => {
+            let mut out = format!("Stage: {name} — {status}");
+            if let Some(meta) = metadata {
+                out.push('\n');
+                out.push_str(meta);
+            }
+            out
+        }
+        TranscriptBlock::CompactionHint { before_tokens, after_tokens, .. } => {
+            format!("Compaction: {before_tokens} → {after_tokens} tokens")
+        }
+        TranscriptBlock::SystemNotice { text, .. } => format!("Notice: {text}"),
+        TranscriptBlock::ImageRef { mime, .. } => format!("[Image: {mime}]"),
     }
 }
 
@@ -1378,9 +1391,9 @@ mod tests {
         assert_eq!(s.cursor_user_prompt(), None);
     }
 
-    /// cursor_block_to_text 服务于 'c' 单块复制（OSC52）：复用
-    /// transcript_to_text 的成形前缀（User: / Assistant: / Tool: / Result:），
-    /// 额外支持 Thinking。不支持的 block 返回 None，让调用方 toast 提示。
+    /// cursor_block_to_text 服务于 'c' 单块复制（OSC52）：逐块成形与
+    /// transcript_to_text 同权威（block_to_text）。None 只剩无 cursor /
+    /// 超界两种，让调用方 toast 提示。
     #[test]
     fn cursor_block_to_text_serializes_supported_blocks() {
         use crate::store::types::ToolPhase;
@@ -1409,17 +1422,66 @@ mod tests {
             Some("Tool: Read({\"path\":\"x\"})"),
         );
 
-        // Thinking（额外支持，transcript_to_text 不复制但单块复制支持）
+        // Thinking
         s.transcript_cursor.set(Some(3));
         assert_eq!(s.cursor_block_to_text().as_deref(), Some("Thinking: ponder"));
 
-        // SkillActivated → 不支持的 block 返回 None
+        // SkillActivated（U18②：原 None，现可读序列化）
         s.transcript_cursor.set(Some(4));
-        assert_eq!(s.cursor_block_to_text(), None);
+        assert_eq!(s.cursor_block_to_text().as_deref(), Some("Skill: auto"));
 
         // cursor 超界 → None
         s.transcript_cursor.set(Some(99));
         assert_eq!(s.cursor_block_to_text(), None);
+    }
+
+    /// U18②：block_to_text 覆盖全部 13 个变体（原返回 None 的 6 个
+    /// 变体现在都可复制）；match 无通配臂，新增变体编译错强制决定成形。
+    #[test]
+    fn block_to_text_covers_all_variants() {
+        use crate::store::types::{FoldState, TodoStatus, ToolPhase};
+        let cases: Vec<(TranscriptBlock, &str)> = vec![
+            (TranscriptBlock::UserPrompt { id: "1".into(), content: "hi".into(), fold: FoldState::Expanded }, "User: hi"),
+            (TranscriptBlock::AssistantMsg { id: "2".into(), content: "yo".into(), fold: FoldState::Expanded }, "Assistant: yo"),
+            (TranscriptBlock::ToolCall { id: "3".into(), name: "Bash".into(), params: "ls".into(), phase: ToolPhase::Done }, "Tool: Bash(ls)"),
+            (TranscriptBlock::ToolResult { id: "4".into(), name: "Bash".into(), result: "ok".into(), is_error: false, fold: FoldState::Expanded, diff: None }, "Result [Bash]: ok"),
+            (TranscriptBlock::Thinking { id: "5".into(), content: "hmm".into(), fold: FoldState::Expanded, duration_ms: 0 }, "Thinking: hmm"),
+            (TranscriptBlock::SkillActivated { id: "6".into(), name: "pdf".into() }, "Skill: pdf"),
+            (TranscriptBlock::TodoList {
+                id: "7".into(),
+                items: vec![
+                    TodoItem { content: "done".into(), status: TodoStatus::Completed },
+                    TodoItem { content: "doing".into(), status: TodoStatus::InProgress },
+                    TodoItem { content: "todo".into(), status: TodoStatus::Pending },
+                    TodoItem { content: "dropped".into(), status: TodoStatus::Cancelled },
+                ],
+                fold: FoldState::Expanded,
+                summary: None,
+            }, "Todo:\n- [x] done\n- [~] doing\n- [ ] todo\n- [-] dropped"),
+            (TranscriptBlock::StageUpdate { id: "8".into(), name: "plan".into(), status: "running".into(), metadata: None }, "Stage: plan — running"),
+            (TranscriptBlock::StageUpdate { id: "9".into(), name: "exec".into(), status: "done".into(), metadata: Some("{\"k\":1}".into()) }, "Stage: exec — done\n{\"k\":1}"),
+            (TranscriptBlock::CompactionHint { id: "10".into(), before_tokens: 9000, after_tokens: 3000 }, "Compaction: 9000 → 3000 tokens"),
+            (TranscriptBlock::SystemNotice { id: "11".into(), text: "note".into() }, "Notice: note"),
+            (TranscriptBlock::ImageRef { id: "12".into(), mime: "image/png".into() }, "[Image: image/png]"),
+        ];
+        assert_eq!(cases.len(), 12, "13 变体减 StageUpdate 两例 = 12 条用例");
+        for (block, want) in cases {
+            assert_eq!(block_to_text(&block), want, "变体 {block:?}");
+        }
+    }
+
+    /// U18②：全量序列化同权威——/copy 与 /export 现在也含 Thinking 等
+    /// 块（原"未支持跳过"是有意改变：内容可读即应可复制）。
+    #[test]
+    fn transcript_to_text_includes_all_block_kinds() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "hello");
+        s.push_thinking("th1", "ponder");
+        s.push_skill("sk1", "auto");
+        let text = s.transcript_to_text();
+        assert!(text.contains("User: hello\n"));
+        assert!(text.contains("Thinking: ponder\n"));
+        assert!(text.contains("Skill: auto\n"));
     }
 
     // ── U11：内容锚定 + 未读计数 ──

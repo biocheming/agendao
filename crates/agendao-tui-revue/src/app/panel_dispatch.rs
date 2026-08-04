@@ -695,10 +695,17 @@ impl AppHandler {
                         crate::dialog::ExportAction::Copy(text) => {
                             // OSC52 非显示序列，直接写 stdout 安全；dialog 已标 copied。
                             // 不关 dialog：用户看到 ✓，可继续 s:share 或 Esc。
-                            if let Err(e) = crate::dialog::clipboard::copy(&text) {
-                                self.store.push_toast(
-                                    &format!("Clipboard write failed: {}", e),
-                                    crate::store::types::ToastMsgVariant::Error);
+                            // U18①：OSC52 失败兜底临时文件——成功路径不 toast
+                            //（dialog ✓ 已反馈），兜底/双失败必须可观测。
+                            use crate::dialog::clipboard::CopyOutcome;
+                            match crate::dialog::clipboard::copy_with_fallback(&text) {
+                                Ok(CopyOutcome::Clipboard) => {}
+                                Ok(CopyOutcome::FileFallback(path)) => self.store.push_toast(
+                                    &format!("Clipboard unavailable — saved to {}", path.display()),
+                                    crate::store::types::ToastMsgVariant::Warning),
+                                Err(e) => self.store.push_toast(
+                                    &format!("Copy failed: {}", e),
+                                    crate::store::types::ToastMsgVariant::Error),
                             }
                         }
                         crate::dialog::ExportAction::Share(sid) => {
