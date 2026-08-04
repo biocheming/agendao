@@ -14,15 +14,50 @@ impl AppHandler {
     pub(super) fn route_panel_key(&mut self, key: &Key) -> bool {
         match &self.panel {
             Panel::Slash => {
-                match self.slash_popup.handle_key(key) {
-                    Some(action_id) => {
-                        self.execute_slash_action(action_id);
+                // U3：popup 是输入框的视图——只拦截导航/填回/执行/恢复四类
+                // 语义键，其余全部 Pass 贯穿给 prompt（query 由 keymap 从
+                // 输入框文本重新派生，popup 不再自维字符缓冲）。
+                use crate::input::slash_popup::SlashKeyOutcome;
+                let consumed = match self.slash_popup.handle_key(key) {
+                    SlashKeyOutcome::FillBack { command, takes_args } => {
+                        self.prompt.set_text(&command);
+                        if !takes_args {
+                            self.panel = Panel::None;
+                        }
+                        // takes_args：popup 已转 ArgHint 保持打开
+                        true
                     }
-                    None => {
-                        if !self.slash_popup.is_open() { self.panel = Panel::None; }
+                    SlashKeyOutcome::Submit => {
+                        // ArgHint 下 Enter：走与裸 Enter 完全相同的 submit
+                        // 路径（/ 开头 → sync_slash_from_text 解析执行）。
+                        self.panel = Panel::None;
+                        match self.prompt.handle_key(&Key::Enter) {
+                            crate::input::PromptAction::Submit(text) => {
+                                if text.starts_with('/') {
+                                    self.sync_slash_from_text(&text);
+                                    self.prompt.clear();
+                                } else {
+                                    self.dispatch(text);
+                                }
+                            }
+                            crate::input::PromptAction::SubmitShell(cmd) => {
+                                self.dispatch_shell(cmd);
+                            }
+                            _ => {}
+                        }
+                        true
                     }
-                }
-                return true;
+                    SlashKeyOutcome::Restore => {
+                        let pre = self.slash_popup.pre_slash_text.clone();
+                        self.prompt.set_text(&pre);
+                        self.panel = Panel::None;
+                        true
+                    }
+                    SlashKeyOutcome::Consumed => true,
+                    // Pass：贯穿给 prompt（route_panel_key 返回 false）。
+                    SlashKeyOutcome::Pass => false,
+                };
+                return consumed;
             }
             Panel::ModelSelect => {
                 match self.model_select.handle_key(key) {
@@ -758,6 +793,8 @@ impl AppHandler {
             Panel::PluginEdit => self.plugin_edit_dialog.handle_ctrl_key(event),
             Panel::ProviderEdit => self.provider_edit_dialog.handle_ctrl_key(event),
             Panel::Rename => self.rename_dialog.handle_ctrl_key(event),
+            // Slash popup 是输入框的视图（U3）：Ctrl chord 贯穿给 prompt。
+            Panel::Slash => false,
             _ => true,
         }
     }
@@ -777,6 +814,8 @@ impl AppHandler {
             Panel::Rename => self.rename_dialog.paste_text(text),
             Panel::ModelSelect => self.model_select.paste_query(text),
             Panel::SessionList => self.session_list.paste_query(text),
+            // Slash popup 是输入框的视图（U3）：粘贴贯穿给 prompt。
+            Panel::Slash => false,
             _ => true,
         }
     }

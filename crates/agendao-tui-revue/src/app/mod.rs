@@ -1449,7 +1449,7 @@ impl View for RootView {
         let hint = if h.interrupt_pending {
             " ⚠ Press Esc again to interrupt".to_string()
         } else if is_slash {
-            " ↑↓ select  Enter: execute  Esc: close".to_string()
+            h.slash_popup.hint_line().to_string()
         } else {
             h.prompt.status_hint(is_running)
         };
@@ -1701,7 +1701,7 @@ impl View for RootView {
                 // 补全框几何同上(外层 geom);fill 用绝对坐标填输入框宽(非全屏宽),挡下层 transcript。
                 let popup = h.slash_popup.render_popup(geom.w);
                 // 上方空间上限 = 输入框上沿到屏顶，留 1 行顶 margin，避免压顶。
-                let ph = (h.slash_popup.filtered_count().min(8) as u16 + 4)
+                let ph = h.slash_popup.display_height()
                     .min(geom.y_top.saturating_sub(ctx.area.y).saturating_sub(1));
                 let py_abs = geom.y_top.saturating_sub(ph).max(1);
                 let py_rel = py_abs.saturating_sub(ctx.area.y);

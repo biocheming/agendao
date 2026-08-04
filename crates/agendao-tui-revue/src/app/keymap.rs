@@ -15,6 +15,7 @@ use agendao_command::{CommandRegistry, UiActionId};
 use crate::app::{AppHandler, Panel};
 use crate::app::dispatch_outcome;
 use crate::input::{PromptAction, SlashPopup};
+use crate::input::slash_popup::SlashPopupMode;
 use crate::store::app_store::Route;
 use crate::store::types::{RunStatus, SettingsFocusPane, ToastMsgVariant};
 use crate::telemetry::event_handler::apply_frontend_event;
@@ -788,8 +789,22 @@ impl AppHandler {
                             return true;
                         }
                         Key::Char('p') => {
-                            self.slash_popup.open();
-                            self.panel = Panel::Slash;
+                            // U3：palette 与 prompt 单点耦合——空输入框补 "/"
+                            // 开补全；已有 "/" 开头文本则同步 popup；有草稿时
+                            // 不抢输入框（诚实提示，防填回覆盖草稿）。
+                            let text = self.prompt.text();
+                            if text.is_empty() {
+                                self.prompt.set_text("/");
+                                self.slash_popup.open();
+                                self.panel = Panel::Slash;
+                            } else if text.trim_start().starts_with('/') {
+                                self.refresh_slash_popup();
+                            } else {
+                                self.store.push_toast(
+                                    "Slash commands must be the first token — finish or clear the draft first",
+                                    crate::store::types::ToastMsgVariant::Info,
+                                );
+                            }
                             return true;
                         }
                         _ => {}
@@ -830,14 +845,7 @@ impl AppHandler {
                     self.prompt.handle_ctrl_key(key);
                     // Ctrl+U/W/Z 等编辑后 slash token 可能变化，与逐字输入
                     // 同口径重判 popup（例："/mo" 被 Ctrl+U 清空 → 关 popup）。
-                    let current_text = self.prompt.text();
-                    if let Some(query) = SlashPopup::slash_token(&current_text) {
-                        self.slash_popup.open_with_query(query);
-                        self.panel = Panel::Slash;
-                    } else if self.panel == Panel::Slash {
-                        self.slash_popup.close();
-                        self.panel = Panel::None;
-                    }
+                    self.refresh_slash_popup();
                     return true;
                 }
                 self.handle_key(&key.key)
@@ -1403,14 +1411,7 @@ impl AppHandler {
                 self.prompt.paste(text);
                 // 粘贴可能引入/消除 slash token（粘入 "/model x"），与逐字
                 // 输入同口径重判 popup。
-                let current_text = self.prompt.text();
-                if let Some(query) = SlashPopup::slash_token(&current_text) {
-                    self.slash_popup.open_with_query(query);
-                    self.panel = Panel::Slash;
-                } else if self.panel == Panel::Slash {
-                    self.slash_popup.close();
-                    self.panel = Panel::None;
-                }
+                self.refresh_slash_popup();
                 true
             }
             Event::Resize(..) => true,
@@ -1546,17 +1547,8 @@ impl AppHandler {
             PromptAction::None => false,
         };
 
-        // ── Slash/command detection: check current input text on every key ──
-        let current_text = self.prompt.text();
-        if let Some(query) = SlashPopup::slash_token(&current_text) {
-            self.slash_popup.open_with_query(query);
-            self.panel = Panel::Slash;
-            if consumed { return true; }
-        } else if self.panel == Panel::Slash {
-            // Text changed and no longer has slash token
-            self.slash_popup.close();
-            self.panel = Panel::None;
-        }
+        // ── Slash popup 同步（U3：query 派生自输入框首 token，单点权威）──
+        self.refresh_slash_popup();
 
         if consumed { return true; }
 
@@ -1620,9 +1612,39 @@ impl AppHandler {
         }
     }
 
+    /// U3：slash popup 与输入框文本同步的唯一入口（土律·单点权威）。
+    /// query 永远派生自首 token；closed→open 转变时暂存 `/` 之前的内容
+    /// 供 Esc 恢复；ArgHint 形态下文本仍是 "/cmd ..." 则保持不关。
+    pub(super) fn refresh_slash_popup(&mut self) {
+        let current_text = self.prompt.text();
+        match SlashPopup::slash_token(&current_text) {
+            Some(query) => {
+                if !self.slash_popup.is_open() {
+                    // trigger 保证 `/` 是首 token，前面仅前导空白——暂存之。
+                    let leading = current_text.len() - current_text.trim_start().len();
+                    self.slash_popup.pre_slash_text = current_text[..leading].to_string();
+                }
+                self.slash_popup.open_with_query(query);
+                self.panel = Panel::Slash;
+            }
+            None => {
+                if self.panel == Panel::Slash {
+                    // ArgHint 且文本仍 "/cmd args" → 参数输入中，保持提示条；
+                    // 否则（删光了 /、改成普通文本）关 popup。
+                    let keep = self.slash_popup.mode == SlashPopupMode::ArgHint
+                        && current_text.trim_start().starts_with('/');
+                    if !keep {
+                        self.slash_popup.close();
+                        self.panel = Panel::None;
+                    }
+                }
+            }
+        }
+    }
+
     /// Parse `/command` text and execute the corresponding action directly.
     /// CommandRegistry stores names WITH leading `/` (e.g. "/models" "/model").
-    fn sync_slash_from_text(&mut self, text: &str) {
+    pub(super) fn sync_slash_from_text(&mut self, text: &str) {
         let trimmed = text.trim();
         if trimmed.len() <= 1 {
             self.slash_popup.open();
@@ -1694,7 +1716,7 @@ impl AppHandler {
         false
     }
 
-    fn dispatch(&mut self, text: String) {
+    pub(super) fn dispatch(&mut self, text: String) {
         // Handle attachment commands
         if self.handle_attachment_cmd(&text) {
             return;
@@ -3216,6 +3238,101 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('w')))));
         // 提交应失败（name 空）——侧面证明 Ctrl+W 真删了内容而非插入 'w'
         assert!(h.mcp_edit_dialog.handle_key(&Key::Enter).is_none());
+    }
+
+    /// U3：行中 `/` 不触发 popup；首 token `/` 才触发，且打字符进输入框。
+    #[test]
+    fn slash_trigger_narrowed_and_single_authority() {
+        let mut h = mk_handler();
+        for c in "please fix /main".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert_eq!(h.panel, Panel::None, "行中 slash 不得触发 popup");
+        assert_eq!(h.prompt.text(), "please fix /main");
+
+        let mut h = mk_handler();
+        for c in "/mo".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert_eq!(h.panel, Panel::Slash);
+        // 单点权威：字符进了输入框，popup query 与之同步
+        assert_eq!(h.prompt.text(), "/mo");
+        assert_eq!(h.slash_popup.query, "mo");
+    }
+
+    /// U3：无参命令 Enter=填回不执行；第二次 Enter 才执行。
+    #[test]
+    fn slash_enter_fills_back_then_second_enter_executes() {
+        let mut h = mk_handler();
+        for c in "/settings".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert_eq!(h.panel, Panel::Slash);
+        // 第一次 Enter：填回 "/settings "，关 popup，不执行（仍在原路由）
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.prompt.text(), "/settings ");
+        assert_eq!(h.panel, Panel::None);
+        assert!(!matches!(h.store.route.get(), Route::Settings), "填回不得执行");
+        // 第二次 Enter：走正常 submit 执行 → 打开 Settings
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert!(matches!(h.store.route.get(), Route::Settings));
+        assert_eq!(h.prompt.text(), "");
+    }
+
+    /// U3：有参命令填回后转 ArgHint，敲参数 + Enter 执行。
+    #[test]
+    fn slash_arg_command_fillback_hint_then_run() {
+        let mut h = mk_handler();
+        for c in "/compact".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.prompt.text(), "/compact ");
+        assert_eq!(h.panel, Panel::Slash, "有参命令填回后 ArgHint 保持打开");
+        // 敲参数（字符贯穿输入框，popup 不因 "无 slash token" 误关）
+        for c in "focus".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert_eq!(h.prompt.text(), "/compact focus");
+        assert_eq!(h.panel, Panel::Slash, "参数输入中 ArgHint 应保持");
+        // Enter → 执行并清空（无 api/session，CompactSession 臂静默消费）
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.prompt.text(), "");
+        assert_eq!(h.panel, Panel::None);
+    }
+
+    /// U3：Esc 恢复 `/` 之前的内容，不再残留残缺 token、不再被困住。
+    #[test]
+    fn slash_esc_restores_and_no_trap() {
+        let mut h = mk_handler();
+        for c in "/mo".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        assert_eq!(h.panel, Panel::Slash);
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert_eq!(h.prompt.text(), "", "Esc 应恢复打开前内容（空）");
+        assert_eq!(h.panel, Panel::None);
+        // 继续打字不再重开 popup（旧缺陷：残留 /s 导致被困）
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('x'))));
+        assert_eq!(h.panel, Panel::None);
+        assert_eq!(h.prompt.text(), "x");
+    }
+
+    /// U3：Ctrl+P 空输入框补 "/" 开补全；有草稿时不抢输入框。
+    #[test]
+    fn ctrl_p_respects_draft() {
+        let mut h = mk_handler();
+        h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('p'))));
+        assert_eq!(h.prompt.text(), "/");
+        assert_eq!(h.panel, Panel::Slash);
+
+        let mut h = mk_handler();
+        for c in "draft".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('p'))));
+        assert_eq!(h.prompt.text(), "draft", "草稿不得被 palette 覆盖");
+        assert_eq!(h.panel, Panel::None);
     }
 
     /// U1：ModelSelect 打开时粘贴进过滤 query。

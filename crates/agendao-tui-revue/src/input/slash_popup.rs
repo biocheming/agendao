@@ -2,8 +2,19 @@
 //!
 //! Uses agendao_command::CommandRegistry for real slash commands
 //! with fuzzy matching, keyboard navigation, and declarative Revue layout.
+//!
+//! U3 交互契约（2026-08 重构，行为 Breaking）：
+//! - **单点权威**：过滤 query 永远派生自输入框首 token（`slash_token`），
+//!   popup 不再自维一份字符缓冲——打字/Backspace/粘贴/Ctrl 全落输入框，
+//!   popup 只是输入框的视图。消除"输入框显示 /s 而 popup 筛 settings"脱节。
+//! - **trigger 收窄**：仅当 `/` 是首 token（前仅空白）且命令名未完成
+//!   （无参数空格）时触发；行中 `/xxx`、填回后的 `/compact focus` 不触发。
+//! - **Enter/Tab = 填回不执行**：选中命令写回输入框（含尾部空格）；
+//!   有参命令转 ArgHint 保持打开显示参数占位，无参命令关 popup——
+//!   第二次 Enter 走正常 submit 才执行（VS Code 命令面板同口径）。
+//! - **Esc = 恢复原文**：open 时暂存 `/` 之前的内容，Esc 写回输入框。
 
-use agendao_command::{CommandRegistry, UiActionId, UiCommandSpec};
+use agendao_command::{CommandRegistry, UiActionId, UiCommandArgumentKind, UiCommandSpec};
 use revue::prelude::*;
 use revue::event::Key;
 use revue::runtime::render::Cell;
@@ -27,15 +38,45 @@ pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
     if current.is_none() { Some(score) } else { None }
 }
 
+/// popup 两种形态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlashPopupMode {
+    /// 命令列表补全（↑/↓ 导航，Enter/Tab 填回）。
+    Completion,
+    /// 填回有参命令后的参数提示条（Enter 执行，其余键全落输入框）。
+    ArgHint,
+}
+
+/// `handle_key` 的返回：popup 只决定"语义"，文本改动归调用方
+/// （panel_dispatch 持有 prompt，土律·单点权威）。
+pub(crate) enum SlashKeyOutcome {
+    /// 填回：把完整命令名（含尾部空格）写回输入框。takes_args=true 时
+    /// popup 已转 ArgHint 保持打开，调用方保留 Panel::Slash。
+    FillBack { command: String, takes_args: bool },
+    /// ArgHint 下 Enter：调用方走正常 prompt submit 执行输入框文本。
+    Submit,
+    /// Esc：调用方用 `pre_slash_text` 覆盖输入框并关 panel。
+    Restore,
+    /// ↑/↓ 导航等已被消费，无需后续。
+    Consumed,
+    /// 未处理——调用方把键贯穿给 prompt 输入（单点权威的核心）。
+    Pass,
+}
+
 pub struct SlashPopup {
     pub visible: bool,
     pub query: String,
     pub selected: usize,
+    pub(crate) mode: SlashPopupMode,
+    /// ArgHint 形态的提示文本（如 "/compact 〈text〉"）。
+    arg_hint: Option<String>,
+    /// Esc 恢复快照：popup 首次打开时输入框中 `/` 之前的内容
+    /// （trigger 收窄后通常仅前导空白；Ctrl+P 手动打开为空串）。
+    pub(crate) pre_slash_text: String,
     /// All slash commands from the registry
     all_commands: Vec<UiCommandSpec>,
     /// Filtered indices into all_commands
     filtered: Vec<usize>,
-    selected_action: Option<UiActionId>,
 }
 
 impl Default for SlashPopup {
@@ -64,89 +105,144 @@ impl SlashPopup {
             visible: false,
             query: String::new(),
             selected: 0,
+            mode: SlashPopupMode::Completion,
+            arg_hint: None,
+            pre_slash_text: String::new(),
             all_commands,
             filtered: Vec::new(),
-            selected_action: None,
         }
     }
 
     pub fn open(&mut self) {
         self.visible = true; self.selected = 0; self.query.clear();
+        self.mode = SlashPopupMode::Completion;
+        self.arg_hint = None;
+        self.pre_slash_text.clear();
         self.refresh_filter();
     }
 
+    /// query 同步入口（单点权威）：每次输入框文本变化由调用方用
+    /// `slash_token` 的派生值调这里。只改过滤，不动 pre_slash_text
+    /// （快照由调用方在 closed→open 转变时写入）。
     pub fn open_with_query(&mut self, query: impl Into<String>) {
         self.query = query.into();
+        self.mode = SlashPopupMode::Completion;
+        self.arg_hint = None;
         self.refresh_filter();
         self.visible = true;
-        self.selected_action = None;
     }
 
     pub fn close(&mut self) {
         self.visible = false; self.query.clear(); self.filtered.clear();
-        self.selected = 0; self.selected_action = None;
+        self.selected = 0;
+        self.mode = SlashPopupMode::Completion;
+        self.arg_hint = None;
     }
 
     pub fn is_open(&self) -> bool { self.visible }
 
-    pub fn take_action(&mut self) -> Option<UiActionId> {
-        self.selected_action.take()
-    }
-
-    /// Detect if the current prompt text contains a slash token.
-    /// Returns the text after `/` (the query) if a slash command is detected.
+    /// U3·trigger 收窄：仅当 `/` 是**首 token**（前仅空白）且命令名
+    /// 尚未完成（单 token、无参数空格）时返回 `/` 后的 query。
+    /// - "/mo" → Some("mo")；"/" → Some("")（suggested 列表）；
+    /// - "please fix /main" → None（行中 slash 是普通文本）；
+    /// - "/compact focus" / "/compact " → None（命令名已完成，
+    ///   进入参数阶段——补全不再打扰，ArgHint 由 mode 保持）。
     pub fn slash_token(text: &str) -> Option<String> {
-        text.split_whitespace()
-            .last()
-            .filter(|token| token.starts_with('/'))
-            .map(|token| token.trim_start_matches('/').to_string())
-            .filter(|token| !token.is_empty())
+        let trimmed = text.trim_start();
+        let token = trimmed.split_whitespace().next()?;
+        if !token.starts_with('/') {
+            return None;
+        }
+        // token 之后还有内容 → 命令名已完成（在敲参数），不触发补全
+        if !trimmed[token.len()..].is_empty() {
+            return None;
+        }
+        Some(token.trim_start_matches('/').to_string())
     }
 
     /// Number of filtered results (for sizing the popup).
     pub fn filtered_count(&self) -> usize { self.filtered.len() }
 
-    /// Push a character to the filter query.
-    pub fn push_char(&mut self, c: char) {
-        self.query.push(c);
-        self.refresh_filter();
+    /// popup 渲染高度（app/mod.rs 的布局预算唯一口径）。
+    pub fn display_height(&self) -> u16 {
+        match self.mode {
+            SlashPopupMode::Completion => self.filtered.len().min(8) as u16 + 4,
+            SlashPopupMode::ArgHint => 3,
+        }
     }
 
-    /// Pop last character from the filter query.
-    pub fn pop_char(&mut self) {
-        self.query.pop();
-        self.refresh_filter();
+    /// prompt 条 hint 行文案（app/mod.rs 的 is_slash 分支唯一口径）。
+    pub fn hint_line(&self) -> &'static str {
+        match self.mode {
+            SlashPopupMode::Completion => " ↑↓ select · Enter/Tab: complete · Esc: cancel",
+            SlashPopupMode::ArgHint => " Enter: run · Esc: cancel",
+        }
     }
 
-    pub fn handle_key(&mut self, key: &Key) -> Option<UiActionId> {
-        if !self.visible { return None; }
-        match key {
-            Key::Escape => { self.close(); None }
-            Key::Enter => {
-                if let Some(idx) = self.filtered.get(self.selected) {
-                    let action_id = self.all_commands[*idx].action_id;
-                    // close() clears selected_action — remember the action
-                    // BEFORE close(), then return it directly. Calling
-                    // self.take_action() after close() always yields None.
-                    self.close();
-                    return Some(action_id);
+    /// 参数类型的人类可读占位（UiCommandArgumentKind → hint 文案）。
+    fn arg_kind_label(kind: UiCommandArgumentKind) -> &'static str {
+        match kind {
+            UiCommandArgumentKind::None => "",
+            UiCommandArgumentKind::Text => "text",
+            UiCommandArgumentKind::SessionTarget => "session id",
+            UiCommandArgumentKind::ModelRef => "provider/model",
+            UiCommandArgumentKind::ThemeId => "theme id",
+            UiCommandArgumentKind::ModeRef => "mode",
+            UiCommandArgumentKind::AgentRef => "agent",
+            UiCommandArgumentKind::PresetRef => "preset",
+        }
+    }
+
+    pub(crate) fn handle_key(&mut self, key: &Key) -> SlashKeyOutcome {
+        if !self.visible { return SlashKeyOutcome::Pass; }
+        match self.mode {
+            SlashPopupMode::Completion => match key {
+                Key::Escape => { self.close(); SlashKeyOutcome::Restore }
+                // Enter/Tab = 填回不执行（U3 行为 Breaking：老"选中即执行"
+                // 让位给带参命令可补参。第二次 Enter 走正常 submit 执行）。
+                Key::Enter | Key::Tab => {
+                    if let Some(idx) = self.filtered.get(self.selected) {
+                        let cmd = &self.all_commands[*idx];
+                        // registry 的 slash.name 含前导 `/`（"/compact"）。
+                        let name = cmd.slash.as_ref()
+                            .map(|s| s.name)
+                            .unwrap_or(cmd.title);
+                        let kind = cmd.argument_kind();
+                        let takes_args = kind != UiCommandArgumentKind::None;
+                        if takes_args {
+                            self.mode = SlashPopupMode::ArgHint;
+                            self.arg_hint = Some(format!(
+                                "{} 〈{}〉", name, Self::arg_kind_label(kind)));
+                            // visible 保持——转参数提示条
+                        } else {
+                            self.close();
+                        }
+                        return SlashKeyOutcome::FillBack {
+                            command: format!("{} ", name),
+                            takes_args,
+                        };
+                    }
+                    SlashKeyOutcome::Consumed
                 }
-                self.take_action()
-            }
-            Key::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                None
-            }
-            Key::Down => {
-                let max = self.filtered.len().saturating_sub(1);
-                if self.selected < max { self.selected += 1; }
-                None
-            }
-            Key::Backspace => { self.pop_char(); None }
-            Key::Char(c) if c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_' => {
-                self.push_char(*c); None
-            }
-            _ => None,
+                Key::Up => {
+                    self.selected = self.selected.saturating_sub(1);
+                    SlashKeyOutcome::Consumed
+                }
+                Key::Down => {
+                    let max = self.filtered.len().saturating_sub(1);
+                    if self.selected < max { self.selected += 1; }
+                    SlashKeyOutcome::Consumed
+                }
+                // 其余键（字符/Backspace/Paste/Ctrl）全部贯穿给 prompt——
+                // query 由调用方从输入框文本重新派生，popup 不碰字符。
+                _ => SlashKeyOutcome::Pass,
+            },
+            SlashPopupMode::ArgHint => match key {
+                Key::Escape => { self.close(); SlashKeyOutcome::Restore }
+                Key::Enter => { self.close(); SlashKeyOutcome::Submit }
+                // ↑/↓ 也让路（prompt 历史导航），参数阶段 popup 只是提示条。
+                _ => SlashKeyOutcome::Pass,
+            },
         }
     }
 
@@ -190,6 +286,21 @@ impl SlashPopup {
     pub fn render_popup(&self, w: u16) -> impl View {
         let mut stack = vstack();
         if !self.visible {
+            return stack;
+        }
+
+        // ArgHint 形态：填回有参命令后的参数占位提示条（无列表）。
+        if self.mode == SlashPopupMode::ArgHint {
+            let mut list = vstack().gap(0);
+            let hint = self.arg_hint.clone().unwrap_or_default();
+            let hint = truncate_to_width(&hint, w.saturating_sub(1).max(8) as usize);
+            list = list.child(
+                Text::new(format!(" {}", hint)).fg(colors::ACCENT_CYAN()).bg(colors::BG_SURFACE()),
+            );
+            list = list.child(
+                Text::new(" Enter: run · Esc: cancel").fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
+            );
+            stack = stack.child(list);
             return stack;
         }
 
@@ -261,7 +372,7 @@ impl SlashPopup {
 
         // 底部 hint
         list = list.child(
-            Text::new(format!(" ↑/↓ navigate · Enter select · Esc cancel{}", position_hint))
+            Text::new(format!(" ↑/↓ navigate · Enter/Tab complete · Esc cancel{}", position_hint))
                 .fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
         );
 
@@ -283,6 +394,90 @@ impl SlashPopup {
 mod tests {
     use super::*;
     use crate::theme::colors;
+
+    /// U3·trigger 收窄：仅首 token 且命令名未完成时触发。
+    #[test]
+    fn slash_token_narrowed_trigger() {
+        assert_eq!(SlashPopup::slash_token("/mo"), Some("mo".to_string()));
+        assert_eq!(SlashPopup::slash_token("/"), Some(String::new()));
+        assert_eq!(SlashPopup::slash_token("  /mo"), Some("mo".to_string()));
+        // 行中 slash 是普通文本
+        assert_eq!(SlashPopup::slash_token("please fix /main"), None);
+        // 命令名已完成（有参数空格）→ 不触发补全
+        assert_eq!(SlashPopup::slash_token("/compact focus"), None);
+        assert_eq!(SlashPopup::slash_token("/compact "), None);
+        assert_eq!(SlashPopup::slash_token("hello"), None);
+        assert_eq!(SlashPopup::slash_token(""), None);
+    }
+
+    /// U3·Enter 填回：无参命令填回后关 popup，不直接执行。
+    #[test]
+    fn enter_fills_back_noarg_command() {
+        let mut popup = SlashPopup::new();
+        popup.open_with_query("settings");
+        assert!(popup.filtered_count() > 0);
+        match popup.handle_key(&Key::Enter) {
+            SlashKeyOutcome::FillBack { command, takes_args } => {
+                assert_eq!(command, "/settings ");
+                assert!(!takes_args);
+            }
+            _ => panic!("expected FillBack"),
+        }
+        assert!(!popup.is_open(), "无参命令填回后 popup 应关闭");
+    }
+
+    /// U3·Enter 填回：有参命令填回后转 ArgHint 保持打开。
+    #[test]
+    fn enter_fills_back_arg_command_into_hint_mode() {
+        let mut popup = SlashPopup::new();
+        popup.open_with_query("compact");
+        match popup.handle_key(&Key::Enter) {
+            SlashKeyOutcome::FillBack { command, takes_args } => {
+                assert_eq!(command, "/compact ");
+                assert!(takes_args);
+            }
+            _ => panic!("expected FillBack"),
+        }
+        assert!(popup.is_open(), "有参命令填回后 popup 保持打开");
+        assert_eq!(popup.mode, SlashPopupMode::ArgHint);
+        // ArgHint 下 Enter → Submit；字符 → Pass（贯穿输入框）
+        match popup.handle_key(&Key::Char('f')) {
+            SlashKeyOutcome::Pass => {}
+            _ => panic!("ArgHint 字符键应 Pass"),
+        }
+        match popup.handle_key(&Key::Enter) {
+            SlashKeyOutcome::Submit => {}
+            _ => panic!("ArgHint Enter 应 Submit"),
+        }
+        assert!(!popup.is_open());
+    }
+
+    /// U3·Esc → Restore（调用方据 pre_slash_text 恢复输入框）。
+    #[test]
+    fn esc_yields_restore() {
+        let mut popup = SlashPopup::new();
+        popup.open_with_query("mo");
+        match popup.handle_key(&Key::Escape) {
+            SlashKeyOutcome::Restore => {}
+            _ => panic!("Esc 应 Restore"),
+        }
+        assert!(!popup.is_open());
+    }
+
+    /// U3·Completion 下字符/Backspace 全部 Pass（popup 不碰字符）。
+    #[test]
+    fn completion_passes_typing_keys_through() {
+        let mut popup = SlashPopup::new();
+        popup.open_with_query("m");
+        for key in [Key::Char('o'), Key::Backspace, Key::Char(' ')] {
+            match popup.handle_key(&key) {
+                SlashKeyOutcome::Pass => {}
+                _ => panic!("{:?} 应 Pass 贯穿输入框", key),
+            }
+        }
+        // query 不被 popup 改动（单点权威在输入框）
+        assert_eq!(popup.query, "m");
+    }
 
     /// fill_background 必须把指定矩形填成 BG_SURFACE 实色,且不污染区域外。
     /// 守住"实色不透字"契约——positioned 浮层不清背景,全靠这一步预填整片。
