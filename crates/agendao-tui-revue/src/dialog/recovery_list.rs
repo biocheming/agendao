@@ -37,6 +37,8 @@ pub struct RecoveryListDialog {
     pub visible: bool,
     entries: Vec<RecoveryEntry>,
     selected: usize,
+    /// U17②：位置记忆——close 时记录光标，重开恢复（clamp 到新长度）。
+    remembered: usize,
 }
 
 impl Default for RecoveryListDialog {
@@ -47,16 +49,22 @@ impl Default for RecoveryListDialog {
 
 impl RecoveryListDialog {
     pub fn new() -> Self {
-        Self { visible: false, entries: Vec::new(), selected: 0 }
+        Self { visible: false, entries: Vec::new(), selected: 0, remembered: 0 }
     }
 
     pub fn set_entries(&mut self, entries: Vec<RecoveryEntry>) {
+        let n = entries.len();
         self.entries = entries;
-        self.selected = 0;
+        // U17②：恢复上次光标位置（clamp 到新长度）而非一律归零。
+        self.selected = self.remembered.min(n.saturating_sub(1));
     }
 
     pub fn open(&mut self) { self.visible = true; }
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) {
+        // U17②：关框记住光标位置（下次重开恢复）。
+        self.remembered = self.selected;
+        self.visible = false;
+    }
     pub fn is_open(&self) -> bool { self.visible }
 
     /// x=execute（仅 action_kind.is_some()，不 close——panel_dispatch 关+开 confirm）

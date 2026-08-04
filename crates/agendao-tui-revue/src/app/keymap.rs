@@ -1223,6 +1223,11 @@ impl AppHandler {
                         // Settings 路由：滚轮分发到焦点栏（金律·不再穿透滚背后 session）。
                         if matches!(self.store.route.get(), Route::Settings) {
                             self.settings_wheel(-1)
+                        } else if self.panel_owns_wheel() {
+                            // U17③：列表弹窗打开时滚轮 = ↑↓（复用 panel 键路由
+                            // 单点权威，天然获得各 dialog 的 clamp/wrap/detail
+                            // 滚动），不再穿透滚背后 transcript。
+                            self.handle_key(&Key::Up)
                         } else {
                             self.active_session.scroll_up();
                             true
@@ -1231,6 +1236,8 @@ impl AppHandler {
                     MouseEventKind::ScrollDown => {
                         if matches!(self.store.route.get(), Route::Settings) {
                             self.settings_wheel(1)
+                        } else if self.panel_owns_wheel() {
+                            self.handle_key(&Key::Down)
                         } else {
                             self.active_session.scroll_down();
                             true
@@ -5370,6 +5377,44 @@ mod tests {
         assert!(
             !matches!(fold_of(&h), FoldState::Truncated),
             "二次点击折叠已选中块"
+        );
+    }
+
+    /// U17③：列表弹窗打开时滚轮路由到弹窗（= ↑↓，复用 panel 键路由
+    /// 单点权威），不穿透滚背后的 transcript。
+    #[test]
+    fn wheel_scrolls_open_panel_not_transcript() {
+        let mut h = mk_handler();
+        h.active_session.scroll_offset.set(2);
+        h.session_list.open();
+        h.session_list.set_sessions(vec![
+            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
+            crate::dialog::SessionEntry { id: "b".into(), title: "t-b".into(), status_hint: String::new() },
+        ]);
+        h.panel = Panel::SessionList;
+        let before = h.active_session.scroll_offset.get();
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollDown))));
+        assert_eq!(h.session_list.selected, 1, "滚轮 = ↓ 移到下一项");
+        assert_eq!(
+            h.active_session.scroll_offset.get(),
+            before,
+            "弹窗打开时滚轮不穿透滚 transcript"
+        );
+        // ScrollUp 回到上一项。
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollUp))));
+        assert_eq!(h.session_list.selected, 0, "滚轮 = ↑ 回上一项");
+    }
+
+    /// U17③：无弹窗时滚轮仍滚 transcript（路由回归兜底）。
+    #[test]
+    fn wheel_without_panel_scrolls_transcript() {
+        let mut h = mk_handler();
+        h.active_session.scroll_offset.set(5);
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollUp))));
+        assert_eq!(
+            h.active_session.scroll_offset.get(),
+            8,
+            "无弹窗滚轮滚 transcript（scroll_up = +3）"
         );
     }
 }

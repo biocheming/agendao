@@ -282,7 +282,7 @@ impl ModelSelectDialog {
         // Build all items (no truncation — backdrop scrolls). Without query
         // filtering, 5,140 models exhaust the user's patience; once we add
         // a search box this becomes `flat.iter().filter(matches_query)`.
-        let items: Vec<ListItem> = self.flat.iter().enumerate().map(|(i, row)| {
+        let mut items: Vec<ListItem> = self.flat.iter().enumerate().map(|(i, row)| {
             match row {
                 FlatRow::Header(label) => ListItem::Header(label.clone()),
                 FlatRow::Model(gi, mi) => {
@@ -297,6 +297,15 @@ impl ModelSelectDialog {
                 }
             }
         }).collect();
+
+        // U17①：过滤无命中 → 明示行（原渲染零行空框 + 过滤 hint，用户
+        // 分不清是没匹配还是没数据）。
+        if items.is_empty() {
+            items.push(ListItem::Row {
+                display: format!("  No matches for '{}'", self.query),
+                muted: true,
+            });
+        }
 
         let title = if self.query.is_empty() {
             "Select Model".to_string()

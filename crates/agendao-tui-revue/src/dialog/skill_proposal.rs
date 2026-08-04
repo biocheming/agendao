@@ -34,6 +34,8 @@ pub struct SkillProposalDialog {
     pub visible: bool,
     proposals: Vec<SkillProposalEntry>,
     selected: usize,
+    /// U17②：位置记忆——close 时记录光标，重开恢复（clamp 到新长度）。
+    remembered: usize,
 }
 
 impl Default for SkillProposalDialog {
@@ -44,16 +46,22 @@ impl Default for SkillProposalDialog {
 
 impl SkillProposalDialog {
     pub fn new() -> Self {
-        Self { visible: false, proposals: Vec::new(), selected: 0 }
+        Self { visible: false, proposals: Vec::new(), selected: 0, remembered: 0 }
     }
 
     pub fn set_proposals(&mut self, proposals: Vec<SkillProposalEntry>) {
+        let n = proposals.len();
         self.proposals = proposals;
-        self.selected = 0;
+        // U17②：恢复上次光标位置（clamp 到新长度）而非一律归零。
+        self.selected = self.remembered.min(n.saturating_sub(1));
     }
 
     pub fn open(&mut self) { self.visible = true; }
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) {
+        // U17②：关框记住光标位置（下次重开恢复）。
+        self.remembered = self.selected;
+        self.visible = false;
+    }
     pub fn is_open(&self) -> bool { self.visible }
 
     /// approve/reject 后移除已处理条目（列表 pending-filtered，状态变更后

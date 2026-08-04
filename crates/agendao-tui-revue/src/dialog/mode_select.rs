@@ -38,6 +38,8 @@ pub struct ModeSelectDialog {
     pub visible: bool,
     entries: Vec<ModeEntry>,
     selected: usize,
+    /// U17②：位置记忆——close 时记录光标，重开恢复（clamp 到新长度）。
+    remembered: usize,
 }
 
 impl Default for ModeSelectDialog {
@@ -48,16 +50,22 @@ impl Default for ModeSelectDialog {
 
 impl ModeSelectDialog {
     pub fn new() -> Self {
-        Self { visible: false, entries: Vec::new(), selected: 0 }
+        Self { visible: false, entries: Vec::new(), selected: 0, remembered: 0 }
     }
 
     pub fn open_with(&mut self, entries: Vec<ModeEntry>) {
+        let n = entries.len();
         self.entries = entries;
-        self.selected = 0;
+        // U17②：恢复上次光标位置（clamp 到新长度）而非一律归零。
+        self.selected = self.remembered.min(n.saturating_sub(1));
         self.visible = true;
     }
 
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) {
+        // U17②：关框记住光标位置（下次重开恢复）。
+        self.remembered = self.selected;
+        self.visible = false;
+    }
     pub fn is_open(&self) -> bool { self.visible }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<ModeEntry> {

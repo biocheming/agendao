@@ -11,6 +11,27 @@ use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::dialog::PermissionReply;
 
 impl AppHandler {
+    /// U17③：当前 panel 是否拥有滚轮（↑↓ 语义的列表类弹窗）。表单/确认类
+    /// 不在列——它们的滚轮维持原行为（滚背后 transcript，如权限弹窗长文
+    /// 场景）。单一判别点，keymap 滚轮路由只问这里（土律）。
+    pub(crate) fn panel_owns_wheel(&self) -> bool {
+        matches!(
+            self.panel,
+            Panel::SessionList
+                | Panel::ModelSelect
+                | Panel::ModeSelect
+                | Panel::AgentSelect
+                | Panel::SkillList
+                | Panel::SkillProposal
+                | Panel::McpList
+                | Panel::Recovery
+                | Panel::TaskList
+                | Panel::Notifications
+                | Panel::Stash
+                | Panel::Fork
+        )
+    }
+
     /// Panel/Overlay 按键分发。返回 true=已消费；false=贯穿（仅 Panel::None）。
     pub(super) fn route_panel_key(&mut self, key: &Key) -> bool {
         match &self.panel {
@@ -856,6 +877,8 @@ impl AppHandler {
             Panel::Rename => self.rename_dialog.paste_text(text),
             Panel::ModelSelect => self.model_select.paste_query(text),
             Panel::SessionList => self.session_list.paste_query(text),
+            // U17⑤：skill_list 也有了实时过滤 query。
+            Panel::SkillList => self.skill_list.paste_query(text),
             // Slash popup 是输入框的视图（U3）：粘贴贯穿给 prompt。
             Panel::Slash => false,
             _ => true,

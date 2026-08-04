@@ -42,6 +42,9 @@ pub struct SessionListDialog {
     /// 'D' (Shift-d) 收集所有 true 项交给 panel_dispatch 走 Confirm 批量删除。
     /// set_sessions/close 时清空,保证不跨次悬空(道纪第九条:写入即承诺回收)。
     marked: Vec<bool>,
+    /// U17②：位置记忆——close 时记录光标，下次 set_sessions 恢复（clamp
+    /// 到新长度；列表内容可能已变，取索引近似，GUI 惯例）。
+    remembered: usize,
 }
 
 impl Default for SessionListDialog {
@@ -61,6 +64,7 @@ impl SessionListDialog {
             query: String::new(),
             directory_scope: String::new(),
             marked: vec![],
+            remembered: 0,
         }
     }
 
@@ -72,6 +76,8 @@ impl SessionListDialog {
     }
 
     pub fn close(&mut self) {
+        // U17②：关框记住光标位置（下次重开恢复）。
+        self.remembered = self.selected;
         self.visible = false;
         self.sessions.clear();
         self.error = None;
@@ -95,7 +101,8 @@ impl SessionListDialog {
         self.sessions = sessions;
         self.loading = false;
         self.error = None;
-        self.selected = 0;
+        // U17②：恢复上次光标位置（clamp 到新长度）而非一律归零。
+        self.selected = self.remembered.min(n.saturating_sub(1));
         // 重置标记位:set_sessions 是新一轮 fetch 的成形,旧标记不应跨次悬空。
         self.marked = vec![false; n];
     }
@@ -136,6 +143,12 @@ impl SessionListDialog {
             }
             Key::Enter => {
                 let filtered = self.filtered_indices();
+                // U17④：无命中时 Enter 不再静默关框（死端）——原地无操作，
+                // 用户继续改 query 或 Esc 显式退出。有命中才关框返回 Open。
+                if filtered.is_empty() { return None; }
+                // U17④：防御性 clamp——selected 永不超过 filtered 尾（高亮
+                // 消失/越界读取的保险，正常键流已钳制，这里兜最后一道）。
+                self.selected = self.selected.min(filtered.len() - 1);
                 let s = filtered.get(self.selected)
                     .and_then(|&i| self.sessions.get(i))
                     .cloned();
@@ -265,7 +278,15 @@ impl SessionListDialog {
                 "n: new session  Esc: close", ctx, geom, 5);
         } else {
             let filtered = self.filtered_indices();
-            let items: Vec<ListItem> = filtered.iter().map(|&i| {
+            // U17①：过滤无命中 → 明示行（原渲染零行空框，用户分不清是
+            // 没匹配还是没数据）。
+            let items: Vec<ListItem> = if filtered.is_empty() {
+                vec![ListItem::Row {
+                    display: format!("  No matches for '{}'", self.query),
+                    muted: true,
+                }]
+            } else {
+            filtered.iter().map(|&i| {
                 let s = &self.sessions[i];
                 let status = if s.status_hint.is_empty() { String::new() } else { format!(" [{}]", s.status_hint) };
                 // 标记位前缀:已 'x' 标记的项前面打 `[*]`(2列宽),未标记空白对齐。
@@ -280,7 +301,8 @@ impl SessionListDialog {
                     display: format!("{}{}{}", mark, s.title, status),
                     muted: false,
                 }
-            }).collect();
+            }).collect()
+            };
             let marked_n = self.marked_count();
             let marked_hint = if marked_n > 0 {
                 format!(" — {} marked", marked_n)
@@ -450,5 +472,31 @@ mod tests {
         assert!(d.handle_key(&Key::Char('n')).is_none());
         assert_eq!(d.query, "n");
         assert!(d.is_open(), "过滤不关框");
+    }
+
+    /// U17④：过滤无命中时 Enter 是 no-op（不再静默关框制造死端）。
+    #[test]
+    fn enter_no_match_is_noop() {
+        let mut d = SessionListDialog::new();
+        d.open();
+        d.set_sessions(vec![entry("a"), entry("b")]);
+        d.handle_key(&Key::Char('z'));
+        assert!(d.handle_key(&Key::Enter).is_none(), "无命中 Enter 不成动作");
+        assert!(d.is_open(), "无命中 Enter 不关框");
+    }
+
+    /// U17②：关框记住光标，重开（新一轮 set_sessions）恢复并 clamp 到新长度。
+    #[test]
+    fn position_memory_restored_and_clamped() {
+        let mut d = SessionListDialog::new();
+        d.open();
+        d.set_sessions(vec![entry("a"), entry("b"), entry("c")]);
+        d.handle_key(&Key::Down);
+        d.handle_key(&Key::Down);
+        assert_eq!(d.selected, 2);
+        d.close();
+        // 重开：列表变短（2 项）→ 记忆位置 clamp 到尾。
+        d.set_sessions(vec![entry("a"), entry("b")]);
+        assert_eq!(d.selected, 1, "记忆位置 clamp 到新长度");
     }
 }

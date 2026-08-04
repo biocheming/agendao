@@ -41,6 +41,8 @@ pub struct McpListDialog {
     pub visible: bool,
     entries: Vec<McpEntry>,
     selected: usize,
+    /// U17②：位置记忆——close 时记录光标，重开恢复（clamp 到新长度）。
+    remembered: usize,
 }
 
 impl Default for McpListDialog {
@@ -51,16 +53,22 @@ impl Default for McpListDialog {
 
 impl McpListDialog {
     pub fn new() -> Self {
-        Self { visible: false, entries: Vec::new(), selected: 0 }
+        Self { visible: false, entries: Vec::new(), selected: 0, remembered: 0 }
     }
 
     pub fn set_entries(&mut self, entries: Vec<McpEntry>) {
+        let n = entries.len();
         self.entries = entries;
-        self.selected = 0;
+        // U17②：恢复上次光标位置（clamp 到新长度）而非一律归零。
+        self.selected = self.remembered.min(n.saturating_sub(1));
     }
 
     pub fn open(&mut self) { self.visible = true; }
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) {
+        // U17②：关框记住光标位置（下次重开恢复）。
+        self.remembered = self.selected;
+        self.visible = false;
+    }
     pub fn is_open(&self) -> bool { self.visible }
 
     /// c=connect / d=disconnect（保持 dialog 打开，支持批量）/ Enter=view（关闭）。
@@ -132,5 +140,30 @@ impl McpListDialog {
             "↑↓ navigate  Home/End: jump  c: connect  d: disconnect  a/A: oauth start/finish  x: clear auth  n: add  e: edit  Enter: view  Esc: close",
             ctx, geom, 12,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> McpEntry {
+        McpEntry { name: name.into(), status: "connected".into(), tools: 1, resources: 0 }
+    }
+
+    /// U17②：关框记住光标，重开（新一轮 set_entries）恢复并 clamp 到新长度。
+    /// 位置记忆是批量套用到 6 个 list dialog 的同构模式，这里守一份回归。
+    #[test]
+    fn position_memory_restored_and_clamped() {
+        let mut d = McpListDialog::new();
+        d.open();
+        d.set_entries(vec![entry("a"), entry("b"), entry("c")]);
+        d.handle_key(&Key::Down);
+        d.handle_key(&Key::Down);
+        assert_eq!(d.selected, 2);
+        d.close();
+        // 重开：列表变短（2 项）→ 记忆位置 clamp 到尾。
+        d.set_entries(vec![entry("a"), entry("b")]);
+        assert_eq!(d.selected, 1, "记忆位置 clamp 到新长度");
     }
 }
