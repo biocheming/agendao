@@ -1852,7 +1852,11 @@ impl AppHandler {
         if matches!(self.store.route.get(), Route::Session { .. }) {
             match key {
                 Key::PageUp => {
-                    self.active_session.scroll_page_up(10);
+                    // U12：页高对齐真实 viewport（留 2 行重叠，GUI 翻页
+                    // 惯例）——与滚动条轨道翻页（viewport_h）同口径，
+                    // 替代硬编码 10 行（窗口矮时翻过头、高时翻不足）。
+                    self.active_session
+                        .scroll_page_up(self.transcript_viewport_h.saturating_sub(2));
                     // Scroll changes which block sits at the cursor row,
                     // so the cursor-bar hstack's content shifts even
                     // though heights don't change. A layout rebuild
@@ -1863,7 +1867,9 @@ impl AppHandler {
                     return true;
                 }
                 Key::PageDown => {
-                    self.active_session.scroll_page_down(10);
+                    // U12：同 PageUp——页高 = transcript_viewport_h - 2。
+                    self.active_session
+                        .scroll_page_down(self.transcript_viewport_h.saturating_sub(2));
                     self.layout_dirty = true;
                     return true;
                 }
@@ -5180,6 +5186,17 @@ mod tests {
         let mut h = mk_session_handler();
         h.active_session.scroll_offset.set(8);
         h.dispatch("hello".into());
+        assert_eq!(h.active_session.scroll_offset.get(), 0);
+    }
+
+    /// U12：PgUp/PgDn 步长 = viewport_h - 2（与滚动条轨道翻页同口径）。
+    #[test]
+    fn page_keys_step_viewport_minus_overlap() {
+        let mut h = mk_session_handler();
+        h.transcript_viewport_h = 20;
+        h.handle(&Event::Key(KeyEvent::new(Key::PageUp)));
+        assert_eq!(h.active_session.scroll_offset.get(), 18, "20 - 2 行重叠");
+        h.handle(&Event::Key(KeyEvent::new(Key::PageDown)));
         assert_eq!(h.active_session.scroll_offset.get(), 0);
     }
 }
