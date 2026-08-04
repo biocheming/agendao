@@ -542,9 +542,27 @@ impl AppHandler {
                             // session_id 从 active_session 取（dialog 不持有；modal 不变量
                             // 保证 open→confirm 期间不变）。None→toast 不伪执行（道纪第十条）。
                             if let Some(sid) = self.active_session.get_session_id() {
+                                // U26⑤：confirm 文案写清后果（第十条）——"proceed?"
+                                // 不说代价等于让用户盲签；按 kind 给一句诚实后果。
+                                let consequence = match &action_kind {
+                                    agendao_client::RecoveryActionKind::AbortRun =>
+                                        "This stops the entire run; in-flight tool calls are cancelled.",
+                                    agendao_client::RecoveryActionKind::AbortStage =>
+                                        "This stops the current stage; later stages are skipped.",
+                                    agendao_client::RecoveryActionKind::Retry =>
+                                        "This re-runs the failed step; side effects already applied may repeat.",
+                                    agendao_client::RecoveryActionKind::Resume =>
+                                        "This continues the run from the last checkpoint.",
+                                    agendao_client::RecoveryActionKind::PartialReplay =>
+                                        "This replays part of the run; later results are recomputed.",
+                                    agendao_client::RecoveryActionKind::RestartStage =>
+                                        "This restarts the stage from scratch; its results so far are discarded.",
+                                    agendao_client::RecoveryActionKind::RestartSubtask =>
+                                        "This restarts the subtask from scratch; its results so far are discarded.",
+                                };
                                 self.confirm_dialog.ask(
                                     "Execute Recovery",
-                                    &format!("Execute {} — proceed?", label),
+                                    &format!("Execute {} — proceed? {}", label, consequence),
                                     "Execute",
                                 );
                                 self.pending_confirm = Some(PendingConfirm::ExecuteRecovery {

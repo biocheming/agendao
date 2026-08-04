@@ -1611,9 +1611,6 @@ impl AppHandler {
                                 }
                             }
 
-                            let ty = m.y;
-                            let transcript_y = self.transcript_area_y;
-                            let transcript_h = self.transcript_viewport_h;
                             // 排除左侧 sidebar 列：sidebar 显示时其区域点击不应被
                             // transcript 命中消费（阴阳边界——sidebar 区归 sidebar）。即便
                             // sidebar 内容当前无点击行为，也须先排除，避免越权 toggle
@@ -1642,85 +1639,22 @@ impl AppHandler {
                                     }
                                 }
                             }
-                            if ty >= transcript_y && ty < transcript_y + transcript_h && m.x > sidebar_w {
-                                // Click is inside transcript area.
-                                // Compute which row in content space was clicked.
-                                let msgs = self.active_session.messages.get();
-                                // 宽度口径与 render 同源（原硬编码 80 与 inner_w 错位）。
-                                let transcript_w = self.terminal_w.saturating_sub(sidebar_w);
-                                let inner_w = transcript_w.saturating_sub(crate::app::PAD.saturating_mul(2));
-                                // extra_h 与 render 同口径：内联 permission/question/Sending
-                                // 块计入内容总高，且可见即 pinned 钉底（user_offset 强 0）——
-                                // 原口径漏算 extra_h，dialog 可见时行映射整体漂移。
-                                let mut extra_h: u16 = 0;
-                                if self.permission_dialog.visible {
-                                    if let Some(blk) = self.permission_dialog.render_inline(transcript_w) {
-                                        extra_h = extra_h.saturating_add(blk.height);
-                                    }
-                                }
-                                if self.question_dialog.visible {
-                                    if let Some(blk) = self.question_dialog.render_inline() {
-                                        extra_h = extra_h.saturating_add(blk.height);
-                                    }
-                                }
-                                if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
-                                    extra_h = extra_h.saturating_add(1);
-                                }
-                                // total_h 与渲染同口径（聚合）——原逐块 layout_block 算高
-                                // 与聚合渲染错位，是「连续结果区域点不准」的根因：
-                                // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
-                                // 屏幕位置对不上，点第 2 行命中第 5 块。
-                                let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w)
-                                    .saturating_add(extra_h);
-                                let max_offset = total_h.saturating_sub(transcript_h);
-                                let pinned = self.permission_dialog.visible || self.question_dialog.visible;
-                                let user_offset = if pinned {
-                                    0
+                            if let Some(idx) = self.transcript_block_at(m.x, m.y, sidebar_w) {
+                                // U13③：单击=选中，点中"已选中"的块才
+                                // 折叠/展开（GUI 选择-激活两段式；原单击
+                                // 即折叠常把"想选中看看"变成误折叠）。
+                                // 折叠仍复用 cursor+toggle 闭环：组折叠时
+                                // 命中段首/ℹ/more 均展开整组（与 Space
+                                // 行为一致）。
+                                if self.active_session.transcript_cursor.get() == Some(idx) {
+                                    self.active_session.toggle_fold_at_cursor();
                                 } else {
-                                    self.active_session.scroll_offset.get().min(max_offset)
-                                };
-                                let scroll_top = max_offset.saturating_sub(user_offset);
-                                let row_in_content = ty.saturating_sub(transcript_y) + scroll_top;
-                                // 视觉单元遍历（与渲染/total_h 同源）：unit.height 量高，
-                                // 命中时 row_owners[rel_row] 把屏幕 y 映射到块——整行命中，
-                                // 装饰行 None 不 toggle。聚合/单块统一，不认块类型（金律：
-                                // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
-                                // row_owners 真实（否则点 ToolResult 子项错块），显式 None
-                                // 全量布局。
-                                let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, inner_w, self.store.compact_density.get());
-                                let compact = self.store.compact_density.get();
-                                let mut acc: u16 = 0;
-                                let mut clicked_idx = None;
-                                for unit in &units {
-                                    let block_end = acc + unit.height;
-                                    if row_in_content < block_end {
-                                        let rel_row = row_in_content.saturating_sub(acc) as usize;
-                                        clicked_idx = unit.row_owners.get(rel_row)
-                                            .copied()
-                                            .flatten()
-                                            .map(|offset| unit.base_index + offset);
-                                        break;
-                                    }
-                                    // 块间空行与 render 同口径：紧凑模式 0 间隔。
-                                    acc = block_end + if compact { 0 } else { 1 };
+                                    self.active_session.transcript_cursor.set(Some(idx));
+                                    self.active_session
+                                        .ensure_cursor_visible(self.transcript_viewport_h);
                                 }
-                                if let Some(idx) = clicked_idx {
-                                    // U13③：单击=选中，点中"已选中"的块才
-                                    // 折叠/展开（GUI 选择-激活两段式；原单击
-                                    // 即折叠常把"想选中看看"变成误折叠）。
-                                    // 折叠仍复用 cursor+toggle 闭环：组折叠时
-                                    // 命中段首/ℹ/more 均展开整组（与 Space
-                                    // 行为一致）。
-                                    if self.active_session.transcript_cursor.get() == Some(idx) {
-                                        self.active_session.toggle_fold_at_cursor();
-                                    } else {
-                                        self.active_session.transcript_cursor.set(Some(idx));
-                                        self.active_session
-                                            .ensure_cursor_visible(self.transcript_viewport_h);
-                                    }
-                                    self.layout_dirty = true;
-                                    return true;
-                                }
+                                self.layout_dirty = true;
+                                return true;
                             }
                         }
                         // Fall through: click on prompt area or elsewhere
@@ -1728,7 +1662,26 @@ impl AppHandler {
                         true
                     }
                     MouseEventKind::Down(MouseButton::Right) => {
-                        // Right-click — future: context menu
+                        // U26④：右键 = 复制点中的 transcript 块（GUI「右键
+                        // 复制」惯例的本批替身，完整上下文菜单见 Backlog）。
+                        // 命中检测与左键同一权威（transcript_block_at），
+                        // 不各写一份几何。未命中块则安静消费（与左键点
+                        // 空白同待遇），不穿透到 prompt。
+                        let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+                        if let Some(idx) = self.transcript_block_at(m.x, m.y, sidebar_w) {
+                            self.active_session.transcript_cursor.set(Some(idx));
+                            match self.active_session.cursor_block_to_text() {
+                                Some(text) => {
+                                    let r = crate::dialog::clipboard::copy_with_fallback(&text);
+                                    self.toast_copy_outcome(r, "Block copied to clipboard");
+                                }
+                                None => self.store.push_toast(
+                                    "Nothing to copy at cursor",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                ),
+                            }
+                            self.layout_dirty = true;
+                        }
                         true
                     }
                     MouseEventKind::Drag(MouseButton::Left) => {
@@ -1899,6 +1852,79 @@ impl AppHandler {
         }
     }
 
+    /// 屏幕坐标 → transcript 块下标（鼠标命中的**唯一权威**，金律·命中触点 1）。
+    /// 左键（选中/折叠）与右键（U26④ 复制块）共用；几何与 render 同口径：
+    /// inner_w 同渲染宽度、extra_h 计入内联 permission/question/Sending 块、
+    /// pinned 时 user_offset 强 0、视觉单元由 build_render_units 聚合（与
+    /// transcript_total_height 同源）——新增聚合种类/块类型此处零改动。
+    /// 命中区域：transcript 视口内且 x > sidebar_w（sidebar 区归 sidebar）。
+    /// 装饰行（row_owners None）不命中块。
+    fn transcript_block_at(&self, x: u16, y: u16, sidebar_w: u16) -> Option<usize> {
+        let transcript_y = self.transcript_area_y;
+        let transcript_h = self.transcript_viewport_h;
+        if !(y >= transcript_y && y < transcript_y + transcript_h && x > sidebar_w) {
+            return None;
+        }
+        let msgs = self.active_session.messages.get();
+        // 宽度口径与 render 同源（原硬编码 80 与 inner_w 错位）。
+        let transcript_w = self.terminal_w.saturating_sub(sidebar_w);
+        let inner_w = transcript_w.saturating_sub(crate::app::PAD.saturating_mul(2));
+        // extra_h 与 render 同口径：内联 permission/question/Sending
+        // 块计入内容总高，且可见即 pinned 钉底（user_offset 强 0）——
+        // 原口径漏算 extra_h，dialog 可见时行映射整体漂移。
+        let mut extra_h: u16 = 0;
+        if self.permission_dialog.visible {
+            if let Some(blk) = self.permission_dialog.render_inline(transcript_w) {
+                extra_h = extra_h.saturating_add(blk.height);
+            }
+        }
+        if self.question_dialog.visible {
+            if let Some(blk) = self.question_dialog.render_inline() {
+                extra_h = extra_h.saturating_add(blk.height);
+            }
+        }
+        if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
+            extra_h = extra_h.saturating_add(1);
+        }
+        // total_h 与渲染同口径（聚合）——原逐块 layout_block 算高
+        // 与聚合渲染错位，是「连续结果区域点不准」的根因：
+        // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
+        // 屏幕位置对不上，点第 2 行命中第 5 块。
+        let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w)
+            .saturating_add(extra_h);
+        let max_offset = total_h.saturating_sub(transcript_h);
+        let pinned = self.permission_dialog.visible || self.question_dialog.visible;
+        let user_offset = if pinned {
+            0
+        } else {
+            self.active_session.scroll_offset.get().min(max_offset)
+        };
+        let scroll_top = max_offset.saturating_sub(user_offset);
+        let row_in_content = y.saturating_sub(transcript_y) + scroll_top;
+        // 视觉单元遍历（与渲染/total_h 同源）：unit.height 量高，
+        // 命中时 row_owners[rel_row] 把屏幕 y 映射到块——整行命中，
+        // 装饰行 None 不 toggle。聚合/单块统一，不认块类型（金律：
+        // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
+        // row_owners 真实（否则点 ToolResult 子项错块），显式 None
+        // 全量布局。
+        let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, inner_w, self.store.compact_density.get());
+        let compact = self.store.compact_density.get();
+        let mut acc: u16 = 0;
+        for unit in &units {
+            let block_end = acc + unit.height;
+            if row_in_content < block_end {
+                let rel_row = row_in_content.saturating_sub(acc) as usize;
+                return unit.row_owners.get(rel_row)
+                    .copied()
+                    .flatten()
+                    .map(|offset| unit.base_index + offset);
+            }
+            // 块间空行与 render 同口径：紧凑模式 0 间隔。
+            acc = block_end + if compact { 0 } else { 1 };
+        }
+        None
+    }
+
     fn handle_key(&mut self, key: &Key) -> bool {
         // ── Panel/Overlay routing: delegated to route_panel_key (panel_dispatch.rs) ──
         if self.route_panel_key(key) {
@@ -2001,16 +2027,17 @@ impl AppHandler {
                     // otherwise it inserts a literal space into the
                     // composer. This keeps the keymap compatible with
                     // typing prose.
-                    self.active_session.toggle_fold_at_cursor();
-                    // Fold toggle changes `layout_block(b).height` for
-                    // the affected block. The cached layout tree still
-                    // holds the OLD height slots, so the next draw
-                    // would paint new content into stale slots and the
-                    // user would see no change. The run-loop closure
-                    // reads `layout_dirty` and calls
-                    // `request_layout_rebuild()` for us.
-                    self.layout_dirty = true;
-                    return true;
+                    //
+                    // U26②：只在真切了 fold 时消费（toggle_fold_at_cursor
+                    // 返回值）——全新会话/无可折叠块/cursor 落在不可折叠块
+                    // 时 Space 落回编辑器，空格可作消息首字符（原无声消费，
+                    // 空格永远无法开头）。fold 切换改变块高，标 layout_dirty
+                    // 让 run-loop 重建布局（缓存槽位否则陈旧）。
+                    if self.active_session.toggle_fold_at_cursor() {
+                        self.layout_dirty = true;
+                        return true;
+                    }
+                    // 未消费：继续走后续路由 → prompt 插入字面空格。
                 }
                 // 'e' = edit & resend（对齐 web "Revise & resend" 按钮一步触发）。
                 // 双重守卫：prompt 空（对齐 Space 先例，避免打字中途误触发）+
@@ -5459,6 +5486,56 @@ mod tests {
         assert!(
             !matches!(fold_of(&h), FoldState::Truncated),
             "二次点击折叠已选中块"
+        );
+    }
+
+    /// U26②：无可折叠块时 Space 落回编辑器（空格可作消息首字符）——
+    /// 原无声消费，空格永远无法开头。
+    #[test]
+    fn space_inserts_literal_when_nothing_foldable() {
+        let mut h = mk_session_handler();
+        assert!(h.prompt.text().is_empty());
+        h.handle(&Event::Key(KeyEvent::new(Key::Char(' '))));
+        assert_eq!(h.prompt.text(), " ", "无可折叠块时 Space 插入字面空格");
+    }
+
+    /// U26②：有可折叠块时 Space 仍是折叠热键（行为不回归）。
+    #[test]
+    fn space_still_folds_when_foldable_exists() {
+        use crate::store::types::{FoldState, TranscriptBlock};
+        let mut h = mk_session_handler();
+        h.active_session.push_user_message("u1", "hello");
+        h.handle(&Event::Key(KeyEvent::new(Key::Char(' '))));
+        assert!(h.prompt.text().is_empty(), "Space 被折叠消费，不进编辑器");
+        match &h.active_session.messages.get()[0] {
+            TranscriptBlock::UserPrompt { fold, .. } => {
+                assert!(matches!(fold, FoldState::Expanded), "Truncated → Expanded")
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    /// U26④：右键 = 复制点中的块（命中与左键同一权威 transcript_block_at；
+    /// GUI「右键复制」惯例的替身，完整上下文菜单见 Backlog）。
+    #[test]
+    fn right_click_copies_block_at_point() {
+        let mut h = mk_session_handler();
+        h.terminal_w = 120;
+        h.transcript_viewport_h = 20;
+        h.active_session.push_user_message("u1", "hello right-click");
+        let y = h.transcript_area_y;
+        let ev = Event::Mouse(MouseEvent::new(40, y, MouseEventKind::Down(MouseButton::Right)));
+        assert!(h.handle(&ev));
+        assert_eq!(
+            h.active_session.transcript_cursor.get(),
+            Some(0),
+            "右键命中即选中（cursor 语义与左键单击一致）"
+        );
+        let toasts = h.store.toasts.get();
+        assert!(
+            toasts.iter().any(|t| t.text.contains("Block copied to clipboard")),
+            "右键复制 toast：{:?}",
+            toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
         );
     }
 

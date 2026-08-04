@@ -208,14 +208,29 @@ impl PromptInput {
     }
 
     pub fn handle_key(&mut self, key: &Key) -> PromptAction {
-        // Shell mode toggle
+        // Shell mode toggle / U26① `!!` 转义。
         if let Key::Char('!') = key {
             if self.editor.get_content().trim().is_empty() {
-                self.mode = InputMode::Shell;
-                self.focused = true;
-                let ph = self.shell_placeholder().to_string();
-                self.reset_editor(&ph);
-                return PromptAction::None;
+                match self.mode {
+                    InputMode::Normal => {
+                        self.mode = InputMode::Shell;
+                        self.focused = true;
+                        let ph = self.shell_placeholder().to_string();
+                        self.reset_editor(&ph);
+                        return PromptAction::None;
+                    }
+                    InputMode::Shell => {
+                        // 第二个 `!` = 字面 `!` 退回 Normal——"!important"
+                        // 这类普通消息原本无法发出（首 `!` 被模式切换吞掉，
+                        // `!` 永远无法作消息首字符）。Esc 仍是纯退出。
+                        self.mode = InputMode::Normal;
+                        self.focused = true;
+                        let ph = self.normal_placeholder().to_string();
+                        self.reset_editor(&ph);
+                        self.set_text("!");
+                        return PromptAction::Consumed;
+                    }
+                }
             }
         }
         if matches!(key, Key::Escape) && self.mode == InputMode::Shell {
@@ -483,6 +498,11 @@ impl PromptInput {
     /// ^Z/^Y undo/redo（U2 readline 集）；^P 命令面板（keymap 全局）。
     pub fn status_hint(&self, is_running: bool) -> String {
         if is_running { return "Running... Esc: stop".into(); }
+        // U26①：shell 模式有自己的宣传口径（Esc 退出 / !! 字面转义）——
+        // 不宣传则用户不知道为何 Enter 变成"运行命令"。
+        if self.mode == InputMode::Shell {
+            return "Shell mode | Enter:run | Esc:normal mode | !!: literal !".into();
+        }
         let len = self.editor.get_content().trim().len();
         if self.focused && len > 0 {
             format!("{} chars | Enter:send Alt/S-Enter:newline | ^Z/^Y:undo ^P:commands", len)
@@ -712,6 +732,31 @@ fn char_index_at_display_col(line: &str, display_col: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// U26①：`!!` 转义——首 `!` 进 Shell 模式，第二个 `!` 退回 Normal
+    /// 并留下字面 `!`（"!important" 这类普通消息可发）；Shell 模式
+    /// hint 宣传 Esc 退出与 !! 转义。
+    #[test]
+    fn bang_bang_escapes_to_literal_normal_mode() {
+        let mut p = PromptInput::new();
+        assert!(matches!(p.handle_key(&Key::Char('!')), PromptAction::None));
+        assert!(matches!(p.mode(), InputMode::Shell), "首 ! 进 Shell 模式");
+        // Shell 模式 hint 宣传口径。
+        let hint = p.status_hint(false);
+        assert!(hint.contains("Shell mode"), "{hint}");
+        assert!(hint.contains("Esc:normal mode"), "{hint}");
+        assert!(hint.contains("!!: literal !"), "{hint}");
+        // 第二个 `!`：退回 Normal + 字面 `!`。
+        assert!(matches!(p.handle_key(&Key::Char('!')), PromptAction::Consumed));
+        assert!(matches!(p.mode(), InputMode::Normal), "!! 退回 Normal");
+        assert_eq!(p.text(), "!", "留下字面 ! 作首字符");
+        // 继续输入成普通消息，Enter 走 Submit 而非 SubmitShell。
+        p.handle_key(&Key::Char('i'));
+        match p.handle_key(&Key::Enter) {
+            PromptAction::Submit(t) => assert_eq!(t, "!i"),
+            other => panic!("!! 转义后 Enter 应是普通 Submit，实际 {other:?}"),
+        }
+    }
 
     /// U20：hint 只宣传真实可用的键（正向半：宣传→实现；反向半由 keymap
     /// 侧已存的绑键测试兜住——^P palette / q quit / ? help / Esc interrupt /

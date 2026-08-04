@@ -673,7 +673,12 @@ impl SessionStore {
     /// Toggle fold on the block under the cursor (or the latest
     /// foldable block when no cursor is set yet — matches the user's
     /// "I just want to expand the last result" mental model).
-    pub fn toggle_fold_at_cursor(&self) {
+    ///
+    /// U26②：返回是否真切了 fold——无可折叠块、或 cursor 显式落在无
+    /// fold 字段的块（ToolCall/SystemNotice 等）时 false，调用方
+    ///（Space 键）据此把按键落回编辑器（空格可作消息首字符），不做
+    /// 无声消费（第十条）。
+    pub fn toggle_fold_at_cursor(&self) -> bool {
         let msgs = self.messages.get();
         let mut idx = self.transcript_cursor.get();
         if idx.is_none() {
@@ -682,7 +687,7 @@ impl SessionStore {
                 if Self::is_foldable(&msgs[i]) { idx = Some(i); break; }
             }
         }
-        let Some(i) = idx else { return; };
+        let Some(i) = idx else { return false; };
         // 单井聚合：cursor 落在折叠的 ToolResult 组内（段首 fold=Folded 且项数 >
         // TOOL_GROUP_PREVIEW）时，Space 展开整组（切段首 fold）——让「[+N more]」
         // 行也能点开。组未折叠（项数 ≤ 阈值，或段首已 Expanded）则切 cursor 块自己
@@ -697,8 +702,24 @@ impl SessionStore {
         });
         drop(msgs);
         let target = expand_group_head.unwrap_or(i);
+        // 目标块是否真的会被 toggle_fold 改变（toggle_fold 只认带 fold
+        // 字段的五类；cursor 显式落在 ToolCall/SystemNotice 等无 fold 块
+        // 上时它是无声 no-op）——不切则如实报 false，让 Space 落回编辑器。
+        let toggleable = {
+            let msgs = self.messages.get();
+            matches!(msgs.get(target), Some(
+                TranscriptBlock::UserPrompt { .. }
+                | TranscriptBlock::Thinking { .. }
+                | TranscriptBlock::ToolResult { .. }
+                | TranscriptBlock::TodoList { .. }
+                | TranscriptBlock::AssistantMsg { .. }))
+        };
+        if !toggleable {
+            return false;
+        }
         self.toggle_fold(target);
         self.transcript_cursor.set(Some(i));
+        true
     }
 
     /// 土律：transcript → 纯文本的**唯一**序列化权威。
@@ -1293,6 +1314,26 @@ mod tests {
             TranscriptBlock::UserPrompt { fold, .. } => assert_eq!(*fold, FoldState::Truncated),
             _ => panic!(),
         }
+    }
+
+    /// U26②：toggle_fold_at_cursor 如实报告是否真切了 fold——
+    /// 空 transcript / cursor 落在无 fold 字段的块（SystemNotice）
+    /// 时 false（Space 据此落回编辑器）；有可折叠块时 true。
+    #[test]
+    fn toggle_fold_at_cursor_reports_whether_it_toggled() {
+        let s = SessionStore::new();
+        // 空 transcript：无可折叠块 → false。
+        assert!(!s.toggle_fold_at_cursor());
+        // 只有 SystemNotice（无 fold 字段）→ false。
+        s.push_notice("n1", "note");
+        assert!(!s.toggle_fold_at_cursor());
+        // 有可折叠块（UserPrompt）→ true 且 cursor 被设置。
+        s.push_user_message("u1", "hello");
+        assert!(s.toggle_fold_at_cursor());
+        assert_eq!(s.transcript_cursor.get(), Some(1));
+        // cursor 显式落在 SystemNotice（index 0）→ false（不无声消费）。
+        s.transcript_cursor.set(Some(0));
+        assert!(!s.toggle_fold_at_cursor());
     }
 
     #[test]
