@@ -6,6 +6,7 @@
 //! 流向 transcript 滚动与 prompt 输入。
 
 use revue::event::{Key, KeyEvent};
+use agendao_command::UiActionId;
 use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::dialog::PermissionReply;
 
@@ -234,9 +235,15 @@ impl AppHandler {
                         // 取消：回收 pending。
                         self.pending_confirm = None;
                     }
-                    self.panel = Panel::None;
+                    // U15①：回来源 panel（SessionList 批量删回列表；其余
+                    // 来源默认 None）。replace 取出即复位，不跨轮悬空。
+                    self.panel = std::mem::replace(&mut self.confirm_return, Panel::None);
+                } else if !self.confirm_dialog.visible {
+                    // handle_key 未给结论但 dialog 已不可见（保险路径）——
+                    // 必须 else：否则上一行刚恢复的来源 panel 会被这行
+                    // 无条件覆盖回 None（U15① 初版实测 bug）。
+                    self.panel = std::mem::replace(&mut self.confirm_return, Panel::None);
                 }
-                if !self.confirm_dialog.visible { self.panel = Panel::None; }
                 return true;
             }
             Panel::Stash => {
@@ -288,7 +295,18 @@ impl AppHandler {
                                 "Delete",
                             );
                             self.pending_confirm = Some(PendingConfirm::DeleteSessionsBatch(ids));
+                            // U15①：dialog 保持打开 → Confirm 解决后回列表继续
+                            // 操作（原无条件 panel=None，forget_sessions 回填
+                            // 白写、用户被踢出列表，与上行注释矛盾）。
+                            self.confirm_return = Panel::SessionList;
                             self.panel = Panel::Confirm;
+                        }
+                        crate::dialog::SessionListAction::NewSession => {
+                            // U15②：空态 'n' → 复用 NewSession 唯一成形路径
+                            // （reset + navigate Home + focus + toast），不在
+                            // 此处二次成形（金律）。
+                            self.execute_slash_action(UiActionId::NewSession);
+                            self.panel = Panel::None;
                         }
                     }
                     return true;

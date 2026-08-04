@@ -525,8 +525,9 @@ impl AppHandler {
                         let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
                     });
                 } else if self.api.is_none() {
-                    // 无桥：立即可判空态（drain 不会来）。
-                    self.session_list.set_error("No sessions in this directory".into());
+                    // 无桥：立即可判空态（drain 不会来）。U15②：空 ≠ 错误，
+                    // 填空列表走 muted 空态分支，不 set_error 红字。
+                    self.session_list.set_sessions(Vec::new());
                 } else {
                     // debounce：在途拉取属于别的弹窗（begin_dialog_fetch 已
                     // toast），loading 不能干等——用 store 现有缓存填充；
@@ -543,7 +544,8 @@ impl AppHandler {
                         })
                         .collect();
                     if entries.is_empty() {
-                        self.session_list.set_error("No sessions in this directory".into());
+                        // U15②：缓存为空 = 空态，非错误。
+                        self.session_list.set_sessions(Vec::new());
                     } else {
                         self.session_list.set_sessions(entries);
                     }

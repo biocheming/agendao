@@ -1029,8 +1029,9 @@ impl AppHandler {
                                             })
                                             .collect();
                                         if entries.is_empty() {
-                                            self.session_list
-                                                .set_error("No sessions in this directory".into());
+                                            // U15②：真空目录 = 空态分支（muted
+                                            // 文案 + 'n' 开新会话），非红色 Error。
+                                            self.session_list.set_sessions(Vec::new());
                                         } else {
                                             self.session_list.set_sessions(entries);
                                         }
@@ -4097,9 +4098,10 @@ mod tests {
         assert!(matches!(h.panel, Panel::McpList), "panel 切换");
     }
 
-    /// sessions 回执：清闸 + 清 loading；空目录 → 就地错误态而非 toast。
+    /// sessions 回执：清闸 + 清 loading；空目录 → U15② 空态分支（sessions
+    /// 清空、error 为空），不再渲染红色 Error。
     #[test]
-    fn dialog_fetch_done_sessions_empty_sets_error_state() {
+    fn dialog_fetch_done_sessions_empty_uses_empty_state() {
         let mut h = mk_handler();
         h.store
             .dialog_fetch_pending
@@ -4115,11 +4117,60 @@ mod tests {
         h.handle(&Event::Tick);
         assert!(h.store.dialog_fetch_pending.get().is_none(), "回执清闸");
         assert!(!h.session_list.loading, "loading 态清除");
-        assert_eq!(
-            h.session_list.error.as_deref(),
-            Some("No sessions in this directory"),
-            "空目录就地错误态"
-        );
+        assert!(h.session_list.error.is_none(), "空目录不置错误态");
+        assert!(h.session_list.sessions.is_empty(), "空态 = 空 sessions 列表");
+    }
+
+    /// U15①：批量删 Confirm 确认后回 SessionList——来源 panel 被记录并
+    /// 恢复，不再无条件 panel=None 把用户踢出列表（forget_sessions 回填
+    /// 也不再白写：dialog 仍打开，dispatch 继续路由到它）。
+    #[test]
+    fn batch_delete_confirm_returns_to_session_list() {
+        let mut h = mk_handler();
+        h.session_list.open();
+        h.session_list.set_sessions(vec![
+            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
+            crate::dialog::SessionEntry { id: "b".into(), title: "t-b".into(), status_hint: String::new() },
+        ]);
+        h.panel = Panel::SessionList;
+        // 'x' 标记当前项 → 'D' 触发批量删 Confirm。
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('x'))));
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('D'))));
+        assert_eq!(h.panel, Panel::Confirm);
+        // Enter 确认（无 api：ok_ids 空，但 panel 状态机流转与 api 无关）。
+        h.handle(&Event::Key(KeyEvent::new(Key::Enter)));
+        assert_eq!(h.panel, Panel::SessionList, "Confirm 解决后回列表");
+        assert!(h.session_list.is_open(), "dialog 保持打开");
+        assert_eq!(h.confirm_return, Panel::None, "return panel 取出即复位");
+    }
+
+    /// U15①：批量删 Confirm 取消（Esc）同样回 SessionList。
+    #[test]
+    fn batch_delete_confirm_cancel_returns_to_session_list() {
+        let mut h = mk_handler();
+        h.session_list.open();
+        h.session_list.set_sessions(vec![
+            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
+        ]);
+        h.panel = Panel::SessionList;
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('x'))));
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('D'))));
+        assert_eq!(h.panel, Panel::Confirm);
+        h.handle(&Event::Key(KeyEvent::new(Key::Escape)));
+        assert_eq!(h.panel, Panel::SessionList, "取消也回列表");
+        assert!(h.pending_confirm.is_none(), "pending 已回收");
+        assert_eq!(h.confirm_return, Panel::None, "return panel 复位");
+    }
+
+    /// U15①：非 SessionList 来源的 Confirm 仍回 None（confirm_return 默认
+    /// 值不被批量删的赋值污染）。
+    #[test]
+    fn confirm_without_source_returns_to_none() {
+        let mut h = mk_handler();
+        h.confirm_dialog.ask("T", "msg", "OK");
+        h.panel = Panel::Confirm;
+        h.handle(&Event::Key(KeyEvent::new(Key::Enter)));
+        assert_eq!(h.panel, Panel::None);
     }
 
     /// 失败回执：sessions 在 loading → 就地置错；否则 Error toast。均清闸。

@@ -19,6 +19,9 @@ pub struct SessionEntry {
 pub enum SessionListAction {
     Open(SessionEntry),
     DeleteBatch(Vec<String>),
+    /// U15②：空态下按 'n' 开新会话（空态文案承诺的动作必须真实可达——
+    /// 原文案写 "Enter 开启新会话" 但 Enter 只关框，说谎）。
+    NewSession,
 }
 
 pub struct SessionListDialog {
@@ -167,6 +170,13 @@ impl SessionListDialog {
                     Some(SessionListAction::DeleteBatch(ids))
                 }
             }
+            // U15②：空态下 'n' = 开新会话（空态文案承诺的可用动作）。非空时
+            // 'n' 是普通过滤字符，落下面的 graphic arm——故 guard 必须带
+            // is_empty 且本 arm 在 graphic arm 之上（match 顺序优先）。
+            Key::Char('n') if self.sessions.is_empty() => {
+                self.close();
+                Some(SessionListAction::NewSession)
+            }
             // Allow alphanumeric + space + dash/underscore/dot for filtering
             // ('x'/'D' 已在前面 arm 拦截,不会落到此处搜索)
             Key::Char(c) if c.is_ascii_graphic() || *c == ' ' => {
@@ -242,15 +252,17 @@ impl SessionListDialog {
                 "Esc: close", ctx, geom, 5);
         } else if self.sessions.is_empty() {
             // 空状态：极简一行，scope 信息靠 title 的 "in <name>" 表达。
+            // U15②：文案只承诺真实可达的动作（'n' 开新会话 / Esc 关框）——
+            // 原 scoped 文案写 "Enter 开启新会话" 但 Enter 只关框，说谎。
             let title = format!("Sessions{}", scope_suffix);
             let msg = if self.directory_scope.is_empty() {
-                "No sessions found."
+                "No sessions yet — n: new session"
             } else {
-                "本目录下暂无会话，按 Esc 返回，按 Enter 开启新会话。"
+                "本目录下暂无会话 — n 开新会话，Esc 返回"
             };
             let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED()));
             backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN(), body,
-                "Esc: close", ctx, geom, 5);
+                "n: new session  Esc: close", ctx, geom, 5);
         } else {
             let filtered = self.filtered_indices();
             let items: Vec<ListItem> = filtered.iter().map(|&i| {
@@ -405,5 +417,38 @@ impl SessionListDialog {
             .width(pop_w)
             .height(pop_h)
             .render(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str) -> SessionEntry {
+        SessionEntry { id: id.into(), title: format!("t-{id}"), status_hint: String::new() }
+    }
+
+    /// U15②：空态下 'n' 是"开新会话"动作（空态文案承诺的键必须真实可达）。
+    #[test]
+    fn n_in_empty_list_offers_new_session() {
+        let mut d = SessionListDialog::new();
+        d.open();
+        d.set_sessions(Vec::new());
+        assert!(matches!(
+            d.handle_key(&Key::Char('n')),
+            Some(SessionListAction::NewSession)
+        ));
+        assert!(!d.is_open(), "动作成形后 dialog 关闭");
+    }
+
+    /// U15②：非空时 'n' 仍是过滤字符，不被新会话 arm 抢走。
+    #[test]
+    fn n_in_nonempty_list_filters() {
+        let mut d = SessionListDialog::new();
+        d.open();
+        d.set_sessions(vec![entry("a"), entry("b")]);
+        assert!(d.handle_key(&Key::Char('n')).is_none());
+        assert_eq!(d.query, "n");
+        assert!(d.is_open(), "过滤不关框");
     }
 }

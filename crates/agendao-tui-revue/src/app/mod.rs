@@ -383,6 +383,11 @@ pub(crate) struct AppHandler {
     /// confirm dialog, consumed and cleared when the user answers (道纪第九条:
     /// 写入即承诺回收 —— pending 不许悬空跨多轮)。
     pub(crate) pending_confirm: Option<PendingConfirm>,
+    /// U15①：Confirm 解决后要回到的 panel（默认 None）。仅当来源弹窗在
+    /// Confirm 期间保持打开时设置——目前只有 SessionList 批量删（dialog
+    /// 不关，删完回列表继续操作）；其余来源弹窗在打开 Confirm 前已自行
+    /// close，回 None 即可。解决时 `mem::replace` 取出即复位，不跨轮悬空。
+    pub(crate) confirm_return: Panel,
     pub(crate) help: HelpDialog,
     pub(crate) skill_list: SkillListDialog,
     pub(crate) skill_proposal: SkillProposalDialog,
@@ -864,6 +869,7 @@ impl AppHandler {
             export_dialog: SessionExportDialog::new(),
             confirm_dialog: ConfirmDialog::new(),
             pending_confirm: None,
+            confirm_return: Panel::None,
             help: HelpDialog::new(),
             skill_list: SkillListDialog::new(),
             skill_proposal: SkillProposalDialog::new(),
