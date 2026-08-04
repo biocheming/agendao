@@ -525,21 +525,33 @@ impl AppHandler {
             UiActionId::CompactSession => {
                 // F10：`/compact <focus>` 的 focus 由 sync_slash_from_text 暂存。
                 let focus = self.pending_compact_focus.take();
-                if let Some(sid) = self.active_session.get_session_id() {
-                    if let Some(ref api) = self.api {
-                        match api.compact_session(&sid, focus.as_deref()) {
-                            Ok(_) => self.store.push_toast(
-                                &match focus {
-                                    Some(f) => format!("Compaction triggered (focus: {f})"),
-                                    None => "Compaction triggered".to_string(),
+                // U6 异步化：触发调用可耗数秒 → 后台 task；在飞期间
+                // run_status=Sending 转 spinner（处理中指示），重复触发防抖。
+                if self.compact_in_flight {
+                    self.store.push_toast(
+                        "Compaction already in progress",
+                        crate::store::types::ToastMsgVariant::Info,
+                    );
+                } else if let Some(sid) = self.active_session.get_session_id() {
+                    if let Some(api) = self.api.clone() {
+                        self.compact_in_flight = true;
+                        self.active_session.run_status.set(RunStatus::Sending);
+                        let tx = self.app_ops.sender();
+                        let handle = api.handle().clone();
+                        handle.spawn(async move {
+                            let result = api
+                                .compact_session_async(&sid, focus.as_deref())
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| e.to_string());
+                            let _ = tx.send(
+                                crate::app::app_op::AppOpOutcome::CompactionTriggered {
+                                    session_id: sid,
+                                    focus,
+                                    result,
                                 },
-                                crate::store::types::ToastMsgVariant::Success,
-                            ),
-                            Err(e) => self.store.push_toast(
-                                &format!("Compact failed: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            ),
-                        }
+                            );
+                        });
                     }
                 }
             }

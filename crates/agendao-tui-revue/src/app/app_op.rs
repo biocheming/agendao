@@ -33,6 +33,13 @@ pub enum AppOpOutcome {
         /// server 探测到 provider 端不通（HTTP 状态/超时等）。
         result: Result<ProviderTestData, String>,
     },
+    /// `/compact` 触发回执（触发调用本身可耗数秒——压缩本体在 server
+    /// 侧异步跑，这里只是"已受理/受理失败"的通知）。
+    CompactionTriggered {
+        session_id: String,
+        focus: Option<String>,
+        result: Result<(), String>,
+    },
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。
@@ -92,16 +99,16 @@ mod tests {
         tx.send(sample()).unwrap();
         let out = ops.drain();
         assert_eq!(out.len(), 1);
-        match &out[0] {
-            AppOpOutcome::ProviderTested {
-                provider_id,
-                result,
-                ..
-            } => {
-                assert_eq!(provider_id, "openai");
-                assert_eq!(result.as_ref().unwrap().latency_ms, 42);
-            }
-        }
+        let AppOpOutcome::ProviderTested {
+            provider_id,
+            result,
+            ..
+        } = &out[0]
+        else {
+            panic!("expected ProviderTested");
+        };
+        assert_eq!(provider_id, "openai");
+        assert_eq!(result.as_ref().unwrap().latency_ms, 42);
         assert!(ops.drain().is_empty(), "drain 后再取为空（已消费）");
     }
 

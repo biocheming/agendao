@@ -547,6 +547,24 @@ impl ApiBridge {
         self.block_on(self.client.compact_session(session_id, focus))
     }
 
+    /// 异步变体（U6）：/compact 触发可耗数秒，后台 task 用，
+    /// 不经 `block_on`。
+    pub async fn compact_session_async(
+        &self,
+        session_id: &str,
+        focus: Option<&str>,
+    ) -> anyhow::Result<agendao_client::CompactResponse> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_compact_session(
+                Arc::clone(ls),
+                session_id,
+                focus.map(str::to_string),
+            )
+            .await;
+        }
+        self.client.compact_session(session_id, focus).await
+    }
+
     /// /skill/catalog：列出可用 skills（read-only 视图）。
     pub fn list_skills(
         &self,

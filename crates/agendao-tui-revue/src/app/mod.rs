@@ -424,6 +424,9 @@ pub(crate) struct AppHandler {
     /// 置位，slash_action 的 CompactSession 臂 take() 消费（UiActionId 不
     /// 带参——命令注册表跨越多个前端，参数走 app 本地暂存）。
     pub(crate) pending_compact_focus: Option<String>,
+    /// /compact 触发调用在飞（U6）：true 期间重复触发被防抖吞掉；
+    /// 回执 drain（CompactionTriggered）清零。
+    pub(crate) compact_in_flight: bool,
     /// 发 prompt 后置位；一轮结束（Idle）时由 Tick 分支消费一次——拉取服务端
     /// LLM 生成的 title 同步到 active_session.title，然后清除。闭合新建 session
     /// 首轮 title 无事件回流的缺口（header 不再恒显 "New Session"）。
@@ -849,6 +852,7 @@ impl AppHandler {
             quit_armed_at: None,
             quit_armed_via_q: false,
             pending_compact_focus: None,
+            compact_in_flight: false,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
             active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes, app_ops: ops,

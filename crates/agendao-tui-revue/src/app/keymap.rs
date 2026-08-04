@@ -741,6 +741,45 @@ impl AppHandler {
                                 ),
                             }
                         }
+                        app_op::AppOpOutcome::CompactionTriggered {
+                            session_id,
+                            focus,
+                            result,
+                        } => {
+                            self.compact_in_flight = false;
+                            match result {
+                                Ok(()) => {
+                                    // 受理成功：压缩本体由 server 事件流驱动
+                                    // （run_status 由 FrontendEvent 推进，不抢）。
+                                    self.store.push_toast(
+                                        &match focus {
+                                            Some(f) => {
+                                                format!("Compaction triggered (focus: {f})")
+                                            }
+                                            None => "Compaction triggered".to_string(),
+                                        },
+                                        ToastMsgVariant::Success,
+                                    );
+                                }
+                                Err(e) => {
+                                    // 失败：收回 Sending 指示（仅当仍是当前会话
+                                    // 且状态机未被事件流接管）。
+                                    if self.active_session.session_id.get().as_deref()
+                                        == Some(session_id.as_str())
+                                        && matches!(
+                                            self.active_session.run_status.get(),
+                                            RunStatus::Sending
+                                        )
+                                    {
+                                        self.active_session.run_status.set(RunStatus::Idle);
+                                    }
+                                    self.store.push_toast(
+                                        &format!("Compact failed: {}", e),
+                                        ToastMsgVariant::Error,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 for fe in &events {
@@ -3300,6 +3339,34 @@ mod tests {
             h.store.settings_testing_provider.get().is_none(),
             "失败路径不残留 pending"
         );
+    }
+
+    // ── U6：/compact 异步化 ──
+
+    /// 在飞期间重复 /compact → 防抖 toast，状态不被重置。
+    #[test]
+    fn compact_debounced_while_in_flight() {
+        let mut h = mk_handler();
+        h.compact_in_flight = true;
+        h.execute_slash_action(UiActionId::CompactSession);
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("already in progress")),
+            "防抖提示"
+        );
+        assert!(h.compact_in_flight, "在飞标记不被重置");
+    }
+
+    /// 无活动会话 → 静默不触发（不进在飞态、不转 spinner）。
+    #[test]
+    fn compact_without_session_is_noop() {
+        let mut h = mk_handler();
+        h.execute_slash_action(UiActionId::CompactSession);
+        assert!(!h.compact_in_flight);
+        assert!(h.store.toasts.get().is_empty());
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。
