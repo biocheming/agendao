@@ -296,6 +296,8 @@ pub(crate) enum Panel {
     PluginEdit,
     /// Settings→Providers 内 a / e → 弹 provider 添加/编辑 form dialog。
     ProviderEdit,
+    /// U7③：通知中心（toast_history 只读回看）。
+    Notifications,
 }
 
 /// Confirm-dialog outcome discriminator. `Panel::Confirm` only yields a bool;
@@ -373,6 +375,8 @@ pub(crate) struct AppHandler {
     pub(crate) mcp_list: McpListDialog,
     pub(crate) recovery_list: RecoveryListDialog,
     pub(crate) task_list: TaskListDialog,
+    /// U7③：通知中心（toast_history 只读回看，数据真相在 store signal）。
+    pub(crate) notification_dialog: crate::dialog::NotificationDialog,
     /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
     /// 走 client.put_provider_model_config / delete_provider_model_config 唯一写路径。
     pub(crate) model_edit_dialog: ModelEditDialog,
@@ -534,6 +538,9 @@ pub(crate) struct AppHandler {
     /// U7②：可见 toast 的 (id, Rect) 列表（render 每帧重发），供点击
     /// dismiss 命中测试。栈序 = 渲染序（最新一条在最后）。
     pub(crate) toast_rects: Vec<(u64, revue::prelude::Rect)>,
+    /// U7③：status bar 🔔 角标的 Rect（render 每帧重发；无通知时 None），
+    /// 点击 → Panel::Notifications。
+    pub(crate) bell_rect: Option<revue::prelude::Rect>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -839,6 +846,7 @@ impl AppHandler {
             mcp_list: McpListDialog::new(),
             recovery_list: RecoveryListDialog::new(),
             task_list: TaskListDialog::new(),
+            notification_dialog: crate::dialog::NotificationDialog::new(),
             model_edit_dialog: ModelEditDialog::new(),
             mcp_edit_dialog: McpEditDialog::new(),
             plugin_edit_dialog: PluginEditDialog::new(),
@@ -885,6 +893,7 @@ impl AppHandler {
             provider_edit_rect: None,
             confirm_rect: None,
             toast_rects: Vec::new(),
+            bell_rect: None,
         }
     }
 }
@@ -1569,6 +1578,7 @@ impl View for RootView {
             Panel::McpList => "mcps",
             Panel::Recovery => "recovery",
             Panel::TaskList => "tasks",
+            Panel::Notifications => "notifications",
             Panel::ModelEdit => "modelEdit",
             Panel::McpEdit => "mcpEdit",
             Panel::PluginEdit => "pluginEdit",
@@ -1614,9 +1624,35 @@ impl View for RootView {
             Some(label) => format!(" ◌ {}…", label),
             None => String::new(),
         };
-        let status_text = format!(
-            " {} │ [{}]{}{}{} │{} q:quit ^P:cmd ?:help ",
+        // U7③：🔔 通知角标（history 条数）——常驻重发现入口，点击开
+        // 通知中心。位置 = gutter(PAD) + 前缀 display width；Rect 发布
+        // 供 keymap 命中（与 toast_rects 同批写回）。
+        let history_count = h.store.toast_history.get().len();
+        let bell_seg = if history_count > 0 {
+            format!(" 🔔{}", history_count.min(99))
+        } else {
+            String::new()
+        };
+        let status_prefix = format!(
+            " {} │ [{}]{}{}{} │{}",
             dir_short, panel_label, stats, fetch_hint, cursor_hint, nav_hint,
+        );
+        let bell_rect: Option<revue::prelude::Rect> = if bell_seg.is_empty() {
+            None
+        } else {
+            use unicode_width::UnicodeWidthStr;
+            let bx = PAD + UnicodeWidthStr::width(status_prefix.as_str()) as u16;
+            let bw = UnicodeWidthStr::width(bell_seg.as_str()) as u16;
+            Some(revue::prelude::Rect::new(
+                bx,
+                ctx.area.height.saturating_sub(1),
+                bw,
+                1,
+            ))
+        };
+        let status_text = format!(
+            "{}{} q:quit ^P:cmd ?:help ",
+            status_prefix, bell_seg,
         );
         let status_bar = Text::new(&status_text)
             .fg(colors::FG_MUTED())
@@ -1774,6 +1810,11 @@ impl View for RootView {
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
             Panel::TaskList => h.task_list.render(ctx, geom),
+            Panel::Notifications => {
+                // 只读回看：数据真相在 store signal（土律·单一权威）。
+                let history = h.store.toast_history.get();
+                h.notification_dialog.render(ctx, geom, &history);
+            }
             Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx, cursor_blink_on); }
             Panel::McpEdit => { mcp_edit_rect = h.mcp_edit_dialog.render(ctx, cursor_blink_on); }
             Panel::PluginEdit => { plugin_edit_rect = h.plugin_edit_dialog.render(ctx, cursor_blink_on); }
@@ -1848,6 +1889,7 @@ impl View for RootView {
             toast_rects.push((t.id, revue::prelude::Rect::new(x, y, w + 2, 3)));
         }
         self.handler.borrow_mut().toast_rects = toast_rects;
+        self.handler.borrow_mut().bell_rect = bell_rect;
 
         // ── Session header dir 全路径 tooltip（click-to-reveal）─────────────────────
         // 点击 header dir 区 → store.dir_tooltip = Some(DirTooltip{ path, x, y })（keymap toggle）；

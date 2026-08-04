@@ -23,6 +23,7 @@ pub mod model_edit;
 pub mod mcp_edit;
 pub mod plugin_edit;
 pub mod provider_edit;
+pub mod notifications;
 
 pub use confirm::ConfirmDialog;
 pub use help::HelpDialog;
@@ -45,4 +46,5 @@ pub use model_edit::{ModelEditDialog, ModelEditAction, ModelEditSubmission, Mode
 pub use mcp_edit::{McpEditDialog, McpEditAction, McpEditSubmission, McpEditMode, McpTransport};
 pub use plugin_edit::{PluginEditDialog, PluginEditAction, PluginEditSubmission};
 pub use provider_edit::{ProviderEditDialog, ProviderEditAction};
+pub use notifications::NotificationDialog;
 pub(crate) use provider_edit::ProviderEditField;

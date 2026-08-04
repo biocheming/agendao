@@ -68,6 +68,8 @@ pub enum UiActionId {
     AppearancePrev,
     ViewStatus,
     ToggleMcp,
+    /// 通知中心（U7③）：回看 toast 历史（最近 50 条）。TUI-only。
+    OpenNotifications,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -502,6 +504,19 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
                 name: "/help",
                 aliases: &["/commands"],
                 suggested: true,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::OpenNotifications,
+            title: "Notifications",
+            description: "Show notification history",
+            category: UiCommandCategory::System,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/notifications",
+                aliases: &[],
+                suggested: false,
             }),
         },
         UiCommandSpec {

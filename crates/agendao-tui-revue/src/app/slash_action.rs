@@ -190,6 +190,11 @@ impl AppHandler {
                 self.agent_select.open();
                 self.panel = Panel::AgentSelect;
             }
+            UiActionId::OpenNotifications => {
+                // U7③：通知中心——只读回看 toast_history（含已过期/dismiss）。
+                self.notification_dialog.open();
+                self.panel = Panel::Notifications;
+            }
             UiActionId::OpenSkills => {
                 // 读视图 first slice（道纪第十条）：列表权威已成，挂载需
                 // manage_skill + scoping 独立工程，故只 toast 不伪成功。

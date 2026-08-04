@@ -1227,6 +1227,15 @@ impl AppHandler {
                             self.store.dismiss_toast(*id);
                             return true;
                         }
+                        // ── U7③ status bar 🔔 角标 → 通知中心 ──
+                        if let Some(r) = self.bell_rect {
+                            if r.contains(m.x, m.y) {
+                                self.close_all_panels();
+                                self.notification_dialog.open();
+                                self.panel = Panel::Notifications;
+                                return true;
+                            }
+                        }
                         // ── Session list dialog scrollbar click ──
                         // Hit-test before the sidebar / transcript
                         // branches so clicking on the dialog's
@@ -2088,6 +2097,7 @@ impl AppHandler {
         self.rename_dialog.close();
         self.confirm_dialog.close();
         self.help.dismiss();
+        self.notification_dialog.close();
         self.panel = Panel::None;
     }
 
@@ -4034,6 +4044,31 @@ mod tests {
             !h.handle(&Event::Key(KeyEvent::new(Key::Escape))),
             "队列空 Esc 不消费"
         );
+    }
+
+    /// U7③：🔔 角标点击 → 通知中心打开；Esc 关闭回 None。
+    #[test]
+    fn bell_click_opens_notifications() {
+        let mut h = mk_handler();
+        h.store.push_toast("hello", crate::store::types::ToastMsgVariant::Info);
+        h.bell_rect = Some(revue::prelude::Rect::new(10, 24, 5, 1));
+        let ev = Event::Mouse(MouseEvent::new(11, 24, MouseEventKind::Down(MouseButton::Left)));
+        assert!(h.handle(&ev), "铃铛点击被消费");
+        assert!(h.notification_dialog.is_open(), "通知中心打开");
+        assert!(matches!(h.panel, Panel::Notifications));
+        // Esc（panel 打开时全局 Esc → close_all_panels）。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert!(!h.notification_dialog.is_open(), "Esc 关闭");
+        assert!(matches!(h.panel, Panel::None));
+    }
+
+    /// U7③：/notifications slash → OpenNotifications 打开通知中心。
+    #[test]
+    fn slash_open_notifications() {
+        let mut h = mk_handler();
+        h.execute_slash_action(agendao_command::UiActionId::OpenNotifications);
+        assert!(h.notification_dialog.is_open());
+        assert!(matches!(h.panel, Panel::Notifications));
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

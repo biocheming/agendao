@@ -557,6 +557,13 @@ impl AppHandler {
                 if !self.task_list.is_open() { self.panel = Panel::None; }
                 return true;
             }
+            Panel::Notifications => {
+                // 只读回看：导航 + Esc（条目无可执行语义，道纪第十条）。
+                let count = self.store.toast_history.get().len();
+                self.notification_dialog.handle_key(key, count);
+                if !self.notification_dialog.is_open() { self.panel = Panel::None; }
+                return true;
+            }
             Panel::ModelEdit => {
                 if let Some(action) = self.model_edit_dialog.handle_key(key) {
                     match action {
