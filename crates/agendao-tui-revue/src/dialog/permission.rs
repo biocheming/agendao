@@ -160,6 +160,67 @@ impl PermissionRequest {
             other => other,
         })
     }
+
+    /// From a server `PermissionRequestInfo`（live `PermissionUpsert` 事件与
+    /// F4 catch-up `list_permissions` 共用同一映射，土律·单点权威）。
+    pub fn from_info(info: &agendao_client::PermissionRequestInfo) -> PermissionRequest {
+        let supported_lifetimes = if info.supported_lifetimes.is_empty() {
+            vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session]
+        } else {
+            info.supported_lifetimes
+                .iter()
+                .filter_map(|s| match s.as_str() {
+                    "once" => Some(PermissionLifetime::Once),
+                    "turn" => Some(PermissionLifetime::Turn),
+                    "session" | "always" => Some(PermissionLifetime::Session),
+                    _ => None,
+                })
+                .collect()
+        };
+        // 服务端把 input 包成元信息封套（真实命令在 metadata.command，兜底
+        // patterns[0]）——提取链单点在 extract_resource。封套无命令细节时退到
+        // 授权目标摘要，保住可读性。
+        let resource = {
+            let r = extract_resource(&info.input);
+            if r.is_empty() {
+                info.grant_target_summary.clone().unwrap_or_default()
+            } else {
+                r
+            }
+        };
+        PermissionRequest {
+            id: info.id.clone(),
+            tool: info.tool.clone(),
+            message: info.message.clone(),
+            perm_type: permission_type_from_tool(&info.tool),
+            supported_lifetimes,
+            permission_class: info.permission_class.clone(),
+            scope_label: info.scope_label.clone(),
+            risk_tags: info.risk_tags.clone(),
+            resource,
+        }
+    }
+}
+
+/// Map server tool name → `PermissionType`（live `PermissionUpsert` 与
+/// F4 catch-up `list_permissions` 共用，土律·单点权威）。
+pub fn permission_type_from_tool(tool: &str) -> PermissionType {
+    match tool.to_lowercase().as_str() {
+        "read" | "readfile" | "read_file" => PermissionType::ReadFile,
+        "write" | "writefile" | "write_file" => PermissionType::WriteFile,
+        "edit" | "editfile" | "edit_file" => PermissionType::Edit,
+        "bash" | "shell" | "execute" | "executecommand" => PermissionType::Bash,
+        "glob" | "globsearch" => PermissionType::Glob,
+        "grep" | "grepsearch" | "search" => PermissionType::Grep,
+        "ls" | "list" | "listdir" | "listdirectory" => PermissionType::List,
+        "network" | "networkrequest" | "http" => PermissionType::NetworkRequest,
+        "webfetch" | "web_fetch" | "fetch" => PermissionType::WebFetch,
+        "websearch" | "web_search" => PermissionType::WebSearch,
+        "task" | "agent" => PermissionType::Task,
+        "codesearch" | "code_search" => PermissionType::CodeSearch,
+        "external" | "externaldirectory" | "external_directory" => PermissionType::ExternalDirectory,
+        _ => PermissionType::ExecuteCommand,
+    }
 }
 
 pub struct PermissionDialog {

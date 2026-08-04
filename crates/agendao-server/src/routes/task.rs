@@ -38,7 +38,7 @@ pub(crate) fn task_routes() -> Router<Arc<ServerState>> {
         .route("/{id}", get(get_task).delete(cancel_task))
 }
 
-async fn list_tasks() -> Json<Vec<TaskSummaryInfo>> {
+pub(crate) async fn list_tasks() -> Json<Vec<TaskSummaryInfo>> {
     let tasks = global_task_registry().list();
     let now = chrono::Utc::now().timestamp();
     Json(
@@ -79,7 +79,7 @@ async fn get_task(Path(id): Path<String>) -> Result<Json<TaskDetail>> {
     }))
 }
 
-async fn cancel_task(Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub(crate) async fn cancel_task(Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     agendao_orchestrator::global_lifecycle()
         .cancel_task(&id)
         .map_err(ApiError::NotFound)?;

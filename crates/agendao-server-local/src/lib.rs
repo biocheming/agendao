@@ -359,6 +359,14 @@ pub async fn local_list_skills(
     agendao_server::local_list_skills(state, query).await
 }
 
+/// GET `/skill/detail?name=` 的 local-direct 短路：TUI 技能详情视图读通路。
+pub async fn local_get_skill_detail(
+    state: Arc<LocalServerState>,
+    query: agendao_client::SkillDetailQuery,
+) -> Result<agendao_client::SkillDetailResponse> {
+    agendao_server::local_get_skill_detail(state, query).await
+}
+
 /// GET `/tool/catalog` 的 local-direct 短路：TUI Settings→Tools 读通路。
 pub async fn local_list_tools(
     state: Arc<LocalServerState>,
@@ -418,6 +426,27 @@ pub async fn local_disconnect_mcp(state: Arc<LocalServerState>, name: &str) -> R
     agendao_server::local_disconnect_mcp(state, name).await
 }
 
+/// POST `/mcp/{name}/auth` 的 local-direct 短路：发起 OAuth，返回授权 URL。
+pub async fn local_start_mcp_auth(
+    state: Arc<LocalServerState>,
+    name: &str,
+) -> Result<agendao_client::McpAuthStartInfo> {
+    agendao_server::local_start_mcp_auth(state, name).await
+}
+
+/// POST `/mcp/{name}/auth/authenticate` 的 local-direct 短路：完成挂起的 OAuth 交换。
+pub async fn local_authenticate_mcp(
+    state: Arc<LocalServerState>,
+    name: &str,
+) -> Result<agendao_client::McpStatusInfo> {
+    agendao_server::local_authenticate_mcp(state, name).await
+}
+
+/// DELETE `/mcp/{name}/auth` 的 local-direct 短路：清除已存 OAuth 凭据。
+pub async fn local_remove_mcp_auth(state: Arc<LocalServerState>, name: &str) -> Result<bool> {
+    agendao_server::local_remove_mcp_auth(state, name).await
+}
+
 /// PUT `/config/mcp/{key}` 的 local-direct 短路（TUI Settings→MCP 增/改/启停）。
 pub async fn local_put_mcp_config(
     state: Arc<LocalServerState>,
@@ -457,4 +486,86 @@ pub async fn local_list_plugins(
     state: Arc<LocalServerState>,
 ) -> Result<Vec<agendao_client::PluginListEntry>> {
     agendao_server::local_list_plugins(state).await
+}
+
+/// POST `/session/{id}/abort` 的 local-direct 短路：TUI 双击 Esc 中断。
+pub async fn local_abort_session(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<serde_json::Value> {
+    agendao_server::local_abort_session(state, session_id).await
+}
+
+/// POST `/session/{id}/tool/{tool_call_id}/cancel` 的 local-direct 短路。
+pub async fn local_cancel_tool_call(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    tool_call_id: &str,
+) -> Result<serde_json::Value> {
+    agendao_server::local_cancel_tool_call(state, session_id, tool_call_id).await
+}
+
+/// POST `/session/{id}/shell` 的 local-direct 短路：TUI `!command` shell 输入。
+pub async fn local_execute_shell(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    command: String,
+    workdir: Option<String>,
+) -> Result<serde_json::Value> {
+    agendao_server::local_execute_shell(state, session_id, command, workdir).await
+}
+
+/// POST `/session/{id}/fork` 的 local-direct 短路：TUI `/fork`。
+pub async fn local_fork_session(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    message_id: Option<String>,
+) -> Result<agendao_types::SessionInfo> {
+    agendao_server::local_fork_session(state, session_id, message_id).await
+}
+
+/// POST `/session/{id}/compact` 的 local-direct 短路：TUI `/compact [focus]`。
+pub async fn local_compact_session(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    focus: Option<String>,
+) -> Result<agendao_client::CompactResponse> {
+    agendao_server::local_compact_session(state, session_id, focus).await
+}
+
+/// PUT `/session/{id}/title` 的 local-direct 短路：TUI 重命名会话。
+pub async fn local_update_session_title(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    title: &str,
+) -> Result<agendao_types::SessionInfo> {
+    agendao_server::local_update_session_title(state, session_id, title).await
+}
+
+/// GET `/session/{id}/recovery` 的 local-direct 短路：TUI recovery 列表读通路。
+pub async fn local_get_session_recovery(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+) -> Result<agendao_client::SessionRecoveryProtocol> {
+    agendao_server::local_get_session_recovery(state, session_id).await
+}
+
+/// POST `/session/{id}/recovery/execute` 的 local-direct 短路。
+pub async fn local_execute_session_recovery(
+    state: Arc<LocalServerState>,
+    session_id: &str,
+    action: agendao_client::RecoveryActionKind,
+    target_id: Option<String>,
+) -> Result<serde_json::Value> {
+    agendao_server::local_execute_session_recovery(state, session_id, action, target_id).await
+}
+
+/// GET `/task` 的 local-direct 短路：TUI `/tasks` 读通路。
+pub async fn local_list_tasks() -> Result<Vec<agendao_client::TaskSummaryInfo>> {
+    agendao_server::local_list_tasks().await
+}
+
+/// DELETE `/task/{id}` 的 local-direct 短路：TUI `/tasks` cancel 写通路。
+pub async fn local_cancel_task(task_id: &str) -> Result<serde_json::Value> {
+    agendao_server::local_cancel_task(task_id).await
 }

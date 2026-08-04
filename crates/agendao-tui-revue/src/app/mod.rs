@@ -404,6 +404,10 @@ pub(crate) struct AppHandler {
     /// 据此判相，驱动所有输入处块光标 600ms 量级闪烁。
     pub(crate) blink_tick: u64,
     pub(crate) interrupt_pending: bool,
+    /// `/compact <focus>` 的参数通道：sync_slash_from_text 解析出 focus 后
+    /// 置位，slash_action 的 CompactSession 臂 take() 消费（UiActionId 不
+    /// 带参——命令注册表跨越多个前端，参数走 app 本地暂存）。
+    pub(crate) pending_compact_focus: Option<String>,
     /// 发 prompt 后置位；一轮结束（Idle）时由 Tick 分支消费一次——拉取服务端
     /// LLM 生成的 title 同步到 active_session.title，然后清除。闭合新建 session
     /// 首轮 title 无事件回流的缺口（header 不再恒显 "New Session"）。
@@ -822,6 +826,7 @@ impl AppHandler {
             last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
+            pending_compact_focus: None,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
             active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes,

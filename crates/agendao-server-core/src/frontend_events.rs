@@ -171,6 +171,20 @@ pub enum FrontendEvent {
     #[serde(rename = "config.updated")]
     ConfigUpdated,
 
+    // ── Errors ───────────────────────────────────────────────────────────
+
+    /// A run-time error occurred in a session (e.g. mid-turn provider
+    /// failure). Projected from `ServerEvent::Error` so frontends can surface
+    /// it immediately instead of waiting for the next runtime snapshot.
+    #[serde(rename = "session.error")]
+    SessionError {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        error: String,
+        #[serde(rename = "messageID", skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+
     // ── Output ───────────────────────────────────────────────────────
 
     /// An output block has been appended to the session transcript.

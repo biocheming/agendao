@@ -14,10 +14,6 @@ use agendao_command::{CommandRegistry, UiActionId};
 
 use crate::app::{AppHandler, Panel};
 use crate::app::dispatch_outcome;
-use crate::dialog::{
-    PermissionRequest, PermissionLifetime,
-    QuestionOption, QuestionRequest,
-};
 use crate::input::{PromptAction, SlashPopup};
 use crate::store::app_store::Route;
 use crate::store::types::{RunStatus, SettingsFocusPane, ToastMsgVariant};
@@ -678,108 +674,37 @@ impl AppHandler {
                             );
                             changed = true;
                         }
+                        dispatch_outcome::DispatchOutcome::ShellSent { command, .. } => {
+                            // shell 命令已排队：复位 run_status，补渲染与后端
+                            // `execute_shell` handler 落库一致的 assistant 行。
+                            if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
+                                self.active_session.run_status.set(RunStatus::Idle);
+                            }
+                            let block_id = format!("shell-q-{}", ts_now());
+                            self.active_session.push_assistant_delta(
+                                &block_id,
+                                &format!("Shell command queued: {}", command),
+                            );
+                            self.layout_dirty = true;
+                            changed = true;
+                        }
                     }
                 }
                 for fe in &events {
                     use agendao_server_core::frontend_events::FrontendEvent;
                     match fe {
                         FrontendEvent::PermissionUpsert { permission, .. } => {
-                            // Map tool name to PermissionType
-                            let perm_type = match permission.tool.to_lowercase().as_str() {
-                                "read" | "readfile" | "read_file" =>
-                                    crate::dialog::PermissionType::ReadFile,
-                                "write" | "writefile" | "write_file" =>
-                                    crate::dialog::PermissionType::WriteFile,
-                                "edit" | "editfile" | "edit_file" =>
-                                    crate::dialog::PermissionType::Edit,
-                                "bash" | "shell" | "execute" | "executecommand" =>
-                                    crate::dialog::PermissionType::Bash,
-                                "glob" | "globsearch" =>
-                                    crate::dialog::PermissionType::Glob,
-                                "grep" | "grepsearch" | "search" =>
-                                    crate::dialog::PermissionType::Grep,
-                                "ls" | "list" | "listdir" | "listdirectory" =>
-                                    crate::dialog::PermissionType::List,
-                                "network" | "networkrequest" | "http" =>
-                                    crate::dialog::PermissionType::NetworkRequest,
-                                "webfetch" | "web_fetch" | "fetch" =>
-                                    crate::dialog::PermissionType::WebFetch,
-                                "websearch" | "web_search" =>
-                                    crate::dialog::PermissionType::WebSearch,
-                                "task" | "agent" =>
-                                    crate::dialog::PermissionType::Task,
-                                "codesearch" | "code_search" =>
-                                    crate::dialog::PermissionType::CodeSearch,
-                                "external" | "externaldirectory" | "external_directory" =>
-                                    crate::dialog::PermissionType::ExternalDirectory,
-                                _ => crate::dialog::PermissionType::ExecuteCommand,
-                            };
-                            // Parse supported_lifetimes from server
-                            let supported_lifetimes: Vec<PermissionLifetime> = if permission.supported_lifetimes.is_empty() {
-                                vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session]
-                            } else {
-                                permission.supported_lifetimes.iter().filter_map(|s| match s.as_str() {
-                                    "once" => Some(PermissionLifetime::Once),
-                                    "turn" => Some(PermissionLifetime::Turn),
-                                    "session" | "always" => Some(PermissionLifetime::Session),
-                                    _ => None,
-                                }).collect()
-                            };
-                            // Extract resource from input JSON. 服务端把 input
-                            // 包成元信息封套（真实命令在 metadata.command，兜底
-                            // patterns[0]）——提取链单点在 extract_resource。
-                            // 封套无命令细节（如 scope-only 授权）时退到授权目标
-                            // 摘要（"Command family: …"/scope label），保住可读性。
-                            let resource = {
-                                let r = crate::dialog::permission::extract_resource(&permission.input);
-                                if r.is_empty() {
-                                    permission.grant_target_summary.clone().unwrap_or_default()
-                                } else {
-                                    r
-                                }
-                            };
-                            let req = PermissionRequest {
-                                id: permission.id.clone(),
-                                tool: permission.tool.clone(),
-                                message: permission.message.clone(),
-                                perm_type,
-                                supported_lifetimes,
-                                permission_class: permission.permission_class.clone(),
-                                scope_label: permission.scope_label.clone(),
-                                risk_tags: permission.risk_tags.clone(),
-                                resource,
-                            };
-                            self.permission_dialog.add_request(req);
+                            // 映射单点在 PermissionRequest::from_info（live 事件与
+                            // F4 catch-up list_permissions 共用，土律·单点权威）。
+                            self.permission_dialog.add_request(
+                                crate::dialog::PermissionRequest::from_info(permission),
+                            );
                             changed = true;
                         }
                         FrontendEvent::QuestionUpsert { question, .. } => {
-                            // Build options from QuestionItemInfo when available
-                            let qtext = question.questions.first().cloned().unwrap_or_default();
-                            let opts: Vec<QuestionOption> = if let Some(item) = question.items.first() {
-                                item.options.iter().enumerate().map(|(i, o)| QuestionOption {
-                                    id: format!("opt_{}", i),
-                                    label: o.label.clone(),
-                                    description: o.description.clone().unwrap_or_default(),
-                                }).collect()
-                            } else {
-                                // Fallback: flat string options
-                                question.options.as_ref().map(|flat_opts| {
-                                    flat_opts.iter().enumerate().map(|(i, opt)| {
-                                        let label = opt.first().cloned().unwrap_or_default();
-                                        QuestionOption {
-                                            id: format!("opt_{}", i),
-                                            label,
-                                            description: String::new(),
-                                        }
-                                    }).collect()
-                                }).unwrap_or_default()
-                            };
-                            let qr = QuestionRequest {
-                                id: question.id.clone(),
-                                text: qtext,
-                                options: opts,
-                            };
-                            self.question_dialog.ask(qr);
+                            self.question_dialog.ask(
+                                crate::dialog::QuestionRequest::from_info(question),
+                            );
                             changed = true;
                         }
                         FrontendEvent::PermissionRemoved { permission_id, .. } => {
@@ -792,6 +717,21 @@ impl AppHandler {
                             changed = true;
                         }
                         FrontendEvent::QuestionRemoved { .. } => { changed = true; }
+                        FrontendEvent::ConfigUpdated => {
+                            // F3：外部/其它客户端改了配置（config.updated 为全局
+                            // 事件、无 session）。TUI 的配置派生状态（providers /
+                            // mcp / skills / tools / plugins 缓存）需要失效——
+                            // 停在 Settings 时立即回灌（与 OpenSettings 同抽函数），
+                            // 其它路由下下次进入时自然重拉。
+                            if matches!(self.store.route.get(), Route::Settings) {
+                                self.refresh_providers_into_store();
+                                self.refresh_mcp_into_store();
+                                self.refresh_skills_into_store();
+                                self.refresh_tools_into_store();
+                                self.refresh_plugins_into_store();
+                            }
+                            changed = true;
+                        }
                         _ => {
                             if apply_frontend_event(fe, &self.active_session).is_some() {
                                 self.transcript_dirty = true;
@@ -1583,13 +1523,29 @@ impl AppHandler {
                     if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() < 5 {
                         // Second Esc within 5s → abort
                         self.interrupt_pending = false;
-                        if let Some(sid) = self.active_session.get_session_id() {
+                        let aborted = if let Some(sid) = self.active_session.get_session_id() {
                             if let Some(ref api) = self.api {
-                                let _ = api.abort_session(&sid);
+                                match api.abort_session(&sid) {
+                                    Ok(value) => value.get("aborted").and_then(|v| v.as_bool()).unwrap_or(true),
+                                    Err(e) => {
+                                        tracing::warn!(%e, "abort_session failed");
+                                        false
+                                    }
+                                }
+                            } else {
+                                // No API bridge — cannot reach the backend.
+                                false
                             }
+                        } else {
+                            false
+                        };
+                        if aborted {
+                            self.active_session.run_status.set(RunStatus::Idle);
+                            self.store.push_toast("⏹ Session interrupted", crate::store::types::ToastMsgVariant::Info);
+                        } else {
+                            // 诚实失败：不置 Idle、不弹"已中断"假 toast（道纪·不伪已批准）。
+                            self.store.push_toast("⏹ Interrupt failed — session is still running", crate::store::types::ToastMsgVariant::Error);
                         }
-                        self.active_session.run_status.set(RunStatus::Idle);
-                        self.store.push_toast("⏹ Session interrupted", crate::store::types::ToastMsgVariant::Info);
                     } else {
                         // First Esc → show confirmation hint
                         self.interrupt_pending = true;
@@ -1614,6 +1570,18 @@ impl AppHandler {
             return;
         }
         let reg = CommandRegistry::new();
+        // F10：带参命令先按首 token 解析——`/compact <focus>` 的 focus 暂存
+        // pending_compact_focus，由 slash_action CompactSession 臂消费。
+        if let Some((head, args)) = trimmed.split_once(char::is_whitespace) {
+            if let Some(spec) = reg.ui_slash_command(head) {
+                if spec.action_id == UiActionId::CompactSession {
+                    let focus = args.trim();
+                    self.pending_compact_focus =
+                        if focus.is_empty() { None } else { Some(focus.to_string()) };
+                    return self.execute_slash_action(spec.action_id);
+                }
+            }
+        }
         // Look up with leading `/` intact (matches CommandRegistry storage format)
         if let Some(spec) = reg.ui_slash_command(trimmed) {
             return self.execute_slash_action(spec.action_id);
@@ -1795,6 +1763,21 @@ impl AppHandler {
         }
         self.sf_tx.send_replace(Some(session_id.to_string()));
         self.load_session_messages(session_id);
+        // F4：pending question/permission catch-up——事件流不重放订阅前的存量，
+        // 打开会话时从权威 REST 端点拉一次，按 session 过滤后合并进弹窗
+        //（live upsert 与 catch-up 同权威；按 id 去重由 dialog 负责）。
+        if let Some(api) = self.api.as_ref() {
+            if let Ok(questions) = api.list_questions() {
+                for q in questions.into_iter().filter(|q| q.session_id == session_id) {
+                    self.question_dialog.ask(crate::dialog::QuestionRequest::from_info(&q));
+                }
+            }
+            if let Ok(permissions) = api.list_permissions() {
+                for p in permissions.into_iter().filter(|p| p.session_id == session_id) {
+                    self.permission_dialog.add_request(crate::dialog::PermissionRequest::from_info(&p));
+                }
+            }
+        }
         // context 进度条播种：context_tokens（最新 turn 占用）÷ 模型 context_window。
         // 模型解析链：selected_model（用户当前选择）→ session_model（会话最后
         // 使用的模型,更贴合历史会话）。投影的 compaction summary 到达后以更
@@ -1884,7 +1867,69 @@ impl AppHandler {
         self.layout_dirty = true;
     }
 
-    pub(crate) fn dispatch_shell(&mut self, _cmd: String) {}
+    /// `!command` shell 输入的执行入口。
+    ///
+    /// 与 `dispatch` 同构：Home 路由先建会话，乐观 push 用户消息
+    /// `$ {cmd}`，然后 spawn 后台 task 调 `execute_shell`（双模式——local-direct
+    /// 短路 / HTTP），回执经 `dispatch_outcomes` 在 Tick drain 回收：
+    /// `ShellSent` → 复位 Idle + 渲染 "Shell command queued"（与后端落库文案
+    /// 一致，reload 不漂移）；失败走 `Failed`（回收乐观消息 + 错误 notice/toast）。
+    pub(crate) fn dispatch_shell(&mut self, cmd: String) {
+        let cmd = cmd.trim().to_string();
+        if cmd.is_empty() { return; }
+        let route = self.store.route.get();
+        let sid = match route {
+            Route::Home => {
+                if let Some(ref api) = self.api {
+                    self.active_session.reset_for_new_session();
+                    match api.create_session(None, None) {
+                        Ok(info) => {
+                            self.active_session.set_session_id(&info.id);
+                            self.store.navigate(Route::Session { session_id: info.id.clone() });
+                            self.reload_session_list();
+                            info.id
+                        }
+                        Err(e) => {
+                            self.active_session.run_status.set(RunStatus::Error(format!("{}", e)));
+                            return;
+                        }
+                    }
+                } else {
+                    // No API bridge — shell execution is unavailable.
+                    return;
+                }
+            }
+            Route::Session { session_id } => session_id,
+            // Settings 不发 shell（同 dispatch 约定）。
+            Route::Settings => return,
+        };
+        self.sf_tx.send_replace(Some(sid.clone()));
+        let mid = format!("shell-{}", ts_now());
+        self.active_session.push_user_message(&mid, &format!("$ {}", cmd));
+        if let Some(ref api) = self.api {
+            self.active_session.run_status.set(RunStatus::Sending);
+            self.layout_dirty = true;
+            let api_c = api.clone();
+            let tx = self.dispatch_outcomes.sender();
+            let sid_c = sid.clone();
+            let mid_c = mid.clone();
+            let cmd_c = cmd.clone();
+            api.handle().spawn(async move {
+                let r = api_c.execute_shell_async(&sid_c, cmd_c.clone(), None).await;
+                let _ = match r {
+                    Ok(_) => tx.send(dispatch_outcome::DispatchOutcome::ShellSent {
+                        session_id: sid_c,
+                        command: cmd_c,
+                    }),
+                    Err(e) => tx.send(dispatch_outcome::DispatchOutcome::Failed {
+                        session_id: sid_c,
+                        user_msg_id: mid_c,
+                        error: format!("{e}"),
+                    }),
+                };
+            });
+        }
+    }
     pub(crate) fn toggle_help(&mut self) {
         if self.help.visible { self.help.dismiss(); self.panel = Panel::None; }
         else { self.help.toggle(); self.panel = Panel::Help; }
@@ -2945,6 +2990,26 @@ pub(crate) fn eager_load_session_messages(
                                     tr.is_error,
                                     None,
                                 );
+                            }
+                        }
+                        // F5：历史加载补上 agent/subtask/retry/step 卡片（此前
+                        // `_ => {}` 全丢——重试/步骤过程在旧会话里不可见，与
+                        // live 的 session_event 渲染断裂）。服务端 history rebuild
+                        // 把这类 part 转成 web `session_event` 块（messages.rs
+                        // part_to_info → history_session_event_to_web），字段与
+                        // live 事件一致，渲染口径对齐 event_handler.rs:173-180。
+                        "agent" | "subtask" | "retry" | "step_start" | "step_finish" => {
+                            if let Some(ref block) = part.output_block {
+                                let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                                let line = if summary.is_empty() {
+                                    title.to_string()
+                                } else {
+                                    format!("{title}: {summary}")
+                                };
+                                if !line.is_empty() {
+                                    active_session.push_notice(&pid, &line);
+                                }
                             }
                         }
                         _ => {}

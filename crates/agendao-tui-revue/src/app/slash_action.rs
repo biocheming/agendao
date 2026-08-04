@@ -111,6 +111,20 @@ impl AppHandler {
                 self.store.request_exit();
             }
             UiActionId::OpenModelList => {
+                // F2：打开即拉 recent models 填充 "★ Recent" 区块（此前
+                // set_recent 无调用者，区块永远空——死代码）。
+                if let Some(ref api) = self.api {
+                    match api.get_recent_models() {
+                        Ok(entries) => {
+                            let recent: Vec<(String, String)> = entries
+                                .into_iter()
+                                .map(|e| (e.provider, e.model))
+                                .collect();
+                            self.model_select.set_recent(recent);
+                        }
+                        Err(e) => tracing::warn!(%e, "get_recent_models failed"),
+                    }
+                }
                 self.model_select.open();
                 self.panel = Panel::ModelSelect;
             }
@@ -197,16 +211,10 @@ impl AppHandler {
                                     resources: m.resources,
                                 })
                                 .collect();
-                            if entries.is_empty() {
-                                self.store.push_toast(
-                                    "No MCP servers configured",
-                                    crate::store::types::ToastMsgVariant::Warning,
-                                );
-                            } else {
-                                self.mcp_list.set_entries(entries);
-                                self.mcp_list.open();
-                                self.panel = Panel::McpList;
-                            }
+                            // F12：空列表也打开 dialog——`n` 新增入口不能是死端。
+                            self.mcp_list.set_entries(entries);
+                            self.mcp_list.open();
+                            self.panel = Panel::McpList;
                         }
                         Err(e) => {
                             self.store.push_toast(
@@ -341,9 +349,43 @@ impl AppHandler {
             }
             UiActionId::ForkSession => {
                 if let Some(sid) = self.active_session.get_session_id() {
-                    // 整会话 fork（message_id=None）；message 级 fork 需 cursor
-                    // 选中消息（B 层 edit&resend），本轮不做。
-                    self.fork_dialog.open(&sid, None);
+                    // F9：拉最近消息列进 fork dialog 供选择锚点；首项
+                    // "(latest)" = 整会话 fork。拉取失败退化为整会话 fork
+                    // 单项（不阻塞入口）。
+                    let mut options = vec![crate::dialog::ForkMessageOption {
+                        message_id: None,
+                        label: "(latest) — fork whole session".to_string(),
+                    }];
+                    if let Some(ref api) = self.api {
+                        match api.get_messages(&sid) {
+                            Ok(messages) => {
+                                // 最新在上，最多 20 条；预览取首个 text part。
+                                for m in messages.iter().rev().take(20) {
+                                    let preview = m
+                                        .parts
+                                        .iter()
+                                        .find_map(|p| p.text.as_deref())
+                                        .map(|t| {
+                                            let flat: String =
+                                                t.chars().take(60).collect();
+                                            flat.replace('\n', " ")
+                                        })
+                                        .unwrap_or_default();
+                                    options.push(crate::dialog::ForkMessageOption {
+                                        message_id: Some(m.id.clone()),
+                                        label: format!("[{}] {}", m.role, preview),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                self.store.push_toast(
+                                    &format!("Message list unavailable ({e}) — fork whole session only"),
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            }
+                        }
+                    }
+                    self.fork_dialog.open_with_messages(&sid, options);
                     self.panel = Panel::Fork;
                 }
             }
@@ -394,14 +436,20 @@ impl AppHandler {
             }
             UiActionId::ShareSession => {
                 // Part 4: /share 不再走 export dialog 二次确认，直接 API。
-                // 与 web 的「点 share → toast URL」行为一致。
+                // F11：URL 同时进剪贴板（OSC52）；写失败不吞——toast 如实标注。
                 if let Some(sid) = self.active_session.get_session_id() {
                     if let Some(ref api) = self.api {
                         match api.share_session(&sid) {
-                            Ok(resp) => self.store.push_toast(
-                                &format!("Shared: {}", resp.url),
-                                crate::store::types::ToastMsgVariant::Success,
-                            ),
+                            Ok(resp) => {
+                                let msg = match crate::dialog::clipboard::copy(&resp.url) {
+                                    Ok(()) => format!("Shared (URL copied): {}", resp.url),
+                                    Err(_) => format!("Shared (copy failed): {}", resp.url),
+                                };
+                                self.store.push_toast(
+                                    &msg,
+                                    crate::store::types::ToastMsgVariant::Success,
+                                );
+                            }
                             Err(e) => self.store.push_toast(
                                 &format!("Share failed: {}", e),
                                 crate::store::types::ToastMsgVariant::Error,
@@ -447,12 +495,16 @@ impl AppHandler {
                 }
             }
             UiActionId::CompactSession => {
-                // Part 3: 暂不收 focus（需独立 dialog），先 None。
+                // F10：`/compact <focus>` 的 focus 由 sync_slash_from_text 暂存。
+                let focus = self.pending_compact_focus.take();
                 if let Some(sid) = self.active_session.get_session_id() {
                     if let Some(ref api) = self.api {
-                        match api.compact_session(&sid, None) {
+                        match api.compact_session(&sid, focus.as_deref()) {
                             Ok(_) => self.store.push_toast(
-                                "Compaction triggered",
+                                &match focus {
+                                    Some(f) => format!("Compaction triggered (focus: {f})"),
+                                    None => "Compaction triggered".to_string(),
+                                },
                                 crate::store::types::ToastMsgVariant::Success,
                             ),
                             Err(e) => self.store.push_toast(

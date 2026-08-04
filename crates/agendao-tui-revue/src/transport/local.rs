@@ -23,6 +23,7 @@ fn event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
         | FrontendEvent::TodoReplaced { session_id, .. }
+        | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }
@@ -45,9 +46,13 @@ pub fn spawn_source_from_state(
             tokio::select! {
                 event = rx.recv() => {
                     let Some(fe) = event else { break };
-                    let Some(sid) = event_session_id(&fe) else { continue };
-                    if filter_rx.borrow().as_deref() == Some(sid)
-                        && tx.send(fe).is_err() { break; }
+                    // 全局事件（config.updated，无 session id）跨会话放行；
+                    // 会话事件按当前 filter 匹配。
+                    let pass = match event_session_id(&fe) {
+                        None => true,
+                        Some(sid) => filter_rx.borrow().as_deref() == Some(sid),
+                    };
+                    if pass && tx.send(fe).is_err() { break; }
                 }
                 changed = filter_rx.changed() => {
                     if changed.is_err() { cancel.cancel(); break; }
@@ -89,10 +94,12 @@ pub fn spawn_event_source(
             tokio::select! {
                 event = rx.recv() => {
                     let Some(fe) = event else { break };
-                    let Some(sid) = event_session_id(&fe) else { continue };
-                    // Only forward if matches current session filter
-                    if filter_rx.borrow().as_deref() == Some(sid)
-                        && tx.send(fe).is_err() { break; }
+                    // 全局事件（config.updated）跨会话放行；会话事件按 filter 匹配。
+                    let pass = match event_session_id(&fe) {
+                        None => true,
+                        Some(sid) => filter_rx.borrow().as_deref() == Some(sid),
+                    };
+                    if pass && tx.send(fe).is_err() { break; }
                 }
                 changed = filter_rx.changed() => {
                     if changed.is_err() { cancel.cancel(); break; }

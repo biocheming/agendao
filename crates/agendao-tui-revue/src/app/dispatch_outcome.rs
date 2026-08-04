@@ -27,6 +27,13 @@ pub enum DispatchOutcome {
         user_msg_id: String,
         error: String,
     },
+    /// `execute_shell` 成功（`!command` shell 输入）。shell 不是 LLM 轮次，
+    /// 回执到达即本轮结束：run_status 复位 Idle、补渲染 assistant
+    /// "Shell command queued" 行（与后端 `execute_shell` handler 落库文案一致）。
+    ShellSent {
+        session_id: String,
+        command: String,
+    },
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。
@@ -42,6 +49,7 @@ impl DispatchOutcome {
         match self {
             DispatchOutcome::Sent { session_id, .. } => session_id,
             DispatchOutcome::Failed { session_id, .. } => session_id,
+            DispatchOutcome::ShellSent { session_id, .. } => session_id,
         }
     }
 }

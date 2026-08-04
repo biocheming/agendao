@@ -246,7 +246,12 @@ pub(crate) fn stream_frontend_events(
                     // 在 typed 事件上做,发送时复用发布侧共享的预序列化文本。
                     let event = bus.event();
                     if let Some(filter) = session_filter.as_deref() {
-                        if frontend_event_session_id(event) != Some(filter) {
+                        // 会话过滤只拦"属于其它会话"的事件；全局事件
+                        //（`config.updated`，无 session id）跨会话投递——
+                        // EventStreamQuery 文档注释本就承诺
+                        // "or global events like config.updated are forwarded"。
+                        let sid = frontend_event_session_id(event);
+                        if sid.is_some() && sid != Some(filter) {
                             continue;
                         }
                     }

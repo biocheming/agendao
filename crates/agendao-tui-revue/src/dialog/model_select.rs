@@ -39,7 +39,11 @@ pub enum ModelDialogOutcome {
 
 #[derive(Clone)]
 pub struct ProviderGroup {
-    pub name: String, pub models: Vec<ModelEntry>,
+    /// Provider 注册表 id（server 解析 `provider_id/model_id` 用）。
+    pub provider_id: String,
+    /// Human-friendly provider label（e.g. "AIHubMix"）用作组头。
+    pub name: String,
+    pub models: Vec<ModelEntry>,
 }
 
 pub struct ModelSelectDialog {
@@ -79,13 +83,23 @@ impl ModelSelectDialog {
             let display = if m.provider_display.is_empty() { m.provider.clone() } else { m.provider_display.clone() };
             providers.entry(key).or_insert_with(|| (display, Vec::new())).1.push(m);
         }
-        for (_id, (display, models)) in providers {
-            self.groups.push(ProviderGroup { name: display, models });
+        for (id, (display, models)) in providers {
+            self.groups.push(ProviderGroup { provider_id: id, name: display, models });
         }
         self.rebuild_flat();
     }
 
     pub fn set_recent(&mut self, recent: Vec<(String, String)>) { self.recent = recent; self.rebuild_flat(); }
+
+    /// 记录一次模型选择：置顶、按 `(provider, model)` 去重、cap 到 8。
+    /// 返回新列表供调用方 `put_recent_models` 持久化（选中即回写权威）。
+    pub fn record_recent(&mut self, provider: &str, model: &str) -> Vec<(String, String)> {
+        self.recent.retain(|(p, m)| p != provider || m != model);
+        self.recent.insert(0, (provider.to_string(), model.to_string()));
+        self.recent.truncate(8);
+        self.rebuild_flat();
+        self.recent.clone()
+    }
 
     fn rebuild_flat(&mut self) {
         self.flat.clear();
@@ -127,7 +141,10 @@ impl ModelSelectDialog {
 
     fn find_model(&self, provider: &str, model_id: &str) -> Option<(usize, usize)> {
         for (gi, g) in self.groups.iter().enumerate() {
-            if g.name == provider {
+            // ★ Recent 行存的是 provider id；`g.name` 是 display label
+            //（e.g. "AIHubMix"）——只比 name 会让 recent 行永远匹配不上、
+            // 区块形同虚设。优先按 provider_id，兜底按 display 名（老数据）。
+            if g.provider_id == provider || g.name == provider {
                 for (mi, m) in g.models.iter().enumerate() {
                     if m.model_id == model_id { return Some((gi, mi)); }
                 }

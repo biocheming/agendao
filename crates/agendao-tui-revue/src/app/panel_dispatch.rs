@@ -34,6 +34,22 @@ impl AppHandler {
                         // can exist in multiple aggregator providers.
                         let qualified = format!("{}/{}", selected.provider, selected.model_id);
                         self.store.selected_model.set(Some(qualified.clone()));
+                        // F2：选中即记入 recent（置顶去重 cap）并异步持久化——
+                        // 此前仅启动时把 workspace context 原样回写，用户选择
+                        // 从不落盘，"★ Recent" 永不填充。
+                        let recent = self.model_select.record_recent(&selected.provider, &selected.model_id);
+                        if let Some(ref api) = self.api {
+                            let api_c = api.clone();
+                            api.handle().spawn(async move {
+                                let entries: Vec<agendao_state::RecentModelEntry> = recent
+                                    .into_iter()
+                                    .map(|(provider, model)| agendao_state::RecentModelEntry { provider, model })
+                                    .collect();
+                                if let Err(e) = api_c.put_recent_models_async(entries).await {
+                                    tracing::warn!(%e, "put_recent_models failed");
+                                }
+                            });
+                        }
                         let msg = format!("Model: {} ({})", selected.display, qualified);
                         self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
                         self.panel = Panel::None;
@@ -251,15 +267,49 @@ impl AppHandler {
                 return true;
             }
             Panel::SkillList => {
-                if let Some(entry) = self.skill_list.handle_key(key) {
-                    // 道纪第十条：诚实标注 first slice —— 列表权威已成，
-                    // 挂载（manage_skill + scoping）尚待独立工程，故只 toast
-                    // 不假装"已挂载"。
-                    self.store.push_toast(
-                        &format!("Skill selected (read-only): {} — {}", entry.name, entry.location),
-                        crate::store::types::ToastMsgVariant::Info,
-                    );
-                    self.panel = Panel::None;
+                if let Some(action) = self.skill_list.handle_key(key) {
+                    match action {
+                        crate::dialog::SkillListAction::View(entry) => {
+                            // F8：Enter 拉详情回填 dialog（保持打开）。失败诚实
+                            // 报错，不伪造详情（道纪第十条）。
+                            if let Some(ref api) = self.api {
+                                match api.get_skill_detail(&entry.name) {
+                                    Ok(detail) => {
+                                        let meta = &detail.skill.meta;
+                                        let mut lines = vec![
+                                            format!("name: {}", meta.name),
+                                            format!("description: {}", meta.description),
+                                            format!(
+                                                "category: {}",
+                                                meta.category.as_deref().unwrap_or("-")
+                                            ),
+                                            format!("location: {}", meta.location),
+                                            format!("source: {}", detail.source),
+                                            format!("writable: {}", detail.writable),
+                                        ];
+                                        if !meta.supporting_files.is_empty() {
+                                            lines.push(format!(
+                                                "supporting files: {}",
+                                                meta.supporting_files.len()
+                                            ));
+                                        }
+                                        lines.push(String::new());
+                                        lines.extend(
+                                            detail.skill.content.lines().map(str::to_string),
+                                        );
+                                        self.skill_list.show_detail(
+                                            format!("Skill: {}", meta.name),
+                                            lines,
+                                        );
+                                    }
+                                    Err(e) => self.store.push_toast(
+                                        &format!("Skill detail failed: {e}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     return true;
                 }
                 if !self.skill_list.is_open() { self.panel = Panel::None; }
@@ -310,6 +360,86 @@ impl AppHandler {
                                 );
                             } else {
                                 self.execute_mcp_toggle(&e, false);
+                            }
+                        }
+                        crate::dialog::McpAction::AuthStart(e) => {
+                            if let Some(ref api) = self.api {
+                                match api.start_mcp_auth(&e.name) {
+                                    Ok(info) => {
+                                        // URL 走 transcript notice（toast 截断长 URL 不可拷贝）。
+                                        self.active_session.push_notice(
+                                            &format!("mcp-auth-{}", e.name),
+                                            &format!(
+                                                "🔐 MCP `{}` OAuth — open in browser to authorize:\n{}",
+                                                e.name, info.authorization_url
+                                            ),
+                                        );
+                                        self.store.push_toast(
+                                            &format!("OAuth started: {} (URL in transcript, press A after authorizing)", e.name),
+                                            crate::store::types::ToastMsgVariant::Info,
+                                        );
+                                    }
+                                    Err(err) => self.store.push_toast(
+                                        &format!("OAuth start failed: {err}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    ),
+                                }
+                            }
+                        }
+                        crate::dialog::McpAction::AuthFinish(e) => {
+                            if let Some(ref api) = self.api {
+                                match api.authenticate_mcp(&e.name) {
+                                    Ok(_) => {
+                                        self.refresh_mcp_into_store();
+                                        self.store.push_toast(
+                                            &format!("MCP authenticated: {}", e.name),
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        );
+                                    }
+                                    Err(err) => self.store.push_toast(
+                                        &format!("Authenticate failed: {err}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    ),
+                                }
+                            }
+                        }
+                        crate::dialog::McpAction::AuthRemove(e) => {
+                            if let Some(ref api) = self.api {
+                                match api.remove_mcp_auth(&e.name) {
+                                    Ok(_) => {
+                                        self.refresh_mcp_into_store();
+                                        self.store.push_toast(
+                                            &format!("MCP auth cleared: {}", e.name),
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        );
+                                    }
+                                    Err(err) => self.store.push_toast(
+                                        &format!("Remove auth failed: {err}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    ),
+                                }
+                            }
+                        }
+                        crate::dialog::McpAction::Add => {
+                            // F12：复用 Settings 的 McpEditDialog（add 模式）。
+                            self.mcp_list.close();
+                            self.settings_open_add_mcp();
+                        }
+                        crate::dialog::McpAction::Edit(e) => {
+                            // F12：settings 行需 config 合并字段——先刷新再找行。
+                            self.refresh_mcp_into_store();
+                            let rows = self.store.settings_mcp.get();
+                            match rows.iter().position(|r| r.name == e.name) {
+                                Some(idx) => {
+                                    self.store.settings_mcp_selected.set(idx);
+                                    drop(rows);
+                                    self.mcp_list.close();
+                                    self.settings_open_edit_mcp();
+                                }
+                                None => self.store.push_toast(
+                                    &format!("No config entry for `{}` — open Settings to add", e.name),
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                ),
                             }
                         }
                         crate::dialog::McpAction::View(e) => {
@@ -487,9 +617,16 @@ impl AppHandler {
                         crate::dialog::ExportAction::Share(sid) => {
                             if let Some(ref api) = self.api {
                                 match api.share_session(&sid) {
-                                    Ok(resp) => self.store.push_toast(
-                                        &format!("Shared: {}", resp.url),
-                                        crate::store::types::ToastMsgVariant::Success),
+                                    Ok(resp) => {
+                                        // F11：URL 同时进剪贴板；写失败如实标注。
+                                        let msg = match crate::dialog::clipboard::copy(&resp.url) {
+                                            Ok(()) => format!("Shared (URL copied): {}", resp.url),
+                                            Err(_) => format!("Shared (copy failed): {}", resp.url),
+                                        };
+                                        self.store.push_toast(
+                                            &msg,
+                                            crate::store::types::ToastMsgVariant::Success);
+                                    }
                                     Err(e) => self.store.push_toast(
                                         &format!("Share failed: {}", e),
                                         crate::store::types::ToastMsgVariant::Error),

@@ -1189,16 +1189,20 @@ impl AsyncApiClient {
     }
 
     pub async fn start_mcp_auth(&self, name: &str) -> anyhow::Result<McpAuthStartInfo> {
+        // Server route: POST /mcp/{name}/auth (routes/mcp.rs) — returns
+        // { authorization_url, client_id, status }.
         self.post_json_no_body(
-            &format!("/mcp/{}/auth/start", name),
+            &format!("/mcp/{}/auth", name),
             &format!("start MCP auth `{}`", name),
         )
         .await
     }
 
     pub async fn authenticate_mcp(&self, name: &str) -> anyhow::Result<McpStatusInfo> {
+        // Server route: POST /mcp/{name}/auth/authenticate — completes the
+        // pending OAuth exchange and returns fresh server status.
         self.post_json_no_body(
-            &format!("/mcp/{}/auth", name),
+            &format!("/mcp/{}/auth/authenticate", name),
             &format!("authenticate MCP `{}`", name),
         )
         .await

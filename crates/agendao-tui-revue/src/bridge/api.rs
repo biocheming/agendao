@@ -216,6 +216,15 @@ impl ApiBridge {
         self.block_on(self.client.put_recent_models(&entries))
     }
 
+    /// Async 版 `put_recent_models` —— 模型选中后的持久化走后台 task
+    /// （同步版 block_on 在 runtime worker 内会 panic）。
+    pub async fn put_recent_models_async(&self, entries: Vec<RecentModelEntry>) -> anyhow::Result<Vec<RecentModelEntry>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_put_recent_models(Arc::clone(ls), entries).await;
+        }
+        self.client.put_recent_models(&entries).await
+    }
+
     // ── Provider 管理 ──
 
     pub fn get_provider_descriptor(&self, provider_id: &str) -> anyhow::Result<agendao_client::ProviderDescriptorResponse> {
@@ -435,20 +444,63 @@ impl ApiBridge {
     // ── 运行控制 ──
 
     pub fn abort_session(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_abort_session(
+                Arc::clone(ls),
+                session_id,
+            ));
+        }
         self.block_on(self.client.abort_session(session_id))
     }
 
     pub fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> anyhow::Result<serde_json::Value> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_cancel_tool_call(
+                Arc::clone(ls),
+                session_id,
+                tool_call_id,
+            ));
+        }
         self.block_on(self.client.cancel_tool_call(session_id, tool_call_id))
     }
 
     pub fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> anyhow::Result<serde_json::Value> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_execute_shell(
+                Arc::clone(ls),
+                session_id,
+                command,
+                workdir,
+            ));
+        }
         self.block_on(self.client.execute_shell(session_id, command, workdir))
+    }
+
+    /// Async 版 `execute_shell` —— dispatch_shell 后台 task 调用（同步版
+    /// block_on 在 runtime worker 内会 panic，与 send_prompt_with_async 同构）。
+    pub async fn execute_shell_async(
+        &self,
+        session_id: &str,
+        command: String,
+        workdir: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_execute_shell(Arc::clone(ls), session_id, command, workdir)
+                .await;
+        }
+        self.client.execute_shell(session_id, command, workdir).await
     }
 
     // ── 会话管理 ──
 
     pub fn fork_session(&self, session_id: &str, message_id: Option<&str>) -> anyhow::Result<agendao_client::SessionInfo> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_fork_session(
+                Arc::clone(ls),
+                session_id,
+                message_id.map(str::to_string),
+            ));
+        }
         self.block_on(self.client.fork_session(session_id, message_id))
     }
 
@@ -462,13 +514,19 @@ impl ApiBridge {
         self.block_on(self.client.unshare_session(session_id))
     }
 
-    /// /compact：触发会话压缩。focus=None 时 server 用默认压缩策略；
-    /// 本 bridge 暂不收 focus 参数，独立 dialog 出来后再扩签名。
+    /// /compact：触发会话压缩。focus=None 时 server 用默认压缩策略。
     pub fn compact_session(
         &self,
         session_id: &str,
         focus: Option<&str>,
     ) -> anyhow::Result<agendao_client::CompactResponse> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_compact_session(
+                Arc::clone(ls),
+                session_id,
+                focus.map(str::to_string),
+            ));
+        }
         self.block_on(self.client.compact_session(session_id, focus))
     }
 
@@ -482,6 +540,29 @@ impl ApiBridge {
             return self.block_on(agendao_server_local::local_list_skills(Arc::clone(ls), query));
         }
         self.block_on(self.client.list_skills(query))
+    }
+
+    /// /skill/detail：单个 skill 详情（meta + 正文 content + 来源/可写标记）。
+    /// 读视图——skill_list Enter 详情 panel 的数据源（双模式）。
+    pub fn get_skill_detail(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<agendao_client::SkillDetailResponse> {
+        if let Some(ref ls) = self.local {
+            let query = agendao_client::SkillDetailQuery {
+                name: name.to_string(),
+                ..Default::default()
+            };
+            return self.block_on(agendao_server_local::local_get_skill_detail(
+                Arc::clone(ls),
+                query,
+            ));
+        }
+        let query = agendao_client::SkillDetailQuery {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        self.block_on(self.client.get_skill_detail(&query))
     }
 
     /// /tool/catalog：列出全部 tool（含 disabled，打标）——Settings→Tools 读面。
@@ -552,16 +633,24 @@ impl ApiBridge {
     }
 
     /// /session/{id}/recovery：per-session 恢复协议（actions + checkpoints）。
-    /// 读视图——execute recovery 需 confirm + execute_session_recovery，留后续。
     pub fn get_session_recovery(
         &self,
         session_id: &str,
     ) -> anyhow::Result<agendao_client::SessionRecoveryProtocol> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_get_session_recovery(
+                Arc::clone(ls),
+                session_id,
+            ));
+        }
         self.block_on(self.client.get_session_recovery(session_id))
     }
 
     /// /task：全局 agent 任务注册表（非 per-session）。
     pub fn list_tasks(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
+        if self.local.is_some() {
+            return self.block_on(agendao_server_local::local_list_tasks());
+        }
         self.block_on(self.client.list_tasks())
     }
 
@@ -597,6 +686,40 @@ impl ApiBridge {
             return self.block_on(agendao_server_local::local_disconnect_mcp(Arc::clone(ls), name));
         }
         self.block_on(self.client.disconnect_mcp(name))
+    }
+
+    /// /mcp/{name}/auth POST：发起 OAuth，返回授权 URL（双模式）。
+    pub fn start_mcp_auth(&self, name: &str) -> anyhow::Result<agendao_client::McpAuthStartInfo> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_start_mcp_auth(
+                Arc::clone(ls),
+                name,
+            ));
+        }
+        self.block_on(self.client.start_mcp_auth(name))
+    }
+
+    /// /mcp/{name}/auth/authenticate POST：完成挂起的 OAuth 交换（双模式）。
+    /// 用户浏览器授权完成后调用；Ok 后重拉 get_mcp_status 回流。
+    pub fn authenticate_mcp(&self, name: &str) -> anyhow::Result<agendao_client::McpStatusInfo> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_authenticate_mcp(
+                Arc::clone(ls),
+                name,
+            ));
+        }
+        self.block_on(self.client.authenticate_mcp(name))
+    }
+
+    /// /mcp/{name}/auth DELETE：清除已存 OAuth 凭据（双模式）。
+    pub fn remove_mcp_auth(&self, name: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_remove_mcp_auth(
+                Arc::clone(ls),
+                name,
+            ));
+        }
+        self.block_on(self.client.remove_mcp_auth(name))
     }
 
     /// PUT `/config/mcp/{key}`（双模式）：写 MCP server 配置条目。
@@ -671,15 +794,33 @@ impl ApiBridge {
         action: agendao_client::RecoveryActionKind,
         target_id: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_execute_session_recovery(
+                Arc::clone(ls),
+                session_id,
+                action,
+                target_id,
+            ));
+        }
         self.block_on(self.client.execute_session_recovery(session_id, action, target_id))
     }
 
     /// /task/{id} DELETE：取消运行中 task。confirm 类——经 PendingConfirm::CancelTask 路由。
     pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
+        if self.local.is_some() {
+            return self.block_on(agendao_server_local::local_cancel_task(task_id));
+        }
         self.block_on(self.client.cancel_task(task_id))
     }
 
     pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<agendao_client::SessionInfo> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_update_session_title(
+                Arc::clone(ls),
+                session_id,
+                title,
+            ));
+        }
         self.block_on(self.client.update_session_title(session_id, title))
     }
 
@@ -695,6 +836,31 @@ impl ApiBridge {
             return self.block_on(agendao_server_local::local_reply_question(Arc::clone(ls), question_id, answers));
         }
         self.block_on(self.client.reply_question(question_id, answers))
+    }
+
+    /// GET `/question`（双模式）：pending 问题 catch-up（F4）——
+    /// 订阅建立前已存在的提问，事件流不重放，打开会话时拉一次合并。
+    pub fn list_questions(&self) -> anyhow::Result<Vec<agendao_client::QuestionInfo>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_list_questions(Arc::clone(ls)));
+        }
+        self.block_on(self.client.list_questions())
+    }
+
+    /// GET `/permission`（双模式）：pending 权限请求 catch-up（F4）。
+    pub fn list_permissions(&self) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_list_permissions(Arc::clone(ls)));
+        }
+        self.block_on(self.client.list_permissions())
+    }
+
+    /// DELETE `/question/{id}`（双模式）：驳回一个提问（放弃等待）。
+    pub fn reject_question(&self, question_id: &str) -> anyhow::Result<()> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server_local::local_reject_question(Arc::clone(ls), question_id));
+        }
+        self.block_on(self.client.reject_question(question_id))
     }
 
     pub fn reply_permission(&self, permission_id: &str, reply: &str, msg: Option<String>) -> anyhow::Result<()> {

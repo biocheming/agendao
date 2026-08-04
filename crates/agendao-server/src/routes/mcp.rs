@@ -151,7 +151,7 @@ async fn add_mcp_server(
     Ok(Json(result))
 }
 
-async fn start_mcp_auth(
+pub(crate) async fn start_mcp_auth(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
@@ -189,7 +189,7 @@ async fn mcp_auth_callback(
     Ok(Json(McpStatusInfo::from(server_info)))
 }
 
-async fn mcp_authenticate(
+pub(crate) async fn mcp_authenticate(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<McpStatusInfo>> {
@@ -203,7 +203,7 @@ async fn mcp_authenticate(
     Ok(Json(McpStatusInfo::from(server_info)))
 }
 
-async fn remove_mcp_auth(
+pub(crate) async fn remove_mcp_auth(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {

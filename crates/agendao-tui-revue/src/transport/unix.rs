@@ -33,9 +33,12 @@ pub fn spawn_unix_event_source(
                         match event {
                             Some(json) => {
                                 if let Ok(fe) = serde_json::from_value::<FrontendEvent>(json) {
-                                    let sid = event_session_id_short(&fe);
-                                    if filter_rx.borrow().as_deref() == sid
-                                        && tx.send(fe).is_err() { return; }
+                                    // 全局事件（config.updated）跨会话放行。
+                                    let pass = match event_session_id_short(&fe) {
+                                        None => true,
+                                        Some(sid) => filter_rx.borrow().as_deref() == Some(sid),
+                                    };
+                                    if pass && tx.send(fe).is_err() { return; }
                                 }
                             }
                             None => break,
@@ -62,6 +65,7 @@ fn event_session_id_short(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
         | FrontendEvent::TodoReplaced { session_id, .. }
+        | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }

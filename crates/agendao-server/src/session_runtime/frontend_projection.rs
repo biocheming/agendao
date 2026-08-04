@@ -220,11 +220,24 @@ pub(crate) async fn project_server_event(
         }
 
         // ── Internal / telemetry-only events (no frontend projection) ────
-        ServerEvent::Usage { .. }
-        | ServerEvent::Error { .. }
-        | ServerEvent::ControlInputTransition { .. } => {
+        ServerEvent::Usage { .. } | ServerEvent::ControlInputTransition { .. } => {
             vec![]
         }
+
+        // ── Runtime errors: pass through so frontends can surface the
+        // failure immediately (F6) instead of waiting for the next runtime
+        // snapshot. Session-less errors cannot be routed.
+        ServerEvent::Error {
+            session_id: Some(session_id),
+            error,
+            message_id,
+            ..
+        } => vec![FrontendEvent::SessionError {
+            session_id: session_id.clone(),
+            error: error.clone(),
+            message_id: message_id.clone(),
+        }],
+        ServerEvent::Error { .. } => vec![],
 
         // ── Global config changes: pass through to all frontends ────────
         ServerEvent::ConfigUpdated => vec![FrontendEvent::ConfigUpdated],
@@ -732,6 +745,46 @@ mod tests {
             prompt_tokens: 10,
             completion_tokens: 20,
             message_id: None,
+        };
+        let result = project_server_event(&telemetry, &test_sessions(), &event).await;
+        assert!(result.is_empty());
+    }
+
+    // ── Runtime error passthrough (F6) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn session_error_projects_to_frontend_error_event() {
+        let telemetry = test_telemetry();
+        let event = ServerEvent::Error {
+            session_id: Some("ses_1".into()),
+            error: "provider auth failed".into(),
+            message_id: Some("msg_1".into()),
+            done: Some(true),
+        };
+        let result = project_server_event(&telemetry, &test_sessions(), &event).await;
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            FrontendEvent::SessionError {
+                session_id,
+                error,
+                message_id,
+            } => {
+                assert_eq!(session_id, "ses_1");
+                assert_eq!(error, "provider auth failed");
+                assert_eq!(message_id.as_deref(), Some("msg_1"));
+            }
+            other => panic!("expected SessionError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sessionless_error_produces_no_frontend_events() {
+        let telemetry = test_telemetry();
+        let event = ServerEvent::Error {
+            session_id: None,
+            error: "global failure".into(),
+            message_id: None,
+            done: None,
         };
         let result = project_server_event(&telemetry, &test_sessions(), &event).await;
         assert!(result.is_empty());

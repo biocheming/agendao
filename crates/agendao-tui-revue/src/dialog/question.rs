@@ -22,6 +22,49 @@ pub struct QuestionRequest {
     pub options: Vec<QuestionOption>,
 }
 
+impl QuestionRequest {
+    /// From a server `QuestionInfo`（live `QuestionUpsert` 与 F4 catch-up
+    /// `list_questions` 共用同一映射，土律·单点权威）。
+    pub fn from_info(info: &agendao_client::QuestionInfo) -> QuestionRequest {
+        let qtext = info.questions.first().cloned().unwrap_or_default();
+        let options: Vec<QuestionOption> = if let Some(item) = info.items.first() {
+            item.options
+                .iter()
+                .enumerate()
+                .map(|(i, o)| QuestionOption {
+                    id: format!("opt_{}", i),
+                    label: o.label.clone(),
+                    description: o.description.clone().unwrap_or_default(),
+                })
+                .collect()
+        } else {
+            // Fallback: flat string options
+            info.options
+                .as_ref()
+                .map(|flat_opts| {
+                    flat_opts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, opt)| {
+                            let label = opt.first().cloned().unwrap_or_default();
+                            QuestionOption {
+                                id: format!("opt_{}", i),
+                                label,
+                                description: String::new(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        QuestionRequest {
+            id: info.id.clone(),
+            text: qtext,
+            options,
+        }
+    }
+}
+
 pub struct QuestionDialog {
     pub visible: bool,
     requests: Vec<QuestionRequest>,
@@ -39,6 +82,9 @@ impl QuestionDialog {
     pub fn new() -> Self { Self { visible: false, requests: Vec::new(), selected: 0, toggled: Vec::new() } }
 
     pub fn ask(&mut self, q: QuestionRequest) {
+        // Deduplicate: 与 PermissionDialog::add_request 同口径——catch-up 与
+        // live QuestionUpsert 可能先后到达同一 id，重复入队会叠弹。
+        if self.requests.iter().any(|r| r.id == q.id) { return; }
         let n = q.options.len();
         self.toggled = vec![false; n.max(1)];
         self.selected = 0;

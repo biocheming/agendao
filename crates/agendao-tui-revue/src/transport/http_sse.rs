@@ -94,9 +94,12 @@ async fn consume_stream(
             }
             Ok(SseEvent::Message(msg)) => {
                 if let Some(fe) = parse_event(&msg.data) {
-                    let sid = event_session_id(&fe);
-                    if filter_rx.borrow().as_deref() == sid
-                        && tx.send(fe).is_err() { return true; }
+                    let pass = match event_session_id(&fe) {
+                        // 全局事件（config.updated）跨会话放行
+                        None => true,
+                        Some(sid) => filter_rx.borrow().as_deref() == Some(sid),
+                    };
+                    if pass && tx.send(fe).is_err() { return true; }
                 }
                 // Check if session filter changed
                 if *filter_rx.borrow() != connected {
@@ -139,6 +142,7 @@ fn event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
         | FrontendEvent::TodoReplaced { session_id, .. }
+        | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }

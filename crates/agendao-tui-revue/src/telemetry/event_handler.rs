@@ -352,6 +352,15 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 None
             }
         }
+        // F6：运行期错误（如中途 provider 失败）即时上屏——此前 ServerEvent::Error
+        // 在投影层被投影为空，错误要到下一次 runtime 快照才以 RunStatus 出现。
+        FrontendEvent::SessionError { session_id, error, .. } => {
+            session.push_notice(
+                &format!("err-{}", session_id),
+                &format!("⚠ {error}"),
+            );
+            Some(session_id.clone())
+        }
         // Global config change: the TUI reads config through its own
         // authorities on demand; no transcript region to invalidate here.
         FrontendEvent::ConfigUpdated => None,

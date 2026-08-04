@@ -133,7 +133,7 @@ pub struct ExecuteCommandRequest {
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct CompactRequest {
     #[serde(default)]
-    focus: Option<String>,
+    pub(super) focus: Option<String>,
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

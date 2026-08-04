@@ -4,6 +4,8 @@
 //! 直接执行（前置 status 校验——已 connected 不重复 connect，未 connected
 //! 不 disconnect），Ok 后重拉 get_mcp_status 回流（status 字段变化非移除，
 //! 重拉是唯一权威——水生木）。dialog 保持打开支持批量。Enter=View 关闭。
+//! OAuth（F7 接线）：a=发起（展示授权 URL，浏览器完成授权）/ A=完成（服务端
+//! 已授权则 connect）/ x=清除凭据。
 
 use revue::prelude::*;
 use revue::event::Key;
@@ -22,6 +24,16 @@ pub struct McpEntry {
 pub enum McpAction {
     Connect(McpEntry),
     Disconnect(McpEntry),
+    /// a：发起 OAuth——拿授权 URL 展示给用户（浏览器完成授权）。
+    AuthStart(McpEntry),
+    /// A：完成 OAuth——服务端在已授权时 connect（复用 authenticate 语义）。
+    AuthFinish(McpEntry),
+    /// x：清除已存 OAuth 凭据。
+    AuthRemove(McpEntry),
+    /// n：新增 server（复用 Settings 的 McpEditDialog add 模式）。
+    Add,
+    /// e：编辑选中 server（复用 McpEditDialog edit 模式，需 settings 行）。
+    Edit(McpEntry),
     View(McpEntry),
 }
 
@@ -55,7 +67,12 @@ impl McpListDialog {
     pub fn handle_key(&mut self, key: &Key) -> Option<McpAction> {
         if !self.visible { return None; }
         if self.entries.is_empty() {
-            if matches!(key, Key::Escape) { self.close(); }
+            match key {
+                Key::Escape => { self.close(); }
+                // 空列表也要能新增（否则 0 server 时 /mcp 是死端）。
+                Key::Char('n') => return Some(McpAction::Add),
+                _ => {}
+            }
             return None;
         }
         let len = self.entries.len();
@@ -72,6 +89,11 @@ impl McpListDialog {
             }
             Key::Char('c') => pick().map(McpAction::Connect),
             Key::Char('d') => pick().map(McpAction::Disconnect),
+            Key::Char('a') => pick().map(McpAction::AuthStart),
+            Key::Char('A') => pick().map(McpAction::AuthFinish),
+            Key::Char('x') => pick().map(McpAction::AuthRemove),
+            Key::Char('n') => Some(McpAction::Add),
+            Key::Char('e') => pick().map(McpAction::Edit),
             Key::Escape => { self.close(); None }
             _ => None,
         }
@@ -89,7 +111,7 @@ impl McpListDialog {
                 colors::ACCENT_CYAN(),
                 &items,
                 0,
-                "Esc: close",
+                "n: add server  Esc: close",
                 ctx, geom, 3,
             );
             return;
@@ -107,7 +129,7 @@ impl McpListDialog {
             colors::ACCENT_CYAN(),
             &items,
             self.selected,
-            "↑↓ navigate  c: connect  d: disconnect  Enter: view  Esc: close",
+            "↑↓ navigate  c: connect  d: disconnect  a/A: oauth start/finish  x: clear auth  n: add  e: edit  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }
