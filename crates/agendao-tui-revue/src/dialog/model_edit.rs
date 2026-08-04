@@ -136,6 +136,9 @@ pub struct ModelEditDialog {
     /// 原 ModelConfig 全量副本,open_edit 后由 AppHandler GET 到再 `set_prefill`;
     /// close() 时清除(道纪·第九条·配对销毁)。
     prefill: Option<agendao_config::ModelConfig>,
+    /// 校验错误（U5）：Enter 校验失败置位——不关窗、聚焦出错字段、红字渲染
+    /// 在 footer 上方；任何编辑键（含 ctrl chord/粘贴）清除。
+    validation_error: Option<String>,
 }
 
 impl ModelEditDialog {
@@ -158,6 +161,7 @@ impl ModelEditDialog {
             focus: ModelEditField::Id,
             reasoning_visible: true,
             prefill: None,
+            validation_error: None,
         }
     }
 
@@ -178,6 +182,7 @@ impl ModelEditDialog {
         self.focus = ModelEditField::Id;
         self.reasoning_visible = true;
         self.prefill = None;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -220,6 +225,7 @@ impl ModelEditDialog {
         // 未知 reasoning 能力前先隐藏 effort 字段;set_prefill 到达后按原 config 决定。
         self.reasoning_visible = false;
         self.prefill = None;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -266,6 +272,7 @@ impl ModelEditDialog {
         self.provider_id.clear();
         self.origin_model_key.clear();
         self.prefill = None;
+        self.validation_error = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -276,6 +283,10 @@ impl ModelEditDialog {
         if !self.visible {
             return None;
         }
+        // 用户开始改正即撤错误红字（Enter 会按需重新置位）。
+        if !matches!(key, Key::Enter) {
+            self.validation_error = None;
+        }
         match key {
             Key::Escape => {
                 self.close();
@@ -284,13 +295,31 @@ impl ModelEditDialog {
             Key::Enter => {
                 let id = self.id_input.text().trim().to_string();
                 let name = self.name_input.text().trim().to_string();
+                // U5：校验失败不再静默——置错误文案（红字渲染）+ 聚焦出错字段，
+                // 不关窗；用户改正任意键即撤错误。
                 if id.is_empty() {
-                    return None; // id 必填;静默不提交。
+                    self.validation_error = Some("Model ID is required".into());
+                    self.focus = ModelEditField::Id;
+                    return None;
                 }
-                let context_window = parse_optional_u64(self.context_input.text());
-                let max_output_tokens = parse_optional_u64(self.max_output_input.text());
-                let timeout_secs = parse_optional_u64(self.timeout_input.text());
-                let stream_stall_timeout_secs = parse_optional_u64(self.stall_input.text());
+                // 数字字段三态：空=清除 / 合法=Some / 非法=错误不提交
+                // （此前非法按 None 提交 = 打错字抹掉已有配置）。
+                let context_window = match self.numeric_field(ModelEditField::ContextWindow, "Context Window") {
+                    Ok(v) => v,
+                    Err(()) => return None,
+                };
+                let max_output_tokens = match self.numeric_field(ModelEditField::MaxOutputTokens, "Max Output Tokens") {
+                    Ok(v) => v,
+                    Err(()) => return None,
+                };
+                let timeout_secs = match self.numeric_field(ModelEditField::TimeoutSecs, "Timeout") {
+                    Ok(v) => v,
+                    Err(()) => return None,
+                };
+                let stream_stall_timeout_secs = match self.numeric_field(ModelEditField::StreamStallSecs, "Stream stall timeout") {
+                    Ok(v) => v,
+                    Err(()) => return None,
+                };
                 let reasoning_effort = EFFORT_OPTIONS
                     .get(self.effort_idx)
                     .and_then(|v| if *v == "default" { None } else { Some(v.to_string()) });
@@ -367,12 +396,37 @@ impl ModelEditDialog {
         }
     }
 
+    /// 数字字段三态校验（U5）：读字段 → parse_u64_field；非法时置错误
+    /// 文案 + 聚焦该字段（Err(())），调用方直接 return None 不提交。
+    fn numeric_field(
+        &mut self,
+        field: ModelEditField,
+        label: &str,
+    ) -> std::result::Result<Option<u64>, ()> {
+        let text = match field {
+            ModelEditField::ContextWindow => self.context_input.text().to_string(),
+            ModelEditField::MaxOutputTokens => self.max_output_input.text().to_string(),
+            ModelEditField::TimeoutSecs => self.timeout_input.text().to_string(),
+            ModelEditField::StreamStallSecs => self.stall_input.text().to_string(),
+            _ => unreachable!("numeric_field 只服务数字字段"),
+        };
+        match parse_u64_field(&text, label) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                self.validation_error = Some(e);
+                self.focus = field;
+                Err(())
+            }
+        }
+    }
+
     /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
     /// Input 吞掉）。ReasoningEffort choice / Edit 模式只读 id 一律吞掉。
     pub fn handle_ctrl_key(&mut self, event: &KeyEvent) -> bool {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             ModelEditField::Id => {
                 if self.mode == ModelEditMode::Add {
@@ -395,6 +449,7 @@ impl ModelEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             ModelEditField::Id if self.mode == ModelEditMode::Add => {
                 self.id_input.insert_text(text)
@@ -471,6 +526,14 @@ impl ModelEditDialog {
             n_fields += 1;
         }
 
+        // U5：校验错误红字行（footer 上方），高度随行 +1。
+        let err_h = if let Some(e) = &self.validation_error {
+            content = content.child_sized(backdrop::validation_error_line(e), 1);
+            1
+        } else {
+            0
+        };
+
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做鼠标字段命中（金律·几何同源）。
         Some(backdrop::render_dialog(
             title,
@@ -479,7 +542,7 @@ impl ModelEditDialog {
             "Tab: next   ←/→: effort   Enter: save   Esc: cancel",
             ctx,
             76,
-            n_fields * 4 + 6, // border 2 + gap 1 + footer 1 + 呼吸 2
+            n_fields * 4 + 6 + err_h, // border 2 + gap 1 + footer 1 + 呼吸 2 (+错误行)
         ))
     }
 }
@@ -522,12 +585,16 @@ impl Default for ModelEditDialog {
     }
 }
 
-fn parse_optional_u64(s: &str) -> Option<u64> {
+/// 数字字段三态（U5）：空=清除(Ok(None)) / 合法=Ok(Some) /
+/// 非法=Err(文案)——非法不提交，杜绝"打错字按清空处理抹掉已有配置"。
+fn parse_u64_field(s: &str, label: &str) -> std::result::Result<Option<u64>, String> {
     let t = s.trim();
     if t.is_empty() {
-        None
+        Ok(None)
     } else {
-        t.parse::<u64>().ok()
+        t.parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("{} must be a number (empty = clear)", label))
     }
 }
 
@@ -847,5 +914,47 @@ mod tests {
             panic!("expected Submit");
         };
         assert!(s.prefill.is_none());
+    }
+
+    // ── U5：校验失败反馈（错误文案 + 聚焦 + 不关窗 + 三态 parse）──
+
+    #[test]
+    fn empty_id_flags_error_and_focuses_id() {
+        let mut d = ModelEditDialog::new();
+        d.open_add("p1");
+        assert!(d.handle_key(&Key::Enter).is_none(), "空 id 不提交");
+        assert_eq!(d.validation_error.as_deref(), Some("Model ID is required"));
+        assert_eq!(d.focus(), ModelEditField::Id, "焦点跳到出错字段");
+        assert!(d.is_open(), "不关窗");
+        // 用户开始键入 → 错误撤销。
+        d.handle_key(&Key::Char('g'));
+        assert_eq!(d.validation_error, None, "编辑键清除错误态");
+    }
+
+    #[test]
+    fn invalid_number_is_rejected_not_treated_as_clear() {
+        let mut d = ModelEditDialog::new();
+        d.open_add("p1");
+        d.id_input = revue::widget::Input::new().value("gpt-x".to_string());
+        d.context_input = revue::widget::Input::new().value("abc".to_string());
+        assert!(d.handle_key(&Key::Enter).is_none(), "非法数字不提交");
+        assert_eq!(
+            d.validation_error.as_deref(),
+            Some("Context Window must be a number (empty = clear)")
+        );
+        assert_eq!(d.focus(), ModelEditField::ContextWindow);
+        // 改成合法值 → 提交成功且值进 submission（此前会被当 None 抹掉）。
+        d.context_input = revue::widget::Input::new().value("128000".to_string());
+        let Some(ModelEditAction::Submit(s)) = d.handle_key(&Key::Enter) else {
+            panic!("expected Submit");
+        };
+        assert_eq!(s.context_window, Some(128000));
+    }
+
+    #[test]
+    fn parse_u64_field_three_states() {
+        assert_eq!(parse_u64_field("", "X"), Ok(None), "空=清除");
+        assert_eq!(parse_u64_field(" 42 ", "X"), Ok(Some(42)), "合法=Some");
+        assert!(parse_u64_field("4x", "X").is_err(), "非法=Err 不提交");
     }
 }

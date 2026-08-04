@@ -19,6 +19,13 @@ use revue::prelude::*;
 use revue::runtime::render::Cell;
 use crate::theme::colors;
 
+/// 表单校验错误行（红 ⚠ 前缀）——所有编辑弹窗共用（土律·单点权威，U5）。
+/// 用法：校验失败的弹窗 `content.child_sized(validation_error_line(e), 1)`
+/// 并把对话框高度 +1；不关窗、聚焦出错字段，让用户就地改正。
+pub fn validation_error_line(error: &str) -> Text {
+    Text::new(format!("⚠ {}", error)).fg(colors::STATUS_ERROR())
+}
+
 /// 列表 sliding viewport 唯一权威 — selected 出窗时自动滚动。
 ///
 /// 输入:`total` 列表总长、`selected` 当前选中绝对索引、`rows` 视窗最多容纳行数。

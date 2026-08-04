@@ -48,6 +48,9 @@ pub struct PluginEditDialog {
     name_input: revue::widget::Input,
     path_input: revue::widget::Input,
     focus: PluginEditField,
+    /// 校验错误（U5）：Enter 校验失败置位——不关窗、聚焦出错字段、红字渲染
+    /// 在 footer 上方；任何编辑键（含 ctrl chord/粘贴）清除。
+    validation_error: Option<String>,
 }
 
 impl PluginEditDialog {
@@ -58,6 +61,7 @@ impl PluginEditDialog {
             path_input: revue::widget::Input::new()
                 .placeholder("e.g. /abs/path/to/plugin/index.ts"),
             focus: PluginEditField::Name,
+            validation_error: None,
         }
     }
 
@@ -66,6 +70,7 @@ impl PluginEditDialog {
         self.path_input = revue::widget::Input::new()
             .placeholder("e.g. /abs/path/to/plugin/index.ts");
         self.focus = PluginEditField::Name;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -73,6 +78,7 @@ impl PluginEditDialog {
         self.visible = false;
         self.name_input.clear();
         self.path_input.clear();
+        self.validation_error = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -83,6 +89,10 @@ impl PluginEditDialog {
         if !self.visible {
             return None;
         }
+        // 用户开始改正即撤错误红字（Enter 会按需重新置位）。
+        if !matches!(key, Key::Enter) {
+            self.validation_error = None;
+        }
         match key {
             Key::Escape => {
                 self.close();
@@ -91,8 +101,16 @@ impl PluginEditDialog {
             Key::Enter => {
                 let name = self.name_input.text().trim().to_string();
                 let path = self.path_input.text().trim().to_string();
-                if name.is_empty() || path.is_empty() {
-                    return None; // 均必填；静默不提交。
+                // U5：校验失败不再静默——置错误文案（红字渲染）+ 聚焦出错字段，不关窗。
+                if name.is_empty() {
+                    self.validation_error = Some("Name is required".into());
+                    self.focus = PluginEditField::Name;
+                    return None;
+                }
+                if path.is_empty() {
+                    self.validation_error = Some("Path is required".into());
+                    self.focus = PluginEditField::Path;
+                    return None;
                 }
                 let submission = PluginEditSubmission { name, path };
                 self.close();
@@ -126,6 +144,7 @@ impl PluginEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             PluginEditField::Name => self.name_input.readline_ctrl(event),
             PluginEditField::Path => self.path_input.readline_ctrl(event),
@@ -137,6 +156,7 @@ impl PluginEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             PluginEditField::Name => self.name_input.insert_text(text),
             PluginEditField::Path => self.path_input.insert_text(text),
@@ -165,6 +185,13 @@ impl PluginEditDialog {
             .child_sized(name_field, 4)
             .child_sized(path_field, 4);
 
+        // U5：校验错误红字行（footer 上方），高度随行 +1。
+        let (content, err_h) = if let Some(e) = &self.validation_error {
+            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+        } else {
+            (content, 0)
+        };
+
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做鼠标字段命中（金律·几何同源）。
         Some(backdrop::render_dialog(
             " Install Plugin ",
@@ -173,7 +200,7 @@ impl PluginEditDialog {
             "Tab: next   Enter: install   Esc: cancel",
             ctx,
             70,
-            16,
+            16 + err_h,
         ))
     }
 }
@@ -277,5 +304,36 @@ mod tests {
         let action = d.handle_key(&Key::Escape);
         assert!(matches!(action, Some(PluginEditAction::Cancel)));
         assert!(!d.is_open());
+    }
+
+    // ── U5：校验失败反馈（错误文案 + 聚焦 + 不关窗）──
+
+    #[test]
+    fn empty_path_flags_error_and_focuses_path() {
+        let mut d = PluginEditDialog::new();
+        d.open_add();
+        d.name_input = revue::widget::Input::new().value("p".to_string());
+        assert!(d.handle_key(&Key::Enter).is_none(), "空 path 不提交");
+        assert_eq!(d.validation_error.as_deref(), Some("Path is required"));
+        assert_eq!(d.focus, PluginEditField::Path, "焦点跳到出错字段");
+        assert!(d.is_open(), "不关窗");
+        // 改正后提交成功。
+        d.path_input = revue::widget::Input::new().value("/tmp/x.ts".to_string());
+        assert!(matches!(
+            d.handle_key(&Key::Enter),
+            Some(PluginEditAction::Submit(_))
+        ));
+    }
+
+    #[test]
+    fn empty_name_flags_error_and_focuses_name() {
+        let mut d = PluginEditDialog::new();
+        d.open_add();
+        assert!(d.handle_key(&Key::Enter).is_none());
+        assert_eq!(d.validation_error.as_deref(), Some("Name is required"));
+        assert_eq!(d.focus, PluginEditField::Name);
+        // 粘贴也清错误态。
+        d.paste_text("x");
+        assert_eq!(d.validation_error, None);
     }
 }

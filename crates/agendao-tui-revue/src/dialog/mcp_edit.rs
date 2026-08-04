@@ -110,6 +110,9 @@ pub struct McpEditDialog {
     url_input: revue::widget::Input,
     enabled: bool,
     focus: McpEditField,
+    /// 校验错误（U5）：Enter 校验失败置位——不关窗、聚焦出错字段、红字渲染
+    /// 在 footer 上方；任何编辑键（含 ctrl chord/粘贴）清除。
+    validation_error: Option<String>,
 }
 
 impl McpEditDialog {
@@ -126,6 +129,7 @@ impl McpEditDialog {
                 .placeholder("e.g. https://mcp.example.com/sse"),
             enabled: true,
             focus: McpEditField::Name,
+            validation_error: None,
         }
     }
 
@@ -140,6 +144,7 @@ impl McpEditDialog {
             .placeholder("e.g. https://mcp.example.com/sse");
         self.enabled = true;
         self.focus = McpEditField::Name;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -164,6 +169,7 @@ impl McpEditDialog {
             .value(row.url.clone().unwrap_or_default());
         self.enabled = row.enabled;
         self.focus = McpEditField::Name;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -174,6 +180,7 @@ impl McpEditDialog {
         self.command_input.clear();
         self.url_input.clear();
         self.enabled = true;
+        self.validation_error = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -183,6 +190,10 @@ impl McpEditDialog {
     pub fn handle_key(&mut self, key: &Key) -> Option<McpEditAction> {
         if !self.visible {
             return None;
+        }
+        // 用户开始改正即撤错误红字（Enter 会按需重新置位）。
+        if !matches!(key, Key::Enter) {
+            self.validation_error = None;
         }
         match key {
             Key::Escape => {
@@ -197,11 +208,20 @@ impl McpEditDialog {
                 };
                 let command = self.command_input.text().trim().to_string();
                 let url = self.url_input.text().trim().to_string();
-                // 验证：name 必填；local → command 必填；remote → url 必填。
-                if name.is_empty()
-                    || (self.transport == McpTransport::Local && command.is_empty())
-                    || (self.transport == McpTransport::Remote && url.is_empty())
-                {
+                // U5：校验失败不再静默——置错误文案（红字渲染）+ 聚焦出错字段，不关窗。
+                if name.is_empty() {
+                    self.validation_error = Some("Name is required".into());
+                    self.focus = McpEditField::Name;
+                    return None;
+                }
+                if self.transport == McpTransport::Local && command.is_empty() {
+                    self.validation_error = Some("Command is required for local transport".into());
+                    self.focus = McpEditField::Command;
+                    return None;
+                }
+                if self.transport == McpTransport::Remote && url.is_empty() {
+                    self.validation_error = Some("URL is required for remote transport".into());
+                    self.focus = McpEditField::Url;
                     return None;
                 }
                 let submission = McpEditSubmission {
@@ -260,6 +280,7 @@ impl McpEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             McpEditField::Name => {
                 if self.mode == McpEditMode::Add {
@@ -279,6 +300,7 @@ impl McpEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             McpEditField::Name if self.mode == McpEditMode::Add => {
                 self.name_input.insert_text(text)
@@ -333,6 +355,13 @@ impl McpEditDialog {
             .child_sized(command_field, 4)
             .child_sized(url_field, 4);
 
+        // U5：校验错误红字行（footer 上方），高度随行 +1。
+        let (content, err_h) = if let Some(e) = &self.validation_error {
+            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+        } else {
+            (content, 0)
+        };
+
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做鼠标字段命中（金律·几何同源）。
         Some(backdrop::render_dialog(
             title,
@@ -341,7 +370,7 @@ impl McpEditDialog {
             "Tab: next   ←/→: transport   Enter: save   Esc: cancel",
             ctx,
             76,
-            24,
+            24 + err_h,
         ))
     }
 }
@@ -564,5 +593,56 @@ mod tests {
         let action = d.handle_key(&Key::Escape);
         assert!(matches!(action, Some(McpEditAction::Cancel)));
         assert!(!d.is_open());
+    }
+
+    // ── U5：校验失败反馈（错误文案 + 聚焦 + 不关窗）──
+
+    #[test]
+    fn local_without_command_flags_error_and_focuses_command() {
+        let mut d = McpEditDialog::new();
+        d.open_add();
+        d.name_input = revue::widget::Input::new().value("fs".to_string());
+        // transport=Local（默认），command 空
+        assert!(d.handle_key(&Key::Enter).is_none(), "local 缺 command 不提交");
+        assert_eq!(
+            d.validation_error.as_deref(),
+            Some("Command is required for local transport")
+        );
+        assert_eq!(d.focus(), McpEditField::Command, "焦点跳到出错字段");
+        assert!(d.is_open(), "不关窗");
+        // 改正后提交成功。
+        d.command_input = revue::widget::Input::new().value("npx srv".to_string());
+        assert!(matches!(
+            d.handle_key(&Key::Enter),
+            Some(McpEditAction::Submit(_))
+        ));
+    }
+
+    #[test]
+    fn remote_without_url_flags_error_and_focuses_url() {
+        let mut d = McpEditDialog::new();
+        d.open_add();
+        d.name_input = revue::widget::Input::new().value("remote-srv".to_string());
+        // 切到 remote
+        d.handle_key(&Key::Tab); // focus → Transport
+        d.handle_key(&Key::Right);
+        assert!(d.handle_key(&Key::Enter).is_none(), "remote 缺 url 不提交");
+        assert_eq!(
+            d.validation_error.as_deref(),
+            Some("URL is required for remote transport")
+        );
+        assert_eq!(d.focus(), McpEditField::Url);
+        // ctrl chord 编辑也清错误态。
+        d.handle_ctrl_key(&KeyEvent { key: Key::Char('u'), ctrl: true, alt: false, shift: false });
+        assert_eq!(d.validation_error, None);
+    }
+
+    #[test]
+    fn empty_name_flags_error_and_focuses_name() {
+        let mut d = McpEditDialog::new();
+        d.open_add();
+        assert!(d.handle_key(&Key::Enter).is_none());
+        assert_eq!(d.validation_error.as_deref(), Some("Name is required"));
+        assert_eq!(d.focus(), McpEditField::Name);
     }
 }

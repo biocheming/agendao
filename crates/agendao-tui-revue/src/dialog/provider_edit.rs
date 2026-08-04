@@ -77,6 +77,9 @@ pub struct ProviderEditDialog {
     /// api_key 输入：Input.password(true)，buffer 明文，UI 显示 `•`。
     api_key_input: revue::widget::Input,
     focus: ProviderEditField,
+    /// 校验错误（U5）：Enter 校验失败置位——不关窗、聚焦出错字段、红字渲染
+    /// 在 footer 上方；任何编辑键（含 ctrl chord/粘贴）清除。
+    validation_error: Option<String>,
 }
 
 impl ProviderEditDialog {
@@ -93,6 +96,7 @@ impl ProviderEditDialog {
                 .password(true)
                 .placeholder("sk-..."),
             focus: ProviderEditField::Name,
+            validation_error: None,
         }
     }
 
@@ -107,6 +111,7 @@ impl ProviderEditDialog {
             .password(true)
             .placeholder("sk-...");
         self.focus = ProviderEditField::Name;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -131,6 +136,7 @@ impl ProviderEditDialog {
             .placeholder("(leave blank to keep current key)");
         // Name 只读，焦点直接落 Protocol（第一个可编辑字段）。
         self.focus = ProviderEditField::Protocol;
+        self.validation_error = None;
         self.visible = true;
     }
 
@@ -141,6 +147,7 @@ impl ProviderEditDialog {
         self.base_url_input.clear();
         // 关键：api_key 明文 buffer 不驻留（道纪·第九条·配对销毁）。
         self.api_key_input.clear();
+        self.validation_error = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -166,6 +173,10 @@ impl ProviderEditDialog {
         if !self.visible {
             return None;
         }
+        // 用户开始改正即撤错误红字（Enter 会按需重新置位）。
+        if !matches!(key, Key::Enter) {
+            self.validation_error = None;
+        }
         match key {
             Key::Escape => {
                 self.close();
@@ -175,12 +186,21 @@ impl ProviderEditDialog {
                 let name = self.name_input.text().trim().to_string();
                 let base_url = self.base_url_input.text().trim().to_string();
                 let api_key = self.api_key_input.text().to_string();
-                // 验证：name/base_url 必填；Add 模式 api_key 必填
-                // （Edit 留空 = 保留原 key）。不满足静默不提交。
-                if name.is_empty()
-                    || base_url.is_empty()
-                    || (self.mode == ProviderEditMode::Add && api_key.is_empty())
-                {
+                // U5：校验失败不再静默——置错误文案（红字渲染）+ 聚焦出错字段，不关窗。
+                // name/base_url 必填；Add 模式 api_key 必填（Edit 留空 = 保留原 key）。
+                if name.is_empty() {
+                    self.validation_error = Some("Name is required".into());
+                    self.focus = ProviderEditField::Name;
+                    return None;
+                }
+                if base_url.is_empty() {
+                    self.validation_error = Some("Base URL is required".into());
+                    self.focus = ProviderEditField::BaseUrl;
+                    return None;
+                }
+                if self.mode == ProviderEditMode::Add && api_key.is_empty() {
+                    self.validation_error = Some("API key is required".into());
+                    self.focus = ProviderEditField::ApiKey;
                     return None;
                 }
                 // Add 模式 id slug：lowercase + 空格→`-`（与 in-place 同口径）；
@@ -258,6 +278,7 @@ impl ProviderEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             ProviderEditField::Name => {
                 if self.mode == ProviderEditMode::Add {
@@ -277,6 +298,7 @@ impl ProviderEditDialog {
         if !self.visible {
             return false;
         }
+        self.validation_error = None;
         match self.focus {
             ProviderEditField::Name if self.mode == ProviderEditMode::Add => {
                 self.name_input.insert_text(text)
@@ -344,6 +366,13 @@ impl ProviderEditDialog {
             .child_sized(base_field, 4)
             .child_sized(key_field, 4);
 
+        // U5：校验错误红字行（footer 上方），高度随行 +1。
+        let (content, err_h) = if let Some(e) = &self.validation_error {
+            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+        } else {
+            (content, 0)
+        };
+
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做鼠标字段命中（金律·几何同源）。
         Some(backdrop::render_dialog(
             title,
@@ -352,7 +381,7 @@ impl ProviderEditDialog {
             "Tab: next   ←/→: protocol   F2: show/hide key   Enter: save   Esc: cancel",
             ctx,
             76,
-            24,
+            24 + err_h,
         ))
     }
 }
@@ -695,5 +724,43 @@ mod tests {
             Some('s'),
             "明文态渲染真实字符"
         );
+    }
+
+    // ── U5：校验失败反馈（错误文案 + 聚焦 + 不关窗）──
+
+    #[test]
+    fn empty_base_url_flags_error_and_focuses_base_url() {
+        let mut d = ProviderEditDialog::new();
+        d.open_add();
+        d.name_input = revue::widget::Input::new().value("My Provider".to_string());
+        assert!(d.handle_key(&Key::Enter).is_none(), "空 base_url 不提交");
+        assert_eq!(d.validation_error.as_deref(), Some("Base URL is required"));
+        assert_eq!(d.focus(), ProviderEditField::BaseUrl, "焦点跳到出错字段");
+        assert!(d.is_open(), "不关窗");
+        // 用户开始键入 → 错误撤销。
+        d.handle_key(&Key::Char('h'));
+        assert_eq!(d.validation_error, None, "编辑键清除错误态");
+    }
+
+    #[test]
+    fn add_empty_api_key_flags_error_and_focuses_api_key() {
+        let mut d = ProviderEditDialog::new();
+        d.open_add();
+        d.name_input = revue::widget::Input::new().value("My Provider".to_string());
+        d.base_url_input = revue::widget::Input::new().value("https://x".to_string());
+        assert!(d.handle_key(&Key::Enter).is_none(), "Add 空 api_key 不提交");
+        assert_eq!(d.validation_error.as_deref(), Some("API key is required"));
+        assert_eq!(d.focus(), ProviderEditField::ApiKey);
+    }
+
+    #[test]
+    fn edit_mode_blank_api_key_is_allowed() {
+        let mut d = ProviderEditDialog::new();
+        d.open_edit(&sample_provider());
+        // Edit 留空 api_key = 保留原 key → 可提交。
+        assert!(matches!(
+            d.handle_key(&Key::Enter),
+            Some(ProviderEditAction::Submit(_))
+        ));
     }
 }
