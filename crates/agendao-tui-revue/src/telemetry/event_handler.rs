@@ -18,8 +18,10 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 // 此前 `_ => Idle` 把这些相位映射成 Idle，spinner 在每次工具
                 // 调用/压缩期间被冻结（"墨韵"恒静止的主因）。Cancelling 同理：
                 // 取消落定前这一轮仍在跑。
-                SessionRunStatusKind::Compacting
-                | SessionRunStatusKind::WaitingOnTool
+                // U9：Compacting 拆出独立态（展示层可辨"压缩中"），行为口径
+                // 仍与 Running 一致。
+                SessionRunStatusKind::Compacting => RunStatus::Compacting,
+                SessionRunStatusKind::WaitingOnTool
                 | SessionRunStatusKind::Cancelling => RunStatus::Running,
                 // Blocked/Sleeping 是 session 级静置，不算运行。
                 _ => RunStatus::Idle,
@@ -674,5 +676,45 @@ mod tests {
             }
             other => panic!("expected TodoList, got {:?}", other),
         }
+    }
+
+    // ── U9：Compacting 拆出独立 RunStatus ──
+
+    fn runtime_evt(kind: SessionRunStatusKind) -> FrontendEvent {
+        FrontendEvent::SessionRuntimeReplaced {
+            session_id: "s1".into(),
+            runtime: agendao_client::SessionRuntimeState {
+                session_id: "s1".into(),
+                run_status: kind,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: vec![],
+                pending_question: None,
+                pending_permission: None,
+                pending_followup_count: 0,
+                attached_sessions: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn compacting_maps_to_distinct_run_status() {
+        let session = SessionStore::new();
+        apply_frontend_event(&runtime_evt(SessionRunStatusKind::Compacting), &session);
+        assert_eq!(session.run_status.get(), RunStatus::Compacting, "压缩相位独立成态");
+    }
+
+    #[test]
+    fn waiting_on_tool_and_cancelling_stay_running() {
+        // 拆分不得误伤其余相位的既有口径（回归闸门）。
+        let session = SessionStore::new();
+        apply_frontend_event(&runtime_evt(SessionRunStatusKind::WaitingOnTool), &session);
+        assert_eq!(session.run_status.get(), RunStatus::Running);
+        apply_frontend_event(&runtime_evt(SessionRunStatusKind::Cancelling), &session);
+        assert_eq!(session.run_status.get(), RunStatus::Running);
+        apply_frontend_event(&runtime_evt(SessionRunStatusKind::Idle), &session);
+        assert_eq!(session.run_status.get(), RunStatus::Idle);
     }
 }

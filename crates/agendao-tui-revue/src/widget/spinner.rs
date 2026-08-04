@@ -73,11 +73,19 @@ pub fn ink_color() -> Color {
     crate::theme::colors::FG_MUTED()
 }
 
-/// stall 时颜色向红插值：3 秒无新输出后转红（interpolateColor 简化）。
-/// secs_since_last 是距上次输出的秒数；<3 返回 base，>=3 返回 ACCENT_RED。
+/// stall 分级配色（U9 接线）：距上次输出的秒数决定 spinner 色相——
+/// 3s 内返回 base（正常流转）；3–9s 转琥珀（E_AMBER，有一会儿没动静）；
+/// 10s 起转红（ACCENT_RED，配合 prompt hint 的 still waiting… 文案）。
+/// 30s 以上另有 status bar 文案提示（keymap RUNNING_STALE_SECS 同闸）。
 pub fn stall_color(base: Color, secs_since_last: u64) -> Color {
     use crate::theme::colors;
-    if secs_since_last < 3 { base } else { colors::ACCENT_RED() }
+    if secs_since_last < 3 {
+        base
+    } else if secs_since_last < 10 {
+        colors::E_AMBER()
+    } else {
+        colors::ACCENT_RED()
+    }
 }
 
 #[cfg(test)]
@@ -127,11 +135,15 @@ mod tests {
     }
 
     #[test]
-    fn stall_color_red_after_3s() {
+    fn stall_color_staged_amber_then_red() {
         use crate::theme::colors;
-        assert_eq!(stall_color(colors::E_AMBER(), 0), colors::E_AMBER());
-        assert_eq!(stall_color(colors::E_AMBER(), 2), colors::E_AMBER());
-        assert_eq!(stall_color(colors::E_AMBER(), 3), colors::ACCENT_RED());
+        // <3s 保持 base；3–9s 琥珀；>=10s 红。
+        assert_eq!(stall_color(colors::FG_MUTED(), 0), colors::FG_MUTED());
+        assert_eq!(stall_color(colors::FG_MUTED(), 2), colors::FG_MUTED());
+        assert_eq!(stall_color(colors::FG_MUTED(), 3), colors::E_AMBER());
+        assert_eq!(stall_color(colors::FG_MUTED(), 9), colors::E_AMBER());
+        assert_eq!(stall_color(colors::FG_MUTED(), 10), colors::ACCENT_RED());
+        assert_eq!(stall_color(colors::FG_MUTED(), 60), colors::ACCENT_RED());
     }
 
     #[test]

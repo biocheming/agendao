@@ -570,7 +570,8 @@ impl AppHandler {
 
 /// 陈旧 Running 阈值（秒）：run_status 卡在 Running/Sending 且超过该时长
 /// 无任何事件，即判定流挂死，停止 20fps 强制重绘与 spinner 推进。
-const RUNNING_STALE_SECS: u64 = 30;
+/// pub(crate)：U9 状态栏 "no activity" 提示与此同闸（土律·单一权威）。
+pub(crate) const RUNNING_STALE_SECS: u64 = 30;
 
 /// spinner 动画降速因子：重绘只在帧号真正前进时触发（变化驱动），
 /// 帧时长 = 50ms tick × 该值 = 150ms（~6.7fps，墨韵 8 帧仍连贯），
@@ -599,18 +600,18 @@ impl AppHandler {
                 // spinner 推进（冻帧=诚实的停滞态），活动恢复即自愈。
                 let running_stale = matches!(
                     self.active_session.run_status.get(),
-                    RunStatus::Running | RunStatus::Sending
+                    RunStatus::Running | RunStatus::Sending | RunStatus::Compacting
                 ) && self.last_activity.elapsed().as_secs() >= RUNNING_STALE_SECS;
                 // spinner 帧翻转检测（变化驱动，非频率驱动）：动画按
                 // SPINNER_FRAME_DIV 降速，只在帧号真正前进时才需要重绘；
                 // 配合内容事件(changed)与 blink_flipped，全部重绘都有真实原因。
                 let spinner_flipped = matches!(
                     self.active_session.run_status.get(),
-                    RunStatus::Running | RunStatus::Sending
+                    RunStatus::Running | RunStatus::Sending | RunStatus::Compacting
                 ) && (self.spinner_tick / SPINNER_FRAME_DIV)
                     != (self.spinner_tick.wrapping_sub(1) / SPINNER_FRAME_DIV);
                 // Advance spinner when running
-                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending) && !running_stale {
+                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending | RunStatus::Compacting) && !running_stale {
                     self.spinner_tick = self.spinner_tick.wrapping_add(1);
                 }
                 // Garbage-collect expired toasts so the Vec doesn't grow
@@ -1984,7 +1985,7 @@ impl AppHandler {
                 }
                 // 3. Double-tap Esc to interrupt running session
                 let status = self.active_session.run_status.get();
-                if matches!(status, RunStatus::Running | RunStatus::Sending) {
+                if matches!(status, RunStatus::Running | RunStatus::Sending | RunStatus::Compacting) {
                     if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() < 5 {
                         // Second Esc within 5s → abort
                         self.interrupt_pending = false;
@@ -4195,6 +4196,26 @@ mod tests {
         let _ = h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('o'))));
         assert!(!h.permission_dialog.visible && !h.question_dialog.visible);
         assert_eq!(h.pending_decision_count(), 0, "无 pending 时 Ctrl+O 无副作用");
+    }
+
+    // ── U9：Compacting 行为口径与 Running 同闸 ──
+
+    /// Compacting 推进 spinner；30s 无活动（stale）冻帧——与 Running 同闸。
+    #[test]
+    fn compacting_drives_spinner_and_stale_freezes() {
+        let mut h = mk_handler();
+        h.active_session
+            .run_status
+            .set(crate::store::types::RunStatus::Compacting);
+        let t0 = h.spinner_tick;
+        h.handle(&Event::Tick);
+        assert!(h.spinner_tick > t0, "Compacting 推进 spinner");
+        // 31s 无活动 → 冻帧（running_stale 同闸）。
+        h.last_activity =
+            std::time::Instant::now() - std::time::Duration::from_secs(31);
+        let t1 = h.spinner_tick;
+        h.handle(&Event::Tick);
+        assert_eq!(h.spinner_tick, t1, "stale 时 spinner 冻帧");
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

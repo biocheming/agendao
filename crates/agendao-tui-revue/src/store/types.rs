@@ -250,6 +250,11 @@ pub enum RunStatus {
     Idle,
     Sending,
     Running,
+    /// U9：压缩相位独立成态——此前归并 Running，用户无法区分"模型在
+    /// 生成"与"上下文在压缩"（压缩期无 token 流出，易被误判为挂死）。
+    /// 行为口径与 Running 一致（spinner 转、Esc 可打断、stale 判定同闸），
+    /// 仅展示层分流。
+    Compacting,
     WaitingUser,
     Error(String),
 }

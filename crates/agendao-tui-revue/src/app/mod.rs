@@ -1037,7 +1037,7 @@ impl View for RootView {
     fn render(&self, ctx: &mut RenderContext) {
         let route = self.store.route.get();
         let h = self.handler.borrow();
-        let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running);
+        let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running | RunStatus::Compacting);
         let is_slash = h.panel == Panel::Slash;
         // Transcript viewport height, hoisted out of the inner
         // session-route branch so we can publish it to the handler
@@ -1168,6 +1168,8 @@ impl View for RootView {
                 // Run status indicator pinned to the right via a flex spacer.
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
                     RunStatus::Running => (Some(" ● Running"), colors::ACCENT_GREEN()),
+                    // U9：压缩相位独立可辨（◍ 琥珀，区别于 Running 的 ● 绿）。
+                    RunStatus::Compacting => (Some(" ◍ Compacting"), colors::E_AMBER()),
                     RunStatus::Sending => (Some(" ○ Sending"), colors::ACCENT_YELLOW()),
                     RunStatus::WaitingUser => (Some(" ⏸ Waiting"), colors::ACCENT_YELLOW()),
                     RunStatus::Error(_) => (Some(" ✕ Error"), colors::ACCENT_RED()),
@@ -1502,6 +1504,9 @@ impl View for RootView {
             " ⚠ Press Esc again to interrupt".to_string()
         } else if is_slash {
             h.slash_popup.hint_line().to_string()
+        } else if matches!(h.active_session.run_status.get(), RunStatus::Compacting) {
+            // U9：压缩相位独立文案（spinner 同转，语义可辨）。
+            " ◍ Compacting… Esc: stop".to_string()
         } else {
             h.prompt.status_hint(is_running)
         };
@@ -1516,8 +1521,21 @@ impl View for RootView {
                 let frame = crate::widget::spinner::ink_frame(
                     h.spinner_tick / crate::app::keymap::SPINNER_FRAME_DIV,
                 );
+                // U9：stall 分级——3s 无事件转琥珀、10s 转红 + hint 补
+                // "still waiting…"（与 keymap last_activity 同源：任何
+                // 服务端事件/发送回执都会刷新它，活动恢复即自愈回原色）。
+                let stall_secs = h.last_activity.elapsed().as_secs();
+                let frame_color = crate::widget::spinner::stall_color(
+                    crate::widget::spinner::ink_color(),
+                    stall_secs,
+                );
+                let hint = if stall_secs >= 10 && !h.interrupt_pending {
+                    format!("{} · still waiting…", hint)
+                } else {
+                    hint.clone()
+                };
                 line = line
-                    .child_sized(Text::new(format!(" {}", frame)).fg(crate::widget::spinner::ink_color()), 2)
+                    .child_sized(Text::new(format!(" {}", frame)).fg(frame_color), 2)
                     .child_flex(Text::new(&hint).fg(colors::FG_MUTED()), 1.0);
             } else if h.interrupt_pending || is_slash {
                 // 瞬态有用提示（Esc 再按打断 / slash 导航）保留。
@@ -1628,6 +1646,16 @@ impl View for RootView {
             Some(label) => format!(" ◌ {}…", label),
             None => String::new(),
         };
+        // U9：运行态但 30s 无任何活动（与 keymap running_stale 同闸同
+        // 阈值）→ 状态栏明示"可能挂死"。spinner 此时已冻帧，这里给文案
+        // 层确认；活动恢复（任一服务端事件）即自愈消失。
+        let stale_hint = if is_running
+            && h.last_activity.elapsed().as_secs() >= crate::app::keymap::RUNNING_STALE_SECS
+        {
+            " ⚠ no activity 30s+ — connection may be stalled"
+        } else {
+            ""
+        };
         // U7③：🔔 通知角标（history 条数）——常驻重发现入口，点击开
         // 通知中心。位置 = gutter(PAD) + 前缀 display width；Rect 发布
         // 供 keymap 命中（与 toast_rects 同批写回）。
@@ -1647,8 +1675,8 @@ impl View for RootView {
             String::new()
         };
         let status_prefix = format!(
-            " {} │ [{}]{}{}{} │{}",
-            dir_short, panel_label, stats, fetch_hint, cursor_hint, nav_hint,
+            " {} │ [{}]{}{}{}{} │{}",
+            dir_short, panel_label, stats, fetch_hint, stale_hint, cursor_hint, nav_hint,
         );
         let (bell_rect, pending_rect) = {
             use unicode_width::UnicodeWidthStr;
