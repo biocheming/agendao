@@ -477,13 +477,17 @@ impl PromptInput {
     pub fn mode(&self) -> &InputMode { &self.mode }
 
     /// Show status hint above the prompt bar.
+    /// U20：只宣传真实可用的键（与 keymap/handle_ctrl_key 双向核对）——
+    /// Enter 发送；Alt/Shift/Ctrl+Enter 换行（keymap 1185 三修饰同闸）；
+    /// ↑/↓ 到顶/底行才进历史（多行内是行间移动，不宣传为纯历史键）；
+    /// ^Z/^Y undo/redo（U2 readline 集）；^P 命令面板（keymap 全局）。
     pub fn status_hint(&self, is_running: bool) -> String {
         if is_running { return "Running... Esc: stop".into(); }
         let len = self.editor.get_content().trim().len();
         if self.focused && len > 0 {
-            format!("{} chars | Enter: send | Alt+Enter: newline", len)
+            format!("{} chars | Enter:send Alt/S-Enter:newline | ^Z/^Y:undo ^P:commands", len)
         } else if self.focused {
-            "Type to start... | Enter: send | Alt+Enter: newline".into()
+            "Type or /command | Enter:send | ↑/↓:history ^P:commands ?:help".into()
         } else {
             "Click below to type, or just start typing...".into()
         }
@@ -708,6 +712,28 @@ fn char_index_at_display_col(line: &str, display_col: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// U20：hint 只宣传真实可用的键（正向半：宣传→实现；反向半由 keymap
+    /// 侧已存的绑键测试兜住——^P palette / q quit / ? help / Esc interrupt /
+    /// 每个 transcript 绑键均有独立测试）。
+    #[test]
+    fn status_hint_advertises_only_real_keys() {
+        let mut p = PromptInput::new();
+        // 运行态：Esc stop（keymap interrupt 真实存在）。
+        assert!(p.status_hint(true).contains("Esc: stop"));
+        // 空 prompt + focused：历史/面板/help 入口。
+        p.focused = true;
+        let empty_hint = p.status_hint(false);
+        assert!(empty_hint.contains("↑/↓:history"), "{empty_hint}");
+        assert!(empty_hint.contains("^P:commands"), "{empty_hint}");
+        assert!(empty_hint.contains("?:help"), "{empty_hint}");
+        // 有文本：发送/换行/undo。
+        p.set_text("hello");
+        let text_hint = p.status_hint(false);
+        assert!(text_hint.contains("Enter:send"), "{text_hint}");
+        assert!(text_hint.contains("Alt/S-Enter:newline"), "{text_hint}");
+        assert!(text_hint.contains("^Z/^Y:undo"), "{text_hint}");
+    }
 
     #[test]
     fn multiline_content_adapts_height_capped_at_max() {

@@ -172,9 +172,11 @@ impl SlashPopup {
     }
 
     /// prompt 条 hint 行文案（app/mod.rs 的 is_slash 分支唯一口径）。
+    /// U20：Enter/Tab 实为「填回不执行」（U3 Breaking），二次 Enter 才运行——
+    /// 旧文案 "complete" 只说了半步，补全两步语义避免用户以为选中即执行。
     pub fn hint_line(&self) -> &'static str {
         match self.mode {
-            SlashPopupMode::Completion => " ↑↓ select · Enter/Tab: complete · Esc: cancel",
+            SlashPopupMode::Completion => " ↑↓:select Enter/Tab:fill → Enter:run Esc:cancel",
             SlashPopupMode::ArgHint => " Enter: run · Esc: cancel",
         }
     }
@@ -394,6 +396,21 @@ impl SlashPopup {
 mod tests {
     use super::*;
     use crate::theme::colors;
+
+    /// U20：hint 文案与 handle_key 行为同步——Completion 的 Enter/Tab 是
+    /// 「填回不执行」（U3 Breaking），hint 必须说全两步（fill → run），
+    /// 不能只写 "complete" 半步。
+    #[test]
+    fn hint_line_matches_fill_then_run_semantics() {
+        let mut popup = SlashPopup::new();
+        popup.open();
+        assert_eq!(popup.mode, SlashPopupMode::Completion);
+        let hint = popup.hint_line();
+        assert!(hint.contains("fill"), "{hint}");
+        assert!(hint.contains("run"), "{hint}");
+        assert!(hint.contains("Esc:cancel"), "{hint}");
+    }
+
 
     /// U3·trigger 收窄：仅首 token 且命令名未完成时触发。
     #[test]

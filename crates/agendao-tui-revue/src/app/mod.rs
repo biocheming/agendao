@@ -1692,17 +1692,35 @@ impl View for RootView {
             Some(idx) => format!(" cursor:{}", idx + 1),
             None => String::new(),
         };
+        // U20：宣传与实现双向对齐（第十条）。基座键（Tab/S-Tab/PgUp/Dn，
+        // prompt 状态无关）常驻；空 prompt 才生效的键（j/k/Space/g/G/
+        // Home/End/C）只在空 prompt 时宣传——非空时宣传了按了归编辑器，
+        // 等于伪权威；选中态再追加 e/c（UserPrompt 可 revise，任何块可
+        // copy）——选中什么宣传什么。
         let nav_hint = if matches!(route, Route::Session { .. }) {
-            // U13①④：j/k 落地后补写；fold 标注空 prompt 前提（Space
-            // 有输入语义，非空时归编辑器）。
-            " Tab/j/k:nav Space:fold(if empty) PgUp/Dn:scroll g/G:top/bottom"
+            let mut s = String::from(" Tab/S-Tab:nav PgUp/Dn:scroll");
+            if h.prompt.text().is_empty() {
+                s.push_str(" j/k:nav Space:fold g/G·Home/End:top/bottom C:copy-screen");
+                if h.active_session.transcript_cursor.get().is_some() {
+                    if h.active_session.cursor_user_prompt().is_some() {
+                        s.push_str(" e:revise");
+                    }
+                    s.push_str(" c:copy");
+                }
+            }
+            s
         } else {
-            ""
+            String::new()
         };
         // U11④：翻上去阅读期间新到底的块数——"↓ N new"，回底消失。
+        // U20：附回底键提示（G/End 空 prompt 才生效，与 nav_hint 同闸）。
         let unread_count = h.active_session.unread_count();
         let unread_hint = if unread_count > 0 {
-            format!(" ↓ {} new", unread_count)
+            if h.prompt.text().is_empty() {
+                format!(" ↓ {} new (G:jump)", unread_count)
+            } else {
+                format!(" ↓ {} new", unread_count)
+            }
         } else {
             String::new()
         };
