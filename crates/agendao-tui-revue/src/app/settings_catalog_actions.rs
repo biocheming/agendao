@@ -10,10 +10,79 @@
 //! slash `/mcp` `/skills` dialog 仍可独立打开;Settings 路径不经 dialog,
 //! 但写操作复用同一 API 权威(木克土:输入变体复用同一权威)。
 
+use crate::app::app_op;
 use crate::app::AppHandler;
 use crate::store::types::{SettingsMcpRow, SettingsSkillRow, ToastMsgVariant};
 
+/// U6④ 后台 task 的 disabled patterns 改写计划：主线程从 store 快照算好
+/// 上下文（key/组成员/方向/同组其他禁用项），task 内拿到 config 后单点
+/// 复用 `toggle_exact_pattern`/`toggle_group_pattern`（土律·单点权威）。
+/// skill（key=name, group=category）/ tool（key=id, group=family）/
+/// plugin（key=name, group=None）三类启停共用。
+enum DisabledTogglePlan {
+    Exact {
+        key: String,
+        group: Option<String>,
+        disable: bool,
+        others: Vec<String>,
+    },
+    Group {
+        name: String,
+        members: Vec<String>,
+        disable: bool,
+    },
+}
+
+impl DisabledTogglePlan {
+    fn apply(&self, patterns: &mut Vec<String>) {
+        match self {
+            Self::Exact {
+                key,
+                group,
+                disable,
+                others,
+            } => toggle_exact_pattern(patterns, key, group.as_deref(), *disable, others),
+            Self::Group {
+                name,
+                members,
+                disable,
+            } => toggle_group_pattern(patterns, name, members, *disable),
+        }
+    }
+}
+
 impl AppHandler {
+    /// U6④ 公共点火闸：防抖（单闸——写操作都快，一个全局闸足够）+
+    /// bridge 取用 + pending 标记 + 回执通道。返回 `Some` = 可 spawn；
+    /// `None` 时已自行 toast（防抖提示或无 bridge 报错），调用方直接
+    /// return。回执 `SettingsWriteDone` 在 Tick drain 清闸 + refresh + toast。
+    fn begin_settings_write(
+        &mut self,
+        pending_label: &str,
+    ) -> Option<(
+        crate::bridge::api::ApiBridge,
+        tokio::runtime::Handle,
+        tokio::sync::mpsc::UnboundedSender<app_op::AppOpOutcome>,
+    )> {
+        if let Some(cur) = self.store.settings_write_pending.get() {
+            self.store.push_toast(
+                &format!("Still working: {} — wait for it to finish", cur),
+                ToastMsgVariant::Info,
+            );
+            return None;
+        }
+        let Some(api) = self.api.clone() else {
+            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+            return None;
+        };
+        self.store
+            .settings_write_pending
+            .set(Some(pending_label.to_string()));
+        let handle = api.handle().clone();
+        let tx = self.app_ops.sender();
+        Some((api, handle, tx))
+    }
+
     /// 拉 MCP 状态回灌 `store.settings_mcp`。OpenSettings / connect/disconnect /
     /// 增改删/启停写后调用。`/mcp` 状态 map 无配置字段——transport/command/url/
     /// enabled 从 config.mcp 合并（两源合一，config 缺条目时诚实标 `unknown`）。
@@ -170,37 +239,41 @@ impl AppHandler {
             return;
         }
         let name = row.name.clone();
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write(if connect {
+            "MCP connect"
+        } else {
+            "MCP disconnect"
+        }) else {
             return;
         };
-        let result = if connect {
-            api.connect_mcp(&name)
-        } else {
-            api.disconnect_mcp(&name)
-        };
-        match result {
-            Ok(_) => {
-                self.refresh_mcp_into_store();
-                self.store.push_toast(
-                    &format!(
+        // U6④：写移后台 task（HTTP 模式下 connect 可能秒级）；成功文案在
+        // spawn 点拼好（这里有 name/方向上下文），drain 只 refresh + toast。
+        handle.spawn(async move {
+            let result = if connect {
+                api.connect_mcp_async(&name).await
+            } else {
+                api.disconnect_mcp_async(&name).await
+            };
+            let result = result
+                .map(|_| {
+                    format!(
                         "MCP {}: {}",
                         if connect { "connected" } else { "disconnected" },
                         name
-                    ),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!(
-                    "{} failed: {}",
-                    if connect { "Connect" } else { "Disconnect" },
-                    e
-                ),
-                ToastMsgVariant::Error,
-            ),
-        }
+                    )
+                })
+                .map_err(|e| {
+                    format!(
+                        "{} failed: {}",
+                        if connect { "Connect" } else { "Disconnect" },
+                        e
+                    )
+                });
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result,
+            });
+        });
     }
 
     /// Settings Skills:a=approve / r=reject 当前选中的 proposal 行。
@@ -229,32 +302,27 @@ impl AppHandler {
         let id = id.clone();
         let title = title.clone();
         let status = if accept { "accepted" } else { "rejected" };
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("skill proposal") else {
             return;
         };
-        match api.update_skill_proposal_status(&id, status) {
-            Ok(_) => {
-                self.refresh_skills_into_store();
-                self.store.push_toast(
-                    &format!("Proposal {}: {}", status, title),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("{} failed: {}", status, e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        handle.spawn(async move {
+            let result = api
+                .update_skill_proposal_status_async(&id, status)
+                .await
+                .map(|_| format!("Proposal {}: {}", status, title))
+                .map_err(|e| format!("{} failed: {}", status, e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Skills,
+                result,
+            });
+        });
     }
 
     /// Confirm 后的 skill 删除执行（土律·第四条单点权威）：
     /// POST `/skill/manage`(Delete)，local-direct 经 `local_manage_skill` 短路；
     /// 成功则 `refresh_skills_into_store` 回灌（水律·回流同源）。
     pub(crate) fn delete_skill_action(&mut self, name: &str) {
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("skill delete") else {
             return;
         };
         // server 端 session_id 仅用于权限记账与 memory 回流；Settings 页删除
@@ -276,20 +344,18 @@ impl AppHandler {
             directory_name: None,
             file_path: None,
         };
-        match api.manage_skill(&req) {
-            Ok(_) => {
-                self.refresh_skills_into_store();
-                self.store.push_toast(
-                    &format!("Skill deleted: {}", name),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Delete skill failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        let name = name.to_string();
+        handle.spawn(async move {
+            let result = api
+                .manage_skill_async(&req)
+                .await
+                .map(|_| format!("Skill deleted: {}", name))
+                .map_err(|e| format!("Delete skill failed: {}", e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Skills,
+                result,
+            });
+        });
     }
 
     /// `t`（Skills 列表/详情聚焦，或列表行尾开关点击）：启停切换。
@@ -310,29 +376,43 @@ impl AppHandler {
             .min(lines.len().saturating_sub(1));
         let Some(line) = lines.get(sel) else { return };
 
-        enum Edit {
-            Exact {
-                name: String,
-                category: Option<String>,
-                disable: bool,
-            },
-            Group {
-                name: String,
-                disable: bool,
-            },
-        }
-        let edit = match line {
+        // U6④：主线程只从 store 快照算改写计划与成功文案；config 读-改-写
+        // 整体移后台 task（HTTP 模式两次 round-trip 不再冻结 UI）。
+        let (plan, toast_label) = match line {
             SettingsSkillLine::Row(src) => match &rows[*src] {
                 SettingsSkillRow::Catalog {
                     name,
                     category,
                     disabled,
                     ..
-                } => Edit::Exact {
-                    name: name.clone(),
-                    category: category.clone(),
-                    disable: !disabled,
-                },
+                } => {
+                    let disable = !disabled;
+                    let others: Vec<String> = rows
+                        .iter()
+                        .filter(|r| {
+                            r.group_name()
+                                == category
+                                    .as_deref()
+                                    .unwrap_or(crate::store::types::SKILLS_UNCATEGORIZED_GROUP)
+                                && r.is_disabled()
+                                && r.label() != name.as_str()
+                        })
+                        .map(|r| r.label().to_string())
+                        .collect();
+                    (
+                        DisabledTogglePlan::Exact {
+                            key: name.clone(),
+                            group: category.clone(),
+                            disable,
+                            others,
+                        },
+                        format!(
+                            "Skill {}: {}",
+                            if disable { "disabled" } else { "enabled" },
+                            name
+                        ),
+                    )
+                }
                 SettingsSkillRow::Proposal { .. } => {
                     self.store.push_toast(
                         "Proposals are not toggleable — approve/reject with a/r",
@@ -362,84 +442,54 @@ impl AppHandler {
                     .collect();
                 let all_disabled =
                     !members.is_empty() && members.iter().all(|r| r.is_disabled());
-                Edit::Group {
-                    name: name.clone(),
-                    disable: !all_disabled,
-                }
-            }
-        };
-
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
-            return;
-        };
-        let Ok(config) = api.get_config() else {
-            self.store.push_toast("Failed to read config", ToastMsgVariant::Error);
-            return;
-        };
-        let mut patterns = config
-            .skills
-            .as_ref()
-            .map(|s| s.disabled.clone())
-            .unwrap_or_default();
-
-        let toast_label = match &edit {
-            Edit::Exact {
-                name,
-                category,
-                disable,
-            } => {
-                let others: Vec<String> = rows
-                    .iter()
-                    .filter(|r| {
-                        r.group_name()
-                            == category
-                                .as_deref()
-                                .unwrap_or(crate::store::types::SKILLS_UNCATEGORIZED_GROUP)
-                            && r.is_disabled()
-                            && r.label() != name.as_str()
-                    })
-                    .map(|r| r.label().to_string())
-                    .collect();
-                toggle_exact_pattern(&mut patterns, name, category.as_deref(), *disable, &others);
-                format!(
-                    "Skill {}: {}",
-                    if *disable { "disabled" } else { "enabled" },
-                    name
-                )
-            }
-            Edit::Group { name, disable } => {
-                let members: Vec<String> = rows
-                    .iter()
-                    .filter(|r| r.group_name() == name.as_str())
-                    .map(|r| r.label().to_string())
-                    .collect();
-                toggle_group_pattern(&mut patterns, name, &members, *disable);
-                format!(
-                    "Skill category {}: {} ({}/*)",
-                    if *disable { "disabled" } else { "enabled" },
-                    name,
-                    name
+                let disable = !all_disabled;
+                (
+                    DisabledTogglePlan::Group {
+                        name: name.clone(),
+                        members: members.iter().map(|r| r.label().to_string()).collect(),
+                        disable,
+                    },
+                    format!(
+                        "Skill category {}: {} ({}/*)",
+                        if disable { "disabled" } else { "enabled" },
+                        name,
+                        name
+                    ),
                 )
             }
         };
 
-        let update = agendao_client::DisabledConfigUpdate {
-            tools: None,
-            skills: Some(patterns),
-            plugins: None,
+        let Some((api, handle, tx)) = self.begin_settings_write("skill toggle") else {
+            return;
         };
-        match api.put_disabled_config(&update) {
-            Ok(_) => {
-                self.refresh_skills_into_store();
-                self.store.push_toast(&toast_label, ToastMsgVariant::Success);
-                self.layout_dirty = true;
+        handle.spawn(async move {
+            let result: Result<String, String> = async {
+                let config = api
+                    .get_config_async()
+                    .await
+                    .map_err(|e| format!("Failed to read config: {}", e))?;
+                let mut patterns = config
+                    .skills
+                    .as_ref()
+                    .map(|s| s.disabled.clone())
+                    .unwrap_or_default();
+                plan.apply(&mut patterns);
+                let update = agendao_client::DisabledConfigUpdate {
+                    tools: None,
+                    skills: Some(patterns),
+                    plugins: None,
+                };
+                api.put_disabled_config_async(&update)
+                    .await
+                    .map_err(|e| format!("Toggle skill failed: {}", e))?;
+                Ok(toast_label)
             }
-            Err(e) => self.store.push_toast(
-                &format!("Toggle skill failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+            .await;
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Skills,
+                result,
+            });
+        });
     }
 
     /// `t`（Tools 列表/详情聚焦，或列表行尾开关点击）：启停切换。
@@ -460,18 +510,8 @@ impl AppHandler {
             .min(lines.len().saturating_sub(1));
         let Some(line) = lines.get(sel) else { return };
 
-        enum Edit {
-            Exact {
-                id: String,
-                family: Option<String>,
-                disable: bool,
-            },
-            Group {
-                name: String,
-                disable: bool,
-            },
-        }
-        let edit = match line {
+        // U6④：同 skill toggle——主线程算计划与文案，读-改-写移后台。
+        let (plan, toast_label) = match line {
             SettingsToolLine::Row(src) => {
                 let r = &rows[*src];
                 if r.protected {
@@ -484,11 +524,32 @@ impl AppHandler {
                     );
                     return;
                 }
-                Edit::Exact {
-                    id: r.id.clone(),
-                    family: r.family.clone(),
-                    disable: !r.disabled,
-                }
+                let disable = !r.disabled;
+                let others: Vec<String> = rows
+                    .iter()
+                    .filter(|o| {
+                        o.group_name()
+                            == r.family
+                                .as_deref()
+                                .unwrap_or(crate::store::types::TOOLS_UNCATEGORIZED_GROUP)
+                            && o.disabled
+                            && o.id != r.id
+                    })
+                    .map(|o| o.id.clone())
+                    .collect();
+                (
+                    DisabledTogglePlan::Exact {
+                        key: r.id.clone(),
+                        group: r.family.clone(),
+                        disable,
+                        others,
+                    },
+                    format!(
+                        "Tool {}: {} (registry rebuilt)",
+                        if disable { "disabled" } else { "enabled" },
+                        r.id
+                    ),
+                )
             }
             SettingsToolLine::Category { name, .. } => {
                 if name == TOOLS_UNCATEGORIZED_GROUP {
@@ -503,80 +564,50 @@ impl AppHandler {
                     .filter(|r| r.group_name() == name.as_str())
                     .collect();
                 let all_disabled = !members.is_empty() && members.iter().all(|r| r.disabled);
-                Edit::Group {
-                    name: name.clone(),
-                    disable: !all_disabled,
-                }
-            }
-        };
-
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
-            return;
-        };
-        let Ok(config) = api.get_config() else {
-            self.store.push_toast("Failed to read config", ToastMsgVariant::Error);
-            return;
-        };
-        let mut patterns = config.disabled_tools.clone();
-
-        let toast_label = match &edit {
-            Edit::Exact {
-                id,
-                family,
-                disable,
-            } => {
-                let others: Vec<String> = rows
-                    .iter()
-                    .filter(|r| {
-                        r.group_name()
-                            == family
-                                .as_deref()
-                                .unwrap_or(crate::store::types::TOOLS_UNCATEGORIZED_GROUP)
-                            && r.disabled
-                            && r.id != *id
-                    })
-                    .map(|r| r.id.clone())
-                    .collect();
-                toggle_exact_pattern(&mut patterns, id, family.as_deref(), *disable, &others);
-                format!(
-                    "Tool {}: {} (registry rebuilt)",
-                    if *disable { "disabled" } else { "enabled" },
-                    id
-                )
-            }
-            Edit::Group { name, disable } => {
-                let members: Vec<String> = rows
-                    .iter()
-                    .filter(|r| r.group_name() == name.as_str())
-                    .map(|r| r.id.clone())
-                    .collect();
-                toggle_group_pattern(&mut patterns, name, &members, *disable);
-                format!(
-                    "Tool family {}: {} ({}/*, registry rebuilt)",
-                    if *disable { "disabled" } else { "enabled" },
-                    name,
-                    name
+                let disable = !all_disabled;
+                (
+                    DisabledTogglePlan::Group {
+                        name: name.clone(),
+                        members: members.iter().map(|r| r.id.clone()).collect(),
+                        disable,
+                    },
+                    format!(
+                        "Tool family {}: {} ({}/*, registry rebuilt)",
+                        if disable { "disabled" } else { "enabled" },
+                        name,
+                        name
+                    ),
                 )
             }
         };
 
-        let update = agendao_client::DisabledConfigUpdate {
-            tools: Some(patterns),
-            skills: None,
-            plugins: None,
+        let Some((api, handle, tx)) = self.begin_settings_write("tool toggle") else {
+            return;
         };
-        match api.put_disabled_config(&update) {
-            Ok(_) => {
-                self.refresh_tools_into_store();
-                self.store.push_toast(&toast_label, ToastMsgVariant::Success);
-                self.layout_dirty = true;
+        handle.spawn(async move {
+            let result: Result<String, String> = async {
+                let config = api
+                    .get_config_async()
+                    .await
+                    .map_err(|e| format!("Failed to read config: {}", e))?;
+                let mut patterns = config.disabled_tools.clone();
+                plan.apply(&mut patterns);
+                let update = agendao_client::DisabledConfigUpdate {
+                    tools: Some(patterns),
+                    skills: None,
+                    plugins: None,
+                };
+                api.put_disabled_config_async(&update)
+                    .await
+                    .map_err(|e| format!("Toggle tool failed: {}", e))?;
+                Ok(toast_label)
             }
-            Err(e) => self.store.push_toast(
-                &format!("Toggle tool failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+            .await;
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Tools,
+                result,
+            });
+        });
     }
 
     /// `t`（MCP 列表/详情聚焦，或列表行尾开关点击）：启停切换 = 改 config.mcp
@@ -588,59 +619,60 @@ impl AppHandler {
         let idx = self.store.settings_mcp_selected.get();
         let Some(row) = rows.get(idx) else { return };
         let name = row.name.clone();
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
-            return;
-        };
-        let Ok(config) = api.get_config() else {
-            self.store.push_toast("Failed to read config", ToastMsgVariant::Error);
-            return;
-        };
-        let Some(entry) = config.mcp.as_ref().and_then(|m| m.get(&name)) else {
-            self.store.push_toast(
-                &format!("\"{}\" has no config.mcp entry — toggle needs a config entry", name),
-                ToastMsgVariant::Warning,
-            );
-            return;
-        };
-        let next = match entry {
-            agendao_config::McpServerConfig::Enabled { enabled } => {
-                agendao_config::McpServerConfig::Enabled { enabled: !enabled }
-            }
-            agendao_config::McpServerConfig::Full(server) => {
-                let mut server = server.clone();
-                let cur = server.enabled.unwrap_or(true);
-                server.enabled = Some(!cur);
-                agendao_config::McpServerConfig::Full(server)
-            }
-        };
         let disabling = row.enabled;
-        match api.put_mcp_config(&name, &next) {
-            Ok(_) => {
-                self.refresh_mcp_into_store();
-                self.store.push_toast(
-                    &format!(
-                        "MCP {}: {}",
-                        if disabling { "disabled" } else { "enabled" },
+        let Some((api, handle, tx)) = self.begin_settings_write("MCP toggle") else {
+            return;
+        };
+        // U6④：读-改-写整体移后台。config 缺条目的前置拦截随之移入 task
+        // （文案不变；经 drain 以 Error toast 呈现，原为 Warning——同为诚实
+        // 拒绝，无语义丢失）。
+        handle.spawn(async move {
+            let result: Result<String, String> = async {
+                let config = api
+                    .get_config_async()
+                    .await
+                    .map_err(|e| format!("Failed to read config: {}", e))?;
+                let Some(entry) = config.mcp.as_ref().and_then(|m| m.get(&name)) else {
+                    return Err(format!(
+                        "\"{}\" has no config.mcp entry — toggle needs a config entry",
                         name
-                    ),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
+                    ));
+                };
+                let next = match entry {
+                    agendao_config::McpServerConfig::Enabled { enabled } => {
+                        agendao_config::McpServerConfig::Enabled {
+                            enabled: !enabled,
+                        }
+                    }
+                    agendao_config::McpServerConfig::Full(server) => {
+                        let mut server = server.clone();
+                        let cur = server.enabled.unwrap_or(true);
+                        server.enabled = Some(!cur);
+                        agendao_config::McpServerConfig::Full(server)
+                    }
+                };
+                api.put_mcp_config_async(&name, &next)
+                    .await
+                    .map_err(|e| format!("Toggle MCP failed: {}", e))?;
+                Ok(format!(
+                    "MCP {}: {}",
+                    if disabling { "disabled" } else { "enabled" },
+                    name
+                ))
             }
-            Err(e) => self.store.push_toast(
-                &format!("Toggle MCP failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+            .await;
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result,
+            });
+        });
     }
 
     /// McpEditDialog Submit（a=Add / e=Edit）：组装 `McpServerConfig::Full`
     /// 走 PUT `/config/mcp/{key}`。enabled 透传（Add=true / Edit=原值）——
     /// 启停不在表单里，Edit 保存不会意外重置开关（同 model_edit prefill 语义）。
     pub(crate) fn submit_mcp_edit(&mut self, s: crate::dialog::McpEditSubmission) {
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("MCP save") else {
             return;
         };
         let mut server = agendao_config::McpServer {
@@ -658,46 +690,43 @@ impl AppHandler {
         }
         let cfg = agendao_config::McpServerConfig::Full(Box::new(server));
         let is_add = matches!(s.mode, crate::dialog::McpEditMode::Add);
-        match api.put_mcp_config(&s.name, &cfg) {
-            Ok(_) => {
-                self.refresh_mcp_into_store();
-                self.store.push_toast(
-                    &format!(
+        let name = s.name.clone();
+        handle.spawn(async move {
+            let result = api
+                .put_mcp_config_async(&name, &cfg)
+                .await
+                .map(|_| {
+                    format!(
                         "MCP server {}: {}",
                         if is_add { "added" } else { "updated" },
-                        s.name
-                    ),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Save MCP server failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+                        name
+                    )
+                })
+                .map_err(|e| format!("Save MCP server failed: {}", e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result,
+            });
+        });
     }
 
     /// Confirm 后的 MCP 删除执行（DELETE `/config/mcp/{key}`，土律·第四条单点权威）。
     pub(crate) fn delete_mcp_action(&mut self, name: &str) {
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("MCP delete") else {
             return;
         };
-        match api.delete_mcp_config(name) {
-            Ok(_) => {
-                self.refresh_mcp_into_store();
-                self.store.push_toast(
-                    &format!("MCP server deleted: {}", name),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Delete MCP server failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        let name = name.to_string();
+        handle.spawn(async move {
+            let result = api
+                .delete_mcp_config_async(&name)
+                .await
+                .map(|_| format!("MCP server deleted: {}", name))
+                .map_err(|e| format!("Delete MCP server failed: {}", e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result,
+            });
+        });
     }
 
     // ── Settings→Plugins ──
@@ -750,76 +779,76 @@ impl AppHandler {
         let Some(row) = rows.get(sel) else { return };
         let name = row.name.clone();
         let disable = !row.disabled;
-
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
-            return;
-        };
-        let Ok(config) = api.get_config() else {
-            self.store.push_toast("Failed to read config", ToastMsgVariant::Error);
-            return;
-        };
-        let mut patterns = config.disabled_plugins.clone();
         let others: Vec<String> = rows
             .iter()
             .filter(|r| r.disabled && r.name != name)
             .map(|r| r.name.clone())
             .collect();
-        toggle_exact_pattern(&mut patterns, &name, None, disable, &others);
-
-        let update = agendao_client::DisabledConfigUpdate {
-            tools: None,
-            skills: None,
-            plugins: Some(patterns),
+        let plan = DisabledTogglePlan::Exact {
+            key: name.clone(),
+            group: None,
+            disable,
+            others,
         };
-        match api.put_disabled_config(&update) {
-            Ok(_) => {
-                self.refresh_plugins_into_store();
-                self.store.push_toast(
-                    &format!(
-                        "Plugin {}: {}",
-                        if disable { "disabled" } else { "enabled" },
-                        name
-                    ),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
+        let toast_label = format!(
+            "Plugin {}: {}",
+            if disable { "disabled" } else { "enabled" },
+            name
+        );
+
+        let Some((api, handle, tx)) = self.begin_settings_write("plugin toggle") else {
+            return;
+        };
+        handle.spawn(async move {
+            let result: Result<String, String> = async {
+                let config = api
+                    .get_config_async()
+                    .await
+                    .map_err(|e| format!("Failed to read config: {}", e))?;
+                let mut patterns = config.disabled_plugins.clone();
+                plan.apply(&mut patterns);
+                let update = agendao_client::DisabledConfigUpdate {
+                    tools: None,
+                    skills: None,
+                    plugins: Some(patterns),
+                };
+                api.put_disabled_config_async(&update)
+                    .await
+                    .map_err(|e| format!("Toggle plugin failed: {}", e))?;
+                Ok(toast_label)
             }
-            Err(e) => self.store.push_toast(
-                &format!("Toggle plugin failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+            .await;
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Plugins,
+                result,
+            });
+        });
     }
 
     /// Confirm 后的插件删除执行（DELETE `/config/plugin/{key}`，managed 条目；
     /// discovered 条目在 keymap 前置拦截，不会到此）。
     pub(crate) fn delete_plugin_action(&mut self, name: &str) {
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("plugin delete") else {
             return;
         };
-        match api.delete_plugin_config(name) {
-            Ok(_) => {
-                self.refresh_plugins_into_store();
-                self.store.push_toast(
-                    &format!("Plugin deleted: {}", name),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Delete plugin failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        let name = name.to_string();
+        handle.spawn(async move {
+            let result = api
+                .delete_plugin_config_async(&name)
+                .await
+                .map(|_| format!("Plugin deleted: {}", name))
+                .map_err(|e| format!("Delete plugin failed: {}", e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Plugins,
+                result,
+            });
+        });
     }
 
     /// PluginEditDialog Submit（a=安装）：向 config.plugin 写一条 file 类型条目
     /// （PUT `/config/plugin/{key}`，土律·第四条单点权威）。
     pub(crate) fn install_plugin_action(&mut self, s: crate::dialog::PluginEditSubmission) {
-        let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+        let Some((api, handle, tx)) = self.begin_settings_write("plugin install") else {
             return;
         };
         let cfg = agendao_config::PluginConfig {
@@ -827,20 +856,19 @@ impl AppHandler {
             path: Some(s.path.clone()),
             ..Default::default()
         };
-        match api.put_plugin_config(&s.name, &cfg) {
-            Ok(_) => {
-                self.refresh_plugins_into_store();
-                self.store.push_toast(
-                    &format!("Plugin installed: {} ({})", s.name, s.path),
-                    ToastMsgVariant::Success,
-                );
-                self.layout_dirty = true;
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Install plugin failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        let name = s.name.clone();
+        let path = s.path.clone();
+        handle.spawn(async move {
+            let result = api
+                .put_plugin_config_async(&name, &cfg)
+                .await
+                .map(|_| format!("Plugin installed: {} ({})", name, path))
+                .map_err(|e| format!("Install plugin failed: {}", e));
+            let _ = tx.send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Plugins,
+                result,
+            });
+        });
     }
 
     fn sync_mcp_dialog_from_store(&mut self) {

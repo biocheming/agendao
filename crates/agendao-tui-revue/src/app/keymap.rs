@@ -793,6 +793,34 @@ impl AppHandler {
                                 self.apply_session_open(&session_id, *data);
                             }
                         }
+                        app_op::AppOpOutcome::SettingsWriteDone { refresh, result } => {
+                            // U6④：清防抖闸 → 成功则按写面回灌对应 catalog
+                            // （refresh 与旧同步路径同一单点权威）→ toast。
+                            self.store.settings_write_pending.set(None);
+                            match result {
+                                Ok(label) => {
+                                    match refresh {
+                                        app_op::SettingsRefresh::Mcp => {
+                                            self.refresh_mcp_into_store()
+                                        }
+                                        app_op::SettingsRefresh::Skills => {
+                                            self.refresh_skills_into_store()
+                                        }
+                                        app_op::SettingsRefresh::Tools => {
+                                            self.refresh_tools_into_store()
+                                        }
+                                        app_op::SettingsRefresh::Plugins => {
+                                            self.refresh_plugins_into_store()
+                                        }
+                                    }
+                                    self.store.push_toast(&label, ToastMsgVariant::Success);
+                                    self.layout_dirty = true;
+                                }
+                                Err(e) => {
+                                    self.store.push_toast(&e, ToastMsgVariant::Error);
+                                }
+                            }
+                        }
                     }
                 }
                 for fe in &events {
@@ -3542,6 +3570,99 @@ mod tests {
         h.handle(&Event::Tick);
         assert!(!h.store.session_loading.get());
         assert_eq!(h.active_session.title.get(), "loaded title");
+    }
+
+    // ── U6④：settings 写操作异步化 ──
+
+    /// 防抖：在飞期间任何写操作被单闸吞掉（Info toast，pending 不变）。
+    #[test]
+    fn settings_write_debounced_while_pending() {
+        let mut h = mk_handler();
+        h.store
+            .settings_write_pending
+            .set(Some("MCP connect".to_string()));
+        h.delete_mcp_action("foo");
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("Still working")),
+            "防抖提示"
+        );
+        assert_eq!(
+            h.store.settings_write_pending.get().as_deref(),
+            Some("MCP connect"),
+            "在飞标记不被重置"
+        );
+    }
+
+    /// 无 bridge → 诚实报错 toast，且不留 pending（防永久卡闸）。
+    #[test]
+    fn settings_write_without_bridge_toasts_error() {
+        let mut h = mk_handler();
+        h.delete_mcp_action("foo");
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("No API bridge")),
+            "无 bridge 诚实报错"
+        );
+        assert!(h.store.settings_write_pending.get().is_none());
+    }
+
+    /// 成功回执：清闸 + 成功 toast（无 bridge 时 refresh 早退，不 panic）。
+    #[test]
+    fn settings_write_done_ok_clears_pending_and_toasts() {
+        let mut h = mk_handler();
+        h.store
+            .settings_write_pending
+            .set(Some("MCP delete".to_string()));
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result: Ok("MCP server deleted: foo".to_string()),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.store.settings_write_pending.get().is_none(), "回执清闸");
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text == "MCP server deleted: foo"),
+            "成功文案透传"
+        );
+    }
+
+    /// 失败回执：清闸 + 错误 toast。
+    #[test]
+    fn settings_write_done_err_clears_pending_and_toasts() {
+        let mut h = mk_handler();
+        h.store
+            .settings_write_pending
+            .set(Some("MCP delete".to_string()));
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::SettingsWriteDone {
+                refresh: app_op::SettingsRefresh::Mcp,
+                result: Err("Delete MCP server failed: boom".to_string()),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.store.settings_write_pending.get().is_none(), "失败也清闸");
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("boom")),
+            "失败文案透传"
+        );
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

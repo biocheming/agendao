@@ -863,6 +863,130 @@ impl ApiBridge {
         self.block_on(self.client.delete_plugin_config(key))
     }
 
+    // ── U6④ settings 写操作异步变体 ──
+    // 与同步版同一权威、同一路径分支，仅改驱动方式：直接 await 底层调用，
+    // 不经 `block_on`（同步版在 runtime worker 内会 panic）。供 settings
+    // 写操作的后台 task 使用（火=spawn，水=Tick drain 回收 SettingsWriteDone）。
+
+    /// 异步 GET `/config`。
+    pub async fn get_config_async(&self) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_get_config(Arc::clone(ls)).await;
+        }
+        self.client.get_config().await
+    }
+
+    /// 异步 PUT `/config/disabled`。
+    pub async fn put_disabled_config_async(
+        &self,
+        update: &agendao_client::DisabledConfigUpdate,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_put_disabled_config(
+                Arc::clone(ls),
+                update.clone(),
+            )
+            .await;
+        }
+        self.client.put_disabled_config(update).await
+    }
+
+    /// 异步 POST `/skill/manage`。
+    pub async fn manage_skill_async(
+        &self,
+        req: &agendao_client::SkillManageRequest,
+    ) -> anyhow::Result<agendao_client::SkillManageResponse> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_manage_skill(Arc::clone(ls), req.clone()).await;
+        }
+        self.client.manage_skill(req).await
+    }
+
+    /// 异步 POST `/skill/proposal/{id}/status`。
+    pub async fn update_skill_proposal_status_async(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<agendao_client::SkillEvolutionProposal> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_update_skill_proposal_status(
+                Arc::clone(ls),
+                id,
+                status,
+            )
+            .await;
+        }
+        self.client.update_skill_proposal_status(id, status).await
+    }
+
+    /// 异步 POST `/mcp/{name}/connect`。
+    pub async fn connect_mcp_async(&self, name: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_connect_mcp(Arc::clone(ls), name).await;
+        }
+        self.client.connect_mcp(name).await
+    }
+
+    /// 异步 POST `/mcp/{name}/disconnect`。
+    pub async fn disconnect_mcp_async(&self, name: &str) -> anyhow::Result<bool> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_disconnect_mcp(Arc::clone(ls), name).await;
+        }
+        self.client.disconnect_mcp(name).await
+    }
+
+    /// 异步 PUT `/config/mcp/{key}`。
+    pub async fn put_mcp_config_async(
+        &self,
+        key: &str,
+        mcp: &agendao_config::McpServerConfig,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_put_mcp_config(Arc::clone(ls), key, mcp.clone())
+                .await;
+        }
+        self.client.put_mcp_config(key, mcp).await
+    }
+
+    /// 异步 DELETE `/config/mcp/{key}`。
+    pub async fn delete_mcp_config_async(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_delete_mcp_config(Arc::clone(ls), key).await;
+        }
+        self.client.delete_mcp_config(key).await
+    }
+
+    /// 异步 PUT `/config/plugin/{key}`。
+    pub async fn put_plugin_config_async(
+        &self,
+        key: &str,
+        plugin: &agendao_config::PluginConfig,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_put_plugin_config(
+                Arc::clone(ls),
+                key,
+                plugin.clone(),
+            )
+            .await;
+        }
+        self.client.put_plugin_config(key, plugin).await
+    }
+
+    /// 异步 DELETE `/config/plugin/{key}`。
+    pub async fn delete_plugin_config_async(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<agendao_config::Config> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_delete_plugin_config(Arc::clone(ls), key).await;
+        }
+        self.client.delete_plugin_config(key).await
+    }
+
 
     /// /session/{id}/recovery/execute POST：执行 recovery action。confirm 类——
     /// 经 PendingConfirm::ExecuteRecovery 路由（panel_dispatch），不在 list dialog 直接调。

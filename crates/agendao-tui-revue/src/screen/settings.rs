@@ -60,7 +60,11 @@ impl SettingsScreen {
     ) -> revue::widget::Stack {
         let category = store.settings_category.get();
         let focus = store.settings_focus_pane.get();
-        let cat_pane = build_categories_pane(category, focus == SettingsFocusPane::Categories);
+        let cat_pane = build_categories_pane(
+            category,
+            focus == SettingsFocusPane::Categories,
+            store.settings_write_pending.get().as_deref(),
+        );
 
         // 分类分派(土律·唯一编排):Categories 栏恒在左;右侧 body 按分类切换成形语法。
         //   - ModelSettings:三栏(Providers 28 + Details flex),provider/model CRUD
@@ -1389,7 +1393,11 @@ fn vline() -> crate::widget::VLine {
 
 // ── 第一栏:Categories ──
 
-fn build_categories_pane(active: SettingsCategory, focused: bool) -> revue::widget::Stack {
+fn build_categories_pane(
+    active: SettingsCategory,
+    focused: bool,
+    pending: Option<&str>,
+) -> revue::widget::Stack {
     // 标题 + 6 项 + flex 空白 + 底部 Esc 提示。Pane 不画边框(列已用 VLine 划界),
     // 这样视觉重量集中在 active 行的高亮,与 HTML 稿一致。
     let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
@@ -1402,8 +1410,15 @@ fn build_categories_pane(active: SettingsCategory, focused: bool) -> revue::widg
         s = s.child_sized(category_row(cat, active == cat), 1);
     }
 
-    s.child_flex(Text::new(""), 1.0)
-        .child_sized(Text::new("  ← Esc: Exit").fg(colors::FG_TRACE()), 1)
+    s = s.child_flex(Text::new(""), 1.0);
+    // U6④：settings 写操作在飞指示（左栏恒可见，跨分类统一槽位）。
+    if let Some(label) = pending {
+        s = s.child_sized(
+            Text::new(format!("  ◌ {}…", label)).fg(colors::E_AMBER()),
+            1,
+        );
+    }
+    s.child_sized(Text::new("  ← Esc: Exit").fg(colors::FG_TRACE()), 1)
         .child_sized(Text::new(""), 1)
 }
 

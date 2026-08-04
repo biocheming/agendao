@@ -48,6 +48,24 @@ pub enum AppOpOutcome {
         session_id: String,
         data: Box<SessionOpenData>,
     },
+    /// settings 写操作完成（U6④：connect/disconnect/toggle/save/delete
+    /// 共 11 个写点原全部 UI 线程 block_on）。result 直接携带最终 toast
+    /// 文案（Ok=成功文案，Err=失败文案）——文案在 spawn 点拼好（那里有
+    /// 行的上下文：name/title/方向），drain 只负责 refresh + toast。
+    SettingsWriteDone {
+        refresh: SettingsRefresh,
+        result: Result<String, String>,
+    },
+}
+
+/// settings 写成功后回灌哪个 catalog（水律·回流，与旧同步路径同一
+/// refresh 单点权威）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsRefresh {
+    Mcp,
+    Skills,
+    Tools,
+    Plugins,
 }
 
 /// open_session 后台拉取的载荷（plain data，跨 task 边界）。
