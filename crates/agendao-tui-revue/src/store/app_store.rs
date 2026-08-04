@@ -45,6 +45,13 @@ pub struct AppStore {
 
     // 土：Toast 队列（ToastLayer 消费）
     pub toasts: Signal<Vec<ToastMsg>>,
+    /// toast id 分配器（Rc<Cell>：AppStore Clone 后仍共享同一计数序列，
+    /// 与 signal 的共享语义一致）。
+    pub toast_counter: std::rc::Rc<std::cell::Cell<u64>>,
+    /// 通知中心历史（U7③）：每条 toast 入队时留档，上限 50 条（超出
+    /// 丢最旧）。含已过期/已 dismiss 的——历史的意义就是回看「错过
+    /// 的」。Notifications 面板唯一消费。
+    pub toast_history: Signal<Vec<ToastMsg>>,
 
     // 金：Session header dir 全路径 tooltip（点击触发，render overlay 消费）
     pub dir_tooltip: Signal<Option<DirTooltip>>,
@@ -147,6 +154,8 @@ impl AppStore {
             selected_mode: signal(None),
             session_list: signal(Vec::new()),
             toasts: signal(Vec::new()),
+            toast_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
+            toast_history: signal(Vec::new()),
             dir_tooltip: signal(None),
             show_thinking: signal(true),
             show_scrollbar: signal(true),
@@ -195,8 +204,75 @@ impl AppStore {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let expires_at = now_ms.saturating_add(4_000);
-        self.toasts.update(|t| t.push(ToastMsg { text: text.into(), variant, expires_at }));
+        let id = self.toast_counter.get().saturating_add(1);
+        self.toast_counter.set(id);
+        let msg = ToastMsg { id, text: text.into(), variant, expires_at, created_at: now_ms };
+        self.toasts.update(|t| t.push(msg.clone()));
+        // 通知中心留档：cap 50 丢最旧（水律·写入即承诺回收）。
+        self.toast_history.update(|h| {
+            h.push(msg);
+            if h.len() > 50 {
+                let overflow = h.len() - 50;
+                h.drain(..overflow);
+            }
+        });
     }
+
+    /// U7②：按 id dismiss（点击命中）。返回是否实际移除。
+    pub fn dismiss_toast(&self, id: u64) -> bool {
+        let before = self.toasts.get().len();
+        self.toasts.update(|t| t.retain(|m| m.id != id));
+        self.toasts.get().len() != before
+    }
+
+    /// U7②：dismiss 最新一条未过期 toast（Esc 无其它消费时的落点）。
+    /// 返回是否有 toast 被 dismiss（调用方据此决定 Esc 是否被消费）。
+    pub fn dismiss_latest_toast(&self) -> bool {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let latest_id = self
+            .toasts
+            .get()
+            .iter()
+            .rev()
+            .find(|t| t.expires_at == 0 || t.expires_at > now_ms)
+            .map(|t| t.id);
+        match latest_id {
+            Some(id) => self.dismiss_toast(id),
+            None => false,
+        }
+    }
+}
+
+/// U7①：toast 可见窗口选择（render 唯一口径，纯函数便于测试）。
+/// 返回旧→新序（最新在末尾、贴锚点）。规则：未过期（expires_at==0 视
+/// 为无期限）+ 最多 3 条；窗口外仍有未过期 Error 时，换入并挤掉窗口
+/// 内最老的非 Error——Error 不被 Success/Info 顶掉（金·失败语义不漂移）。
+pub(crate) fn select_visible_toasts(toasts: &[ToastMsg], now_ms: u64) -> Vec<ToastMsg> {
+    let active: Vec<&ToastMsg> = toasts
+        .iter()
+        .filter(|t| t.expires_at == 0 || t.expires_at > now_ms)
+        .collect();
+    // 窗口选择：新的在前（rev），取 3；窗口外 Error 换入。
+    let mut visible: Vec<&ToastMsg> = active.iter().rev().take(3).copied().collect();
+    for e in active
+        .iter()
+        .rev()
+        .skip(3)
+        .filter(|t| matches!(t.variant, ToastMsgVariant::Error))
+    {
+        if let Some(idx) = visible
+            .iter()
+            .rposition(|t| !matches!(t.variant, ToastMsgVariant::Error))
+        {
+            visible[idx] = e;
+        }
+    }
+    // 恢复时间序（旧→新）供堆叠：最新一条贴锚点。
+    visible.reverse();
+    visible.into_iter().cloned().collect()
 }
 
 #[cfg(test)]
@@ -225,6 +301,70 @@ mod tests {
         let s = AppStore::new();
         s.push_toast("done", ToastMsgVariant::Success);
         assert_eq!(s.toasts.get().len(), 1);
+    }
+
+    /// U7①：连发 3 条全可见（旧→新序，最新贴锚点=末尾）。
+    #[test]
+    fn visible_window_keeps_three_rapid_toasts() {
+        let s = AppStore::new();
+        s.push_toast("a", ToastMsgVariant::Info);
+        s.push_toast("b", ToastMsgVariant::Success);
+        s.push_toast("c", ToastMsgVariant::Warning);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let vis = select_visible_toasts(&s.toasts.get(), now);
+        let texts: Vec<&str> = vis.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["a", "b", "c"], "三条全可见且时间序");
+    }
+
+    /// U7①：第 4 条顶掉最老的非 Error；窗口外的 Error 换入不被顶。
+    #[test]
+    fn visible_window_error_priority() {
+        let s = AppStore::new();
+        s.push_toast("err-old", ToastMsgVariant::Error);
+        s.push_toast("i1", ToastMsgVariant::Info);
+        s.push_toast("i2", ToastMsgVariant::Info);
+        s.push_toast("i3", ToastMsgVariant::Info);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let vis = select_visible_toasts(&s.toasts.get(), now);
+        let texts: Vec<&str> = vis.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts.len(), 3, "窗口上限 3");
+        assert!(texts.contains(&"err-old"), "Error 不被 Success/Info 顶掉");
+        assert!(!texts.contains(&"i1"), "最老的非 Error 被挤出");
+        assert!(texts.contains(&"i3"), "最新贴锚点保留");
+    }
+
+    /// U7②：按 id dismiss + dismiss 最新；历史留档不受 dismiss 影响。
+    #[test]
+    fn dismiss_toast_by_id_and_latest() {
+        let s = AppStore::new();
+        s.push_toast("x", ToastMsgVariant::Info);
+        s.push_toast("y", ToastMsgVariant::Error);
+        let y_id = s.toasts.get()[1].id;
+        assert!(s.dismiss_toast(y_id), "按 id 移除");
+        assert_eq!(s.toasts.get().len(), 1);
+        assert!(s.dismiss_latest_toast(), "dismiss 最新");
+        assert!(s.toasts.get().is_empty());
+        assert!(!s.dismiss_latest_toast(), "空队列返回 false（Esc 不消费）");
+        assert_eq!(s.toast_history.get().len(), 2, "dismiss 不抹历史");
+    }
+
+    /// U7③：历史 cap 50 丢最旧。
+    #[test]
+    fn toast_history_capped_at_50() {
+        let s = AppStore::new();
+        for i in 0..60 {
+            s.push_toast(&format!("t{}", i), ToastMsgVariant::Info);
+        }
+        let h = s.toast_history.get();
+        assert_eq!(h.len(), 50, "上限 50");
+        assert_eq!(h[0].text, "t10", "最旧的 10 条被丢");
+        assert_eq!(h[49].text, "t59", "最新保留");
     }
 
     /// Settings 路由进出 + 默认 signals 初值符合"未拉取 providers"基线。

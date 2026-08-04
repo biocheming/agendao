@@ -531,6 +531,9 @@ pub(crate) struct AppHandler {
     pub(crate) provider_edit_rect: Option<revue::prelude::Rect>,
     /// ConfirmDialog 渲染后发布的外框 Rect（同构），供 y/n 按钮命中。
     pub(crate) confirm_rect: Option<revue::prelude::Rect>,
+    /// U7②：可见 toast 的 (id, Rect) 列表（render 每帧重发），供点击
+    /// dismiss 命中测试。栈序 = 渲染序（最新一条在最后）。
+    pub(crate) toast_rects: Vec<(u64, revue::prelude::Rect)>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -881,6 +884,7 @@ impl AppHandler {
             plugin_edit_rect: None,
             provider_edit_rect: None,
             confirm_rect: None,
+            toast_rects: Vec::new(),
         }
     }
 }
@@ -1784,21 +1788,26 @@ impl View for RootView {
         self.handler.borrow_mut().provider_edit_rect = provider_edit_rect;
         self.handler.borrow_mut().confirm_rect = confirm_rect;
 
-        // ── Toast overlay ─────────────────────────────────────────
+        // ── Toast overlay（U7①：队列堆叠，最多 3 条）─────────────────
         // Pending toasts hover above the prompt bar so the user sees
         // why an action was rejected (e.g. "Provider not connected").
-        // We show only the most-recent toast that hasn't expired and
-        // bound its width so the line stays readable on narrow terminals.
+        // 最新一条贴锚点（底部锚=prompt 上方 / 顶部锚=header 下沿，弹窗
+        // 打开时避开 Bottom 弹窗 footer），旧条依次向远离锚点方向堆。
+        // Error 优先：窗口外仍有未过期 Error 时，挤掉窗口内最老的非
+        // Error——Error 不被 Success/Info 顶掉（金·失败语义不漂移）。
         let toasts = self.store.toasts.get();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        // Find the latest non-expired toast. expires_at == 0 is treated
-        // as "no deadline" for backwards compatibility — present code
-        // always sets it, but this leaves room for legacy callers.
-        let active = toasts.iter().rev().find(|t| t.expires_at == 0 || t.expires_at > now_ms);
-        if let Some(t) = active {
+        // expires_at == 0 is treated as "no deadline" for backwards
+        // compatibility — present code always sets it, but this leaves
+        // room for legacy callers. 窗口选择口径收在 store 单点
+        // （select_visible_toasts，土律·单一权威）。
+        let visible = crate::store::app_store::select_visible_toasts(&toasts, now_ms);
+        let mut toast_rects: Vec<(u64, revue::prelude::Rect)> = Vec::new();
+        let panel_open = self.handler.borrow().panel != Panel::None;
+        for (i, t) in visible.iter().enumerate() {
             use crate::store::types::ToastMsgVariant;
             let (icon, color) = match t.variant {
                 ToastMsgVariant::Success => ("✓", colors::ACCENT_GREEN()),
@@ -1818,7 +1827,13 @@ impl View for RootView {
             };
             let w = (display.chars().count() as u16).min(max_w).max(10);
             let x = (ctx.area.width.saturating_sub(w + 2)) / 2;
-            let y = prompt_y.saturating_sub(2).max(1);
+            // i = 距锚点的层数（0=最新）。底部锚向上堆；顶部锚（弹窗
+            // 打开）从 header 下沿(y=2)向下堆。
+            let y = if panel_open {
+                2 + (i as u16) * 3
+            } else {
+                prompt_y.saturating_sub(2 + (i as u16) * 3).max(1)
+            };
             // Bordered toast keeps the message visually distinct from
             // the transcript text underneath.
             let toast_widget = Border::rounded()
@@ -1830,7 +1845,9 @@ impl View for RootView {
                 .width(w + 2)
                 .height(3)
                 .render(ctx);
+            toast_rects.push((t.id, revue::prelude::Rect::new(x, y, w + 2, 3)));
         }
+        self.handler.borrow_mut().toast_rects = toast_rects;
 
         // ── Session header dir 全路径 tooltip（click-to-reveal）─────────────────────
         // 点击 header dir 区 → store.dir_tooltip = Some(DirTooltip{ path, x, y })（keymap toggle）；

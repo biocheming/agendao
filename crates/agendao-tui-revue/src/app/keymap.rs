@@ -1215,6 +1215,18 @@ impl AppHandler {
                         false
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
+                        // ── U7② toast 点击 dismiss（最上层 overlay，先于一切命中）──
+                        // toast 画在 dialog/prompt 之上，点中即 dismiss 该条；
+                        // 逆序（最新在最上）命中即消费，不穿透到底层。
+                        if let Some((id, _)) = self
+                            .toast_rects
+                            .iter()
+                            .rev()
+                            .find(|(_, r)| r.contains(m.x, m.y))
+                        {
+                            self.store.dismiss_toast(*id);
+                            return true;
+                        }
                         // ── Session list dialog scrollbar click ──
                         // Hit-test before the sidebar / transcript
                         // branches so clicking on the dialog's
@@ -1982,6 +1994,11 @@ impl AppHandler {
                         self.interrupt_pending = true;
                         self.interrupt_time = std::time::Instant::now();
                     }
+                    return true;
+                }
+                // 4. U7②：无其它消费时，Esc 先 dismiss 最新 toast（不触发
+                //    任何状态变更，只是把通知层让开）。
+                if self.store.dismiss_latest_toast() {
                     return true;
                 }
                 self.interrupt_pending = false;
@@ -3999,6 +4016,23 @@ mod tests {
         assert!(
             !h2.store.toasts.get().iter().any(|t| t.text.contains("boom")),
             "sessions 失败不走 toast"
+        );
+    }
+
+    /// U7②：Panel::None 且无其它消费时，Esc dismiss 最新 toast（消费）；
+    /// 队列空时 Esc 不消费（留给调用方冒泡）。
+    #[test]
+    fn esc_dismisses_latest_toast_when_idle() {
+        let mut h = mk_handler();
+        h.store.push_toast("note", crate::store::types::ToastMsgVariant::Info);
+        assert!(
+            h.handle(&Event::Key(KeyEvent::new(Key::Escape))),
+            "有 toast 时 Esc 被消费"
+        );
+        assert!(h.store.toasts.get().is_empty(), "toast 被 dismiss");
+        assert!(
+            !h.handle(&Event::Key(KeyEvent::new(Key::Escape))),
+            "队列空 Esc 不消费"
         );
     }
 

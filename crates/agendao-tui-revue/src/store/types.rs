@@ -340,6 +340,9 @@ pub enum AttachmentKind {
 
 #[derive(Clone, Debug)]
 pub struct ToastMsg {
+    /// 单调递增 id（AppStore 计数器分配）——dismiss/命中测试按 id 定位，
+    /// 不因过期 GC 移位而误删（土律：删除以身份不以位置）。
+    pub id: u64,
     pub text: String,
     pub variant: ToastMsgVariant,
     /// Wall-clock deadline (millis since UNIX epoch) after which the
@@ -347,6 +350,9 @@ pub struct ToastMsg {
     /// `expires_at` and skips rendering if the deadline passed —
     /// without it toasts pile up forever and obscure the prompt area.
     pub expires_at: u64,
+    /// 入队时刻（millis since UNIX epoch）——通知中心（U7③）按时间
+    /// 排序/显示「x 分钟前」；渲染层不读。
+    pub created_at: u64,
 }
 
 #[derive(Clone, Debug)]
