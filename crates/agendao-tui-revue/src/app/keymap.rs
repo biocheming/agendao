@@ -14,6 +14,7 @@ use agendao_command::{CommandRegistry, UiActionId};
 
 use crate::app::{AppHandler, Panel};
 use crate::app::dispatch_outcome;
+use crate::app::app_op;
 use crate::input::{PromptAction, SlashPopup};
 use crate::input::slash_popup::SlashPopupMode;
 use crate::store::app_store::Route;
@@ -519,8 +520,11 @@ impl AppHandler {
 
     /// `t` / ⚡ 点击：测试选中 provider 的连接（server 只读探测）。
     ///
-    /// 阻塞调用（server 侧超时 10s，正常 <1s）——v1 接受短冻；若后续被感知,
-    /// 换 dispatch_outcomes 异步回报（与 prompt dispatch 同构）。
+    /// U6 异步化：后台 task 跑探测（server 侧超时 10s），UI 线程不再
+    /// block_on 冻结；pending 期间 Providers 栏行内显示 ◌ 标记
+    ///（`settings_testing_provider`），重复触发被防抖吞掉；结果经
+    /// `app_ops` channel 在 Tick drain 回灌 toast（与 prompt dispatch
+    /// 的 spawn + DispatchOutcome 模式同构）。
     pub(crate) fn settings_test_provider_connection(&mut self) {
         let providers = self.store.providers.get();
         let sel_id = self.store.settings_selected_provider.get();
@@ -530,40 +534,37 @@ impl AppHandler {
         else {
             return;
         };
-        let Some(api) = self.api.as_ref() else {
+        // 防抖：已有探测进行中（任意 provider）→ 忽略重复触发。
+        if self.store.settings_testing_provider.get().is_some() {
+            return;
+        }
+        let Some(api) = self.api.clone() else {
             self.store
                 .push_toast("No API bridge", ToastMsgVariant::Error);
             return;
         };
-        match api.test_provider_connection(&sel.id) {
-            Ok(outcome) if outcome.ok => {
-                self.store.push_toast(
-                    &format!(
-                        "✓ {}: {} in {}ms",
-                        sel.name,
-                        outcome.status.unwrap_or(200),
-                        outcome.latency_ms
-                    ),
-                    ToastMsgVariant::Success,
-                );
-            }
-            Ok(outcome) => {
-                let detail = outcome.error.unwrap_or_else(|| {
-                    outcome
-                        .status
-                        .map(|s| format!("HTTP {}", s))
-                        .unwrap_or_else(|| "unknown error".to_string())
-                });
-                self.store.push_toast(
-                    &format!("✗ {}: {}", sel.name, detail),
-                    ToastMsgVariant::Error,
-                );
-            }
-            Err(e) => self.store.push_toast(
-                &format!("Test failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
-        }
+        self.store.settings_testing_provider.set(Some(sel.id.clone()));
+        let tx = self.app_ops.sender();
+        let pid = sel.id.clone();
+        let pname = sel.name.clone();
+        let handle = api.handle().clone();
+        handle.spawn(async move {
+            let result = api
+                .test_provider_connection_async(&pid)
+                .await
+                .map(|r| app_op::ProviderTestData {
+                    ok: r.ok,
+                    status: r.status,
+                    latency_ms: r.latency_ms,
+                    error: r.error,
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(app_op::AppOpOutcome::ProviderTested {
+                provider_id: pid,
+                provider_name: pname,
+                result,
+            });
+        });
     }
 }
 
@@ -692,6 +693,53 @@ impl AppHandler {
                             );
                             self.layout_dirty = true;
                             changed = true;
+                        }
+                    }
+                }
+                // ── 水：drain 非 prompt 异步操作回执（U6：测连接等）──
+                for oc in self.app_ops.drain() {
+                    self.last_activity = std::time::Instant::now();
+                    changed = true;
+                    match oc {
+                        app_op::AppOpOutcome::ProviderTested {
+                            provider_id,
+                            provider_name,
+                            result,
+                        } => {
+                            // 只清自己的 pending（防陈旧回执清掉新一轮探测的标记）。
+                            if self.store.settings_testing_provider.get().as_deref()
+                                == Some(provider_id.as_str())
+                            {
+                                self.store.settings_testing_provider.set(None);
+                            }
+                            match result {
+                                Ok(d) if d.ok => {
+                                    self.store.push_toast(
+                                        &format!(
+                                            "✓ {}: {} in {}ms",
+                                            provider_name,
+                                            d.status.unwrap_or(200),
+                                            d.latency_ms
+                                        ),
+                                        ToastMsgVariant::Success,
+                                    );
+                                }
+                                Ok(d) => {
+                                    let detail = d.error.unwrap_or_else(|| {
+                                        d.status
+                                            .map(|s| format!("HTTP {}", s))
+                                            .unwrap_or_else(|| "unknown error".to_string())
+                                    });
+                                    self.store.push_toast(
+                                        &format!("✗ {}: {}", provider_name, detail),
+                                        ToastMsgVariant::Error,
+                                    );
+                                }
+                                Err(e) => self.store.push_toast(
+                                    &format!("Test failed: {}", e),
+                                    ToastMsgVariant::Error,
+                                ),
+                            }
                         }
                     }
                 }
@@ -3178,7 +3226,80 @@ mod tests {
             eb,
             sf_tx,
             dispatch_outcome::DispatchOutcomes::new(),
+            app_op::AppOps::new(),
         )
+    }
+
+    // ── U6：测连接异步化 ──
+
+    /// 防抖：pending 期间重复触发被吞掉（不重置标记、不报错 toast）。
+    #[test]
+    fn test_connection_debounced_while_pending() {
+        let mut h = mk_handler();
+        h.store.providers.set(vec![agendao_client::ProviderInfo {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            models: vec![],
+            base_url: None,
+            protocol: None,
+            disabled: false,
+        }]);
+        h.store
+            .settings_selected_provider
+            .set(Some("openai".into()));
+        h.store
+            .settings_testing_provider
+            .set(Some("openai".into()));
+        let toasts_before = h.store.toasts.get().len();
+        h.settings_test_provider_connection();
+        assert_eq!(
+            h.store.settings_testing_provider.get().as_deref(),
+            Some("openai"),
+            "pending 标记不被重置"
+        );
+        assert_eq!(
+            h.store.toasts.get().len(),
+            toasts_before,
+            "防抖吞掉：不发任何 toast"
+        );
+    }
+
+    /// 无选中 provider → 静默返回（不置 pending）。
+    #[test]
+    fn test_connection_without_selection_is_noop() {
+        let mut h = mk_handler();
+        h.settings_test_provider_connection();
+        assert!(h.store.settings_testing_provider.get().is_none());
+    }
+
+    /// 无 API bridge → 诚实报错 toast，且不留 pending 标记（防永久卡死）。
+    #[test]
+    fn test_connection_without_bridge_toasts_error() {
+        let mut h = mk_handler();
+        h.store.providers.set(vec![agendao_client::ProviderInfo {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            models: vec![],
+            base_url: None,
+            protocol: None,
+            disabled: false,
+        }]);
+        h.store
+            .settings_selected_provider
+            .set(Some("openai".into()));
+        h.settings_test_provider_connection();
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("No API bridge")),
+            "无 bridge 诚实报错"
+        );
+        assert!(
+            h.store.settings_testing_provider.get().is_none(),
+            "失败路径不残留 pending"
+        );
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

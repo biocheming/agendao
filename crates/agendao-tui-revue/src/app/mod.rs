@@ -9,6 +9,7 @@
 //! `pub(crate)`-visible.
 
 mod keymap;
+mod app_op;
 mod dispatch_outcome;
 mod panel_dispatch;
 mod slash_action;
@@ -180,7 +181,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
     // 初始主题 CSS `:root` 变量注入（stylesheet_mut 自动清样式缓存）。
     app.dom_renderer().stylesheet_mut().variables.extend(initial_theme_vars);
-    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new()));
+    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new(), app_op::AppOps::new()));
     // 初始化 sidebar session 导航树(从 session_list + cwd 构建 NavigateSession 节点)。
     handler.borrow_mut().refresh_sidebar_session_tree();
     // 初始 Home 路由聚焦 prompt——一进去就有块光标，可直接打字（Session 路由保持原 focus 行为）。
@@ -433,6 +434,9 @@ pub(crate) struct AppHandler {
     /// 本地发送回执 channel（与 `event_bus` 严格分离）。dispatch 的后台 task
     /// 经 `sender()` 投递 Sent/Failed，`Event::Tick` 非阻塞 drain 回收。
     pub(crate) dispatch_outcomes: dispatch_outcome::DispatchOutcomes,
+    /// 非 prompt 异步操作回执 channel（U6：测连接/compact/settings 写等）。
+    /// 与 `dispatch_outcomes` 语义分离（见 app_op.rs 模块注释）。
+    pub(crate) app_ops: app_op::AppOps,
     /// Set by event handlers whose state change might alter widget
     /// heights (fold toggle, message push, scroll, etc.). The run loop
     /// reads this after `handle()` and calls `request_layout_rebuild()`
@@ -688,7 +692,7 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool, prompt_inpu
 }
 
 impl AppHandler {
-    fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>, outcomes: dispatch_outcome::DispatchOutcomes) -> Self {
+    fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>, outcomes: dispatch_outcome::DispatchOutcomes, ops: app_op::AppOps) -> Self {
         let prompt = PromptInput::new().with_persistence().with_placeholders(HOME_PROMPT_PLACEHOLDERS, HOME_SHELL_PLACEHOLDERS);
         let mut model_select = ModelSelectDialog::new();
         let mut agent_select = AgentSelectDialog::new();
@@ -847,7 +851,7 @@ impl AppHandler {
             pending_compact_focus: None,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
-            active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes,
+            active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes, app_ops: ops,
             layout_dirty: false,
             transcript_viewport_h: 30, // overwritten on first render
             transcript_area_y: 3,      // after empty + header + divider

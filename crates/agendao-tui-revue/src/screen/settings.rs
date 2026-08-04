@@ -156,11 +156,13 @@ fn build_model_settings_body(
     };
 
     let selected_model = store.settings_selected_model.get();
+    let testing_id = store.settings_testing_provider.get();
 
     let prov_pane = build_providers_pane(
         &providers,
         &connected,
         selected.as_deref(),
+        testing_id.as_deref(),
         focus == SettingsFocusPane::Providers,
         pane_height,
         selected_idx,
@@ -1424,10 +1426,14 @@ fn category_row(cat: SettingsCategory, is_active: bool) -> revue::widget::Stack 
 
 // ── 第二栏:Providers ──
 
+// 8 参数（+testing_id，U6）：均为渲染必需的同源只读切片，与 backdrop 的
+// 多参数渲染函数同口径——不为 lint 强行装箱牺牲可读性。
+#[allow(clippy::too_many_arguments)]
 fn build_providers_pane(
     providers: &[agendao_client::ProviderInfo],
     connected: &HashSet<String>,
     selected_id: Option<&str>,
+    testing_id: Option<&str>,
     focused: bool,
     pane_height: u16,
     selected_idx: Option<usize>,
@@ -1469,7 +1475,8 @@ fn build_providers_pane(
     for p in &providers[start.min(providers.len())..real_end] {
         let is_selected = !is_add && selected_id == Some(p.id.as_str());
         let is_connected = connected.contains(&p.id);
-        s = s.child_sized(provider_row(&p.name, is_connected, is_selected), 1);
+        let is_testing = testing_id == Some(p.id.as_str());
+        s = s.child_sized(provider_row(&p.name, is_connected, is_selected, is_testing), 1);
     }
     // Add 模式 + 虚拟行落在窗口内 → 追加 "(new provider)" highlight 行
     // (selected_idx == providers.len(),只要 end > providers.len() 即在窗口内)。
@@ -1516,16 +1523,22 @@ fn provider_row_draft(focused: bool) -> revue::widget::Stack {
         .child_sized(Text::new(" "), 1)
 }
 
-fn provider_row(name: &str, is_connected: bool, is_selected: bool) -> revue::widget::Stack {
+fn provider_row(name: &str, is_connected: bool, is_selected: bool, is_testing: bool) -> revue::widget::Stack {
     // active provider 行(selected):▸ + E_TEAL;否则 ◇ + FG_SECONDARY。
-    // 连接状态 dot:● ACCENT_GREEN(connected) / ─ FG_TRACE(disconnected)。
+    // 连接状态 dot:● ACCENT_GREEN(connected) / ─ FG_TRACE(disconnected);
+    // 测连接进行中(U6):◌ E_AMBER 覆盖 dot——行内 pending 标记。
     let (marker, color) = if is_selected {
         ("▸", colors::E_TEAL())
     } else {
         ("◇", colors::FG_SECONDARY())
     };
-    let dot = if is_connected { "●" } else { "─" };
-    let dot_color = if is_connected { colors::ACCENT_GREEN() } else { colors::FG_TRACE() };
+    let (dot, dot_color) = if is_testing {
+        ("◌", colors::E_AMBER())
+    } else if is_connected {
+        ("●", colors::ACCENT_GREEN())
+    } else {
+        ("─", colors::FG_TRACE())
+    };
     let prefix = format!(" {} {}", marker, name);
     let prefix_w = cell_w(&prefix);
     hstack().gap(0)

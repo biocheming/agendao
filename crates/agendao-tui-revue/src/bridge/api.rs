@@ -410,6 +410,23 @@ impl ApiBridge {
         self.block_on(self.client.test_provider_connection(provider_id))
     }
 
+    /// 异步变体（U6）：直接 await 底层调用，不经 `block_on`——
+    /// 供 settings 测连接的后台 task 使用（同步版在 runtime worker
+    /// 内会 panic，与 `send_prompt_with_async` 同构）。
+    pub async fn test_provider_connection_async(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<agendao_client::TestProviderConnectionResponse> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_test_provider_connection(
+                Arc::clone(ls),
+                provider_id,
+            )
+            .await;
+        }
+        self.client.test_provider_connection(provider_id).await
+    }
+
     /// GET `/session/{id}/runtime`（双模式）：运行时状态（含 usage——
     /// 打开会话时给 token_usage/context 信息条播种,不等下一次投影）。
     pub fn get_session_runtime(
