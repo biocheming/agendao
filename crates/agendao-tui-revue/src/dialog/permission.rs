@@ -365,7 +365,14 @@ impl PermissionDialog {
                 if self.requests.is_empty() { self.visible = false; }
                 Some((id, reply))
             }
-            Key::Escape | Key::Char('d') | Key::Char('n') => {
+            Key::Escape => {
+                // U8：Esc = 仅收起，不决策——请求保留队列，可经状态栏
+                // ⏸ 角标 / Ctrl+O 重发现回到同一请求。Deny 必须显式
+                // 按 d/n/0，杜绝 Esc 误触造成的静默拒绝。
+                self.visible = false;
+                None
+            }
+            Key::Char('d') | Key::Char('n') => {
                 let id = req.id.clone();
                 self.requests.remove(0);
                 if self.requests.is_empty() { self.visible = false; }
@@ -532,7 +539,7 @@ impl PermissionDialog {
 
         // ── Hint ──
         content = content.child_sized(
-            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n/Esc deny").fg(colors::FG_MUTED()),
+            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n deny · Esc hide").fg(colors::FG_MUTED()),
             1,
         );
         height += 1;
@@ -710,5 +717,53 @@ mod tests {
         // 无资源：无命中区。
         let d2 = dialog_with("");
         assert_eq!(d2.resource_row_range(12), None);
+    }
+
+    // ── U8：Esc = 仅收起，Deny 必须显式 ──
+
+    #[test]
+    fn esc_collapses_but_keeps_queue() {
+        let mut d = dialog_with("cargo test");
+        assert!(d.visible);
+        assert_eq!(d.pending_count(), 1);
+        // Esc：不返回决策、不出队，仅隐藏。
+        let out = d.handle_key(&Key::Escape);
+        assert!(out.is_none());
+        assert!(!d.visible);
+        assert_eq!(d.pending_count(), 1);
+        // 重开后还是同一请求（head 未被替换）。
+        d.visible = true;
+        let out = d.handle_key(&Key::Char('d'));
+        assert!(matches!(out, Some((id, PermissionReply::Deny)) if id == "p1"));
+        assert_eq!(d.pending_count(), 0);
+        assert!(!d.visible);
+    }
+
+    #[test]
+    fn explicit_deny_keys_still_work() {
+        for k in [Key::Char('d'), Key::Char('n'), Key::Char('0')] {
+            let mut d = dialog_with("rm -rf /tmp/x");
+            let out = d.handle_key(&k);
+            assert!(matches!(out, Some((_, PermissionReply::Deny))));
+            assert_eq!(d.pending_count(), 0);
+        }
+    }
+
+    #[test]
+    fn esc_collapse_preserves_multi_queue_order() {
+        let mut d = PermissionDialog::new();
+        let mut r1 = req("first");
+        r1.id = "p1".into();
+        let mut r2 = req("second");
+        r2.id = "p2".into();
+        d.add_request(r1);
+        d.add_request(r2);
+        d.handle_key(&Key::Escape);
+        assert_eq!(d.pending_count(), 2);
+        // 重开后 deny 掉的仍是 p1（队列顺序未乱）。
+        d.visible = true;
+        let out = d.handle_key(&Key::Char('n'));
+        assert!(matches!(out, Some((id, PermissionReply::Deny)) if id == "p1"));
+        assert_eq!(d.pending_count(), 1);
     }
 }

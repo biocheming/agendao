@@ -541,6 +541,9 @@ pub(crate) struct AppHandler {
     /// U7③：status bar 🔔 角标的 Rect（render 每帧重发；无通知时 None），
     /// 点击 → Panel::Notifications。
     pub(crate) bell_rect: Option<revue::prelude::Rect>,
+    /// U8：status bar ⏸ 待决策角标的 Rect（render 每帧重发；无待决策时
+    /// None），点击 → 重新打开首个 pending permission/question。
+    pub(crate) pending_rect: Option<revue::prelude::Rect>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -894,6 +897,7 @@ impl AppHandler {
             confirm_rect: None,
             toast_rects: Vec::new(),
             bell_rect: None,
+            pending_rect: None,
         }
     }
 }
@@ -1633,26 +1637,41 @@ impl View for RootView {
         } else {
             String::new()
         };
+        // U8：⏸ 待决策角标（permission+question 队列合计）——Esc 仅收起
+        // 后的重发现入口；点击 / Ctrl+O 回到首个 pending 请求。计数直读
+        // 队列（pending_decision_count），与队列天然一致。
+        let pending_count = h.pending_decision_count();
+        let pending_seg = if pending_count > 0 {
+            format!(" ⏸{}", pending_count.min(99))
+        } else {
+            String::new()
+        };
         let status_prefix = format!(
             " {} │ [{}]{}{}{} │{}",
             dir_short, panel_label, stats, fetch_hint, cursor_hint, nav_hint,
         );
-        let bell_rect: Option<revue::prelude::Rect> = if bell_seg.is_empty() {
-            None
-        } else {
+        let (bell_rect, pending_rect) = {
             use unicode_width::UnicodeWidthStr;
+            let sy = ctx.area.height.saturating_sub(1);
             let bx = PAD + UnicodeWidthStr::width(status_prefix.as_str()) as u16;
-            let bw = UnicodeWidthStr::width(bell_seg.as_str()) as u16;
-            Some(revue::prelude::Rect::new(
-                bx,
-                ctx.area.height.saturating_sub(1),
-                bw,
-                1,
-            ))
+            let bell_rect = if bell_seg.is_empty() {
+                None
+            } else {
+                let bw = UnicodeWidthStr::width(bell_seg.as_str()) as u16;
+                Some(revue::prelude::Rect::new(bx, sy, bw, 1))
+            };
+            let pending_rect = if pending_seg.is_empty() {
+                None
+            } else {
+                let px = bx + UnicodeWidthStr::width(bell_seg.as_str()) as u16;
+                let pw = UnicodeWidthStr::width(pending_seg.as_str()) as u16;
+                Some(revue::prelude::Rect::new(px, sy, pw, 1))
+            };
+            (bell_rect, pending_rect)
         };
         let status_text = format!(
-            "{}{} q:quit ^P:cmd ?:help ",
-            status_prefix, bell_seg,
+            "{}{}{} q:quit ^P:cmd ?:help ",
+            status_prefix, bell_seg, pending_seg,
         );
         let status_bar = Text::new(&status_text)
             .fg(colors::FG_MUTED())
@@ -1890,6 +1909,7 @@ impl View for RootView {
         }
         self.handler.borrow_mut().toast_rects = toast_rects;
         self.handler.borrow_mut().bell_rect = bell_rect;
+        self.handler.borrow_mut().pending_rect = pending_rect;
 
         // ── Session header dir 全路径 tooltip（click-to-reveal）─────────────────────
         // 点击 header dir 区 → store.dir_tooltip = Some(DirTooltip{ path, x, y })（keymap toggle）；

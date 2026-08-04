@@ -1118,6 +1118,13 @@ impl AppHandler {
                             self.sidebar_visible = !self.sidebar_visible;
                             return true;
                         }
+                        Key::Char('o') => {
+                            // U8：Ctrl+O → 重开首个待决策项（⏸ 角标的键盘
+                            // 等价物；无 pending 时不消费，落回普通路由）。
+                            if self.reopen_first_pending() {
+                                return true;
+                            }
+                        }
                         Key::Char('p') => {
                             // U3：palette 与 prompt 单点耦合——空输入框补 "/"
                             // 开补全；已有 "/" 开头文本则同步 popup；有草稿时
@@ -1233,6 +1240,12 @@ impl AppHandler {
                                 self.close_all_panels();
                                 self.notification_dialog.open();
                                 self.panel = Panel::Notifications;
+                                return true;
+                            }
+                        }
+                        // ── U8 status bar ⏸ 角标 → 重开首个待决策项 ──
+                        if let Some(r) = self.pending_rect {
+                            if r.contains(m.x, m.y) && self.reopen_first_pending() {
                                 return true;
                             }
                         }
@@ -2099,6 +2112,27 @@ impl AppHandler {
         self.help.dismiss();
         self.notification_dialog.close();
         self.panel = Panel::None;
+    }
+
+    /// U8：待决策项合计（permission + question 队列长度）——状态栏 ⏸
+    /// 角标计数与队列一致的单点权威（土律·单一权威，不做第二份缓存）。
+    pub(crate) fn pending_decision_count(&self) -> usize {
+        self.permission_dialog.pending_count() + self.question_dialog.pending_count()
+    }
+
+    /// U8：重发现——重新打开首个待决策项（permission 优先于 question，
+    /// 与内联渲染顺序一致）。返回是否有项被重新打开。
+    /// 仅收起（Esc/Ctrl+O 的逆操作）不改队列，head 请求保持同一个。
+    pub(crate) fn reopen_first_pending(&mut self) -> bool {
+        if self.permission_dialog.pending_count() > 0 {
+            self.permission_dialog.visible = true;
+            true
+        } else if self.question_dialog.pending_count() > 0 {
+            self.question_dialog.visible = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if input contains an attachment command (/image), process it.
@@ -4069,6 +4103,98 @@ mod tests {
         h.execute_slash_action(agendao_command::UiActionId::OpenNotifications);
         assert!(h.notification_dialog.is_open());
         assert!(matches!(h.panel, Panel::Notifications));
+    }
+
+    // ── U8：Esc 仅收起 + ⏸ 角标/Ctrl+O 重发现 + skip 留痕 ──
+
+    fn mk_permission_req(id: &str) -> crate::dialog::PermissionRequest {
+        crate::dialog::PermissionRequest {
+            id: id.into(),
+            tool: "bash".into(),
+            message: String::new(),
+            perm_type: crate::dialog::PermissionType::Bash,
+            supported_lifetimes: vec![crate::dialog::PermissionLifetime::Once],
+            permission_class: None,
+            scope_label: None,
+            risk_tags: vec![],
+            resource: "cargo test".into(),
+        }
+    }
+
+    fn mk_question_req(id: &str) -> crate::dialog::QuestionRequest {
+        crate::dialog::QuestionRequest {
+            id: id.into(),
+            text: "Proceed?".into(),
+            options: vec![crate::dialog::QuestionOption {
+                id: "opt_0".into(),
+                label: "Yes".into(),
+                description: String::new(),
+            }],
+        }
+    }
+
+    /// Esc 收起 permission 后：计数仍在队列；Ctrl+O 重开回到同一请求。
+    #[test]
+    fn esc_collapse_then_ctrl_o_reopens_same_permission() {
+        let mut h = mk_handler();
+        h.permission_dialog.add_request(mk_permission_req("p1"));
+        assert_eq!(h.pending_decision_count(), 1);
+        // Esc → 仅收起（内联 dialog 在 Panel::None arm 消费 Esc）。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert!(!h.permission_dialog.visible, "Esc 收起");
+        assert_eq!(h.pending_decision_count(), 1, "请求保留队列，无静默 deny");
+        // Ctrl+O → 重开同一请求。
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('o')))));
+        assert!(h.permission_dialog.visible, "Ctrl+O 重开");
+        // 显式 deny（n）出队的仍是 p1。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('n')))));
+        assert_eq!(h.pending_decision_count(), 0);
+    }
+
+    /// ⏸ 角标点击 → 重开首个 pending（permission 优先于 question）。
+    #[test]
+    fn pending_badge_click_reopens_first_pending() {
+        let mut h = mk_handler();
+        h.permission_dialog.add_request(mk_permission_req("p1"));
+        h.question_dialog.ask(mk_question_req("q1"));
+        h.permission_dialog.close();
+        h.question_dialog.close();
+        assert_eq!(h.pending_decision_count(), 2);
+        h.pending_rect = Some(revue::prelude::Rect::new(20, 24, 4, 1));
+        let ev = Event::Mouse(MouseEvent::new(21, 24, MouseEventKind::Down(MouseButton::Left)));
+        assert!(h.handle(&ev), "角标点击被消费");
+        assert!(h.permission_dialog.visible, "permission 优先重开");
+        assert!(!h.question_dialog.visible);
+    }
+
+    /// question 显式 skip（s）→ Warning toast 留痕，请求出队。
+    #[test]
+    fn question_skip_toasts_consequence() {
+        let mut h = mk_handler();
+        h.question_dialog.ask(mk_question_req("q1"));
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('s')))));
+        assert_eq!(h.pending_decision_count(), 0, "skip 出队");
+        assert!(
+            h.store.toasts.get().iter().any(|t| t.text.contains("skipped")),
+            "skip 后果 toast"
+        );
+    }
+
+    /// question Esc 仅收起；⏸ 计数与队列一致；无 pending 时 Ctrl+O 不消费。
+    #[test]
+    fn question_esc_collapse_and_idle_ctrl_o() {
+        let mut h = mk_handler();
+        h.question_dialog.ask(mk_question_req("q1"));
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert!(!h.question_dialog.visible);
+        assert_eq!(h.pending_decision_count(), 1, "Esc 不出队");
+        // 清空后 Ctrl+O 无 dialog 副作用（落入 prompt 的 Ctrl 兜底路由）。
+        h.question_dialog.visible = true;
+        let _ = h.question_dialog.handle_key(&Key::Enter);
+        assert_eq!(h.pending_decision_count(), 0);
+        let _ = h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('o'))));
+        assert!(!h.permission_dialog.visible && !h.question_dialog.visible);
+        assert_eq!(h.pending_decision_count(), 0, "无 pending 时 Ctrl+O 无副作用");
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

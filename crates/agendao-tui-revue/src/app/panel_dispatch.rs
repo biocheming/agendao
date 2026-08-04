@@ -713,19 +713,30 @@ impl AppHandler {
                     return true;
                 }
                 if self.question_dialog.visible {
-                    if let Some((qid, labels)) = self.question_dialog.handle_key(key) {
-                        if let Some(ref api) = self.api {
-                            // server 期望 Vec<Vec<String>>:外层每题、内层每题选中的值。
-                            // 本 dialog 一次一题,故包一层。labels 已是 option.label
-                            // (与 web `InteractionOverlays.tsx:132` 同契约)。
-                            let answers = vec![labels];
-                            if let Err(e) = api.reply_question(&qid, answers) {
-                                self.store.push_toast(
-                                    &format!("question reply failed: {}", e),
-                                    crate::store::types::ToastMsgVariant::Error,
-                                );
+                    match self.question_dialog.handle_key(key) {
+                        Some(crate::dialog::QuestionKeyOutcome::Answered(qid, labels)) => {
+                            if let Some(ref api) = self.api {
+                                // server 期望 Vec<Vec<String>>:外层每题、内层每题选中的值。
+                                // 本 dialog 一次一题,故包一层。labels 已是 option.label
+                                // (与 web `InteractionOverlays.tsx:132` 同契约)。
+                                let answers = vec![labels];
+                                if let Err(e) = api.reply_question(&qid, answers) {
+                                    self.store.push_toast(
+                                        &format!("question reply failed: {}", e),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    );
+                                }
                             }
                         }
+                        Some(crate::dialog::QuestionKeyOutcome::Skipped) => {
+                            // U8：显式跳过（s 键）必须留痕——agent 将收不到
+                            // 答案继续运行，用 Warning toast 告知后果。
+                            self.store.push_toast(
+                                "Question skipped — the agent continues without an answer",
+                                crate::store::types::ToastMsgVariant::Warning,
+                            );
+                        }
+                        None => {}
                     }
                     return true;
                 }

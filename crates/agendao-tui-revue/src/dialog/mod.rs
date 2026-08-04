@@ -28,7 +28,7 @@ pub mod notifications;
 pub use confirm::ConfirmDialog;
 pub use help::HelpDialog;
 pub use permission::{PermissionDialog, PermissionReply, PermissionRequest, PermissionType, PermissionLifetime};
-pub use question::{QuestionDialog, QuestionRequest, QuestionOption};
+pub use question::{QuestionDialog, QuestionRequest, QuestionOption, QuestionKeyOutcome};
 pub use agent_select::{AgentSelectDialog, AgentEntry};
 pub use prompt_stash::{StashDialog, StashEntry};
 pub use mode_select::{ModeSelectDialog, ModeEntry};

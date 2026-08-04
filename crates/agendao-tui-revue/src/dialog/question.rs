@@ -72,6 +72,16 @@ pub struct QuestionDialog {
     toggled: Vec<bool>,
 }
 
+/// U8：handle_key 的结果三态——作答 / 显式跳过 / 未决（None）。
+/// 此前 Esc 静默 remove(0)（跳过无任何痕迹）；现在跳过必须显式按 `s`，
+/// 由调用方补 toast 告知后果；Esc 只收起不决策。
+pub enum QuestionKeyOutcome {
+    /// (question_id, answer_labels) —— 契约见 handle_key 文档。
+    Answered(String, Vec<String>),
+    /// 用户显式跳过 head 题（`s` 键）：请求出队，server 侧超时自决。
+    Skipped,
+}
+
 impl Default for QuestionDialog {
     fn default() -> Self {
         Self::new()
@@ -99,15 +109,15 @@ impl QuestionDialog {
         self.visible = false;
     }
 
-    /// 返回 (question_id, answer_labels)。answer 用 option.label 而非 index——
-     /// 与 web `InteractionOverlays.tsx:132` 同契约,server `answer_question`
-     /// 期望 `Vec<Vec<String>>` 为答案值数组(每个外层项对应一道题、内层为该题
-     /// 选中的多个值);本对话框一次只承载一题,故返回单层 `Vec<String>`,由
-     /// 调用方按 server 契约外包一层。
-     ///
-     /// 修复了此前 panel_dispatch 用空 id + 索引字符串发送、server 永远匹配
-     /// 不上的 bug(道纪第十条「有阴无阳」:展示有了,回流断了)。
-     pub fn handle_key(&mut self, key: &Key) -> Option<(String, Vec<String>)> {
+    /// 返回按键结果（见 QuestionKeyOutcome）。answer 用 option.label 而非
+    /// index——与 web `InteractionOverlays.tsx:132` 同契约,server
+    /// `answer_question` 期望 `Vec<Vec<String>>` 为答案值数组(每个外层项对应
+    /// 一道题、内层为该题选中的多个值);本对话框一次只承载一题,故返回单层
+    /// `Vec<String>`,由调用方按 server 契约外包一层。
+    ///
+    /// 修复了此前 panel_dispatch 用空 id + 索引字符串发送、server 永远匹配
+    /// 不上的 bug(道纪第十条「有阴无阳」:展示有了,回流断了)。
+    pub fn handle_key(&mut self, key: &Key) -> Option<QuestionKeyOutcome> {
          if !self.visible || self.requests.is_empty() { return None; }
          let req = &self.requests[0];
          let n = req.options.len();
@@ -135,9 +145,24 @@ impl QuestionDialog {
                      self.toggled = vec![false; next.options.len().max(1)];
                      self.selected = 0;
                  }
-                 Some((qid, labels))
+                 Some(QuestionKeyOutcome::Answered(qid, labels))
              }
-             Key::Escape => { self.requests.remove(0); if self.requests.is_empty() { self.visible = false; } None }
+             Key::Escape => {
+                 // U8：Esc = 仅收起，请求保留队列（与 permission 同语义）；
+                 // 状态栏 ⏸ 角标 / Ctrl+O 可回到同一题。
+                 self.visible = false;
+                 None
+             }
+             Key::Char('s') => {
+                 // 显式跳过：出队并由调用方 toast 告知后果，无静默丢弃。
+                 self.requests.remove(0);
+                 if self.requests.is_empty() { self.visible = false; }
+                 else if let Some(next) = self.requests.first() {
+                     self.toggled = vec![false; next.options.len().max(1)];
+                     self.selected = 0;
+                 }
+                 Some(QuestionKeyOutcome::Skipped)
+             }
              _ => None,
          }
      }
@@ -155,7 +180,7 @@ impl QuestionDialog {
         } else { String::new() };
 
         let is_multi = self.toggled.iter().filter(|&&t| t).count() > 0 || req.options.len() > 1;
-        let hint = if is_multi { "Space toggle · Enter confirm · Esc skip" } else { "↑↓ choose · Enter select · Esc skip" };
+        let hint = if is_multi { "Space toggle · Enter confirm · s skip · Esc hide" } else { "↑↓ choose · Enter select · s skip · Esc hide" };
 
         let mut content = vstack().gap(0)
             .child_sized(
@@ -195,5 +220,71 @@ impl QuestionDialog {
         height += 1;
 
         Some(BlockLayout { height, view: content })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(id: &str, text: &str) -> QuestionRequest {
+        QuestionRequest {
+            id: id.into(),
+            text: text.into(),
+            options: vec![
+                QuestionOption { id: "opt_0".into(), label: "Yes".into(), description: String::new() },
+                QuestionOption { id: "opt_1".into(), label: "No".into(), description: String::new() },
+            ],
+        }
+    }
+
+    // ── U8：Esc = 仅收起；skip 必须显式（s）且留痕 ──
+
+    #[test]
+    fn esc_collapses_but_keeps_queue() {
+        let mut d = QuestionDialog::new();
+        d.ask(q("q1", "Proceed?"));
+        assert_eq!(d.pending_count(), 1);
+        let out = d.handle_key(&Key::Escape);
+        assert!(out.is_none());
+        assert!(!d.visible);
+        assert_eq!(d.pending_count(), 1);
+        // 重开后 Enter 作答的仍是同一题。
+        d.visible = true;
+        let out = d.handle_key(&Key::Enter);
+        assert!(matches!(
+            out,
+            Some(QuestionKeyOutcome::Answered(id, labels)) if id == "q1" && labels == vec!["Yes".to_string()]
+        ));
+        assert_eq!(d.pending_count(), 0);
+    }
+
+    #[test]
+    fn explicit_skip_dequeues_and_reports() {
+        let mut d = QuestionDialog::new();
+        d.ask(q("q1", "First?"));
+        d.ask(q("q2", "Second?"));
+        let out = d.handle_key(&Key::Char('s'));
+        assert!(matches!(out, Some(QuestionKeyOutcome::Skipped)));
+        assert_eq!(d.pending_count(), 1);
+        assert!(d.visible); // 队列未空，弹窗留在下一题
+        // 下一题才是 q2。
+        let out = d.handle_key(&Key::Enter);
+        assert!(matches!(out, Some(QuestionKeyOutcome::Answered(id, _)) if id == "q2"));
+        assert!(!d.visible);
+    }
+
+    #[test]
+    fn no_silent_drop_paths() {
+        // Esc 之后队列长度不变（无静默丢弃）；空队列按键无副作用。
+        let mut d = QuestionDialog::new();
+        d.ask(q("q1", "Only?"));
+        d.handle_key(&Key::Escape);
+        assert_eq!(d.pending_count(), 1);
+        d.visible = false;
+        // 不可见时按键一律 None、队列不动。
+        assert!(d.handle_key(&Key::Char('s')).is_none());
+        assert!(d.handle_key(&Key::Enter).is_none());
+        assert_eq!(d.pending_count(), 1);
     }
 }
