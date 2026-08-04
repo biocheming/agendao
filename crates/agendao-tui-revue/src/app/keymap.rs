@@ -780,6 +780,19 @@ impl AppHandler {
                                 }
                             }
                         }
+                        app_op::AppOpOutcome::SessionLoaded { session_id, data } => {
+                            // loading 指示是全屏单例：任何回执到达都清（连开
+                            // 两个会话时先到回执会早清，可接受的指示精度）。
+                            self.store.session_loading.set(false);
+                            // 只 apply 当前活动会话的拉取——加载期间用户切走
+                            // （再开别的会话/新建）→ 陈旧回执整体丢弃，防
+                            // 旧会话内容灌进新会话 transcript。
+                            if self.active_session.session_id.get().as_deref()
+                                == Some(session_id.as_str())
+                            {
+                                self.apply_session_open(&session_id, *data);
+                            }
+                        }
                     }
                 }
                 for fe in &events {
@@ -1958,15 +1971,61 @@ impl AppHandler {
     /// reset(清旧会话 messages/scroll/telemetry 残留) → set id → 更新事件过滤
     /// (sf_tx,让 transport 只转发该 session 的 FrontendEvent) → 加载历史消息 →
     /// navigate → 关任何 panel。避免多入口各自拼一套"打开会话"逻辑而漂移。
+    ///
+    /// U6③ 异步化：5 个拉取（info/messages/todos/questions/permissions）
+    /// 移后台 task——大会话下同步 block_on 连续冻结数秒。本地即时部分
+    /// （reset/id/sf_tx/路由/关 panel）保持同步，transcript 末尾渲染
+    /// "⏳ Loading session..."（store.session_loading）；回执 SessionLoaded
+    /// 在 Tick drain 由 `apply_session_open` 落库。
     pub(crate) fn open_session(&mut self, session_id: &str) {
         self.active_session.reset_for_new_session();
         self.active_session.set_session_id(session_id);
-        // 播种 usage（水律·回流）：打开即拉 `GET /session/{id}` 的
-        // `telemetry.usage`（持久化累计 token/成本）,底部信息条不等下一次
-        // SessionProjectionReplaced 投影——runtime 端点的 usage 只在运行中有。
+        self.sf_tx.send_replace(Some(session_id.to_string()));
+        self.store
+            .navigate(Route::Session { session_id: session_id.to_string() });
+        self.panel = Panel::None;
+        let Some(api) = self.api.clone() else {
+            // echo 模式（无 bridge）：无东西可拉，确保不残留 loading 指示。
+            self.store.session_loading.set(false);
+            return;
+        };
+        self.store.session_loading.set(true);
+        let tx = self.app_ops.sender();
+        let sid = session_id.to_string();
+        let handle = api.handle().clone();
+        handle.spawn(async move {
+            // 各 fetch 独立成败（messages 挂了不拖垮 title/usage 播种）。
+            let (info, messages, todos, questions, permissions) = tokio::join!(
+                api.get_session_async(&sid),
+                api.get_messages_async(&sid),
+                api.get_session_todos_async(&sid),
+                api.list_questions_async(),
+                api.list_permissions_async(),
+            );
+            let data = app_op::SessionOpenData {
+                info: info.map_err(|e| e.to_string()),
+                messages: messages.map_err(|e| e.to_string()),
+                todos: todos.map_err(|e| e.to_string()),
+                questions: questions.map_err(|e| e.to_string()),
+                permissions: permissions.map_err(|e| e.to_string()),
+            };
+            let _ = tx.send(app_op::AppOpOutcome::SessionLoaded {
+                session_id: sid,
+                data: Box::new(data),
+            });
+        });
+    }
+
+    /// SessionLoaded 回执的落库（水）：与 U6③ 前 open_session 的同步
+    /// 尾段同一语义——title/usage 播种、todos、历史消息路由、pending
+    /// question/permission catch-up、context 进度条播种。
+    fn apply_session_open(&mut self, session_id: &str, data: app_op::SessionOpenData) {
+        // 播种 usage（水律·回流）：`GET /session/{id}` 的 `telemetry.usage`
+        //（持久化累计 token/成本），底部信息条不等下一次投影。
         let mut ctx_tokens: u64 = 0;
-        if let Some(api) = self.api.as_ref() {
-            if let Ok(info) = api.get_session(session_id) {
+        match data.info {
+            Ok(info) => {
+                self.active_session.title.set(info.title);
                 if let Some(t) = info.telemetry {
                     let u = t.usage;
                     ctx_tokens = u.context_tokens;
@@ -1982,22 +2041,33 @@ impl AppHandler {
                     );
                 }
             }
+            Err(e) => tracing::warn!(%session_id, %e, "open_session: get_session failed"),
         }
-        self.sf_tx.send_replace(Some(session_id.to_string()));
-        self.load_session_messages(session_id);
+        match data.todos {
+            Ok(todos) => apply_loaded_todos(&self.active_session, todos),
+            Err(e) => tracing::warn!(%session_id, %e, "open_session: todos failed"),
+        }
+        match data.messages {
+            Ok(msgs) => apply_loaded_messages(&self.active_session, msgs),
+            Err(e) => {
+                tracing::warn!(%session_id, %e, "failed to load session messages");
+                self.store.push_toast(
+                    &format!("Failed to load messages: {}", e),
+                    ToastMsgVariant::Error,
+                );
+            }
+        }
         // F4：pending question/permission catch-up——事件流不重放订阅前的存量，
         // 打开会话时从权威 REST 端点拉一次，按 session 过滤后合并进弹窗
         //（live upsert 与 catch-up 同权威；按 id 去重由 dialog 负责）。
-        if let Some(api) = self.api.as_ref() {
-            if let Ok(questions) = api.list_questions() {
-                for q in questions.into_iter().filter(|q| q.session_id == session_id) {
-                    self.question_dialog.ask(crate::dialog::QuestionRequest::from_info(&q));
-                }
+        if let Ok(questions) = data.questions {
+            for q in questions.into_iter().filter(|q| q.session_id == session_id) {
+                self.question_dialog.ask(crate::dialog::QuestionRequest::from_info(&q));
             }
-            if let Ok(permissions) = api.list_permissions() {
-                for p in permissions.into_iter().filter(|p| p.session_id == session_id) {
-                    self.permission_dialog.add_request(crate::dialog::PermissionRequest::from_info(&p));
-                }
+        }
+        if let Ok(permissions) = data.permissions {
+            for p in permissions.into_iter().filter(|p| p.session_id == session_id) {
+                self.permission_dialog.add_request(crate::dialog::PermissionRequest::from_info(&p));
             }
         }
         // context 进度条播种：context_tokens（最新 turn 占用）÷ 模型 context_window。
@@ -2027,9 +2097,7 @@ impl AppHandler {
                 }
             }
         }
-        self.store
-            .navigate(Route::Session { session_id: session_id.to_string() });
-        self.panel = Panel::None;
+        self.layout_dirty = true;
     }
 
     /// 从 API 拉取当前 cwd 下的会话列表,回灌 `AppStore.session_list`,并
@@ -3134,9 +3202,7 @@ pub(crate) fn eager_load_session_messages(
     api: Option<&crate::bridge::api::ApiBridge>,
     session_id: &str,
 ) {
-    use crate::store::types::ToolPhase;
     let Some(api) = api else { return };
-    active_session.messages.update(|m| m.clear());
     // 同步 session title 到 header 用的 active_session.title。此前该 Signal 只在
     // 手动 rename 时更新，加载/切换 session 后恒显初始值 "New Session"——服务端
     // 已用 LLM 生成真实 title 入库（ensure_default_session_title），但无回流通道，
@@ -3148,19 +3214,47 @@ pub(crate) fn eager_load_session_messages(
     // REST 端点拉一次；此后的增量由 FrontendEvent::TodoReplaced 事件驱动，
     // 不再轮询。
     if let Ok(todos) = api.get_session_todos(session_id) {
-        if !todos.is_empty() {
-            let items: Vec<crate::store::types::TodoItem> = todos
-                .iter()
-                .map(|t| crate::store::types::TodoItem {
-                    content: t.content.clone(),
-                    status: crate::telemetry::event_handler::todo_status_from_str(&t.status),
-                })
-                .collect();
-            active_session.push_todo_list("todos", items, None);
-        }
+        apply_loaded_todos(active_session, todos);
     }
     match api.get_messages(session_id) {
         Ok(msgs) => {
+            apply_loaded_messages(active_session, msgs);
+            active_session.run_status.set(RunStatus::Idle);
+        }
+        Err(e) => {
+            tracing::warn!(%session_id, %e, "failed to load session messages");
+        }
+    }
+}
+
+/// todos 播种（U6③ 抽出：同步启动路径与 open_session 异步回执共用，
+/// 土律·单点权威）。
+pub(crate) fn apply_loaded_todos(
+    active_session: &crate::store::session_store::SessionStore,
+    todos: Vec<agendao_client::ApiTodoItem>,
+) {
+    if todos.is_empty() {
+        return;
+    }
+    let items: Vec<crate::store::types::TodoItem> = todos
+        .iter()
+        .map(|t| crate::store::types::TodoItem {
+            content: t.content.clone(),
+            status: crate::telemetry::event_handler::todo_status_from_str(&t.status),
+        })
+        .collect();
+    active_session.push_todo_list("todos", items, None);
+}
+
+/// 历史消息路由进 transcript blocks（U6③ 抽出，同上）：先清后灌；
+/// 结束置 session_model（context 进度条 fallback）。run_status 复位
+/// 由调用方决定（同步启动路径复位；异步回执不抢状态机）。
+pub(crate) fn apply_loaded_messages(
+    active_session: &crate::store::session_store::SessionStore,
+    msgs: Vec<agendao_client::MessageInfo>,
+) {
+    use crate::store::types::ToolPhase;
+    active_session.messages.update(|m| m.clear());
             // 记录最后一个带 model 的 assistant 消息（context 进度条的
             // model fallback——会话自己用过的模型比全局 selected_model 更准）。
             let mut last_model: Option<String> = None;
@@ -3238,13 +3332,7 @@ pub(crate) fn eager_load_session_messages(
                     }
                 }
             }
-            active_session.session_model.set(last_model);
-            active_session.run_status.set(RunStatus::Idle);
-        }
-        Err(e) => {
-            tracing::warn!(%session_id, %e, "failed to load session messages");
-        }
-    }
+    active_session.session_model.set(last_model);
 }
 
 #[cfg(test)]
@@ -3367,6 +3455,93 @@ mod tests {
         h.execute_slash_action(UiActionId::CompactSession);
         assert!(!h.compact_in_flight);
         assert!(h.store.toasts.get().is_empty());
+    }
+
+    // ── U6③：open_session 异步化 ──
+
+    fn sample_session_info(id: &str, title: &str) -> agendao_client::SessionInfo {
+        agendao_client::SessionInfo {
+            id: id.into(),
+            slug: id.into(),
+            project_id: "p".into(),
+            directory: "/tmp".into(),
+            parent_id: None,
+            title: title.into(),
+            version: "v".into(),
+            time: Default::default(),
+            summary: None,
+            share: None,
+            revert: None,
+            permission: None,
+            fork: None,
+            telemetry: None,
+            metadata: None,
+        }
+    }
+
+    fn sample_open_data(info_title: &str) -> app_op::SessionOpenData {
+        app_op::SessionOpenData {
+            info: Ok(sample_session_info("s", info_title)),
+            messages: Ok(vec![]),
+            todos: Ok(vec![]),
+            questions: Ok(vec![]),
+            permissions: Ok(vec![]),
+        }
+    }
+
+    /// echo 模式（无 bridge）：本地部分即时完成，且不残留 loading 指示。
+    #[test]
+    fn open_session_without_bridge_navigates_without_loading() {
+        let mut h = mk_handler();
+        h.store.session_loading.set(true); // 预设残留，验证被清
+        h.open_session("s1");
+        assert!(!h.store.session_loading.get(), "无 bridge 不残留 loading");
+        assert_eq!(h.active_session.session_id.get().as_deref(), Some("s1"));
+        assert!(
+            matches!(h.store.route.get(), Route::Session { ref session_id } if session_id == "s1"),
+            "路由即时切换"
+        );
+    }
+
+    /// 陈旧回执（加载期间用户切到别的会话）整体丢弃，但 loading 必清。
+    #[test]
+    fn session_loaded_stale_outcome_is_dropped() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("current");
+        h.active_session.title.set("keep".to_string());
+        h.store.session_loading.set(true);
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::SessionLoaded {
+                session_id: "other".into(),
+                data: Box::new(sample_open_data("stale title")),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(!h.store.session_loading.get(), "回执到达必清 loading");
+        assert_eq!(
+            h.active_session.title.get(),
+            "keep",
+            "陈旧回执不得覆盖当前会话"
+        );
+    }
+
+    /// 当前会话的回执正常落库（title 播种为代表性观测点）。
+    #[test]
+    fn session_loaded_current_outcome_applies() {
+        let mut h = mk_handler();
+        h.active_session.set_session_id("s");
+        h.store.session_loading.set(true);
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::SessionLoaded {
+                session_id: "s".into(),
+                data: Box::new(sample_open_data("loaded title")),
+            })
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(!h.store.session_loading.get());
+        assert_eq!(h.active_session.title.get(), "loaded title");
     }
 
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。

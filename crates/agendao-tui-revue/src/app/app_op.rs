@@ -40,6 +40,25 @@ pub enum AppOpOutcome {
         focus: Option<String>,
         result: Result<(), String>,
     },
+    /// `open_session` 的后台拉取完成（U6③：原连续 5 个同步调用——
+    /// get_session/get_messages/todos/questions/permissions，大会话下
+    /// 冻结数秒）。主线程 Tick drain 时按字段逐个 apply（每个 fetch
+    /// 独立成败：messages 挂了不拖垮 title/usage 播种）。
+    SessionLoaded {
+        session_id: String,
+        data: Box<SessionOpenData>,
+    },
+}
+
+/// open_session 后台拉取的载荷（plain data，跨 task 边界）。
+#[derive(Clone, Debug)]
+pub struct SessionOpenData {
+    /// title + telemetry.usage 播种。
+    pub info: Result<agendao_client::SessionInfo, String>,
+    pub messages: Result<Vec<agendao_client::MessageInfo>, String>,
+    pub todos: Result<Vec<agendao_client::ApiTodoItem>, String>,
+    pub questions: Result<Vec<agendao_client::QuestionInfo>, String>,
+    pub permissions: Result<Vec<agendao_client::PermissionRequestInfo>, String>,
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。

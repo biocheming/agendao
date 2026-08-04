@@ -77,6 +77,9 @@ pub struct AppStore {
     /// 正在测连接的 provider id（U6 异步化）：`Some` = 后台探测进行中——
     /// Providers 栏行内显示 ◌ pending 标记，且重复触发被防抖吞掉。
     pub settings_testing_provider: Signal<Option<String>>,
+    /// open_session 后台拉取进行中（U6③）：transcript 末尾渲染
+    /// "⏳ Loading session..." 内联块；回执 drain 清零。
+    pub session_loading: Signal<bool>,
     /// Details 栏内当前选中 model_key;`None` = 当前 provider 无 models 或未进入 Details 焦点。
     /// 由 `handle_settings_key` 在 Details focused 时 ↑/↓ 切换,m/e/d 操作以此为目标。
     pub settings_selected_model: Signal<Option<String>>,
@@ -147,6 +150,7 @@ impl AppStore {
             providers_connected: signal(HashSet::new()),
             settings_selected_provider: signal(None),
             settings_testing_provider: signal(None),
+            session_loading: signal(false),
             settings_selected_model: signal(None),
             settings_category: signal(SettingsCategory::General),
             settings_focus_pane: signal(SettingsFocusPane::Providers),

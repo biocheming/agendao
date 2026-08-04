@@ -1364,6 +1364,15 @@ impl View for RootView {
                         );
                         extra_h = extra_h.saturating_add(1);
                     }
+                    // U6③：open_session 后台拉取进行中的处理中指示（与
+                    // Sending 块同位同构——transcript 流末尾顶格行）。
+                    if h.store.session_loading.get() {
+                        transcript = transcript.child_sized(
+                            Text::new(" ⏳ Loading session...").fg(colors::ACCENT_YELLOW()),
+                            1,
+                        );
+                        extra_h = extra_h.saturating_add(1);
+                    }
                     // 把内联块计入 scroll 视口高度，并在 permission/question
                     // pending 时强制钉底（阴：收束注意力到待决策项）。
                     let total_h = total_h.saturating_add(extra_h);

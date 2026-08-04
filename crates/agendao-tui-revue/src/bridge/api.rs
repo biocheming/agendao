@@ -98,11 +98,54 @@ impl ApiBridge {
         self.block_on(self.client.get_session(session_id))
     }
 
+    /// 异步变体（U6③ open_session 后台拉取）。
+    pub async fn get_session_async(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_get_session(Arc::clone(ls), session_id).await;
+        }
+        self.client.get_session(session_id).await
+    }
+
     pub fn get_messages(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server_local::local_list_messages(Arc::clone(ls), session_id, None, None));
         }
         self.block_on(self.client.get_messages(session_id))
+    }
+
+    /// 异步变体（U6③）。
+    pub async fn get_messages_async(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_list_messages(Arc::clone(ls), session_id, None, None).await;
+        }
+        self.client.get_messages(session_id).await
+    }
+
+    /// 异步变体（U6③）。
+    pub async fn get_session_todos_async(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::ApiTodoItem>> {
+        if let Some(ref ls) = self.local {
+            let todos = agendao_server_local::local_get_session_todos(Arc::clone(ls), session_id).await?;
+            return Ok(todos.into_iter().map(|t| agendao_client::ApiTodoItem {
+                id: t.id, content: t.content, status: t.status, priority: t.priority,
+            }).collect());
+        }
+        self.client.get_session_todos(session_id).await
+    }
+
+    /// 异步变体（U6③）。
+    pub async fn list_questions_async(&self) -> anyhow::Result<Vec<agendao_client::QuestionInfo>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_list_questions(Arc::clone(ls)).await;
+        }
+        self.client.list_questions().await
+    }
+
+    /// 异步变体（U6③）。
+    pub async fn list_permissions_async(&self) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_list_permissions(Arc::clone(ls)).await;
+        }
+        self.client.list_permissions().await
     }
 
     pub fn send_prompt(
