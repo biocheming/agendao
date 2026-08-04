@@ -261,6 +261,24 @@ impl ModelSelectDialog {
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 
+        // U16：无 provider/无模型 → 空态明示 + 下一步指引（原渲染零行
+        // 空框 + 过滤 hint，用户无从下手的死端）。
+        if self.groups.is_empty() {
+            let items = vec![ListItem::Row {
+                display: "  (No models configured — add a provider in Settings)".to_string(),
+                muted: true,
+            }];
+            backdrop::render_list_dialog_bottom(
+                "Select Model",
+                colors::ACCENT_CYAN(),
+                &items,
+                0,
+                "Esc: close",
+                ctx, geom, 3,
+            );
+            return;
+        }
+
         // Build all items (no truncation — backdrop scrolls). Without query
         // filtering, 5,140 models exhaust the user's patience; once we add
         // a search box this becomes `flat.iter().filter(matches_query)`.

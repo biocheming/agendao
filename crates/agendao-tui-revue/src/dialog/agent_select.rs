@@ -65,6 +65,22 @@ impl AgentSelectDialog {
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
+        // U16：空态明示（原渲染零行空框 + 导航 hint——无法导航的死端）。
+        if self.agents.is_empty() {
+            let items = vec![ListItem::Row {
+                display: "  (No agents configured)".to_string(),
+                muted: true,
+            }];
+            backdrop::render_list_dialog_bottom(
+                "Select Agent",
+                colors::ACCENT_PURPLE(),
+                &items,
+                0,
+                "Esc: close",
+                ctx, geom, 3,
+            );
+            return;
+        }
         // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
         let items: Vec<ListItem> = self.agents.iter().enumerate().map(|(i, a)| {
             let marker = if i == self.selected { "▶ " } else { "  " };

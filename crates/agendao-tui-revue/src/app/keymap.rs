@@ -877,16 +877,13 @@ impl AppHandler {
                                                 location: s.location,
                                             })
                                             .collect();
-                                        if entries.is_empty() {
-                                            self.store.push_toast(
-                                                "No skills available",
-                                                ToastMsgVariant::Warning,
-                                            );
-                                        } else {
-                                            self.skill_list.set_skills(entries);
-                                            self.skill_list.open();
-                                            self.panel = Panel::SkillList;
-                                        }
+                                        // U16：空列表也打开 dialog（mcp_list
+                                        // F12 样板）——空态文案 + 's' 跳
+                                        // Settings 的真实下一步，不再一闪
+                                        // toast（原空态渲染是死代码）。
+                                        self.skill_list.set_skills(entries);
+                                        self.skill_list.open();
+                                        self.panel = Panel::SkillList;
                                     }
                                     app_op::DialogFetchData::SkillProposals(proposals) => {
                                         let entries: Vec<crate::dialog::SkillProposalEntry> =
@@ -901,16 +898,12 @@ impl AppHandler {
                                                         .to_lowercase(),
                                                 })
                                                 .collect();
-                                        if entries.is_empty() {
-                                            self.store.push_toast(
-                                                "No pending proposals",
-                                                ToastMsgVariant::Warning,
-                                            );
-                                        } else {
-                                            self.skill_proposal.set_proposals(entries);
-                                            self.skill_proposal.open();
-                                            self.panel = Panel::SkillProposal;
-                                        }
+                                        // U16：空列表也打开 dialog——空态
+                                        // "(No pending proposals)" 可见，
+                                        // 不再一闪 toast。
+                                        self.skill_proposal.set_proposals(entries);
+                                        self.skill_proposal.open();
+                                        self.panel = Panel::SkillProposal;
                                     }
                                     app_op::DialogFetchData::McpStatus(mcps) => {
                                         let entries: Vec<crate::dialog::McpEntry> = mcps
@@ -950,16 +943,11 @@ impl AppHandler {
                                                 target_id: None,
                                             });
                                         }
-                                        if entries.is_empty() {
-                                            self.store.push_toast(
-                                                "No recovery actions or checkpoints",
-                                                ToastMsgVariant::Warning,
-                                            );
-                                        } else {
-                                            self.recovery_list.set_entries(entries);
-                                            self.recovery_list.open();
-                                            self.panel = Panel::Recovery;
-                                        }
+                                        // U16：空列表也打开 dialog（空态文案
+                                        // 不再死代码）。
+                                        self.recovery_list.set_entries(entries);
+                                        self.recovery_list.open();
+                                        self.panel = Panel::Recovery;
                                     }
                                     app_op::DialogFetchData::Tasks(tasks) => {
                                         let entries: Vec<crate::dialog::TaskEntry> = tasks
@@ -972,16 +960,11 @@ impl AppHandler {
                                                 max_steps: t.max_steps,
                                             })
                                             .collect();
-                                        if entries.is_empty() {
-                                            self.store.push_toast(
-                                                "No active agent tasks",
-                                                ToastMsgVariant::Warning,
-                                            );
-                                        } else {
-                                            self.task_list.set_entries(entries);
-                                            self.task_list.open();
-                                            self.panel = Panel::TaskList;
-                                        }
+                                        // U16：空列表也打开 dialog（空态文案
+                                        // 不再死代码）。
+                                        self.task_list.set_entries(entries);
+                                        self.task_list.open();
+                                        self.panel = Panel::TaskList;
                                     }
                                     app_op::DialogFetchData::Modes(modes) => {
                                         // 携 kind 而不只是 name，dispatch 处才能
@@ -996,15 +979,11 @@ impl AppHandler {
                                                 description: m.description,
                                             })
                                             .collect();
-                                        if entries.is_empty() {
-                                            self.store.push_toast(
-                                                "No execution modes available",
-                                                ToastMsgVariant::Warning,
-                                            );
-                                        } else {
-                                            self.mode_select.open_with(entries);
-                                            self.panel = Panel::ModeSelect;
-                                        }
+                                        // U16：空列表也打开 dialog（空态
+                                        // 分支 + Esc 已有测试钉住，不再
+                                        // 一闪 toast）。
+                                        self.mode_select.open_with(entries);
+                                        self.panel = Panel::ModeSelect;
                                     }
                                     app_op::DialogFetchData::Sessions(sessions) => {
                                         // 与旧 OpenSessionList 同步路径同口径：
@@ -4171,6 +4150,50 @@ mod tests {
         h.panel = Panel::Confirm;
         h.handle(&Event::Key(KeyEvent::new(Key::Enter)));
         assert_eq!(h.panel, Panel::None);
+    }
+
+    /// U16：skills/proposals/tasks/modes 空回执也打开弹窗（mcp_list F12
+    /// 样板）——空态文案可见，不再是一闪 toast（空态渲染原属死代码）。
+    /// Recovery 臂同 pattern（proto 结构体重，测试不逐一复制）。
+    #[test]
+    fn dialog_fetch_done_empty_lists_open_dialogs() {
+        let cases: [(app_op::DialogFetchData, Panel, &str); 4] = [
+            (app_op::DialogFetchData::Skills(Vec::new()), Panel::SkillList, "skills"),
+            (app_op::DialogFetchData::SkillProposals(Vec::new()), Panel::SkillProposal, "proposals"),
+            (app_op::DialogFetchData::Tasks(Vec::new()), Panel::TaskList, "tasks"),
+            (app_op::DialogFetchData::Modes(Vec::new()), Panel::ModeSelect, "modes"),
+        ];
+        for (data, want_panel, name) in cases {
+            let mut h = mk_handler();
+            h.store
+                .dialog_fetch_pending
+                .set(Some(format!("Loading {name}")));
+            h.app_ops
+                .sender()
+                .send(app_op::AppOpOutcome::DialogFetchDone(Ok(data)))
+                .unwrap();
+            h.handle(&Event::Tick);
+            assert_eq!(h.panel, want_panel, "{name}: 空回执应打开弹窗");
+            assert!(
+                h.store.dialog_fetch_pending.get().is_none(),
+                "{name}: 回执清闸"
+            );
+        }
+    }
+
+    /// U16：skills 空态 's' → 全屏 Settings（空态承诺的下一步真实可达）。
+    #[test]
+    fn skills_empty_s_opens_settings() {
+        let mut h = mk_handler();
+        h.skill_list.set_skills(Vec::new());
+        h.skill_list.open();
+        h.panel = Panel::SkillList;
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('s'))));
+        assert!(
+            matches!(h.store.route.get(), Route::Settings),
+            "'s' 应跳 Settings"
+        );
+        assert_eq!(h.panel, Panel::None, "跳走后 panel 清空");
     }
 
     /// 失败回执：sessions 在 loading → 就地置错；否则 Error toast。均清闸。

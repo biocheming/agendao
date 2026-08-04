@@ -24,6 +24,9 @@ pub struct SkillEntry {
 /// Enter 选中——dispatch 拉详情后调 `show_detail` 回填（dialog 不关）。
 pub enum SkillListAction {
     View(SkillEntry),
+    /// U16：空态 's' → 跳 Settings 管理 skills（空态承诺的下一步必须
+    /// 真实可达）。
+    OpenSettings,
 }
 
 /// 详情视图：title + 预切行 + 滚动偏移（内容长，全文行进）。
@@ -87,7 +90,15 @@ impl SkillListDialog {
             return None;
         }
         if self.skills.is_empty() {
-            if matches!(key, Key::Escape) { self.close(); }
+            match key {
+                Key::Escape => { self.close(); }
+                // U16：空态给真实下一步——'s' 跳 Settings 管理 skills。
+                Key::Char('s') => {
+                    self.close();
+                    return Some(SkillListAction::OpenSettings);
+                }
+                _ => {}
+            }
             return None;
         }
         let len = self.skills.len();
@@ -126,10 +137,10 @@ impl SkillListDialog {
             return;
         }
         // 空态：列表为空时仍要给可见反馈（避免"按 /skills 没反应"误判为
-        // 已关）；用 muted 行说明，Esc 关闭。
+        // 已关）；用 muted 行说明，并给真实下一步（U16：'s' 跳 Settings）。
         if self.skills.is_empty() {
             let items = vec![ListItem::Row {
-                display: "  (No skills available)".to_string(),
+                display: "  (No skills available — manage them in Settings)".to_string(),
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
@@ -137,7 +148,7 @@ impl SkillListDialog {
                 colors::ACCENT_PURPLE(),
                 &items,
                 0,
-                "Esc: close",
+                "s: open settings  Esc: close",
                 ctx, geom, 3,
             );
             return;

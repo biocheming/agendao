@@ -362,6 +362,12 @@ impl AppHandler {
                                 }
                             }
                         }
+                        crate::dialog::SkillListAction::OpenSettings => {
+                            // U16：空态 's' → 全屏 Settings（skills 管理面），
+                            // 复用唯一入口（金律：成形点单一）。
+                            self.execute_slash_action(UiActionId::OpenSettings);
+                            self.panel = Panel::None;
+                        }
                     }
                     return true;
                 }
