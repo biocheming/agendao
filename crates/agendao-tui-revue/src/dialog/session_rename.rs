@@ -4,6 +4,7 @@ use revue::prelude::*;
 use revue::event::Key;
 use crate::theme::colors;
 use crate::dialog::backdrop;
+use crate::input::readline::InputReadlineExt;
 
 pub struct SessionRenameDialog {
     pub visible: bool,
@@ -68,7 +69,7 @@ impl SessionRenameDialog {
         if !self.visible {
             return false;
         }
-        self.input.handle_key_event(event)
+        self.input.readline_ctrl(event)
     }
 
     /// 粘贴 → Input。

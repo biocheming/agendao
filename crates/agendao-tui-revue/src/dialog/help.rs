@@ -69,12 +69,15 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("/fork", "Fork current session"),
         Binding("/mode", "Switch composer mode/profile"),
         Binding("/themes", "Cycle theme"),
+        Binding("/stash", "Stash prompt draft / browse stash"),
+        Binding("/exit", "Quit (aliases: /quit /q)"),
 
         Section("─ Global ─"),
-        Binding("Esc/q", "Quit"),
+        Binding("q", "Quit (empty prompt, press twice)"),
+        Binding("Esc", "Close dialog / double-tap: interrupt run"),
         Binding("h", "Home screen"),
         Binding("?", "Toggle help"),
-        Binding("Ctrl+C", "Force quit"),
+        Binding("Ctrl+C", "Quit now (unsent draft auto-stashed)"),
     ]
 };
 

@@ -206,6 +206,9 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         let is_tick = matches!(event, revue::runtime::event::Event::Tick);
         let mut h = view.handler.borrow_mut();
         let handled = h.handle(event);
+        // U4：q 双击//exit 的退出请求（revue 只替我们管 Ctrl+C；
+        // 自控退出经此旗标交还 App 单点收口）。
+        let quit_requested = std::mem::take(&mut h.quit_requested);
         let layout_dirty = h.layout_dirty;
         h.layout_dirty = false;
         let transcript_dirty = h.transcript_dirty;
@@ -216,6 +219,9 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         // `:root` 变量留在 pending 槽（它拿不到 &mut App），此处收口应用。
         let theme_vars = h.pending_theme_vars.take();
         drop(h);
+        if quit_requested {
+            app.quit();
+        }
         if let Some(vars) = theme_vars {
             app.dom_renderer().stylesheet_mut().variables.extend(vars);
             app.request_redraw();
@@ -404,6 +410,15 @@ pub(crate) struct AppHandler {
     /// 据此判相，驱动所有输入处块光标 600ms 量级闪烁。
     pub(crate) blink_tick: u64,
     pub(crate) interrupt_pending: bool,
+    /// U4：agendao 自控退出通道。revue（第三方库，不可改）只对 Ctrl+C 无条件
+    /// quit；q 双击、/exit 的退出收口于此——keymap/slash_action 置位，run 循环
+    /// 读旗后调 `app.quit()`（AppHandler 拿不到 &mut App，旗标是唯一出口）。
+    pub(crate) quit_requested: bool,
+    /// U4：q 退出确认的 arm 时刻（双击窗口 keymap::QUIT_CONFIRM_WINDOW）。
+    pub(crate) quit_armed_at: Option<std::time::Instant>,
+    /// U4：首次 q 暂扣标记——窗口内改按其他字符键时把 'q' 补回输入框
+    /// （"query" 这类 q 开头的正常输入不丢首字母）。
+    pub(crate) quit_armed_via_q: bool,
     /// `/compact <focus>` 的参数通道：sync_slash_from_text 解析出 focus 后
     /// 置位，slash_action 的 CompactSession 臂 take() 消费（UiActionId 不
     /// 带参——命令注册表跨越多个前端，参数走 app 本地暂存）。
@@ -826,6 +841,9 @@ impl AppHandler {
             last_activity: std::time::Instant::now(),
             blink_tick: 0,
             interrupt_pending: false,
+            quit_requested: false,
+            quit_armed_at: None,
+            quit_armed_via_q: false,
             pending_compact_focus: None,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),

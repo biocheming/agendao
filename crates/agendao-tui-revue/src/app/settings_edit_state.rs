@@ -21,6 +21,8 @@
 
 use revue::widget::Input;
 
+use crate::input::readline::InputReadlineExt;
+
 /// in-place 编辑两种模式。Add 多 1 个 name 字段(同时充当 id),Edit 不允许改 id/name。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEditMode {
@@ -245,9 +247,9 @@ impl SettingsEditState {
             return false;
         }
         match self.focus {
-            SettingsEditField::Name => self.name_input.handle_key_event(event),
-            SettingsEditField::BaseUrl => self.base_url_input.handle_key_event(event),
-            SettingsEditField::ApiKey => self.api_key_input.handle_key_event(event),
+            SettingsEditField::Name => self.name_input.readline_ctrl(event),
+            SettingsEditField::BaseUrl => self.base_url_input.readline_ctrl(event),
+            SettingsEditField::ApiKey => self.api_key_input.readline_ctrl(event),
             SettingsEditField::Protocol => true,
         }
     }

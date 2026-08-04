@@ -41,9 +41,46 @@ impl AppHandler {
         self.reload_session_list();
     }
 
+    /// U4：把未发送草稿写入 stash 并立即落盘（/stash 可找回）。
+    /// 空草稿、或文本本身是 slash 命令（"/new" 这类触发文本不是草稿）
+    /// 时不收。返回是否实际 stash 了。
+    pub(crate) fn stash_unsent_draft(&mut self) -> bool {
+        let text = self.prompt.text();
+        if text.trim().is_empty() || text.trim_start().starts_with('/') {
+            return false;
+        }
+        let entry = StashEntry {
+            text,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        };
+        self.stash_entries.push(entry);
+        // 水律：push 后立即落盘，下一轮/下次启动可复用。
+        crate::dialog::prompt_stash::save_stash(&self.stash_entries);
+        true
+    }
+
     pub(crate) fn execute_slash_action(&mut self, action_id: UiActionId) {
         self.panel = Panel::None;
+        // U4 草稿保护：动作触发即清 prompt，清前先把草稿 stash 落盘——
+        // 此前 sidebar/鼠标/快捷键触发 /new 等动作时草稿被无声销毁。
+        // （PromptStashPush 同此通道：旧实现 clear 在前、臂内永远读到空
+        // 文本，是死路径；现在统一在清前捕获。）
+        let stashed = self.stash_unsent_draft();
         self.prompt.clear();
+        if stashed {
+            if matches!(action_id, UiActionId::PromptStashPush) {
+                self.store.push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
+            } else if !matches!(action_id, UiActionId::OpenStash | UiActionId::PromptStashList) {
+                // 查看类动作不打扰（草稿已保全，列表立即可见）。
+                self.store.push_toast(
+                    "Draft stashed (/stash to restore)",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+        }
         match action_id {
             UiActionId::ShowHelp | UiActionId::ShowStatus => {
                 self.help.toggle();
@@ -91,24 +128,15 @@ impl AppHandler {
                 self.panel = Panel::Stash;
             }
             UiActionId::PromptStashPush => {
-                let text = self.prompt.text();
-                if !text.trim().is_empty() {
-                    let entry = StashEntry {
-                        text,
-                        created_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0),
-                    };
-                    self.stash_entries.push(entry);
-                    // 水律：push 后立即落盘，下一轮/下次启动可复用。
-                    crate::dialog::prompt_stash::save_stash(&self.stash_entries);
-                    self.prompt.clear();
-                    self.store.push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
-                }
+                // U4：stash 已在函数顶部统一收口（清 prompt 前捕获草稿）。
+                // 旧实现在此处读 prompt.text()，但 clear 在前，永远读空——
+                // 死路径，已由顶部捕获替代。
             }
             UiActionId::Exit => {
                 self.store.request_exit();
+                // exiting 信号无读者（保留为状态记录）；真正的退出经
+                // quit_requested 旗标 → run 循环 app.quit() 收口。
+                self.quit_requested = true;
             }
             UiActionId::OpenModelList => {
                 // F2：打开即拉 recent models 填充 "★ Recent" 区块（此前

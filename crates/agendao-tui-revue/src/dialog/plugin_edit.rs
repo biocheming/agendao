@@ -11,6 +11,7 @@ use revue::prelude::*;
 use revue::widget::Border;
 
 use crate::dialog::backdrop;
+use crate::input::readline::InputReadlineExt;
 use crate::theme::colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,8 +127,8 @@ impl PluginEditDialog {
             return false;
         }
         match self.focus {
-            PluginEditField::Name => self.name_input.handle_key_event(event),
-            PluginEditField::Path => self.path_input.handle_key_event(event),
+            PluginEditField::Name => self.name_input.readline_ctrl(event),
+            PluginEditField::Path => self.path_input.readline_ctrl(event),
         }
     }
 

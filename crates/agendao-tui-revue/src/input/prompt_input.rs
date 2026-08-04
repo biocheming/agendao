@@ -68,7 +68,15 @@ pub struct PromptInput {
     /// render → event 的几何回流（Rc<Cell>：`View::render` 只有 &self，
     /// 与 ScrollableTranscript 的 publish 通道同构）。
     geom: Rc<Cell<Option<PromptViewGeom>>>,
+    /// 快照 undo/redo 栈（内容 + 光标）。自有权威——revue TextArea::undo
+    /// 有 CJK char/byte 混算缺陷，而 revue 是第三方库不可改（土律·边界），
+    /// 故 prompt 的 undo 语义由本层以快照持有（每次变更一记，粒度可预期）。
+    undo_stack: Vec<(String, (usize, usize))>,
+    redo_stack: Vec<(String, (usize, usize))>,
 }
+
+/// undo 栈上限（防长会话内存无界；到达上限丢最老快照）。
+const UNDO_STACK_CAP: usize = 128;
 
 fn default_history_path() -> std::path::PathBuf {
     // 输入历史统一收在 agendao_home（~/.agendao,土律·单点权威）。
@@ -125,6 +133,8 @@ impl PromptInput {
             history_path: None,
             placeholder: "Ask anything...".into(),
             geom: Rc::new(Cell::new(None)),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -153,6 +163,40 @@ impl PromptInput {
     fn reset_editor(&mut self, placeholder: &str) {
         self.editor.set_content("");
         self.placeholder = placeholder.to_string();
+        // 提交/模式切换是语义边界：旧草稿的 undo 历史一并作废。
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    /// 变更前快照（自有 undo 权威）。与栈顶去重、清空 redo、封顶
+    /// UNDO_STACK_CAP——所有变更入口（键入/删除/换行/粘贴/kill/历史导航/
+    /// set_text）统一经此一记（土律·单点口径）。
+    fn snapshot_undo(&mut self) {
+        let snap = (self.editor.get_content(), self.editor.cursor_position());
+        if self.undo_stack.last() == Some(&snap) {
+            return;
+        }
+        self.undo_stack.push(snap);
+        if self.undo_stack.len() > UNDO_STACK_CAP {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn undo(&mut self) -> bool {
+        let Some((content, cursor)) = self.undo_stack.pop() else { return false; };
+        self.redo_stack.push((self.editor.get_content(), self.editor.cursor_position()));
+        self.editor.set_content(&content);
+        self.editor.set_cursor(cursor.0, cursor.1);
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some((content, cursor)) = self.redo_stack.pop() else { return false; };
+        self.undo_stack.push((self.editor.get_content(), self.editor.cursor_position()));
+        self.editor.set_content(&content);
+        self.editor.set_cursor(cursor.0, cursor.1);
+        true
     }
 
     fn normal_placeholder(&self) -> &str {
@@ -231,6 +275,10 @@ impl PromptInput {
             Key::Tab => PromptAction::None,
             _ => {
                 self.focused = true;
+                // 仅变更类按键快照（导航键不进 undo 历史）。
+                if matches!(key, Key::Char(_) | Key::Backspace | Key::Delete) {
+                    self.snapshot_undo();
+                }
                 let changed = self.editor.handle_key(key);
                 if changed { PromptAction::Consumed } else { PromptAction::None }
             }
@@ -240,15 +288,77 @@ impl PromptInput {
     /// Shift+Enter / Ctrl+Enter 换行（Enter 发送语义不变——keymap 单点路由）。
     pub fn insert_newline(&mut self) {
         self.focused = true;
+        self.snapshot_undo();
         self.editor.handle_key(&Key::Enter);
     }
 
-    /// Ctrl 组合键（readline 集，U2）：透传给 TextArea。
+    /// Ctrl 组合键（readline 集，U2）：agendao 自实现——revue 是第三方库
+    /// 不可改，TextArea 又无 ctrl 路由，故 readline chord（A/E/W/U/K/Z/Y、
+    /// 词跳）在此以公开 API 组合（readline.rs 同宗，Input/TextArea 各一份）。
     /// 返回 true=已消费；未绑定 chord 返回 false（调用方吞掉，
     /// 绝不剥修饰键退化成插入字面字母）。
     pub fn handle_ctrl_key(&mut self, event: &revue::event::KeyEvent) -> bool {
+        use revue::event::Key as K;
         self.focused = true;
-        self.editor.handle_ctrl_key(event)
+        match event.key {
+            K::Char('a') => self.editor.move_home(),
+            K::Char('e') => self.editor.move_end(),
+            K::Left => self.editor.move_word_left(),
+            K::Right => self.editor.move_word_right(),
+            K::Char('w') | K::Backspace => self.kill_word_before_cursor(),
+            K::Char('u') => self.kill_to_line_start(),
+            K::Char('k') => self.kill_to_line_end(),
+            K::Char('z') => { self.undo(); }
+            K::Char('y') => { self.redo(); }
+            _ => return false,
+        }
+        true
+    }
+
+    /// 多行 kill 的公共骨架：把内容按 char 线性索引切掉 [from, to)，
+    /// 光标落到 from（经 (line,col) 换算，readline.rs 单点工具）。
+    fn kill_range(&mut self, from: usize, to: usize) {
+        if from >= to {
+            return;
+        }
+        self.snapshot_undo();
+        let content = self.editor.get_content();
+        let mut chars: Vec<char> = content.chars().collect();
+        let to = to.min(chars.len());
+        let from = from.min(to);
+        chars.drain(from..to);
+        let new: String = chars.into_iter().collect();
+        let (line, col) = crate::input::readline::linear_to_line_col(&new, from);
+        self.editor.set_content(&new);
+        self.editor.set_cursor(line, col);
+    }
+
+    fn cursor_linear(&self) -> usize {
+        let (line, col) = self.editor.cursor_position();
+        crate::input::readline::line_col_to_linear(&self.editor.get_content(), line, col)
+    }
+
+    /// Ctrl+W：删光标前一词（readline 口径：先空白后非空白）。
+    fn kill_word_before_cursor(&mut self) {
+        let cursor = self.cursor_linear();
+        let start = crate::input::readline::word_start_before(&self.editor.get_content(), cursor);
+        self.kill_range(start, cursor);
+    }
+
+    /// Ctrl+U：删到行首（多行时只动当前行，readline 口径）。
+    fn kill_to_line_start(&mut self) {
+        let (line, _) = self.editor.cursor_position();
+        let start = crate::input::readline::line_col_to_linear(&self.editor.get_content(), line, 0);
+        self.kill_range(start, self.cursor_linear());
+    }
+
+    /// Ctrl+K：删到行尾（多行时只动当前行）。
+    fn kill_to_line_end(&mut self) {
+        let (line, _) = self.editor.cursor_position();
+        let content = self.editor.get_content();
+        let line_len = content.split('\n').nth(line).map(|l| l.chars().count()).unwrap_or(0);
+        let end = crate::input::readline::line_col_to_linear(&content, line, line_len);
+        self.kill_range(self.cursor_linear(), end);
     }
 
     /// 粘贴（U1）：bracketed paste 文本原样进编辑器（多行保留）。
@@ -259,6 +369,7 @@ impl PromptInput {
             return;
         }
         self.focused = true;
+        self.snapshot_undo();
         self.editor.insert_str(&normalized);
     }
 
@@ -272,6 +383,7 @@ impl PromptInput {
         }
         if let Some(idx) = self.history_idx {
             if let Some(entry) = self.history.get(idx).cloned() {
+                self.snapshot_undo();
                 self.editor.set_content(&entry);
                 self.editor.move_document_end();
             }
@@ -285,12 +397,14 @@ impl PromptInput {
             if idx + 1 < self.history.len() {
                 self.history_idx = Some(idx + 1);
                 if let Some(entry) = self.history.get(idx + 1).cloned() {
+                    self.snapshot_undo();
                     self.editor.set_content(&entry);
                     self.editor.move_document_end();
                 }
             } else {
                 self.history_idx = None;
                 let draft = self.draft.take().unwrap_or_default();
+                self.snapshot_undo();
                 self.editor.set_content(&draft);
                 self.editor.move_document_end();
             }
@@ -303,12 +417,16 @@ impl PromptInput {
     /// Replace the input text wholesale (e.g. restoring a stashed draft).
     /// 喂回输入框权威 —— 水生木闭环（stash 恢复项回灌下一轮输入）。
     pub fn set_text(&mut self, text: &str) {
+        self.snapshot_undo();
         self.editor.set_content(text);
         self.editor.move_document_end();
     }
     pub fn clear(&mut self) {
         self.editor.set_content("");
         self.focused = false;
+        // 清空是语义边界（同 reset_editor）：undo 历史一并作废。
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
     pub fn is_focused(&self) -> bool { self.focused }
 
@@ -682,6 +800,47 @@ mod tests {
         // 未绑定 chord（Ctrl+G）→ false（调用方吞掉），文本不变
         assert!(!p.handle_ctrl_key(&ctrl(Key::Char('g'))));
         assert_eq!(p.text(), "");
+    }
+
+    #[test]
+    fn ctrl_z_snapshot_undo_redo_roundtrip_cjk() {
+        let mut p = PromptInput::new();
+        let ctrl = |key: Key| revue::event::KeyEvent {
+            key, ctrl: true, alt: false, shift: false,
+        };
+        // CJK 逐字键入：自有快照 undo（绕开 revue TextArea undo 的 CJK 缺陷）。
+        p.handle_key(&Key::Char('你'));
+        p.handle_key(&Key::Char('好'));
+        p.handle_key(&Key::Char('a'));
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('z'))));
+        assert_eq!(p.text(), "你好");
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('z'))));
+        assert_eq!(p.text(), "你");
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('y'))));
+        assert_eq!(p.text(), "你好");
+        assert_eq!(p.editor.cursor_position(), (0, 2), "undo/redo 恢复光标位");
+    }
+
+    #[test]
+    fn kills_on_multiline_only_touch_current_line() {
+        let mut p = PromptInput::new();
+        let ctrl = |key: Key| revue::event::KeyEvent {
+            key, ctrl: true, alt: false, shift: false,
+        };
+        p.set_text("hello world\nfoo bar");
+        // set_text → 光标在末行行尾 (1, 7)
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('w'))));
+        assert_eq!(p.text(), "hello world\nfoo ");
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('u'))));
+        // 只删当前行行首；revue TextArea 会归一掉文档末尾的空尾行（语义等价）。
+        assert_eq!(p.text(), "hello world");
+        // Ctrl+K 在中部行尾截断：挪到行中再 k。
+        p.editor.set_cursor(0, 5);
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('k'))));
+        assert_eq!(p.text(), "hello");
+        // kill 进快照 undo：z 逐级回滚。
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('z'))));
+        assert_eq!(p.text(), "hello world");
     }
 
     #[test]

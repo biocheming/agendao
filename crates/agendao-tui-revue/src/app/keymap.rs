@@ -576,6 +576,10 @@ const RUNNING_STALE_SECS: u64 = 30;
 /// 取代此前"Running 即每 tick 强制重绘"的频率驱动。
 pub(crate) const SPINNER_FRAME_DIV: u64 = 3;
 
+/// U4：q 双击退出的确认窗口（比 Esc 中断的 5s 短——退出确认宜快，
+/// 超时后暂扣的 'q' 静默失效，不影响后续正常输入）。
+pub(crate) const QUIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl AppHandler {
     pub(crate) fn handle(&mut self, event: &Event) -> bool {
         match event {
@@ -810,6 +814,15 @@ impl AppHandler {
                         _ => {}
                     }
                 }
+                // ── U4：Ctrl+C 退出前草稿保护 ─────────────────────
+                // revue（第三方库，不可改）在 handler 返回后对 Ctrl+C 无条件
+                // quit——veto 不了；但 handler 先跑：趁此把未发送草稿同步
+                // stash 落盘，下次启动 /stash 可找回。双击制退出落在 q 键
+                // （revue 只强占 Ctrl+C，'q' 完全归 agendao 自控）。
+                if key.ctrl && matches!(key.key, Key::Char('c')) {
+                    self.stash_unsent_draft();
+                    return true;
+                }
                 // Alt/Shift/Ctrl+Enter → prompt 换行（Enter 裸键保持发送）。
                 // Alt+Enter 是主通道：tmux/标准 xterm 下 S/C-Enter 常退化成
                 // 普通 Enter 或文本，无法独立送达；Alt+Enter 几乎处处以
@@ -830,7 +843,8 @@ impl AppHandler {
                 // 完整 KeyEvent 按 文本panel → Settings 表单 → prompt 透传
                 // （readline 集 A/E/W/U/K/Z/Y、词跳、kill 行）；未绑定 chord
                 // 全部吞掉（返回 true），绝不退化成字母、不漏全局键。
-                // Ctrl+C/V 等剪贴板语义键由 U4/剪贴板专项另行定义。
+                // Ctrl+C 已由上方 U4 分支定义（草稿 stash 后交 revue 退出）；
+                // Ctrl+V 等剪贴板语义键由剪贴板专项另行定义。
                 if key.ctrl {
                     if self.route_panel_ctrl_key(key) {
                         return true;
@@ -1531,6 +1545,44 @@ impl AppHandler {
                 return true;
             }
 
+        // ── U4: q 退出确认（双击制；空 prompt 时 q 不喂编辑器）──
+        //
+        // 原全局 `q → request_exit` 排在 prompt catch-all 之后永不可达
+        // （死键，且 request_exit 置的 exiting 信号也无读者）。现在：
+        // 空 prompt + 无 panel + 非 Settings 路由下，首次 q arm + toast；
+        // 窗口内第二个 q 退出；窗口内改按其他字符键，把暂扣的 'q' 补回
+        // 输入框再继续正常路由（"query" 这类 q 开头输入不丢首字母）；
+        // 非字符键（Enter/Esc/方向键）仅 disarm，不补回（避免误发 "q"）。
+        if self.quit_armed_via_q {
+            self.quit_armed_via_q = false;
+            let armed = self.quit_armed_at
+                .is_some_and(|t| t.elapsed() < QUIT_CONFIRM_WINDOW);
+            if armed && matches!(key, Key::Char('q')) {
+                self.store.request_exit();
+                self.quit_requested = true;
+                return true;
+            }
+            if armed && matches!(key, Key::Char(_)) {
+                self.prompt.paste("q");
+                self.refresh_slash_popup();
+            }
+            // 窗口过期：暂扣的 'q' 静默丢弃（toast 早已消失）。不 return，
+            // 本键继续走正常路由。
+        } else if matches!(key, Key::Char('q'))
+            && self.prompt.text().is_empty()
+            && self.panel == Panel::None
+            && !self.settings_edit.active
+            && !matches!(self.store.route.get(), Route::Settings)
+        {
+            self.quit_armed_at = Some(std::time::Instant::now());
+            self.quit_armed_via_q = true;
+            self.store.push_toast(
+                "Press q again to quit",
+                crate::store::types::ToastMsgVariant::Warning,
+            );
+            return true;
+        }
+
         // ── Normal prompt input ──
         let consumed = match self.prompt.handle_key(key) {
             PromptAction::Submit(text) => {
@@ -1553,8 +1605,9 @@ impl AppHandler {
         if consumed { return true; }
 
         // ── Global keys ──
+        // （q 退出已由上方 U4 双击制接管——原 `q → request_exit` 在 prompt
+        // catch-all 之后永不可达，且 exiting 信号无读者，属双重死代码。）
         match key {
-            Key::Char('q') => { self.store.request_exit(); true }
             Key::Char('h') => { self.store.navigate(Route::Home); self.prompt.focus(); true }
             Key::Char('?') => { self.toggle_help(); true }
             Key::Escape => {
@@ -3110,6 +3163,7 @@ pub(crate) fn eager_load_session_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::readline::InputReadlineExt;
     use revue::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
     fn mk_handler() -> AppHandler {
@@ -3344,7 +3398,7 @@ mod tests {
         assert!(h.handle(&Event::Paste("gpt-4".to_string())));
         // query 收下了粘贴（title 或过滤结果反映），prompt 未被污染
         assert_eq!(h.prompt.text(), "");
-        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))) || true);
+        let _ = h.handle(&Event::Key(KeyEvent::new(Key::Escape)));
     }
 
     /// U2：Settings 表单编辑态 Ctrl chord 进焦点字段（name_input）。
@@ -3683,5 +3737,134 @@ mod tests {
         assert!(h.handle(&ev));
         assert!(matches!(h.panel, Panel::None), "cancel 应关闭弹窗");
         assert!(h.pending_confirm.is_none(), "cancel 应回收 pending");
+    }
+
+    // ── U4 退出与草稿保护 ─────────────────────────────────────────
+
+    /// 落盘隔离：stash/history 写 AGENDAO_HOME，指向进程级共享临时目录，
+    /// 不碰真实 ~/.agendao（OnceLock 单值，并行测试无 env 竞态；静态
+    /// TempDir 进程退出时不析构，/tmp 由 OS 回收）。
+    fn isolate_agendao_home() {
+        use std::sync::OnceLock;
+        static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = HOME.get_or_init(|| tempfile::tempdir().expect("tempdir"));
+        std::env::set_var("AGENDAO_HOME", dir.path());
+    }
+
+    /// U4：Ctrl+C 不可 veto（revue 第三方库在 handler 返回后无条件退出），
+    /// 但 handler 先跑——未发送草稿同步 stash 落盘，下次启动 /stash 找回。
+    #[test]
+    fn ctrl_c_stashes_draft_before_revue_owned_quit() {
+        isolate_agendao_home();
+        let mut h = mk_handler();
+        h.stash_entries.clear();
+        h.prompt.set_text("fix the bug");
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('c')))));
+        assert_eq!(h.stash_entries.len(), 1);
+        assert_eq!(h.stash_entries[0].text, "fix the bug");
+        // quit 决策不归 agendao（revue 强占），自控旗标保持 false。
+        assert!(!h.quit_requested);
+    }
+
+    /// U4：空草稿时 Ctrl+C 不制造空 stash 条目。
+    #[test]
+    fn ctrl_c_with_empty_prompt_stashes_nothing() {
+        isolate_agendao_home();
+        let mut h = mk_handler();
+        h.stash_entries.clear();
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('c')))));
+        assert!(h.stash_entries.is_empty());
+    }
+
+    /// U4：q 双击制退出——首次 arm + toast（字符不入输入框），
+    /// 窗口内第二次置 quit_requested（run 循环据此 app.quit()）。
+    #[test]
+    fn q_double_press_quits() {
+        let mut h = mk_handler();
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('q')))));
+        assert!(!h.quit_requested);
+        assert!(h.prompt.text().is_empty(), "首次 q 不进输入框");
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('q')))));
+        assert!(h.quit_requested);
+        assert!(h.store.exiting.get());
+    }
+
+    /// U4：q arm 后改按其他字符 → 暂扣的 'q' 补回（"query" 不丢首字母）。
+    #[test]
+    fn q_armed_then_other_char_inserts_back() {
+        let mut h = mk_handler();
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('q'))));
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('u'))));
+        assert_eq!(h.prompt.text(), "qu");
+        assert!(!h.quit_requested);
+    }
+
+    /// U4：q arm 后按非字符键（Enter）仅 disarm——不补回、不误发 "q"。
+    #[test]
+    fn q_armed_then_enter_only_disarms() {
+        let mut h = mk_handler();
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('q'))));
+        h.handle(&Event::Key(KeyEvent::new(Key::Enter)));
+        assert!(h.prompt.text().is_empty());
+        assert!(!h.quit_requested);
+    }
+
+    /// U4：有草稿时 q 是正常输入字符（不抢退出语义）。
+    #[test]
+    fn q_with_draft_types_into_prompt() {
+        let mut h = mk_handler();
+        h.prompt.set_text("abc");
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('q'))));
+        assert_eq!(h.prompt.text(), "abcq");
+        assert!(!h.quit_requested);
+    }
+
+    /// U4：sidebar/快捷键触发 /new 时，未发送草稿自动 stash
+    /// （此前 execute_slash_action 无条件 clear，草稿无声销毁）。
+    #[test]
+    fn slash_action_auto_stashes_draft() {
+        isolate_agendao_home();
+        let mut h = mk_handler();
+        h.stash_entries.clear();
+        h.prompt.set_text("draft to keep");
+        h.execute_slash_action(UiActionId::NewSession);
+        assert!(h.prompt.text().is_empty());
+        assert_eq!(h.stash_entries.len(), 1);
+        assert_eq!(h.stash_entries[0].text, "draft to keep");
+    }
+
+    /// U4：slash 命令文本自身（"/new"）是触发器不是草稿，不入 stash。
+    #[test]
+    fn slash_command_text_is_not_stashed() {
+        isolate_agendao_home();
+        let mut h = mk_handler();
+        h.stash_entries.clear();
+        h.prompt.set_text("/new");
+        h.execute_slash_action(UiActionId::NewSession);
+        assert!(h.stash_entries.is_empty());
+    }
+
+    /// U4：PromptStashPush 显式 stash 走清前捕获（修复旧实现 clear 在
+    /// 前、臂内永远读到空文本的死路径）。
+    #[test]
+    fn stash_push_uses_pre_clear_captured_draft() {
+        isolate_agendao_home();
+        let mut h = mk_handler();
+        h.stash_entries.clear();
+        h.prompt.set_text("explicit stash me");
+        h.execute_slash_action(UiActionId::PromptStashPush);
+        assert!(h.prompt.text().is_empty());
+        assert_eq!(h.stash_entries.len(), 1);
+        assert_eq!(h.stash_entries[0].text, "explicit stash me");
+    }
+
+    /// U4：/exit 经 quit_requested 旗标请求退出（修复 request_exit
+    /// 只置无读者 exiting 信号的死路径）。
+    #[test]
+    fn exit_action_requests_quit() {
+        let mut h = mk_handler();
+        h.execute_slash_action(UiActionId::Exit);
+        assert!(h.quit_requested);
+        assert!(h.store.exiting.get());
     }
 }

@@ -25,6 +25,7 @@ use revue::widget::Border;
 use crate::app::provider_actions::{ProviderEditMode, ProviderEditSubmission};
 use crate::app::settings_edit_state::PROTOCOL_OPTIONS;
 use crate::dialog::backdrop;
+use crate::input::readline::InputReadlineExt;
 use crate::theme::colors;
 
 /// 眼睛符号（与 status_icon 的 ◌◐● 同一套终端安全字形，显示宽 1）：
@@ -260,13 +261,13 @@ impl ProviderEditDialog {
         match self.focus {
             ProviderEditField::Name => {
                 if self.mode == ProviderEditMode::Add {
-                    self.name_input.handle_key_event(event)
+                    self.name_input.readline_ctrl(event)
                 } else {
                     true
                 }
             }
-            ProviderEditField::BaseUrl => self.base_url_input.handle_key_event(event),
-            ProviderEditField::ApiKey => self.api_key_input.handle_key_event(event),
+            ProviderEditField::BaseUrl => self.base_url_input.readline_ctrl(event),
+            ProviderEditField::ApiKey => self.api_key_input.readline_ctrl(event),
             ProviderEditField::Protocol => true,
         }
     }

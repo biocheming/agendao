@@ -17,6 +17,7 @@ use revue::prelude::*;
 use revue::widget::Border;
 
 use crate::dialog::backdrop;
+use crate::input::readline::InputReadlineExt;
 use crate::theme::colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,13 +263,13 @@ impl McpEditDialog {
         match self.focus {
             McpEditField::Name => {
                 if self.mode == McpEditMode::Add {
-                    self.name_input.handle_key_event(event)
+                    self.name_input.readline_ctrl(event)
                 } else {
                     true
                 }
             }
-            McpEditField::Command => self.command_input.handle_key_event(event),
-            McpEditField::Url => self.url_input.handle_key_event(event),
+            McpEditField::Command => self.command_input.readline_ctrl(event),
+            McpEditField::Url => self.url_input.readline_ctrl(event),
             McpEditField::Transport => true,
         }
     }

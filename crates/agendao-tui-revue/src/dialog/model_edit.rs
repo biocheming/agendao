@@ -24,6 +24,7 @@ use revue::prelude::*;
 use revue::widget::Border;
 
 use crate::dialog::backdrop;
+use crate::input::readline::InputReadlineExt;
 use crate::theme::colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,16 +376,16 @@ impl ModelEditDialog {
         match self.focus {
             ModelEditField::Id => {
                 if self.mode == ModelEditMode::Add {
-                    self.id_input.handle_key_event(event)
+                    self.id_input.readline_ctrl(event)
                 } else {
                     true
                 }
             }
-            ModelEditField::Name => self.name_input.handle_key_event(event),
-            ModelEditField::ContextWindow => self.context_input.handle_key_event(event),
-            ModelEditField::MaxOutputTokens => self.max_output_input.handle_key_event(event),
-            ModelEditField::TimeoutSecs => self.timeout_input.handle_key_event(event),
-            ModelEditField::StreamStallSecs => self.stall_input.handle_key_event(event),
+            ModelEditField::Name => self.name_input.readline_ctrl(event),
+            ModelEditField::ContextWindow => self.context_input.readline_ctrl(event),
+            ModelEditField::MaxOutputTokens => self.max_output_input.readline_ctrl(event),
+            ModelEditField::TimeoutSecs => self.timeout_input.readline_ctrl(event),
+            ModelEditField::StreamStallSecs => self.stall_input.readline_ctrl(event),
             ModelEditField::ReasoningEffort => true,
         }
     }
