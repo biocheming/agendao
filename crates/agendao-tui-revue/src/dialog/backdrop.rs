@@ -114,6 +114,26 @@ pub(crate) fn truncate_to_width(s: &str, max_w: usize) -> String {
     out
 }
 
+/// U14①：footer hint 超宽裁剪——保尾部丢头部（头部补 … 明示省略）。
+/// 各 dialog 的 hint 文案惯例把逃生键（Esc/Enter）放在尾部，而原
+/// 居中渲染超宽时两端裁剪会把 "Enter: …  Esc: close" 整体吃掉
+/// （Home 路由输入框仅 64 宽时 mcp_list 120 字符 hint 即中招）。
+/// 居中绘制前先把文本收到 ≤ width，居中就只剩≤宽文本，不再双端
+/// 丢字。
+pub(crate) fn fit_hint_tail(hint: &str, width: u16) -> String {
+    let w = width as usize;
+    let chars: Vec<char> = hint.chars().collect();
+    if chars.len() <= w {
+        return hint.to_string();
+    }
+    if w <= 1 {
+        return "…".to_string();
+    }
+    let tail: String = chars[chars.len() - (w - 1)..].iter().collect();
+    format!("…{}", tail)
+}
+
+
 /// Where a dialog/list anchors on screen.
 ///
 /// Two strategies share one rendering core (唯一成形语法 — 金律):
@@ -231,7 +251,7 @@ fn render_positioned_dialog(
                 )
                 .child_flex(content, 1.0)
                 .child_sized(
-                    Text::new(footer_hint)
+                    Text::new(fit_hint_tail(footer_hint, w))
                         .fg(colors::FG_MUTED())
                         .bg(colors::BG_PRIMARY())
                         .align(Alignment::Center),
@@ -254,7 +274,7 @@ fn render_positioned_dialog(
                     vstack().gap(1)
                         .child_flex(content, 1.0)
                         .child_sized(
-                            Text::new(footer_hint)
+                            Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
                                 .fg(colors::FG_MUTED())
                                 .align(Alignment::Center),
                             1,
@@ -616,7 +636,7 @@ fn render_positioned_list(
             )
             .child_flex(list_content, 1.0)
             .child_sized(
-                Text::new(footer_hint)
+                Text::new(fit_hint_tail(footer_hint, w))
                     .fg(colors::FG_MUTED())
                     .bg(colors::BG_PRIMARY())
                     .align(Alignment::Center),
@@ -640,7 +660,7 @@ fn render_positioned_list(
                 vstack().gap(0)
                     .child_flex(list_content, 1.0)
                     .child_sized(
-                        Text::new(footer_hint)
+                        Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
                             .fg(colors::FG_MUTED())
                             .align(Alignment::Center),
                         1,
@@ -824,5 +844,65 @@ mod tests {
         let (start, end) = list_viewport_window(0, 0, 8);
         assert_eq!(start, 0);
         assert_eq!(end, 0);
+    }
+
+    #[test]
+    fn fit_hint_tail_noop_when_fits() {
+        assert_eq!(fit_hint_tail("Esc: close", 64), "Esc: close");
+        assert_eq!(fit_hint_tail("abc", 3), "abc");
+    }
+
+    #[test]
+    fn fit_hint_tail_preserves_escape_tail() {
+        // U14①:mcp_list 的 120 字符 hint 在 64 宽输入框下必须保住尾部
+        // "Esc: close"(逃生键),头部丢字用 … 明示。
+        let hint = "↑↓ navigate  Home/End: jump  c: connect  d: disconnect  \
+                    a/A: oauth  x: clear  n: add  e: edit  Enter: view  Esc: close";
+        let got = fit_hint_tail(hint, 64);
+        assert_eq!(got.chars().count(), 64);
+        assert!(got.starts_with('…'), "截断须以 … 起头: {got}");
+        assert!(got.ends_with("Esc: close"), "逃生键尾部必须保留: {got}");
+    }
+
+    #[test]
+    fn fit_hint_tail_degenerate_width() {
+        // w<=1 时只剩 …(连尾部也放不下,明示省略即可)。
+        assert_eq!(fit_hint_tail("abcdef", 1), "…");
+        assert_eq!(fit_hint_tail("abcdef", 0), "…");
+    }
+
+    /// U14② 验收：hint 与 handle_key 实际支持键一致。源级扫描钉住映射——
+    /// 此后给 dialog 加新键却不写进 hint（或反之）会在这里立刻失败。
+    #[test]
+    fn dialog_hints_document_handled_keys() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/dialog");
+        let read = |f: &str| {
+            std::fs::read_to_string(format!("{dir}/{f}"))
+                .unwrap_or_else(|e| panic!("read {f}: {e}"))
+        };
+        // Home/End 跳转处理器必须写进 hint。
+        for f in [
+            "agent_select.rs", "mode_select.rs", "mcp_list.rs", "skill_proposal.rs",
+            "recovery_list.rs", "task_list.rs", "session_fork.rs", "notifications.rs",
+            "skill_list.rs",
+        ] {
+            let s = read(f);
+            assert!(s.contains("Key::Home"), "{f}: 前置——应有 Home 处理");
+            assert!(s.contains("Home/End"), "{f}: hint 未写 Home/End");
+        }
+        // 过滤弹窗的 Backspace 擦除键必须写进 hint。
+        for f in ["model_select.rs", "session_list.rs"] {
+            let s = read(f);
+            assert!(s.contains("Key::Backspace"), "{f}: 前置——应有 Backspace 处理");
+            assert!(s.contains('⌫'), "{f}: hint 未写 ⌫");
+        }
+        // confirm 的 'q' 取消键、permission 的 'a'/'d' 快捷键必须写进 hint。
+        assert!(
+            read("confirm.rs").contains("n/Esc/q: cancel"),
+            "confirm hint 未写 q"
+        );
+        let p = read("permission.rs");
+        assert!(p.contains("↵/y/a allow"), "permission hint 未写 a");
+        assert!(p.contains("0/n/d deny"), "permission hint 未写 d");
     }
 }

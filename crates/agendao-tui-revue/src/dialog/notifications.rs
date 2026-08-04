@@ -133,7 +133,7 @@ impl NotificationDialog {
             colors::ACCENT_CYAN(),
             &items,
             self.selected,
-            "↑↓ navigate  Esc: close",
+            "↑↓ navigate  Home/End: jump  Esc: close",
             ctx, geom, 12,
         );
     }

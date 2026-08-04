@@ -112,7 +112,7 @@ impl TaskListDialog {
             colors::ACCENT_GREEN(),
             &items,
             self.selected,
-            "↑↓ navigate  c: cancel  Enter: view  Esc: close",
+            "↑↓ navigate  Home/End: jump  c: cancel  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

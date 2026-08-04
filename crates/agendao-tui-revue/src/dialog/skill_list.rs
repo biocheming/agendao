@@ -120,7 +120,7 @@ impl SkillListDialog {
                 &items,
                 // 用选中索引驱动 sliding viewport：scroll 即"选中行"。
                 detail.scroll,
-                "↑↓/PgUp/PgDn scroll  Esc: back",
+                "↑↓/PgUp/PgDn scroll  Home/End: top/bottom  Esc: back",
                 ctx, geom, DETAIL_VIEWPORT,
             );
             return;
@@ -155,7 +155,7 @@ impl SkillListDialog {
             colors::ACCENT_PURPLE(),
             &items,
             self.selected,
-            "↑↓ navigate  Enter: detail  Esc: close",
+            "↑↓ navigate  Home/End: jump  Enter: detail  Esc: close",
             ctx, geom, 12,
         );
     }

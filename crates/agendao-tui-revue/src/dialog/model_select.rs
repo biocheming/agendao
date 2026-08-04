@@ -291,7 +291,7 @@ impl ModelSelectDialog {
             colors::ACCENT_CYAN(),
             &items,
             self.selected,
-            "type to filter  ↑↓ navigate  Tab: variant  Enter: select  Esc: close",
+            "type to filter  ⌫ erase  ↑↓ navigate  Tab: variant  Enter: select  Esc: close",
             ctx,
             geom,
             18,

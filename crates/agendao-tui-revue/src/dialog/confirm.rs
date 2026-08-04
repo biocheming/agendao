@@ -55,7 +55,7 @@ impl ConfirmDialog {
         let content = vstack().child(
             Text::new(&self.message).fg(colors::FG_SECONDARY())
         );
-        let hint = format!("y/Enter: {}  n/Esc: cancel", self.confirm_label);
+        let hint = format!("y/Enter: {}  n/Esc/q: cancel", self.confirm_label);
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做按钮命中（几何同源）。
         Some(backdrop::render_dialog_bottom(&self.title, colors::ACCENT_YELLOW(), content, &hint, ctx, geom, 5))
     }

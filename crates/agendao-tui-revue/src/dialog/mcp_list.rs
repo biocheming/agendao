@@ -129,7 +129,7 @@ impl McpListDialog {
             colors::ACCENT_CYAN(),
             &items,
             self.selected,
-            "↑↓ navigate  c: connect  d: disconnect  a/A: oauth start/finish  x: clear auth  n: add  e: edit  Enter: view  Esc: close",
+            "↑↓ navigate  Home/End: jump  c: connect  d: disconnect  a/A: oauth start/finish  x: clear auth  n: add  e: edit  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

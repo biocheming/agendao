@@ -124,7 +124,7 @@ impl SkillProposalDialog {
             colors::ACCENT_PURPLE(),
             &items,
             self.selected,
-            "↑↓ navigate  a: approve  r: reject  Enter: view  Esc: close",
+            "↑↓ navigate  Home/End: jump  a: approve  r: reject  Enter: view  Esc: close",
             ctx, geom, 12,
         );
     }

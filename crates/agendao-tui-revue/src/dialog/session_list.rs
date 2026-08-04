@@ -279,9 +279,9 @@ impl SessionListDialog {
                 format!("Sessions{} — query: {}{}", scope_suffix, self.query, marked_hint)
             };
             let footer = if marked_n > 0 {
-                "type filter  ↑↓ nav  Enter open  x mark  D delete marked  Esc close"
+                "type filter  ⌫ erase  ↑↓ nav  Enter open  x mark  D delete marked  Esc close"
             } else {
-                "type filter  ↑↓ nav  Enter open  x mark  Esc close"
+                "type filter  ⌫ erase  ↑↓ nav  Enter open  x mark  Esc close"
             };
             let layout = backdrop::render_list_dialog_bottom_with_layout(
                 &title,

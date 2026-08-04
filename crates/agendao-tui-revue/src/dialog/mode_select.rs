@@ -109,7 +109,7 @@ impl ModeSelectDialog {
             colors::ACCENT_PURPLE(),
             &items,
             self.selected,
-            "↑↓ navigate  Enter: select  Esc: close",
+            "↑↓ navigate  Home/End: jump  Enter: select  Esc: close",
             ctx, geom, 14,
         );
     }

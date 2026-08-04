@@ -539,7 +539,7 @@ impl PermissionDialog {
 
         // ── Hint ──
         content = content.child_sized(
-            Text::new(" ↑↓ navigate · ↵/y allow · 1-3 quick allow · 0/n deny · Esc hide").fg(colors::FG_MUTED()),
+            Text::new(" ↑↓ navigate · ↵/y/a allow · 1-3 quick allow · 0/n/d deny · Esc hide").fg(colors::FG_MUTED()),
             1,
         );
         height += 1;

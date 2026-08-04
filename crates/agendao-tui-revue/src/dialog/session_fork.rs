@@ -102,7 +102,7 @@ impl SessionForkDialog {
             colors::ACCENT_PURPLE(),
             &items,
             self.selected,
-            "↑↓ select anchor  Enter: fork  Esc: cancel",
+            "↑↓ select anchor  Home/End: jump  Enter: fork  Esc: cancel",
             ctx, geom, 10,
         );
     }

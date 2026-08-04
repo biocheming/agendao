@@ -123,7 +123,7 @@ impl RecoveryListDialog {
             colors::ACCENT_YELLOW(),
             &items,
             self.selected,
-            "↑↓ navigate  x: execute (actions only)  Enter: view  Esc: close",
+            "↑↓ navigate  Home/End: jump  x: execute (actions only)  Enter: view  Esc: close",
             ctx, geom, 16,
         );
     }
