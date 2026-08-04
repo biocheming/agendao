@@ -1867,6 +1867,29 @@ impl AppHandler {
                     self.layout_dirty = true;
                     return true;
                 }
+                // U11②：回底/到顶四键。空 prompt 才让位——Home/End 有文本
+                // 编辑语义（光标行首/行尾），g/G 是字母键，prompt 非空时
+                // 归编辑器（与 Space/'e'/'c' 同一让位先例）。
+                Key::Home if self.prompt.text().is_empty() => {
+                    self.active_session.scroll_to_top();
+                    self.layout_dirty = true;
+                    return true;
+                }
+                Key::End if self.prompt.text().is_empty() => {
+                    self.active_session.scroll_to_bottom();
+                    self.layout_dirty = true;
+                    return true;
+                }
+                Key::Char('g') if self.prompt.text().is_empty() => {
+                    self.active_session.scroll_to_top();
+                    self.layout_dirty = true;
+                    return true;
+                }
+                Key::Char('G') if self.prompt.text().is_empty() => {
+                    self.active_session.scroll_to_bottom();
+                    self.layout_dirty = true;
+                    return true;
+                }
                 Key::Tab => {
                     // Tab cycles forward through foldable blocks.
                     self.active_session.cursor_next_foldable();
@@ -2226,6 +2249,10 @@ impl AppHandler {
         self.sf_tx.send_replace(Some(sid.clone()));
         let mid = format!("user-{}", ts_now());
         self.active_session.push_user_message(&mid, &text);
+        // U11③：发送即回底——刚发出的消息必须在视口内（GUI 会话惯例）；
+        // 翻上去阅读的位置由用户下一次显式滚动重建。scroll_to_bottom
+        // 顺带清未读计数。
+        self.active_session.scroll_to_bottom();
         if let Some(ref api) = self.api {
             self.active_session.run_status.set(RunStatus::Sending);
             self.layout_dirty = true;
@@ -5105,4 +5132,54 @@ mod tests {
         assert_eq!(h.active_session.messages.get().len(), before, "不误发");
     }
 
+    // ── U11：回底/到顶键 + 发送回底 ──
+
+    fn mk_session_handler() -> AppHandler {
+        let mut h = mk_handler();
+        h.store.navigate(Route::Session { session_id: "s".into() });
+        h
+    }
+
+    /// End/G 回底、Home/g 到顶（空 prompt 让位，Session 路由）。
+    #[test]
+    fn home_end_g_keys_jump_top_bottom() {
+        let mut h = mk_session_handler();
+        h.active_session.scroll_offset.set(3);
+        h.handle(&Event::Key(KeyEvent::new(Key::End)));
+        assert_eq!(h.active_session.scroll_offset.get(), 0, "End 回底");
+
+        h.handle(&Event::Key(KeyEvent::new(Key::Home)));
+        assert_eq!(h.active_session.scroll_offset.get(), u16::MAX, "Home 到顶");
+
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('G'))));
+        assert_eq!(h.active_session.scroll_offset.get(), 0, "G 回底");
+
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('g'))));
+        assert_eq!(h.active_session.scroll_offset.get(), u16::MAX, "g 到顶");
+    }
+
+    /// prompt 非空时 Home/End/g/G 归编辑器（不抢滚动语义）。
+    #[test]
+    fn scroll_jump_keys_yield_to_nonempty_prompt() {
+        let mut h = mk_session_handler();
+        h.prompt.set_text("draft");
+        h.active_session.scroll_offset.set(3);
+        for key in [Key::Home, Key::End, Key::Char('g'), Key::Char('G')] {
+            h.handle(&Event::Key(KeyEvent::new(key)));
+            assert_eq!(
+                h.active_session.scroll_offset.get(),
+                3,
+                "{key:?} 不得抢滚动（prompt 有草稿）"
+            );
+        }
+    }
+
+    /// 发送消息自动回底（刚发出的内容必须在视口内）。
+    #[test]
+    fn dispatch_scrolls_to_bottom() {
+        let mut h = mk_session_handler();
+        h.active_session.scroll_offset.set(8);
+        h.dispatch("hello".into());
+        assert_eq!(h.active_session.scroll_offset.get(), 0);
+    }
 }

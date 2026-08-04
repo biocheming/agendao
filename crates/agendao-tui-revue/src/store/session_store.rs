@@ -24,6 +24,16 @@ pub struct SessionStore {
     /// re-read history. Updated by mouse wheel and PageUp/PageDown.
     pub scroll_offset: Signal<u16>,
 
+    /// U11①：上一帧渲染的 transcript 总高（render 单点回写）。流式
+    /// chunk/新块把内容底部长高 Δ 时，若用户翻上去阅读（offset>0），
+    /// offset 同步 +Δ——锚的是内容坐标，不是"距底行数"，正在读的行
+    /// 视觉位置不动。
+    pub scroll_anchor_last_h: Signal<u16>,
+
+    /// U11④：未读记账——offset==0（在底）时对齐为当前块数；翻上去
+    /// 期间 messages 长尾多出的块数即 status bar "↓ N new"。
+    pub unread_seen_len: Signal<usize>,
+
     /// Index of the transcript block currently under the keyboard
     /// cursor. The cursor moves with j/k (vim) and is the target of
     /// Space (toggle fold). When `None`, no block is selected — typical
@@ -77,6 +87,8 @@ impl SessionStore {
             working_dir: signal(String::new()),
             messages: signal(Vec::new()),
             scroll_offset: signal(0),
+            scroll_anchor_last_h: signal(0),
+            unread_seen_len: signal(0),
             transcript_cursor: signal(None),
             token_usage: signal(TokenUsage::default()),
             cache_stats: signal(CacheStats::default()),
@@ -105,6 +117,8 @@ impl SessionStore {
         self.run_status.set(RunStatus::Idle);
         self.messages.update(|m| m.clear());
         self.scroll_offset.set(0);
+        self.scroll_anchor_last_h.set(0);
+        self.unread_seen_len.set(0);
         self.transcript_cursor.set(None);
         self.token_usage.set(TokenUsage::default());
         self.cache_stats.set(CacheStats::default());
@@ -481,6 +495,45 @@ impl SessionStore {
 
     pub fn scroll_to_bottom(&self) {
         self.scroll_offset.set(0);
+        // U11④：回底即已读——未读计数立即消失（不等下一帧 render 回写）。
+        self.unread_seen_len.set(self.messages.get().len());
+    }
+
+    /// U11②：滚到顶。offset 语义 = 距底行数，顶 = max_offset；u16::MAX
+    /// 由渲染侧 `.min(max_offset)` 收口到真实顶，无需在此知道总高。
+    pub fn scroll_to_top(&self) {
+        self.scroll_offset.set(u16::MAX);
+    }
+
+    /// U11：render 每帧回写（单点，渲染算完权威 total_h 后调用）。
+    /// ①内容锚定：offset>0 且总高环比增长 Δ → offset += Δ（钉内容
+    /// 坐标，流式 chunk 顶不走正在读的行）；④未读记账：offset==0 →
+    /// seen 对齐当前块数（在底即已读）。pinned（内联 permission/
+    /// question 强制钉底）期间不锚定。last==0（reset/新会话首帧）
+    /// 不锚定——防止首帧把 offset 顶飞。
+    pub fn sync_scroll_frame(&self, total_h: u16, msg_len: usize, pinned: bool) {
+        let last = self.scroll_anchor_last_h.get();
+        self.scroll_anchor_last_h.set(total_h);
+        if self.scroll_offset.get() == 0 {
+            self.unread_seen_len.set(msg_len);
+            return;
+        }
+        if pinned || last == 0 || total_h <= last {
+            return;
+        }
+        let delta = total_h - last;
+        self.scroll_offset.update(|o| *o = o.saturating_add(delta));
+    }
+
+    /// U11④：翻上去阅读期间新到底的块数（status bar "↓ N new"）。
+    pub fn unread_count(&self) -> usize {
+        if self.scroll_offset.get() == 0 {
+            return 0;
+        }
+        self.messages
+            .get()
+            .len()
+            .saturating_sub(self.unread_seen_len.get())
     }
 
     // ── Transcript cursor & fold ──
@@ -1363,5 +1416,88 @@ mod tests {
         // cursor 超界 → None
         s.transcript_cursor.set(Some(99));
         assert_eq!(s.cursor_block_to_text(), None);
+    }
+
+    // ── U11：内容锚定 + 未读计数 ──
+
+    /// 翻上去阅读（offset>0）时内容底部长高 Δ → offset 同步 +Δ，
+    /// 正在读的行视觉不动（锚内容坐标，非"距底行数"）。
+    #[test]
+    fn anchor_bumps_offset_on_growth_while_scrolled_up() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "hello");
+        // 首帧：total 100，用户翻上去 10 行。
+        s.sync_scroll_frame(100, 1, false);
+        s.scroll_offset.set(10);
+        // 次帧：流式把内容顶高 6 行。
+        s.sync_scroll_frame(106, 1, false);
+        assert_eq!(s.scroll_offset.get(), 16, "offset +Δ 保持阅读位置");
+        // 再次长高 4 行。
+        s.sync_scroll_frame(110, 1, false);
+        assert_eq!(s.scroll_offset.get(), 20);
+    }
+
+    /// 在底（offset==0）不锚定——钉底语义不变。
+    #[test]
+    fn anchor_noop_at_bottom() {
+        let s = SessionStore::new();
+        s.sync_scroll_frame(100, 0, false);
+        s.sync_scroll_frame(120, 0, false);
+        assert_eq!(s.scroll_offset.get(), 0);
+    }
+
+    /// pinned（内联 permission/question 钉底）期间不锚定。
+    #[test]
+    fn anchor_noop_when_pinned() {
+        let s = SessionStore::new();
+        s.sync_scroll_frame(100, 0, false);
+        s.scroll_offset.set(5);
+        s.sync_scroll_frame(110, 0, true);
+        assert_eq!(s.scroll_offset.get(), 5);
+    }
+
+    /// last==0 首帧不锚定（防 reset/新会话首帧把 offset 顶飞）。
+    #[test]
+    fn anchor_noop_on_first_frame() {
+        let s = SessionStore::new();
+        s.scroll_offset.set(7);
+        s.sync_scroll_frame(100, 0, false);
+        assert_eq!(s.scroll_offset.get(), 7);
+    }
+
+    /// 内容缩短（compact 替换）不锚定，offset 由渲染 min(max_offset) 收口。
+    #[test]
+    fn anchor_noop_on_shrink() {
+        let s = SessionStore::new();
+        s.sync_scroll_frame(100, 0, false);
+        s.scroll_offset.set(10);
+        s.sync_scroll_frame(40, 0, false);
+        assert_eq!(s.scroll_offset.get(), 10);
+    }
+
+    /// 翻上去期间新块到达 → 未读计数；回底立即清零。
+    #[test]
+    fn unread_counts_new_blocks_until_bottom() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "a");
+        // 在底一帧：seen 对齐 1。
+        s.sync_scroll_frame(10, 1, false);
+        // 翻上去后新到两块。
+        s.scroll_offset.set(5);
+        s.push_user_message("u2", "b");
+        s.push_user_message("u3", "c");
+        s.sync_scroll_frame(20, 3, false);
+        assert_eq!(s.unread_count(), 2);
+        // 回底 → 未读消失。
+        s.scroll_to_bottom();
+        assert_eq!(s.unread_count(), 0);
+    }
+
+    /// scroll_to_top 置 u16::MAX，渲染侧 min(max_offset) 收口到真实顶。
+    #[test]
+    fn scroll_to_top_saturates_to_max_offset() {
+        let s = SessionStore::new();
+        s.scroll_to_top();
+        assert_eq!(s.scroll_offset.get(), u16::MAX);
     }
 }

@@ -1425,6 +1425,10 @@ impl View for RootView {
                     let total_h = total_h.saturating_add(extra_h);
                     let max_offset = total_h.saturating_sub(available);
                     let pinned = h.permission_dialog.visible || h.question_dialog.visible;
+                    // U11①④：内容锚定 + 未读记账（单点回写，语义见
+                    // SessionStore::sync_scroll_frame）。须在 user_offset
+                    // 读取之前——锚定补的 Δ 本帧即生效。
+                    h.active_session.sync_scroll_frame(total_h, msgs.len(), pinned);
                     let user_offset = if pinned {
                         0
                     } else {
@@ -1675,9 +1679,16 @@ impl View for RootView {
             None => String::new(),
         };
         let nav_hint = if matches!(route, Route::Session { .. }) {
-            " Tab:nav Space:fold PgUp/Dn:scroll"
+            " Tab:nav Space:fold PgUp/Dn:scroll g/G:top/bottom"
         } else {
             ""
+        };
+        // U11④：翻上去阅读期间新到底的块数——"↓ N new"，回底消失。
+        let unread_count = h.active_session.unread_count();
+        let unread_hint = if unread_count > 0 {
+            format!(" ↓ {} new", unread_count)
+        } else {
+            String::new()
         };
         // U6⑤：后台弹窗拉取在途 → 状态栏 ◌ 段（与 settings 左栏 ◌ 同一
         // 指示语言；单闸保证至多一个在途，文案即点火处 label）。
@@ -1714,8 +1725,8 @@ impl View for RootView {
             String::new()
         };
         let status_prefix = format!(
-            " {} │ [{}]{}{}{}{} │{}",
-            dir_short, panel_label, stats, fetch_hint, stale_hint, cursor_hint, nav_hint,
+            " {} │ [{}]{}{}{}{}{} │{}",
+            dir_short, panel_label, stats, fetch_hint, stale_hint, unread_hint, cursor_hint, nav_hint,
         );
         let (bell_rect, pending_rect) = {
             use unicode_width::UnicodeWidthStr;
