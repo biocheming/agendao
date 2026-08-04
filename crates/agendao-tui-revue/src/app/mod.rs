@@ -583,6 +583,24 @@ pub(crate) const HOME_SHELL_PLACEHOLDERS: &[&str] = &["ls -la", "git status", "p
 /// 扣除、鼠标命中 x 边界三处共用——避免「32」散落漂移致 sidebar 显隐时宽/命中错位。
 pub(crate) const SIDEBAR_WIDTH: u16 = 32;
 
+/// U24：窄终端降级阈值——内容列至少保有的列数。窗口宽 < SIDEBAR_WIDTH +
+/// MIN_CONTENT_W 时渲染层自动隐藏 sidebar（不动 sidebar_visible 用户态，
+/// 拉宽即恢复），否则内容列被挤成个位数宽、深井/PAD 裁切后全是碎片。
+pub(crate) const MIN_CONTENT_W: u16 = 30;
+
+/// U24：sidebar 有效可见性（渲染与命中**同一口径**，金律：几何不得漂移）。
+/// 所有布局/命中站点一律经此换算，不得直读 sidebar_visible。
+/// width==0 = 几何未发布（首帧 render 前，或无 render 的测试环境）——
+/// 不降级，回用户态（真实终端宽度永不为 0）。
+pub(crate) fn effective_sidebar_visible(sidebar_visible: bool, width: u16) -> bool {
+    sidebar_visible && (width == 0 || width >= SIDEBAR_WIDTH + 1 + MIN_CONTENT_W)
+}
+
+/// U24：可排布下限——低于此尺寸不硬排（任何布局都是碎片），整屏画诚实
+/// 警告（RootView::render 顶部短路）。
+pub(crate) const MIN_TERMINAL_W: u16 = 24;
+pub(crate) const MIN_TERMINAL_H: u16 = 8;
+
 /// 全局左右气口宽（深川·流白「流白」物理载体）。transcript 内 messageblock 左右各留 PAD；
 /// page_inner 内的非 transcript 元素（header/ctx/attachment/prompt/status）左侧留 PAD，
 /// 对齐 messageblock 内容列起点（= SIDEBAR_WIDTH + PAD）。气口宽度单点（金律：唯一成形口径）。
@@ -1066,6 +1084,20 @@ impl View for RootView {
     fn render(&self, ctx: &mut RenderContext) {
         let route = self.store.route.get();
         let h = self.handler.borrow();
+        // U24：最小尺寸警告——低于可排布下限不硬排（任何布局都是碎片），
+        // 整屏画一句诚实提示；用户拉大即自动恢复正常渲染。
+        if ctx.area.width < MIN_TERMINAL_W || ctx.area.height < MIN_TERMINAL_H {
+            let msg = format!(
+                "Terminal too small: {}x{} — need at least {}x{}",
+                ctx.area.width, ctx.area.height, MIN_TERMINAL_W, MIN_TERMINAL_H
+            );
+            Text::new(&msg).fg(colors::ACCENT_YELLOW()).render(ctx);
+            return;
+        }
+        // U24：窄终端降级——宽度不足时 sidebar 自动隐藏（不动 sidebar_visible
+        // 用户态，拉宽即恢复）。本帧全部布局站点统一用 sidebar_on，与 keymap
+        // 命中同口径（effective_sidebar_visible，金律：几何不得漂移）。
+        let sidebar_on = effective_sidebar_visible(h.sidebar_visible, ctx.area.width);
         let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running | RunStatus::Compacting);
         let is_slash = h.panel == Panel::Slash;
         // Transcript viewport height, hoisted out of the inner
@@ -1102,7 +1134,7 @@ impl View for RootView {
         // Session tree 可点击导航命中快照(阳面命中口径);build 内算好绝对 y,
         // publish 段发布到 handler 供 keymap click hit-test(与 sidebar_tab_y 同构)。
         let mut sidebar_nav_hits: Vec<crate::telemetry::sidebar::SidebarNavHit> = Vec::new();
-        if h.sidebar_visible {
+        if sidebar_on {
             let token = h.active_session.token_usage.get();
             let cache = h.active_session.cache_stats.get();
             let price = h.active_session.pricing.get();
@@ -1175,7 +1207,7 @@ impl View for RootView {
 
                 // dir 点击命中区：page_x = sidebar 显示 ? SIDEBAR_WIDTH+1(vline) : 0；
                 // header 经 gutter 左留 PAD=4；title 在前占 title_w（含尾随气口），gap(2)，dir 紧接其后。
-                let page_x: u16 = if h.sidebar_visible { SIDEBAR_WIDTH + 1 } else { 0 };
+                let page_x: u16 = if sidebar_on { SIDEBAR_WIDTH + 1 } else { 0 };
                 dir_hit = Some((page_x + PAD + title_w + 2, dir_w));
 
                 if let Some(ref m) = self.store.selected_model.get() {
@@ -1283,7 +1315,7 @@ impl View for RootView {
                     let cursor_idx = h.active_session.transcript_cursor.get();
                     // transcript 可用宽（几何规则基准）：扣除 sidebar（32）。
                     // scrollbar（1-2 列）作为微小偏差容忍。
-                    let sidebar_w: u16 = if h.sidebar_visible { SIDEBAR_WIDTH } else { 0 };
+                    let sidebar_w: u16 = if sidebar_on { SIDEBAR_WIDTH } else { 0 };
                     let transcript_w = ctx.area.width.saturating_sub(sidebar_w);
                     // 全局左右气口（Gemini 第二轮指令#1）：禁止全宽通铺。每块左右
                     // 各留 PAD 字符，让终端 BG_PRIMARY 主背景像流水在两侧贯通——
@@ -1634,7 +1666,7 @@ impl View for RootView {
         let diff_detail_open = h.active_session.diff_detail_open.get();
         let (info_strip, badge_offset) = build_session_info_strip(&tokens, ctx_pct, &diff_summary);
         let diff_badge_geom: Option<(u16, u16, u16)> = badge_offset.map(|(bx, bw)| {
-            let page_x: u16 = if h.sidebar_visible { SIDEBAR_WIDTH + 1 } else { 0 };
+            let page_x: u16 = if sidebar_on { SIDEBAR_WIDTH + 1 } else { 0 };
             let badge_y = ctx.area.height.saturating_sub(2); // info_strip 行 = status_bar 上一行
             (page_x + PAD + bx, badge_y, bw)
         });
@@ -1902,7 +1934,7 @@ impl View for RootView {
         // 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）共用同一输入框几何
         // ——prompt_geometry 唯一权威（土律）：宽=输入框宽、x 对齐输入框、贴输入框正上方。
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
-        let geom = prompt_geometry(&route, ctx.area, h.sidebar_visible, prompt_input_rows);
+        let geom = prompt_geometry(&route, ctx.area, sidebar_on, prompt_input_rows);
         let mut model_edit_rect: Option<revue::prelude::Rect> = None;
         let mut mcp_edit_rect: Option<revue::prelude::Rect> = None;
         let mut plugin_edit_rect: Option<revue::prelude::Rect> = None;
@@ -2201,5 +2233,31 @@ mod drain_publish_regression {
             Some(Payload { area: 7, content_h: 100, viewport_h: 30 })
         );
         assert_eq!(outer.borrow().metrics, Some((100, 30)));
+    }
+}
+
+#[cfg(test)]
+mod effective_sidebar_tests {
+    //! U24：窄终端 sidebar 自动隐藏——纯函数口径钉死（渲染与命中共用此 fn，
+    //! 金律：几何不得漂移，所以钉函数即钉全部站点）。
+
+    use super::{effective_sidebar_visible, MIN_CONTENT_W, SIDEBAR_WIDTH};
+
+    /// 阈值 = SIDEBAR_WIDTH + 1(分隔列) + MIN_CONTENT_W：低于则隐藏，
+    /// 达到则可见；width==0（几何未发布）不降级；用户关始终关。
+    #[test]
+    fn degrades_only_below_threshold_and_never_on_unpublished_geometry() {
+        let threshold = SIDEBAR_WIDTH + 1 + MIN_CONTENT_W;
+        // 宽足够：随用户态。
+        assert!(effective_sidebar_visible(true, threshold));
+        assert!(effective_sidebar_visible(true, 200));
+        assert!(!effective_sidebar_visible(false, 200));
+        // 窄一列即隐藏。
+        assert!(!effective_sidebar_visible(true, threshold - 1));
+        // 几何未发布（0）不降级，回用户态。
+        assert!(effective_sidebar_visible(true, 0));
+        // 用户关与宽度无关。
+        assert!(!effective_sidebar_visible(false, 0));
+        assert!(!effective_sidebar_visible(false, threshold - 1));
     }
 }

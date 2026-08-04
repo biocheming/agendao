@@ -1505,7 +1505,7 @@ impl AppHandler {
                         // ── Sidebar interactions (Home / Session / Settings 均可用) ──
                         // Tab 切换、session tree 导航、⚙ Settings 入口不应被
                         // Route::Session 门控——Home 上也要能点树打开会话(水生木)。
-                        if self.sidebar_visible && m.x < crate::app::SIDEBAR_WIDTH {
+                        if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) && m.x < crate::app::SIDEBAR_WIDTH {
                             // Tab 符号行 / 下划线行 → 切 telemetry tab
                             if m.y == self.sidebar_tab_y || m.y == self.sidebar_tab_y + 1 {
                                 let new_tab = ((m.x / 4) as usize)
@@ -1619,7 +1619,7 @@ impl AppHandler {
                             // VLine 竖线（独立 1 列），命中边界收紧为 m.x > sidebar_w——跳过
                             // sidebar 含竖线列；sidebar 不显示时 sidebar_w=0，m.x>0 仍覆盖整宽
                             //（列 0 是 transcript 左气口，无 fold 命中，无害）。
-                            let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+                            let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
                             // ── 内联 permission 块命中（render 发布的 hit rect）──
                             // 块在 transcript 流末尾、位置随滚动变，几何以 render 发布的
                             // 绝对 y 为准（与 dir/sidebar 命中同模式）。命中资源区行范围
@@ -1667,7 +1667,7 @@ impl AppHandler {
                         // 命中检测与左键同一权威（transcript_block_at），
                         // 不各写一份几何。未命中块则安静消费（与左键点
                         // 空白同待遇），不穿透到 prompt。
-                        let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+                        let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
                         if let Some(idx) = self.transcript_block_at(m.x, m.y, sidebar_w) {
                             self.active_session.transcript_cursor.set(Some(idx));
                             match self.active_session.cursor_block_to_text() {
@@ -1792,7 +1792,7 @@ impl AppHandler {
         if msgs.is_empty() {
             return String::new();
         }
-        let sidebar_w = if self.sidebar_visible { crate::app::SIDEBAR_WIDTH } else { 0 };
+        let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
         let inner_w = self
             .terminal_w
             .saturating_sub(sidebar_w)
@@ -2784,7 +2784,7 @@ impl AppHandler {
         use crate::screen::settings as geo;
         use crate::store::types::{GeneralRow, SettingsCategory, SettingsFocusPane};
 
-        let x_off: u16 = if self.sidebar_visible {
+        let x_off: u16 = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) {
             crate::app::SIDEBAR_WIDTH + 1
         } else {
             0
@@ -5536,6 +5536,32 @@ mod tests {
             toasts.iter().any(|t| t.text.contains("Block copied to clipboard")),
             "右键复制 toast：{:?}",
             toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// U24：窄终端时 sidebar 命中区同步失效——transcript 命中不再扣
+    /// SIDEBAR_WIDTH（渲染与命中同一 effective_sidebar_visible 口径，
+    /// 金律：几何不得漂移）。sidebar 列窄屏下归内容区。
+    #[test]
+    fn narrow_terminal_disables_sidebar_hit_offset() {
+        let mut h = mk_session_handler();
+        h.sidebar_visible = true;
+        h.terminal_w = 40; // < SIDEBAR_WIDTH+1+MIN_CONTENT_W → sidebar 自动隐藏
+        h.transcript_viewport_h = 20;
+        h.active_session.push_user_message("u1", "narrow hit");
+        let y = h.transcript_area_y;
+        // x=2 在 sidebar 列内：窄终端下应命中 transcript 块（列归内容）。
+        assert_eq!(
+            h.transcript_block_at(2, y, 0),
+            Some(0),
+            "窄终端 sidebar 列归 transcript"
+        );
+        // 宽终端同坐标不命中（列归 sidebar）。
+        h.terminal_w = 120;
+        assert_eq!(
+            h.transcript_block_at(2, y, crate::app::SIDEBAR_WIDTH),
+            None,
+            "宽终端 sidebar 列不命中 transcript"
         );
     }
 
