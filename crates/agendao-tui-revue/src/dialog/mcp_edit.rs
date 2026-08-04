@@ -253,6 +253,42 @@ impl McpEditDialog {
         }
     }
 
+    /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
+    /// Input 吞掉，防退化插入字母/漏全局键）。choice/toggle/只读字段一律吞掉。
+    pub fn handle_ctrl_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            McpEditField::Name => {
+                if self.mode == McpEditMode::Add {
+                    self.name_input.handle_key_event(event)
+                } else {
+                    true
+                }
+            }
+            McpEditField::Command => self.command_input.handle_key_event(event),
+            McpEditField::Url => self.url_input.handle_key_event(event),
+            McpEditField::Transport => true,
+        }
+    }
+
+    /// 粘贴 → 当前 focus 的文本 Input；非文本字段吞掉（不落到背后的 prompt）。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            McpEditField::Name if self.mode == McpEditMode::Add => {
+                self.name_input.insert_text(text)
+            }
+            McpEditField::Command => self.command_input.insert_text(text),
+            McpEditField::Url => self.url_input.insert_text(text),
+            _ => {}
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;

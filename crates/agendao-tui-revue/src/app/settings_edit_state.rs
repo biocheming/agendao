@@ -237,6 +237,34 @@ impl SettingsEditState {
             }
         }
     }
+
+    /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
+    /// Input 吞掉，防退化插入字母/漏全局键）。Protocol choice 字段吞掉。
+    pub fn handle_ctrl_key(&mut self, event: &revue::event::KeyEvent) -> bool {
+        if !self.active {
+            return false;
+        }
+        match self.focus {
+            SettingsEditField::Name => self.name_input.handle_key_event(event),
+            SettingsEditField::BaseUrl => self.base_url_input.handle_key_event(event),
+            SettingsEditField::ApiKey => self.api_key_input.handle_key_event(event),
+            SettingsEditField::Protocol => true,
+        }
+    }
+
+    /// 粘贴 → 当前 focus 的文本 Input；Protocol 字段吞掉（不落到背后的 prompt）。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.active {
+            return false;
+        }
+        match self.focus {
+            SettingsEditField::Name => self.name_input.insert_text(text),
+            SettingsEditField::BaseUrl => self.base_url_input.insert_text(text),
+            SettingsEditField::ApiKey => self.api_key_input.insert_text(text),
+            SettingsEditField::Protocol => {}
+        }
+        true
+    }
 }
 
 impl Default for SettingsEditState {

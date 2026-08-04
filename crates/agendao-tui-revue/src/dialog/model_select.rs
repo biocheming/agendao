@@ -245,6 +245,19 @@ impl ModelSelectDialog {
         }
     }
 
+    /// 粘贴 → 追加到实时过滤 query（剥离控制字符；' ' 与 Key::Space 输入同效）。
+    pub fn paste_query(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        if !clean.is_empty() {
+            self.query.push_str(&clean);
+            self.selected = 0;
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 

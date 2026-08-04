@@ -366,6 +366,48 @@ impl ModelEditDialog {
         }
     }
 
+    /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
+    /// Input 吞掉）。ReasoningEffort choice / Edit 模式只读 id 一律吞掉。
+    pub fn handle_ctrl_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            ModelEditField::Id => {
+                if self.mode == ModelEditMode::Add {
+                    self.id_input.handle_key_event(event)
+                } else {
+                    true
+                }
+            }
+            ModelEditField::Name => self.name_input.handle_key_event(event),
+            ModelEditField::ContextWindow => self.context_input.handle_key_event(event),
+            ModelEditField::MaxOutputTokens => self.max_output_input.handle_key_event(event),
+            ModelEditField::TimeoutSecs => self.timeout_input.handle_key_event(event),
+            ModelEditField::StreamStallSecs => self.stall_input.handle_key_event(event),
+            ModelEditField::ReasoningEffort => true,
+        }
+    }
+
+    /// 粘贴 → 当前 focus 的文本 Input；非文本字段吞掉（不落到背后的 prompt）。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            ModelEditField::Id if self.mode == ModelEditMode::Add => {
+                self.id_input.insert_text(text)
+            }
+            ModelEditField::Name => self.name_input.insert_text(text),
+            ModelEditField::ContextWindow => self.context_input.insert_text(text),
+            ModelEditField::MaxOutputTokens => self.max_output_input.insert_text(text),
+            ModelEditField::TimeoutSecs => self.timeout_input.insert_text(text),
+            ModelEditField::StreamStallSecs => self.stall_input.insert_text(text),
+            _ => {}
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;

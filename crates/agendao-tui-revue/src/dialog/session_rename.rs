@@ -63,6 +63,23 @@ impl SessionRenameDialog {
         }
     }
 
+    /// Ctrl 组合键 → Input（readline 编辑；未绑定 chord 由 Input 吞掉）。
+    pub fn handle_ctrl_key(&mut self, event: &revue::event::KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+        self.input.handle_key_event(event)
+    }
+
+    /// 粘贴 → Input。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        self.input.insert_text(text);
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
         let content = vstack().gap(1)

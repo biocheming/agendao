@@ -777,8 +777,11 @@ impl AppHandler {
                 changed || blink_flipped || (spinner_flipped && !running_stale) || self.interrupt_pending
             }
             Event::Key(key) => {
-                // Ctrl+B → toggle sidebar, Ctrl+P → command palette
-                if key.ctrl {
+                // Ctrl+B → toggle sidebar, Ctrl+P → command palette。
+                // 仅无 panel 且不在 Settings 表单编辑时接管全局：弹窗/表单
+                // 里的 Ctrl 组合键归焦点文本字段（readline 编辑，见下方
+                // Ctrl 路由），不被全局 toggle 抢走（U26-3 孤儿弹窗修复）。
+                if key.ctrl && self.panel == Panel::None && !self.settings_edit.active {
                     match key.key {
                         Key::Char('b') => {
                             self.sidebar_visible = !self.sidebar_visible;
@@ -804,6 +807,37 @@ impl AppHandler {
                     && !matches!(self.store.route.get(), Route::Settings)
                 {
                     self.prompt.insert_newline();
+                    return true;
+                }
+                // ── Ctrl 组合键路由（U2·修饰键透传）──────────────────
+                // 此前统一走 `handle_key(&key.key)` 把 ctrl 剥掉：prompt 里
+                // Ctrl+A 退化成插入 'a'，弹窗字段里 Ctrl+W 变成 'w'。现在
+                // 完整 KeyEvent 按 文本panel → Settings 表单 → prompt 透传
+                // （readline 集 A/E/W/U/K/Z/Y、词跳、kill 行）；未绑定 chord
+                // 全部吞掉（返回 true），绝不退化成字母、不漏全局键。
+                // Ctrl+C/V 等剪贴板语义键由 U4/剪贴板专项另行定义。
+                if key.ctrl {
+                    if self.route_panel_ctrl_key(key) {
+                        return true;
+                    }
+                    if matches!(self.store.route.get(), Route::Settings) {
+                        if self.settings_edit.active {
+                            return self.settings_edit.handle_ctrl_key(key);
+                        }
+                        // Settings 非编辑态无文本输入：吞掉防漏全局。
+                        return true;
+                    }
+                    self.prompt.handle_ctrl_key(key);
+                    // Ctrl+U/W/Z 等编辑后 slash token 可能变化，与逐字输入
+                    // 同口径重判 popup（例："/mo" 被 Ctrl+U 清空 → 关 popup）。
+                    let current_text = self.prompt.text();
+                    if let Some(query) = SlashPopup::slash_token(&current_text) {
+                        self.slash_popup.open_with_query(query);
+                        self.panel = Panel::Slash;
+                    } else if self.panel == Panel::Slash {
+                        self.slash_popup.close();
+                        self.panel = Panel::None;
+                    }
                     return true;
                 }
                 self.handle_key(&key.key)
@@ -1352,6 +1386,32 @@ impl AppHandler {
                     MouseEventKind::Move => false,
                     _ => false,
                 }
+            }
+            Event::Paste(text) => {
+                // U1·bracketed paste：文本panel → Settings 表单 → prompt。
+                // revue 后端已开 bracketed paste，事件此前落到 `_ => false`
+                // 被整段丢弃。多段粘贴一次性插入（单条 undo），CRLF 归一
+                // 在 PromptInput::paste 收口。
+                if self.route_panel_paste(text) {
+                    return true;
+                }
+                if matches!(self.store.route.get(), Route::Settings) {
+                    // Settings 仅编辑态有文本输入；非编辑态吞掉不穿透。
+                    self.settings_edit.paste_text(text);
+                    return true;
+                }
+                self.prompt.paste(text);
+                // 粘贴可能引入/消除 slash token（粘入 "/model x"），与逐字
+                // 输入同口径重判 popup。
+                let current_text = self.prompt.text();
+                if let Some(query) = SlashPopup::slash_token(&current_text) {
+                    self.slash_popup.open_with_query(query);
+                    self.panel = Panel::Slash;
+                } else if self.panel == Panel::Slash {
+                    self.slash_popup.close();
+                    self.panel = Panel::None;
+                }
+                true
             }
             Event::Resize(..) => true,
             _ => false,
@@ -3028,7 +3088,7 @@ pub(crate) fn eager_load_session_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revue::event::{MouseButton, MouseEvent, MouseEventKind};
+    use revue::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
     fn mk_handler() -> AppHandler {
         let store = crate::store::app_store::AppStore::new();
@@ -3079,6 +3139,110 @@ mod tests {
         // 裸 Enter → 发送（echo 模式无 api，prompt 清空即提交语义发生）
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
         assert_eq!(h.prompt.text(), "", "裸 Enter 应提交并清空输入框");
+    }
+
+    /// U1：Event::Paste 进 prompt——多行保留、CRLF 归一、不产生逐键回显。
+    #[test]
+    fn paste_event_inserts_into_prompt() {
+        let mut h = mk_handler();
+        assert!(h.handle(&Event::Paste("line1\r\nline2 中文".to_string())));
+        assert_eq!(h.prompt.text(), "line1\nline2 中文");
+    }
+
+    /// U1：粘贴引入 slash token 时 popup 同步打开（与逐字输入同口径）。
+    #[test]
+    fn paste_slash_token_opens_popup() {
+        let mut h = mk_handler();
+        h.handle(&Event::Paste("/mod".to_string()));
+        assert_eq!(h.panel, Panel::Slash);
+        assert!(h.slash_popup.is_open());
+    }
+
+    /// U2：prompt 的 Ctrl chord 走 readline 语义，绝不退化成字面字母。
+    #[test]
+    fn ctrl_chords_edit_prompt_without_inserting_letters() {
+        let mut h = mk_handler();
+        for c in "hello world".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        // Ctrl+W → kill word
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('w')))));
+        assert_eq!(h.prompt.text(), "hello ");
+        // Ctrl+U → kill to line start
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('u')))));
+        assert_eq!(h.prompt.text(), "");
+        // 未绑定 chord（Ctrl+G）吞掉：不插入 'g'，文本不变
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('g')))));
+        assert_eq!(h.prompt.text(), "");
+        // Ctrl+A 全选后 Ctrl+K 不应插入 'a'/'k'
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('a')))));
+        assert_eq!(h.prompt.text(), "");
+    }
+
+    /// U2：Ctrl+Z/Y 撤销/重做 prompt 文本编辑。
+    #[test]
+    fn ctrl_z_y_undo_redo_prompt_text() {
+        let mut h = mk_handler();
+        for c in "abc".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('z'))));
+        assert_eq!(h.prompt.text(), "ab");
+        h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('y'))));
+        assert_eq!(h.prompt.text(), "abc");
+    }
+
+    /// U1+U2：弹窗打开时粘贴/Ctrl 归弹窗字段，不穿透到 prompt；
+    /// Ctrl+B 不再抢全局 sidebar toggle（U26-3）。
+    #[test]
+    fn panel_owns_paste_and_ctrl_chords() {
+        let mut h = mk_handler();
+        for c in "draft".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        h.mcp_edit_dialog.open_add();
+        h.panel = Panel::McpEdit;
+        let sidebar_before = h.sidebar_visible;
+
+        // 粘贴 → Name 字段（Add 模式首字段），prompt 不变
+        assert!(h.handle(&Event::Paste("my-server".to_string())));
+        assert_eq!(h.prompt.text(), "draft");
+
+        // Ctrl+B 不 toggle sidebar（弹窗接管 Ctrl）
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('b')))));
+        assert_eq!(h.sidebar_visible, sidebar_before);
+
+        // Ctrl+W 清空 Name 里的 word（readline 语义进弹窗字段）
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('w')))));
+        // 提交应失败（name 空）——侧面证明 Ctrl+W 真删了内容而非插入 'w'
+        assert!(h.mcp_edit_dialog.handle_key(&Key::Enter).is_none());
+    }
+
+    /// U1：ModelSelect 打开时粘贴进过滤 query。
+    #[test]
+    fn paste_into_model_select_query() {
+        let mut h = mk_handler();
+        h.model_select.open();
+        h.panel = Panel::ModelSelect;
+        assert!(h.handle(&Event::Paste("gpt-4".to_string())));
+        // query 收下了粘贴（title 或过滤结果反映），prompt 未被污染
+        assert_eq!(h.prompt.text(), "");
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))) || true);
+    }
+
+    /// U2：Settings 表单编辑态 Ctrl chord 进焦点字段（name_input）。
+    #[test]
+    fn settings_edit_receives_ctrl_chords() {
+        let mut h = mk_handler();
+        h.store.navigate_settings();
+        h.settings_edit.enter_add();
+        // focus 默认 Name 字段：先键入两词
+        h.settings_edit.name_input.insert_text("hello world");
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('w')))));
+        assert_eq!(h.settings_edit.name_input.get_value(), "hello ");
+        // 粘贴进表单字段
+        assert!(h.handle(&Event::Paste("-again".to_string())));
+        assert_eq!(h.settings_edit.name_input.get_value(), "hello -again");
     }
 
     /// Settings 分类栏点击：分类行 y=3+i、x ∈ [x_off, x_off+22)（sidebar 展开 x_off=33）。

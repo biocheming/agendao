@@ -202,6 +202,20 @@ impl SessionListDialog {
         }
     }
 
+    /// 粘贴 → 追加到实时过滤 query（剥离控制字符，与逐字输入同口径：
+    /// 非 ASCII 的 CJK 也允许——matches_query 对小写化子串匹配）。
+    pub fn paste_query(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        if !clean.is_empty() {
+            self.query.push_str(&clean);
+            self.selected = 0;
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
         if !self.visible { return; }
 

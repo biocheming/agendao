@@ -119,6 +119,30 @@ impl PluginEditDialog {
         }
     }
 
+    /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
+    /// Input 吞掉，防退化插入字母/漏全局键）。
+    pub fn handle_ctrl_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            PluginEditField::Name => self.name_input.handle_key_event(event),
+            PluginEditField::Path => self.path_input.handle_key_event(event),
+        }
+    }
+
+    /// 粘贴 → 当前 focus 的文本 Input。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            PluginEditField::Name => self.name_input.insert_text(text),
+            PluginEditField::Path => self.path_input.insert_text(text),
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;

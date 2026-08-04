@@ -251,6 +251,42 @@ impl ProviderEditDialog {
         }
     }
 
+    /// Ctrl 组合键 → 当前 focus 的文本 Input（readline 编辑；未绑定 chord 由
+    /// Input 吞掉）。Protocol choice / Edit 模式只读 Name 一律吞掉。
+    pub fn handle_ctrl_key(&mut self, event: &KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            ProviderEditField::Name => {
+                if self.mode == ProviderEditMode::Add {
+                    self.name_input.handle_key_event(event)
+                } else {
+                    true
+                }
+            }
+            ProviderEditField::BaseUrl => self.base_url_input.handle_key_event(event),
+            ProviderEditField::ApiKey => self.api_key_input.handle_key_event(event),
+            ProviderEditField::Protocol => true,
+        }
+    }
+
+    /// 粘贴 → 当前 focus 的文本 Input；非文本字段吞掉（不落到背后的 prompt）。
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if !self.visible {
+            return false;
+        }
+        match self.focus {
+            ProviderEditField::Name if self.mode == ProviderEditMode::Add => {
+                self.name_input.insert_text(text)
+            }
+            ProviderEditField::BaseUrl => self.base_url_input.insert_text(text),
+            ProviderEditField::ApiKey => self.api_key_input.insert_text(text),
+            _ => {}
+        }
+        true
+    }
+
     pub fn render(&self, ctx: &mut RenderContext, cursor_on: bool) -> Option<revue::prelude::Rect> {
         if !self.visible {
             return None;

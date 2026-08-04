@@ -243,6 +243,25 @@ impl PromptInput {
         self.editor.handle_key(&Key::Enter);
     }
 
+    /// Ctrl 组合键（readline 集，U2）：透传给 TextArea。
+    /// 返回 true=已消费；未绑定 chord 返回 false（调用方吞掉，
+    /// 绝不剥修饰键退化成插入字面字母）。
+    pub fn handle_ctrl_key(&mut self, event: &revue::event::KeyEvent) -> bool {
+        self.focused = true;
+        self.editor.handle_ctrl_key(event)
+    }
+
+    /// 粘贴（U1）：bracketed paste 文本原样进编辑器（多行保留）。
+    /// \r\n / \r 归一为 \n（Windows 剪贴板口径）。
+    pub fn paste(&mut self, text: &str) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        self.focused = true;
+        self.editor.insert_str(&normalized);
+    }
+
     fn history_up(&mut self) -> PromptAction {
         if self.history.is_empty() { return PromptAction::None; }
         if self.history_idx.is_none() {
@@ -633,6 +652,36 @@ mod tests {
         p.set_text("ab\ncdef");
         p.editor.set_cursor(0, 99);
         assert_eq!(p.editor.cursor_position(), (0, 2));
+    }
+
+    #[test]
+    fn paste_inserts_multiline_and_normalizes_crlf() {
+        let mut p = PromptInput::new();
+        p.paste("hello\r\nworld\r!");
+        assert_eq!(p.text(), "hello\nworld\n!");
+        assert!(p.is_focused());
+        assert_eq!(p.visible_height(), 3);
+    }
+
+    #[test]
+    fn ctrl_keys_edit_without_inserting_letters() {
+        let mut p = PromptInput::new();
+        p.set_text("foo bar");
+        let ctrl = |key: Key| revue::event::KeyEvent {
+            key,
+            ctrl: true,
+            alt: false,
+            shift: false,
+        };
+        // Ctrl+W 删词（不插入 'w'）
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('w'))));
+        assert_eq!(p.text(), "foo ");
+        // Ctrl+U 删到行首
+        assert!(p.handle_ctrl_key(&ctrl(Key::Char('u'))));
+        assert_eq!(p.text(), "");
+        // 未绑定 chord（Ctrl+G）→ false（调用方吞掉），文本不变
+        assert!(!p.handle_ctrl_key(&ctrl(Key::Char('g'))));
+        assert_eq!(p.text(), "");
     }
 
     #[test]

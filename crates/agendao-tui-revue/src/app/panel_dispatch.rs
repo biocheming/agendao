@@ -5,7 +5,7 @@
 //! 语义不变：每个 panel 独占键；Panel::None 贯穿返回 false，让键继续
 //! 流向 transcript 滚动与 prompt 输入。
 
-use revue::event::Key;
+use revue::event::{Key, KeyEvent};
 use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::dialog::PermissionReply;
 
@@ -741,6 +741,43 @@ impl AppHandler {
                     crate::store::types::ToastMsgVariant::Error,
                 ),
             }
+        }
+    }
+
+    /// Panel/Overlay 的 Ctrl 组合键分发（U2·修饰键透传）。返回 true=已消费。
+    ///
+    /// 文本输入弹窗把完整 KeyEvent 透传给焦点字段的 revue Input
+    /// （readline 编辑集：A/E/W/U/K/Z/Y、词跳）；无文本输入的 panel 吞掉
+    /// chord——防漏到全局键（q 退出 / h 首页等），也防退化成字面字母。
+    /// Panel::None 贯穿返回 false，让 chord 继续流向 Settings 表单/prompt。
+    pub(super) fn route_panel_ctrl_key(&mut self, event: &KeyEvent) -> bool {
+        match &self.panel {
+            Panel::None => false,
+            Panel::ModelEdit => self.model_edit_dialog.handle_ctrl_key(event),
+            Panel::McpEdit => self.mcp_edit_dialog.handle_ctrl_key(event),
+            Panel::PluginEdit => self.plugin_edit_dialog.handle_ctrl_key(event),
+            Panel::ProviderEdit => self.provider_edit_dialog.handle_ctrl_key(event),
+            Panel::Rename => self.rename_dialog.handle_ctrl_key(event),
+            _ => true,
+        }
+    }
+
+    /// Panel/Overlay 的粘贴分发（U1·bracketed paste）。返回 true=已消费。
+    ///
+    /// 文本弹窗进焦点字段 Input；ModelSelect/SessionList 进实时过滤 query；
+    /// 其余 panel 吞掉——粘贴不穿透到弹窗背后的 prompt（土律·第十条：
+    /// 弹窗开着时输入所有权归弹窗）。
+    pub(super) fn route_panel_paste(&mut self, text: &str) -> bool {
+        match &self.panel {
+            Panel::None => false,
+            Panel::ModelEdit => self.model_edit_dialog.paste_text(text),
+            Panel::McpEdit => self.mcp_edit_dialog.paste_text(text),
+            Panel::PluginEdit => self.plugin_edit_dialog.paste_text(text),
+            Panel::ProviderEdit => self.provider_edit_dialog.paste_text(text),
+            Panel::Rename => self.rename_dialog.paste_text(text),
+            Panel::ModelSelect => self.model_select.paste_query(text),
+            Panel::SessionList => self.session_list.paste_query(text),
+            _ => true,
         }
     }
 }

@@ -660,9 +660,17 @@ impl AppHandler {
             // 可触发），但 server 端无对应 API（grep 全无端点）——落到通用
             // "coming soon" 兜底会掩盖「server 根本没这个能力」的真相。这里
             // 显式分流，让用户看到权威缺口而非伪期待。server 补齐后再开路由。
-            UiActionId::Undo
-            | UiActionId::Redo
-            | UiActionId::Timeline
+            UiActionId::Undo | UiActionId::Redo => {
+                // spec 语义是会话级"撤回/恢复上一条消息"（Revert last
+                // message），server 无端点 → 诚实标注；同时指向 prompt
+                // 文本级撤销（Ctrl+Z/Ctrl+Y，U2 已通），避免用户以为
+                // "撤销"在整个 TUI 里不存在。
+                self.store.push_toast(
+                    &format!("{:?}: session-level revert not supported by server yet — prompt text undo is Ctrl+Z / Ctrl+Y", action_id),
+                    crate::store::types::ToastMsgVariant::Warning,
+                );
+            }
+            UiActionId::Timeline
             | UiActionId::NavigateParentSession
             | UiActionId::VoiceInput => {
                 self.store.push_toast(
