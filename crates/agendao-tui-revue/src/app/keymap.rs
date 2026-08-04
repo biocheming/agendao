@@ -1718,10 +1718,19 @@ impl AppHandler {
                                     acc = block_end + if compact { 0 } else { 1 };
                                 }
                                 if let Some(idx) = clicked_idx {
-                                    // 复用 cursor+toggle 闭环：组折叠时命中段首/ℹ/more 均
-                                    // 展开整组，组展开时切该块详情（与 Space 行为一致）。
-                                    self.active_session.transcript_cursor.set(Some(idx));
-                                    self.active_session.toggle_fold_at_cursor();
+                                    // U13③：单击=选中，点中"已选中"的块才
+                                    // 折叠/展开（GUI 选择-激活两段式；原单击
+                                    // 即折叠常把"想选中看看"变成误折叠）。
+                                    // 折叠仍复用 cursor+toggle 闭环：组折叠时
+                                    // 命中段首/ℹ/more 均展开整组（与 Space
+                                    // 行为一致）。
+                                    if self.active_session.transcript_cursor.get() == Some(idx) {
+                                        self.active_session.toggle_fold_at_cursor();
+                                    } else {
+                                        self.active_session.transcript_cursor.set(Some(idx));
+                                        self.active_session
+                                            .ensure_cursor_visible(self.transcript_viewport_h);
+                                    }
                                     self.layout_dirty = true;
                                     return true;
                                 }
@@ -1904,6 +1913,27 @@ impl AppHandler {
                     // the current viewport moves the cursor but leaves
                     // the visible window unchanged, and pressing Space
                     // toggles a block the user can't see.
+                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.layout_dirty = true;
+                    return true;
+                }
+                // U13①：Shift-Tab 反向循环（与 Tab 正向配对，GUI 焦点
+                // 遍历惯例）；j/k 在 prompt 为空时作 cursor 上下——与
+                // 注释/toast 宣传对齐（原零绑定，文档幽灵）。
+                Key::BackTab => {
+                    self.active_session.cursor_prev_foldable();
+                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.layout_dirty = true;
+                    return true;
+                }
+                Key::Char('j') if self.prompt.text().is_empty() => {
+                    self.active_session.cursor_next_foldable();
+                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.layout_dirty = true;
+                    return true;
+                }
+                Key::Char('k') if self.prompt.text().is_empty() => {
+                    self.active_session.cursor_prev_foldable();
                     self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
                     self.layout_dirty = true;
                     return true;
@@ -5198,5 +5228,74 @@ mod tests {
         assert_eq!(h.active_session.scroll_offset.get(), 18, "20 - 2 行重叠");
         h.handle(&Event::Key(KeyEvent::new(Key::PageDown)));
         assert_eq!(h.active_session.scroll_offset.get(), 0);
+    }
+
+    // ── U13：消息选择交互 ──
+
+    /// j/k 在 prompt 为空时作 cursor 上下（与宣传对齐，落地文档幽灵）。
+    #[test]
+    fn jk_navigates_cursor_when_prompt_empty() {
+        let mut h = mk_session_handler();
+        h.active_session.push_user_message("u1", "a");
+        h.active_session.push_user_message("u2", "b");
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('j'))));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(0));
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('j'))));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(1));
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('k'))));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(0));
+    }
+
+    /// prompt 非空时 j/k 归编辑器（输入语义优先）。
+    #[test]
+    fn jk_types_into_nonempty_prompt() {
+        let mut h = mk_session_handler();
+        h.active_session.push_user_message("u1", "a");
+        h.prompt.set_text("d");
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('j'))));
+        assert_eq!(h.active_session.transcript_cursor.get(), None, "不得抢 cursor");
+        assert!(h.prompt.text().contains('j'), "j 落入输入框");
+    }
+
+    /// Shift-Tab 反向循环（与 Tab 正向配对）。
+    #[test]
+    fn backtab_moves_cursor_backward() {
+        let mut h = mk_session_handler();
+        h.active_session.push_user_message("u1", "a");
+        h.active_session.push_user_message("u2", "b");
+        h.active_session.transcript_cursor.set(Some(1));
+        h.handle(&Event::Key(KeyEvent::new(Key::BackTab)));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(0));
+    }
+
+    /// U13③：单击=选中；点中已选中的块才折叠/展开（两段式）。
+    #[test]
+    fn mouse_first_click_selects_second_click_folds() {
+        use crate::store::types::{FoldState, TranscriptBlock};
+        let mut h = mk_session_handler();
+        h.terminal_w = 120;
+        h.transcript_viewport_h = 20;
+        h.active_session.push_user_message("u1", "hello");
+        let y = h.transcript_area_y;
+        let ev = || {
+            Event::Mouse(MouseEvent::new(40, y, MouseEventKind::Down(MouseButton::Left)))
+        };
+        // 第一次点击：选中，不折叠。
+        assert!(h.handle(&ev()));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(0));
+        let fold_of = |h: &AppHandler| match &h.active_session.messages.get()[0] {
+            TranscriptBlock::UserPrompt { fold, .. } => fold.clone(),
+            other => panic!("unexpected block: {other:?}"),
+        };
+        assert!(
+            matches!(fold_of(&h), FoldState::Truncated),
+            "首次点击只选中，不折叠"
+        );
+        // 第二次点击（同块）：折叠。
+        assert!(h.handle(&ev()));
+        assert!(
+            !matches!(fold_of(&h), FoldState::Truncated),
+            "二次点击折叠已选中块"
+        );
     }
 }

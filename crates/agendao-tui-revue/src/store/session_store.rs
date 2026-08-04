@@ -622,7 +622,11 @@ impl SessionStore {
     /// works after a jump).
     pub fn ensure_cursor_visible(&self, viewport_h: u16) {
         let Some(cursor) = self.transcript_cursor.get() else { return };
-        if cursor == 0 { return; } // first block always visible at scroll_top=0
+        // U13⑤：原 `cursor == 0 → return` 假设"首块总在 scroll_top=0
+        // 可见"——错误：钉底时 scroll_top=max_offset，首块远在视口外，
+        // j/k 绕回首块时视口不跟随（块被折叠/展开却看不见）。删掉该
+        // 早退，下方数学天然处理：cursor_top=0 → new_scroll_top=0 →
+        // offset=max_offset（真实顶）。
         let total = self.total_transcript_height();
         if total <= viewport_h { return; } // everything fits, nothing to scroll
         let max_offset = total.saturating_sub(viewport_h);
@@ -1499,5 +1503,22 @@ mod tests {
         let s = SessionStore::new();
         s.scroll_to_top();
         assert_eq!(s.scroll_offset.get(), u16::MAX);
+    }
+
+    /// U13⑤：cursor==0（首块）在钉底时不在视口内——ensure_cursor_visible
+    /// 必须把视口拉回真实顶（原 cursor==0 早退假设"首块总可见"，错误）。
+    #[test]
+    fn ensure_cursor_visible_scrolls_to_first_block() {
+        let s = SessionStore::new();
+        for i in 0..10 {
+            s.push_user_message(&format!("u{i}"), "line");
+        }
+        let total = s.total_transcript_height();
+        let viewport: u16 = 4;
+        assert!(total > viewport, "前置：内容须超出视口");
+        s.transcript_cursor.set(Some(0));
+        s.ensure_cursor_visible(viewport);
+        // cursor_top=0 → new_scroll_top=0（pad 饱和）→ offset=max_offset。
+        assert_eq!(s.scroll_offset.get(), total - viewport);
     }
 }

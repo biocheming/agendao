@@ -1371,7 +1371,15 @@ impl View for RootView {
                             .child_sized(Text::new(" ".repeat(PAD as usize)), PAD)
                             .child_sized(inner, inner_w)
                             .child_sized(Text::new(" ".repeat(PAD as usize)), PAD);
-                        transcript = transcript.child_sized(padded, unit.height);
+                        // U13②：选中态整行背景条（surface_selected 主题色）——
+                        // 原仅引导符加粗太弱（流式滚动中一眼找不到 cursor）。
+                        // GUI 选中行惯例：整行低对比高亮，含两侧气口。
+                        let row: Box<dyn View> = if is_cursor_unit {
+                            Box::new(BgStack::new(padded, colors::BG_HIGHLIGHT()))
+                        } else {
+                            Box::new(padded)
+                        };
+                        transcript = transcript.child_sized(row, unit.height);
                         content_rows = content_rows.saturating_add(unit.height);
                         // 块间留白（1 行 BG_PRIMARY 空行）：井/气泡之间透气。不包
                         // BgStack——空行保持主背景。total_h 已同步 compact_density
@@ -1679,7 +1687,9 @@ impl View for RootView {
             None => String::new(),
         };
         let nav_hint = if matches!(route, Route::Session { .. }) {
-            " Tab:nav Space:fold PgUp/Dn:scroll g/G:top/bottom"
+            // U13①④：j/k 落地后补写；fold 标注空 prompt 前提（Space
+            // 有输入语义，非空时归编辑器）。
+            " Tab/j/k:nav Space:fold(if empty) PgUp/Dn:scroll g/G:top/bottom"
         } else {
             ""
         };
