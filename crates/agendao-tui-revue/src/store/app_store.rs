@@ -84,6 +84,10 @@ pub struct AppStore {
     /// "MCP connect"）——Settings 页头行显示 ◌ 处理中标记，且所有写
     /// 操作共用此闸防抖（写都快，单闸足够；回执 drain 清零）。
     pub settings_write_pending: Signal<Option<String>>,
+    /// 弹窗打开拉取在飞标签（U6⑤）：`Some` = 后台拉取进行中（如
+    /// "Loading sessions"）——status bar 尾部显示 ◌ 标记，且弹窗拉取
+    /// 共用此闸防抖（回执 drain 清零）。
+    pub dialog_fetch_pending: Signal<Option<String>>,
     /// Details 栏内当前选中 model_key;`None` = 当前 provider 无 models 或未进入 Details 焦点。
     /// 由 `handle_settings_key` 在 Details focused 时 ↑/↓ 切换,m/e/d 操作以此为目标。
     pub settings_selected_model: Signal<Option<String>>,
@@ -156,6 +160,7 @@ impl AppStore {
             settings_testing_provider: signal(None),
             session_loading: signal(false),
             settings_write_pending: signal(None),
+            dialog_fetch_pending: signal(None),
             settings_selected_model: signal(None),
             settings_category: signal(SettingsCategory::General),
             settings_focus_pane: signal(SettingsFocusPane::Providers),

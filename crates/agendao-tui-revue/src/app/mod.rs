@@ -1604,9 +1604,15 @@ impl View for RootView {
         } else {
             ""
         };
+        // U6⑤：后台弹窗拉取在途 → 状态栏 ◌ 段（与 settings 左栏 ◌ 同一
+        // 指示语言；单闸保证至多一个在途，文案即点火处 label）。
+        let fetch_hint = match h.store.dialog_fetch_pending.get() {
+            Some(label) => format!(" ◌ {}…", label),
+            None => String::new(),
+        };
         let status_text = format!(
-            " {} │ [{}]{}{} │{} q:quit ^P:cmd ?:help ",
-            dir_short, panel_label, stats, cursor_hint, nav_hint,
+            " {} │ [{}]{}{}{} │{} q:quit ^P:cmd ?:help ",
+            dir_short, panel_label, stats, fetch_hint, cursor_hint, nav_hint,
         );
         let status_bar = Text::new(&status_text)
             .fg(colors::FG_MUTED())

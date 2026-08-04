@@ -821,6 +821,204 @@ impl AppHandler {
                                 }
                             }
                         }
+                        app_op::AppOpOutcome::DialogFetchDone(result) => {
+                            // U6⑤：清防抖闸 → 按数据变体路由到对应弹窗，空/
+                            // 成功分支与各弹窗原同步口径逐条对应（金·事件语
+                            // 义不可漂移）。失败文案在点火处按弹窗语境拼好。
+                            self.store.dialog_fetch_pending.set(None);
+                            match result {
+                                Ok(data) => match data {
+                                    app_op::DialogFetchData::RecentModels(entries) => {
+                                        // 弹窗在触发处已开；空表=失败回执
+                                        // （点火处已 warn），保留旧 recents。
+                                        if !entries.is_empty() {
+                                            let recent: Vec<(String, String)> = entries
+                                                .into_iter()
+                                                .map(|e| (e.provider, e.model))
+                                                .collect();
+                                            self.model_select.set_recent(recent);
+                                        }
+                                    }
+                                    app_op::DialogFetchData::Skills(skills) => {
+                                        let entries: Vec<crate::dialog::SkillEntry> = skills
+                                            .into_iter()
+                                            .map(|s| crate::dialog::SkillEntry {
+                                                name: s.name,
+                                                description: s.description,
+                                                location: s.location,
+                                            })
+                                            .collect();
+                                        if entries.is_empty() {
+                                            self.store.push_toast(
+                                                "No skills available",
+                                                ToastMsgVariant::Warning,
+                                            );
+                                        } else {
+                                            self.skill_list.set_skills(entries);
+                                            self.skill_list.open();
+                                            self.panel = Panel::SkillList;
+                                        }
+                                    }
+                                    app_op::DialogFetchData::SkillProposals(proposals) => {
+                                        let entries: Vec<crate::dialog::SkillProposalEntry> =
+                                            proposals
+                                                .into_iter()
+                                                .map(|p| crate::dialog::SkillProposalEntry {
+                                                    id: p.id,
+                                                    title: p.title,
+                                                    status: format!("{:?}", p.status)
+                                                        .to_lowercase(),
+                                                    kind: format!("{:?}", p.proposal_kind)
+                                                        .to_lowercase(),
+                                                })
+                                                .collect();
+                                        if entries.is_empty() {
+                                            self.store.push_toast(
+                                                "No pending proposals",
+                                                ToastMsgVariant::Warning,
+                                            );
+                                        } else {
+                                            self.skill_proposal.set_proposals(entries);
+                                            self.skill_proposal.open();
+                                            self.panel = Panel::SkillProposal;
+                                        }
+                                    }
+                                    app_op::DialogFetchData::McpStatus(mcps) => {
+                                        let entries: Vec<crate::dialog::McpEntry> = mcps
+                                            .into_iter()
+                                            .map(|m| crate::dialog::McpEntry {
+                                                name: m.name,
+                                                status: m.status,
+                                                tools: m.tools,
+                                                resources: m.resources,
+                                            })
+                                            .collect();
+                                        // F12：空列表也打开 dialog——`n` 新增
+                                        // 入口不能是死端。
+                                        self.mcp_list.set_entries(entries);
+                                        self.mcp_list.open();
+                                        self.panel = Panel::McpList;
+                                    }
+                                    app_op::DialogFetchData::Recovery(proto) => {
+                                        let mut entries: Vec<crate::dialog::RecoveryEntry> =
+                                            Vec::new();
+                                        for a in proto.actions {
+                                            entries.push(crate::dialog::RecoveryEntry {
+                                                label: format!("action: {}", a.label),
+                                                detail: a.description,
+                                                action_kind: Some(a.kind),
+                                                target_id: a.target_id,
+                                            });
+                                        }
+                                        for c in proto.checkpoints {
+                                            entries.push(crate::dialog::RecoveryEntry {
+                                                label: format!(
+                                                    "checkpoint: [{}] {}",
+                                                    c.status, c.label
+                                                ),
+                                                detail: c.summary.unwrap_or(c.kind),
+                                                action_kind: None,
+                                                target_id: None,
+                                            });
+                                        }
+                                        if entries.is_empty() {
+                                            self.store.push_toast(
+                                                "No recovery actions or checkpoints",
+                                                ToastMsgVariant::Warning,
+                                            );
+                                        } else {
+                                            self.recovery_list.set_entries(entries);
+                                            self.recovery_list.open();
+                                            self.panel = Panel::Recovery;
+                                        }
+                                    }
+                                    app_op::DialogFetchData::Tasks(tasks) => {
+                                        let entries: Vec<crate::dialog::TaskEntry> = tasks
+                                            .into_iter()
+                                            .map(|t| crate::dialog::TaskEntry {
+                                                id: t.id,
+                                                agent_name: t.agent_name,
+                                                status: t.status,
+                                                step: t.step,
+                                                max_steps: t.max_steps,
+                                            })
+                                            .collect();
+                                        if entries.is_empty() {
+                                            self.store.push_toast(
+                                                "No active agent tasks",
+                                                ToastMsgVariant::Warning,
+                                            );
+                                        } else {
+                                            self.task_list.set_entries(entries);
+                                            self.task_list.open();
+                                            self.panel = Panel::TaskList;
+                                        }
+                                    }
+                                    app_op::DialogFetchData::Modes(modes) => {
+                                        // 携 kind 而不只是 name，dispatch 处才能
+                                        // 按 kind 分流（对齐 web `App.tsx:836`）。
+                                        let entries: Vec<crate::dialog::ModeEntry> = modes
+                                            .into_iter()
+                                            .filter(|m| !m.hidden.unwrap_or(false))
+                                            .map(|m| crate::dialog::ModeEntry {
+                                                kind: m.kind,
+                                                id: m.id,
+                                                display: m.name,
+                                                description: m.description,
+                                            })
+                                            .collect();
+                                        if entries.is_empty() {
+                                            self.store.push_toast(
+                                                "No execution modes available",
+                                                ToastMsgVariant::Warning,
+                                            );
+                                        } else {
+                                            self.mode_select.open_with(entries);
+                                            self.panel = Panel::ModeSelect;
+                                        }
+                                    }
+                                    app_op::DialogFetchData::Sessions(sessions) => {
+                                        // 与旧 OpenSessionList 同步路径同口径：
+                                        // store 刷新 + sidebar 树 + 弹窗填充
+                                        // （loading 由 set_sessions/set_error 清）。
+                                        let items: Vec<crate::store::types::SessionListItem> =
+                                            sessions
+                                                .iter()
+                                                .map(crate::telemetry::session_tree::map_api_session_item)
+                                                .collect();
+                                        self.store.session_list.set(items);
+                                        self.refresh_sidebar_session_tree();
+                                        let entries: Vec<crate::dialog::SessionEntry> = self
+                                            .store
+                                            .session_list
+                                            .get()
+                                            .into_iter()
+                                            .map(|s| crate::dialog::SessionEntry {
+                                                id: s.id,
+                                                title: s.title,
+                                                status_hint: String::new(),
+                                            })
+                                            .collect();
+                                        if entries.is_empty() {
+                                            self.session_list
+                                                .set_error("No sessions in this directory".into());
+                                        } else {
+                                            self.session_list.set_sessions(entries);
+                                        }
+                                    }
+                                },
+                                Err(msg) => {
+                                    // 单闸保证在途拉取唯一：session_list 处于
+                                    // loading 即在途的是 sessions 拉取——就地
+                                    // 置错；其余弹窗走 Error toast。
+                                    if self.session_list.loading {
+                                        self.session_list.set_error(msg);
+                                    } else {
+                                        self.store.push_toast(&msg, ToastMsgVariant::Error);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 for fe in &events {
@@ -3665,11 +3863,149 @@ mod tests {
         );
     }
 
+    /// U6⑤ 防抖：在飞期间再触发弹窗拉取 → Info 提示，闸不被重置。
+    #[test]
+    fn dialog_fetch_debounced_while_pending() {
+        let mut h = mk_handler();
+        h.store
+            .dialog_fetch_pending
+            .set(Some("Loading skills".to_string()));
+        h.execute_slash_action(agendao_command::UiActionId::OpenMcpList);
+        assert!(
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("Still working")),
+            "防抖提示"
+        );
+        assert_eq!(
+            h.store.dialog_fetch_pending.get().as_deref(),
+            Some("Loading skills"),
+            "在飞标记不被重置"
+        );
+    }
+
+    /// 无 bridge → 静默返回（与旧同步 `if let Some(api)` 不报警口径一致），
+    /// 不留 pending（防永久卡闸）。
+    #[test]
+    fn dialog_fetch_without_bridge_is_silent() {
+        let mut h = mk_handler();
+        h.execute_slash_action(agendao_command::UiActionId::OpenMcpList);
+        assert!(
+            !h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("Still working") || t.text.contains("bridge")),
+            "无桥静默"
+        );
+        assert!(h.store.dialog_fetch_pending.get().is_none());
+    }
+
+    /// MCP 回执：清闸 + 弹窗填充打开（空列表也开，F12 `n` 新增非死端）。
+    #[test]
+    fn dialog_fetch_done_mcp_opens_panel() {
+        let mut h = mk_handler();
+        h.store
+            .dialog_fetch_pending
+            .set(Some("Loading MCP servers".to_string()));
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::DialogFetchDone(Ok(
+                app_op::DialogFetchData::McpStatus(vec![agendao_client::McpStatusInfo {
+                    name: "fs".to_string(),
+                    status: "connected".to_string(),
+                    tools: 3,
+                    resources: 0,
+                    error: None,
+                }]),
+            )))
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.store.dialog_fetch_pending.get().is_none(), "回执清闸");
+        assert!(h.mcp_list.visible, "弹窗打开");
+        assert!(matches!(h.panel, Panel::McpList), "panel 切换");
+    }
+
+    /// sessions 回执：清闸 + 清 loading；空目录 → 就地错误态而非 toast。
+    #[test]
+    fn dialog_fetch_done_sessions_empty_sets_error_state() {
+        let mut h = mk_handler();
+        h.store
+            .dialog_fetch_pending
+            .set(Some("Loading sessions".to_string()));
+        h.session_list.open();
+        h.session_list.loading = true;
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::DialogFetchDone(Ok(
+                app_op::DialogFetchData::Sessions(Vec::new()),
+            )))
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.store.dialog_fetch_pending.get().is_none(), "回执清闸");
+        assert!(!h.session_list.loading, "loading 态清除");
+        assert_eq!(
+            h.session_list.error.as_deref(),
+            Some("No sessions in this directory"),
+            "空目录就地错误态"
+        );
+    }
+
+    /// 失败回执：sessions 在 loading → 就地置错；否则 Error toast。均清闸。
+    #[test]
+    fn dialog_fetch_done_err_routes_by_loading_state() {
+        // 非 sessions：toast。
+        let mut h = mk_handler();
+        h.store
+            .dialog_fetch_pending
+            .set(Some("Loading skills".to_string()));
+        h.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::DialogFetchDone(Err(
+                "Failed to load skills: boom".to_string(),
+            )))
+            .unwrap();
+        h.handle(&Event::Tick);
+        assert!(h.store.dialog_fetch_pending.get().is_none(), "失败也清闸");
+        assert!(
+            h.store.toasts.get().iter().any(|t| t.text.contains("boom")),
+            "失败文案透传 toast"
+        );
+
+        // sessions loading：就地置错，不 toast。
+        let mut h2 = mk_handler();
+        h2.store
+            .dialog_fetch_pending
+            .set(Some("Loading sessions".to_string()));
+        h2.session_list.open();
+        h2.session_list.loading = true;
+        h2.app_ops
+            .sender()
+            .send(app_op::AppOpOutcome::DialogFetchDone(Err(
+                "Failed to refresh session list: boom".to_string(),
+            )))
+            .unwrap();
+        h2.handle(&Event::Tick);
+        assert!(!h2.session_list.loading, "失败也清 loading");
+        assert!(
+            h2.session_list
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("boom")),
+            "sessions 就地置错"
+        );
+        assert!(
+            !h2.store.toasts.get().iter().any(|t| t.text.contains("boom")),
+            "sessions 失败不走 toast"
+        );
+    }
+
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。
     #[test]
     fn gear_click_opens_settings() {
-        let mut h = mk_handler();
-        h.sidebar_visible = true;
+        let mut h = mk_handler();        h.sidebar_visible = true;
         h.terminal_h = 24;
         h.sidebar_tab_y = 9;
         let ev = Event::Mouse(MouseEvent::new(30, 23, MouseEventKind::Down(MouseButton::Left)));

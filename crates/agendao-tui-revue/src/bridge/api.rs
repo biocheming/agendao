@@ -987,6 +987,103 @@ impl ApiBridge {
         self.client.delete_plugin_config(key).await
     }
 
+    // ── U6⑤ 弹窗打开拉取异步变体 ──
+    // 同一权威、同一分支，仅改驱动方式（直接 await，不经 block_on）。
+    // 供 `/sessions` `/skills` `/mcps` `/tasks` 等弹窗打开的后台拉取
+    // （火=spawn，水=Tick drain 回收 DialogFetchDone）。
+
+    /// 异步列出目录下会话（保持 recent-first 排序口径）。
+    pub async fn list_sessions_in_directory_async(
+        &self,
+        directory: Option<String>,
+    ) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
+        let mut items = if let Some(ref ls) = self.local {
+            agendao_server_local::local_list_sessions_in_directory(
+                Arc::clone(ls),
+                directory.clone(),
+                None,
+                None,
+            )
+            .await?
+        } else {
+            self.client
+                .list_sessions_in_directory(directory.as_deref(), None, None)
+                .await?
+        };
+        sort_sessions_recent_first(&mut items);
+        Ok(items)
+    }
+
+    /// 异步拉 recent models（ModelSelect "★ Recent" 区块）。
+    pub async fn get_recent_models_async(&self) -> anyhow::Result<Vec<RecentModelEntry>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_get_recent_models(Arc::clone(ls)).await;
+        }
+        self.client.get_recent_models().await
+    }
+
+    /// 异步列 skills catalog。
+    pub async fn list_skills_async(
+        &self,
+        query: Option<&agendao_client::SkillCatalogQuery>,
+    ) -> anyhow::Result<Vec<agendao_client::SkillCatalogEntry>> {
+        if let Some(ref ls) = self.local {
+            let query = query.cloned().unwrap_or_default();
+            return agendao_server_local::local_list_skills(Arc::clone(ls), query).await;
+        }
+        self.client.list_skills(query).await
+    }
+
+    /// 异步列 skill proposals。
+    pub async fn list_skill_proposals_async(
+        &self,
+        status: &str,
+    ) -> anyhow::Result<Vec<agendao_client::SkillEvolutionProposal>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_list_skill_proposals(Arc::clone(ls), status)
+                .await;
+        }
+        self.client.list_skill_proposals(status).await
+    }
+
+    /// 异步拉 MCP 状态列表。
+    pub async fn get_mcp_status_async(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_get_mcp_status(Arc::clone(ls)).await;
+        }
+        self.client.get_mcp_status().await
+    }
+
+    /// 异步拉 per-session recovery 协议。
+    pub async fn get_session_recovery_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<agendao_client::SessionRecoveryProtocol> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_get_session_recovery(Arc::clone(ls), session_id)
+                .await;
+        }
+        self.client.get_session_recovery(session_id).await
+    }
+
+    /// 异步列全局 agent 任务。
+    pub async fn list_tasks_async(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
+        if self.local.is_some() {
+            return agendao_server_local::local_list_tasks().await;
+        }
+        self.client.list_tasks().await
+    }
+
+    /// 异步列 execution modes。
+    pub async fn list_execution_modes_async(
+        &self,
+    ) -> anyhow::Result<Vec<agendao_client::ExecutionModeInfo>> {
+        if let Some(ref ls) = self.local {
+            return agendao_server_local::local_list_execution_modes(Arc::clone(ls)).await;
+        }
+        self.client.list_execution_modes().await
+    }
+
 
     /// /session/{id}/recovery/execute POST：执行 recovery action。confirm 类——
     /// 经 PendingConfirm::ExecuteRecovery 路由（panel_dispatch），不在 list dialog 直接调。

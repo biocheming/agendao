@@ -56,6 +56,26 @@ pub enum AppOpOutcome {
         refresh: SettingsRefresh,
         result: Result<String, String>,
     },
+    /// 弹窗打开拉取完成（U6⑤：`/sessions` `/skills` `/proposals` `/mcps`
+    /// `/recovery` `/tasks` `/modes` 及 ModelSelect 的 recent 拉取，原全部
+    /// UI 线程 block_on）。数据变体即弹窗判别器（金：事件语义不可漂移）；
+    /// Err 携带 spawn 点拼好的完整失败 toast 文案（那里有弹窗上下文）。
+    DialogFetchDone(Result<DialogFetchData, String>),
+}
+
+/// 弹窗打开拉取的载荷（plain data，跨 task 边界）。每个变体对应一个
+/// 弹窗的打开拉取；drain 按变体路由到对应 dialog/store 落库。
+#[derive(Clone, Debug)]
+pub enum DialogFetchData {
+    /// ModelSelect 的 "★ Recent" 区块（打开即拉，失败仅 warn 不阻塞打开）。
+    RecentModels(Vec<agendao_state::RecentModelEntry>),
+    Skills(Vec<agendao_client::SkillCatalogEntry>),
+    SkillProposals(Vec<agendao_client::SkillEvolutionProposal>),
+    McpStatus(Vec<agendao_client::McpStatusInfo>),
+    Recovery(Box<agendao_client::SessionRecoveryProtocol>),
+    Tasks(Vec<agendao_client::TaskSummaryInfo>),
+    Modes(Vec<agendao_client::ExecutionModeInfo>),
+    Sessions(Vec<agendao_client::SessionListItem>),
 }
 
 /// settings 写成功后回灌哪个 catalog（水律·回流，与旧同步路径同一

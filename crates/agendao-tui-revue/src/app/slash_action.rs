@@ -21,15 +21,41 @@
 
 use agendao_command::UiActionId;
 
+use crate::app::app_op;
 use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::store::app_store::Route;
 use crate::store::types::{RunStatus, ToolPhase};
-use crate::dialog::{
-    StashEntry,
-    SkillEntry, SkillProposalEntry, McpEntry, RecoveryEntry, TaskEntry,
-};
+use crate::dialog::StashEntry;
 
 impl AppHandler {
+    /// U6⑤ 公共点火闸（弹窗打开拉取）：防抖（单闸）+ bridge 取用 +
+    /// pending 标记 + 回执通道。返回 `Some` = 可 spawn；`None` 时已自行
+    /// toast（防抖提示或无 bridge 静默返回——与旧同步路径的 `if let Some
+    /// (api)` 不报警口径一致），调用方直接 return。
+    fn begin_dialog_fetch(
+        &mut self,
+        pending_label: &str,
+    ) -> Option<(
+        crate::bridge::api::ApiBridge,
+        tokio::runtime::Handle,
+        tokio::sync::mpsc::UnboundedSender<app_op::AppOpOutcome>,
+    )> {
+        if let Some(cur) = self.store.dialog_fetch_pending.get() {
+            self.store.push_toast(
+                &format!("Still working: {} — wait for it to finish", cur),
+                crate::store::types::ToastMsgVariant::Info,
+            );
+            return None;
+        }
+        let api = self.api.clone()?;
+        self.store
+            .dialog_fetch_pending
+            .set(Some(pending_label.to_string()));
+        let handle = api.handle().clone();
+        let tx = self.app_ops.sender();
+        Some((api, handle, tx))
+    }
+
     /// 切到 fork 后的新会话：reset + set_session_id + sf_tx + load + navigate。
     /// /revise（message 级 fork）调完后再 set_text 回填；/fork（整会话 fork）不回填。
     pub(crate) fn switch_to_forked_session(&mut self, info: &agendao_client::SessionInfo) {
@@ -140,18 +166,22 @@ impl AppHandler {
             }
             UiActionId::OpenModelList => {
                 // F2：打开即拉 recent models 填充 "★ Recent" 区块（此前
-                // set_recent 无调用者，区块永远空——死代码）。
-                if let Some(ref api) = self.api {
-                    match api.get_recent_models() {
-                        Ok(entries) => {
-                            let recent: Vec<(String, String)> = entries
-                                .into_iter()
-                                .map(|e| (e.provider, e.model))
-                                .collect();
-                            self.model_select.set_recent(recent);
-                        }
-                        Err(e) => tracing::warn!(%e, "get_recent_models failed"),
-                    }
+                // set_recent 无调用者，区块永远空——死代码）。U6⑤：拉取移
+                // 后台，dialog 即时打开（与原口径一致：失败仅 warn 不阻塞）。
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading models") {
+                    handle.spawn(async move {
+                        // 失败口径=旧同步路径：仅 warn，不 toast 不阻塞（弹窗
+                        // 已开）；以空表回执代失败，drain 对空表跳过 set_recent。
+                        let result = api
+                            .get_recent_models_async()
+                            .await
+                            .map(app_op::DialogFetchData::RecentModels)
+                            .unwrap_or_else(|e| {
+                                tracing::warn!(%e, "get_recent_models failed");
+                                app_op::DialogFetchData::RecentModels(Vec::new())
+                            });
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(Ok(result)));
+                    });
                 }
                 self.model_select.open();
                 self.panel = Panel::ModelSelect;
@@ -163,137 +193,57 @@ impl AppHandler {
             UiActionId::OpenSkills => {
                 // 读视图 first slice（道纪第十条）：列表权威已成，挂载需
                 // manage_skill + scoping 独立工程，故只 toast 不伪成功。
-                if let Some(ref api) = self.api {
-                    match api.list_skills(None) {
-                        Ok(skills) => {
-                            let entries: Vec<SkillEntry> = skills.into_iter()
-                                .map(|s| SkillEntry {
-                                    name: s.name,
-                                    description: s.description,
-                                    location: s.location,
-                                })
-                                .collect();
-                            if entries.is_empty() {
-                                self.store.push_toast(
-                                    "No skills available",
-                                    crate::store::types::ToastMsgVariant::Warning,
-                                );
-                            } else {
-                                self.skill_list.set_skills(entries);
-                                self.skill_list.open();
-                                self.panel = Panel::SkillList;
-                            }
-                        }
-                        Err(e) => {
-                            self.store.push_toast(
-                                &format!("Failed to load skills: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
-                        }
-                    }
+                // U6⑤：拉取移后台——空/失败/成功分支全部由 drain 数据驱动
+                // （与原同步口径逐条对应）。
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading skills") {
+                    handle.spawn(async move {
+                        let result = api
+                            .list_skills_async(None)
+                            .await
+                            .map(app_op::DialogFetchData::Skills)
+                            .map_err(|e| format!("Failed to load skills: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
                 }
             }
             UiActionId::OpenSkillProposals => {
                 // 读视图 first slice：approve/reject 需 update_skill_proposal_status
                 // + confirm，留 B 层第三批（道纪第十条：不伪"已批准"）。
-                if let Some(ref api) = self.api {
-                    match api.list_skill_proposals("draft") {
-                        Ok(proposals) => {
-                            let entries: Vec<SkillProposalEntry> = proposals.into_iter()
-                                .map(|p| SkillProposalEntry {
-                                    id: p.id,
-                                    title: p.title,
-                                    status: format!("{:?}", p.status).to_lowercase(),
-                                    kind: format!("{:?}", p.proposal_kind).to_lowercase(),
-                                })
-                                .collect();
-                            if entries.is_empty() {
-                                self.store.push_toast(
-                                    "No pending proposals",
-                                    crate::store::types::ToastMsgVariant::Warning,
-                                );
-                            } else {
-                                self.skill_proposal.set_proposals(entries);
-                                self.skill_proposal.open();
-                                self.panel = Panel::SkillProposal;
-                            }
-                        }
-                        Err(e) => {
-                            self.store.push_toast(
-                                &format!("Failed to load proposals: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
-                        }
-                    }
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading proposals") {
+                    handle.spawn(async move {
+                        let result = api
+                            .list_skill_proposals_async("draft")
+                            .await
+                            .map(app_op::DialogFetchData::SkillProposals)
+                            .map_err(|e| format!("Failed to load proposals: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
                 }
             }
             UiActionId::OpenMcpList => {
-                if let Some(ref api) = self.api {
-                    match api.get_mcp_status() {
-                        Ok(mcps) => {
-                            let entries: Vec<McpEntry> = mcps.into_iter()
-                                .map(|m| McpEntry {
-                                    name: m.name,
-                                    status: m.status,
-                                    tools: m.tools,
-                                    resources: m.resources,
-                                })
-                                .collect();
-                            // F12：空列表也打开 dialog——`n` 新增入口不能是死端。
-                            self.mcp_list.set_entries(entries);
-                            self.mcp_list.open();
-                            self.panel = Panel::McpList;
-                        }
-                        Err(e) => {
-                            self.store.push_toast(
-                                &format!("Failed to load MCP status: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
-                        }
-                    }
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading MCP servers") {
+                    handle.spawn(async move {
+                        let result = api
+                            .get_mcp_status_async()
+                            .await
+                            .map(app_op::DialogFetchData::McpStatus)
+                            .map_err(|e| format!("Failed to load MCP status: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
                 }
             }
             UiActionId::OpenRecoveryList => {
                 // per-session：需 active session_id。
                 if let Some(sid) = self.active_session.get_session_id() {
-                    if let Some(ref api) = self.api {
-                        match api.get_session_recovery(&sid) {
-                            Ok(proto) => {
-                                let mut entries: Vec<RecoveryEntry> = Vec::new();
-                                for a in proto.actions {
-                                    entries.push(RecoveryEntry {
-                                        label: format!("action: {}", a.label),
-                                        detail: a.description,
-                                        action_kind: Some(a.kind),
-                                        target_id: a.target_id,
-                                    });
-                                }
-                                for c in proto.checkpoints {
-                                    entries.push(RecoveryEntry {
-                                        label: format!("checkpoint: [{}] {}", c.status, c.label),
-                                        detail: c.summary.unwrap_or(c.kind),
-                                        action_kind: None,
-                                        target_id: None,
-                                    });
-                                }
-                                if entries.is_empty() {
-                                    self.store.push_toast(
-                                        "No recovery actions or checkpoints",
-                                        crate::store::types::ToastMsgVariant::Warning,
-                                    );
-                                } else {
-                                    self.recovery_list.set_entries(entries);
-                                    self.recovery_list.open();
-                                    self.panel = Panel::Recovery;
-                                }
-                            }
-                            Err(e) => {
-                                self.store.push_toast(
-                                    &format!("Failed to load recovery: {}", e),
-                                    crate::store::types::ToastMsgVariant::Error,
-                                );
-                            }
-                        }
+                    if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading recovery") {
+                        handle.spawn(async move {
+                            let result = api
+                                .get_session_recovery_async(&sid)
+                                .await
+                                .map(|p| app_op::DialogFetchData::Recovery(Box::new(p)))
+                                .map_err(|e| format!("Failed to load recovery: {}", e));
+                            let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                        });
                     }
                 } else {
                     self.store.push_toast(
@@ -303,69 +253,27 @@ impl AppHandler {
                 }
             }
             UiActionId::ListTasks => {
-                if let Some(ref api) = self.api {
-                    match api.list_tasks() {
-                        Ok(tasks) => {
-                            let entries: Vec<TaskEntry> = tasks.into_iter()
-                                .map(|t| TaskEntry {
-                                    id: t.id,
-                                    agent_name: t.agent_name,
-                                    status: t.status,
-                                    step: t.step,
-                                    max_steps: t.max_steps,
-                                })
-                                .collect();
-                            if entries.is_empty() {
-                                self.store.push_toast(
-                                    "No active agent tasks",
-                                    crate::store::types::ToastMsgVariant::Warning,
-                                );
-                            } else {
-                                self.task_list.set_entries(entries);
-                                self.task_list.open();
-                                self.panel = Panel::TaskList;
-                            }
-                        }
-                        Err(e) => {
-                            self.store.push_toast(
-                                &format!("Failed to load tasks: {}", e),
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
-                        }
-                    }
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading tasks") {
+                    handle.spawn(async move {
+                        let result = api
+                            .list_tasks_async()
+                            .await
+                            .map(app_op::DialogFetchData::Tasks)
+                            .map_err(|e| format!("Failed to load tasks: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
                 }
             }
             UiActionId::OpenModeList => {
-                if let Some(ref api) = self.api {
-                    match api.list_execution_modes() {
-                        Ok(modes) => {
-                            // 映射成 ModeEntry：携 kind 而不只是 name，dispatch
-                            // 处才能按 kind 分流到 agent / scheduler_profile 槽
-                            // （对齐 web `App.tsx:836`）。
-                            let entries: Vec<crate::dialog::ModeEntry> = modes
-                                .into_iter()
-                                .filter(|m| !m.hidden.unwrap_or(false))
-                                .map(|m| crate::dialog::ModeEntry {
-                                    kind: m.kind,
-                                    id: m.id,
-                                    display: m.name,
-                                    description: m.description,
-                                })
-                                .collect();
-                            if entries.is_empty() {
-                                self.store.push_toast(
-                                    "No execution modes available",
-                                    crate::store::types::ToastMsgVariant::Warning,
-                                );
-                            } else {
-                                self.mode_select.open_with(entries);
-                                self.panel = Panel::ModeSelect;
-                            }
-                        }
-                        Err(e) => {
-                            self.store.push_toast(&format!("Failed to load modes: {}", e), crate::store::types::ToastMsgVariant::Error);
-                        }
-                    }
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading modes") {
+                    handle.spawn(async move {
+                        let result = api
+                            .list_execution_modes_async()
+                            .await
+                            .map(app_op::DialogFetchData::Modes)
+                            .map_err(|e| format!("Failed to load modes: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
                 }
             }
             UiActionId::RenameSession => {
@@ -593,27 +501,47 @@ impl AppHandler {
                 }
             }
             UiActionId::OpenSessionList => {
+                // U6⑤：弹窗立开 + 真 loading 态（session_list.loading 分支原
+                // 为死代码）；拉取移后台，drain 处填充/置错。reload_session_list
+                // 的 store 刷新也随 drain 完成（Sidebar 树同步更新）。
                 self.session_list.open();
                 self.session_list.loading = true;
                 self.panel = Panel::SessionList;
                 let cwd = self.store.working_dir.get();
                 self.session_list.set_directory_scope(cwd.clone());
-                self.reload_session_list();
-                let entries: Vec<crate::dialog::SessionEntry> = self
-                    .store
-                    .session_list
-                    .get()
-                    .into_iter()
-                    .map(|s| crate::dialog::SessionEntry {
-                        id: s.id,
-                        title: s.title,
-                        status_hint: String::new(),
-                    })
-                    .collect();
-                if entries.is_empty() {
+                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading sessions") {
+                    let cwd_filter = if cwd.is_empty() { None } else { Some(cwd) };
+                    handle.spawn(async move {
+                        let result = api
+                            .list_sessions_in_directory_async(cwd_filter)
+                            .await
+                            .map(app_op::DialogFetchData::Sessions)
+                            .map_err(|e| format!("Failed to refresh session list: {}", e));
+                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
+                    });
+                } else if self.api.is_none() {
+                    // 无桥：立即可判空态（drain 不会来）。
                     self.session_list.set_error("No sessions in this directory".into());
                 } else {
-                    self.session_list.set_sessions(entries);
+                    // debounce：在途拉取属于别的弹窗（begin_dialog_fetch 已
+                    // toast），loading 不能干等——用 store 现有缓存填充；
+                    // 若在途的恰是 sessions 拉取，drain 到达后自然覆盖。
+                    let entries: Vec<crate::dialog::SessionEntry> = self
+                        .store
+                        .session_list
+                        .get()
+                        .into_iter()
+                        .map(|s| crate::dialog::SessionEntry {
+                            id: s.id,
+                            title: s.title,
+                            status_hint: String::new(),
+                        })
+                        .collect();
+                    if entries.is_empty() {
+                        self.session_list.set_error("No sessions in this directory".into());
+                    } else {
+                        self.session_list.set_sessions(entries);
+                    }
                 }
             }
             UiActionId::ToggleSidebar => {
