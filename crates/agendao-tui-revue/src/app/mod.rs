@@ -1105,7 +1105,8 @@ impl View for RootView {
         // (for `ensure_cursor_visible` in the next event) after the
         // borrow is released at the bottom of `render`. Defaults to
         // the Home route's full height.
-        // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+ctx1+prompt4+status1=9）- attachment_h。
+        // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+info1+status1=5）
+        // - prompt_bar(prompt_bar_h) - attachment_h（与下方 transcript_viewport_h 同口径）。
         // attachments 提前至此：attachment_h 与布局层、attachment_strip 共用此 borrow（避免重复 get + 重复计算）。
         // 注：保持 get() 克隆——read() guard 会借用 h 直至 render 末尾，与下方
         // drop(h) 冲突；attachments 通常为空/极小，克隆代价可忽略。
@@ -1117,13 +1118,16 @@ impl View for RootView {
         };
         // 光标闪烁相（土律·单点：blink_tick 由 Tick 推进，blink_visible 判相）。
         let cursor_blink_on = crate::widget::blink::blink_visible(h.blink_tick);
-        // 多行 prompt：内容自适应行数（封顶 MAX_VISIBLE_LINES，超出滚动条）。
+        // 多行 prompt：soft-wrap 折行后内容自适应行数（封顶 MAX_VISIBLE_LINES，
+        // 超出滚动条）。宽度走 prompt_geometry 单点权威（Home 居中宽 /
+        // Session 主区-PAD；rows 不影响宽，先传 0 取宽再算行数）。
         // prompt_bar 高 = hint(1) + 内容行 + 底边框(1)。
-        let prompt_input_rows = h.prompt.visible_height();
+        let prompt_w = prompt_geometry(&route, ctx.area, sidebar_on, 0).w;
+        let prompt_input_rows = h.prompt.visible_height_for(prompt_w);
         let prompt_bar_h = prompt_input_rows + 2;
-        // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+ctx1+info1+status1=6）
+        // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+info1+status1=5）
         // - prompt_bar(prompt_bar_h) - attachment_h。
-        let transcript_viewport_h: u16 = ctx.area.height.saturating_sub(6 + prompt_bar_h + attachment_h);
+        let transcript_viewport_h: u16 = ctx.area.height.saturating_sub(5 + prompt_bar_h + attachment_h);
 
         // ── Content area ──
         let mut content_stack = vstack();
@@ -1309,7 +1313,7 @@ impl View for RootView {
                     // scroll_offset; new messages auto-pin to the bottom
                     // ONLY when offset is 0, so reading old history
                     // doesn't get yanked back to the latest mid-read.
-                    let available = ctx.area.height.saturating_sub(6 + prompt_bar_h);
+                    let available = ctx.area.height.saturating_sub(5 + prompt_bar_h);
                     // total_h 与渲染/鼠标命中/cursor 滚动同口径（聚合），单点
                     // transcript_total_height——避免逐块高度与聚合渲染错位致命中/滚动失准。
                     let cursor_idx = h.active_session.transcript_cursor.get();
@@ -1538,24 +1542,6 @@ impl View for RootView {
             }
         }
 
-        // ── Context strip: model / agent / mode ──
-        let mut ctx_parts: Vec<String> = Vec::new();
-        if let Some(ref m) = self.store.selected_model.get() {
-            ctx_parts.push(format!("m:{}", m));
-        }
-        if let Some(ref a) = self.store.selected_agent.get() {
-            ctx_parts.push(format!("a:{}", a));
-        }
-        if let Some(ref m) = self.store.selected_mode.get() {
-            ctx_parts.push(m.to_string());
-        }
-        let context_strip_text = if ctx_parts.is_empty() {
-            "[default]".to_string()
-        } else {
-            format!("[{}]", ctx_parts.join(" "))
-        };
-        let context_strip = Text::new(&context_strip_text).fg(colors::FG_MUTED());
-
         // ── Attachment strip ──（attachments / attachment_h 已在 viewport 区提前借用）
         let attachment_strip = if attachments.is_empty() {
             vstack()
@@ -1698,23 +1684,16 @@ impl View for RootView {
         };
         let dir = self.store.working_dir.get();
         let dir_short = dir.rsplit('/').next().unwrap_or(&dir);
-        let tokens = h.active_session.token_usage.get();
-        let mut stats = String::new();
-        if tokens.total > 0 {
-            stats.push_str(&format!(" in:{} out:{}", crate::theme::fmt_tokens(tokens.input), crate::theme::fmt_tokens(tokens.output)));
-            if tokens.cache_read > 0 || tokens.cache_miss > 0 {
-                stats.push_str(&format!(" cache:{}r/{}m", crate::theme::fmt_tokens(tokens.cache_read), crate::theme::fmt_tokens(tokens.cache_miss)));
-            }
-            if tokens.total_cost > 0.0 {
-                stats.push_str(&format!(" {}", crate::theme::fmt_cost(tokens.total_cost)));
-            }
-        }
+        // token stats 归 info_strip 独一份（build_session_info_strip 消费同一
+        // 份 token_usage——状态栏不再重复展示，金律·输出口径单点）。
         // Active tasks count
         let active_tools = h.active_session.active_tools.get();
         let running = active_tools.iter().filter(|t| t.phase == ToolPhase::Running).count();
-        if running > 0 {
-            stats.push_str(&format!(" tasks:{}", running));
-        }
+        let tasks_hint = if running > 0 {
+            format!(" tasks:{}", running)
+        } else {
+            String::new()
+        };
         // Show cursor + key hints for transcript navigation. Without
         // these, users have no clue Tab/Space exist — and Space/Tab
         // don't visibly do anything until they happen to hover their
@@ -1724,28 +1703,16 @@ impl View for RootView {
             Some(idx) => format!(" cursor:{}", idx + 1),
             None => String::new(),
         };
-        // U20：宣传与实现双向对齐（第十条）。基座键（Tab/S-Tab/PgUp/Dn，
-        // prompt 状态无关）常驻；空 prompt 才生效的键（j/k/Space/g/G/
-        // Home/End/C）只在空 prompt 时宣传——非空时宣传了按了归编辑器，
-        // 等于伪权威；选中态再追加 e/c（UserPrompt 可 revise，任何块可
-        // copy）——选中什么宣传什么。
+        // U20：宣传与实现双向对齐（第十条）。status bar 只留基座短口径；
+        // 全量键位说明归 `?` help 弹窗（dialog::help::KEYBINDINGS 文档
+        // 权威——j/k/Space/g/G/Home/End/C/e/c/Tab/S-Tab 均在表内）。
         let nav_hint = if matches!(route, Route::Session { .. }) {
-            let mut s = String::from(" Tab/S-Tab:nav PgUp/Dn:scroll");
-            if h.prompt.text().is_empty() {
-                s.push_str(" j/k:nav Space:fold g/G·Home/End:top/bottom C:copy-screen");
-                if h.active_session.transcript_cursor.get().is_some() {
-                    if h.active_session.cursor_user_prompt().is_some() {
-                        s.push_str(" e:revise");
-                    }
-                    s.push_str(" c:copy");
-                }
-            }
-            s
+            " Tab:nav PgUp/Dn:scroll ?:help"
         } else {
-            String::new()
+            ""
         };
         // U11④：翻上去阅读期间新到底的块数——"↓ N new"，回底消失。
-        // U20：附回底键提示（G/End 空 prompt 才生效，与 nav_hint 同闸）。
+        // U20：附回底键提示（G/End 空 prompt 才生效——非空时按键归编辑器）。
         let unread_count = h.active_session.unread_count();
         let unread_hint = if unread_count > 0 {
             if h.prompt.text().is_empty() {
@@ -1792,7 +1759,7 @@ impl View for RootView {
         };
         let status_prefix = format!(
             " {} │ [{}]{}{}{}{}{} │{}",
-            dir_short, panel_label, stats, fetch_hint, stale_hint, unread_hint, cursor_hint, nav_hint,
+            dir_short, panel_label, tasks_hint, fetch_hint, stale_hint, unread_hint, cursor_hint, nav_hint,
         );
         let (bell_rect, pending_rect) = {
             use unicode_width::UnicodeWidthStr;
@@ -1838,13 +1805,12 @@ impl View for RootView {
                 .child_sized(gutter(status_bar), 1),
             Route::Session { .. } => vstack()
                 .child_flex(content_stack, 1.0)
-                .child_sized(gutter(context_strip), 1)
                 .child_sized(gutter(attachment_strip), attachment_h)
                 .child_sized(gutter(prompt_bar), prompt_bar_h)   // hint(1) + 多行输入(自适应≤10) + 底线(1)
                 .child_sized(gutter(info_strip), 1)   // token + context 进度条
                 .child_sized(gutter(status_bar), 1),
             // Settings:仅 content_stack(SettingsScreen 全屏)+ 底部 status_bar;
-            // 不画 context/attachment/prompt_bar(Settings 不接受 prompt 输入)。
+            // 不画 attachment/prompt_bar(Settings 不接受 prompt 输入)。
             Route::Settings => vstack()
                 .child_flex(content_stack, 1.0)
                 .child_sized(gutter(status_bar), 1),
@@ -1930,11 +1896,14 @@ impl View for RootView {
             }
         }
         let h = self.handler.borrow();
-        let prompt_y = ctx.area.y + ctx.area.height.saturating_sub(5);
         // 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）共用同一输入框几何
         // ——prompt_geometry 唯一权威（土律）：宽=输入框宽、x 对齐输入框、贴输入框正上方。
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
         let geom = prompt_geometry(&route, ctx.area, sidebar_on, prompt_input_rows);
+        // Toast 底部锚 = 输入框上方第一条可用行：与弹窗同源取 prompt bar 顶边
+        // （geom.y_top）再上一行。旧常量 5 是单行输入时代口径——多行输入
+        // （rows≤10）时 toast 会压 hint 行/输入框（金律：几何不得漂移）。
+        let prompt_y = geom.y_top.saturating_sub(1);
         let mut model_edit_rect: Option<revue::prelude::Rect> = None;
         let mut mcp_edit_rect: Option<revue::prelude::Rect> = None;
         let mut plugin_edit_rect: Option<revue::prelude::Rect> = None;

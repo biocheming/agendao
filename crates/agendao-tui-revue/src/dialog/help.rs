@@ -45,7 +45,7 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("Ctrl+P", "Command palette"),
 
         Section("─ Transcript (cursor) ─"),
-        Binding("j/k · Tab", "Cursor next/prev foldable block"),
+        Binding("j/k · Tab/S-Tab", "Cursor next/prev foldable block"),
         Binding("Space", "Toggle fold at cursor (prompt empty)"),
         Binding("e", "Edit & resend cursor UserPrompt"),
         Binding("c", "Copy cursor block (OSC52)"),

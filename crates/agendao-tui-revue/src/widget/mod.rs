@@ -20,6 +20,9 @@
 //!   让 message block 获得同色系明度层次（revue Stack 不自带背景 fill）。
 //! - [`vline`] — 垂直分隔线（`VLine`）：与 `bg_stack` 对偶，1 列宽整高填 `│`，
 //!   只动 `cell.symbol`+`fg` 保留 bg；作 sidebar↔主区纯黑合一边界。
+//! - [`wrap_editor`] — soft-wrap 编辑器控件（`WrapEditor` 编辑层 +
+//!   `EditorView` 视图层）：细化 `revue::TextArea`，自带 ❯ 箭头、
+//!   滚动窗、闪烁光标与命中几何回流；prompt 输入框的编辑/渲染权威。
 
 pub mod scrollbar;
 pub mod scroll_view;
@@ -28,6 +31,7 @@ pub mod spinner;
 pub mod blink;
 pub mod bg_stack;
 pub mod vline;
+pub mod wrap_editor;
 
 pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
