@@ -137,9 +137,13 @@ pub(crate) async fn resolve_provider_model(
 ) -> Result<ProviderModel> {
     let config = state.config_store.config();
     let auth_store = state.auth_manager.list().await;
-    let models_dev = state.catalog_authority.data().await;
     let bootstrap_config = bootstrap_config_from_config(&config);
-    let bootstrap_state = ProviderBootstrapState::init(&models_dev, &bootstrap_config, &auth_store);
+    // Take the shared Arc snapshot (cheap) and build outside the catalog
+    // read lock — `ProviderBootstrapState::init` scans the whole table and
+    // must not block catalog refreshes.
+    let catalog_snapshot = state.catalog_authority.snapshot().await;
+    let bootstrap_state =
+        ProviderBootstrapState::init(&catalog_snapshot.data, &bootstrap_config, &auth_store);
 
     let Some(provider) = bootstrap_state.providers.get(provider_id) else {
         return Err(ApiError::BadRequest(format!(

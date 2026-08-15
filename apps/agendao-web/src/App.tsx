@@ -547,7 +547,8 @@ export default function App() {
           uiPreferences: {
             webTheme: theme,
             webMode: selectedMode || null,
-            webModel: selectedModel || null,
+            // 空串是后端的清空哨兵（PATCH null = 不变），直接透传当前选择。
+            webModel: selectedModel,
             showThinking,
           },
         }),

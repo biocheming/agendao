@@ -1,6 +1,6 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -928,12 +928,12 @@ pub fn build_session_execution_topology(
     let record_ids = records
         .iter()
         .map(|record| record.id.clone())
-        .collect::<Vec<_>>();
+        .collect::<HashSet<_>>();
     for record in records {
         let has_parent = record
             .parent_id
             .as_ref()
-            .map(|parent_id| record_ids.iter().any(|id| id == parent_id))
+            .map(|parent_id| record_ids.contains(parent_id.as_str()))
             .unwrap_or(false);
         if has_parent {
             children_by_parent

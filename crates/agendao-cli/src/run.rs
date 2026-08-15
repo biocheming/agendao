@@ -112,7 +112,9 @@ pub(super) async fn run_non_interactive(
             .ok();
     let show_thinking = cli_resolve_show_thinking(
         thinking,
-        remote_context.as_ref().map(|context| &context.config),
+        remote_context
+            .as_ref()
+            .map(|context| context.config.as_ref()),
         false,
     );
     let model = model.or_else(|| {

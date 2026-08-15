@@ -877,45 +877,6 @@ pub fn compact_session_now_with_focus_result(
     }
 }
 
-pub fn auto_compact_session_with_focus_if_needed(
-    session: &mut Session,
-    provider: &dyn agendao_provider::Provider,
-    model_id: &str,
-    max_output_tokens: Option<u64>,
-    config_store: Option<&agendao_config::ConfigStore>,
-    options: AutoCompactionOptions<'_>,
-) -> Option<String> {
-    let AutoCompactionOptions {
-        focus,
-        trigger,
-        phase,
-        usage,
-    } = options;
-    if !session.context_kind().owns_prompt_continuity() {
-        return None;
-    }
-    let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
-    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
-    let assessment = SessionPrompt::assess_compaction(
-        &filtered,
-        &session.messages,
-        provider,
-        model_id,
-        max_output_tokens,
-        &compaction_config,
-        usage,
-    )?;
-    let record = SessionPrompt::build_compaction_record(
-        trigger,
-        phase,
-        Some(assessment.reason),
-        false,
-        usage,
-        assessment.limit_tokens,
-    );
-    SessionPrompt::trigger_compaction_with_record(session, &filtered, focus, Some(record), false)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextPressureGovernanceOutcome {
     Proceed(ContextPressureGovernanceSummary),

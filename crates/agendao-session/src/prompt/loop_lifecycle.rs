@@ -1309,7 +1309,6 @@ struct PromptLoopContext {
     provider_id: String,
     agent_name: Option<String>,
     surface_inputs: PromptSurfaceInputs,
-    compiled_request: CompiledExecutionRequest,
     hooks: PromptHooks,
     config_store: Option<Arc<agendao_config::ConfigStore>>,
 }
@@ -1552,28 +1551,28 @@ impl SessionPrompt {
             hooks,
         } = request;
         // Rehydrate through the authority builder so hot-path mutations
-        // cannot bypass provider-option/default normalization.
-        let surface_inputs = PromptSurfaceInputs::builder(
-            surface_inputs.session_id.clone(),
-            compiled_request.clone(),
-        )
-        .set_base_system_prompt(
-            skill_reflection::augment_system_prompt_with_skill_reflection(
-                session,
-                surface_inputs.system_prompt.clone(),
-            ),
-        )
-        .set_environment_identity(surface_inputs.env_context.clone())
-        .set_memory_prefetch(surface_inputs.memory_prefetch.clone())
-        .set_tool_surface(
-            surface_inputs.tools.clone(),
-            surface_inputs.tool_source_digests.clone(),
-            surface_inputs.tool_catalog_by_name.clone(),
-            surface_inputs.tool_catalog_mode,
-            surface_inputs.tool_catalog_hash.clone(),
-        )
-        .set_external_tool_execution_by_name(surface_inputs.external_tool_execution_by_name.clone())
-        .set_provider_options(surface_inputs.provider_options.clone());
+        // cannot bypass provider-option/default normalization. The old
+        // `surface_inputs` is shadowed below and never read again, so every
+        // field moves into the builder instead of cloning.
+        let surface_inputs =
+            PromptSurfaceInputs::builder(surface_inputs.session_id, compiled_request)
+                .set_base_system_prompt(
+                    skill_reflection::augment_system_prompt_with_skill_reflection(
+                        session,
+                        surface_inputs.system_prompt,
+                    ),
+                )
+                .set_environment_identity(surface_inputs.env_context)
+                .set_memory_prefetch(surface_inputs.memory_prefetch)
+                .set_tool_surface(
+                    surface_inputs.tools,
+                    surface_inputs.tool_source_digests,
+                    surface_inputs.tool_catalog_by_name,
+                    surface_inputs.tool_catalog_mode,
+                    surface_inputs.tool_catalog_hash,
+                )
+                .set_external_tool_execution_by_name(surface_inputs.external_tool_execution_by_name)
+                .set_provider_options(surface_inputs.provider_options);
 
         let used_reserved_token = reserved_token.is_some();
         if !used_reserved_token && Self::is_duplicate_ingress_turn(session, &input) {
@@ -1668,7 +1667,6 @@ impl SessionPrompt {
                         provider_id,
                         agent_name: input.agent.clone(),
                         surface_inputs,
-                        compiled_request,
                         hooks,
                         config_store: self.config_store.clone(),
                     },
@@ -1799,24 +1797,32 @@ impl SessionPrompt {
             .as_ref()
             .map(|m| m.provider_id.clone())
             .unwrap_or_else(|| "anthropic".to_string());
-        let surface_inputs =
-            PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
-                .set_base_system_prompt(system_prompt)
-                .set_environment_identity(Some(SystemPrompt::environment(
-                    &EnvironmentContext::from_current(
-                        model_id.clone(),
-                        provider_id.clone(),
-                        session.record().directory.clone(),
-                    ),
-                )))
-                .set_tool_surface(
-                    tools,
-                    Vec::new(),
-                    BTreeMap::new(),
-                    super::tools_and_output::ToolCatalogMode::FullSchema,
-                    agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
-                )
-                .set_external_tool_execution_by_name(BTreeMap::new());
+        // Enrich before building the surface so `surface_inputs` carries the
+        // same inherited defaults the loop consumes (single owner, no copy).
+        let compiled_request = compiled_request.inherit_missing(&session_runtime_request_defaults(
+            session
+                .metadata
+                .get("model_variant")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        ));
+        let surface_inputs = PromptSurfaceInputs::builder(session_id.to_string(), compiled_request)
+            .set_base_system_prompt(system_prompt)
+            .set_environment_identity(Some(SystemPrompt::environment(
+                &EnvironmentContext::from_current(
+                    model_id.clone(),
+                    provider_id.clone(),
+                    session.record().directory.clone(),
+                ),
+            )))
+            .set_tool_surface(
+                tools,
+                Vec::new(),
+                BTreeMap::new(),
+                super::tools_and_output::ToolCatalogMode::FullSchema,
+                agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
+            )
+            .set_external_tool_execution_by_name(BTreeMap::new());
         let token = self.resume(session_id).await;
 
         let token = match token {
@@ -1835,13 +1841,6 @@ impl SessionPrompt {
             .get("agent")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let compiled_request = compiled_request.inherit_missing(&session_runtime_request_defaults(
-            session
-                .metadata
-                .get("model_variant")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        ));
 
         {
             let mut session_state = self.session_state.write().await;
@@ -1864,7 +1863,6 @@ impl SessionPrompt {
                     provider_id: provider_id.clone(),
                     agent_name: resume_agent,
                     surface_inputs,
-                    compiled_request: compiled_request.clone(),
                     hooks: PromptHooks::default(),
                     config_store: self.config_store.clone(),
                 },
@@ -3183,7 +3181,7 @@ impl SessionPrompt {
                     &filtered_messages,
                     &prompt_ctx.provider,
                     &prompt_ctx.model_id,
-                    &prompt_ctx.compiled_request,
+                    &prompt_ctx.surface_inputs.compiled_request,
                     prompt_ctx.config_store.as_deref(),
                     prompt_ctx.hooks.update_hook.as_ref(),
                     prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
@@ -3227,7 +3225,7 @@ impl SessionPrompt {
                 system_prompt: prompt_ctx.surface_inputs.system_prompt.as_deref(),
                 messages: &chat_messages,
                 tools: &resolved_tools,
-                compiled_request: &prompt_ctx.compiled_request,
+                compiled_request: &prompt_ctx.surface_inputs.compiled_request,
                 provider_profile: Some(provider_profile.clone()),
             });
             let previous_cache_fingerprint = Self::latest_cache_request_fingerprint(session);
@@ -3239,7 +3237,7 @@ impl SessionPrompt {
                 Self::latest_prompt_surface_state_snapshot(session);
             let prompt_surface_inputs = PromptSurfaceInputs::builder(
                 session_id.clone(),
-                prompt_ctx.compiled_request.clone(),
+                prompt_ctx.surface_inputs.compiled_request.clone(),
             )
             .set_base_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
             .set_environment_identity(prompt_ctx.surface_inputs.env_context.clone())
@@ -3376,7 +3374,7 @@ impl SessionPrompt {
                             provider: prompt_ctx.provider.clone(),
                             model_id: prompt_ctx.model_id.clone(),
                             agent_name: prompt_ctx.agent_name.clone(),
-                            compiled_request: prompt_ctx.compiled_request.clone(),
+                            compiled_request: prompt_ctx.surface_inputs.compiled_request.clone(),
                             hooks: prompt_ctx.hooks.clone(),
                             config_store: prompt_ctx.config_store.clone(),
                         },

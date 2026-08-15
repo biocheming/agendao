@@ -12,7 +12,9 @@ pub use wellknown::{clear_wellknown_cache, load_config_with_remote, load_wellkno
 pub struct ResolvedWorkspaceContext {
     pub identity: WorkspaceIdentity,
     pub mode: WorkspaceMode,
-    pub config: Config,
+    /// Shared snapshot from the ConfigStore — resolving never deep-copies
+    /// the config.
+    pub config: Arc<Config>,
     #[serde(default)]
     pub recent_models: Vec<RecentModelEntry>,
 }
@@ -22,7 +24,7 @@ impl ResolvedWorkspaceContext {
         Self {
             identity: WorkspaceIdentity::fallback(std::path::Path::new(".")),
             mode: WorkspaceMode::Shared,
-            config: Config::default(),
+            config: Arc::new(Config::default()),
             recent_models: Vec::new(),
         }
     }
@@ -42,7 +44,7 @@ impl ResolvedWorkspaceContextAuthority {
     }
 
     pub async fn resolve(&self) -> Result<ResolvedWorkspaceContext> {
-        let config = (*self.config_store.config()).clone();
+        let config = self.config_store.config();
         let identity = self
             .config_store
             .workspace_identity()

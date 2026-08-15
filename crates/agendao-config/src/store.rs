@@ -302,6 +302,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn patch_persists_and_clears_web_model_via_ui_preferences() {
+        // Mirrors the real web frontend PATCH payload shape: the value is
+        // always sent (string), with an empty string meaning "clear".
+        let store = ConfigStore::new(Config::default());
+
+        store
+            .patch(serde_json::json!({
+                "uiPreferences": { "webModel": "anthropic/claude" }
+            }))
+            .unwrap();
+        assert_eq!(
+            store
+                .config()
+                .ui_preferences
+                .as_ref()
+                .and_then(|ui| ui.web_model.clone()),
+            Some("anthropic/claude".to_string())
+        );
+
+        // Overwrite.
+        store
+            .patch(serde_json::json!({
+                "uiPreferences": { "webModel": "openai/gpt" }
+            }))
+            .unwrap();
+        assert_eq!(
+            store
+                .config()
+                .ui_preferences
+                .as_ref()
+                .and_then(|ui| ui.web_model.clone()),
+            Some("openai/gpt".to_string())
+        );
+
+        // The frontend clears by sending an empty string.
+        store
+            .patch(serde_json::json!({
+                "uiPreferences": { "webModel": "" }
+            }))
+            .unwrap();
+        assert_eq!(
+            store
+                .config()
+                .ui_preferences
+                .as_ref()
+                .and_then(|ui| ui.web_model.clone()),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn patch_invalidates_plugin_cache() {
         let store = ConfigStore::new(Config::default());
 

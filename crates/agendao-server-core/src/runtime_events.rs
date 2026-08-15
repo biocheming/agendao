@@ -95,6 +95,9 @@ impl EventBusTelemetry {
             max_receivers: self.max_receivers.load(Ordering::Relaxed),
             last_send_at_ms: self.last_send_at_ms.load(Ordering::Relaxed),
             last_send_error_at_ms: self.last_send_error_at_ms.load(Ordering::Relaxed),
+            coalesced_snapshot_count: self.coalesced_snapshot_count.load(Ordering::Relaxed),
+            identity_missing_count: self.identity_missing_count.load(Ordering::Relaxed),
+            full_snapshot_emitted_count: self.full_snapshot_emitted_count.load(Ordering::Relaxed),
         }
     }
 }

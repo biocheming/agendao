@@ -42,7 +42,7 @@ pub enum CatalogRefreshStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogRefreshResult {
-    pub snapshot: CatalogSnapshot,
+    pub snapshot: Arc<CatalogSnapshot>,
     pub status: CatalogRefreshStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
@@ -52,7 +52,7 @@ pub struct ModelCatalogAuthority {
     snapshot_path: PathBuf,
     metadata_path: PathBuf,
     client: reqwest::Client,
-    snapshot: RwLock<Option<CatalogSnapshot>>,
+    snapshot: RwLock<Option<Arc<CatalogSnapshot>>>,
     refresh_lock: Mutex<()>,
     next_generation: AtomicU64,
 }
@@ -74,7 +74,9 @@ impl ModelCatalogAuthority {
         Self::new(snapshot_path, metadata_path)
     }
 
-    pub async fn snapshot(&self) -> CatalogSnapshot {
+    /// Shared snapshot handle — clones only the `Arc`, never the multi-MB
+    /// catalogue table. Hot read path for every provider-facing request.
+    pub async fn snapshot(&self) -> Arc<CatalogSnapshot> {
         if let Some(snapshot) = self.snapshot.read().await.clone() {
             return snapshot;
         }
@@ -88,7 +90,8 @@ impl ModelCatalogAuthority {
             .load_cached_snapshot()
             .await
             .unwrap_or_else(|| self.allocate_snapshot(HashMap::new(), CatalogMetadata::default()));
-        self.store_snapshot(loaded.clone()).await;
+        let loaded = Arc::new(loaded);
+        self.store_snapshot(Arc::clone(&loaded)).await;
 
         if loaded.data.is_empty() {
             return self.refresh_locked(Some(loaded), false).await.snapshot;
@@ -97,8 +100,11 @@ impl ModelCatalogAuthority {
         loaded
     }
 
+    /// Full-table copy. Only for cold paths (CLI one-shot listings); hot
+    /// paths should use [`Self::snapshot`] (shared handle) or
+    /// [`Self::map_snapshot`] (borrow under read lock).
     pub async fn data(&self) -> ModelsData {
-        self.snapshot().await.data
+        self.snapshot().await.data.clone()
     }
 
     /// Run `f` against the cached snapshot under a read lock, loading the
@@ -116,7 +122,7 @@ impl ModelCatalogAuthority {
         f(snapshot)
     }
 
-    pub async fn refresh(&self, force: bool) -> CatalogSnapshot {
+    pub async fn refresh(&self, force: bool) -> Arc<CatalogSnapshot> {
         self.refresh_with_result(force).await.snapshot
     }
 
@@ -124,18 +130,19 @@ impl ModelCatalogAuthority {
         let _guard = self.refresh_lock.lock().await;
         let current = match self.snapshot.read().await.clone() {
             Some(snapshot) => Some(snapshot),
-            None => self.load_cached_snapshot().await,
+            None => self.load_cached_snapshot().await.map(Arc::new),
         };
         self.refresh_locked(current, force).await
     }
 
     async fn refresh_locked(
         &self,
-        current: Option<CatalogSnapshot>,
+        current: Option<Arc<CatalogSnapshot>>,
         force: bool,
     ) -> CatalogRefreshResult {
-        let current = current
-            .unwrap_or_else(|| self.allocate_snapshot(HashMap::new(), CatalogMetadata::default()));
+        let current = current.unwrap_or_else(|| {
+            Arc::new(self.allocate_snapshot(HashMap::new(), CatalogMetadata::default()))
+        });
         let now = chrono::Utc::now().timestamp_millis();
         let url = format!("{}/api.json", MODELS_DEV_URL);
 
@@ -155,7 +162,9 @@ impl ModelCatalogAuthority {
 
         let result = match request.send().await {
             Ok(response) if response.status() == reqwest::StatusCode::NOT_MODIFIED => {
-                let mut snapshot = current.clone();
+                // Only the metadata changes on 304; the table copy here is the
+                // one accepted full clone (refreshes are rare, user-triggered).
+                let mut snapshot = (*current).clone();
                 snapshot.metadata.last_refresh_at = Some(now);
                 if snapshot.metadata.source_url.is_empty() {
                     snapshot.metadata.source_url = url.clone();
@@ -168,7 +177,7 @@ impl ModelCatalogAuthority {
                     );
                 }
                 CatalogRefreshResult {
-                    snapshot,
+                    snapshot: Arc::new(snapshot),
                     status: CatalogRefreshStatus::NotModified,
                     error_message: None,
                 }
@@ -188,7 +197,7 @@ impl ModelCatalogAuthority {
                                 last_success_at: Some(now),
                                 source_url: url.clone(),
                             };
-                            let snapshot = self.allocate_snapshot(parsed, metadata);
+                            let snapshot = Arc::new(self.allocate_snapshot(parsed, metadata));
                             if let Err(error) = self.write_snapshot_text(&text).await {
                                 tracing::debug!(
                                     path = %self.snapshot_path.display(),
@@ -262,7 +271,7 @@ impl ModelCatalogAuthority {
         result
     }
 
-    async fn store_snapshot(&self, snapshot: CatalogSnapshot) {
+    async fn store_snapshot(&self, snapshot: Arc<CatalogSnapshot>) {
         self.next_generation
             .fetch_max(snapshot.generation.saturating_add(1), Ordering::SeqCst);
         *self.snapshot.write().await = Some(snapshot);

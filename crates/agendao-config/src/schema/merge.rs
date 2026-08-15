@@ -787,6 +787,15 @@ impl DeepMerge for UiPreferencesConfig {
             message_density,
             semantic_highlight,
         );
+        // `null` in a PATCH deserializes to `None`, which per the schema-wide
+        // merge convention means "leave unchanged". The web frontend needs a
+        // way to clear a stale model selection, so an explicit empty string
+        // acts as the clear sentinel for this one field.
+        match other.web_model {
+            Some(model) if model.is_empty() => self.web_model = None,
+            Some(model) => self.web_model = Some(model),
+            None => {}
+        }
     }
 }
 
@@ -889,5 +898,57 @@ mod tests {
         assert_eq!(ui.web_mode.as_deref(), Some("agent:atlas"));
         assert_eq!(ui.show_header, Some(false));
         assert_eq!(ui.show_thinking, Some(true));
+    }
+
+    #[test]
+    fn ui_preferences_web_model_set_overwrite_and_clear() {
+        let mut ui = UiPreferencesConfig::default();
+
+        // Set.
+        ui.deep_merge(UiPreferencesConfig {
+            web_model: Some("anthropic/claude".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(ui.web_model.as_deref(), Some("anthropic/claude"));
+
+        // Overwrite.
+        ui.deep_merge(UiPreferencesConfig {
+            web_model: Some("openai/gpt".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(ui.web_model.as_deref(), Some("openai/gpt"));
+
+        // PATCH null deserializes to None and must leave the value alone.
+        ui.deep_merge(UiPreferencesConfig {
+            web_model: None,
+            ..Default::default()
+        });
+        assert_eq!(ui.web_model.as_deref(), Some("openai/gpt"));
+
+        // An explicit empty string is the clear sentinel.
+        ui.deep_merge(UiPreferencesConfig {
+            web_model: Some(String::new()),
+            ..Default::default()
+        });
+        assert_eq!(ui.web_model, None);
+    }
+
+    #[test]
+    fn ui_preferences_web_model_patch_roundtrip_through_config() {
+        let mut config = Config::default();
+        config.merge(Config {
+            ui_preferences: Some(UiPreferencesConfig {
+                web_model: Some("anthropic/claude".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            config
+                .ui_preferences
+                .as_ref()
+                .and_then(|ui| ui.web_model.clone()),
+            Some("anthropic/claude".to_string())
+        );
     }
 }

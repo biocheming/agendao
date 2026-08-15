@@ -348,6 +348,36 @@ impl CliStyle {
     }
 }
 
+/// Number of terminal rows `rendered` traverses starting from a fresh row:
+/// one row per hard newline, plus wrapping for lines wider than `width`
+/// columns. ANSI escape sequences take no display width. A trailing newline
+/// leaves the cursor on a fresh row and adds no extra row. Used for
+/// incremental terminal redraws (cursor-up deltas must match this count).
+pub fn rendered_row_count(rendered: &str, width: u16) -> usize {
+    if rendered.is_empty() {
+        return 0;
+    }
+    let width = (width.max(1)) as usize;
+    let segments: Vec<&str> = rendered.split('\n').collect();
+    let last = segments.len() - 1;
+    let mut rows = 0usize;
+    for (index, segment) in segments.iter().enumerate() {
+        // A trailing newline leaves the cursor on a fresh row; the empty
+        // segment it produces occupies no row.
+        if index == last && index > 0 && segment.is_empty() {
+            break;
+        }
+        let plain = agendao_util::util::color::strip_ansi(segment);
+        let columns = unicode_width::UnicodeWidthStr::width(plain.as_str());
+        rows += if columns == 0 {
+            1
+        } else {
+            columns.div_ceil(width)
+        };
+    }
+    rows
+}
+
 fn terminal_width() -> Option<u16> {
     // crossterm provides cross-platform terminal size detection
     // (works on Unix, Windows, and macOS).
@@ -362,6 +392,34 @@ fn terminal_width() -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_row_counts_newlines_and_trailing() {
+        assert_eq!(rendered_row_count("", 80), 0);
+        assert_eq!(rendered_row_count("abc", 80), 1);
+        assert_eq!(rendered_row_count("abc\n", 80), 1);
+        assert_eq!(rendered_row_count("abc\ndef", 80), 2);
+        assert_eq!(rendered_row_count("abc\ndef\n", 80), 2);
+        assert_eq!(rendered_row_count("a\n\nb\n", 80), 3);
+    }
+
+    #[test]
+    fn rendered_row_counts_wrapping() {
+        // 80-column terminal: 80 chars fit one row, 81 wrap to two.
+        let one_row = "x".repeat(80);
+        let two_rows = "x".repeat(81);
+        assert_eq!(rendered_row_count(&one_row, 80), 1);
+        assert_eq!(rendered_row_count(&two_rows, 80), 2);
+        // A wrapped line followed by a hard newline takes three rows.
+        assert_eq!(rendered_row_count(&format!("{two_rows}\n"), 80), 2);
+        assert_eq!(rendered_row_count(&format!("{two_rows}\nab"), 80), 3);
+    }
+
+    #[test]
+    fn rendered_row_ignores_ansi_escapes() {
+        let styled = format!("{}{}", "\x1B[1;32m", "hello\x1B[0m");
+        assert_eq!(rendered_row_count(&styled, 80), 1);
+    }
 
     #[test]
     fn plain_style_no_ansi() {

@@ -289,10 +289,6 @@ impl SessionDiagnosticsSidecar {
         Self::derive(session, messages)
     }
 
-    pub fn prompt_surface_state_snapshot_value(&self) -> Option<serde_json::Value> {
-        self.prompt_surface_state_snapshot.clone()
-    }
-
     pub fn context_compaction_lifecycle_summary_value(&self) -> Option<serde_json::Value> {
         self.context_compaction_lifecycle_summary.clone()
     }

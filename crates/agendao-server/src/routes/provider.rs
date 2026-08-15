@@ -801,16 +801,16 @@ fn connect_draft_from_custom_query(query: &str) -> ProviderConnectDraft {
     }
 }
 
-async fn load_catalog_snapshot(state: &ServerState) -> CatalogSnapshot {
+async fn load_catalog_snapshot(state: &ServerState) -> std::sync::Arc<CatalogSnapshot> {
     state.catalog_authority.snapshot().await
 }
 
-fn build_model_variant_lookup(data: ModelsData) -> HashMap<String, HashMap<String, Vec<String>>> {
-    data.into_iter()
+fn build_model_variant_lookup(data: &ModelsData) -> HashMap<String, HashMap<String, Vec<String>>> {
+    data.iter()
         .map(|(provider_id, provider)| {
             let model_map = provider
                 .models
-                .into_iter()
+                .iter()
                 .map(|(model_id, model)| {
                     let mut variants = model
                         .variants
@@ -818,13 +818,13 @@ fn build_model_variant_lookup(data: ModelsData) -> HashMap<String, HashMap<Strin
                         .map(|items| items.keys().cloned().collect::<Vec<_>>())
                         .unwrap_or_default();
                     if variants.is_empty() {
-                        variants = synthetic_variant_names(&provider_id, &model);
+                        variants = synthetic_variant_names(provider_id, model);
                     }
                     variants.sort();
-                    (model_id, variants)
+                    (model_id.clone(), variants)
                 })
                 .collect::<HashMap<_, _>>();
-            (provider_id, model_map)
+            (provider_id.clone(), model_map)
         })
         .collect()
 }
@@ -865,7 +865,7 @@ pub(crate) async fn get_model_variant_lookup(
     state: &ServerState,
 ) -> HashMap<String, HashMap<String, Vec<String>>> {
     let snapshot = load_catalog_snapshot(state).await;
-    build_model_variant_lookup(snapshot.data)
+    build_model_variant_lookup(&snapshot.data)
 }
 
 pub(crate) fn variants_for_model(
@@ -883,8 +883,10 @@ pub(crate) fn variants_for_model(
 pub(crate) async fn list_providers(
     State(state): State<Arc<ServerState>>,
 ) -> Json<ProviderListResponse> {
-    let variant_lookup = get_model_variant_lookup(state.as_ref()).await;
-    let models_data = load_catalog_snapshot(state.as_ref()).await.data;
+    // One snapshot per response: the variant lookup and the catalogue
+    // iteration must see the same generation.
+    let catalog_snapshot = load_catalog_snapshot(state.as_ref()).await;
+    let variant_lookup = build_model_variant_lookup(&catalog_snapshot.data);
 
     let providers_guard = state.providers.read().await;
     let connected: std::collections::HashSet<String> = providers_guard
@@ -906,7 +908,7 @@ pub(crate) async fn list_providers(
     let mut provider_protocols: HashMap<String, String> = HashMap::new();
 
     // 1) models.dev full provider catalogue.
-    for (provider_id, provider) in &models_data {
+    for (provider_id, provider) in &catalog_snapshot.data {
         let Some(protocol) = provider.npm.as_deref().and_then(catalog_wire_protocol) else {
             continue;
         };
@@ -1223,8 +1225,10 @@ pub(crate) async fn get_provider_descriptor(
 async fn list_managed_providers(
     State(state): State<Arc<ServerState>>,
 ) -> Json<ManagedProvidersResponse> {
-    let variant_lookup = get_model_variant_lookup(state.as_ref()).await;
-    let models_data = load_catalog_snapshot(state.as_ref()).await.data;
+    // One snapshot per response: the variant lookup and the catalogue
+    // lookups must see the same generation.
+    let catalog_snapshot = load_catalog_snapshot(state.as_ref()).await;
+    let variant_lookup = build_model_variant_lookup(&catalog_snapshot.data);
     let auth_store = state.auth_manager.list().await;
     let config = state.config_store.config();
 
@@ -1245,7 +1249,7 @@ async fn list_managed_providers(
     let mut providers = provider_ids
         .into_iter()
         .map(|id| {
-            let known = models_data.get(&id);
+            let known = catalog_snapshot.data.get(&id);
             let configured = config
                 .provider
                 .as_ref()
@@ -1389,7 +1393,7 @@ async fn list_managed_providers(
 }
 
 async fn known_provider_entries(state: &ServerState) -> Vec<KnownProviderEntry> {
-    let models_data = load_catalog_snapshot(state).await.data;
+    let catalog_snapshot = load_catalog_snapshot(state).await;
     let config = state.config_store.config();
     let configured_providers = config.provider.clone().unwrap_or_default();
     let connected_ids: std::collections::HashSet<String> = state
@@ -1401,25 +1405,26 @@ async fn known_provider_entries(state: &ServerState) -> Vec<KnownProviderEntry> 
         .map(|m| m.provider)
         .collect();
 
-    let mut providers: Vec<KnownProviderEntry> = models_data
-        .into_iter()
+    let mut providers: Vec<KnownProviderEntry> = catalog_snapshot
+        .data
+        .iter()
         .filter_map(|(id, info)| {
-            let configured = configured_providers.get(&id);
+            let configured = configured_providers.get(id);
             let npm = configured
                 .and_then(|provider| provider.npm.clone())
                 .or(info.npm.clone());
             let protocol = configured
-                .and_then(|provider| configured_wire_protocol(&id, provider))
+                .and_then(|provider| configured_wire_protocol(id, provider))
                 .or_else(|| npm.as_deref().and_then(catalog_wire_protocol))?;
             let base_url = configured
                 .and_then(|provider| provider.base_url.clone())
                 .or(info.api.clone());
             Some(KnownProviderEntry {
-                connected: connected_ids.contains(&id),
+                connected: connected_ids.contains(id),
                 model_count: info.models.len(),
-                env: info.env,
-                name: provider_display_name(&id, &info.name),
-                id,
+                env: info.env.clone(),
+                name: provider_display_name(id, &info.name),
+                id: id.clone(),
                 base_url,
                 protocol: Some(protocol.to_string()),
                 npm,

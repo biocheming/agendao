@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub const MAX_RECENT_MODELS: usize = 5;
 
@@ -28,12 +28,36 @@ pub struct GlobalUserState {
     pub workspaces: HashMap<String, WorkspaceUserState>,
 }
 
+/// Fingerprint of a state file — `(mtime, creation time, length)`, each
+/// individually optional because filesystems differ in what they record.
+/// `None` (outer) means "no observable file".
+type StateFileFingerprint = Option<(
+    Option<std::time::SystemTime>,
+    Option<std::time::SystemTime>,
+    u64,
+)>;
+
+/// Cached resolved view plus the state-file fingerprint it was computed
+/// from. The fingerprint lets other authorities or processes writing the
+/// same state file invalidate this cache naturally on the next resolve.
+/// Entries are a plain `Vec`: cache hits clone it out anyway (callers own
+/// a `Vec`), so an `Arc` here would only add an allocation and a hop.
+#[derive(Debug)]
+struct RecentModelsCache {
+    entries: Vec<RecentModelEntry>,
+    file_metadata: StateFileFingerprint,
+}
+
 pub struct UserStateAuthority {
     identity: WorkspaceIdentity,
     mode: WorkspaceMode,
     global_path: PathBuf,
     workspace_path: Option<PathBuf>,
     write_lock: Mutex<()>,
+    /// Recent-models cache keyed by state-file metadata: a resolve only
+    /// re-reads and re-parses the JSON when the file actually changed
+    /// (stat per resolve instead of full read+parse).
+    recent_models_cache: RwLock<Option<RecentModelsCache>>,
 }
 
 fn state_file_locks() -> &'static std::sync::Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
@@ -64,6 +88,7 @@ impl UserStateAuthority {
             global_path: default_global_state_path(),
             workspace_path,
             write_lock: Mutex::new(()),
+            recent_models_cache: RwLock::new(None),
         }
     }
 
@@ -82,6 +107,12 @@ impl UserStateAuthority {
     }
 
     pub async fn resolved_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
+        let current_metadata = self.state_file_metadata().await;
+        if let Some(cache) = self.recent_models_cache.read().await.as_ref() {
+            if cache.file_metadata == current_metadata {
+                return Ok(cache.entries.clone());
+            }
+        }
         let recent = match self.mode {
             WorkspaceMode::Isolated => {
                 let state = self.read_workspace_state().await?;
@@ -91,13 +122,58 @@ impl UserStateAuthority {
                 let state = self.read_global_state().await?;
                 if let Some(workspace) = state.workspaces.get(&self.identity.workspace_key) {
                     if !workspace.recent_models.is_empty() {
-                        return Ok(normalize_recent_models(&workspace.recent_models));
+                        let resolved = normalize_recent_models(&workspace.recent_models);
+                        self.store_recent_models_cache(resolved.clone(), current_metadata)
+                            .await;
+                        return Ok(resolved);
                     }
                 }
                 state.recent_models
             }
         };
-        Ok(normalize_recent_models(&recent))
+        let resolved = normalize_recent_models(&recent);
+        self.store_recent_models_cache(resolved.clone(), current_metadata)
+            .await;
+        Ok(resolved)
+    }
+
+    async fn store_recent_models_cache(
+        &self,
+        resolved: Vec<RecentModelEntry>,
+        file_metadata: StateFileFingerprint,
+    ) {
+        *self.recent_models_cache.write().await = Some(RecentModelsCache {
+            entries: resolved,
+            file_metadata,
+        });
+    }
+
+    /// The state file this authority's resolved view derives from, and its
+    /// current (mtime, creation time, len) — the cache invalidation key.
+    /// `None` covers both "no file yet" and "no file possible" (isolated
+    /// mode without a workspace config dir). Creation time only helps for
+    /// atomic-replacement writes (new inode); in-place truncate-writes like
+    /// this crate's own `tokio::fs::write` keep the inode and btime, so
+    /// there the key rests on mtime + len.
+    async fn state_file_metadata(&self) -> StateFileFingerprint {
+        let Some(path) = self.observed_state_path() else {
+            return None;
+        };
+        match tokio::fs::metadata(path).await {
+            Ok(metadata) => Some((
+                metadata.modified().ok(),
+                metadata.created().ok(),
+                metadata.len(),
+            )),
+            Err(_) => None,
+        }
+    }
+
+    fn observed_state_path(&self) -> Option<&Path> {
+        match self.mode {
+            WorkspaceMode::Isolated => self.workspace_path.as_deref(),
+            WorkspaceMode::Shared => Some(self.global_path.as_ref()),
+        }
     }
 
     pub async fn save_recent_models(&self, recent: &[RecentModelEntry]) -> Result<()> {
@@ -113,6 +189,13 @@ impl UserStateAuthority {
                 let mut state = self.read_workspace_state().await?;
                 state.recent_models = recent.clone();
                 self.write_workspace_state(&state).await?;
+                // Bind the cache while still holding the file lock: reading
+                // the fingerprint after releasing it could capture another
+                // writer's fingerprint and permanently shadow it with our
+                // content.
+                let metadata = self.state_file_metadata().await;
+                self.store_recent_models_cache(recent.clone(), metadata)
+                    .await;
             }
             WorkspaceMode::Shared => {
                 let file_lock = state_file_lock(&self.global_path);
@@ -126,6 +209,8 @@ impl UserStateAuthority {
                     },
                 );
                 self.write_global_state(&state).await?;
+                let metadata = self.state_file_metadata().await;
+                self.store_recent_models_cache(recent, metadata).await;
             }
         }
         Ok(())
@@ -282,6 +367,7 @@ mod tests {
             global_path,
             workspace_path,
             write_lock: Mutex::new(()),
+            recent_models_cache: RwLock::new(None),
         }
     }
 
@@ -485,5 +571,137 @@ mod tests {
         let first = state_file_lock(&path);
         let second = state_file_lock(&path);
         assert!(Arc::ptr_eq(&first, &second));
+    }
+    #[tokio::test]
+    async fn recent_models_cache_serves_repeated_resolves_without_reread() {
+        let temp = TestDir::new("agendao_state_cache_hit");
+        let workspace_root = temp.path.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
+        let global_path = temp.path.join("global-state.json");
+        let authority = make_authority(
+            make_identity(&workspace_root, true),
+            WorkspaceMode::Shared,
+            global_path.clone(),
+        );
+
+        let expected = recent("openai", "gpt-5.4");
+        authority
+            .save_recent_models(&expected)
+            .await
+            .expect("save recent models");
+
+        // Resolve again: the file is untouched, so the metadata-keyed cache
+        // serves the same view without re-reading the file.
+        let resolved = authority
+            .resolved_recent_models()
+            .await
+            .expect("resolve recent models");
+        assert_eq!(resolved, expected);
+
+        // Deleting the backing file changes the metadata key, invalidating
+        // the cache; reads fall back to defaults.
+        tokio::fs::remove_file(&global_path)
+            .await
+            .expect("remove global state");
+        let resolved = authority
+            .resolved_recent_models()
+            .await
+            .expect("resolve after file removal");
+        assert!(
+            resolved.is_empty(),
+            "cache must not survive the backing file disappearing"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_saves_never_bind_cache_to_foreign_fingerprint() {
+        // Regression test for the save-path race: the cache bind (content +
+        // file fingerprint) must happen while the saver still holds the file
+        // lock. If it happened after releasing the lock, saver A could read
+        // saver B's fingerprint and bind A's content to it — permanently
+        // shadowing B's write in A's cache.
+        let temp = TestDir::new("agendao_state_cache_race");
+        let workspace_root = temp.path.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
+        let global_path = temp.path.join("global-state.json");
+        let identity = make_identity(&workspace_root, true);
+        let authority_a =
+            make_authority(identity.clone(), WorkspaceMode::Shared, global_path.clone());
+        let authority_b = make_authority(identity, WorkspaceMode::Shared, global_path.clone());
+
+        for round in 0..25 {
+            // Different-length model names keep the file length part of the
+            // fingerprint distinct, so this cannot pass via length collision.
+            let models_a = recent("openai", &format!("gpt-round-{round}"));
+            let models_b = recent("anthropic", &format!("opus-round-{round}-longer"));
+            let (a, b) = tokio::join!(
+                authority_a.save_recent_models(&models_a),
+                authority_b.save_recent_models(&models_b),
+            );
+            a.expect("save a");
+            b.expect("save b");
+
+            let state: GlobalUserState =
+                read_json_file(&global_path).await.expect("read disk state");
+            let disk = normalize_recent_models(&state.recent_models);
+            let resolved_a = authority_a
+                .resolved_recent_models()
+                .await
+                .expect("resolve a");
+            let resolved_b = authority_b
+                .resolved_recent_models()
+                .await
+                .expect("resolve b");
+            assert_eq!(
+                resolved_a, disk,
+                "authority A must reflect disk (round {round})"
+            );
+            assert_eq!(
+                resolved_b, disk,
+                "authority B must reflect disk (round {round})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn external_state_file_write_invalidates_cache() {
+        let temp = TestDir::new("agendao_state_cache_invalidate");
+        let workspace_root = temp.path.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
+        let global_path = temp.path.join("global-state.json");
+        let identity = make_identity(&workspace_root, true);
+        let authority =
+            make_authority(identity.clone(), WorkspaceMode::Shared, global_path.clone());
+
+        let expected = recent("openai", "gpt-5.4");
+        authority
+            .save_recent_models(&expected)
+            .await
+            .expect("save recent models");
+        let resolved = authority
+            .resolved_recent_models()
+            .await
+            .expect("resolve recent models");
+        assert_eq!(resolved, expected);
+
+        // Another authority (or process) overwrites the same file. The
+        // metadata-keyed cache must notice and re-read.
+        let external = GlobalUserState {
+            recent_models: recent("anthropic", "claude-opus"),
+            workspaces: HashMap::new(),
+        };
+        write_json_file(&global_path, &external)
+            .await
+            .expect("external write");
+
+        let resolved = authority
+            .resolved_recent_models()
+            .await
+            .expect("resolve after external write");
+        assert_eq!(
+            resolved,
+            recent("anthropic", "claude-opus"),
+            "external writes to the state file must invalidate the cache"
+        );
     }
 }

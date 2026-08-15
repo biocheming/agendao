@@ -105,13 +105,24 @@ fn remote_apply_non_terminal_live_slot_update(
     }
 }
 
-fn remote_emit_transcript(semantic_state: &mut RemoteSemanticRenderState) -> io::Result<()> {
+fn remote_emit_transcript(
+    semantic_state: &mut RemoteSemanticRenderState,
+    style: &CliStyle,
+) -> io::Result<()> {
     if !semantic_state.is_terminal {
         return Ok(());
     }
+    // Incremental update: erase+reprint only the live-slot tail instead of
+    // clearing the screen and reprinting the whole transcript per event.
+    // The erase moves up by the row count recorded when the tail was last
+    // printed; a width change since then forces a full clear+reprint inside
+    // `incremental_screen_update` because reflowed rows make the stored
+    // count unreliable.
     print!(
-        "\x1B[2J\x1B[1;1H{}",
-        semantic_state.transcript.rendered_text()
+        "{}",
+        semantic_state
+            .transcript
+            .incremental_screen_update(style.width)
     );
     io::stdout().flush()
 }
@@ -128,9 +139,10 @@ pub(super) async fn consume_remote_events(
     let mut current_data: Vec<String> = Vec::new();
     let mut semantic_state = RemoteSemanticRenderState::new();
     let mut saw_active = false;
-    // Detected once per stream: `detect()` does an is_terminal check plus a
-    // terminal-width ioctl, which is wasteful per SSE event. Trade-off: a
-    // terminal resize mid-stream no longer updates the render width.
+    // Base style detected once per stream (is_terminal + ioctl); only the
+    // terminal OutputBlockAppended branch refreshes the width per event via
+    // `with_live_width()` so a mid-stream terminal resize re-renders
+    // correctly without querying the terminal size for unrelated events.
     let style = CliStyle::detect();
     let dispatch_context = RemoteEventContext {
         client,
@@ -242,6 +254,12 @@ async fn dispatch_remote_event(
                 {
                     return Ok(false);
                 }
+                // Only terminal transcript rendering needs the live width
+                // (markdown, tool previews, and collapse all read
+                // `style.width`, and the terminal may have been resized
+                // since the last event). One live style is shared by
+                // content rendering and redraw so both agree on the width.
+                let live_style = style.with_live_width();
                 let transcript_identity = live_identity.as_ref().filter(|identity| {
                     LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
                 });
@@ -249,10 +267,10 @@ async fn dispatch_remote_event(
                     semantic_state,
                     &block,
                     transcript_identity.or(live_identity.as_ref()),
-                    style,
+                    &live_style,
                     show_thinking.load(Ordering::SeqCst),
                 );
-                remote_emit_transcript(semantic_state)?;
+                remote_emit_transcript(semantic_state, &live_style)?;
             }
         }
         FrontendEvent::SessionError { error, .. } => {

@@ -162,6 +162,11 @@ pub struct UiPreferencesConfig {
     #[serde(rename = "webMode", skip_serializing_if = "Option::is_none")]
     pub web_mode: Option<String>,
 
+    /// Web-selected model reference ("provider/model"), persisted by the
+    /// web frontend's settings save.
+    #[serde(rename = "webModel", skip_serializing_if = "Option::is_none")]
+    pub web_model: Option<String>,
+
     #[serde(rename = "showHeader", skip_serializing_if = "Option::is_none")]
     pub show_header: Option<bool>,
 

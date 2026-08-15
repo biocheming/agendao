@@ -13,7 +13,7 @@ use agendao_types::{
     SkillOperationalSourceScope, SkillSourceRef, SkillSyncAction, SkillSyncPlan,
     SkillWriteLedgerAction,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 impl SkillGovernanceAuthority {
@@ -512,19 +512,39 @@ impl SkillGovernanceAuthority {
     ) -> Result<(), SkillError> {
         let mut distributions = self.distributions();
         let mut touched = BTreeMap::<String, SkillManagedLifecycleRecord>::new();
+        // Index by (ascii-lowercased skill_name, source_id) so each
+        // distribution lookup is O(1) instead of a linear scan over managed
+        // records. ASCII lowering matches the previous `eq_ignore_ascii_case`
+        // semantics exactly (skill names may contain non-ASCII characters,
+        // which `to_lowercase` would fold differently).
+        let managed_by_skill_and_source: HashMap<
+            (String, &str),
+            &crate::sync::ResolvedManagedSkillRecord,
+        > = managed_records
+            .iter()
+            .filter_map(|record| {
+                let source_id = record.record.source.as_ref().map(|s| s.source_id.as_str());
+                source_id.map(|source_id| {
+                    (
+                        (record.record.skill_name.to_ascii_lowercase(), source_id),
+                        record,
+                    )
+                })
+            })
+            .fold(HashMap::new(), |mut map, (key, record)| {
+                // Keep the first record for a duplicate key, matching the
+                // previous `iter().find` first-match semantics.
+                map.entry(key).or_insert(record);
+                map
+            });
         for distribution in &mut distributions {
-            let Some(managed_record) = managed_records.iter().find(|record| {
-                record
-                    .record
-                    .skill_name
-                    .eq_ignore_ascii_case(&distribution.skill_name)
-                    && record
-                        .record
-                        .source
-                        .as_ref()
-                        .map(|source| source.source_id == distribution.source.source_id)
-                        .unwrap_or(false)
-            }) else {
+            let managed_record = managed_by_skill_and_source
+                .get(&(
+                    distribution.skill_name.to_ascii_lowercase(),
+                    distribution.source.source_id.as_str(),
+                ))
+                .copied();
+            let Some(managed_record) = managed_record else {
                 continue;
             };
 

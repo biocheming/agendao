@@ -569,6 +569,15 @@ pub struct EventBusTelemetrySummary {
     pub max_receivers: u64,
     pub last_send_at_ms: u64,
     pub last_send_error_at_ms: u64,
+    /// LiveSnapshotCoalescer: number of deltas accumulated into snapshots.
+    #[serde(default)]
+    pub coalesced_snapshot_count: u64,
+    /// Output blocks received without live_identity (legacy passthrough).
+    #[serde(default)]
+    pub identity_missing_count: u64,
+    /// Coalesced full snapshots emitted to frontends.
+    #[serde(default)]
+    pub full_snapshot_emitted_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

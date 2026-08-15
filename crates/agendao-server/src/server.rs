@@ -469,11 +469,16 @@ impl ServerState {
 
         // Ensure models.dev cache exists before bootstrap (which reads it synchronously).
         {
-            match tokio::time::timeout(Duration::from_secs(10), state.catalog_authority.data())
-                .await
-            {
-                Ok(data) => {
-                    tracing::info!(providers = data.len(), "models.dev cache ready");
+            let provider_count = tokio::time::timeout(Duration::from_secs(10), async {
+                state
+                    .catalog_authority
+                    .map_snapshot(|snapshot| snapshot.data.len())
+                    .await
+            })
+            .await;
+            match provider_count {
+                Ok(count) => {
+                    tracing::info!(providers = count, "models.dev cache ready");
                 }
                 Err(_) => {
                     tracing::warn!(
