@@ -33,7 +33,7 @@ mod debug;
 #[cfg(not(feature = "lsp"))]
 mod debug {
     use crate::cli::DebugCommands;
-    use crate::server_lifecycle::CliRuntimeContext;
+    use crate::CliRuntimeContext;
 
     pub(super) async fn handle_debug_command(
         _action: DebugCommands,
@@ -120,7 +120,7 @@ mod run;
 #[cfg(not(feature = "run-core"))]
 mod run {
     use crate::cli::RunCommandArgs;
-    use crate::server_lifecycle::CliRuntimeContext;
+    use crate::CliRuntimeContext;
 
     pub(super) async fn run_non_interactive(
         _options: serde_json::Value,
