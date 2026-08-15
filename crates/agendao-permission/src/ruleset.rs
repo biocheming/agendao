@@ -205,16 +205,6 @@ pub fn default_ruleset() -> PermissionRuleset {
             action: PermissionAction::Deny,
         },
         PermissionRule {
-            permission: "plan_enter".to_string(),
-            pattern: "*".to_string(),
-            action: PermissionAction::Deny,
-        },
-        PermissionRule {
-            permission: "plan_exit".to_string(),
-            pattern: "*".to_string(),
-            action: PermissionAction::Deny,
-        },
-        PermissionRule {
             permission: "read".to_string(),
             pattern: "*.env".to_string(),
             action: PermissionAction::Ask,
@@ -238,29 +228,17 @@ pub fn build_agent_ruleset(agent_name: &str, user_ruleset: &[PermissionRule]) ->
 
     match agent_name {
         "build" => {
-            let build_specific = vec![
-                PermissionRule {
-                    permission: "question".to_string(),
-                    pattern: "*".to_string(),
-                    action: PermissionAction::Allow,
-                },
-                PermissionRule {
-                    permission: "plan_enter".to_string(),
-                    pattern: "*".to_string(),
-                    action: PermissionAction::Allow,
-                },
-            ];
+            let build_specific = vec![PermissionRule {
+                permission: "question".to_string(),
+                pattern: "*".to_string(),
+                action: PermissionAction::Allow,
+            }];
             merge(&[defaults, build_specific, user])
         }
         "plan" => {
             let plan_specific = vec![
                 PermissionRule {
                     permission: "question".to_string(),
-                    pattern: "*".to_string(),
-                    action: PermissionAction::Allow,
-                },
-                PermissionRule {
-                    permission: "plan_exit".to_string(),
                     pattern: "*".to_string(),
                     action: PermissionAction::Allow,
                 },

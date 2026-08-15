@@ -3,6 +3,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -10,9 +11,27 @@ pub struct ApplyPatchTool;
 #[cfg(feature = "lsp")]
 const MAX_DIAGNOSTICS_PER_FILE: usize = 20;
 
+static FILE_HEADER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^---\s+(?:a/)?(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$").unwrap());
+static NEW_FILE_HEADER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\+\+\+\s+(?:b/)?(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$").unwrap());
+static HUNK_HEADER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").unwrap());
+static RENAME_FROM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^rename from (.+)$").unwrap());
+static RENAME_TO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^rename to (.+)$").unwrap());
+static BEGIN_FILE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*\*\*\s+Begin\s+File:\s+(.+)$").unwrap());
+static DELETE_FILE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*\*\*\s+Delete\s+File:\s+(.+)$").unwrap());
+static END_PATCH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*\*\*\s+End\s+Patch$").unwrap());
+static MOVE_TO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*\*\*\s+Move\s+To:\s+(.+)$").unwrap());
+
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyPatchInput {
-    #[serde(rename = "patchText", alias = "patch_text")]
     patch_text: String,
 }
 
@@ -298,13 +317,6 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
         return parse_model_patch(&normalized);
     }
 
-    let file_header = Regex::new(r"^---\s+(?:a/)?(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$").unwrap();
-    let new_file_header =
-        Regex::new(r"^\+\+\+\s+(?:b/)?(.+?)(?:\s+\d{4}-\d{2}-\d{2}.*)?$").unwrap();
-    let hunk_header = Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").unwrap();
-    let rename_from_re = Regex::new(r"^rename from (.+)$").unwrap();
-    let rename_to_re = Regex::new(r"^rename to (.+)$").unwrap();
-
     let mut current_file: Option<FilePatch> = None;
     let mut current_hunk: Option<Hunk> = None;
     let mut in_hunk = false;
@@ -332,16 +344,16 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
         }
 
         // Detect rename from/to lines in git diff extended headers
-        if let Some(caps) = rename_from_re.captures(line) {
+        if let Some(caps) = RENAME_FROM_RE.captures(line) {
             rename_from = Some(caps[1].to_string());
             continue;
         }
-        if let Some(caps) = rename_to_re.captures(line) {
+        if let Some(caps) = RENAME_TO_RE.captures(line) {
             rename_to = Some(caps[1].to_string());
             continue;
         }
 
-        if let Some(caps) = file_header.captures(line) {
+        if let Some(caps) = FILE_HEADER_RE.captures(line) {
             if let Some(ref mut file) = current_file {
                 if let Some(hunk) = current_hunk.take() {
                     file.hunks.push(hunk);
@@ -352,7 +364,7 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
             continue;
         }
 
-        if let Some(caps) = new_file_header.captures(line) {
+        if let Some(caps) = NEW_FILE_HEADER_RE.captures(line) {
             let new_path = caps[1].to_string();
 
             // Determine operation based on old/new paths
@@ -395,7 +407,7 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
             continue;
         }
 
-        if let Some(caps) = hunk_header.captures(line) {
+        if let Some(caps) = HUNK_HEADER_RE.captures(line) {
             if let Some(ref mut file) = current_file {
                 if let Some(hunk) = current_hunk.take() {
                     file.hunks.push(hunk);
@@ -454,11 +466,6 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
 
 fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
     let mut file_patches = Vec::new();
-    let begin_file = Regex::new(r"^\*\*\*\s+Begin\s+File:\s+(.+)$").unwrap();
-    let delete_file = Regex::new(r"^\*\*\*\s+Delete\s+File:\s+(.+)$").unwrap();
-    let end_patch = Regex::new(r"^\*\*\*\s+End\s+Patch$").unwrap();
-    let move_to = Regex::new(r"^\*\*\*\s+Move\s+To:\s+(.+)$").unwrap();
-
     let mut current_file: Option<FilePatch> = None;
     let mut content_lines: Vec<String> = Vec::new();
     let mut in_content = false;
@@ -469,7 +476,7 @@ fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
         }
 
         // Detect delete file directive
-        if let Some(caps) = delete_file.captures(line) {
+        if let Some(caps) = DELETE_FILE_RE.captures(line) {
             if let Some(file) = current_file.take() {
                 if !content_lines.is_empty() {
                     file_patches.push(file);
@@ -487,7 +494,7 @@ fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
         }
 
         // Detect move-to directive (applies to current file)
-        if let Some(caps) = move_to.captures(line) {
+        if let Some(caps) = MOVE_TO_RE.captures(line) {
             if let Some(ref mut file) = current_file {
                 let target = caps[1].trim().to_string();
                 file.operation = PatchOperation::Move { move_path: target };
@@ -495,7 +502,7 @@ fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
             continue;
         }
 
-        if let Some(caps) = begin_file.captures(line) {
+        if let Some(caps) = BEGIN_FILE_RE.captures(line) {
             if let Some(file) = current_file.take() {
                 if !content_lines.is_empty() {
                     file_patches.push(file);
@@ -535,7 +542,7 @@ fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
             continue;
         }
 
-        if end_patch.is_match(line) {
+        if END_PATCH_RE.is_match(line) {
             break;
         }
 
@@ -1039,7 +1046,7 @@ async fn collect_lsp_diagnostics_for_targets(
             ));
         }
 
-        return (output_parts.join("\n\n"), diagnostics_meta);
+        (output_parts.join("\n\n"), diagnostics_meta)
     }
 
     #[cfg(not(feature = "lsp"))]

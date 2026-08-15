@@ -3,9 +3,10 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use crate::message::{Content, ContentPart, Message, Role};
-use crate::responses::{
-    CallWarning, LocalShellAction, ResponsesInput, ResponsesReasoning, SystemMessageMode,
+use crate::responses::types::{
+    LocalShellAction, ResponsesInput, ResponsesReasoning, SystemMessageMode,
 };
+use crate::responses::validation::CallWarning;
 
 pub async fn convert_to_openai_responses_input(
     prompt: &[Message],
@@ -225,10 +226,12 @@ pub async fn convert_to_openai_responses_input(
                             }
 
                             if !text.is_empty() {
-                                entry.summary.push(crate::responses::ReasoningSummaryText {
-                                    text_type: "summary_text".to_string(),
-                                    text,
-                                });
+                                entry
+                                    .summary
+                                    .push(crate::responses::types::ReasoningSummaryText {
+                                        text_type: "summary_text".to_string(),
+                                        text,
+                                    });
                             }
                         }
                         _ => {

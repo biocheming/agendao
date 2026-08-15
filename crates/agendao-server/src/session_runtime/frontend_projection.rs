@@ -4,11 +4,6 @@
 //! maps execution-domain ServerEvents into frontend-authority FrontendEvents.
 //! No transport (SSE / Unix / Direct) may bypass this projector.
 //!
-//! ## Commit 2 status (skeleton)
-//!
-//! The projector is fully functional but NOT yet wired into transport paths.
-//! Dead-code warnings are expected until Commands 3-7 connect the transports.
-//!
 //! ## Design
 //!
 //! ```text
@@ -21,15 +16,10 @@
 //! ```
 //!
 //! The projector reads from authority registries (runtime state store,
-//! question registry, stage summaries, topology) to enrich events into
+//! question registry, topology) to enrich events into
 //! full-payload FrontendEvents that frontends can apply without follow-up
 //! queries.
 //!
-//! # Commit 3 scope (authority wiring)
-//!
-//! - Passthrough: OutputBlock, DiffUpdated (event payload is already complete)
-//! - Tool call: ToolCallUpsert with correct phase mapping
-//! - Question: QuestionRemoved (removal doesn't need full QuestionInfo lookup)
 //! - Permission: PermissionRemoved + PermissionUpsert from info field
 //! - Runtime/Projection: full authority projection including usage_books,
 //!   compaction, cache semantics, and closure contract from session data
@@ -49,7 +39,7 @@ use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 /// Broadcast a FrontendEvent on the frontend event bus.
 ///
 /// The event is shared with all subscribers through `Arc` — in-process
-/// subscribers (direct bridge) consume the typed event with no JSON round
+/// subscribers (including local receivers) consume the typed event with no JSON round
 /// trip; the JSON wire text is materialized lazily (at most once) when a
 /// network-boundary (SSE) subscriber demands it.
 pub(crate) fn broadcast_frontend_event(
@@ -132,8 +122,7 @@ pub(crate) async fn project_server_event(
             request_id,
             ..
         } => {
-            let mut events =
-                project_question_upsert(telemetry, session_id, request_id).await;
+            let mut events = project_question_upsert(telemetry, session_id, request_id).await;
             if let Some(rt) = project_runtime_replaced(telemetry, session_id).await {
                 events.push(rt);
             }
@@ -187,9 +176,7 @@ pub(crate) async fn project_server_event(
 
         // ── Session state changes: runtime + projection snapshot ────────
         ServerEvent::SessionStatus { session_id, .. }
-        | ServerEvent::TopologyChanged { session_id, .. }
-        | ServerEvent::AttachedSessionAttached { parent_id: session_id, .. }
-        | ServerEvent::AttachedSessionDetached { parent_id: session_id, .. } => {
+        | ServerEvent::TopologyChanged { session_id, .. } => {
             let mut events = Vec::new();
             if let Some(rt) = project_runtime_replaced(telemetry, session_id).await {
                 events.push(rt);
@@ -252,7 +239,7 @@ fn session_update_source_projects_nothing(source: &str) -> bool {
             | "prompt.scheduler.stage.content"
             | "prompt.scheduler.stage.reasoning"
             | "prompt.scheduler.stage.child.final"
-            | "direct_bridge"
+            | "local_frontend"
             | "topology"
     )
 }
@@ -273,22 +260,15 @@ pub(crate) fn spawn_frontend_projector(
         loop {
             match rx.recv().await {
                 Ok(payload) => {
-                    // Raw (non-ServerEvent) payloads have no typed projection —
-                    // this preserves the old `from_str` failure → skip semantics.
-                    let Some(event) = payload.as_event() else {
-                        continue;
-                    };
                     let frontend_events =
-                        project_server_event(telemetry.as_ref(), &sessions, event).await;
+                        project_server_event(telemetry.as_ref(), &sessions, payload.event_ref())
+                            .await;
                     for fe in frontend_events {
                         broadcast_frontend_event(&frontend_bus, fe);
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        skipped = n,
-                        "Frontend projector lagged on ServerEvent bus"
-                    );
+                    tracing::warn!(skipped = n, "Frontend projector lagged on ServerEvent bus");
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
@@ -334,7 +314,6 @@ async fn project_projection_replaced(
     session_id: &str,
 ) -> Option<FrontendEvent> {
     let runtime = telemetry.get_runtime_snapshot(session_id).await?;
-    let stages = telemetry.list_stage_summaries(session_id).await;
     let topology = telemetry
         .build_session_execution_topology(session_id.to_string(), vec![])
         .await;
@@ -352,22 +331,17 @@ async fn project_projection_replaced(
     let projection_fields = {
         let sessions_guard = sessions.lock().await;
         let session = sessions_guard.get(session_id)?;
-        build_session_projection_fields(
-            session,
-            session_id,
-            runtime.usage.as_ref(),
-            &sessions_guard,
-        )
+        build_session_projection_fields(session, runtime.usage.as_ref())
     };
 
     Some(FrontendEvent::SessionProjectionReplaced {
         session_id: session_id.to_string(),
         topology,
-        stages,
         usage: runtime.usage.clone(),
         usage_books: Some(projection_fields.usage_books),
         context_compaction_summary: projection_fields.context_compaction_summary,
-        context_compaction_lifecycle_summary: projection_fields.context_compaction_lifecycle_summary,
+        context_compaction_lifecycle_summary: projection_fields
+            .context_compaction_lifecycle_summary,
         cache_semantics: projection_fields.cache_semantics,
         context_closure_contract: projection_fields.context_closure_contract,
     })
@@ -477,15 +451,6 @@ fn convert_runtime_state(
             }
         }),
         pending_followup_count: server.pending_followup_count,
-        attached_sessions: server
-            .attached_sessions
-            .iter()
-            .map(|a| agendao_api::AttachedSessionSummary {
-                attached_id: a.attached_id.clone(),
-                parent_id: a.parent_id.clone(),
-                context_kind: Some(a.context_kind),
-            })
-            .collect(),
     }
 }
 
@@ -497,8 +462,8 @@ fn convert_runtime_state(
 fn convert_execution_topology(
     server: &agendao_server_core::runtime_control::SessionExecutionTopology,
 ) -> agendao_api::SessionExecutionTopology {
-    serde_json::from_value(serde_json::to_value(server).unwrap_or_default())
-        .unwrap_or_else(|_| agendao_api::SessionExecutionTopology {
+    serde_json::from_value(serde_json::to_value(server).unwrap_or_default()).unwrap_or_else(|_| {
+        agendao_api::SessionExecutionTopology {
             session_id: server.session_id.clone(),
             active_count: server.active_count,
             done_count: server.done_count,
@@ -508,24 +473,34 @@ fn convert_execution_topology(
             retry_count: server.retry_count,
             updated_at: server.updated_at,
             roots: vec![],
-        })
+        }
+    })
 }
 
-/// Convert server-internal QuestionInfo to the API-facing type.
-///
-/// Uses serde roundtrip as a pragmatic bridge (Commit 2 skeleton).
-/// The two types have identical serde shapes.
 fn convert_question_info(
     server: &agendao_server_core::runtime_control::QuestionInfo,
 ) -> agendao_api::QuestionInfo {
-    serde_json::from_value(serde_json::to_value(server).unwrap_or_default())
-        .unwrap_or_else(|_| agendao_api::QuestionInfo {
-            id: server.id.clone(),
-            session_id: server.session_id.clone(),
-            questions: server.questions.clone(),
-            options: server.options.clone(),
-            items: vec![],
-        })
+    agendao_api::QuestionInfo {
+        id: server.id.clone(),
+        session_id: server.session_id.clone(),
+        items: server
+            .items
+            .iter()
+            .map(|item| agendao_api::QuestionItemInfo {
+                question: item.question.clone(),
+                header: item.header.clone(),
+                options: item
+                    .options
+                    .iter()
+                    .map(|option| agendao_api::QuestionOptionInfo {
+                        label: option.label.clone(),
+                        description: option.description.clone(),
+                    })
+                    .collect(),
+                multiple: item.multiple,
+            })
+            .collect(),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -630,7 +605,8 @@ mod tests {
     #[tokio::test]
     async fn config_updated_passthrough() {
         let telemetry = test_telemetry();
-        let result = project_server_event(&telemetry, &test_sessions(), &ServerEvent::ConfigUpdated).await;
+        let result =
+            project_server_event(&telemetry, &test_sessions(), &ServerEvent::ConfigUpdated).await;
         assert_eq!(result.len(), 1);
         assert!(
             matches!(result[0], FrontendEvent::ConfigUpdated),
@@ -853,7 +829,6 @@ mod tests {
                     pending_question: None,
                     pending_permission: None,
                     pending_followup_count: 0,
-                    attached_sessions: vec![],
                 },
             },
             FrontendEvent::QuestionRemoved {
@@ -874,8 +849,7 @@ mod tests {
             },
         ];
         for event in &events {
-            let json =
-                serde_json::to_value(event).expect("FrontendEvent must serialize");
+            let json = serde_json::to_value(event).expect("FrontendEvent must serialize");
             assert!(
                 json.get("type").and_then(|v| v.as_str()).is_some(),
                 "missing 'type' field in: {}",
@@ -1082,11 +1056,10 @@ mod tests {
             .send(Arc::clone(&source))
             .expect("send to event bus");
 
-        let projected =
-            tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
-                .await
-                .expect("projected event within timeout")
-                .expect("frontend bus open");
+        let projected = tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
+            .await
+            .expect("projected event within timeout")
+            .expect("frontend bus open");
 
         match projected.event() {
             FrontendEvent::OutputBlockAppended {
@@ -1152,59 +1125,6 @@ mod tests {
                 }
                 other => panic!("expected OutputBlockAppended, got {:?}", other),
             }
-        }
-
-        handle.abort();
-    }
-
-    /// Raw (non-ServerEvent) payloads are skipped by the projector — the
-    /// same semantics as the old `from_str` parse-failure path.
-    #[tokio::test]
-    async fn projector_skips_raw_payloads() {
-        let telemetry = test_telemetry();
-        let sessions = test_sessions();
-        let (event_tx, _) = broadcast::channel::<Arc<ServerBusEvent>>(16);
-        let (frontend_tx, _) = broadcast::channel::<Arc<FrontendBusEvent>>(16);
-        let mut frontend_rx = frontend_tx.subscribe();
-
-        let handle = spawn_frontend_projector(event_tx.clone(), frontend_tx, telemetry, sessions);
-
-        event_tx
-            .send(Arc::new(ServerBusEvent::raw(
-                "{\"type\":\"tui.request\"}".to_string(),
-            )))
-            .expect("send raw payload");
-        event_tx
-            .send(Arc::new(ServerBusEvent::event(ServerEvent::Usage {
-                session_id: Some("ses_1".into()),
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                message_id: None,
-            })))
-            .expect("send typed payload");
-
-        // Usage projects to zero frontend events as well, so send one
-        // event that DOES project to prove the raw payload was skipped (not
-        // merely unprojected).
-        event_tx
-            .send(Arc::new(ServerBusEvent::event(ServerEvent::OutputBlock {
-                session_id: "ses_1".into(),
-                block: serde_json::json!({"kind": "message", "text": "after-raw"}),
-                id: None,
-                live_identity: None,
-            })))
-            .expect("send typed output block");
-
-        let projected =
-            tokio::time::timeout(std::time::Duration::from_secs(2), frontend_rx.recv())
-                .await
-                .expect("projected event within timeout")
-                .expect("frontend bus open");
-        match projected.event() {
-            FrontendEvent::OutputBlockAppended { block, .. } => {
-                assert_eq!(block["text"], "after-raw");
-            }
-            other => panic!("expected OutputBlockAppended, got {:?}", other),
         }
 
         handle.abort();

@@ -503,7 +503,9 @@ pub(super) fn distribution_audit_event(
     }
 }
 
-pub(super) fn managed_record_timeline_entry(record: ManagedSkillRecord) -> SkillGovernanceTimelineEntry {
+pub(super) fn managed_record_timeline_entry(
+    record: ManagedSkillRecord,
+) -> SkillGovernanceTimelineEntry {
     let status = if record.deleted_locally || record.locally_modified {
         SkillGovernanceTimelineStatus::Warn
     } else {
@@ -765,7 +767,7 @@ fn audit_event_summary(event: &SkillAuditEvent) -> String {
                 .unwrap_or_else(|| "distribution".to_string())
         ),
         SkillAuditKind::ArtifactFetched => payload_string(&event.payload, "artifact_locator")
-                .unwrap_or_else(|| "artifact cached".to_string()).to_string(),
+            .unwrap_or_else(|| "artifact cached".to_string()),
         SkillAuditKind::ArtifactEvicted => format!(
             "{} · retention {}s",
             payload_string(&event.payload, "artifact_locator")
@@ -773,7 +775,7 @@ fn audit_event_summary(event: &SkillAuditEvent) -> String {
             payload_usize(&event.payload, "retention_seconds").unwrap_or_default()
         ),
         SkillAuditKind::ArtifactFetchFailed => payload_string(&event.payload, "error")
-                .unwrap_or_else(|| "artifact fetch failed".to_string()).to_string(),
+            .unwrap_or_else(|| "artifact fetch failed".to_string()),
         SkillAuditKind::RemoteInstallPlanned | SkillAuditKind::RemoteUpdatePlanned => format!(
             "{} · {}",
             payload_string(&event.payload, "action").unwrap_or_else(|| "plan".to_string()),
@@ -787,7 +789,9 @@ fn audit_event_summary(event: &SkillAuditEvent) -> String {
         SkillAuditKind::Create
         | SkillAuditKind::Patch
         | SkillAuditKind::Edit
-        | SkillAuditKind::Delete => payload_string(&event.payload, "location").unwrap_or_else(|| "workspace write".into()).to_string(),
+        | SkillAuditKind::Delete => {
+            payload_string(&event.payload, "location").unwrap_or_else(|| "workspace write".into())
+        }
         SkillAuditKind::WriteFile | SkillAuditKind::RemoveFile => {
             let file_path = payload_string(&event.payload, "supporting_file")
                 .unwrap_or_else(|| "supporting file".to_string());

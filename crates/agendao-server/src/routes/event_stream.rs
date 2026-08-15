@@ -1,9 +1,9 @@
 use super::*;
-use agendao_server_core::frontend_events::FrontendBusEvent;
-use agendao_server_core::runtime_events::ServerBusEvent;
 use crate::session_runtime::frontend_subscription::{
     frontend_event_passes_subscription_caps, frontend_event_session_id,
 };
+use agendao_server_core::frontend_events::FrontendBusEvent;
+use agendao_server_core::runtime_events::ServerBusEvent;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct EventStreamQuery {
@@ -11,24 +11,26 @@ pub(super) struct EventStreamQuery {
     /// to this session (or global events like `config.updated`) are forwarded.
     #[serde(default)]
     session: Option<String>,
-    /// P2-1: subscription tier override (tui, web, cli). When absent, the
-    /// server applies the legacy compatible default (full capabilities).
-    #[serde(default)]
+    /// Required subscription tier: `tui`, `web`, or `cli`.
     tier: Option<String>,
 }
 
 pub(super) async fn event_stream(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<EventStreamQuery>,
-) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let subscription =
-        agendao_api::ResolvedFrontendSubscription::from_wire_tier(query.tier.as_deref());
+        agendao_api::ResolvedFrontendSubscription::from_wire_tier(query.tier.as_deref())
+            .map_err(ApiError::BadRequest)?;
     tracing::debug!(
-        tier = query.tier.as_deref().unwrap_or("default"),
-        is_legacy = subscription.is_legacy_compat,
+        tier = ?subscription.tier,
         "resolved frontend subscription for /event SSE"
     );
-    stream_frontend_events(state.frontend_bus.subscribe(), query.session, subscription)
+    Ok(stream_frontend_events(
+        state.frontend_bus.subscribe(),
+        query.session,
+        subscription,
+    ))
 }
 
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
@@ -71,22 +73,6 @@ pub(crate) fn stream_server_events(
             ok
         };
 
-        let raw_matches_filter = |raw: &str| -> bool {
-            let Some(ref filter) = session_filter else {
-                return true;
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-                return true;
-            };
-            match value.get("sessionID").and_then(|v| v.as_str()) {
-                Some(sid) => sid == filter.as_str(),
-                None => match value.get("parentID").and_then(|v| v.as_str()) {
-                    Some(pid) => pid == filter.as_str(),
-                    None => true,
-                },
-            }
-        };
-
         loop {
             if pending.is_some() {
                 let due_at = pending_due_at.unwrap_or_else(|| tokio::time::Instant::now() + delay);
@@ -94,57 +80,42 @@ pub(crate) fn stream_server_events(
                     recv = rx.recv() => {
                         match recv {
                             Ok(bus) => {
-                                if let Some(event) = bus.as_event() {
-                                    if !matches_filter(event) {
+                                let event = bus.event_ref();
+                                if !matches_filter(event) {
+                                    continue;
+                                }
+                                // 非 OutputBlock 事件不被 coalesce/merge 变换,
+                                // 可复用发布侧共享的预序列化文本(字节与
+                                // 重新 serialize 完全一致),避免每个 SSE
+                                // 订阅者各自序列化一份。
+                                let reusable = (!matches!(
+                                    event,
+                                    ServerEvent::OutputBlock { .. }
+                                ))
+                                .then(|| bus.clone());
+                                let next = snapshot_coalescer.coalesce(event.clone());
+                                if !subscribable(&next) {
+                                    continue;
+                                }
+                                if let Some(current) = pending.as_mut() {
+                                    if merge_output_block_delta(current, &next) {
                                         continue;
                                     }
-                                    // 非 OutputBlock 事件不被 coalesce/merge 变换,
-                                    // 可复用发布侧共享的预序列化文本(字节与
-                                    // 重新 serialize 完全一致),避免每个 SSE
-                                    // 订阅者各自序列化一份。
-                                    let reusable = (!matches!(
-                                        event,
-                                        ServerEvent::OutputBlock { .. }
-                                    ))
-                                    .then(|| bus.clone());
-                                    let next = snapshot_coalescer.coalesce(event.clone());
-                                    if !subscribable(&next) {
-                                        continue;
-                                    }
-                                    if let Some(current) = pending.as_mut() {
-                                        if merge_output_block_delta(current, &next) {
-                                            continue;
-                                        }
-                                    }
-                                    if let Some(flushed) = pending.take() {
-                                        pending_due_at = None;
-                                        if send_server_event_json(&tx, &flushed).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                    if is_mergeable_output_delta(&next) {
-                                        pending = Some(next);
-                                        pending_due_at = Some(tokio::time::Instant::now() + delay);
-                                    } else if send_typed_or_shared(&tx, &next, reusable.as_deref())
-                                        .await
-                                        .is_err()
-                                    {
+                                }
+                                if let Some(flushed) = pending.take() {
+                                    pending_due_at = None;
+                                    if send_server_event_json(&tx, &flushed).await.is_err() {
                                         break;
                                     }
-                                } else {
-                                    let raw = bus.json();
-                                    if !raw_matches_filter(raw) {
-                                        continue;
-                                    }
-                                    if let Some(flushed) = pending.take() {
-                                        pending_due_at = None;
-                                        if send_server_event_json(&tx, &flushed).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                    if send_raw_server_event(&tx, raw).await.is_err() {
-                                        break;
-                                    }
+                                }
+                                if is_mergeable_output_delta(&next) {
+                                    pending = Some(next);
+                                    pending_due_at = Some(tokio::time::Instant::now() + delay);
+                                } else if send_typed_or_shared(&tx, &next, reusable.as_deref())
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -189,34 +160,24 @@ pub(crate) fn stream_server_events(
             } else {
                 match rx.recv().await {
                     Ok(bus) => {
-                        if let Some(event) = bus.as_event() {
-                            if !matches_filter(event) {
-                                continue;
-                            }
-                            let reusable =
-                                (!matches!(event, ServerEvent::OutputBlock { .. }))
-                                    .then(|| bus.clone());
-                            let event = snapshot_coalescer.coalesce(event.clone());
-                            if !subscribable(&event) {
-                                continue;
-                            }
-                            if is_mergeable_output_delta(&event) {
-                                pending = Some(event);
-                                pending_due_at = Some(tokio::time::Instant::now() + delay);
-                            } else if send_typed_or_shared(&tx, &event, reusable.as_deref())
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        } else {
-                            let raw = bus.json();
-                            if !raw_matches_filter(raw) {
-                                continue;
-                            }
-                            if send_raw_server_event(&tx, raw).await.is_err() {
-                                break;
-                            }
+                        let event = bus.event_ref();
+                        if !matches_filter(event) {
+                            continue;
+                        }
+                        let reusable = (!matches!(event, ServerEvent::OutputBlock { .. }))
+                            .then(|| bus.clone());
+                        let event = snapshot_coalescer.coalesce(event.clone());
+                        if !subscribable(&event) {
+                            continue;
+                        }
+                        if is_mergeable_output_delta(&event) {
+                            pending = Some(event);
+                            pending_due_at = Some(tokio::time::Instant::now() + delay);
+                        } else if send_typed_or_shared(&tx, &event, reusable.as_deref())
+                            .await
+                            .is_err()
+                        {
+                            break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -283,21 +244,14 @@ pub(crate) fn stream_frontend_events(
 }
 
 pub(super) struct LiveSnapshotCoalescer {
-    pub(super) accum: std::collections::HashMap<String, String>,
+    pub(super) accum: crate::live_snapshot::LiveSnapshotAccumulator,
     telemetry: Option<std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>>,
-}
-
-fn key_for(session_id: &str, identity: &agendao_types::LiveMessagePartIdentity) -> String {
-    format!(
-        "{}:{}:{}",
-        session_id, identity.message_id, identity.part_key
-    )
 }
 
 impl LiveSnapshotCoalescer {
     pub(super) fn new() -> Self {
         Self {
-            accum: std::collections::HashMap::new(),
+            accum: crate::live_snapshot::LiveSnapshotAccumulator::default(),
             telemetry: None,
         }
     }
@@ -306,7 +260,7 @@ impl LiveSnapshotCoalescer {
         telemetry: std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>,
     ) -> Self {
         Self {
-            accum: std::collections::HashMap::new(),
+            accum: crate::live_snapshot::LiveSnapshotAccumulator::default(),
             telemetry: Some(telemetry),
         }
     }
@@ -333,64 +287,32 @@ impl LiveSnapshotCoalescer {
             };
         };
 
-        let coalesce_field = match identity.part_kind {
-            agendao_types::LiveMessagePartKind::AssistantText
-            | agendao_types::LiveMessagePartKind::AssistantReasoning => "text",
-            agendao_types::LiveMessagePartKind::ToolCall => "detail",
-            _ => {
-                return ServerEvent::OutputBlock {
-                    session_id,
-                    block,
-                    id,
-                    live_identity,
-                };
-            }
+        let Some(coalesce_field) = crate::live_snapshot::coalesced_text_field(identity) else {
+            return ServerEvent::OutputBlock {
+                session_id,
+                block,
+                id,
+                live_identity,
+            };
         };
-
-        if identity.phase == agendao_types::LivePartPhase::End {
-            let key = key_for(&session_id, identity);
-            self.accum.remove(&key);
-            return ServerEvent::OutputBlock {
-                session_id,
-                block,
-                id,
-                live_identity,
-            };
-        }
-
-        if !matches!(
-            identity.phase,
-            agendao_types::LivePartPhase::Append | agendao_types::LivePartPhase::Snapshot
-        ) {
-            return ServerEvent::OutputBlock {
-                session_id,
-                block,
-                id,
-                live_identity,
-            };
-        }
-
-        let key = key_for(&session_id, identity);
         let text = block
             .get(coalesce_field)
             .and_then(|v| v.as_str())
             .unwrap_or("");
-
-        // 原地更新累积缓冲（append 追加 / snapshot 就地归并），每个 chunk 只做
-        // O(chunk) 增量工作；仅为即将发出的 full 帧克隆一次全文（full 帧本身必须
-        // 携带累积全文，这一次拷贝是线上契约的下界）。旧实现每 chunk 做
-        // clone + serde_json::json! 两份全文拷贝，随回答长度呈 O(n²) 总量。
-        let entry = self.accum.entry(key).or_default();
-        if identity.phase == agendao_types::LivePartPhase::Append {
-            entry.reserve(text.len());
-            entry.push_str(text);
-        } else {
-            merge_snapshot_text_in_place(entry, text);
-        }
-        let accumulated = entry.clone();
+        let Some(accumulated) = self.accum.update(&session_id, identity, text) else {
+            return ServerEvent::OutputBlock {
+                session_id,
+                block,
+                id,
+                live_identity,
+            };
+        };
 
         if let Some(obj) = block.as_object_mut() {
-            obj.insert(coalesce_field.to_string(), serde_json::Value::String(accumulated));
+            obj.insert(
+                coalesce_field.to_string(),
+                serde_json::Value::String(accumulated),
+            );
             obj.insert("phase".to_string(), serde_json::json!("full"));
         }
         if let Some(ref telemetry) = self.telemetry {
@@ -407,49 +329,6 @@ impl LiveSnapshotCoalescer {
             }),
         }
     }
-}
-
-/// 原地版快照归并：逐字节等价于旧的"分配新 String 返回"版本
-/// （`merged` 在所有分支下都以 `existing` 为前缀或与 `existing` 相同，
-/// 因此只需 append 增量即可，无需每 chunk 重分配全文）。
-///
-/// 三态语义保持不变：
-///   - 累积快照：incoming 以 existing 为前缀 → 追加增量（等价于替换为 incoming）。
-///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
-///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接（existing 原样保留，仅追加尾部）。
-pub(super) fn merge_snapshot_text_in_place(existing: &mut String, incoming: &str) {
-    if incoming.is_empty() {
-        return;
-    }
-    if existing.is_empty() {
-        existing.reserve(incoming.len());
-        existing.push_str(incoming);
-        return;
-    }
-    if incoming.starts_with(existing.as_str()) {
-        existing.push_str(&incoming[existing.len()..]);
-        return;
-    }
-    if existing.starts_with(incoming) {
-        return;
-    }
-
-    let overlap = suffix_prefix_overlap(existing, incoming);
-    existing.reserve(incoming.len() - overlap);
-    existing.push_str(&incoming[overlap..]);
-}
-
-fn suffix_prefix_overlap(existing: &str, incoming: &str) -> usize {
-    let max = existing.len().min(incoming.len());
-    for size in (1..=max).rev() {
-        if existing.is_char_boundary(existing.len() - size)
-            && incoming.is_char_boundary(size)
-            && existing[existing.len() - size..] == incoming[..size]
-        {
-            return size;
-        }
-    }
-    0
 }
 
 pub(super) fn event_passes_subscription_caps(
@@ -471,7 +350,6 @@ pub(super) fn event_passes_subscription_caps(
             match kind {
                 "reasoning" => !caps.final_only && (phase != "delta" || caps.reasoning_delta),
                 "message" => !caps.final_only && caps.message_text_delta,
-                "scheduler_stage" => !caps.final_only && caps.tool_progress,
                 "tool" => {
                     matches!(phase, "done" | "error") || (!caps.final_only && caps.tool_progress)
                 }
@@ -489,8 +367,6 @@ pub(super) fn event_passes_subscription_caps(
         | ServerEvent::ToolCallLifecycle { .. }
         | ServerEvent::ConfigUpdated
         | ServerEvent::TopologyChanged { .. }
-        | ServerEvent::AttachedSessionAttached { .. }
-        | ServerEvent::AttachedSessionDetached { .. }
         | ServerEvent::DiffUpdated { .. }
         | ServerEvent::TodoUpdated { .. }
         | ServerEvent::ControlInputTransition { .. } => true,

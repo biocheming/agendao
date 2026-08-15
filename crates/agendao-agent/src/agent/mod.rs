@@ -222,7 +222,6 @@ mod tests {
         let media = AgentInfo::media_reader();
 
         let deep_prompt = deep.system_prompt.as_deref().expect("deep worker prompt");
-        assert!(deep_prompt.contains("task_flow"));
         assert!(deep_prompt.contains("shell_session"));
         assert!(deep_prompt.contains("ast_grep_replace"));
         assert!(deep_prompt.contains("task_create"));
@@ -279,10 +278,6 @@ mod tests {
             PermissionAction::Allow
         );
         assert_eq!(
-            general.tool_permission_decision("task_flow"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
             general.tool_permission_decision("shell_session"),
             PermissionAction::Allow
         );
@@ -295,7 +290,6 @@ mod tests {
             .allowed_tools
             .iter()
             .any(|t| t == "ast_grep_replace"));
-        assert!(general.allowed_tools.iter().any(|t| t == "task_flow"));
         assert!(general.allowed_tools.iter().any(|t| t == "shell_session"));
     }
 
@@ -316,14 +310,6 @@ mod tests {
             PermissionAction::Allow
         );
         assert_eq!(
-            build.tool_permission_decision("plan_enter"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            build.tool_permission_decision("task_flow"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
             build.tool_permission_decision("shell_session"),
             PermissionAction::Allow
         );
@@ -333,7 +319,6 @@ mod tests {
         );
         assert!(build.allowed_tools.iter().any(|t| t == "ast_grep_search"));
         assert!(build.allowed_tools.iter().any(|t| t == "ast_grep_replace"));
-        assert!(build.allowed_tools.iter().any(|t| t == "task_flow"));
         assert!(build.allowed_tools.iter().any(|t| t == "shell_session"));
     }
 
@@ -437,27 +422,5 @@ mod tests {
 
         let registry = AgentRegistry::from_config(&config);
         assert!(registry.get("build").is_none());
-    }
-
-    #[test]
-    fn deprecated_mode_config_forces_primary_mode() {
-        let config = LoadedConfig {
-            mode: Some(LoadedAgentConfigs {
-                entries: HashMap::from([(
-                    "investigate".to_string(),
-                    LoadedAgentConfig {
-                        mode: Some(LoadedAgentMode::Subagent),
-                        ..Default::default()
-                    },
-                )]),
-            }),
-            ..Default::default()
-        };
-
-        let registry = AgentRegistry::from_config(&config);
-        let agent = registry
-            .get("investigate")
-            .expect("investigate should be created from deprecated mode config");
-        assert!(matches!(agent.mode, AgentMode::Primary));
     }
 }

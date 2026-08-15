@@ -11,15 +11,55 @@
 use revue::event::{Event, Key};
 
 use agendao_command::{CommandRegistry, UiActionId};
+use agendao_orchestrator::selector::SchedulerChoice;
+use agendao_orchestrator::templates::TemplateId;
 
-use crate::app::{AppHandler, Panel};
-use crate::app::dispatch_outcome;
 use crate::app::app_op;
-use crate::input::{PromptAction, SlashPopup};
+use crate::app::dispatch_outcome;
+use crate::app::{AppHandler, Panel};
 use crate::input::slash_popup::SlashPopupMode;
+use crate::input::{PromptAction, SlashPopup};
 use crate::store::app_store::Route;
-use crate::store::types::{RunStatus, SettingsFocusPane, ToastMsgVariant};
+use crate::store::types::{RunStatus, SettingsFocusPane, ToastMsgVariant, TokenUsage};
 use crate::telemetry::event_handler::apply_frontend_event;
+
+fn resolve_execution_mode(
+    mode: Option<&str>,
+    selected_agent: Option<String>,
+) -> Result<(Option<String>, Option<SchedulerChoice>), String> {
+    let Some(mode) = mode else {
+        return Ok((selected_agent, None));
+    };
+    let Some((kind, id)) = mode.split_once(':') else {
+        return Err(format!("invalid execution mode '{mode}'"));
+    };
+    match kind {
+        "agent" if !id.is_empty() => Ok((Some(id.to_string()), None)),
+        "scheduler" => {
+            let choice = match id {
+                "auto" => SchedulerChoice::Auto,
+                "direct" => SchedulerChoice::Template {
+                    template: TemplateId::Direct,
+                },
+                "plan" => SchedulerChoice::Template {
+                    template: TemplateId::Plan,
+                },
+                "coordinate" => SchedulerChoice::Template {
+                    template: TemplateId::Coordinate,
+                },
+                "verify" => SchedulerChoice::Template {
+                    template: TemplateId::Verify,
+                },
+                "autoresearch" => SchedulerChoice::Template {
+                    template: TemplateId::Autoresearch,
+                },
+                _ => return Err(format!("unknown scheduler template '{id}'")),
+            };
+            Ok((None, Some(choice)))
+        }
+        _ => Err(format!("unsupported execution mode '{mode}'")),
+    }
+}
 
 /// General 行 → toggle action 的单点映射（土律归一）。
 /// 键盘（handle_general_body_key 的 Enter/Space/←/→）与鼠标点击行共用；
@@ -28,8 +68,8 @@ fn general_row_toggle_action(
     row: crate::store::types::GeneralRow,
     prev: bool,
 ) -> agendao_command::UiActionId {
-    use agendao_command::UiActionId;
     use crate::store::types::GeneralRow;
+    use agendao_command::UiActionId;
     match row {
         GeneralRow::ShowThinking => UiActionId::ToggleThinking,
         GeneralRow::ShowScrollbar => UiActionId::ToggleScrollbar,
@@ -296,7 +336,9 @@ impl AppHandler {
     /// `a`（Providers 聚焦 / "+ Add provider" 点击）：进入 Add provider 表单。
     pub(crate) fn settings_enter_add_provider(&mut self) {
         self.settings_edit.enter_add();
-        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+        self.store
+            .settings_focus_pane
+            .set(SettingsFocusPane::Details);
         self.layout_dirty = true;
     }
 
@@ -313,7 +355,9 @@ impl AppHandler {
             return;
         };
         self.settings_edit.enter_edit(sel);
-        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+        self.store
+            .settings_focus_pane
+            .set(SettingsFocusPane::Details);
         self.layout_dirty = true;
     }
 
@@ -331,8 +375,7 @@ impl AppHandler {
         let providers = self.store.providers.get();
         let sel_provider_id = self.store.settings_selected_provider.get();
         let sel_model_key = self.store.settings_selected_model.get();
-        let (Some(provider_id), Some(model_key)) = (sel_provider_id, sel_model_key)
-        else {
+        let (Some(provider_id), Some(model_key)) = (sel_provider_id, sel_model_key) else {
             return;
         };
         let Some(provider) = providers.iter().find(|p| p.id == provider_id) else {
@@ -453,8 +496,7 @@ impl AppHandler {
         let providers = self.store.providers.get();
         let sel_provider_id = self.store.settings_selected_provider.get();
         let sel_model_key = self.store.settings_selected_model.get();
-        let (Some(provider_id), Some(model_key)) = (sel_provider_id, sel_model_key)
-        else {
+        let (Some(provider_id), Some(model_key)) = (sel_provider_id, sel_model_key) else {
             return;
         };
         let model_name = providers
@@ -510,10 +552,9 @@ impl AppHandler {
                 );
                 self.refresh_providers_into_store();
             }
-            Err(e) => self.store.push_toast(
-                &format!("Toggle failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
+            Err(e) => self
+                .store
+                .push_toast(&format!("Toggle failed: {}", e), ToastMsgVariant::Error),
         }
         self.layout_dirty = true;
     }
@@ -543,7 +584,9 @@ impl AppHandler {
                 .push_toast("No API bridge", ToastMsgVariant::Error);
             return;
         };
-        self.store.settings_testing_provider.set(Some(sel.id.clone()));
+        self.store
+            .settings_testing_provider
+            .set(Some(sel.id.clone()));
         let tx = self.app_ops.sender();
         let pid = sel.id.clone();
         let pname = sel.name.clone();
@@ -591,17 +634,17 @@ impl AppHandler {
                 let blink_flipped = crate::widget::blink::blink_visible(self.blink_tick)
                     != crate::widget::blink::blink_visible(self.blink_tick.wrapping_sub(1));
                 // Reset interrupt confirmation after 5s timeout
-                if self.interrupt_pending
-                    && self.interrupt_time.elapsed().as_secs() > 5 {
-                        self.interrupt_pending = false;
-                    }
+                if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() > 5 {
+                    self.interrupt_pending = false;
+                }
                 // 陈旧 Running 判定：run_status 卡在 Running/Sending 且超时无活动
                 // （典型：流挂死，run 永不结束）。此时停止 20fps 强制重绘与
                 // spinner 推进（冻帧=诚实的停滞态），活动恢复即自愈。
                 let running_stale = matches!(
                     self.active_session.run_status.get(),
                     RunStatus::Running | RunStatus::Sending | RunStatus::Compacting
-                ) && self.last_activity.elapsed().as_secs() >= RUNNING_STALE_SECS;
+                ) && self.last_activity.elapsed().as_secs()
+                    >= RUNNING_STALE_SECS;
                 // spinner 帧翻转检测（变化驱动，非频率驱动）：动画按
                 // SPINNER_FRAME_DIV 降速，只在帧号真正前进时才需要重绘；
                 // 配合内容事件(changed)与 blink_flipped，全部重绘都有真实原因。
@@ -611,7 +654,11 @@ impl AppHandler {
                 ) && (self.spinner_tick / SPINNER_FRAME_DIV)
                     != (self.spinner_tick.wrapping_sub(1) / SPINNER_FRAME_DIV);
                 // Advance spinner when running
-                if matches!(self.active_session.run_status.get(), RunStatus::Running | RunStatus::Sending | RunStatus::Compacting) && !running_stale {
+                if matches!(
+                    self.active_session.run_status.get(),
+                    RunStatus::Running | RunStatus::Sending | RunStatus::Compacting
+                ) && !running_stale
+                {
                     self.spinner_tick = self.spinner_tick.wrapping_add(1);
                 }
                 // Garbage-collect expired toasts so the Vec doesn't grow
@@ -624,7 +671,9 @@ impl AppHandler {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
                 let prev_toast_count = self.store.toasts.get().len();
-                self.store.toasts.update(|t| t.retain(|m| m.expires_at == 0 || m.expires_at > now_ms));
+                self.store
+                    .toasts
+                    .update(|t| t.retain(|m| m.expires_at == 0 || m.expires_at > now_ms));
                 let toasts_changed = self.store.toasts.get().len() != prev_toast_count;
                 let events = self.event_bus.drain();
                 let mut changed = toasts_changed;
@@ -653,7 +702,10 @@ impl AppHandler {
                             if status == "queued" {
                                 self.queued_prompts = self.queued_prompts.saturating_add(1);
                             } else if !matches!(status.as_str(), "awaiting_user")
-                                && matches!(self.active_session.run_status.get(), RunStatus::Sending)
+                                && matches!(
+                                    self.active_session.run_status.get(),
+                                    RunStatus::Sending
+                                )
                             {
                                 // 同步整轮回执（"accepted"）：local_prompt 与 HTTP
                                 // session_prompt 都是整轮跑完才返回，回执到达即本轮
@@ -674,7 +726,12 @@ impl AppHandler {
                             self.title_refresh_pending = true;
                             changed = true;
                         }
-                        dispatch_outcome::DispatchOutcome::Failed { user_msg_id, error, prompt_text, .. } => {
+                        dispatch_outcome::DispatchOutcome::Failed {
+                            user_msg_id,
+                            error,
+                            prompt_text,
+                            ..
+                        } => {
                             // 回收乐观消息（生命周期对称：push ↔ remove），不留
                             // "幽灵 user prompt"误导用户以为已发送。
                             self.active_session.remove_user_message(user_msg_id);
@@ -928,19 +985,7 @@ impl AppHandler {
                                             entries.push(crate::dialog::RecoveryEntry {
                                                 label: format!("action: {}", a.label),
                                                 detail: a.description,
-                                                action_kind: Some(a.kind),
-                                                target_id: a.target_id,
-                                            });
-                                        }
-                                        for c in proto.checkpoints {
-                                            entries.push(crate::dialog::RecoveryEntry {
-                                                label: format!(
-                                                    "checkpoint: [{}] {}",
-                                                    c.status, c.label
-                                                ),
-                                                detail: c.summary.unwrap_or(c.kind),
-                                                action_kind: None,
-                                                target_id: None,
+                                                action_kind: a.kind,
                                             });
                                         }
                                         // U16：空列表也打开 dialog（空态文案
@@ -948,23 +993,6 @@ impl AppHandler {
                                         self.recovery_list.set_entries(entries);
                                         self.recovery_list.open();
                                         self.panel = Panel::Recovery;
-                                    }
-                                    app_op::DialogFetchData::Tasks(tasks) => {
-                                        let entries: Vec<crate::dialog::TaskEntry> = tasks
-                                            .into_iter()
-                                            .map(|t| crate::dialog::TaskEntry {
-                                                id: t.id,
-                                                agent_name: t.agent_name,
-                                                status: t.status,
-                                                step: t.step,
-                                                max_steps: t.max_steps,
-                                            })
-                                            .collect();
-                                        // U16：空列表也打开 dialog（空态文案
-                                        // 不再死代码）。
-                                        self.task_list.set_entries(entries);
-                                        self.task_list.open();
-                                        self.panel = Panel::TaskList;
                                     }
                                     app_op::DialogFetchData::Modes(modes) => {
                                         // 携 kind 而不只是 name，dispatch 处才能
@@ -1042,9 +1070,8 @@ impl AppHandler {
                             changed = true;
                         }
                         FrontendEvent::QuestionUpsert { question, .. } => {
-                            self.question_dialog.ask(
-                                crate::dialog::QuestionRequest::from_info(question),
-                            );
+                            self.question_dialog
+                                .ask(crate::dialog::QuestionRequest::from_info(question));
                             changed = true;
                         }
                         FrontendEvent::PermissionRemoved { permission_id, .. } => {
@@ -1056,7 +1083,9 @@ impl AppHandler {
                             }
                             changed = true;
                         }
-                        FrontendEvent::QuestionRemoved { .. } => { changed = true; }
+                        FrontendEvent::QuestionRemoved { .. } => {
+                            changed = true;
+                        }
                         FrontendEvent::ConfigUpdated => {
                             // F3：外部/其它客户端改了配置（config.updated 为全局
                             // 事件、无 session）。TUI 的配置派生状态（providers /
@@ -1114,7 +1143,10 @@ impl AppHandler {
                 if blink_flipped && self.panel == Panel::None {
                     self.prompt_dirty = true;
                 }
-                changed || blink_flipped || (spinner_flipped && !running_stale) || self.interrupt_pending
+                changed
+                    || blink_flipped
+                    || (spinner_flipped && !running_stale)
+                    || self.interrupt_pending
             }
             Event::Key(key) => {
                 // Ctrl+B → toggle sidebar, Ctrl+P → command palette。
@@ -1217,7 +1249,7 @@ impl AppHandler {
                 self.handle_key(&key.key)
             }
             Event::Mouse(m) => {
-                use revue::event::{MouseEventKind, MouseButton};
+                use revue::event::{MouseButton, MouseEventKind};
                 match m.kind {
                     MouseEventKind::ScrollUp => {
                         // Settings 路由：滚轮分发到焦点栏（金律·不再穿透滚背后 session）。
@@ -1284,7 +1316,11 @@ impl AppHandler {
                         // SessionList dialog publishes its
                         // scrollbar geometry right now (see
                         // `app::session_list_scrollbar_slot`).
-                        if let Some(sb) = crate::app::session_list_scrollbar_slot().lock().ok().and_then(|g| *g) {
+                        if let Some(sb) = crate::app::session_list_scrollbar_slot()
+                            .lock()
+                            .ok()
+                            .and_then(|g| *g)
+                        {
                             let overlay = crate::widget::ScrollbarOverlay::new(
                                 (0, 0),
                                 sb.area,
@@ -1311,16 +1347,21 @@ impl AppHandler {
                                             return true;
                                         }
                                         crate::widget::ScrollbarHit::ArrowDown => {
-                                            self.session_list.selected = sb.item_count.saturating_sub(1) as usize;
+                                            self.session_list.selected =
+                                                sb.item_count.saturating_sub(1) as usize;
                                             return true;
                                         }
                                         crate::widget::ScrollbarHit::PageUp => {
-                                            self.session_list.selected = self.session_list.selected.saturating_sub(sb.visible_rows as usize);
+                                            self.session_list.selected = self
+                                                .session_list
+                                                .selected
+                                                .saturating_sub(sb.visible_rows as usize);
                                             return true;
                                         }
                                         crate::widget::ScrollbarHit::PageDown => {
                                             self.session_list.selected =
-                                                (self.session_list.selected + sb.visible_rows as usize)
+                                                (self.session_list.selected
+                                                    + sb.visible_rows as usize)
                                                     .min(sb.item_count.saturating_sub(1) as usize);
                                             return true;
                                         }
@@ -1351,7 +1392,9 @@ impl AppHandler {
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
                                 if in_x && m.y > rect.y && rel % 4 != 0 {
-                                    if let Some(field) = self.model_edit_dialog.field_at_block_index(idx) {
+                                    if let Some(field) =
+                                        self.model_edit_dialog.field_at_block_index(idx)
+                                    {
                                         self.model_edit_dialog.set_focus(field);
                                         // rel%4==2 = 输入行（label0/上框1/输入2/下框3）：
                                         // 光标定位到点击字符（文本起点 = 外框1+字段框1 = rect.x+2）。
@@ -1371,7 +1414,11 @@ impl AppHandler {
                                 let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
-                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::McpEditDialog::FIELDS.len() {
+                                if in_x
+                                    && m.y > rect.y
+                                    && rel % 4 != 0
+                                    && idx < crate::dialog::McpEditDialog::FIELDS.len()
+                                {
                                     let field = crate::dialog::McpEditDialog::FIELDS[idx];
                                     self.mcp_edit_dialog.set_focus(field);
                                     if rel % 4 == 2 && m.x >= rect.x + 2 {
@@ -1389,7 +1436,11 @@ impl AppHandler {
                                 let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
-                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::PluginEditDialog::FIELDS.len() {
+                                if in_x
+                                    && m.y > rect.y
+                                    && rel % 4 != 0
+                                    && idx < crate::dialog::PluginEditDialog::FIELDS.len()
+                                {
                                     let field = crate::dialog::PluginEditDialog::FIELDS[idx];
                                     self.plugin_edit_dialog.set_focus(field);
                                     if rel % 4 == 2 && m.x >= rect.x + 2 {
@@ -1409,7 +1460,11 @@ impl AppHandler {
                                 let in_x = m.x > rect.x && m.x + 1 < rect.x + rect.width;
                                 let rel = m.y.wrapping_sub(rect.y + 1);
                                 let idx = (rel / 4) as usize;
-                                if in_x && m.y > rect.y && rel % 4 != 0 && idx < crate::dialog::ProviderEditDialog::FIELDS.len() {
+                                if in_x
+                                    && m.y > rect.y
+                                    && rel % 4 != 0
+                                    && idx < crate::dialog::ProviderEditDialog::FIELDS.len()
+                                {
                                     let field = crate::dialog::ProviderEditDialog::FIELDS[idx];
                                     self.provider_edit_dialog.set_focus(field);
                                     let eye_hit = field == crate::dialog::ProviderEditField::ApiKey
@@ -1431,7 +1486,8 @@ impl AppHandler {
                         if self.panel == crate::app::Panel::Confirm {
                             if let Some(rect) = self.confirm_rect {
                                 if m.y == rect.y + rect.height.saturating_sub(1) {
-                                    let label_w = self.confirm_dialog.confirm_label.chars().count() as u16;
+                                    let label_w =
+                                        self.confirm_dialog.confirm_label.chars().count() as u16;
                                     let seg1_w = 8 + label_w; // "y/Enter: " + label
                                     let hint_w = seg1_w + 2 + 13; // + "  " + "n/Esc: cancel"
                                     let start = rect.x + rect.width.saturating_sub(hint_w) / 2;
@@ -1463,7 +1519,8 @@ impl AppHandler {
                             // when the user is actually at the
                             // bottom.
                             let max_offset = content_h.saturating_sub(viewport_h);
-                            let user_offset = self.active_session.scroll_offset.get().min(max_offset);
+                            let user_offset =
+                                self.active_session.scroll_offset.get().min(max_offset);
                             let scroll_top = max_offset.saturating_sub(user_offset);
                             let overlay = crate::widget::ScrollbarOverlay::new(
                                 (0, 0),
@@ -1505,7 +1562,11 @@ impl AppHandler {
                         // ── Sidebar interactions (Home / Session / Settings 均可用) ──
                         // Tab 切换、session tree 导航、⚙ Settings 入口不应被
                         // Route::Session 门控——Home 上也要能点树打开会话(水生木)。
-                        if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) && m.x < crate::app::SIDEBAR_WIDTH {
+                        if crate::app::effective_sidebar_visible(
+                            self.sidebar_visible,
+                            self.terminal_w,
+                        ) && m.x < crate::app::SIDEBAR_WIDTH
+                        {
                             // Tab 符号行 / 下划线行 → 切 telemetry tab
                             if m.y == self.sidebar_tab_y || m.y == self.sidebar_tab_y + 1 {
                                 let new_tab = ((m.x / 4) as usize)
@@ -1518,14 +1579,12 @@ impl AppHandler {
                             }
                             // Session tree 行：箭头区（缩进+▶/▼ 2 列）= 纯 toggle 展开/折叠;
                             // 行其余部分 = open_session 并自动展开其子节点（若有）。
-                            if let Some(hit) = self
-                                .sidebar_nav_hits
-                                .iter()
-                                .find(|hit| hit.y == m.y)
+                            if let Some(hit) = self.sidebar_nav_hits.iter().find(|hit| hit.y == m.y)
                             {
                                 let (sid, depth, has_children) =
                                     (hit.session_id.clone(), hit.depth, hit.has_children);
-                                let arrow_end: u16 = (depth as u16).saturating_mul(2).saturating_add(2);
+                                let arrow_end: u16 =
+                                    (depth as u16).saturating_mul(2).saturating_add(2);
                                 if has_children && m.x < arrow_end {
                                     // toggle：在集合则折叠出集合,不在则展开入集合。
                                     let newly = self.session_tree_expanded.insert(sid.clone());
@@ -1619,7 +1678,14 @@ impl AppHandler {
                             // VLine 竖线（独立 1 列），命中边界收紧为 m.x > sidebar_w——跳过
                             // sidebar 含竖线列；sidebar 不显示时 sidebar_w=0，m.x>0 仍覆盖整宽
                             //（列 0 是 transcript 左气口，无 fold 命中，无害）。
-                            let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
+                            let sidebar_w = if crate::app::effective_sidebar_visible(
+                                self.sidebar_visible,
+                                self.terminal_w,
+                            ) {
+                                crate::app::SIDEBAR_WIDTH
+                            } else {
+                                0
+                            };
                             // ── 内联 permission 块命中（render 发布的 hit rect）──
                             // 块在 transcript 流末尾、位置随滚动变，几何以 render 发布的
                             // 绝对 y 为准（与 dir/sidebar 命中同模式）。命中资源区行范围
@@ -1627,7 +1693,9 @@ impl AppHandler {
                             // 避免落到 prompt focus。
                             if m.x > sidebar_w {
                                 if let Some(hit) = self.permission_hit {
-                                    if m.y >= hit.y_start && m.y < hit.y_start.saturating_add(hit.height) {
+                                    if m.y >= hit.y_start
+                                        && m.y < hit.y_start.saturating_add(hit.height)
+                                    {
                                         if let Some((rs, rc)) = hit.resource_rows {
                                             let rel = m.y - hit.y_start;
                                             if rel >= rs && rel < rs.saturating_add(rc) {
@@ -1667,7 +1735,14 @@ impl AppHandler {
                         // 命中检测与左键同一权威（transcript_block_at），
                         // 不各写一份几何。未命中块则安静消费（与左键点
                         // 空白同待遇），不穿透到 prompt。
-                        let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
+                        let sidebar_w = if crate::app::effective_sidebar_visible(
+                            self.sidebar_visible,
+                            self.terminal_w,
+                        ) {
+                            crate::app::SIDEBAR_WIDTH
+                        } else {
+                            0
+                        };
                         if let Some(idx) = self.transcript_block_at(m.x, m.y, sidebar_w) {
                             self.active_session.transcript_cursor.set(Some(idx));
                             match self.active_session.cursor_block_to_text() {
@@ -1690,7 +1765,8 @@ impl AppHandler {
                         // store it (in "rows back from bottom" form).
                         if let (Some(drag), Some((sb_area, (content_h, viewport_h)))) = (
                             self.transcript_scrollbar_drag,
-                            self.transcript_scrollbar_area.zip(self.transcript_scrollbar_metrics),
+                            self.transcript_scrollbar_area
+                                .zip(self.transcript_scrollbar_metrics),
                         ) {
                             let overlay = crate::widget::ScrollbarOverlay::new(
                                 (0, 0),
@@ -1713,7 +1789,10 @@ impl AppHandler {
                         // the other scrollbars use.
                         if let (Some(drag), Some(sb)) = (
                             self.session_list_scrollbar_drag,
-                            crate::app::session_list_scrollbar_slot().lock().ok().and_then(|g| *g),
+                            crate::app::session_list_scrollbar_slot()
+                                .lock()
+                                .ok()
+                                .and_then(|g| *g),
                         ) {
                             if matches!(self.panel, Panel::SessionList) {
                                 let overlay = crate::widget::ScrollbarOverlay::new(
@@ -1734,7 +1813,8 @@ impl AppHandler {
                                 // position — the dialog's own
                                 // start-window algorithm will then
                                 // place it sensibly.
-                                let target = (new_in_window as usize).min(sb.item_count.saturating_sub(1) as usize);
+                                let target = (new_in_window as usize)
+                                    .min(sb.item_count.saturating_sub(1) as usize);
                                 self.session_list.selected = target;
                                 self.layout_dirty = true;
                                 return true;
@@ -1792,20 +1872,32 @@ impl AppHandler {
         if msgs.is_empty() {
             return String::new();
         }
-        let sidebar_w = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) { crate::app::SIDEBAR_WIDTH } else { 0 };
+        let sidebar_w =
+            if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) {
+                crate::app::SIDEBAR_WIDTH
+            } else {
+                0
+            };
         let inner_w = self
             .terminal_w
             .saturating_sub(sidebar_w)
             .saturating_sub(crate::app::PAD.saturating_mul(2));
         let compact = self.store.compact_density.get();
         let show_thinking = self.store.show_thinking.get();
-        let total_h = crate::screen::transcript_total_height(&msgs, show_thinking, compact, inner_w);
+        let total_h =
+            crate::screen::transcript_total_height(&msgs, show_thinking, compact, inner_w);
         let max_offset = total_h.saturating_sub(self.transcript_viewport_h);
         let user_offset = self.active_session.scroll_offset.get().min(max_offset);
         let scroll_top = max_offset.saturating_sub(user_offset);
         let visible_end = scroll_top.saturating_add(self.transcript_viewport_h);
         let units = crate::screen::build_render_units(
-            &msgs, None, 0, show_thinking, None, inner_w, compact,
+            &msgs,
+            None,
+            0,
+            show_thinking,
+            None,
+            inner_w,
+            compact,
         );
         // BTreeSet：块索引去重且保 transcript 顺序。
         let mut seen = std::collections::BTreeSet::new();
@@ -1845,10 +1937,9 @@ impl AppHandler {
                 &format!("Clipboard unavailable — saved to {}", path.display()),
                 ToastMsgVariant::Warning,
             ),
-            Err(e) => self.store.push_toast(
-                &format!("Copy failed: {e}"),
-                ToastMsgVariant::Error,
-            ),
+            Err(e) => self
+                .store
+                .push_toast(&format!("Copy failed: {e}"), ToastMsgVariant::Error),
         }
     }
 
@@ -1890,8 +1981,13 @@ impl AppHandler {
         // 与聚合渲染错位，是「连续结果区域点不准」的根因：
         // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
         // 屏幕位置对不上，点第 2 行命中第 5 块。
-        let total_h = crate::screen::transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w)
-            .saturating_add(extra_h);
+        let total_h = crate::screen::transcript_total_height(
+            &msgs,
+            self.store.show_thinking.get(),
+            self.store.compact_density.get(),
+            inner_w,
+        )
+        .saturating_add(extra_h);
         let max_offset = total_h.saturating_sub(transcript_h);
         let pinned = self.permission_dialog.visible || self.question_dialog.visible;
         let user_offset = if pinned {
@@ -1907,14 +2003,24 @@ impl AppHandler {
         // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
         // row_owners 真实（否则点 ToolResult 子项错块），显式 None
         // 全量布局。
-        let units = crate::screen::build_render_units(&msgs, None, 0, self.store.show_thinking.get(), None, inner_w, self.store.compact_density.get());
+        let units = crate::screen::build_render_units(
+            &msgs,
+            None,
+            0,
+            self.store.show_thinking.get(),
+            None,
+            inner_w,
+            self.store.compact_density.get(),
+        );
         let compact = self.store.compact_density.get();
         let mut acc: u16 = 0;
         for unit in &units {
             let block_end = acc + unit.height;
             if row_in_content < block_end {
                 let rel_row = row_in_content.saturating_sub(acc) as usize;
-                return unit.row_owners.get(rel_row)
+                return unit
+                    .row_owners
+                    .get(rel_row)
                     .copied()
                     .flatten()
                     .map(|offset| unit.base_index + offset);
@@ -1997,7 +2103,8 @@ impl AppHandler {
                     // the current viewport moves the cursor but leaves
                     // the visible window unchanged, and pressing Space
                     // toggles a block the user can't see.
-                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.active_session
+                        .ensure_cursor_visible(self.transcript_viewport_h);
                     self.layout_dirty = true;
                     return true;
                 }
@@ -2006,19 +2113,22 @@ impl AppHandler {
                 // 注释/toast 宣传对齐（原零绑定，文档幽灵）。
                 Key::BackTab => {
                     self.active_session.cursor_prev_foldable();
-                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.active_session
+                        .ensure_cursor_visible(self.transcript_viewport_h);
                     self.layout_dirty = true;
                     return true;
                 }
                 Key::Char('j') if self.prompt.text().is_empty() => {
                     self.active_session.cursor_next_foldable();
-                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.active_session
+                        .ensure_cursor_visible(self.transcript_viewport_h);
                     self.layout_dirty = true;
                     return true;
                 }
                 Key::Char('k') if self.prompt.text().is_empty() => {
                     self.active_session.cursor_prev_foldable();
-                    self.active_session.ensure_cursor_visible(self.transcript_viewport_h);
+                    self.active_session
+                        .ensure_cursor_visible(self.transcript_viewport_h);
                     self.layout_dirty = true;
                     return true;
                 }
@@ -2042,8 +2152,10 @@ impl AppHandler {
                 // 'e' = edit & resend（对齐 web "Revise & resend" 按钮一步触发）。
                 // 双重守卫：prompt 空（对齐 Space 先例，避免打字中途误触发）+
                 // cursor 在 UserPrompt（否则 'e' 落到 prompt 输入字符）。
-                Key::Char('e') if self.prompt.text().is_empty()
-                    && self.active_session.cursor_user_prompt().is_some() => {
+                Key::Char('e')
+                    if self.prompt.text().is_empty()
+                        && self.active_session.cursor_user_prompt().is_some() =>
+                {
                     self.execute_slash_action(UiActionId::RevisePrompt);
                     return true;
                 }
@@ -2053,8 +2165,10 @@ impl AppHandler {
                 // 复用 transcript_to_text 成形契约，再 OSC52 一次性写终端剪贴板
                 // ——与 /copy slash（全 transcript）职责分离：slash → 显式全量,
                 // 'c' → cursor 单块。无支持的 block 时 toast 提示，避免无声失败。
-                Key::Char('c') if self.prompt.text().is_empty()
-                    && self.active_session.transcript_cursor.get().is_some() => {
+                Key::Char('c')
+                    if self.prompt.text().is_empty()
+                        && self.active_session.transcript_cursor.get().is_some() =>
+                {
                     match self.active_session.cursor_block_to_text() {
                         // U18①：copy_with_fallback——OSC52 失败兜底临时文件。
                         Some(text) => {
@@ -2094,10 +2208,9 @@ impl AppHandler {
         // 但 PromptInput 仍会消费字符键(否则 Tab/↑/↓ 会被吞)。这里在交还 prompt
         // 之前先吃掉 Tab/Up/Down/Enter,Settings 才能交互(土律·第十条:
         // 阳面 ⚙ 进、Tab/↑/↓/Enter 调,阴面 store signals 收口)。
-        if matches!(self.store.route.get(), Route::Settings)
-            && self.handle_settings_key(key) {
-                return true;
-            }
+        if matches!(self.store.route.get(), Route::Settings) && self.handle_settings_key(key) {
+            return true;
+        }
 
         // ── U4: q 退出确认（双击制；空 prompt 时 q 不喂编辑器）──
         //
@@ -2109,7 +2222,8 @@ impl AppHandler {
         // 非字符键（Enter/Esc/方向键）仅 disarm，不补回（避免误发 "q"）。
         if self.quit_armed_via_q {
             self.quit_armed_via_q = false;
-            let armed = self.quit_armed_at
+            let armed = self
+                .quit_armed_at
                 .is_some_and(|t| t.elapsed() < QUIT_CONFIRM_WINDOW);
             if armed && matches!(key, Key::Char('q')) {
                 self.store.request_exit();
@@ -2148,7 +2262,10 @@ impl AppHandler {
                 self.dispatch(text);
                 return true;
             }
-            PromptAction::SubmitShell(cmd) => { self.dispatch_shell(cmd); return true; }
+            PromptAction::SubmitShell(cmd) => {
+                self.dispatch_shell(cmd);
+                return true;
+            }
             PromptAction::Consumed => true,
             PromptAction::None => false,
         };
@@ -2156,14 +2273,23 @@ impl AppHandler {
         // ── Slash popup 同步（U3：query 派生自输入框首 token，单点权威）──
         self.refresh_slash_popup();
 
-        if consumed { return true; }
+        if consumed {
+            return true;
+        }
 
         // ── Global keys ──
         // （q 退出已由上方 U4 双击制接管——原 `q → request_exit` 在 prompt
         // catch-all 之后永不可达，且 exiting 信号无读者，属双重死代码。）
         match key {
-            Key::Char('h') => { self.store.navigate(Route::Home); self.prompt.focus(); true }
-            Key::Char('?') => { self.toggle_help(); true }
+            Key::Char('h') => {
+                self.store.navigate(Route::Home);
+                self.prompt.focus();
+                true
+            }
+            Key::Char('?') => {
+                self.toggle_help();
+                true
+            }
             Key::Escape => {
                 // 1. Close dialogs first
                 if self.panel != Panel::None {
@@ -2178,14 +2304,20 @@ impl AppHandler {
                 }
                 // 3. Double-tap Esc to interrupt running session
                 let status = self.active_session.run_status.get();
-                if matches!(status, RunStatus::Running | RunStatus::Sending | RunStatus::Compacting) {
+                if matches!(
+                    status,
+                    RunStatus::Running | RunStatus::Sending | RunStatus::Compacting
+                ) {
                     if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() < 5 {
                         // Second Esc within 5s → abort
                         self.interrupt_pending = false;
                         let aborted = if let Some(sid) = self.active_session.get_session_id() {
                             if let Some(ref api) = self.api {
                                 match api.abort_session(&sid) {
-                                    Ok(value) => value.get("aborted").and_then(|v| v.as_bool()).unwrap_or(true),
+                                    Ok(value) => value
+                                        .get("aborted")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(true),
                                     Err(e) => {
                                         tracing::warn!(%e, "abort_session failed");
                                         false
@@ -2200,10 +2332,16 @@ impl AppHandler {
                         };
                         if aborted {
                             self.active_session.run_status.set(RunStatus::Idle);
-                            self.store.push_toast("⏹ Session interrupted", crate::store::types::ToastMsgVariant::Info);
+                            self.store.push_toast(
+                                "⏹ Session interrupted",
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
                         } else {
                             // 诚实失败：不置 Idle、不弹"已中断"假 toast（道纪·不伪已批准）。
-                            self.store.push_toast("⏹ Interrupt failed — session is still running", crate::store::types::ToastMsgVariant::Error);
+                            self.store.push_toast(
+                                "⏹ Interrupt failed — session is still running",
+                                crate::store::types::ToastMsgVariant::Error,
+                            );
                         }
                     } else {
                         // First Esc → show confirmation hint
@@ -2270,8 +2408,11 @@ impl AppHandler {
             if let Some(spec) = reg.ui_slash_command(head) {
                 if spec.action_id == UiActionId::CompactSession {
                     let focus = args.trim();
-                    self.pending_compact_focus =
-                        if focus.is_empty() { None } else { Some(focus.to_string()) };
+                    self.pending_compact_focus = if focus.is_empty() {
+                        None
+                    } else {
+                        Some(focus.to_string())
+                    };
                     return self.execute_slash_action(spec.action_id);
                 }
             }
@@ -2283,12 +2424,16 @@ impl AppHandler {
         // Fallback: strip trailing chars for partial match
         let all = reg.ui_all_slash_commands();
         if let Some(spec) = all.iter().find(|c| {
-            c.slash.as_ref().is_some_and(|s| s.name.starts_with(trimmed) || s.aliases.iter().any(|a| a.starts_with(trimmed)))
+            c.slash.as_ref().is_some_and(|s| {
+                s.name.starts_with(trimmed) || s.aliases.iter().any(|a| a.starts_with(trimmed))
+            })
         }) {
             return self.execute_slash_action(spec.action_id);
         }
-        self.store.push_toast(&format!("Unknown command: {}", trimmed),
-            crate::store::types::ToastMsgVariant::Error);
+        self.store.push_toast(
+            &format!("Unknown command: {}", trimmed),
+            crate::store::types::ToastMsgVariant::Error,
+        );
     }
 
     pub(crate) fn close_all_panels(&mut self) {
@@ -2343,7 +2488,10 @@ impl AppHandler {
                 },
             };
             self.active_session.add_attachment(attachment);
-            self.store.push_toast(&format!("Attached: {}", path), crate::store::types::ToastMsgVariant::Success);
+            self.store.push_toast(
+                &format!("Attached: {}", path),
+                crate::store::types::ToastMsgVariant::Success,
+            );
             return true;
         }
         // @<path> — reference a file in prompt context (kept in text)
@@ -2365,13 +2513,22 @@ impl AppHandler {
                     match api.create_session(None, None) {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);
-                            self.store.navigate(Route::Session { session_id: info.id.clone() });
+                            self.store.navigate(Route::Session {
+                                session_id: info.id.clone(),
+                            });
                             self.reload_session_list();
                             info.id
                         }
-                        Err(e) => { self.active_session.run_status.set(RunStatus::Error(format!("{}", e))); return; }
+                        Err(e) => {
+                            self.active_session
+                                .run_status
+                                .set(RunStatus::Error(format!("{}", e)));
+                            return;
+                        }
                     }
-                } else { "echo".to_string() }
+                } else {
+                    "echo".to_string()
+                }
             }
             Route::Session { session_id } => session_id,
             // Settings 不发 prompt(输入在 Settings 应该走不到 dispatch,但 match 必须穷尽)。
@@ -2392,18 +2549,18 @@ impl AppHandler {
             // backend uses the model/agent/mode picked in the dialogs
             // instead of the workspace default.
             //
-            // `selected_mode` 契约为 `"kind:id"` 复合字符串（对齐 web
-            // `App.tsx:836`：`selectedMode.split(":", 2)` → 分流到
-            // agent / scheduler_profile 两个槽）。agent kind 复合时优先级
-            // 高于 selected_agent，避免 mode 与 agent 双权威打架。
+            // `selected_mode` is a `kind:id` pair from the server catalog.
+            // Scheduler ids map directly to the typed built-in templates.
             let model = self.store.selected_model.get();
             let mode = self.store.selected_mode.get();
-            let (agent, scheduler_profile) = match mode.as_deref().and_then(|s| s.split_once(':')) {
-                Some(("agent", id))   => (Some(id.to_string()), None),
-                Some(("preset", id))  => (None, Some(id.to_string())),
-                Some(("profile", id)) => (None, Some(id.to_string())),
-                _ => (self.store.selected_agent.get(), None),
-            };
+            let (agent, scheduler) =
+                match resolve_execution_mode(mode.as_deref(), self.store.selected_agent.get()) {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        self.active_session.run_status.set(RunStatus::Error(error));
+                        return;
+                    }
+                };
 
             // ── 火：spawn send_prompt_with 到后台，主线程立即返回 ──
             // 关键修复：原在按键同步回调里 block_on 等网络往返（local_prompt
@@ -2419,7 +2576,7 @@ impl AppHandler {
             let text_retry = text.clone();
             api.handle().spawn(async move {
                 let r = api_c
-                    .send_prompt_with_async(&sid_c, text_c, agent, scheduler_profile, model, None)
+                    .send_prompt_with_async(&sid_c, text_c, agent, scheduler, model, None)
                     .await;
                 let _ = match r {
                     Ok(resp) => tx.send(dispatch_outcome::DispatchOutcome::Sent {
@@ -2438,9 +2595,12 @@ impl AppHandler {
             // 接收后才请求刷新，比发送前盲置更准）。
         } else {
             // Echo mode (no API) — respond immediately
-            self.active_session.push_assistant_delta(&format!("echo-{}", ts_now()), &format!("[echo] {}", text));
+            self.active_session
+                .push_assistant_delta(&format!("echo-{}", ts_now()), &format!("[echo] {}", text));
             self.active_session.run_status.set(RunStatus::Idle);
-            self.store.navigate(Route::Session { session_id: "echo".into() });
+            self.store.navigate(Route::Session {
+                session_id: "echo".into(),
+            });
         }
     }
 
@@ -2468,8 +2628,9 @@ impl AppHandler {
         self.active_session.reset_for_new_session();
         self.active_session.set_session_id(session_id);
         self.sf_tx.send_replace(Some(session_id.to_string()));
-        self.store
-            .navigate(Route::Session { session_id: session_id.to_string() });
+        self.store.navigate(Route::Session {
+            session_id: session_id.to_string(),
+        });
         self.panel = Panel::None;
         let Some(api) = self.api.clone() else {
             // echo 模式（无 bridge）：无东西可拉，确保不残留 loading 指示。
@@ -2516,16 +2677,17 @@ impl AppHandler {
                 if let Some(t) = info.telemetry {
                     let u = t.usage;
                     ctx_tokens = u.context_tokens;
-                    self.active_session.set_token_usage(
-                        u.input_tokens,
-                        u.output_tokens,
-                        u.reasoning_tokens,
-                        u.cache_read_tokens,
-                        u.cache_miss_tokens,
-                        u.cache_write_tokens,
-                        u.context_tokens,
-                        u.total_cost,
-                    );
+                    self.active_session.set_token_usage(TokenUsage {
+                        input: u.input_tokens,
+                        output: u.output_tokens,
+                        reasoning: u.reasoning_tokens,
+                        total: u.input_tokens + u.output_tokens + u.reasoning_tokens,
+                        cache_read: u.cache_read_tokens,
+                        cache_miss: u.cache_miss_tokens,
+                        cache_write: u.cache_write_tokens,
+                        context_tokens: u.context_tokens,
+                        total_cost: u.total_cost,
+                    });
                 }
             }
             Err(e) => tracing::warn!(%session_id, %e, "open_session: get_session failed"),
@@ -2549,12 +2711,17 @@ impl AppHandler {
         //（live upsert 与 catch-up 同权威；按 id 去重由 dialog 负责）。
         if let Ok(questions) = data.questions {
             for q in questions.into_iter().filter(|q| q.session_id == session_id) {
-                self.question_dialog.ask(crate::dialog::QuestionRequest::from_info(&q));
+                self.question_dialog
+                    .ask(crate::dialog::QuestionRequest::from_info(&q));
             }
         }
         if let Ok(permissions) = data.permissions {
-            for p in permissions.into_iter().filter(|p| p.session_id == session_id) {
-                self.permission_dialog.add_request(crate::dialog::PermissionRequest::from_info(&p));
+            for p in permissions
+                .into_iter()
+                .filter(|p| p.session_id == session_id)
+            {
+                self.permission_dialog
+                    .add_request(crate::dialog::PermissionRequest::from_info(&p));
             }
         }
         // context 进度条播种：context_tokens（最新 turn 占用）÷ 模型 context_window。
@@ -2592,7 +2759,11 @@ impl AppHandler {
     pub(crate) fn reload_session_list(&mut self) {
         let Some(api) = self.api.as_ref() else { return };
         let cwd = self.store.working_dir.get();
-        let cwd_filter = if cwd.is_empty() { None } else { Some(cwd.clone()) };
+        let cwd_filter = if cwd.is_empty() {
+            None
+        } else {
+            Some(cwd.clone())
+        };
         match api.list_sessions_in_directory(cwd_filter) {
             Ok(sessions) => {
                 let items: Vec<crate::store::types::SessionListItem> = sessions
@@ -2653,7 +2824,9 @@ impl AppHandler {
     /// 一致，reload 不漂移）；失败走 `Failed`（回收乐观消息 + 错误 notice/toast）。
     pub(crate) fn dispatch_shell(&mut self, cmd: String) {
         let cmd = cmd.trim().to_string();
-        if cmd.is_empty() { return; }
+        if cmd.is_empty() {
+            return;
+        }
         let route = self.store.route.get();
         let sid = match route {
             Route::Home => {
@@ -2662,12 +2835,16 @@ impl AppHandler {
                     match api.create_session(None, None) {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);
-                            self.store.navigate(Route::Session { session_id: info.id.clone() });
+                            self.store.navigate(Route::Session {
+                                session_id: info.id.clone(),
+                            });
                             self.reload_session_list();
                             info.id
                         }
                         Err(e) => {
-                            self.active_session.run_status.set(RunStatus::Error(format!("{}", e)));
+                            self.active_session
+                                .run_status
+                                .set(RunStatus::Error(format!("{}", e)));
                             return;
                         }
                     }
@@ -2682,7 +2859,8 @@ impl AppHandler {
         };
         self.sf_tx.send_replace(Some(sid.clone()));
         let mid = format!("shell-{}", ts_now());
-        self.active_session.push_user_message(&mid, &format!("$ {}", cmd));
+        self.active_session
+            .push_user_message(&mid, &format!("$ {}", cmd));
         if let Some(ref api) = self.api {
             self.active_session.run_status.set(RunStatus::Sending);
             self.layout_dirty = true;
@@ -2712,8 +2890,13 @@ impl AppHandler {
         }
     }
     pub(crate) fn toggle_help(&mut self) {
-        if self.help.visible { self.help.dismiss(); self.panel = Panel::None; }
-        else { self.help.toggle(); self.panel = Panel::Help; }
+        if self.help.visible {
+            self.help.dismiss();
+            self.panel = Panel::None;
+        } else {
+            self.help.toggle();
+            self.panel = Panel::Help;
+        }
     }
 
     /// General 分类 body 键路由(木律·唯一输入权威)。
@@ -2784,11 +2967,12 @@ impl AppHandler {
         use crate::screen::settings as geo;
         use crate::store::types::{GeneralRow, SettingsCategory, SettingsFocusPane};
 
-        let x_off: u16 = if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) {
-            crate::app::SIDEBAR_WIDTH + 1
-        } else {
-            0
-        };
+        let x_off: u16 =
+            if crate::app::effective_sidebar_visible(self.sidebar_visible, self.terminal_w) {
+                crate::app::SIDEBAR_WIDTH + 1
+            } else {
+                0
+            };
         let x2 = x_off + geo::CATEGORIES_W + geo::VLINE_W; // Providers/List 栏左缘
         let x3 = x2 + geo::PROVIDERS_W + geo::VLINE_W; // Details 栏左缘
         let pane_h = self.terminal_h; // = 渲染侧 ctx.area.height（build 的 pane_height）
@@ -2799,7 +2983,9 @@ impl AppHandler {
             let idx = (m.y - geo::PANE_FIRST_ROW_Y) as usize;
             if idx < SettingsCategory::ALL.len() {
                 self.store.settings_category.set(SettingsCategory::ALL[idx]);
-                self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                self.store
+                    .settings_focus_pane
+                    .set(SettingsFocusPane::Providers);
                 self.layout_dirty = true;
                 return true;
             }
@@ -2859,12 +3045,15 @@ impl AppHandler {
                             if rel % geo::EDIT_FIELD_BLOCK_STRIDE == 1 && m.x >= x3 + 2 {
                                 let char_idx = (m.x - x3 - 2) as usize;
                                 match f {
-                                    SettingsEditField::Name =>
-                                        self.settings_edit.name_input.set_cursor(char_idx),
-                                    SettingsEditField::BaseUrl =>
-                                        self.settings_edit.base_url_input.set_cursor(char_idx),
-                                    SettingsEditField::ApiKey =>
-                                        self.settings_edit.api_key_input.set_cursor(char_idx),
+                                    SettingsEditField::Name => {
+                                        self.settings_edit.name_input.set_cursor(char_idx)
+                                    }
+                                    SettingsEditField::BaseUrl => {
+                                        self.settings_edit.base_url_input.set_cursor(char_idx)
+                                    }
+                                    SettingsEditField::ApiKey => {
+                                        self.settings_edit.api_key_input.set_cursor(char_idx)
+                                    }
                                     SettingsEditField::Protocol => {}
                                 }
                             }
@@ -2903,7 +3092,9 @@ impl AppHandler {
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
                         self.settings_select_provider_by_id(providers[i].id.clone());
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Providers);
                         self.layout_dirty = true;
                         return true;
                     }
@@ -2956,7 +3147,9 @@ impl AppHandler {
                     }
                     let model_key = provider.models[i].id.clone();
                     self.store.settings_selected_model.set(Some(model_key));
-                    self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                    self.store
+                        .settings_focus_pane
+                        .set(SettingsFocusPane::Details);
                     let w = self.terminal_w;
                     if m.x >= w.saturating_sub(4) {
                         self.settings_confirm_delete_model();
@@ -2981,20 +3174,15 @@ impl AppHandler {
                         return false;
                     }
                     let visible = pane_h.saturating_sub(5).max(1) as usize;
-                    let sel = self
-                        .store
-                        .settings_mcp_selected
-                        .get()
-                        .min(rows.len() - 1);
-                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
-                        rows.len(),
-                        sel,
-                        visible,
-                    );
+                    let sel = self.store.settings_mcp_selected.get().min(rows.len() - 1);
+                    let (start, end) =
+                        crate::dialog::backdrop::list_viewport_window(rows.len(), sel, visible);
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
                         self.store.settings_mcp_selected.set(i);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Providers);
                         if m.x >= x2 + geo::LIST_COL_W.saturating_sub(10) {
                             self.toggle_settings_mcp_enabled();
                         }
@@ -3010,11 +3198,7 @@ impl AppHandler {
                     if rows.is_empty() {
                         return false;
                     }
-                    let sel = self
-                        .store
-                        .settings_mcp_selected
-                        .get()
-                        .min(rows.len() - 1);
+                    let sel = self.store.settings_mcp_selected.get().min(rows.len() - 1);
                     let r = &rows[sel];
                     let header_w = 4 + r.name.chars().count() as u16; // "  ⚔ " + name
                     let pill_w: u16 = if r.is_connected() { 11 } else { 14 };
@@ -3022,14 +3206,18 @@ impl AppHandler {
                     if m.x >= px0 && m.x < px0 + pill_w {
                         let connect = !r.is_connected();
                         self.toggle_settings_mcp(connect);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Details);
                         return true;
                     }
                     // gap(1) 后的 [ On ]/[ Off ] pill（宽 7，与渲染同源）。
                     let px1 = px0 + pill_w + 1;
                     if m.x >= px1 && m.x < px1 + 7 {
                         self.toggle_settings_mcp_enabled();
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Details);
                         return true;
                     }
                 }
@@ -3053,15 +3241,14 @@ impl AppHandler {
                         .settings_plugins_selected
                         .get()
                         .min(rows.len() - 1);
-                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
-                        rows.len(),
-                        sel,
-                        visible,
-                    );
+                    let (start, end) =
+                        crate::dialog::backdrop::list_viewport_window(rows.len(), sel, visible);
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
                         self.store.settings_plugins_selected.set(i);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Providers);
                         if m.x >= x2 + geo::LIST_COL_W.saturating_sub(9) {
                             self.toggle_settings_plugin();
                         }
@@ -3092,15 +3279,14 @@ impl AppHandler {
                         .settings_skills_selected
                         .get()
                         .min(lines.len() - 1);
-                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
-                        lines.len(),
-                        sel,
-                        visible,
-                    );
+                    let (start, end) =
+                        crate::dialog::backdrop::list_viewport_window(lines.len(), sel, visible);
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
                         self.store.settings_skills_selected.set(i);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Providers);
                         let in_pill_zone = m.x >= x2 + geo::LIST_COL_W.saturating_sub(9);
                         if in_pill_zone {
                             self.toggle_settings_skill();
@@ -3119,12 +3305,16 @@ impl AppHandler {
                 if m.x >= x3 && m.y == footer_y {
                     if m.x < x3 + 13 {
                         self.decide_settings_skill_proposal(true);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Details);
                         return true;
                     }
                     if m.x < x3 + 27 {
                         self.decide_settings_skill_proposal(false);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Details);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Details);
                         return true;
                     }
                 }
@@ -3150,15 +3340,14 @@ impl AppHandler {
                         .settings_tools_selected
                         .get()
                         .min(lines.len() - 1);
-                    let (start, end) = crate::dialog::backdrop::list_viewport_window(
-                        lines.len(),
-                        sel,
-                        visible,
-                    );
+                    let (start, end) =
+                        crate::dialog::backdrop::list_viewport_window(lines.len(), sel, visible);
                     let i = start + (m.y - geo::PANE_FIRST_ROW_Y) as usize;
                     if i < end {
                         self.store.settings_tools_selected.set(i);
-                        self.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+                        self.store
+                            .settings_focus_pane
+                            .set(SettingsFocusPane::Providers);
                         let in_pill_zone = m.x >= x2 + geo::LIST_COL_W.saturating_sub(9);
                         if in_pill_zone {
                             self.toggle_settings_tool();
@@ -3192,7 +3381,9 @@ impl AppHandler {
                     .unwrap_or(0) as i32;
                 let n = SettingsCategory::ALL.len() as i32;
                 let nxt = (((cur + dir) % n) + n) % n;
-                self.store.settings_category.set(SettingsCategory::ALL[nxt as usize]);
+                self.store
+                    .settings_category
+                    .set(SettingsCategory::ALL[nxt as usize]);
             }
             SettingsFocusPane::Providers => match category {
                 SettingsCategory::ModelSettings => self.settings_move_provider(dir),
@@ -3341,29 +3532,30 @@ impl AppHandler {
                 match focus {
                     SettingsFocusPane::Categories => {
                         let cur = self.store.settings_category.get();
-                        let idx = SettingsCategory::ALL.iter().position(|&c| c == cur).unwrap_or(0);
+                        let idx = SettingsCategory::ALL
+                            .iter()
+                            .position(|&c| c == cur)
+                            .unwrap_or(0);
                         let n = SettingsCategory::ALL.len() as i32;
                         let nxt = (((idx as i32 + dir) % n) + n) % n;
-                        self.store.settings_category.set(SettingsCategory::ALL[nxt as usize]);
+                        self.store
+                            .settings_category
+                            .set(SettingsCategory::ALL[nxt as usize]);
                     }
-                    SettingsFocusPane::Providers => {
-                        match category {
-                            SettingsCategory::McpServers => self.settings_move_mcp(dir),
-                            SettingsCategory::Skills => self.settings_move_skills(dir),
-                            SettingsCategory::Tools => self.settings_move_tools(dir),
-                            SettingsCategory::Plugins => self.settings_move_plugins(dir),
-                            _ => self.settings_move_provider(dir),
-                        }
-                    }
-                    SettingsFocusPane::Details => {
-                        match category {
-                            SettingsCategory::McpServers => self.settings_move_mcp(dir),
-                            SettingsCategory::Skills => self.settings_move_skills(dir),
-                            SettingsCategory::Tools => self.settings_move_tools(dir),
-                            SettingsCategory::Plugins => self.settings_move_plugins(dir),
-                            _ => self.settings_move_model(dir),
-                        }
-                    }
+                    SettingsFocusPane::Providers => match category {
+                        SettingsCategory::McpServers => self.settings_move_mcp(dir),
+                        SettingsCategory::Skills => self.settings_move_skills(dir),
+                        SettingsCategory::Tools => self.settings_move_tools(dir),
+                        SettingsCategory::Plugins => self.settings_move_plugins(dir),
+                        _ => self.settings_move_provider(dir),
+                    },
+                    SettingsFocusPane::Details => match category {
+                        SettingsCategory::McpServers => self.settings_move_mcp(dir),
+                        SettingsCategory::Skills => self.settings_move_skills(dir),
+                        SettingsCategory::Tools => self.settings_move_tools(dir),
+                        SettingsCategory::Plugins => self.settings_move_plugins(dir),
+                        _ => self.settings_move_model(dir),
+                    },
                 }
                 self.layout_dirty = true;
                 true
@@ -3475,7 +3667,10 @@ impl AppHandler {
                 if self.store.settings_category.get() != SettingsCategory::ModelSettings {
                     return false;
                 }
-                if !matches!(self.store.settings_focus_pane.get(), SettingsFocusPane::Details) {
+                if !matches!(
+                    self.store.settings_focus_pane.get(),
+                    SettingsFocusPane::Details
+                ) {
                     return false;
                 }
                 self.settings_open_add_model();
@@ -3746,83 +3941,91 @@ pub(crate) fn apply_loaded_messages(
 ) {
     use crate::store::types::ToolPhase;
     active_session.messages.update(|m| m.clear());
-            // 记录最后一个带 model 的 assistant 消息（context 进度条的
-            // model fallback——会话自己用过的模型比全局 selected_model 更准）。
-            let mut last_model: Option<String> = None;
-            for msg in msgs {
-                if msg.role == "assistant" {
-                    if let Some(ref m) = msg.model {
-                        if !m.trim().is_empty() {
-                            last_model = Some(m.clone());
-                        }
-                    }
-                }
-                for (part_idx, part) in msg.parts.iter().enumerate() {
-                    let pid = format!("api-{}-{}", msg.id, part_idx);
-                    match part.part_type.as_str() {
-                        "text" => {
-                            let Some(text) = part.text.as_deref() else { continue };
-                            if text.is_empty() { continue };
-                            if msg.role == "user" || msg.role == "human" {
-                                active_session.push_user_message(&msg.id, text);
-                            } else {
-                                // Use msg.id (not pid) so multiple text parts
-                                // of the same message merge into one block.
-                                // pid includes part_idx which would force a new
-                                // block per part, showing only the last token.
-                                active_session.push_assistant_delta(&msg.id, text);
-                            }
-                        }
-                        "reasoning" => {
-                            let Some(text) = part.text.as_deref() else { continue };
-                            if !text.is_empty() {
-                                active_session.push_thinking(&pid, text);
-                            }
-                        }
-                        "toolCall" | "tool_call" => {
-                            if let Some(ref tc) = part.tool_call {
-                                let preview = serde_json::to_string(&tc.input)
-                                    .unwrap_or_default();
-                                active_session.upsert_tool_call(
-                                    &tc.id, &tc.name, &preview, ToolPhase::Done,
-                                );
-                            }
-                        }
-                        "toolResult" | "tool_result" => {
-                            if let Some(ref tr) = part.tool_result {
-                                active_session.push_tool_result(
-                                    &tr.tool_call_id,
-                                    tr.title.as_deref().unwrap_or("tool"),
-                                    &tr.content,
-                                    tr.is_error,
-                                    None,
-                                );
-                            }
-                        }
-                        // F5：历史加载补上 agent/subtask/retry/step 卡片（此前
-                        // `_ => {}` 全丢——重试/步骤过程在旧会话里不可见，与
-                        // live 的 session_event 渲染断裂）。服务端 history rebuild
-                        // 把这类 part 转成 web `session_event` 块（messages.rs
-                        // part_to_info → history_session_event_to_web），字段与
-                        // live 事件一致，渲染口径对齐 event_handler.rs:173-180。
-                        "agent" | "subtask" | "retry" | "step_start" | "step_finish" => {
-                            if let Some(ref block) = part.output_block {
-                                let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                                let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-                                let line = if summary.is_empty() {
-                                    title.to_string()
-                                } else {
-                                    format!("{title}: {summary}")
-                                };
-                                if !line.is_empty() {
-                                    active_session.push_notice(&pid, &line);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+    // 记录最后一个带 model 的 assistant 消息（context 进度条的
+    // model fallback——会话自己用过的模型比全局 selected_model 更准）。
+    let mut last_model: Option<String> = None;
+    for msg in msgs {
+        if msg.role == "assistant" {
+            if let Some(ref m) = msg.model {
+                if !m.trim().is_empty() {
+                    last_model = Some(m.clone());
                 }
             }
+        }
+        for (part_idx, part) in msg.parts.iter().enumerate() {
+            let pid = format!("api-{}-{}", msg.id, part_idx);
+            match part.part_type.as_str() {
+                "text" => {
+                    let Some(text) = part.text.as_deref() else {
+                        continue;
+                    };
+                    if text.is_empty() {
+                        continue;
+                    };
+                    if msg.role == "user" || msg.role == "human" {
+                        active_session.push_user_message(&msg.id, text);
+                    } else {
+                        // Use msg.id (not pid) so multiple text parts
+                        // of the same message merge into one block.
+                        // pid includes part_idx which would force a new
+                        // block per part, showing only the last token.
+                        active_session.push_assistant_delta(&msg.id, text);
+                    }
+                }
+                "reasoning" => {
+                    let Some(text) = part.text.as_deref() else {
+                        continue;
+                    };
+                    if !text.is_empty() {
+                        active_session.push_thinking(&pid, text);
+                    }
+                }
+                "toolCall" | "tool_call" => {
+                    if let Some(ref tc) = part.tool_call {
+                        let preview = serde_json::to_string(&tc.input).unwrap_or_default();
+                        active_session.upsert_tool_call(
+                            &tc.id,
+                            &tc.name,
+                            &preview,
+                            ToolPhase::Done,
+                        );
+                    }
+                }
+                "toolResult" | "tool_result" => {
+                    if let Some(ref tr) = part.tool_result {
+                        active_session.push_tool_result(
+                            &tr.tool_call_id,
+                            tr.title.as_deref().unwrap_or("tool"),
+                            &tr.content,
+                            tr.is_error,
+                            None,
+                        );
+                    }
+                }
+                // Historical loading restores agent/retry/step cards (previously
+                // `_ => {}` 全丢——重试/步骤过程在旧会话里不可见，与
+                // live 的 session_event 渲染断裂）。服务端 history rebuild
+                // 把这类 part 转成 web `session_event` 块（messages.rs
+                // part_to_info → history_session_event_to_web），字段与
+                // live 事件一致，渲染口径对齐 event_handler.rs:173-180。
+                "agent" | "retry" | "step_start" | "step_finish" => {
+                    if let Some(ref block) = part.output_block {
+                        let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                        let line = if summary.is_empty() {
+                            title.to_string()
+                        } else {
+                            format!("{title}: {summary}")
+                        };
+                        if !line.is_empty() {
+                            active_session.push_notice(&pid, &line);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     active_session.session_model.set(last_model);
 }
 
@@ -3830,6 +4033,24 @@ pub(crate) fn apply_loaded_messages(
 mod tests {
     use super::*;
     use crate::input::readline::InputReadlineExt;
+
+    #[test]
+    fn scheduler_mode_resolves_to_typed_template() {
+        let (agent, scheduler) =
+            resolve_execution_mode(Some("scheduler:verify"), Some("build".to_string())).unwrap();
+        assert_eq!(agent, None);
+        assert!(matches!(
+            scheduler,
+            Some(SchedulerChoice::Template {
+                template: TemplateId::Verify
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_profile_mode_is_rejected() {
+        assert!(resolve_execution_mode(Some("profile:sisyphus"), None).is_err());
+    }
     use revue::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
     fn mk_handler() -> AppHandler {
@@ -3865,9 +4086,7 @@ mod tests {
         h.store
             .settings_selected_provider
             .set(Some("openai".into()));
-        h.store
-            .settings_testing_provider
-            .set(Some("openai".into()));
+        h.store.settings_testing_provider.set(Some("openai".into()));
         let toasts_before = h.store.toasts.get().len();
         h.settings_test_provider_connection();
         assert_eq!(
@@ -4119,11 +4338,7 @@ mod tests {
         h.handle(&Event::Tick);
         assert!(h.store.settings_write_pending.get().is_none(), "失败也清闸");
         assert!(
-            h.store
-                .toasts
-                .get()
-                .iter()
-                .any(|t| t.text.contains("boom")),
+            h.store.toasts.get().iter().any(|t| t.text.contains("boom")),
             "失败文案透传"
         );
     }
@@ -4213,7 +4428,10 @@ mod tests {
         assert!(h.store.dialog_fetch_pending.get().is_none(), "回执清闸");
         assert!(!h.session_list.loading, "loading 态清除");
         assert!(h.session_list.error.is_none(), "空目录不置错误态");
-        assert!(h.session_list.sessions.is_empty(), "空态 = 空 sessions 列表");
+        assert!(
+            h.session_list.sessions.is_empty(),
+            "空态 = 空 sessions 列表"
+        );
     }
 
     /// U15①：批量删 Confirm 确认后回 SessionList——来源 panel 被记录并
@@ -4224,8 +4442,16 @@ mod tests {
         let mut h = mk_handler();
         h.session_list.open();
         h.session_list.set_sessions(vec![
-            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
-            crate::dialog::SessionEntry { id: "b".into(), title: "t-b".into(), status_hint: String::new() },
+            crate::dialog::SessionEntry {
+                id: "a".into(),
+                title: "t-a".into(),
+                status_hint: String::new(),
+            },
+            crate::dialog::SessionEntry {
+                id: "b".into(),
+                title: "t-b".into(),
+                status_hint: String::new(),
+            },
         ]);
         h.panel = Panel::SessionList;
         // 'x' 标记当前项 → 'D' 触发批量删 Confirm。
@@ -4244,9 +4470,12 @@ mod tests {
     fn batch_delete_confirm_cancel_returns_to_session_list() {
         let mut h = mk_handler();
         h.session_list.open();
-        h.session_list.set_sessions(vec![
-            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
-        ]);
+        h.session_list
+            .set_sessions(vec![crate::dialog::SessionEntry {
+                id: "a".into(),
+                title: "t-a".into(),
+                status_hint: String::new(),
+            }]);
         h.panel = Panel::SessionList;
         h.handle(&Event::Key(KeyEvent::new(Key::Char('x'))));
         h.handle(&Event::Key(KeyEvent::new(Key::Char('D'))));
@@ -4268,16 +4497,27 @@ mod tests {
         assert_eq!(h.panel, Panel::None);
     }
 
-    /// U16：skills/proposals/tasks/modes 空回执也打开弹窗（mcp_list F12
+    /// U16：skills/proposals/modes 空回执也打开弹窗（mcp_list F12
     /// 样板）——空态文案可见，不再是一闪 toast（空态渲染原属死代码）。
     /// Recovery 臂同 pattern（proto 结构体重，测试不逐一复制）。
     #[test]
     fn dialog_fetch_done_empty_lists_open_dialogs() {
-        let cases: [(app_op::DialogFetchData, Panel, &str); 4] = [
-            (app_op::DialogFetchData::Skills(Vec::new()), Panel::SkillList, "skills"),
-            (app_op::DialogFetchData::SkillProposals(Vec::new()), Panel::SkillProposal, "proposals"),
-            (app_op::DialogFetchData::Tasks(Vec::new()), Panel::TaskList, "tasks"),
-            (app_op::DialogFetchData::Modes(Vec::new()), Panel::ModeSelect, "modes"),
+        let cases: [(app_op::DialogFetchData, Panel, &str); 3] = [
+            (
+                app_op::DialogFetchData::Skills(Vec::new()),
+                Panel::SkillList,
+                "skills",
+            ),
+            (
+                app_op::DialogFetchData::SkillProposals(Vec::new()),
+                Panel::SkillProposal,
+                "proposals",
+            ),
+            (
+                app_op::DialogFetchData::Modes(Vec::new()),
+                Panel::ModeSelect,
+                "modes",
+            ),
         ];
         for (data, want_panel, name) in cases {
             let mut h = mk_handler();
@@ -4356,7 +4596,11 @@ mod tests {
             "sessions 就地置错"
         );
         assert!(
-            !h2.store.toasts.get().iter().any(|t| t.text.contains("boom")),
+            !h2.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("boom")),
             "sessions 失败不走 toast"
         );
     }
@@ -4366,7 +4610,8 @@ mod tests {
     #[test]
     fn esc_dismisses_latest_toast_when_idle() {
         let mut h = mk_handler();
-        h.store.push_toast("note", crate::store::types::ToastMsgVariant::Info);
+        h.store
+            .push_toast("note", crate::store::types::ToastMsgVariant::Info);
         assert!(
             h.handle(&Event::Key(KeyEvent::new(Key::Escape))),
             "有 toast 时 Esc 被消费"
@@ -4382,9 +4627,14 @@ mod tests {
     #[test]
     fn bell_click_opens_notifications() {
         let mut h = mk_handler();
-        h.store.push_toast("hello", crate::store::types::ToastMsgVariant::Info);
+        h.store
+            .push_toast("hello", crate::store::types::ToastMsgVariant::Info);
         h.bell_rect = Some(revue::prelude::Rect::new(10, 24, 5, 1));
-        let ev = Event::Mouse(MouseEvent::new(11, 24, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            11,
+            24,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev), "铃铛点击被消费");
         assert!(h.notification_dialog.is_open(), "通知中心打开");
         assert!(matches!(h.panel, Panel::Notifications));
@@ -4459,7 +4709,11 @@ mod tests {
         h.question_dialog.close();
         assert_eq!(h.pending_decision_count(), 2);
         h.pending_rect = Some(revue::prelude::Rect::new(20, 24, 4, 1));
-        let ev = Event::Mouse(MouseEvent::new(21, 24, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            21,
+            24,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev), "角标点击被消费");
         assert!(h.permission_dialog.visible, "permission 优先重开");
         assert!(!h.question_dialog.visible);
@@ -4473,7 +4727,11 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('s')))));
         assert_eq!(h.pending_decision_count(), 0, "skip 出队");
         assert!(
-            h.store.toasts.get().iter().any(|t| t.text.contains("skipped")),
+            h.store
+                .toasts
+                .get()
+                .iter()
+                .any(|t| t.text.contains("skipped")),
             "skip 后果 toast"
         );
     }
@@ -4492,7 +4750,11 @@ mod tests {
         assert_eq!(h.pending_decision_count(), 0);
         let _ = h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('o'))));
         assert!(!h.permission_dialog.visible && !h.question_dialog.visible);
-        assert_eq!(h.pending_decision_count(), 0, "无 pending 时 Ctrl+O 无副作用");
+        assert_eq!(
+            h.pending_decision_count(),
+            0,
+            "无 pending 时 Ctrl+O 无副作用"
+        );
     }
 
     // ── U9：Compacting 行为口径与 Running 同闸 ──
@@ -4508,8 +4770,7 @@ mod tests {
         h.handle(&Event::Tick);
         assert!(h.spinner_tick > t0, "Compacting 推进 spinner");
         // 31s 无活动 → 冻帧（running_stale 同闸）。
-        h.last_activity =
-            std::time::Instant::now() - std::time::Duration::from_secs(31);
+        h.last_activity = std::time::Instant::now() - std::time::Duration::from_secs(31);
         let t1 = h.spinner_tick;
         h.handle(&Event::Tick);
         assert_eq!(h.spinner_tick, t1, "stale 时 spinner 冻帧");
@@ -4518,10 +4779,15 @@ mod tests {
     /// sidebar 底部 ⚙ 点击（x=W-3..W, y=末行）应触发 OpenSettings。
     #[test]
     fn gear_click_opens_settings() {
-        let mut h = mk_handler();        h.sidebar_visible = true;
+        let mut h = mk_handler();
+        h.sidebar_visible = true;
         h.terminal_h = 24;
         h.sidebar_tab_y = 9;
-        let ev = Event::Mouse(MouseEvent::new(30, 23, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            30,
+            23,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev), "gear click should be consumed");
         assert!(matches!(h.store.route.get(), Route::Settings));
     }
@@ -4539,7 +4805,12 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::alt(Key::Enter))));
         assert_eq!(h.prompt.text(), "hi\n", "Alt+Enter 必须插入换行而非发送");
         // Shift+Enter → 换行
-        let shift_enter = KeyEvent { key: Key::Enter, ctrl: false, alt: false, shift: true };
+        let shift_enter = KeyEvent {
+            key: Key::Enter,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        };
         assert!(h.handle(&Event::Key(shift_enter)));
         assert_eq!(h.prompt.text(), "hi\n\n");
         // Ctrl+Enter → 换行
@@ -4659,7 +4930,10 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
         assert_eq!(h.prompt.text(), "/settings ");
         assert_eq!(h.panel, Panel::None);
-        assert!(!matches!(h.store.route.get(), Route::Settings), "填回不得执行");
+        assert!(
+            !matches!(h.store.route.get(), Route::Settings),
+            "填回不得执行"
+        );
         // 第二次 Enter：走正常 submit 执行 → 打开 Settings
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
         assert!(matches!(h.store.route.get(), Route::Settings));
@@ -4757,10 +5031,20 @@ mod tests {
         h.store.navigate_settings();
         h.sidebar_visible = true;
         // "Model Settings" 行（i=1 → y=4 0-based），x=40（1-based col 41）
-        let ev = Event::Mouse(MouseEvent::new(40, 4, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            40,
+            4,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert_eq!(h.store.settings_category.get(), SettingsCategory::ModelSettings);
-        assert_eq!(h.store.settings_focus_pane.get(), SettingsFocusPane::Providers);
+        assert_eq!(
+            h.store.settings_category.get(),
+            SettingsCategory::ModelSettings
+        );
+        assert_eq!(
+            h.store.settings_focus_pane.get(),
+            SettingsFocusPane::Providers
+        );
     }
 
     /// sidebar session tree：箭头区点击 toggle 展开/折叠（默认折叠）。
@@ -4801,14 +5085,28 @@ mod tests {
             depth: 0,
             has_children: true,
         }];
-        let ev = Event::Mouse(MouseEvent::new(1, 20, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            1,
+            20,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert!(h.session_tree_expanded.contains("root"), "arrow click expands");
+        assert!(
+            h.session_tree_expanded.contains("root"),
+            "arrow click expands"
+        );
         assert!(h.active_session.sidebar_trees.get().session_nodes[0].expanded);
         // 再点一次 → 折叠回去。
-        let ev = Event::Mouse(MouseEvent::new(1, 20, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            1,
+            20,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert!(!h.session_tree_expanded.contains("root"), "second arrow click collapses");
+        assert!(
+            !h.session_tree_expanded.contains("root"),
+            "second arrow click collapses"
+        );
         assert!(!h.active_session.sidebar_trees.get().session_nodes[0].expanded);
     }
 
@@ -4820,7 +5118,11 @@ mod tests {
         h.sidebar_visible = true;
         let before = h.store.show_thinking.get();
         // 首行（i=0 → y=5 0-based），x=65（body 区）
-        let ev = Event::Mouse(MouseEvent::new(65, 5, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            65,
+            5,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(h.store.show_thinking.get(), !before);
         assert_eq!(h.store.settings_general_selected.get(), 0);
@@ -4828,13 +5130,16 @@ mod tests {
 
     // ── Settings 全分类鼠标交互（x_off=33 / x2=56 / x3=85 / footer_y=21）──
 
-    fn provider(id: &str, models: Vec<agendao_client::ProviderModelInfo>) -> agendao_client::ProviderInfo {
+    fn provider(
+        id: &str,
+        models: Vec<agendao_client::ProviderModelInfo>,
+    ) -> agendao_client::ProviderInfo {
         agendao_client::ProviderInfo {
             id: id.into(),
             name: format!("P-{}", id),
             models,
             base_url: Some("https://api.example.com".into()),
-            protocol: Some("openai".into()),
+            protocol: Some("openai-chat".into()),
             disabled: false,
         }
     }
@@ -4858,7 +5163,9 @@ mod tests {
         h.sidebar_visible = true;
         h.terminal_h = 24;
         h.terminal_w = 100;
-        h.store.settings_category.set(SettingsCategory::ModelSettings);
+        h.store
+            .settings_category
+            .set(SettingsCategory::ModelSettings);
         h.store.providers.set(providers);
     }
 
@@ -4868,10 +5175,20 @@ mod tests {
         let mut h = mk_handler();
         goto_model_settings(&mut h, vec![provider("p1", vec![]), provider("p2", vec![])]);
         // 第二个 provider（i=1 → y=4），Providers 栏 x∈[56,84)
-        let ev = Event::Mouse(MouseEvent::new(60, 4, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            60,
+            4,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert_eq!(h.store.settings_selected_provider.get().as_deref(), Some("p2"));
-        assert_eq!(h.store.settings_focus_pane.get(), SettingsFocusPane::Providers);
+        assert_eq!(
+            h.store.settings_selected_provider.get().as_deref(),
+            Some("p2")
+        );
+        assert_eq!(
+            h.store.settings_focus_pane.get(),
+            SettingsFocusPane::Providers
+        );
     }
 
     #[test]
@@ -4879,7 +5196,11 @@ mod tests {
         let mut h = mk_handler();
         goto_model_settings(&mut h, vec![provider("p1", vec![])]);
         // footer "+ Add provider" 行 y = terminal_h - 3 = 21
-        let ev = Event::Mouse(MouseEvent::new(60, 21, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            60,
+            21,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert!(h.settings_edit.is_add(), "点击 + Add 应进入 Add 表单");
     }
@@ -4890,17 +5211,29 @@ mod tests {
         goto_model_settings(&mut h, vec![provider("p1", vec![model("m1"), model("m2")])]);
         h.store.settings_selected_provider.set(Some("p1".into()));
         // models 首行 y=17（i=0 m1 / i=1 m2）。点击 m2 行中部 → 选中 + 焦点 Details。
-        let ev = Event::Mouse(MouseEvent::new(90, 18, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            90,
+            18,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(h.store.settings_selected_model.get().as_deref(), Some("m2"));
         // ✕（x >= 96）→ Confirm 删除弹窗。
-        let ev = Event::Mouse(MouseEvent::new(97, 18, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            97,
+            18,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert!(matches!(h.panel, Panel::Confirm));
         h.confirm_dialog.close();
         h.panel = Panel::None;
         // ✎（94<=x<96）→ ModelEdit 编辑弹窗（api=None → 无 prefill 降级但仍弹）。
-        let ev = Event::Mouse(MouseEvent::new(94, 18, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            94,
+            18,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert!(matches!(h.panel, Panel::ModelEdit));
     }
@@ -4913,12 +5246,23 @@ mod tests {
         let providers = h.store.providers.get();
         h.settings_edit.enter_edit(&providers[0]);
         // Edit 模式 4 字段后 Protocol 块 y∈[11,14)：点击 → 聚焦 Protocol。
-        let ev = Event::Mouse(MouseEvent::new(90, 12, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            90,
+            12,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert_eq!(h.settings_edit.focus, crate::app::settings_edit_state::SettingsEditField::Protocol);
+        assert_eq!(
+            h.settings_edit.focus,
+            crate::app::settings_edit_state::SettingsEditField::Protocol
+        );
         let idx0 = h.settings_edit.protocol_idx;
         // 已聚焦时再点 → 前进一个选项（同 → 键）。
-        let ev = Event::Mouse(MouseEvent::new(90, 12, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            90,
+            12,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(h.settings_edit.protocol_idx, idx0 + 1);
     }
@@ -4942,16 +5286,29 @@ mod tests {
             url: None,
             enabled: true,
         };
-        h.store.settings_mcp.set(vec![row("alpha", "connected"), row("beta", "disconnected")]);
+        h.store
+            .settings_mcp
+            .set(vec![row("alpha", "connected"), row("beta", "disconnected")]);
         // 列表第二行（i=1 → y=4）→ 选中 beta。
-        let ev = Event::Mouse(MouseEvent::new(60, 4, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            60,
+            4,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(h.store.settings_mcp_selected.get(), 1);
         // beta 的 Status pill：header_w=4+4=8 → px0=85+8+1=94，" Disconnected "=14 宽。
-        let ev = Event::Mouse(MouseEvent::new(96, 1, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            96,
+            1,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         // api=None → 动作落到 toast（证明点击路由进了 toggle_settings_mcp）。
-        assert!(!h.store.toasts.get().is_empty(), "pill 点击应触发 connect 动作");
+        assert!(
+            !h.store.toasts.get().is_empty(),
+            "pill 点击应触发 connect 动作"
+        );
     }
 
     #[test]
@@ -4962,16 +5319,25 @@ mod tests {
         h.sidebar_visible = true;
         h.terminal_h = 24;
         h.store.settings_category.set(SettingsCategory::Skills);
-        h.store.settings_skills.set(vec![SettingsSkillRow::Proposal {
-            id: "prop-1".into(),
-            title: "Add retry rule".into(),
-            status: "pending".into(),
-            kind: "methodology".into(),
-        }]);
+        h.store
+            .settings_skills
+            .set(vec![SettingsSkillRow::Proposal {
+                id: "prop-1".into(),
+                title: "Add retry rule".into(),
+                status: "pending".into(),
+                kind: "methodology".into(),
+            }]);
         // footer approve 区（x3=85 起 13 列内，y = 24-3 = 21）。
-        let ev = Event::Mouse(MouseEvent::new(88, 21, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            88,
+            21,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
-        assert!(!h.store.toasts.get().is_empty(), "approve 区点击应路由到 decide");
+        assert!(
+            !h.store.toasts.get().is_empty(),
+            "approve 区点击应路由到 decide"
+        );
     }
 
     #[test]
@@ -4989,9 +5355,15 @@ mod tests {
             protected,
             disabled: false,
         };
-        h.store.settings_tools.set(vec![tool("bash", "shell", false)]);
+        h.store
+            .settings_tools
+            .set(vec![tool("bash", "shell", false)]);
         // 行尾开关 pill 区点击（x2=56，pill 区 = 列表栏末 9 列 x>=75；数据行 y=4）。
-        let ev = Event::Mouse(MouseEvent::new(77, 4, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            77,
+            4,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(h.store.settings_tools_selected.get(), 1);
         assert!(
@@ -5017,15 +5389,25 @@ mod tests {
         let mut h = mk_handler();
         goto_model_settings(
             &mut h,
-            vec![provider("p1", vec![]), provider("p2", vec![]), provider("p3", vec![])],
+            vec![
+                provider("p1", vec![]),
+                provider("p2", vec![]),
+                provider("p3", vec![]),
+            ],
         );
         h.store.settings_selected_provider.set(Some("p1".into()));
         let ev = Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollDown));
         assert!(h.handle(&ev));
-        assert_eq!(h.store.settings_selected_provider.get().as_deref(), Some("p2"));
+        assert_eq!(
+            h.store.settings_selected_provider.get().as_deref(),
+            Some("p2")
+        );
         let ev = Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollUp));
         assert!(h.handle(&ev));
-        assert_eq!(h.store.settings_selected_provider.get().as_deref(), Some("p1"));
+        assert_eq!(
+            h.store.settings_selected_provider.get().as_deref(),
+            Some("p1")
+        );
     }
 
     #[test]
@@ -5035,7 +5417,11 @@ mod tests {
         h.panel = Panel::ModelEdit;
         h.model_edit_rect = Some(revue::prelude::Rect::new(15, 2, 70, 22));
         // Name 字段块（i=1 → y ∈ [7,11)）：点击 (20, 8)。
-        let ev = Event::Mouse(MouseEvent::new(20, 8, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            20,
+            8,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         let expect = h.model_edit_dialog.field_at_block_index(1);
         assert_eq!(Some(h.model_edit_dialog.focus()), expect);
@@ -5049,7 +5435,11 @@ mod tests {
         h.panel = Panel::ProviderEdit;
         h.provider_edit_rect = Some(revue::prelude::Rect::new(15, 2, 76, 24));
         // BaseUrl 字段块（i=2 → y ∈ [11,15)）：点击 (20, 12)。
-        let ev = Event::Mouse(MouseEvent::new(20, 12, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            20,
+            12,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(
             h.provider_edit_dialog.focus(),
@@ -5060,13 +5450,18 @@ mod tests {
     #[test]
     fn confirm_dialog_cancel_zone_closes_without_action() {
         let mut h = mk_handler();
-        h.confirm_dialog.ask("Delete Provider", "Delete provider \"p1\"?", "Delete");
+        h.confirm_dialog
+            .ask("Delete Provider", "Delete provider \"p1\"?", "Delete");
         h.panel = Panel::Confirm;
         h.pending_confirm = Some(crate::app::PendingConfirm::DeleteProvider("p1".into()));
         h.confirm_rect = Some(revue::prelude::Rect::new(10, 5, 60, 5));
         // hint 行 y = 5+5-1 = 9；seg1_w=14, hint_w=29, start = 10+(60-29)/2 = 25；
         // cancel 区 [25+14+2, 25+29) = [41, 54)。
-        let ev = Event::Mouse(MouseEvent::new(45, 9, MouseEventKind::Down(MouseButton::Left)));
+        let ev = Event::Mouse(MouseEvent::new(
+            45,
+            9,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
         assert!(h.handle(&ev));
         assert!(matches!(h.panel, Panel::None), "cancel 应关闭弹窗");
         assert!(h.pending_confirm.is_none(), "cancel 应回收 pending");
@@ -5326,7 +5721,10 @@ mod tests {
         let got = crate::app::short_err(&long);
         assert_eq!(got.chars().count(), 25, "24 字符 + …");
         assert!(got.ends_with('…'));
-        assert_eq!(crate::app::short_err("first line\nsecond line"), "first line");
+        assert_eq!(
+            crate::app::short_err("first line\nsecond line"),
+            "first line"
+        );
     }
 
     /// Ctrl+R 重试：take 清空留存原文并重发同一 prompt（乐观消息再上屏）。
@@ -5361,8 +5759,10 @@ mod tests {
     // ── U11：回底/到顶键 + 发送回底 ──
 
     fn mk_session_handler() -> AppHandler {
-        let mut h = mk_handler();
-        h.store.navigate(Route::Session { session_id: "s".into() });
+        let h = mk_handler();
+        h.store.navigate(Route::Session {
+            session_id: "s".into(),
+        });
         h
     }
 
@@ -5443,7 +5843,11 @@ mod tests {
         h.active_session.push_user_message("u1", "a");
         h.prompt.set_text("d");
         h.handle(&Event::Key(KeyEvent::new(Key::Char('j'))));
-        assert_eq!(h.active_session.transcript_cursor.get(), None, "不得抢 cursor");
+        assert_eq!(
+            h.active_session.transcript_cursor.get(),
+            None,
+            "不得抢 cursor"
+        );
         assert!(h.prompt.text().contains('j'), "j 落入输入框");
     }
 
@@ -5468,7 +5872,11 @@ mod tests {
         h.active_session.push_user_message("u1", "hello");
         let y = h.transcript_area_y;
         let ev = || {
-            Event::Mouse(MouseEvent::new(40, y, MouseEventKind::Down(MouseButton::Left)))
+            Event::Mouse(MouseEvent::new(
+                40,
+                y,
+                MouseEventKind::Down(MouseButton::Left),
+            ))
         };
         // 第一次点击：选中，不折叠。
         assert!(h.handle(&ev()));
@@ -5522,9 +5930,14 @@ mod tests {
         let mut h = mk_session_handler();
         h.terminal_w = 120;
         h.transcript_viewport_h = 20;
-        h.active_session.push_user_message("u1", "hello right-click");
+        h.active_session
+            .push_user_message("u1", "hello right-click");
         let y = h.transcript_area_y;
-        let ev = Event::Mouse(MouseEvent::new(40, y, MouseEventKind::Down(MouseButton::Right)));
+        let ev = Event::Mouse(MouseEvent::new(
+            40,
+            y,
+            MouseEventKind::Down(MouseButton::Right),
+        ));
         assert!(h.handle(&ev));
         assert_eq!(
             h.active_session.transcript_cursor.get(),
@@ -5533,7 +5946,9 @@ mod tests {
         );
         let toasts = h.store.toasts.get();
         assert!(
-            toasts.iter().any(|t| t.text.contains("Block copied to clipboard")),
+            toasts
+                .iter()
+                .any(|t| t.text.contains("Block copied to clipboard")),
             "右键复制 toast：{:?}",
             toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
         );
@@ -5573,12 +5988,24 @@ mod tests {
         h.active_session.scroll_offset.set(2);
         h.session_list.open();
         h.session_list.set_sessions(vec![
-            crate::dialog::SessionEntry { id: "a".into(), title: "t-a".into(), status_hint: String::new() },
-            crate::dialog::SessionEntry { id: "b".into(), title: "t-b".into(), status_hint: String::new() },
+            crate::dialog::SessionEntry {
+                id: "a".into(),
+                title: "t-a".into(),
+                status_hint: String::new(),
+            },
+            crate::dialog::SessionEntry {
+                id: "b".into(),
+                title: "t-b".into(),
+                status_hint: String::new(),
+            },
         ]);
         h.panel = Panel::SessionList;
         let before = h.active_session.scroll_offset.get();
-        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollDown))));
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(
+            60,
+            10,
+            MouseEventKind::ScrollDown
+        ))));
         assert_eq!(h.session_list.selected, 1, "滚轮 = ↓ 移到下一项");
         assert_eq!(
             h.active_session.scroll_offset.get(),
@@ -5586,7 +6013,11 @@ mod tests {
             "弹窗打开时滚轮不穿透滚 transcript"
         );
         // ScrollUp 回到上一项。
-        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollUp))));
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(
+            60,
+            10,
+            MouseEventKind::ScrollUp
+        ))));
         assert_eq!(h.session_list.selected, 0, "滚轮 = ↑ 回上一项");
     }
 
@@ -5595,7 +6026,11 @@ mod tests {
     fn wheel_without_panel_scrolls_transcript() {
         let mut h = mk_handler();
         h.active_session.scroll_offset.set(5);
-        assert!(h.handle(&Event::Mouse(MouseEvent::new(60, 10, MouseEventKind::ScrollUp))));
+        assert!(h.handle(&Event::Mouse(MouseEvent::new(
+            60,
+            10,
+            MouseEventKind::ScrollUp
+        ))));
         assert_eq!(
             h.active_session.scroll_offset.get(),
             8,

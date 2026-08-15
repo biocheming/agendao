@@ -137,8 +137,8 @@ agendao run --command <command> [选项]
 | `--fork` | flag | false | 从已有会话分叉 |
 | `--share` | flag | false | 共享会话 |
 | `-m, --model` | string | -- | 指定模型 |
-| `--agent` | string | -- | 指定智能体（与 `--scheduler-profile` 互斥） |
-| `--scheduler-profile` | string | -- | 指定调度器配置（与 `--agent` 互斥） |
+| `--agent` | string | -- | 指定 leaf agent（与 `--scheduler` 互斥） |
+| `--scheduler` | string | -- | 指定 `auto/direct/plan/coordinate/verify/autoresearch` 或 inline Blueprint JSON（与 `--agent` 互斥） |
 | `-f, --file` | path[] | [] | 附加文件 |
 | `--format` | enum | default | 输出格式: `default` 或 `json` |
 | `--title` | string | -- | 会话标题 |
@@ -337,7 +337,7 @@ agendao session show <SESSION_ID>
 说明：
 
 - 输出的是 authority-backed session info。
-- 如果该会话已有 persisted telemetry，返回中会包含 usage、stage summaries、repair summary、repair query snapshot、tool trajectory quality 等结构化读面。
+- 如果该会话已有 persisted telemetry，返回中会包含 usage、repair summary、repair query snapshot、tool trajectory quality 等结构化读面。
 
 #### session delete
 
@@ -357,7 +357,7 @@ agendao session provision-external-adapter --adapter-id <ID> --actor-id <ID> [�
 | `--actor-id` | string | 外部调用方标识 |
 | `--workspace-id` | string | 外部工作区标识 |
 | `--route-policy-id` | string | 路由策略标识 |
-| `--scheduler-profile` | string | 调度器 profile |
+| `--scheduler` | string | `auto/direct/plan/coordinate/verify/autoresearch` 或 inline Blueprint JSON |
 | `--directory` | path | 工作目录 |
 | `--project-id` | string | 项目标识 |
 | `--title` | string | 会话标题 |
@@ -522,7 +522,7 @@ agendao config validation --format json
 说明：
 
 - `agendao config` 侧重“当前解析结果”。
-- `agendao config validation` 侧重 provider / external adapter / scheduler skill tree 等 owner-local validation 结果。
+- `agendao config validation` 侧重 provider 与 external adapter 的 fail-closed validation 结果。
 
 ---
 
@@ -886,18 +886,13 @@ agendao generate
 | `/providers` | 列出提供商 |
 | `/provider <name>` | 连接到提供商 |
 | `/connect <name>` | 连接到提供商 |
-| `/preset` | 列出调度器预设 |
-| `/preset <name>` | 选择调度器预设 |
 
-### 智能体与任务
+### 智能体
 
 | 命令 | 说明 |
 |------|------|
 | `/agent` | 列出可用智能体 |
 | `/agent <name>` | 切换智能体 |
-| `/tasks` | 列出智能体任务 |
-| `/tasks show <ID>` | 显示任务详情 |
-| `/tasks kill <ID>` | 终止任务（别名: `/tasks cancel`） |
 
 ### 恢复与调试
 
@@ -914,7 +909,7 @@ agendao generate
 | `/inspect` | 显示阶段事件日志（别名: `/stage`, `/stages`） |
 | `/inspect <stage_id>` | 显示特定阶段 |
 
-`/abort` 通过独立控制请求命中 server 的取消路由，不会把 `/abort` 文本作为普通消息插进当前运行中的任务。若目标是某个已登记的 agent task，请使用 `/tasks kill <ID>`。
+`/abort` 通过独立控制请求命中 server 的取消路由，不会把 `/abort` 文本作为普通消息插进当前运行中的任务。
 
 事件浏览器查询语法：
 

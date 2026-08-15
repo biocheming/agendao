@@ -1,14 +1,6 @@
 //! Runtime budget authority (§5 single state ownership).
 //!
-//! **Migration status:** the canonical budget struct is defined here, and new
-//! code should read from `RuntimeBudgetConfig`. The main governance hot paths
-//! (`govern_tool_result_output`, `govern_tool_result_batch`) already accept a
-//! `ToolResultBudget` parameter derived from this authority. Other call sites
-//! still pass `ToolResultBudget::legacy()` — the TODO(P0) markers identify
-//! places where config wiring remains.
-//!
-//! Target end-state: every numerical budget/limit is sourced from a single
-//! `RuntimeBudgetConfig` instance, with no semantic duplicates in other crates.
+//! Every numerical runtime limit is sourced from this authority.
 //!
 //! Override these defaults via the `runtimeBudget` section in `agendao.json`
 //! or `agendao.jsonc`.
@@ -20,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Constitution §5: a single struct owns every budget field. No semantic
 /// duplicates in server/session/frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RuntimeBudgetConfig {
     // ── Tool result governance ──
     /// Max chars in a single tool result before artifact offload.
@@ -38,10 +30,6 @@ pub struct RuntimeBudgetConfig {
     /// Max MCP resource chars included in system prompt.
     pub max_mcp_resource_chars: usize,
 
-    // ── Runtime transient payloads ──
-    /// Max bytes of transient runtime state payloads (e.g. stage summaries).
-    pub runtime_transient_payload_bytes: usize,
-
     // ── Streaming / connection ──
     /// Max events buffered per SSE/event-bridge connection before dropping.
     pub stream_connection_queue_size: usize,
@@ -49,24 +37,6 @@ pub struct RuntimeBudgetConfig {
     pub max_ui_bridge_queue: usize,
     /// Max events processed per render frame in TUI.
     pub max_events_per_frame: usize,
-
-    // ── Stage event log ──
-    /// Max stage events retained per session.
-    pub max_stage_events_per_session: usize,
-
-    // ── Scheduler hydration ──
-    /// Max messages hydrated into scheduler context.
-    pub scheduler_context_hydrate_max_messages: usize,
-    /// Max memory records hydrated per session by scheduler.
-    pub scheduler_memory_hydrate_max_records: usize,
-
-    // ── Subsession handoff ──
-    /// Max subsession history turns persisted.
-    pub max_subsession_history_turns: usize,
-    /// Max chars per subsession field.
-    pub max_subsession_field_chars: usize,
-    /// Max chars for subsession tail fields.
-    pub max_subsession_tail_field_chars: usize,
 
     // ── Frontend local caches ──
     /// Max entries in TUI prompt history.
@@ -113,25 +83,10 @@ impl Default for RuntimeBudgetConfig {
             max_attachment_bytes: 120_000,
             max_mcp_resource_chars: 12_000,
 
-            // Runtime transient payloads
-            runtime_transient_payload_bytes: 256_000,
-
             // Streaming / connection
             stream_connection_queue_size: 128,
             max_ui_bridge_queue: 4096,
             max_events_per_frame: 256,
-
-            // Stage event log
-            max_stage_events_per_session: 4096,
-
-            // Scheduler hydration
-            scheduler_context_hydrate_max_messages: 12,
-            scheduler_memory_hydrate_max_records: 8,
-
-            // Subsession handoff
-            max_subsession_history_turns: 8,
-            max_subsession_field_chars: 4_000,
-            max_subsession_tail_field_chars: 1_200,
 
             // Frontend local caches
             frontend_max_prompt_history_entries: 200,

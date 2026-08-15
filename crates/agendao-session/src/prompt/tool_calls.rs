@@ -318,31 +318,10 @@ impl SessionPrompt {
     }
 
     pub(super) fn parse_json_or_string(raw: &str) -> serde_json::Value {
-        // First try standard JSON parse.
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
-            // If the parsed value is a JSON string, it may itself contain a
-            // JSON object (double-encoded). Try robust object recovery first.
-            if matches!(val, serde_json::Value::String(_)) {
-                if let Some(obj) = agendao_util::json::try_parse_json_object_robust(raw) {
-                    return obj;
-                }
-            }
-            return val;
-        }
-
-        // Recover object-shaped arguments with robust parsing.
-        if let Some(obj) = agendao_util::json::try_parse_json_object_robust(raw) {
-            return obj;
-        }
-
-        // If the raw string looks like it could be a JSON object with issues,
-        // wrap it so tools can still access it via the registry normalizer.
-        tracing::warn!(
-            raw_len = raw.len(),
-            raw_preview = %raw.chars().take(200).collect::<String>(),
-            "tool call arguments failed JSON parse, wrapping as string"
-        );
-        serde_json::Value::String(raw.to_string())
+        serde_json::from_str(raw).unwrap_or_else(|error| {
+            tracing::warn!(%error, raw_len = raw.len(), "tool call arguments failed JSON decode");
+            serde_json::Value::String(raw.to_string())
+        })
     }
 
     pub(super) fn invalid_tool_payload(tool_name: &str, error: &str) -> serde_json::Value {
@@ -427,15 +406,6 @@ impl SessionPrompt {
         }
 
         if let Some(raw) = input.as_str() {
-            if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(raw) {
-                return parsed;
-            }
-            if let Some(recovered) =
-                agendao_util::json::recover_tool_arguments_from_jsonish(tool_name, raw)
-            {
-                return recovered;
-            }
-
             let mut payload = Self::invalid_tool_payload(
                 tool_name,
                 error.unwrap_or("Tool arguments are malformed or truncated"),
@@ -496,49 +466,15 @@ impl SessionPrompt {
             // not on partial/pending input fragments.
             crate::ToolCallStatus::Pending => None,
             crate::ToolCallStatus::Running => {
-                // Try raw input first (most authoritative source).
+                // A wire-level raw value is authoritative only when it is valid JSON.
                 if let Some(raw) = raw_input {
                     let parsed = Self::parse_json_or_string(raw);
-                    // If parse_json_or_string returned a non-empty object, use it.
                     if parsed.is_object() && parsed.as_object().is_some_and(|o| !o.is_empty()) {
                         return Some(parsed);
                     }
-                    // If it returned a Value::String, the registry normalizer
-                    // will try to parse it again. Still usable.
-                    if parsed.is_string() {
-                        return Some(parsed);
-                    }
                 }
 
-                // Fall back to state_input or PartType input.
-                let fallback = state_input.unwrap_or_else(|| input.clone());
-
-                // If the fallback is an empty object but the PartType input is
-                // a string (e.g. Value::String wrapping JSON), try to parse it.
-                if fallback.is_object() && fallback.as_object().is_some_and(|o| o.is_empty()) {
-                    // Try the PartType's input directly — it might be a
-                    // Value::String containing valid JSON.
-                    if let Some(s) = input.as_str() {
-                        if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(s) {
-                            tracing::debug!(
-                                "tool_call_input_for_execution: recovered args from input string"
-                            );
-                            return Some(parsed);
-                        }
-                    }
-                    // Also try raw from PartType even if state_raw was empty.
-                    if let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) {
-                        if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(raw)
-                        {
-                            tracing::debug!(
-                                "tool_call_input_for_execution: recovered args from raw field"
-                            );
-                            return Some(parsed);
-                        }
-                    }
-                }
-
-                Some(fallback)
+                Some(state_input.unwrap_or_else(|| input.clone()))
             }
             crate::ToolCallStatus::Completed | crate::ToolCallStatus::Error => None,
         }
@@ -918,12 +854,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_json_or_string_recovers_stringified_object() {
+    fn parse_json_or_string_keeps_stringified_object_as_string() {
         let inner = r#"{"file_path":"/tmp/a","content":"hello"}"#;
         let outer = serde_json::to_string(inner).expect("stringify should succeed");
         let parsed = SessionPrompt::parse_json_or_string(&outer);
-        assert_eq!(parsed["file_path"], "/tmp/a");
-        assert_eq!(parsed["content"], "hello");
+        assert_eq!(parsed, serde_json::Value::String(inner.to_string()));
     }
 
     #[test]

@@ -20,8 +20,6 @@ use crate::{ApiError, Result, ServerState};
 use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 
-use super::scheduler::resolve_scheduler_request_defaults_validated;
-
 // ─── Request / Response structs ───────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -37,7 +35,7 @@ pub struct ListSessionsQuery {
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub parent_id: Option<String>,
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub directory: Option<String>,
     pub project_id: Option<String>,
     pub title: Option<String>,
@@ -45,7 +43,7 @@ pub struct CreateSessionRequest {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CreateSessionSpec {
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub directory: Option<String>,
     pub project_id: Option<String>,
     pub title: Option<String>,
@@ -206,9 +204,9 @@ fn session_list_summary(session: &agendao_session::Session) -> Option<SessionLis
 
 fn session_list_hints(session: &agendao_session::Session) -> Option<SessionListHints> {
     let session = session.record();
-    let scheduler_profile = session
+    let scheduler = session
         .metadata
-        .get("scheduler_profile")
+        .get("scheduler")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
     let hints = SessionListHints {
@@ -227,7 +225,7 @@ fn session_list_hints(session: &agendao_session::Session) -> Option<SessionListH
             .get("model_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
-        scheduler_profile: scheduler_profile.clone(),
+        scheduler: scheduler.clone(),
         agent: session
             .metadata
             .get("agent")
@@ -238,7 +236,7 @@ fn session_list_hints(session: &agendao_session::Session) -> Option<SessionListH
     if hints.current_model.is_none()
         && hints.model_provider.is_none()
         && hints.model_id.is_none()
-        && hints.scheduler_profile.is_none()
+        && hints.scheduler.is_none()
         && hints.agent.is_none()
     {
         None
@@ -342,29 +340,6 @@ pub(crate) fn session_to_info(session: &agendao_session::Session) -> SessionInfo
     }
 }
 
-fn collect_session_tree_ids(
-    sessions: &agendao_session::SessionManager,
-    root_id: &str,
-) -> Option<Vec<String>> {
-    sessions.get(root_id)?;
-
-    fn visit(sessions: &agendao_session::SessionManager, session_id: &str, out: &mut Vec<String>) {
-        out.push(session_id.to_string());
-        let child_ids: Vec<String> = sessions
-            .attached_sessions(session_id)
-            .into_iter()
-            .map(|session| session.id.clone())
-            .collect();
-        for attached_id in child_ids {
-            visit(sessions, &attached_id, out);
-        }
-    }
-
-    let mut ids = Vec::new();
-    visit(sessions, root_id, &mut ids);
-    Some(ids)
-}
-
 pub(super) async fn persist_sessions_if_enabled(state: &Arc<ServerState>) {
     if let Err(err) = state.sync_sessions_to_storage().await {
         tracing::error!("failed to sync sessions to storage: {}", err);
@@ -434,15 +409,10 @@ pub(super) fn session_agent_override(session: &agendao_session::Session) -> Opti
         .map(|value| value.to_string())
 }
 
-pub(super) fn session_scheduler_profile_override(
+pub(super) fn session_scheduler_override(
     session: &agendao_session::Session,
-) -> Option<String> {
-    session
-        .record()
-        .metadata
-        .get("scheduler_profile")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string())
+) -> Option<agendao_orchestrator::selector::SchedulerChoice> {
+    serde_json::from_value(session.record().metadata.get("scheduler")?.clone()).ok()
 }
 
 pub(super) async fn set_session_run_status(
@@ -602,7 +572,7 @@ pub(super) async fn create_session(
     let session = create_session_from_spec(
         &state,
         CreateSessionSpec {
-            scheduler_profile: req.scheduler_profile,
+            scheduler: req.scheduler,
             directory: req.directory,
             project_id: req.project_id,
             title: req.title,
@@ -622,20 +592,7 @@ pub(crate) async fn create_session_from_spec(
     state: &Arc<ServerState>,
     spec: CreateSessionSpec,
 ) -> Result<agendao_session::Session> {
-    let requested_scheduler_profile = spec
-        .scheduler_profile
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let effective_scheduler_profile = if let Some(profile) = requested_scheduler_profile.as_deref()
-    {
-        resolve_scheduler_request_defaults_validated(&state.config_store.config(), Some(profile))?
-            .and_then(|defaults| defaults.profile_name)
-            .or_else(|| Some(profile.to_string()))
-    } else {
-        None
-    };
+    let requested_scheduler = spec.scheduler;
     let requested_directory = spec
         .directory
         .as_deref()
@@ -675,11 +632,12 @@ pub(crate) async fn create_session_from_spec(
         session.set_title(title);
     }
     sessions.update(session.clone());
-    if let Some(profile) = effective_scheduler_profile
-        .as_deref()
-        .or(requested_scheduler_profile.as_deref())
-    {
-        session.insert_metadata("scheduler_profile", serde_json::json!(profile));
+    if let Some(choice) = requested_scheduler {
+        session.insert_metadata(
+            "scheduler",
+            serde_json::to_value(choice)
+                .map_err(|error| ApiError::BadRequest(error.to_string()))?,
+        );
         session.insert_metadata("scheduler_applied", serde_json::json!(true));
         sessions.update(session.clone());
     }
@@ -724,29 +682,20 @@ pub(super) async fn delete_session(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted_session_ids = {
+    {
         let mut sessions = state.sessions.lock().await;
-        let deleted_ids = collect_session_tree_ids(&sessions, &id)
-            .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
         sessions
             .delete(&id)
             .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-        deleted_ids
-    };
-
-    for session_id in &deleted_session_ids {
-        agendao_tool::tool_access::clear_tool_access_tracker(session_id);
-        state
-            .runtime_telemetry
-            .set_session_run_status(session_id, SessionRunStatus::Idle)
-            .await;
-        state
-            .runtime_telemetry
-            .clear_session_runtime(session_id)
-            .await;
     }
-    // 保留全量 sync：delete 移除了整棵 session 树，必须靠全量同步清理库中
-    // 已不存在的 stale session/message 行——单 session flush 感知不到删除。
+
+    agendao_tool::tool_access::clear_tool_access_tracker(&id);
+    state
+        .runtime_telemetry
+        .set_session_run_status(&id, SessionRunStatus::Idle)
+        .await;
+    state.runtime_telemetry.clear_session_runtime(&id).await;
+    // 删除需要全量 sync 清理库中已不存在的 session/message 行。
     persist_sessions_if_enabled(&state).await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -785,19 +734,6 @@ pub(super) async fn runtime_snapshot_or_default(
     }
 }
 
-pub(super) async fn get_session_attached_sessions(
-    State(state): State<Arc<ServerState>>,
-    Path(id): Path<String>,
-) -> Result<Json<SessionListResponse>> {
-    let manager = state.sessions.lock().await;
-    let attached_sessions = manager.attached_sessions(&id);
-    let items = attached_sessions
-        .into_iter()
-        .map(session_to_list_item)
-        .collect();
-    Ok(Json(session_list_response(items)))
-}
-
 pub(super) async fn get_session_todos(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
@@ -829,7 +765,10 @@ pub(super) async fn fork_session(
 ) -> Result<Json<SessionInfo>> {
     // 懒加载水合闸门：fork 从内存复制父会话消息，dehydrated 父会话需先回填，
     // 否则 fork 出空历史子会话（且后续 flush 语义错乱）。
-    state.ensure_session_messages_hydrated(&id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state
+        .ensure_session_messages_hydrated(&id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
     let spec = SessionForkSpec {
         message_id: req.message_id.as_deref(),
         history_mode: req.history_mode.unwrap_or_default(),
@@ -960,49 +899,23 @@ pub(super) async fn get_session_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::collect_session_tree_ids;
     use super::{
-        create_session, fork_session, get_session_attached_sessions, session_list_contract,
-        session_revert, session_to_info, session_to_list_item, start_compaction, CompactRequest,
-        CreateSessionRequest, ForkSessionRequest, RevertRequest,
+        create_session, fork_session, session_list_contract, session_revert, session_to_info,
+        session_to_list_item, start_compaction, CompactRequest, CreateSessionRequest,
+        ForkSessionRequest, RevertRequest,
     };
     use crate::ApiError;
     use crate::ServerState;
     use agendao_session::{
-        persist_session_telemetry_snapshot, MessageRole, PartType, PersistedStageTelemetrySummary,
-        Session, SessionForkSpec, SessionMessage, SessionTelemetrySnapshot,
-        SessionTelemetrySnapshotVersion,
+        persist_session_telemetry_snapshot, MessageRole, PartType, Session, SessionForkSpec,
+        SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion,
     };
-    use agendao_stage_protocol::StageStatus;
     use agendao_types::SessionForkHistoryMode;
     use axum::{
         extract::{Path, Query, State},
         Json,
     };
     use std::sync::Arc;
-
-    #[test]
-    fn collect_session_tree_ids_includes_descendants() {
-        let mut sessions = agendao_session::SessionManager::new();
-        let root = sessions.create("project", "/tmp/project");
-        let child = Session::attached_with_context_kind(
-            &root,
-            agendao_types::SessionContextKind::DelegatedSubsession,
-        );
-        sessions.update(child.clone());
-        let grandchild = Session::attached_with_context_kind(
-            &child,
-            agendao_types::SessionContextKind::DelegatedSubsession,
-        );
-        sessions.update(grandchild.clone());
-
-        let ids = collect_session_tree_ids(&sessions, &root.id).expect("root subtree");
-
-        assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], root.id);
-        assert!(ids.contains(&child.id));
-        assert!(ids.contains(&grandchild.id));
-    }
 
     #[test]
     fn session_to_info_includes_typed_persisted_telemetry() {
@@ -1019,33 +932,6 @@ mod tests {
                 context_tokens: 0,
                 total_cost: 0.25,
             },
-            stage_summaries: vec![PersistedStageTelemetrySummary {
-                stage_id: "stage-1".to_string(),
-                stage_name: "Plan".to_string(),
-                index: Some(1),
-                total: Some(2),
-                step: Some(1),
-                step_total: Some(3),
-                status: StageStatus::Running,
-                prompt_tokens: Some(11),
-                completion_tokens: Some(7),
-                reasoning_tokens: Some(5),
-                cache_read_tokens: Some(2),
-                cache_write_tokens: Some(1),
-                focus: Some("inspect".to_string()),
-                last_event: Some("scheduler.stage.started".to_string()),
-                waiting_on: None,
-                activity: Some("Inspecting scheduler state".to_string()),
-                estimated_context_tokens: Some(99),
-                skill_tree_budget: Some(512),
-                skill_tree_truncation_strategy: Some("head".to_string()),
-                skill_tree_truncated: Some(false),
-                retry_attempt: None,
-                active_agent_count: 1,
-                active_tool_count: 2,
-                attached_session_count: 0,
-                primary_attached_session_id: None,
-            }],
             tool_repair_summary: None,
             memory: None,
             compaction_continuity: None,
@@ -1117,7 +1003,7 @@ mod tests {
         let mut session = Session::new("project", "/tmp/project");
         session.insert_metadata("model_provider", serde_json::json!("zhipuai"));
         session.insert_metadata("model_id", serde_json::json!("glm-5.1"));
-        session.insert_metadata("scheduler_profile", serde_json::json!("prometheus"));
+        session.insert_metadata("scheduler", serde_json::json!("prometheus"));
         session.insert_metadata(
             "pending_command_invocation",
             serde_json::json!({"command": "connect"}),
@@ -1136,7 +1022,6 @@ mod tests {
                     context_tokens: 0,
                     total_cost: 0.1,
                 },
-                stage_summaries: vec![],
                 tool_repair_summary: None,
                 memory: None,
                 compaction_continuity: None,
@@ -1191,32 +1076,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_attached_route_returns_list_wrapper_contract() {
-        let state = Arc::new(ServerState::new());
-        let parent_id = {
-            let mut sessions = state.sessions.lock().await;
-            let parent = sessions.create("project", "/tmp/project");
-            let child = Session::attached_with_context_kind(
-                &parent,
-                agendao_types::SessionContextKind::DelegatedSubsession,
-            );
-            sessions.update(child);
-            parent.id.clone()
-        };
-
-        let axum::Json(response) = get_session_attached_sessions(State(state), Path(parent_id))
-            .await
-            .expect("attached route should succeed");
-
-        assert_eq!(response.items.len(), 1);
-        assert_eq!(response.contract.search_fields, vec!["title".to_string()]);
-        assert!(response
-            .contract
-            .non_search_fields
-            .contains(&"hints".to_string()));
-    }
-
-    #[tokio::test]
     async fn create_session_route_rejects_legacy_parent_id_attached_creation() {
         let state = Arc::new(ServerState::new());
         let parent_id = {
@@ -1228,7 +1087,7 @@ mod tests {
             State(state),
             Json(CreateSessionRequest {
                 parent_id: Some(parent_id),
-                scheduler_profile: None,
+                scheduler: None,
                 directory: None,
                 project_id: None,
                 title: None,

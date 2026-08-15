@@ -3,7 +3,7 @@ export type ThemeId = "daylight" | "sunset" | "cobalt";
 export interface ExecutionMode {
   id: string;
   name: string;
-  kind: string;
+  kind: "agent" | "scheduler";
   hidden?: boolean;
   mode?: string;
 }
@@ -14,7 +14,7 @@ export const THEMES: Array<{ id: ThemeId; label: string }> = [
   { id: "cobalt", label: "Cobalt" },
 ];
 
-export const DEFAULT_WEB_MODE = "preset:auto";
+export const DEFAULT_WEB_MODE = "scheduler:auto";
 
 export function applyPreferences(config: Record<string, unknown>) {
   const ui = (config.uiPreferences ?? config.ui_preferences ?? {}) as Record<string, unknown>;

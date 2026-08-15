@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -25,7 +24,7 @@ pub async fn local_create_session(
         State(state),
         Json(CreateSessionRequest {
             parent_id: None,
-            scheduler_profile: request.scheduler_profile,
+            scheduler: request.scheduler,
             directory: request.directory,
             project_id: request.project_id,
             title: request.title,
@@ -255,18 +254,6 @@ pub async fn local_prompt(
                     filename,
                     mime,
                 },
-                agendao_api::PromptPart::Agent { name } => {
-                    agendao_session::prompt::PartInput::Agent { name }
-                }
-                agendao_api::PromptPart::Subtask {
-                    prompt,
-                    description,
-                    agent,
-                } => agendao_session::prompt::PartInput::Subtask {
-                    prompt,
-                    description,
-                    agent,
-                },
             })
             .collect()
     });
@@ -285,7 +272,7 @@ pub async fn local_prompt(
             model: request.model,
             variant: request.variant,
             agent: request.agent,
-            scheduler_profile: request.scheduler_profile,
+            scheduler: request.scheduler,
             command: request.command,
             arguments: request.arguments,
             recovery: None,
@@ -637,10 +624,7 @@ pub async fn local_list_skills(
     let Json(entries) = super::super::skill_catalog::list_skill_catalog_entries(
         State(state),
         Query(super::super::skill_catalog::SkillCatalogQuery {
-            session_id: query.session_id,
             category: query.category,
-            stage: query.stage,
-            tool_policy: query.tool_policy,
             tools: query.tools,
             toolsets: query.toolsets,
             include_disabled: query.include_disabled,
@@ -688,12 +672,12 @@ pub async fn local_manage_skill(
         )
         .await
         .map_err(api_error)?;
-    serde_json::from_value(
-        serde_json::to_value(super::super::skill_catalog::SkillManageResponse {
+    serde_json::from_value(serde_json::to_value(
+        super::super::skill_catalog::SkillManageResponse {
             result: result.result,
             guard_report: result.guard_report,
-        })?,
-    )
+        },
+    )?)
     .context("failed to convert local skill manage payload")
 }
 
@@ -707,10 +691,7 @@ pub async fn local_get_skill_detail(
         Query(super::super::skill_catalog::SkillDetailQuery {
             name: query.name,
             catalog: super::super::skill_catalog::SkillCatalogQuery {
-                session_id: query.session_id,
                 category: query.category,
-                stage: query.stage,
-                tool_policy: query.tool_policy,
                 tools: query.tools,
                 toolsets: query.toolsets,
                 include_disabled: false,
@@ -838,13 +819,10 @@ pub async fn local_put_mcp_config(
     key: &str,
     mcp: agendao_config::McpServerConfig,
 ) -> anyhow::Result<agendao_config::Config> {
-    let Json(config) = super::super::config::put_mcp_config(
-        State(state),
-        Path(key.to_string()),
-        Json(mcp),
-    )
-    .await
-    .map_err(api_error)?;
+    let Json(config) =
+        super::super::config::put_mcp_config(State(state), Path(key.to_string()), Json(mcp))
+            .await
+            .map_err(api_error)?;
     Ok(config)
 }
 
@@ -853,10 +831,9 @@ pub async fn local_delete_mcp_config(
     state: Arc<ServerState>,
     key: &str,
 ) -> anyhow::Result<agendao_config::Config> {
-    let Json(config) =
-        super::super::config::delete_mcp_config(State(state), Path(key.to_string()))
-            .await
-            .map_err(api_error)?;
+    let Json(config) = super::super::config::delete_mcp_config(State(state), Path(key.to_string()))
+        .await
+        .map_err(api_error)?;
     Ok(config)
 }
 
@@ -866,13 +843,10 @@ pub async fn local_put_plugin_config(
     key: &str,
     plugin: agendao_config::PluginConfig,
 ) -> anyhow::Result<agendao_config::Config> {
-    let Json(config) = super::super::config::put_plugin_config(
-        State(state),
-        Path(key.to_string()),
-        Json(plugin),
-    )
-    .await
-    .map_err(api_error)?;
+    let Json(config) =
+        super::super::config::put_plugin_config(State(state), Path(key.to_string()), Json(plugin))
+            .await
+            .map_err(api_error)?;
     Ok(config)
 }
 
@@ -991,7 +965,6 @@ pub async fn local_execute_session_recovery(
     state: Arc<ServerState>,
     session_id: &str,
     action: agendao_api::RecoveryActionKind,
-    target_id: Option<String>,
 ) -> anyhow::Result<serde_json::Value> {
     let action: crate::recovery::RecoveryActionKind =
         serde_json::from_value(serde_json::to_value(action)?)
@@ -999,23 +972,9 @@ pub async fn local_execute_session_recovery(
     let Json(response) = super::recovery::execute_session_recovery(
         State(state),
         Path(session_id.to_string()),
-        Json(crate::recovery::ExecuteRecoveryRequest { action, target_id }),
+        Json(crate::recovery::ExecuteRecoveryRequest { action }),
     )
     .await
     .map_err(api_error)?;
-    Ok(response)
-}
-
-/// GET `/task` 的 local-direct 短路：TUI `/tasks` 全局任务注册表读通路。
-pub async fn local_list_tasks() -> anyhow::Result<Vec<agendao_api::TaskSummaryInfo>> {
-    let Json(tasks) = super::super::task::list_tasks().await;
-    Ok(tasks)
-}
-
-/// DELETE `/task/{id}` 的 local-direct 短路：TUI `/tasks` cancel 写通路。
-pub async fn local_cancel_task(task_id: &str) -> anyhow::Result<serde_json::Value> {
-    let Json(response) = super::super::task::cancel_task(Path(task_id.to_string()))
-        .await
-        .map_err(api_error)?;
     Ok(response)
 }

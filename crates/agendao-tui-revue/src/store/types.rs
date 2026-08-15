@@ -6,7 +6,12 @@
 // ── Transcript blocks (金：TranscriptFeed 唯一消费者) ──
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TodoStatus { Pending, InProgress, Completed, Cancelled }
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TodoItem {
@@ -17,9 +22,9 @@ pub struct TodoItem {
 /// Metadata for the running task list header.
 #[derive(Clone, Debug, Default)]
 pub struct TodoSummary {
-    pub duration: String,    // e.g. "19m 49s"
-    pub tokens: String,      // e.g. "50.4k"
-    pub phase: String,       // e.g. "still thinking"
+    pub duration: String, // e.g. "19m 49s"
+    pub tokens: String,   // e.g. "50.4k"
+    pub phase: String,    // e.g. "still thinking"
 }
 
 /// Three-state fold for transcript blocks.
@@ -46,7 +51,7 @@ impl FoldState {
 
 /// Unified diff preview attached to a tool result (edit/write/apply_patch).
 /// Carried by the wire block's `display.preview = {kind:"diff", text, truncated}`
-/// (agent_presenter.rs) — the TUI renders it with ± line coloring instead of
+/// (block projection) - the TUI renders it with +/- line coloring instead of
 /// the plain `detail` text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffPreview {
@@ -160,22 +165,26 @@ impl TranscriptBlock {
                     FoldState::Expanded => total.max(1) as u16 + 1,
                 }
             }
-            TranscriptBlock::Thinking { content, fold, .. } => {
-                match fold {
-                    FoldState::Folded => 1,
-                    FoldState::Truncated => {
-                        let total = content.lines().count();
-                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
-                        let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
-                        1 + body + extra
-                    }
-                    FoldState::Expanded => 1 + content.lines().count().max(1) as u16,
+            TranscriptBlock::Thinking { content, fold, .. } => match fold {
+                FoldState::Folded => 1,
+                FoldState::Truncated => {
+                    let total = content.lines().count();
+                    let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                    let extra = if total > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                    1 + body + extra
+                }
+                FoldState::Expanded => 1 + content.lines().count().max(1) as u16,
+            },
+            TranscriptBlock::ToolCall { params, .. } => {
+                if params.is_empty() {
+                    1
+                } else {
+                    2
                 }
             }
-            TranscriptBlock::ToolCall { params, .. } => {
-                if params.is_empty() { 1 } else { 2 }
-            }
-            TranscriptBlock::ToolResult { result, fold, diff, .. } => {
+            TranscriptBlock::ToolResult {
+                result, fold, diff, ..
+            } => {
                 // body 口径与 screen/session.rs 的 ToolResult 分支同源：diff 预览
                 // 存在时 body = diff 文本；server-truncated 恒多一行截断标注。
                 let total = diff
@@ -187,7 +196,11 @@ impl TranscriptBlock {
                     FoldState::Folded => 1,
                     FoldState::Truncated => {
                         let body = FOLD_PREVIEW_LINES.min(total) as u16;
-                        let extra = if total > FOLD_PREVIEW_LINES || server_truncated { 1 } else { 0 };
+                        let extra = if total > FOLD_PREVIEW_LINES || server_truncated {
+                            1
+                        } else {
+                            0
+                        };
                         1 + body + extra
                     }
                     FoldState::Expanded => {
@@ -198,14 +211,21 @@ impl TranscriptBlock {
                 }
             }
             TranscriptBlock::StageUpdate { metadata, .. } => {
-                let extra = metadata.as_ref().map(|m| m.lines().count() as u16).unwrap_or(0);
+                let extra = metadata
+                    .as_ref()
+                    .map(|m| m.lines().count() as u16)
+                    .unwrap_or(0);
                 3 + extra
             }
             TranscriptBlock::TodoList { items, fold, .. } => match fold {
                 FoldState::Folded => 1, // header only
                 FoldState::Truncated => {
                     let body = FOLD_PREVIEW_LINES.min(items.len()) as u16;
-                    let extra = if items.len() > FOLD_PREVIEW_LINES { 1 } else { 0 };
+                    let extra = if items.len() > FOLD_PREVIEW_LINES {
+                        1
+                    } else {
+                        0
+                    };
                     1 + body + extra
                 }
                 FoldState::Expanded => 1 + items.len().max(1) as u16,
@@ -228,7 +248,11 @@ impl TranscriptBlock {
                         (body + extra).max(1)
                     }
                     FoldState::Expanded => {
-                        if content.is_empty() { 2 } else { total.max(1) as u16 + 1 }
+                        if content.is_empty() {
+                            2
+                        } else {
+                            total.max(1) as u16 + 1
+                        }
                     }
                 }
             }
@@ -337,8 +361,15 @@ pub struct Attachment {
 
 #[derive(Clone, Debug)]
 pub enum AttachmentKind {
-    File { path: String, lines: usize },
-    Image { mime: String, width: u32, height: u32 },
+    File {
+        path: String,
+        lines: usize,
+    },
+    Image {
+        mime: String,
+        width: u32,
+        height: u32,
+    },
 }
 
 // ── 金：Toast ──
@@ -554,28 +585,26 @@ pub fn flatten_settings_skill_rows(
     }
 
     let mut lines = Vec::new();
-    let emit_group = |key: &str,
-                          display: &str,
-                          indices: &mut Vec<usize>,
-                          lines: &mut Vec<SettingsSkillLine>| {
-        indices.sort_by(|&a, &b| {
-            rows[a]
-                .label()
-                .to_ascii_lowercase()
-                .cmp(&rows[b].label().to_ascii_lowercase())
-        });
-        let is_collapsed = collapsed.contains(key);
-        let disabled_count = indices.iter().filter(|&&i| rows[i].is_disabled()).count();
-        lines.push(SettingsSkillLine::Category {
-            name: display.to_string(),
-            count: indices.len(),
-            collapsed: is_collapsed,
-            disabled_count,
-        });
-        if !is_collapsed {
-            lines.extend(indices.iter().copied().map(SettingsSkillLine::Row));
-        }
-    };
+    let emit_group =
+        |key: &str, display: &str, indices: &mut Vec<usize>, lines: &mut Vec<SettingsSkillLine>| {
+            indices.sort_by(|&a, &b| {
+                rows[a]
+                    .label()
+                    .to_ascii_lowercase()
+                    .cmp(&rows[b].label().to_ascii_lowercase())
+            });
+            let is_collapsed = collapsed.contains(key);
+            let disabled_count = indices.iter().filter(|&&i| rows[i].is_disabled()).count();
+            lines.push(SettingsSkillLine::Category {
+                name: display.to_string(),
+                count: indices.len(),
+                collapsed: is_collapsed,
+                disabled_count,
+            });
+            if !is_collapsed {
+                lines.extend(indices.iter().copied().map(SettingsSkillLine::Row));
+            }
+        };
 
     // proposals 伪类目恒最前（待处理优先，与旧版"proposals 排在前"语义一致）。
     let proposals_key = SKILLS_PROPOSALS_GROUP.to_ascii_lowercase();
@@ -904,7 +933,13 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["filesystem_edit", "read", "write", TOOLS_UNCATEGORIZED_GROUP, "skill"]
+            vec![
+                "filesystem_edit",
+                "read",
+                "write",
+                TOOLS_UNCATEGORIZED_GROUP,
+                "skill"
+            ]
         );
         match &lines[3] {
             SettingsToolLine::Category {

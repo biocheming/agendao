@@ -10,8 +10,17 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::Arc;
+use tokio_util::io::ReaderStream;
 
 use crate::{ApiError, Result, ServerState};
+
+const MAX_FILE_READ_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SEARCH_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SEARCH_RESULTS: usize = 1_000;
+const MAX_SEARCH_ENTRIES: usize = 100_000;
+const MAX_SEARCH_DEPTH: usize = 64;
+const MAX_TREE_DEPTH: usize = 16;
+const MAX_TREE_NODES: usize = 10_000;
 
 pub(crate) fn file_routes() -> Router<Arc<ServerState>> {
     Router::new()
@@ -28,7 +37,6 @@ pub(crate) fn find_routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/text", get(find_text))
         .route("/file", get(find_files))
-        .route("/symbol", get(find_symbols))
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +147,14 @@ pub struct DirectoryCreateResponse {
 
 fn project_root(state: &ServerState) -> Result<PathBuf> {
     Ok(state.project_root())
+}
+
+async fn blocking_io<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| ApiError::InternalError(format!("Filesystem task failed: {error}")))?
 }
 
 fn modified_millis(path: &FsPath) -> Option<i64> {
@@ -287,12 +303,29 @@ fn list_child_paths(path: &FsPath, root: &FsPath) -> Result<Vec<PathBuf>> {
         .flatten()
         .map(|entry| entry.path())
         .filter(|child| is_within_root(child, root))
+        .take(MAX_TREE_NODES + 1)
         .collect::<Vec<_>>();
+    if entries.len() > MAX_TREE_NODES {
+        return Err(ApiError::BadRequest(format!(
+            "Directory exceeds the {MAX_TREE_NODES} entry limit"
+        )));
+    }
     entries.sort();
     Ok(entries)
 }
 
-fn build_tree_node(path: &FsPath, root: &FsPath, depth: usize) -> Result<FileTreeNode> {
+fn build_tree_node(
+    path: &FsPath,
+    root: &FsPath,
+    depth: usize,
+    remaining_nodes: &mut usize,
+) -> Result<FileTreeNode> {
+    if *remaining_nodes == 0 {
+        return Err(ApiError::BadRequest(format!(
+            "File tree exceeds the {MAX_TREE_NODES} node limit"
+        )));
+    }
+    *remaining_nodes -= 1;
     let canonical = canonicalize_within_root(path, root)?;
     let name = canonical
         .file_name()
@@ -323,7 +356,12 @@ fn build_tree_node(path: &FsPath, root: &FsPath, depth: usize) -> Result<FileTre
     if let Some(paths) = entries.as_ref() {
         if depth > 0 {
             for child in paths {
-                children.push(build_tree_node(child, root, depth.saturating_sub(1))?);
+                children.push(build_tree_node(
+                    child,
+                    root,
+                    depth.saturating_sub(1),
+                    remaining_nodes,
+                )?);
             }
         }
     }
@@ -345,25 +383,22 @@ async fn list_files(
     Query(query): Query<ListFilesQuery>,
 ) -> Result<Json<Vec<FileInfo>>> {
     let default_root = project_root(state.as_ref())?;
-    let root = effective_root_for_input(&query.path, &default_root)?;
-    let path = resolve_existing_input_path(&query.path, &root)?;
-    let mut files = Vec::new();
+    blocking_io(move || {
+        let root = effective_root_for_input(&query.path, &default_root)?;
+        let path = resolve_existing_input_path(&query.path, &root)?;
+        let mut files = Vec::new();
 
-    if path.is_dir() {
-        let mut entries = std::fs::read_dir(&path)
-            .map_err(|e| ApiError::BadRequest(format!("Failed to read directory: {}", e)))?
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path_buf| is_within_root(path_buf, &root))
-            .collect::<Vec<_>>();
-        entries.sort();
-
-        for path_buf in entries {
-            files.push(file_info_from_path(&path_buf));
+        if path.is_dir() {
+            let entries = list_child_paths(&path, &root)?;
+            files.reserve(entries.len());
+            for path_buf in entries {
+                files.push(file_info_from_path(&path_buf));
+            }
         }
-    }
 
-    Ok(Json(files))
+        Ok(Json(files))
+    })
+    .await
 }
 
 async fn get_file_tree(
@@ -372,17 +407,32 @@ async fn get_file_tree(
 ) -> Result<Json<FileTreeNode>> {
     let default_root = project_root(state.as_ref())?;
     let depth = query.depth.unwrap_or(1);
-    if let Some(input) = query.path.as_deref() {
-        let root = effective_root_for_input(input, &default_root)?;
-        Ok(Json(build_tree_node(
-            &resolve_existing_input_path(input, &root)?,
-            &root,
-            depth,
-        )?))
-    } else {
-        let root = canonical_root(&default_root)?;
-        Ok(Json(build_tree_node(&root, &root, depth)?))
+    if depth > MAX_TREE_DEPTH {
+        return Err(ApiError::BadRequest(format!(
+            "File tree depth exceeds the {MAX_TREE_DEPTH} level limit"
+        )));
     }
+    blocking_io(move || {
+        let mut remaining_nodes = MAX_TREE_NODES;
+        if let Some(input) = query.path.as_deref() {
+            let root = effective_root_for_input(input, &default_root)?;
+            Ok(Json(build_tree_node(
+                &resolve_existing_input_path(input, &root)?,
+                &root,
+                depth,
+                &mut remaining_nodes,
+            )?))
+        } else {
+            let root = canonical_root(&default_root)?;
+            Ok(Json(build_tree_node(
+                &root,
+                &root,
+                depth,
+                &mut remaining_nodes,
+            )?))
+        }
+    })
+    .await
 }
 
 async fn read_file(
@@ -393,15 +443,24 @@ async fn read_file(
     let root = effective_root_for_input(&query.path, &default_root)?;
     let path = resolve_existing_input_path(&query.path, &root)?;
 
-    if path.is_file() {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => Ok(Json(
-                serde_json::json!({ "content": content, "path": query.path }),
-            )),
-            Err(e) => Err(ApiError::BadRequest(format!("Failed to read file: {}", e))),
-        }
-    } else {
+    if !path.is_file() {
         Err(ApiError::BadRequest("Path is not a file".to_string()))
+    } else {
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("Failed to inspect file: {e}")))?
+            .len();
+        if size > MAX_FILE_READ_BYTES {
+            return Err(ApiError::BadRequest(format!(
+                "File exceeds the {MAX_FILE_READ_BYTES} byte content limit"
+            )));
+        }
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("Failed to read file: {e}")))?;
+        Ok(Json(
+            serde_json::json!({ "content": content, "path": query.path }),
+        ))
     }
 }
 
@@ -425,7 +484,7 @@ async fn write_file(
 
     if !parent.exists() {
         if req.create_parents {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 ApiError::BadRequest(format!("Failed to create parent directories: {}", e))
             })?;
         } else {
@@ -435,7 +494,8 @@ async fn write_file(
         }
     }
 
-    std::fs::write(&path, req.content.as_bytes())
+    tokio::fs::write(&path, req.content.as_bytes())
+        .await
         .map_err(|e| ApiError::BadRequest(format!("Failed to write file: {}", e)))?;
 
     Ok(Json(FileWriteResponse {
@@ -464,7 +524,8 @@ async fn create_directory(
         ));
     }
 
-    std::fs::create_dir_all(&path)
+    tokio::fs::create_dir_all(&path)
+        .await
         .map_err(|e| ApiError::BadRequest(format!("Failed to create directory: {}", e)))?;
 
     Ok(Json(DirectoryCreateResponse {
@@ -482,10 +543,12 @@ async fn delete_file(
 
     if path.is_dir() {
         if req.recursive {
-            std::fs::remove_dir_all(&path)
+            tokio::fs::remove_dir_all(&path)
+                .await
                 .map_err(|e| ApiError::BadRequest(format!("Failed to delete directory: {}", e)))?;
         } else {
-            std::fs::remove_dir(&path)
+            tokio::fs::remove_dir(&path)
+                .await
                 .map_err(|e| ApiError::BadRequest(format!("Failed to delete directory: {}", e)))?;
         }
         return Ok(Json(FileDeleteResponse {
@@ -494,7 +557,8 @@ async fn delete_file(
         }));
     }
 
-    std::fs::remove_file(&path)
+    tokio::fs::remove_file(&path)
+        .await
         .map_err(|e| ApiError::BadRequest(format!("Failed to delete file: {}", e)))?;
 
     Ok(Json(FileDeleteResponse {
@@ -517,8 +581,9 @@ async fn download_file(
         ));
     }
 
-    let bytes = std::fs::read(&path)
-        .map_err(|e| ApiError::BadRequest(format!("Failed to read file for download: {}", e)))?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to open file for download: {e}")))?;
     let filename = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -537,7 +602,7 @@ async fn download_file(
             ),
             (header::CONTENT_DISPOSITION, content_disposition),
         ],
-        Body::from(bytes),
+        Body::from_stream(ReaderStream::new(file)),
     ))
 }
 
@@ -608,10 +673,10 @@ async fn upload_files(
     if let Some(path) = req.path.as_deref() {
         let root = effective_root_for_input(path, &default_root)?;
         let target_dir = resolve_output_path(path, &root)?;
-        persist_uploaded_files(&root, &target_dir, req.files)
+        blocking_io(move || persist_uploaded_files(&root, &target_dir, req.files)).await
     } else {
         let root = canonical_root(&default_root)?;
-        persist_uploaded_files(&root, &root, req.files)
+        blocking_io(move || persist_uploaded_files(&root, &root, req.files)).await
     }
 }
 
@@ -619,12 +684,13 @@ async fn get_file_status(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<Vec<FileStatusInfo>>> {
     let cwd = state.project_root();
-    let output = std::process::Command::new("git")
+    let output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(&cwd)
         .arg("status")
         .arg("--porcelain")
         .output()
+        .await
         .map_err(|e| ApiError::BadRequest(format!("Failed to run git status: {}", e)))?;
 
     if !output.status.success() {
@@ -694,54 +760,98 @@ async fn find_text(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<FindTextQuery>,
 ) -> Result<Json<Vec<SearchResult>>> {
+    if query.pattern.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Search pattern must not be empty".to_string(),
+        ));
+    }
     let default_root = project_root(state.as_ref())?;
-    let base_input = query
-        .path
-        .unwrap_or_else(|| default_root.to_string_lossy().to_string());
-    let root = effective_root_for_input(&base_input, &default_root)?;
-    let base_path = resolve_existing_input_path(&base_input, &root)?;
-    let mut results = Vec::new();
+    blocking_io(move || {
+        let base_input = query
+            .path
+            .unwrap_or_else(|| default_root.to_string_lossy().to_string());
+        let root = effective_root_for_input(&base_input, &default_root)?;
+        let base_path = resolve_existing_input_path(&base_input, &root)?;
+        let mut results = Vec::new();
+        let mut visited = 0;
 
-    fn search_in_file(path: &FsPath, pattern: &str, results: &mut Vec<SearchResult>) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for (line_num, line) in content.lines().enumerate() {
-                if let Some(col) = line.find(pattern) {
-                    results.push(SearchResult {
-                        path: path.to_string_lossy().to_string(),
-                        line: line_num + 1,
-                        column: col + 1,
-                        match_text: line.to_string(),
-                    });
+        fn search_in_file(path: &FsPath, pattern: &str, results: &mut Vec<SearchResult>) {
+            let within_size_limit = std::fs::metadata(path)
+                .map(|metadata| metadata.len() <= MAX_SEARCH_FILE_BYTES)
+                .unwrap_or(false);
+            if !within_size_limit {
+                return;
+            }
+            if let Ok(content) = std::fs::read_to_string(path) {
+                for (line_num, line) in content.lines().enumerate() {
+                    if results.len() >= MAX_SEARCH_RESULTS {
+                        return;
+                    }
+                    if let Some(col) = line.find(pattern) {
+                        results.push(SearchResult {
+                            path: path.to_string_lossy().to_string(),
+                            line: line_num + 1,
+                            column: col + 1,
+                            match_text: line.to_string(),
+                        });
+                    }
                 }
             }
         }
-    }
 
-    fn search_recursive(
-        path: &FsPath,
-        root: &FsPath,
-        pattern: &str,
-        results: &mut Vec<SearchResult>,
-    ) {
-        if path.is_dir() {
+        fn search_recursive(
+            path: &FsPath,
+            root: &FsPath,
+            pattern: &str,
+            depth: usize,
+            visited: &mut usize,
+            results: &mut Vec<SearchResult>,
+        ) {
+            if depth > MAX_SEARCH_DEPTH
+                || *visited >= MAX_SEARCH_ENTRIES
+                || results.len() >= MAX_SEARCH_RESULTS
+            {
+                return;
+            }
+            if path.is_file() {
+                *visited += 1;
+                search_in_file(path, pattern, results);
+                return;
+            }
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.flatten() {
+                    if *visited >= MAX_SEARCH_ENTRIES || results.len() >= MAX_SEARCH_RESULTS {
+                        return;
+                    }
+                    *visited += 1;
                     let path_buf = entry.path();
                     if !is_within_root(&path_buf, root) {
                         continue;
                     }
                     if path_buf.is_dir() {
-                        search_recursive(&path_buf, root, pattern, results);
+                        let name = entry.file_name();
+                        if matches!(name.to_str(), Some(".git" | "node_modules" | "target")) {
+                            continue;
+                        }
+                        search_recursive(&path_buf, root, pattern, depth + 1, visited, results);
                     } else if path_buf.is_file() {
                         search_in_file(&path_buf, pattern, results);
                     }
                 }
             }
         }
-    }
 
-    search_recursive(&base_path, &root, &query.pattern, &mut results);
-    Ok(Json(results))
+        search_recursive(
+            &base_path,
+            &root,
+            &query.pattern,
+            0,
+            &mut visited,
+            &mut results,
+        );
+        Ok(Json(results))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -814,81 +924,70 @@ async fn find_files(
     Query(query): Query<FindFilesQuery>,
 ) -> Result<Json<Vec<String>>> {
     let base_path = project_root(state.as_ref())?;
-    let mut results = Vec::new();
-    let limit = query.limit.unwrap_or(100);
+    let limit = query.limit.unwrap_or(100).clamp(1, MAX_SEARCH_RESULTS);
     let match_directories = query.file_type.as_deref() != Some("file");
     let match_files = query.file_type.as_deref() != Some("directory");
+    blocking_io(move || {
+        let root = canonical_root(&base_path)?;
+        let mut results = Vec::new();
+        let mut visited = 0;
 
-    fn find_recursive(
-        path: &FsPath,
-        root: &FsPath,
-        query: &str,
-        results: &mut Vec<String>,
-        limit: usize,
-        match_directories: bool,
-        match_files: bool,
-    ) {
-        if results.len() >= limit {
-            return;
+        struct FindOptions<'a> {
+            query: &'a str,
+            limit: usize,
+            match_directories: bool,
+            match_files: bool,
         }
-        if path.is_dir() {
+
+        fn find_recursive(
+            path: &FsPath,
+            root: &FsPath,
+            depth: usize,
+            visited: &mut usize,
+            results: &mut Vec<String>,
+            options: &FindOptions<'_>,
+        ) {
+            if depth > MAX_SEARCH_DEPTH
+                || *visited >= MAX_SEARCH_ENTRIES
+                || results.len() >= options.limit
+            {
+                return;
+            }
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.flatten() {
+                    if *visited >= MAX_SEARCH_ENTRIES || results.len() >= options.limit {
+                        return;
+                    }
+                    *visited += 1;
                     let path_buf = entry.path();
                     if !is_within_root(&path_buf, root) {
                         continue;
                     }
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let should_match = (path_buf.is_dir() && match_directories)
-                        || (path_buf.is_file() && match_files);
-                    if should_match && name.contains(query) {
+                    let is_directory = path_buf.is_dir();
+                    let name = entry.file_name();
+                    let name_text = name.to_string_lossy();
+                    let should_match = (is_directory && options.match_directories)
+                        || (path_buf.is_file() && options.match_files);
+                    if should_match && name_text.contains(options.query) {
                         results.push(path_buf.to_string_lossy().to_string());
                     }
-                    if path_buf.is_dir() && results.len() < limit {
-                        find_recursive(
-                            &path_buf,
-                            root,
-                            query,
-                            results,
-                            limit,
-                            match_directories,
-                            match_files,
-                        );
+                    if is_directory
+                        && !matches!(name.to_str(), Some(".git" | "node_modules" | "target"))
+                    {
+                        find_recursive(&path_buf, root, depth + 1, visited, results, options);
                     }
                 }
             }
         }
-    }
 
-    find_recursive(
-        &base_path,
-        &base_path,
-        &query.query,
-        &mut results,
-        limit,
-        match_directories,
-        match_files,
-    );
-    Ok(Json(results))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FindSymbolsQuery {
-    pub query: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SymbolInfo {
-    pub name: String,
-    pub kind: String,
-    pub path: String,
-    pub line: usize,
-}
-
-async fn find_symbols(
-    State(_state): State<Arc<ServerState>>,
-    Query(query): Query<FindSymbolsQuery>,
-) -> Result<Json<Vec<SymbolInfo>>> {
-    let _ = query.query.as_str();
-    Ok(Json(Vec::new()))
+        let options = FindOptions {
+            query: &query.query,
+            limit,
+            match_directories,
+            match_files,
+        };
+        find_recursive(&root, &root, 0, &mut visited, &mut results, &options);
+        Ok(Json(results))
+    })
+    .await
 }

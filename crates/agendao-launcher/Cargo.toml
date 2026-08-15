@@ -17,5 +17,4 @@ reqwest = { workspace = true, features = ["charset", "http2", "system-proxy"] }
 rust-embed = { version = "8", optional = true }
 tokio = { workspace = true, features = ["process", "rt", "time"] }
 url = { workspace = true }
-which = "7"
 tracing = { workspace = true }

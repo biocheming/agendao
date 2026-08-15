@@ -12,7 +12,6 @@ use agendao_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
     session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
 };
-use agendao_stage_protocol::StageSummary;
 use agendao_types::message_continuity_packet;
 #[cfg(test)]
 use agendao_types::message_latest_compaction_summary;
@@ -29,8 +28,6 @@ use agendao_types::{
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Serialize;
-#[cfg(test)]
-use agendao_types::WorkflowUsageSummary;
 
 use crate::{Result, ServerState};
 use agendao_server_core::runtime_control::SessionExecutionTopology;
@@ -53,7 +50,6 @@ pub(crate) const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permiss
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionTelemetrySnapshot {
     pub runtime: SessionRuntimeState,
-    pub stages: Vec<StageSummary>,
     pub topology: SessionExecutionTopology,
     pub usage: SessionUsage,
     pub usage_books: SessionUsageBooks,
@@ -394,20 +390,12 @@ pub(super) async fn build_session_telemetry_snapshot(
 ) -> Result<SessionTelemetrySnapshot> {
     let mut runtime = runtime_snapshot_or_default(state, session_id).await?;
     let mut usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
-    let tree_observation = {
-        let sessions = state.sessions.lock().await;
-        session_tree_observation_for_session(&sessions, session_id)
-    };
     let mut usage_books = SessionUsageBooks {
         request_context_tokens: session.latest_request_context_tokens(),
         live_context_tokens: usage.live_context_tokens(),
-        workflow_cumulative: tree_observation.workflow_cumulative.clone(),
+        workflow_cumulative: usage.workflow_usage_summary(),
     };
 
-    let stages = state
-        .runtime_telemetry
-        .list_stage_summaries(session_id)
-        .await;
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
     let tool_repair_summary = build_session_tool_repair_telemetry(session);
     let model_tool_repair_summary = if let Some(model_ref) = session_telemetry_model_ref(session) {
@@ -486,8 +474,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
         .and_then(|value| serde_json::from_value(value).ok());
-    let compaction_continuity =
-        latest_compaction_continuity_inspection(session, context_compaction_summary.as_ref());
+    let compaction_continuity = latest_compaction_continuity_inspection(session);
     let context_compaction_lifecycle_summary = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::context_compaction_lifecycle_summary_value)
@@ -519,12 +506,10 @@ pub(super) async fn build_session_telemetry_snapshot(
     });
     let context_closure_contract = build_context_closure_contract(
         context_explain.as_ref(),
-        &usage_books,
         cache_semantics.as_ref(),
         context_compaction_summary.as_ref(),
         context_compaction_lifecycle_summary.as_ref(),
         context_pressure_governance_summary.as_ref(),
-        tree_observation.attached_subtree_session_count,
     );
     let ingress_stabilization = diagnostics
         .as_ref()
@@ -549,7 +534,6 @@ pub(super) async fn build_session_telemetry_snapshot(
 
     Ok(SessionTelemetrySnapshot {
         runtime,
-        stages,
         topology,
         usage,
         usage_books,
@@ -629,45 +613,18 @@ async fn populate_steering_telemetry(
 
 fn latest_compaction_continuity_inspection(
     session: &Session,
-    raw_summary: Option<&ContextCompactionSummary>,
 ) -> Option<SessionCompactionContinuityInspection> {
-    if let Some(packet) = session.record().messages.iter().rev().find_map(|message| {
+    let packet = session.record().messages.iter().rev().find_map(|message| {
         if !matches!(message.role, agendao_types::MessageRole::Assistant) {
             return None;
         }
         message_continuity_packet(&message.metadata)
-    }) {
-        return continuity_packet_inspection(&packet.metadata_value())
-            .or_else(|| Some(SessionCompactionContinuityInspection::from_packet(&packet)));
-    }
-
-    let (summary, message_id) = latest_context_compaction_summary_message(session, raw_summary)?;
-    SessionCompactionContinuityInspection::from_raw_summary(summary, Some(message_id))
+    })?;
+    continuity_packet_inspection(&packet.metadata_value())
+        .or_else(|| Some(SessionCompactionContinuityInspection::from_packet(&packet)))
 }
 
-fn latest_context_compaction_summary_message<'a>(
-    session: &'a Session,
-    raw_summary: Option<&'a ContextCompactionSummary>,
-) -> Option<(&'a ContextCompactionSummary, String)> {
-    let summary = raw_summary?;
-    let message_id = session
-        .record()
-        .messages
-        .iter()
-        .rev()
-        .find(|message| {
-            matches!(message.role, agendao_types::MessageRole::Assistant)
-                && message
-                    .metadata
-                    .contains_key(agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY)
-        })
-        .map(|message| message.id.clone())?;
-    Some((summary, message_id))
-}
-
-use crate::session_runtime::projection_authority::{
-    build_context_closure_contract, session_tree_observation_for_session,
-};
+use crate::session_runtime::projection_authority::build_context_closure_contract;
 
 #[cfg(test)]
 fn latest_cache_evidence(session: &Session) -> Option<serde_json::Value> {
@@ -779,12 +736,7 @@ pub(super) async fn persist_session_telemetry_metadata(
         return;
     };
 
-    let raw_summary = SessionDiagnosticsSidecar::derive_from_session(session)
-        .as_ref()
-        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
-        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok());
-    snapshot.compaction_continuity =
-        latest_compaction_continuity_inspection(session, raw_summary.as_ref());
+    snapshot.compaction_continuity = latest_compaction_continuity_inspection(session);
     snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
     snapshot.tool_trajectory_quality =
         agendao_session::build_session_tool_trajectory_quality(session);
@@ -884,10 +836,8 @@ fn build_session_multimodal_insight(session: &Session) -> Option<SessionMultimod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
     use agendao_memory::PersistedMemorySnapshot;
-    use agendao_orchestrator::ExecutionContext;
     use agendao_plugin::{global, Hook, HookEvent};
     use agendao_server_core::runtime_control::{SessionExecutionTopology, SessionRunStatus};
     use agendao_server_core::runtime_state::SessionRuntimeState;
@@ -895,7 +845,6 @@ mod tests {
         load_session_telemetry_snapshot, persist_session_telemetry_snapshot, MessageUsage,
         SessionTelemetrySnapshotVersion,
     };
-    use agendao_stage_protocol::{StageStatus, StageSummary};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -971,7 +920,7 @@ mod tests {
         );
         session.insert_metadata(
             LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
-            serde_json::json!("Task flow: create task"),
+            serde_json::json!("Bash: cargo check"),
         );
         session.insert_metadata(
             "last_permission_miss_count".to_string(),
@@ -979,7 +928,7 @@ mod tests {
         );
         state
             .runtime_telemetry
-            .permission_requested(&sid, "perm_1", serde_json::json!({"tool":"task_flow"}))
+            .permission_requested(&sid, "perm_1", serde_json::json!({"tool":"bash"}))
             .await;
         (sid, session)
     }
@@ -1083,19 +1032,6 @@ mod tests {
 
     #[test]
     fn context_closure_contract_tracks_compaction_and_cache_explainability() {
-        let usage_books = SessionUsageBooks {
-            request_context_tokens: Some(88_000),
-            live_context_tokens: Some(82_000),
-            workflow_cumulative: WorkflowUsageSummary {
-                input_tokens: 120_000,
-                output_tokens: 18_000,
-                reasoning_tokens: 5_000,
-                cache_write_tokens: 2_000,
-                cache_read_tokens: 34_000,
-                cache_miss_tokens: 7_000,
-                total_cost: 1.60,
-            },
-        };
         let context_explain = SessionContextExplain {
             resolved_model: Some("openai/gpt-4o".to_string()),
             fork: None,
@@ -1107,7 +1043,7 @@ mod tests {
             live_context_tokens: Some(82_000),
             last_request_context_tokens: Some(88_000),
             owner_session_cumulative_tokens: 104_000,
-            workflow_cumulative_tokens: usage_books.workflow_cumulative.total_tokens(),
+            workflow_cumulative_tokens: 143_000,
         };
         let context_compaction_summary = ContextCompactionSummary {
             trigger: "auto_preflight".to_string(),
@@ -1195,12 +1131,10 @@ mod tests {
 
         let contract = build_context_closure_contract(
             Some(&context_explain),
-            &usage_books,
             Some(&cache_semantics),
             Some(&context_compaction_summary),
             Some(&lifecycle_summary),
             Some(&governance_summary),
-            2,
         )
         .expect("contract should build");
 
@@ -1252,34 +1186,10 @@ mod tests {
             contract.cache_explainability.severity,
             Some(agendao_types::SessionCacheSeverity::MediumChange)
         );
-        assert_eq!(
-            contract
-                .child_history_isolation
-                .attached_subtree_session_count,
-            2
-        );
-        assert_eq!(
-            contract
-                .child_history_isolation
-                .attached_subtree_cumulative_tokens,
-            usage_books.workflow_cumulative.total_tokens()
-                - context_explain.owner_session_cumulative_tokens
-        );
-        assert!(contract.child_history_isolation.owner_local_live_prefix);
-        assert!(
-            !contract
-                .child_history_isolation
-                .child_history_in_live_prefix_detected
-        );
     }
 
     #[test]
     fn context_closure_contract_prefers_installed_boundary_metrics_without_governance_summary() {
-        let usage_books = SessionUsageBooks {
-            request_context_tokens: Some(88_000),
-            live_context_tokens: Some(82_000),
-            workflow_cumulative: WorkflowUsageSummary::default(),
-        };
         let context_explain = SessionContextExplain {
             resolved_model: Some("openai/gpt-4o".to_string()),
             fork: None,
@@ -1329,12 +1239,10 @@ mod tests {
 
         let contract = build_context_closure_contract(
             Some(&context_explain),
-            &usage_books,
             None,
             Some(&context_compaction_summary),
             Some(&lifecycle_summary),
             None,
-            0,
         )
         .expect("contract should build");
 
@@ -1445,9 +1353,7 @@ mod tests {
             }),
         );
 
-        let raw_summary = latest_context_compaction_summary(&session).expect("summary");
-        let inspection = latest_compaction_continuity_inspection(&session, Some(&raw_summary))
-            .expect("inspection");
+        let inspection = latest_compaction_continuity_inspection(&session).expect("inspection");
 
         assert_eq!(
             inspection.source,
@@ -1464,6 +1370,21 @@ mod tests {
             inspection.recall_policy.as_deref(),
             Some("recent_tail_plus_memory")
         );
+    }
+
+    #[test]
+    fn latest_compaction_continuity_inspection_requires_packet() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "summary": "Summary without a continuity packet."
+            }),
+        );
+
+        assert!(latest_compaction_continuity_inspection(&session).is_none());
     }
 
     #[test]
@@ -1646,35 +1567,6 @@ mod tests {
 
         let snapshot = SessionTelemetrySnapshot {
             runtime,
-            stages: vec![StageSummary {
-                stage_id: "stage-1".to_string(),
-                stage_name: "Plan".to_string(),
-                index: Some(1),
-                total: Some(2),
-                step: Some(1),
-                step_total: Some(3),
-                status: StageStatus::Waiting,
-                prompt_tokens: Some(11),
-                context_tokens: None,
-                completion_tokens: Some(7),
-                reasoning_tokens: Some(5),
-                cache_read_tokens: Some(2),
-                cache_miss_tokens: Some(0),
-                cache_write_tokens: Some(1),
-                focus: Some("inspect scheduler".to_string()),
-                last_event: Some("scheduler.stage.waiting".to_string()),
-                waiting_on: Some("tool".to_string()),
-                activity: Some("Reading scheduler telemetry".to_string()),
-                estimated_context_tokens: Some(99),
-                skill_tree_budget: Some(512),
-                skill_tree_truncation_strategy: Some("head".to_string()),
-                skill_tree_truncated: Some(true),
-                retry_attempt: Some(2),
-                active_agent_count: 1,
-                active_tool_count: 2,
-                attached_session_count: 0,
-                primary_attached_session_id: None,
-            }],
             topology: SessionExecutionTopology {
                 session_id: "session-1".to_string(),
                 active_count: 1,
@@ -1797,10 +1689,7 @@ mod tests {
                 cache_evidence: Some(agendao_types::SessionCacheEvidenceExplain {
                     status: "degraded".to_string(),
                     severity: agendao_types::SessionCacheSeverity::MediumChange,
-                    primary_cause: Some(
-                        "prefix changed before the stable boundary"
-                            .to_string(),
-                    ),
+                    primary_cause: Some("prefix changed before the stable boundary".to_string()),
                     change_count: 1,
                 }),
                 prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
@@ -1812,10 +1701,7 @@ mod tests {
                     drift_details: Vec::new(),
                     volatility_findings: Vec::new(),
                 }),
-                label: Some(
-                    "boundary recorded · prefix changed"
-                        .to_string(),
-                ),
+                label: Some("boundary recorded · prefix changed".to_string()),
             }),
             context_closure_contract: Some(agendao_types::SessionContextClosureContract {
                 prefix_stability: agendao_types::SessionPrefixStabilityContract {
@@ -1824,10 +1710,7 @@ mod tests {
                     api_view_messages: 8,
                     trimmed_model_visible_messages: 7,
                     prefix_change_detected: true,
-                    explanation: Some(
-                        "boundary recorded · prefix changed"
-                            .to_string(),
-                    ),
+                    explanation: Some("boundary recorded · prefix changed".to_string()),
                 },
                 compaction_boundary: agendao_types::SessionCompactionBoundaryContract {
                     boundary_recorded: true,
@@ -1858,24 +1741,7 @@ mod tests {
                     explained: true,
                     source: agendao_types::SessionCacheExplainabilitySource::CacheEvidence,
                     severity: Some(agendao_types::SessionCacheSeverity::MediumChange),
-                    explanation: Some(
-                        "boundary recorded · prefix changed"
-                            .to_string(),
-                    ),
-                },
-                child_history_isolation: agendao_types::SessionChildHistoryIsolationContract {
-                    attached_subtree_session_count: 0,
-                    owner_session_cumulative_tokens: runtime_usage.session_cumulative_tokens(),
-                    workflow_cumulative_tokens: runtime_usage
-                        .workflow_usage_summary()
-                        .total_tokens(),
-                    attached_subtree_cumulative_tokens: 0,
-                    owner_live_context_tokens: None,
-                    owner_local_live_prefix: true,
-                    child_history_in_live_prefix_detected: false,
-                    explanation:
-                        "No attached subtree sessions were observed; the live prefix remains owner-local."
-                            .to_string(),
+                    explanation: Some("boundary recorded · prefix changed".to_string()),
                 },
             }),
             prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
@@ -1883,7 +1749,9 @@ mod tests {
                 reason: "surface changed: toolSurfaceHash".to_string(),
                 changed_fields: vec!["toolSurfaceHash".to_string()],
                 stable_prefix_change: Some(false),
-                dynamic_overlay_reasons: vec!["dynamic env field · Current local time: <dynamic>".to_string()],
+                dynamic_overlay_reasons: vec![
+                    "dynamic env field · Current local time: <dynamic>".to_string()
+                ],
                 drift_details: vec![agendao_types::PromptSurfaceDriftDetail {
                     category: agendao_types::PromptSurfaceDriftCategory::ToolSurface,
                     field: "toolSurfaceHash".to_string(),
@@ -1924,12 +1792,9 @@ mod tests {
         let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");
 
         assert!(value.get("runtime").is_some());
-        assert!(value.get("stages").is_some());
         assert!(value.get("topology").is_some());
         assert!(value.get("usage").is_some());
         assert_eq!(value["runtime"]["active_stage_id"], "stage-1");
-        assert_eq!(value["stages"][0]["status"], "waiting");
-        assert_eq!(value["stages"][0]["skill_tree_truncated"], true);
         assert_eq!(value["topology"]["waiting_count"], 1);
         assert_eq!(value["usage"]["total_cost"], 0.12);
         assert_eq!(value["context_explain"]["api_view_messages"], 8);
@@ -1966,10 +1831,6 @@ mod tests {
         assert_eq!(
             value["context_closure_contract"]["cache_explainability"]["source"],
             "cache_evidence"
-        );
-        assert_eq!(
-            value["context_closure_contract"]["child_history_isolation"]["owner_local_live_prefix"],
-            true
         );
         assert_eq!(
             value["prompt_surface_evidence"]["changed_fields"][0],
@@ -2027,7 +1888,7 @@ mod tests {
         );
         assert_eq!(
             runtime_snapshot.last_permission_grant_target.as_deref(),
-            Some("Task flow: create task")
+            Some("Bash: cargo check")
         );
         assert_eq!(runtime_snapshot.last_permission_miss_count, 5);
         let runtime_protocol = runtime_snapshot
@@ -2045,7 +1906,7 @@ mod tests {
         );
         assert_eq!(
             runtime_protocol.permission.pending_tool.as_deref(),
-            Some("task_flow")
+            Some("bash")
         );
 
         persist_session_telemetry_metadata(&state, &mut session).await;
@@ -2066,7 +1927,7 @@ mod tests {
         );
         assert_eq!(
             persisted.last_permission_grant_target.as_deref(),
-            Some("Task flow: create task")
+            Some("Bash: cargo check")
         );
         assert_eq!(persisted.last_permission_miss_count, 5);
     }
@@ -2126,7 +1987,6 @@ mod tests {
                 "cache_read_tokens": 5,
                 "total_cost": 0.5
             },
-            "stage_summaries": [],
             "last_run_status": "completed",
             "updated_at": 123
         });
@@ -2272,7 +2132,6 @@ mod tests {
                         context_tokens: 0,
                         total_cost: 0.25,
                     },
-                    stage_summaries: vec![],
                     repair_query_snapshot: None,
                     tool_trajectory_quality: None,
                     tool_result_governance: None,
@@ -2443,26 +2302,6 @@ mod tests {
             }),
         );
 
-        let exec_ctx = ExecutionContext {
-            session_id: session_id.clone(),
-            workdir: "/tmp/project".to_string(),
-            agent_name: "test-agent".to_string(),
-            metadata: HashMap::new(),
-        };
-
-        emit_scheduler_stage_message(SchedulerStageMessageInput {
-            state: &state,
-            session_id: &session_id,
-            scheduler_profile: "prometheus",
-            stage_name: "plan",
-            stage_index: 1,
-            stage_total: 1,
-            content: "## Plan\n\n- summarize runtime",
-            exec_ctx: &exec_ctx,
-            output_hook: None,
-        })
-        .await;
-
         state
             .runtime_telemetry
             .record_session_usage(
@@ -2502,14 +2341,6 @@ mod tests {
         assert_eq!(
             hook_ctx
                 .get("snapshot")
-                .and_then(|value| value.get("stage_summaries"))
-                .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            hook_ctx
-                .get("snapshot")
                 .and_then(|value| value.get("compaction_continuity"))
                 .and_then(|value| value.get("source")),
             Some(&serde_json::json!("continuity_packet"))
@@ -2528,179 +2359,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_snapshot_usage_books_keep_owner_local_context_and_subtree_cumulative() {
-        let state = Arc::new(ServerState::new());
-
-        let (root_id, mut root_session, root_usage, child_usage) = {
-            let mut sessions = state.sessions.lock().await;
-
-            let mut root = sessions.create("project", "/tmp/project");
-            let root_usage = MessageUsage {
-                input_tokens: 120,
-                output_tokens: 30,
-                reasoning_tokens: 9,
-                cache_write_tokens: 7,
-                cache_read_tokens: 40,
-                cache_miss_tokens: 5,
-                context_tokens: 180,
-                total_cost: 0.75,
-            };
-            let assistant = root.add_assistant_message();
-            assistant.usage = Some(root_usage.clone());
-            sessions.update(root.clone());
-
-            let mut child = agendao_session::Session::attached_with_context_kind(
-                &root,
-                agendao_types::SessionContextKind::DelegatedSubsession,
-            );
-            let child_usage = MessageUsage {
-                input_tokens: 60,
-                output_tokens: 15,
-                reasoning_tokens: 4,
-                cache_write_tokens: 3,
-                cache_read_tokens: 12,
-                cache_miss_tokens: 2,
-                context_tokens: 90,
-                total_cost: 0.33,
-            };
-            let child_assistant = child.add_assistant_message();
-            child_assistant.usage = Some(child_usage.clone());
-            sessions.update(child);
-
-            (root.id.clone(), root, root_usage, child_usage)
-        };
-        root_session.insert_metadata(
-            agendao_session::prompt::CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY.to_string(),
-            serde_json::json!({
-                "trigger": "auto_preflight",
-                "phase": "prompt.pre_request",
-                "status": "compacted",
-                "reason": "lightweight_tool_result_trim",
-                "request_context_tokens": 120_u64,
-                "live_context_tokens": 96_u64,
-                "compaction_attempted": true,
-                "compaction_succeeded": true,
-                "blocking": false,
-                "decision_trace": {
-                    "path": "prompt.pre_request",
-                    "mode": "lightweight_trim",
-                    "reason": "lightweight_tool_result_trim",
-                    "lightweight_trim": {
-                        "trimmed_rounds": 1,
-                        "trimmed_tool_calls": 1,
-                        "trimmed_tool_results": 1,
-                        "trimmed_call_tokens": 240,
-                        "trimmed_result_tokens": 480,
-                        "used_round_grouping": true
-                    }
-                }
-            }),
-        );
-
-        let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
-            .await
-            .expect("snapshot should build");
-
-        assert_eq!(
-            snapshot.usage_books.request_context_tokens,
-            root_usage.request_context_tokens()
-        );
-        assert_eq!(
-            snapshot.usage_books.live_context_tokens,
-            root_usage.live_context_tokens()
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.input_tokens,
-            root_usage.input_tokens + child_usage.input_tokens
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.output_tokens,
-            root_usage.output_tokens + child_usage.output_tokens
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.reasoning_tokens,
-            root_usage.reasoning_tokens + child_usage.reasoning_tokens
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.cache_read_tokens,
-            root_usage.cache_read_tokens + child_usage.cache_read_tokens
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.cache_miss_tokens,
-            root_usage.cache_miss_tokens + child_usage.cache_miss_tokens
-        );
-        assert_eq!(
-            snapshot.usage_books.workflow_cumulative.total_tokens(),
-            root_usage.input_tokens
-                + root_usage.output_tokens
-                + root_usage.reasoning_tokens
-                + child_usage.input_tokens
-                + child_usage.output_tokens
-                + child_usage.reasoning_tokens
-        );
-        assert!(
-            (snapshot.usage_books.workflow_cumulative.total_cost
-                - (root_usage.total_cost + child_usage.total_cost))
-                .abs()
-                < f64::EPSILON
-        );
-        assert_eq!(
-            snapshot
-                .decision_trace
-                .as_ref()
-                .map(|trace| trace.mode.as_str()),
-            Some("lightweight_trim")
-        );
-        let explain = snapshot
-            .context_explain
-            .as_ref()
-            .expect("context explain should be present");
-        assert_eq!(explain.raw_history_messages, 1);
-        assert_eq!(explain.raw_model_visible_messages, 1);
-        assert_eq!(explain.api_view_messages, 0);
-        assert_eq!(explain.api_view_estimated_input_tokens, None);
-        assert_eq!(
-            explain.live_context_tokens,
-            root_usage.live_context_tokens()
-        );
-        assert_eq!(
-            explain.last_request_context_tokens,
-            root_usage.request_context_tokens()
-        );
-        assert_eq!(
-            explain.owner_session_cumulative_tokens,
-            root_usage.input_tokens + root_usage.output_tokens + root_usage.reasoning_tokens
-        );
-        assert_eq!(
-            explain.workflow_cumulative_tokens,
-            snapshot.usage_books.workflow_cumulative.total_tokens()
-        );
-        let contract = snapshot
-            .context_closure_contract
-            .as_ref()
-            .expect("context closure contract should be present");
-        assert_eq!(
-            contract
-                .child_history_isolation
-                .attached_subtree_session_count,
-            1
-        );
-        assert_eq!(
-            contract
-                .child_history_isolation
-                .attached_subtree_cumulative_tokens,
-            child_usage.input_tokens + child_usage.output_tokens + child_usage.reasoning_tokens
-        );
-        assert!(contract.child_history_isolation.owner_local_live_prefix);
-        assert!(
-            !contract
-                .child_history_isolation
-                .child_history_in_live_prefix_detected
-        );
-        assert!(!contract.prefix_stability.prefix_change_detected);
-    }
-
-    #[tokio::test]
     async fn telemetry_snapshot_includes_session_and_model_tool_repair_summaries() {
         let state = Arc::new(ServerState::new());
 
@@ -2711,7 +2369,7 @@ mod tests {
             root.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
             root.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
             let assistant = root.add_assistant_message();
-            assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+            assistant.add_tool_call("call-1", "bash", serde_json::json!({}));
             if let Some(agendao_session::MessagePart {
                 part_type: agendao_session::PartType::ToolCall { status, state, .. },
                 ..
@@ -2719,9 +2377,9 @@ mod tests {
             {
                 *status = agendao_session::ToolCallStatus::Completed;
                 let mut metadata = agendao_tool::Metadata::new();
-                agendao_tool::append_tool_repair_event_map(
+                agendao_tool::append_repair_event(
                     &mut metadata,
-                    agendao_tool::tool_repair_event("alias_normalization", "tool", "task_flow"),
+                    agendao_types::RepairEvent::new("alias_normalization", "tool", "bash"),
                 );
                 *state = Some(agendao_session::ToolState::Completed {
                     input: serde_json::json!({}),
@@ -2768,7 +2426,7 @@ mod tests {
             other_model.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
             other_model.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
             let other_assistant = other_model.add_assistant_message();
-            other_assistant.add_tool_call("call-3", "task_flow", serde_json::json!({}));
+            other_assistant.add_tool_call("call-3", "bash", serde_json::json!({}));
             if let Some(agendao_session::MessagePart {
                 part_type: agendao_session::PartType::ToolCall { status, state, .. },
                 ..
@@ -2776,9 +2434,9 @@ mod tests {
             {
                 *status = agendao_session::ToolCallStatus::Completed;
                 let mut metadata = agendao_tool::Metadata::new();
-                agendao_tool::append_tool_repair_event_map(
+                agendao_tool::append_repair_event(
                     &mut metadata,
-                    agendao_tool::tool_repair_event("fallback", "tool", "task_flow"),
+                    agendao_types::RepairEvent::new("fallback", "tool", "bash"),
                 );
                 *state = Some(agendao_session::ToolState::Completed {
                     input: serde_json::json!({}),
@@ -2813,7 +2471,7 @@ mod tests {
         assert!(session_summary
             .tools
             .iter()
-            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+            .any(|tool| tool.tool_name == "bash" && tool.repaired_call_count == 1));
 
         let model_summary = snapshot
             .model_tool_repair_summary
@@ -2829,7 +2487,7 @@ mod tests {
         assert!(model_summary
             .tools
             .iter()
-            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+            .any(|tool| tool.tool_name == "bash" && tool.repaired_call_count == 1));
         assert!(model_summary
             .tools
             .iter()

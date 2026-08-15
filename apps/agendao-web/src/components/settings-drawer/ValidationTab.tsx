@@ -44,10 +44,6 @@ function validationSeverityTone(severity: string | null | undefined) {
 
 function validationOwnerLabel(owner: ConfigPolicyValidationOwnerRecord, t: (key: string) => string) {
   switch (owner) {
-    case "scheduler":
-      return t("settings.validation.owner.scheduler");
-    case "skill_tree":
-      return t("settings.validation.owner.skillTree");
     case "provider_profile":
       return t("settings.validation.owner.providerProfile");
     case "external_adapter":
@@ -57,8 +53,6 @@ function validationOwnerLabel(owner: ConfigPolicyValidationOwnerRecord, t: (key:
 
 function validationEffectLabel(effect: string | null | undefined, t: (key: string) => string) {
   switch ((effect || "").toLowerCase()) {
-    case "soft_fallback":
-      return t("settings.validation.effect.softFallback");
     case "fail_closed_bootstrap":
       return t("settings.validation.effect.failClosedBootstrap");
     case "fail_closed_request_gate":
@@ -70,10 +64,6 @@ function validationEffectLabel(effect: string | null | undefined, t: (key: strin
 
 function validationScopeLabel(scopeKind: string | null | undefined, t: (key: string) => string) {
   switch ((scopeKind || "").toLowerCase()) {
-    case "scheduler_path":
-      return t("settings.validation.scope.schedulerPath");
-    case "skill_tree":
-      return t("settings.validation.scope.skillTree");
     case "provider":
       return t("settings.validation.scope.provider");
     case "external_adapter":
@@ -192,9 +182,6 @@ export function ValidationTab({
                         {t("settings.validation.scopeLine", { kind: validationScopeLabel(item.scope.kind, t) })}
                         {item.scope.subject_id ? ` · ${item.scope.subject_id}` : ""}
                       </p>
-                      {item.fallback ? (
-                        <p className="m-0">{t("settings.validation.fallbackLine", { value: item.fallback })}</p>
-                      ) : null}
                     </div>
                   </div>
                 );

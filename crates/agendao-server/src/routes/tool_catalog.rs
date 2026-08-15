@@ -32,15 +32,9 @@ pub(crate) async fn build_tool_list_entries(
         .list()
         .await
         .into_iter()
-        .filter(|tool| {
-            // legacy `mcp_*` facade aliases 与 schema listing 口径一致：不展示。
-            !agendao_tool::tool_catalog::is_legacy_tool_catalog_facade_alias_tool(tool.id())
-        })
         .map(|tool| {
             let id = tool.id().to_string();
-            let family = tool
-                .catalog_metadata()
-                .and_then(|catalog| catalog.family);
+            let family = tool.catalog_metadata().and_then(|catalog| catalog.family);
             let is_disabled = agendao_config::matching::matching_disabled_pattern(disabled, &id)
                 .is_some()
                 || family

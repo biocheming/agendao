@@ -10,12 +10,11 @@ const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
     "model_provider",
     "model_variant",
     "scheduler_applied",
-    "scheduler_profile",
+    "scheduler",
     "scheduler_root_agent",
     "scheduler_selection_source",
     "scheduler_selection_trace",
     "scheduler_selection_warning",
-    "scheduler_skill_tree_applied",
 ];
 
 const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
@@ -24,9 +23,8 @@ const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
     "model_provider",
     "model_variant",
     "scheduler_applied",
-    "scheduler_profile",
+    "scheduler",
     "scheduler_root_agent",
-    "scheduler_skill_tree_applied",
 ];
 
 pub(crate) fn copy_fork_policy_metadata_from(source: &Session, target: &mut Session) {

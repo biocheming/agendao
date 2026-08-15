@@ -5,38 +5,71 @@
 //! 状态所有权(土)不变 —— 仍是 `PermissionDialog` 持有 pending 队列;
 //! 只是把成形(金)从「浮动 modal」改成「内联 BlockLayout」。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::screen::BlockLayout;
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PermissionType {
-    ReadFile, WriteFile, Edit, ExecuteCommand, Bash,
-    NetworkRequest, Glob, Grep, List, Task,
-    WebFetch, WebSearch, CodeSearch, ExternalDirectory,
+    ReadFile,
+    WriteFile,
+    Edit,
+    ExecuteCommand,
+    Bash,
+    NetworkRequest,
+    Glob,
+    Grep,
+    List,
+    WebFetch,
+    WebSearch,
+    CodeSearch,
+    ExternalDirectory,
 }
 
 impl PermissionType {
-    pub fn icon(&self) -> &'static str { match self {
-        Self::ReadFile => "[R]", Self::WriteFile => "[W]", Self::Edit => "[E]",
-        Self::ExecuteCommand => "[X]", Self::Bash => "[!]", Self::NetworkRequest => "[N]",
-        Self::Glob => "[G]", Self::Grep => "[S]", Self::List => "[L]", Self::Task => "[T]",
-        Self::WebFetch => "[F]", Self::WebSearch => "[Q]", Self::CodeSearch => "[C]",
-        Self::ExternalDirectory => "[D]",
-    }}
-    pub fn label(&self) -> &'static str { match self {
-        Self::ReadFile => "Read file", Self::WriteFile => "Write file", Self::Edit => "Edit file",
-        Self::ExecuteCommand => "Execute command", Self::Bash => "Run shell command",
-        Self::NetworkRequest => "Network request", Self::Glob => "Glob search",
-        Self::Grep => "Grep search", Self::List => "List directory", Self::Task => "Task operation",
-        Self::WebFetch => "Fetch web content", Self::WebSearch => "Web search",
-        Self::CodeSearch => "Code search", Self::ExternalDirectory => "External directory access",
-    }}
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::ReadFile => "[R]",
+            Self::WriteFile => "[W]",
+            Self::Edit => "[E]",
+            Self::ExecuteCommand => "[X]",
+            Self::Bash => "[!]",
+            Self::NetworkRequest => "[N]",
+            Self::Glob => "[G]",
+            Self::Grep => "[S]",
+            Self::List => "[L]",
+            Self::WebFetch => "[F]",
+            Self::WebSearch => "[Q]",
+            Self::CodeSearch => "[C]",
+            Self::ExternalDirectory => "[D]",
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ReadFile => "Read file",
+            Self::WriteFile => "Write file",
+            Self::Edit => "Edit file",
+            Self::ExecuteCommand => "Execute command",
+            Self::Bash => "Run shell command",
+            Self::NetworkRequest => "Network request",
+            Self::Glob => "Glob search",
+            Self::Grep => "Grep search",
+            Self::List => "List directory",
+            Self::WebFetch => "Fetch web content",
+            Self::WebSearch => "Web search",
+            Self::CodeSearch => "Code search",
+            Self::ExternalDirectory => "External directory access",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum PermissionLifetime { Once, Turn, Session }
+pub enum PermissionLifetime {
+    Once,
+    Turn,
+    Session,
+}
 
 /// 资源区折叠预览行数（与 transcript FoldState 的 FOLD_PREVIEW_LINES 同口径）。
 const RESOURCE_PREVIEW_LINES: usize = 3;
@@ -165,7 +198,11 @@ impl PermissionRequest {
     /// F4 catch-up `list_permissions` 共用同一映射，土律·单点权威）。
     pub fn from_info(info: &agendao_client::PermissionRequestInfo) -> PermissionRequest {
         let supported_lifetimes = if info.supported_lifetimes.is_empty() {
-            vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session]
+            vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ]
         } else {
             info.supported_lifetimes
                 .iter()
@@ -216,9 +253,10 @@ pub fn permission_type_from_tool(tool: &str) -> PermissionType {
         "network" | "networkrequest" | "http" => PermissionType::NetworkRequest,
         "webfetch" | "web_fetch" | "fetch" => PermissionType::WebFetch,
         "websearch" | "web_search" => PermissionType::WebSearch,
-        "task" | "agent" => PermissionType::Task,
         "codesearch" | "code_search" => PermissionType::CodeSearch,
-        "external" | "externaldirectory" | "external_directory" => PermissionType::ExternalDirectory,
+        "external" | "externaldirectory" | "external_directory" => {
+            PermissionType::ExternalDirectory
+        }
         _ => PermissionType::ExecuteCommand,
     }
 }
@@ -250,8 +288,12 @@ impl PermissionDialog {
 
     pub fn add_request(&mut self, req: PermissionRequest) {
         // Deduplicate: if a request with the same id already exists, skip
-        if self.requests.iter().any(|r| r.id == req.id) { return; }
-        self.requests.push(req); self.selected_lifetime = 0; self.visible = true;
+        if self.requests.iter().any(|r| r.id == req.id) {
+            return;
+        }
+        self.requests.push(req);
+        self.selected_lifetime = 0;
+        self.visible = true;
     }
 
     /// Remove a request by id (e.g. when server sends PermissionRemoved).
@@ -272,13 +314,15 @@ impl PermissionDialog {
         self.visible = false;
     }
 
-    pub fn pending_count(&self) -> usize { self.requests.len() }
+    pub fn pending_count(&self) -> usize {
+        self.requests.len()
+    }
 
     /// head request 的资源区当前是否展开。
     fn resource_expanded(&self) -> bool {
-        self.requests.first().is_some_and(|r| {
-            self.resource_expanded_for.as_deref() == Some(r.id.as_str())
-        })
+        self.requests
+            .first()
+            .is_some_and(|r| self.resource_expanded_for.as_deref() == Some(r.id.as_str()))
     }
 
     /// 展开/收起 head request 的资源区（Space 键与鼠标点击共用）。
@@ -338,20 +382,31 @@ impl PermissionDialog {
     /// — the prompt loop then hangs waiting for an answer that never
     /// reaches it.
     pub fn handle_key(&mut self, key: &Key) -> Option<(String, PermissionReply)> {
-        if !self.visible || self.requests.is_empty() { return None; }
+        if !self.visible || self.requests.is_empty() {
+            return None;
+        }
         let req = &self.requests[0];
         let n = req.supported_lifetimes.len();
         // Total selectable items: lifetime options + deny option
         let total_options = n + 1;
         match key {
-            Key::Up => { self.selected_lifetime = self.selected_lifetime.saturating_sub(1); None }
-            Key::Down => { self.selected_lifetime = (self.selected_lifetime + 1).min(total_options.saturating_sub(1)); None }
+            Key::Up => {
+                self.selected_lifetime = self.selected_lifetime.saturating_sub(1);
+                None
+            }
+            Key::Down => {
+                self.selected_lifetime =
+                    (self.selected_lifetime + 1).min(total_options.saturating_sub(1));
+                None
+            }
             Key::Enter => {
                 // If selected index is beyond lifetimes, it's the deny option
                 if self.selected_lifetime >= n {
                     let id = req.id.clone();
                     self.requests.remove(0);
-                    if self.requests.is_empty() { self.visible = false; }
+                    if self.requests.is_empty() {
+                        self.visible = false;
+                    }
                     return Some((id, PermissionReply::Deny));
                 }
                 let reply = match req.supported_lifetimes.get(self.selected_lifetime) {
@@ -362,7 +417,9 @@ impl PermissionDialog {
                 };
                 let id = req.id.clone();
                 self.requests.remove(0);
-                if self.requests.is_empty() { self.visible = false; }
+                if self.requests.is_empty() {
+                    self.visible = false;
+                }
                 Some((id, reply))
             }
             Key::Escape => {
@@ -375,7 +432,9 @@ impl PermissionDialog {
             Key::Char('d') | Key::Char('n') => {
                 let id = req.id.clone();
                 self.requests.remove(0);
-                if self.requests.is_empty() { self.visible = false; }
+                if self.requests.is_empty() {
+                    self.visible = false;
+                }
                 Some((id, PermissionReply::Deny))
             }
             // Number keys jump to a specific lifetime + accept in one stroke
@@ -383,7 +442,9 @@ impl PermissionDialog {
                 // Deny shortcut
                 let id = req.id.clone();
                 self.requests.remove(0);
-                if self.requests.is_empty() { self.visible = false; }
+                if self.requests.is_empty() {
+                    self.visible = false;
+                }
                 Some((id, PermissionReply::Deny))
             }
             Key::Char('1') if n >= 1 => {
@@ -427,7 +488,9 @@ impl PermissionDialog {
         };
         let id = req.id.clone();
         self.requests.remove(0);
-        if self.requests.is_empty() { self.visible = false; }
+        if self.requests.is_empty() {
+            self.visible = false;
+        }
         Some((id, reply))
     }
 
@@ -444,29 +507,41 @@ impl PermissionDialog {
     /// permission 是流末尾的独立待决策块,语义中性,不暗示附属某 tool_call
     /// (agendao 的 permission 是 server 推的独立事件,无 tool_call 锚点)。
     pub fn render_inline(&self, width: u16) -> Option<BlockLayout> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         let req = self.requests.first()?;
 
         // ── Queue position indicator ──
         let queue_hint = if self.requests.len() > 1 {
             format!(" ({}/{})", 1, self.requests.len())
-        } else { String::new() };
+        } else {
+            String::new()
+        };
 
         // ── Risk → header color (dangerous reads red, else amber) ──
-        let header_color = if req.risk_tags.iter().any(|t| t.contains("dangerous") || t.contains("destructive")) {
+        let header_color = if req
+            .risk_tags
+            .iter()
+            .any(|t| t.contains("dangerous") || t.contains("destructive"))
+        {
             colors::ACCENT_RED()
         } else {
             colors::E_AMBER()
         };
 
         // ── Header: ⏺ tool (label) — top-level, like a ToolCall block ──
-        let mut content = vstack().gap(0)
-            .child_sized(
-                Text::new(format!(" ⏺ {} ({}){}", req.tool, req.perm_type.label(), queue_hint))
-                    .bold()
-                    .fg(header_color),
-                1,
-            );
+        let mut content = vstack().gap(0).child_sized(
+            Text::new(format!(
+                " ⏺ {} ({}){}",
+                req.tool,
+                req.perm_type.label(),
+                queue_hint
+            ))
+            .bold()
+            .fg(header_color),
+            1,
+        );
         let mut height: u16 = 1;
 
         // ── Message (indent 3) ──
@@ -483,16 +558,16 @@ impl PermissionDialog {
         if let Some((lines, hint)) = self.resource_render_plan(width) {
             for line in &lines {
                 content = content.child_sized(
-                    Text::new(format!("   {}", line)).fg(colors::FG_MUTED()).italic(),
+                    Text::new(format!("   {}", line))
+                        .fg(colors::FG_MUTED())
+                        .italic(),
                     1,
                 );
                 height += 1;
             }
             if let Some(hint) = hint {
-                content = content.child_sized(
-                    Text::new(format!("   {}", hint)).fg(colors::FG_TRACE()),
-                    1,
-                );
+                content = content
+                    .child_sized(Text::new(format!("   {}", hint)).fg(colors::FG_TRACE()), 1);
                 height += 1;
             }
         }
@@ -513,44 +588,58 @@ impl PermissionDialog {
         // ── Lifetime options (❯ pointer, inline CLI style) ──
         let lifetimes = &req.supported_lifetimes;
         for (i, lt) in lifetimes.iter().enumerate() {
-            let marker = if i == self.selected_lifetime { "❯ " } else { "  " };
+            let marker = if i == self.selected_lifetime {
+                "❯ "
+            } else {
+                "  "
+            };
             let desc = match lt {
                 PermissionLifetime::Once => "Allow this request only",
                 PermissionLifetime::Turn => "Allow for this turn",
                 PermissionLifetime::Session => "Allow for this session",
             };
-            let color = if i == self.selected_lifetime { colors::ACCENT_CYAN() } else { colors::FG_SECONDARY() };
-            content = content.child_sized(
-                Text::new(format!("{}{}", marker, desc)).fg(color),
-                1,
-            );
+            let color = if i == self.selected_lifetime {
+                colors::ACCENT_CYAN()
+            } else {
+                colors::FG_SECONDARY()
+            };
+            content = content.child_sized(Text::new(format!("{}{}", marker, desc)).fg(color), 1);
             height += 1;
         }
 
         // ── Deny option ──
         let deny_selected = self.selected_lifetime == lifetimes.len();
         let deny_marker = if deny_selected { "❯ " } else { "  " };
-        let deny_color = if deny_selected { colors::ACCENT_RED() } else { colors::FG_SECONDARY() };
-        content = content.child_sized(
-            Text::new(format!("{}Deny", deny_marker)).fg(deny_color),
-            1,
-        );
+        let deny_color = if deny_selected {
+            colors::ACCENT_RED()
+        } else {
+            colors::FG_SECONDARY()
+        };
+        content = content.child_sized(Text::new(format!("{}Deny", deny_marker)).fg(deny_color), 1);
         height += 1;
 
         // ── Hint ──
         content = content.child_sized(
-            Text::new(" ↑↓ navigate · ↵/y/a allow · 1-3 quick allow · 0/n/d deny · Esc hide").fg(colors::FG_MUTED()),
+            Text::new(" ↑↓ navigate · ↵/y/a allow · 1-3 quick allow · 0/n/d deny · Esc hide")
+                .fg(colors::FG_MUTED()),
             1,
         );
         height += 1;
 
-        Some(BlockLayout { height, view: content })
+        Some(BlockLayout {
+            height,
+            view: content,
+        })
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum PermissionReply { AllowOnce, AllowTurn, AllowSession, Deny }
-
+pub enum PermissionReply {
+    AllowOnce,
+    AllowTurn,
+    AllowSession,
+    Deny,
+}
 
 #[cfg(test)]
 mod tests {
@@ -623,7 +712,10 @@ mod tests {
         );
         assert_eq!(extract_resource(&serde_json::json!(null)), "");
         // 空字符串不算命中。
-        assert_eq!(extract_resource(&serde_json::json!({"metadata": {"command": ""}})), "");
+        assert_eq!(
+            extract_resource(&serde_json::json!({"metadata": {"command": ""}})),
+            ""
+        );
     }
 
     // ── wrap_resource_lines ──
@@ -655,7 +747,10 @@ mod tests {
         let d = dialog_with(LONG_CMD);
         let (lines, hint) = d.resource_render_plan(12).unwrap();
         assert_eq!(lines.len(), RESOURCE_PREVIEW_LINES);
-        assert_eq!(hint.as_deref(), Some("… +2 more lines · Space/click to expand"));
+        assert_eq!(
+            hint.as_deref(),
+            Some("… +2 more lines · Space/click to expand")
+        );
     }
 
     #[test]

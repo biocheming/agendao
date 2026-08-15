@@ -25,7 +25,7 @@ impl Tool for SkillsListTool {
     }
 
     fn description(&self) -> &str {
-        "Second-step skill discovery. After skills_categories, list available skills with name, description, and category before using skill_view(name) or skill(name)."
+        "Second-step skill discovery. After skills_categories, list available skills with name, description, and category before using skill_view(name)."
     }
 
     fn parameters(&self) -> serde_json::Value {

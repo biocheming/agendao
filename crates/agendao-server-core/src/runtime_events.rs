@@ -1,8 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use agendao_command_render::agent_presenter::output_block_to_web;
+use agendao_command_render::block_projection::output_block_to_web;
 use agendao_command_render::output_blocks::OutputBlock;
-use agendao_stage_protocol::{telemetry_event_names, StageEvent};
 use agendao_types::{ControlInputKind, ControlInputPhase};
 use serde::{Deserialize, Serialize};
 
@@ -186,11 +185,7 @@ pub enum ServerEvent {
         request_id: String,
         questions: serde_json::Value,
     },
-    #[serde(
-        rename = "question.resolved",
-        alias = "question.replied",
-        alias = "question.rejected"
-    )]
+    #[serde(rename = "question.resolved")]
     QuestionResolved {
         #[serde(rename = "sessionID")]
         session_id: String,
@@ -211,11 +206,11 @@ pub enum ServerEvent {
         permission_id: String,
         info: serde_json::Value,
     },
-    #[serde(rename = "permission.resolved", alias = "permission.replied")]
+    #[serde(rename = "permission.resolved")]
     PermissionResolved {
         #[serde(rename = "sessionID")]
         session_id: String,
-        #[serde(rename = "permissionID", alias = "requestID")]
+        #[serde(rename = "permissionID")]
         permission_id: String,
         reply: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,21 +245,7 @@ pub enum ServerEvent {
         #[serde(rename = "stageID", skip_serializing_if = "Option::is_none")]
         stage_id: Option<String>,
     },
-    #[serde(rename = "attached_session.attached")]
-    AttachedSessionAttached {
-        #[serde(rename = "parentID")]
-        parent_id: String,
-        #[serde(rename = "attachedID")]
-        attached_id: String,
-    },
-    #[serde(rename = "attached_session.detached")]
-    AttachedSessionDetached {
-        #[serde(rename = "parentID")]
-        parent_id: String,
-        #[serde(rename = "attachedID")]
-        attached_id: String,
-    },
-    #[serde(rename = "diff.updated", alias = "session.diff")]
+    #[serde(rename = "diff.updated")]
     DiffUpdated {
         #[serde(rename = "sessionID")]
         session_id: String,
@@ -297,7 +278,7 @@ impl ServerEvent {
 
     /// Extract the session ID associated with this event, if any.
     ///
-    /// Session-scoped events carry a `session_id` or equivalent (`parent_id`).
+    /// Session-scoped events carry a `session_id`.
     /// Global events like `ConfigUpdated` return `None`.
     pub fn session_id(&self) -> Option<&str> {
         match self {
@@ -321,8 +302,6 @@ impl ServerEvent {
             | Self::TopologyChanged { session_id, .. }
             | Self::DiffUpdated { session_id, .. }
             | Self::TodoUpdated { session_id, .. } => Some(session_id),
-            Self::AttachedSessionAttached { parent_id, .. }
-            | Self::AttachedSessionDetached { parent_id, .. } => Some(parent_id),
             Self::Usage {
                 session_id: None, ..
             }
@@ -348,8 +327,6 @@ impl ServerEvent {
             Self::ConfigUpdated => "config.updated",
             Self::ToolCallLifecycle { .. } => "tool_call.lifecycle",
             Self::TopologyChanged { .. } => "execution.topology.changed",
-            Self::AttachedSessionAttached { .. } => "attached_session.attached",
-            Self::AttachedSessionDetached { .. } => "attached_session.detached",
             Self::DiffUpdated { .. } => "diff.updated",
             Self::TodoUpdated { .. } => "todo.updated",
         }
@@ -362,218 +339,39 @@ impl ServerEvent {
     pub fn to_json_value(&self) -> Option<serde_json::Value> {
         serde_json::to_value(self).ok()
     }
-
-    pub fn from_stage_event(event: &StageEvent) -> Option<Self> {
-        match event.event_type.as_str() {
-            telemetry_event_names::SESSION_UPDATED => Some(Self::SessionUpdated {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                source: event.payload.get("source")?.as_str()?.to_string(),
-            }),
-            telemetry_event_names::SESSION_STATUS => Some(Self::SessionStatus {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                status: event.payload.get("status")?.clone(),
-            }),
-            telemetry_event_names::SESSION_USAGE => Some(Self::Usage {
-                session_id: event
-                    .payload
-                    .get("sessionID")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                prompt_tokens: event.payload.get("prompt_tokens")?.as_u64()?,
-                completion_tokens: event.payload.get("completion_tokens")?.as_u64()?,
-                message_id: event
-                    .payload
-                    .get("message_id")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::SESSION_ERROR => Some(Self::Error {
-                session_id: event
-                    .payload
-                    .get("sessionID")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                error: event.payload.get("error")?.as_str()?.to_string(),
-                message_id: event
-                    .payload
-                    .get("message_id")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                done: event.payload.get("done").and_then(|value| value.as_bool()),
-            }),
-            telemetry_event_names::QUESTION_CREATED => Some(Self::QuestionCreated {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                request_id: event.payload.get("requestID")?.as_str()?.to_string(),
-                questions: event.payload.get("questions")?.clone(),
-            }),
-            telemetry_event_names::QUESTION_RESOLVED => Some(Self::QuestionResolved {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                request_id: event.payload.get("requestID")?.as_str()?.to_string(),
-                resolution: event
-                    .payload
-                    .get("resolution")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok()),
-                answers: event.payload.get("answers").cloned(),
-                reason: event
-                    .payload
-                    .get("reason")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::PERMISSION_REQUESTED => Some(Self::PermissionRequested {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                permission_id: event.payload.get("permissionID")?.as_str()?.to_string(),
-                info: event.payload.get("info")?.clone(),
-            }),
-            telemetry_event_names::PERMISSION_RESOLVED => Some(Self::PermissionResolved {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                permission_id: event.payload.get("permissionID")?.as_str()?.to_string(),
-                reply: event.payload.get("reply")?.as_str()?.to_string(),
-                message: event
-                    .payload
-                    .get("message")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::TOOL_STARTED => Some(Self::ToolCallLifecycle {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                tool_call_id: event.payload.get("toolCallId")?.as_str()?.to_string(),
-                phase: ToolCallPhase::Start,
-                tool_name: event
-                    .payload
-                    .get("toolName")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::TOOL_COMPLETED => Some(Self::ToolCallLifecycle {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                tool_call_id: event.payload.get("toolCallId")?.as_str()?.to_string(),
-                phase: ToolCallPhase::Complete,
-                tool_name: event
-                    .payload
-                    .get("toolName")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::EXECUTION_TOPOLOGY_CHANGED => Some(Self::TopologyChanged {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                execution_id: event
-                    .payload
-                    .get("executionID")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                stage_id: event
-                    .payload
-                    .get("stageID")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-            }),
-            telemetry_event_names::DIFF_UPDATED => Some(Self::DiffUpdated {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                diff: serde_json::from_value(event.payload.get("diff")?.clone()).ok()?,
-            }),
-            telemetry_event_names::TODO_UPDATED => Some(Self::TodoUpdated {
-                session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
-                todos: serde_json::from_value(event.payload.get("todos")?.clone()).ok()?,
-            }),
-            telemetry_event_names::ATTACHED_SESSION_ATTACHED => {
-                Some(Self::AttachedSessionAttached {
-                    parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
-                    attached_id: event.payload.get("attachedID")?.as_str()?.to_string(),
-                })
-            }
-            telemetry_event_names::ATTACHED_SESSION_DETACHED => {
-                Some(Self::AttachedSessionDetached {
-                    parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
-                    attached_id: event.payload.get("attachedID")?.as_str()?.to_string(),
-                })
-            }
-            _ => None,
-        }
-    }
 }
 
 /// In-process payload of the canonical ServerEvent bus.
 ///
 /// The event bus is an in-process typed channel: a publisher pushes one typed
-/// `ServerEvent` (or a raw non-ServerEvent JSON payload such as `tui.request`)
-/// and every subscriber shares it through `Arc` — in-process subscribers
-/// (frontend projector, direct bridge) see the typed event directly with no
-/// JSON round trip.
+/// `ServerEvent` and every subscriber shares it through `Arc`. In-process
+/// subscribers see the typed event directly with no JSON round trip.
 ///
 /// The canonical JSON wire text is materialized lazily on first demand and
 /// then shared by every network-boundary (SSE) subscriber of the same event,
 /// so each event is serialized at most once per process instead of once per
 /// subscriber.
 #[derive(Debug)]
-pub enum ServerBusEvent {
-    /// Typed ServerEvent with lazily-shared JSON wire text.
-    Event(ServerBusEnvelope),
-    /// Raw JSON payload that is not a `ServerEvent` (e.g. `tui.request`).
-    Raw(String),
-}
-
-/// Typed ServerEvent plus its lazily-materialized, shareable JSON wire text.
-#[derive(Debug)]
-pub struct ServerBusEnvelope {
+pub struct ServerBusEvent {
     event: ServerEvent,
     json: std::sync::OnceLock<String>,
 }
 
 impl ServerBusEvent {
     pub fn event(event: ServerEvent) -> Self {
-        Self::Event(ServerBusEnvelope::new(event))
-    }
-
-    pub fn raw(json: String) -> Self {
-        Self::Raw(json)
-    }
-
-    /// Typed event for in-process consumers; `None` for raw payloads.
-    ///
-    /// Raw payloads are exactly the ones that previously failed
-    /// `serde_json::from_str::<ServerEvent>` on the subscriber side, so
-    /// returning `None` here preserves the old fallback semantics.
-    pub fn as_event(&self) -> Option<&ServerEvent> {
-        match self {
-            Self::Event(envelope) => Some(envelope.event()),
-            Self::Raw(_) => None,
-        }
-    }
-
-    /// Canonical JSON wire text — byte-identical to
-    /// `serde_json::to_string` of the typed event, serialized at most once
-    /// and shared by all consumers of this envelope.
-    pub fn json(&self) -> &str {
-        match self {
-            Self::Event(envelope) => envelope.json(),
-            Self::Raw(raw) => raw.as_str(),
-        }
-    }
-
-    /// Test probe: `true` once the JSON wire text has been materialized.
-    /// In-process-only pipelines must leave this `false`.
-    pub fn is_json_materialized(&self) -> bool {
-        match self {
-            Self::Event(envelope) => envelope.is_json_materialized(),
-            Self::Raw(_) => true,
-        }
-    }
-}
-
-impl ServerBusEnvelope {
-    pub fn new(event: ServerEvent) -> Self {
         Self {
             event,
             json: std::sync::OnceLock::new(),
         }
     }
 
-    pub fn event(&self) -> &ServerEvent {
+    pub fn event_ref(&self) -> &ServerEvent {
         &self.event
     }
 
+    /// Canonical JSON wire text — byte-identical to
+    /// `serde_json::to_string` of the typed event, serialized at most once
+    /// and shared by all consumers of this envelope.
     pub fn json(&self) -> &str {
         self.json.get_or_init(|| {
             serde_json::to_string(&self.event).unwrap_or_else(|error| {
@@ -583,6 +381,8 @@ impl ServerBusEnvelope {
         })
     }
 
+    /// Test probe: `true` once the JSON wire text has been materialized.
+    /// In-process-only pipelines must leave this `false`.
     pub fn is_json_materialized(&self) -> bool {
         self.json.get().is_some()
     }
@@ -631,7 +431,6 @@ mod tests {
         ToolCallPhase,
     };
     use agendao_command_render::output_blocks::{OutputBlock, StatusBlock};
-    use agendao_stage_protocol::{telemetry_event_names, StageEvent};
     use agendao_types::{
         ControlInputKind, ControlInputPhase, LiveMessagePartIdentity, LiveMessagePartKind,
         LivePartPhase, ASSISTANT_TEXT_MAIN_PART_KEY,
@@ -651,15 +450,15 @@ mod tests {
         let bus = sample_bus_event();
         assert!(!bus.is_json_materialized());
         assert!(matches!(
-            bus.as_event(),
-            Some(ServerEvent::SessionUpdated { .. })
+            bus.event_ref(),
+            ServerEvent::SessionUpdated { .. }
         ));
     }
 
     #[test]
     fn bus_event_json_matches_direct_serialization_byte_for_byte() {
         let bus = sample_bus_event();
-        let expected = serde_json::to_string(bus.as_event().unwrap()).expect("direct json");
+        let expected = serde_json::to_string(bus.event_ref()).expect("direct json");
         assert_eq!(bus.json(), expected);
     }
 
@@ -679,13 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_bus_event_has_no_typed_event_and_passes_json_through() {
-        let bus = ServerBusEvent::raw("{\"type\":\"tui.request\"}".to_string());
-        assert!(bus.as_event().is_none());
-        assert_eq!(bus.json(), "{\"type\":\"tui.request\"}");
-    }
-
-    #[test]
     fn server_event_serializes_output_block_wrapper() {
         let event = ServerEvent::output_block(
             "session-1",
@@ -696,7 +488,6 @@ mod tests {
                 part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: LiveMessagePartKind::AssistantText,
                 phase: LivePartPhase::Snapshot,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         );
 
@@ -714,7 +505,6 @@ mod tests {
         );
         assert_eq!(value["live_identity"]["part_kind"], "assistant_text");
         assert_eq!(value["live_identity"]["phase"], "snapshot");
-        assert_eq!(value["live_identity"]["legacy_block_id"], "block-1");
     }
 
     #[test]
@@ -723,19 +513,6 @@ mod tests {
             .to_json_value()
             .expect("event json");
         assert_eq!(value, serde_json::json!({ "type": "config.updated" }));
-    }
-
-    #[test]
-    fn attached_session_attached_serializes_with_parent_and_attached_ids() {
-        let value = ServerEvent::AttachedSessionAttached {
-            parent_id: "parent-1".to_string(),
-            attached_id: "child-1".to_string(),
-        }
-        .to_json_value()
-        .expect("event json");
-        assert_eq!(value["type"], "attached_session.attached");
-        assert_eq!(value["parentID"], "parent-1");
-        assert_eq!(value["attachedID"], "child-1");
     }
 
     #[test]
@@ -772,72 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn stage_event_maps_tool_started_to_transport_event() {
-        let event = StageEvent {
-            event_id: "evt_1".to_string(),
-            scope: agendao_stage_protocol::EventScope::Stage,
-            stage_id: Some("stage_1".to_string()),
-            execution_id: Some("tool_call:tool-1".to_string()),
-            event_type: telemetry_event_names::TOOL_STARTED.to_string(),
-            ts: 1,
-            payload: serde_json::json!({
-                "sessionID": "session-1",
-                "toolCallId": "tool-1",
-                "toolName": "shell",
-            }),
-        };
-
-        let mapped = ServerEvent::from_stage_event(&event).expect("mapped event");
-        let value = mapped.to_json_value().expect("event json");
-        assert_eq!(value["type"], "tool_call.lifecycle");
-        assert_eq!(value["phase"], "start");
-        assert_eq!(value["toolName"], "shell");
-    }
-
-    #[test]
-    fn stage_event_maps_session_status_to_transport_event() {
-        let event = StageEvent {
-            event_id: "evt_1".to_string(),
-            scope: agendao_stage_protocol::EventScope::Session,
-            stage_id: None,
-            execution_id: None,
-            event_type: telemetry_event_names::SESSION_STATUS.to_string(),
-            ts: 1,
-            payload: serde_json::json!({
-                "sessionID": "session-1",
-                "status": { "type": "retry", "attempt": 2, "message": "wait", "next": 123 }
-            }),
-        };
-
-        let mapped = ServerEvent::from_stage_event(&event).expect("mapped event");
-        let value = mapped.to_json_value().expect("event json");
-        assert_eq!(value["type"], "session.status");
-        assert_eq!(value["status"]["type"], "retry");
-        assert_eq!(value["status"]["attempt"], 2);
-    }
-
-    #[test]
-    fn stage_event_maps_session_updated_to_transport_event() {
-        let event = StageEvent {
-            event_id: "evt_1".to_string(),
-            scope: agendao_stage_protocol::EventScope::Session,
-            stage_id: None,
-            execution_id: None,
-            event_type: telemetry_event_names::SESSION_UPDATED.to_string(),
-            ts: 1,
-            payload: serde_json::json!({
-                "sessionID": "session-1",
-                "source": "prompt.completed",
-            }),
-        };
-
-        let mapped = ServerEvent::from_stage_event(&event).expect("mapped event");
-        let value = mapped.to_json_value().expect("event json");
-        assert_eq!(value["type"], "session.updated");
-        assert_eq!(value["source"], "prompt.completed");
-    }
-
-    #[test]
     fn session_updated_serializes_as_tagged_type() {
         let value = ServerEvent::SessionUpdated {
             session_id: "session-1".to_string(),
@@ -863,56 +574,6 @@ mod tests {
         assert_eq!(snapshot.max_receivers, 3);
         assert!(snapshot.last_send_at_ms > 0);
         assert!(snapshot.last_send_error_at_ms > 0);
-    }
-
-    #[test]
-    fn stage_event_maps_session_usage_to_transport_event() {
-        let event = StageEvent {
-            event_id: "evt_1".to_string(),
-            scope: agendao_stage_protocol::EventScope::Session,
-            stage_id: None,
-            execution_id: None,
-            event_type: telemetry_event_names::SESSION_USAGE.to_string(),
-            ts: 1,
-            payload: serde_json::json!({
-                "sessionID": "session-1",
-                "message_id": "msg-1",
-                "prompt_tokens": 12,
-                "completion_tokens": 34,
-                "reasoning_tokens": 5,
-            }),
-        };
-
-        let mapped = ServerEvent::from_stage_event(&event).expect("mapped event");
-        let value = mapped.to_json_value().expect("event json");
-        assert_eq!(value["type"], "usage");
-        assert_eq!(value["sessionID"], "session-1");
-        assert_eq!(value["prompt_tokens"], 12);
-        assert_eq!(value["completion_tokens"], 34);
-    }
-
-    #[test]
-    fn stage_event_maps_session_error_to_transport_event() {
-        let event = StageEvent {
-            event_id: "evt_1".to_string(),
-            scope: agendao_stage_protocol::EventScope::Session,
-            stage_id: None,
-            execution_id: None,
-            event_type: telemetry_event_names::SESSION_ERROR.to_string(),
-            ts: 1,
-            payload: serde_json::json!({
-                "sessionID": "session-1",
-                "message_id": "msg-1",
-                "done": true,
-                "error": "boom",
-            }),
-        };
-
-        let mapped = ServerEvent::from_stage_event(&event).expect("mapped event");
-        let value = mapped.to_json_value().expect("event json");
-        assert_eq!(value["type"], "error");
-        assert_eq!(value["message_id"], "msg-1");
-        assert_eq!(value["done"], true);
     }
 
     #[test]
@@ -952,48 +613,26 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wire_aliases_deserialize_to_canonical_variants() {
-        let cases: &[(&str, serde_json::Value)] = &[
-            (
-                "question.replied",
-                serde_json::json!({
-                    "type": "question.replied", "sessionID": "s-1", "requestID": "q-1",
-                    "answers": [["Yes"]],
-                }),
-            ),
-            (
-                "permission.replied",
-                serde_json::json!({
-                    "type": "permission.replied", "sessionID": "s-1", "requestID": "p-1",
-                    "reply": "once",
-                }),
-            ),
-            (
-                "session.diff",
-                serde_json::json!({
-                    "type": "session.diff", "sessionID": "s-1",
-                    "diff": [{"path": "src/main.rs", "additions": 1, "deletions": 0}],
-                }),
-            ),
-        ];
-        for (alias, json) in cases {
-            let event: ServerEvent = serde_json::from_value(json.clone())
-                .unwrap_or_else(|e| panic!("legacy event {alias}: {e}"));
-            match *alias {
-                "question.replied" => assert!(matches!(
-                    event, ServerEvent::QuestionResolved { request_id, .. }
-                        if request_id == "q-1"
-                )),
-                "permission.replied" => assert!(matches!(
-                    event, ServerEvent::PermissionResolved { permission_id, .. }
-                        if permission_id == "p-1"
-                )),
-                "session.diff" => assert!(matches!(
-                    event, ServerEvent::DiffUpdated { session_id, diff }
-                        if session_id == "s-1" && diff.len() == 1
-                )),
-                _ => panic!("unexpected alias {alias}"),
-            }
+    fn removed_wire_aliases_are_rejected() {
+        for json in [
+            serde_json::json!({
+                "type": "question.replied", "sessionID": "s-1", "requestID": "q-1",
+                "answers": [["Yes"]],
+            }),
+            serde_json::json!({
+                "type": "permission.replied", "sessionID": "s-1", "requestID": "p-1",
+                "reply": "once",
+            }),
+            serde_json::json!({
+                "type": "permission.resolved", "sessionID": "s-1", "requestID": "p-1",
+                "reply": "once",
+            }),
+            serde_json::json!({
+                "type": "session.diff", "sessionID": "s-1",
+                "diff": [{"path": "src/main.rs", "additions": 1, "deletions": 0}],
+            }),
+        ] {
+            assert!(serde_json::from_value::<ServerEvent>(json).is_err());
         }
     }
 }
@@ -1244,122 +883,6 @@ mod canonical_event_tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use agendao_stage_protocol::{telemetry_event_names, EventScope, StageEvent};
-
-    fn stage_event(event_type: &str, payload: serde_json::Value) -> StageEvent {
-        StageEvent {
-            event_id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
-            scope: EventScope::Session,
-            stage_id: None,
-            execution_id: None,
-            event_type: event_type.to_string(),
-            ts: chrono::Utc::now().timestamp_millis(),
-            payload,
-        }
-    }
-
-    // ── Permission lifecycle: pending → resolved ───────────────────────────
-
-    #[test]
-    fn permission_pending_maps_to_correct_server_event() {
-        let event = stage_event(
-            telemetry_event_names::PERMISSION_REQUESTED,
-            serde_json::json!({
-                "sessionID": "sess-1",
-                "permissionID": "perm-1",
-                "info": { "tool": "bash", "pattern": "rm -rf" },
-            }),
-        );
-        let transport = ServerEvent::from_stage_event(&event)
-            .expect("permission.requested should map to a ServerEvent");
-        assert!(matches!(
-            transport,
-            ServerEvent::PermissionRequested { ref session_id, ref permission_id, .. }
-                if session_id == "sess-1" && permission_id == "perm-1"
-        ));
-    }
-
-    #[test]
-    fn permission_resolved_maps_to_correct_server_event() {
-        let event = stage_event(
-            telemetry_event_names::PERMISSION_RESOLVED,
-            serde_json::json!({
-                "sessionID": "sess-1",
-                "permissionID": "perm-1",
-                "reply": "once",
-            }),
-        );
-        let transport = ServerEvent::from_stage_event(&event)
-            .expect("permission.resolved should map to a ServerEvent");
-        assert!(matches!(
-            transport,
-            ServerEvent::PermissionResolved { ref session_id, ref permission_id, ref reply, .. }
-                if session_id == "sess-1" && permission_id == "perm-1" && reply == "once"
-        ));
-    }
-
-    // ── Tool call lifecycle: started → completed ───────────────────────────
-
-    #[test]
-    fn tool_call_started_maps_to_correct_server_event() {
-        let event = stage_event(
-            telemetry_event_names::TOOL_STARTED,
-            serde_json::json!({
-                "sessionID": "sess-1",
-                "toolCallId": "call-1",
-                "toolName": "bash",
-            }),
-        );
-        // ToolCallStarted goes through the ToolCallLifecycle mapping.
-        let transport = ServerEvent::from_stage_event(&event)
-            .expect("tool_call.started should map to a ServerEvent");
-        assert!(matches!(
-            transport,
-            ServerEvent::ToolCallLifecycle { ref session_id, ref tool_call_id, phase: ToolCallPhase::Start, .. }
-                if session_id == "sess-1" && tool_call_id == "call-1"
-        ));
-    }
-
-    #[test]
-    fn tool_call_completed_maps_to_correct_server_event() {
-        let event = stage_event(
-            telemetry_event_names::TOOL_COMPLETED,
-            serde_json::json!({
-                "sessionID": "sess-1",
-                "toolCallId": "call-1",
-                "toolName": "bash",
-            }),
-        );
-        let transport = ServerEvent::from_stage_event(&event)
-            .expect("tool_call.completed should map to a ServerEvent");
-        assert!(matches!(
-            transport,
-            ServerEvent::ToolCallLifecycle {
-                phase: ToolCallPhase::Complete,
-                ..
-            }
-        ));
-    }
-
-    // ── Reconcile / session.updated lifecycle ──────────────────────────────
-
-    #[test]
-    fn session_updated_maps_to_correct_server_event() {
-        let event = stage_event(
-            telemetry_event_names::SESSION_UPDATED,
-            serde_json::json!({
-                "sessionID": "sess-1",
-                "source": "turn.final",
-            }),
-        );
-        let transport = ServerEvent::from_stage_event(&event)
-            .expect("session.updated should map to a ServerEvent");
-        assert!(matches!(
-            transport,
-            ServerEvent::SessionUpdated { ref session_id, ref source }
-                if session_id == "sess-1" && source == "turn.final"
-        ));
-    }
 
     // ── ReconcileReason wire contract ────────────────────────────────────
     // These strings are the wire protocol between server and all three

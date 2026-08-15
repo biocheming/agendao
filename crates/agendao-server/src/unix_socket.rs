@@ -1,13 +1,7 @@
-use agendao_orchestrator::OrchestrationCore;
-/// Unix Socket Server - Listens on Unix domain socket and dispatches to OrchestrationCore.
+/// Unix Socket Server - Listens on Unix domain socket and dispatches to canonical session APIs.
 ///
 /// This server implements the JSON-RPC protocol over Unix sockets,
-/// allowing local processes to communicate with OrchestrationCore without HTTP overhead.
-///
-/// Session authority is shared with the HTTP server: `OrchestrationCore` is
-/// constructed with `agendao_session::SessionManager` (the same instance as
-/// `ServerState.sessions`), so `prompt`, `list_sessions`, and `get_session`
-/// all read/write the same session data — no text mirror needed.
+/// allowing local processes to communicate without HTTP overhead.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -19,34 +13,18 @@ use crate::server::ServerState;
 use crate::session_runtime::frontend_subscription::{
     frontend_event_passes_subscription_caps, frontend_event_session_id,
 };
-use agendao_session_core::SessionStore;
-
-/// Unix Socket server. Generic over `S: SessionStore` so it can accept
-/// `OrchestrationCore<agendao_session::SessionManager>` for unified authority.
-pub struct UnixSocketServer<S: SessionStore = agendao_session_core::SessionManager> {
+pub struct UnixSocketServer {
     state: Arc<ServerState>,
-    core: Arc<OrchestrationCore<S>>,
     socket_path: String,
 }
 
-impl<S: SessionStore> UnixSocketServer<S> {
-    pub fn new(
-        state: Arc<ServerState>,
-        core: Arc<OrchestrationCore<S>>,
-        socket_path: String,
-    ) -> Self {
-        Self {
-            state,
-            core,
-            socket_path,
-        }
+impl UnixSocketServer {
+    pub fn new(state: Arc<ServerState>, socket_path: String) -> Self {
+        Self { state, socket_path }
     }
 
     /// Start the Unix socket server
-    pub async fn serve(&self) -> Result<()>
-    where
-        S: Send + 'static,
-    {
+    pub async fn serve(&self) -> Result<()> {
         // 1. Reject symlinks anywhere in the ancestor chain.
         //    create_dir_all, remove_file, and bind all follow symlinks
         //    silently — we must check before any of them touch the path.
@@ -104,9 +82,8 @@ impl<S: SessionStore> UnixSocketServer<S> {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
                     let state = Arc::clone(&self.state);
-                    let core = Arc::clone(&self.core);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, state, core).await {
+                        if let Err(e) = handle_connection(stream, state).await {
                             tracing::error!("Error handling connection: {}", e);
                         }
                     });
@@ -119,7 +96,7 @@ impl<S: SessionStore> UnixSocketServer<S> {
     }
 }
 
-impl<S: SessionStore> Drop for UnixSocketServer<S> {
+impl Drop for UnixSocketServer {
     fn drop(&mut self) {
         // Clean up socket file
         let _ = std::fs::remove_file(&self.socket_path);
@@ -151,11 +128,7 @@ impl Drop for UmaskGuard {
     }
 }
 
-async fn handle_connection<S: SessionStore + Send + 'static>(
-    stream: UnixStream,
-    state: Arc<ServerState>,
-    core: Arc<OrchestrationCore<S>>,
-) -> Result<()> {
+async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -193,18 +166,26 @@ async fn handle_connection<S: SessionStore + Send + 'static>(
             let subscription = agendao_api::ResolvedFrontendSubscription::from_wire_tier(
                 request.params.get("tier").and_then(|v| v.as_str()),
             );
-            let response = handle_request(request, &state, &core).await;
+            let response = handle_request(request, &state).await;
             let response_json = serde_json::to_string(&response)?;
             writer.write_all(response_json.as_bytes()).await?;
             writer.write_all(b"\n").await?;
             writer.flush().await?;
 
-            stream_frontend_events_to_writer(&state, session_id.as_deref(), subscription, writer)
+            if response.error.is_none() {
+                let subscription = subscription.expect("subscribe validation and parsing agree");
+                stream_frontend_events_to_writer(
+                    &state,
+                    session_id.as_deref(),
+                    subscription,
+                    writer,
+                )
                 .await;
+            }
             return Ok(());
         }
 
-        let response = handle_request(request, &state, &core).await;
+        let response = handle_request(request, &state).await;
         let response_json = serde_json::to_string(&response)?;
         writer.write_all(response_json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
@@ -216,13 +197,12 @@ async fn handle_connection<S: SessionStore + Send + 'static>(
     Ok(())
 }
 
-async fn handle_request<S: SessionStore + Send + 'static>(
+async fn handle_request(
     request: JsonRpcRequest,
     state: &Arc<ServerState>,
-    core: &Arc<OrchestrationCore<S>>,
 ) -> JsonRpcResponse<serde_json::Value> {
     let result = match request.method.as_str() {
-        "prompt" => handle_prompt(request.params, state, core).await,
+        "prompt" => handle_prompt(request.params, state).await,
         "list_sessions" => handle_list_sessions(state).await,
         "get_workspace_context" => handle_get_workspace_context(state).await,
         "get_recent_models" => handle_get_recent_models(state).await,
@@ -254,10 +234,9 @@ async fn handle_request<S: SessionStore + Send + 'static>(
     }
 }
 
-async fn handle_prompt<S: SessionStore + Send + 'static>(
+async fn handle_prompt(
     params: serde_json::Value,
     state: &Arc<ServerState>,
-    core: &Arc<OrchestrationCore<S>>,
 ) -> Result<serde_json::Value, JsonRpcError> {
     let req: PromptRequest = serde_json::from_value(params).map_err(|e| {
         tracing::warn!("JSON-RPC invalid params: {}", e);
@@ -267,8 +246,13 @@ async fn handle_prompt<S: SessionStore + Send + 'static>(
         }
     })?;
 
-    // Ensure session exists in the shared authority (OrchestrationCore
-    // now uses the same SessionManager as ServerState).
+    let previous_assistant_id = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&req.session_id)
+            .and_then(|session| session.last_owner_local_assistant_message())
+            .map(|message| message.id.clone())
+    };
     {
         let mut sessions = state.sessions.lock().await;
         if sessions.get_mut(&req.session_id).is_none() {
@@ -279,23 +263,22 @@ async fn handle_prompt<S: SessionStore + Send + 'static>(
         }
     }
 
-    // Execute via OrchestrationCore — reads and writes the SAME
-    // SessionManager as ServerState.sessions. No text mirror needed.
-    let options = agendao_orchestrator::PromptExecutionOptions {
-        agent_id: req.agent_id,
-        scheduler_profile: req.scheduler_profile,
-        model: req.model,
-        variant: req.variant,
-        continue_last: req.continue_last,
+    let request = agendao_api::PromptRequest {
+        message: Some(req.text),
+        parts: None,
+        idempotency_key: None,
+        ingress_source: Some("cli".to_string()),
         source_origin: Some(agendao_types::MessageSourceOrigin::Operator),
         source_surface: Some(agendao_types::MessageSourceSurface::UnixSocket),
-        ingress_source: None,
-        idempotency_key: None,
+        agent: req.agent_id,
+        scheduler: req.scheduler,
+        model: req.model,
+        variant: req.variant,
         command: req.command,
+        arguments: None,
     };
 
-    let result = core
-        .execute_prompt(&req.session_id, &req.text, options)
+    crate::local_prompt(state.clone(), &req.session_id, request)
         .await
         .map_err(|e| {
             tracing::error!("JSON-RPC execution error: {}", e);
@@ -305,10 +288,38 @@ async fn handle_prompt<S: SessionStore + Send + 'static>(
             }
         })?;
 
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(1_800), async {
+        loop {
+            let result = {
+                let sessions = state.sessions.lock().await;
+                sessions.get(&req.session_id).and_then(|session| {
+                    let message = session.last_owner_local_assistant_message()?;
+                    (previous_assistant_id.as_deref() != Some(message.id.as_str())
+                        && message.finish.is_some())
+                    .then(|| {
+                        (
+                            message.id.clone(),
+                            crate::session_runtime::assistant_visible_text(message),
+                        )
+                    })
+                })
+            };
+            if let Some(result) = result {
+                break result;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| JsonRpcError {
+        code: -32000,
+        message: "Prompt execution timed out".to_string(),
+    })?;
+
     let response = PromptResponse {
-        session_id: result.session_id,
-        message_id: result.message_id,
-        text: result.text,
+        session_id: req.session_id,
+        message_id: completed.0,
+        text: completed.1,
     };
 
     serde_json::to_value(response).map_err(|e| {
@@ -477,13 +488,14 @@ async fn handle_subscribe_events(
     params: serde_json::Value,
     _state: &Arc<ServerState>,
 ) -> Result<serde_json::Value, JsonRpcError> {
-    let session_id = params
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsonRpcError {
-            code: -32602,
-            message: "Missing session_id".to_string(),
-        })?;
+    agendao_api::ResolvedFrontendSubscription::from_wire_tier(
+        params.get("tier").and_then(|value| value.as_str()),
+    )
+    .map_err(|message| JsonRpcError {
+        code: -32602,
+        message,
+    })?;
+    let session_id = params.get("session_id").and_then(|v| v.as_str());
     Ok(serde_json::json!({
         "subscribed": true,
         "session_id": session_id,
@@ -498,7 +510,7 @@ async fn stream_frontend_events_to_writer(
 ) {
     use tokio::io::AsyncWriteExt;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_bus(
+    let mut rx = crate::session_runtime::local_frontend::spawn_local_frontend_events(
         Arc::clone(state),
         cancel.clone(),
     );
@@ -582,13 +594,11 @@ struct PromptRequest {
     #[serde(default)]
     agent_id: Option<String>,
     #[serde(default)]
-    scheduler_profile: Option<String>,
+    scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     variant: Option<String>,
-    #[serde(default)]
-    continue_last: bool,
     #[serde(default)]
     command: Option<String>,
 }
@@ -605,23 +615,25 @@ mod tests {
             "session_id": "ses_1",
             "text": "/run cargo test",
             "agent_id": "build",
-            "scheduler_profile": "default",
+            "scheduler": {"kind": "auto"},
             "model": "openai/gpt-5",
             "variant": "fast",
-            "continue_last": true,
             "command": "run"
         }))
         .expect("deserialize unix prompt request");
 
         assert_eq!(request.command.as_deref(), Some("run"));
-        assert_eq!(request.scheduler_profile.as_deref(), Some("default"));
+        assert!(matches!(
+            request.scheduler,
+            Some(agendao_orchestrator::selector::SchedulerChoice::Auto)
+        ));
         assert_eq!(request.variant.as_deref(), Some("fast"));
-        assert!(request.continue_last);
     }
 
     #[test]
-    fn unix_socket_cli_tier_filters_message_delta_but_keeps_tool_completion() {
-        let cli_caps = agendao_api::FrontendSubscriptionTier::CliLowFrequency.default_capabilities();
+    fn unix_socket_cli_tier_keeps_final_message_and_tool_completion() {
+        let cli_caps =
+            agendao_api::FrontendSubscriptionTier::CliLowFrequency.default_capabilities();
 
         let delta = FrontendEvent::OutputBlockAppended {
             session_id: "ses_1".to_string(),
@@ -639,10 +651,24 @@ mod tests {
             tool_name: "bash".to_string(),
             phase: ToolCallPhase::Complete,
         };
+        let full = FrontendEvent::OutputBlockAppended {
+            session_id: "ses_1".to_string(),
+            id: Some("msg_1".to_string()),
+            block: serde_json::json!({
+                "kind": "message",
+                "phase": "full",
+                "text": "hi"
+            }),
+            live_identity: None,
+        };
 
         assert!(
             !frontend_event_passes_subscription_caps(&delta, &cli_caps),
             "CLI tier must not receive message delta over unix transport"
+        );
+        assert!(
+            frontend_event_passes_subscription_caps(&full, &cli_caps),
+            "CLI tier must receive the completed message"
         );
         assert!(
             frontend_event_passes_subscription_caps(&tool_done, &cli_caps),

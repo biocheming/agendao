@@ -2,51 +2,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agendao_core::bus::{Bus, BusEventDef};
+use agendao_execution_types::compaction_request;
 use agendao_memory::{MemoryAuthority, ToolMemoryObservation};
-use agendao_orchestrator::compaction_request;
-use agendao_orchestrator::runtime::events::CancelToken as RuntimeCancelToken;
-use agendao_orchestrator::runtime::events::LoopRequest;
-use agendao_orchestrator::runtime::traits::ModelCaller;
-use agendao_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
 use agendao_plugin::{HookContext, HookEvent};
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::message_v2::{
     AssistantTime, AssistantTokens, CacheTokens, CompletedTime, MessageInfo, MessagePath,
     MessageWithParts, ModelRef, Part, TextTime, ToolState, UserTime,
 };
-use agendao_provider::{Content, ContentPart, ImageUrl, Message, Provider, Role};
+use agendao_provider::{Content, ContentPart, ImageUrl, Message, Provider, Role, StreamEvent};
 
 const COMPACTION_BUFFER: u64 = 20_000;
 const PRUNE_MINIMUM: u64 = 20_000;
 const PRUNE_PROTECT: u64 = 40_000;
 
-const PRUNE_PROTECTED_TOOLS: &[&str] = &["skill", "skills_list", "skill_view"];
-
-fn new_compaction_model_caller(
-    provider: Arc<dyn Provider>,
-    model_id: String,
-    variant: Option<String>,
-) -> SimpleModelCaller {
-    SimpleModelCaller {
-        provider,
-        config: SimpleModelCallerConfig {
-            request: compaction_request(model_id, variant),
-        },
-    }
-}
-
-#[derive(Clone)]
-struct CompactionAbortToken {
-    abort: tokio_util::sync::CancellationToken,
-}
-
-impl RuntimeCancelToken for CompactionAbortToken {
-    fn is_cancelled(&self) -> bool {
-        self.abort.is_cancelled()
-    }
-}
+const PRUNE_PROTECTED_TOOLS: &[&str] = &["skills_list", "skill_view"];
 
 /// Bus event definition for session.compacted (mirrors TS Event.Compacted).
 pub const EVENT_COMPACTED: BusEventDef = BusEventDef::new("session.compacted");
@@ -525,18 +498,36 @@ When constructing the summary, try to stick to this template:
     }
 
     async fn collect_summary_text(
-        model_caller: &dyn ModelCaller,
-        req: LoopRequest,
+        provider: &dyn Provider,
+        messages: Vec<Message>,
+        model_id: String,
+        variant: Option<String>,
         abort: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<String> {
-        let stream = model_caller
-            .call_stream(req)
+        let request =
+            compaction_request(model_id, variant).to_chat_request(messages, Vec::new(), true);
+        let mut stream = provider
+            .chat_stream(request)
             .await
             .map_err(|error| anyhow::anyhow!("Compaction model call failed: {}", error))?;
-        let cancel = CompactionAbortToken { abort };
-        agendao_orchestrator::runtime::collect_text_chunks(model_caller, stream, &cancel)
-            .await
-            .map_err(|err| anyhow::anyhow!("Compaction stream failed: {}", err))
+        let mut text = String::new();
+        loop {
+            let event = tokio::select! {
+                _ = abort.cancelled() => return Err(anyhow::anyhow!("Compaction cancelled")),
+                event = stream.next() => event,
+            };
+            let Some(event) = event else {
+                break;
+            };
+            match event.map_err(|error| anyhow::anyhow!("Compaction stream failed: {error}"))? {
+                StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                StreamEvent::Error(error) => {
+                    return Err(anyhow::anyhow!("Compaction stream failed: {error}"));
+                }
+                _ => {}
+            }
+        }
+        Ok(text)
     }
 
     /// Run the full compaction process using LLM summarization.
@@ -646,17 +637,15 @@ When constructing the summary, try to stick to this template:
         };
         provider_messages.push(Message::user(prompt_text));
 
-        let model_caller = new_compaction_model_caller(
-            provider.clone(),
+        let text = match Self::collect_summary_text(
+            provider.as_ref(),
+            provider_messages,
             input.model.model_id.clone(),
             input.variant.clone(),
-        );
-        let req = LoopRequest {
-            messages: provider_messages,
-            tools: Vec::new(),
-        };
-
-        let text = match Self::collect_summary_text(&model_caller, req, input.abort.clone()).await {
+            input.abort.clone(),
+        )
+        .await
+        {
             Ok(text) => text,
             Err(error) => {
                 tracing::error!(
@@ -1501,7 +1490,7 @@ mod tests {
             auto: true,
             model: ModelRef {
                 model_id: "test-model".to_string(),
-                provider_id: "ethnopic".to_string(),
+                provider_id: "anthropic".to_string(),
             },
             custom_prompt: Some("custom".to_string()),
             plugin_context: None,
@@ -1606,7 +1595,7 @@ mod tests {
             session_id: "ses_123".to_string(),
             agent: "default".to_string(),
             model: ModelRef {
-                provider_id: "ethnopic".to_string(),
+                provider_id: "anthropic".to_string(),
                 model_id: "test-model".to_string(),
             },
             auto: true,

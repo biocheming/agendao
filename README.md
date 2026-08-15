@@ -194,7 +194,8 @@ AgenDao is a complete local coding-agent runtime. CLI, TUI, and Web are not thre
 - Web, TUI, and Server align message synchronization on authoritative `session.updated`; streaming `output_block` and the persisted final message do not diverge as separate truths
 - all three frontends share one event contract
 
-Built-in scheduler presets: `sisyphus` · `prometheus` · `atlas` · `hephaestus` · `verifier`
+Built-in Blueprint templates: `direct` · `plan` · `coordinate` · `verify` · `autoresearch`.
+They are data interpreted by the same `SchedulerEngine`, not separate executors.
 
 ---
 

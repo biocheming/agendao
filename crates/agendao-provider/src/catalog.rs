@@ -51,6 +51,7 @@ pub struct CatalogRefreshResult {
 pub struct ModelCatalogAuthority {
     snapshot_path: PathBuf,
     metadata_path: PathBuf,
+    client: reqwest::Client,
     snapshot: RwLock<Option<CatalogSnapshot>>,
     refresh_lock: Mutex<()>,
     next_generation: AtomicU64,
@@ -61,6 +62,7 @@ impl ModelCatalogAuthority {
         Self {
             snapshot_path,
             metadata_path,
+            client: reqwest::Client::new(),
             snapshot: RwLock::new(None),
             refresh_lock: Mutex::new(()),
             next_generation: AtomicU64::new(1),
@@ -83,7 +85,8 @@ impl ModelCatalogAuthority {
         }
 
         let loaded = self
-            .load_cached_snapshot_sync()
+            .load_cached_snapshot()
+            .await
             .unwrap_or_else(|| self.allocate_snapshot(HashMap::new(), CatalogMetadata::default()));
         self.store_snapshot(loaded.clone()).await;
 
@@ -119,19 +122,11 @@ impl ModelCatalogAuthority {
 
     pub async fn refresh_with_result(&self, force: bool) -> CatalogRefreshResult {
         let _guard = self.refresh_lock.lock().await;
-        let current = self
-            .snapshot
-            .read()
-            .await
-            .clone()
-            .or_else(|| self.load_cached_snapshot_sync());
+        let current = match self.snapshot.read().await.clone() {
+            Some(snapshot) => Some(snapshot),
+            None => self.load_cached_snapshot().await,
+        };
         self.refresh_locked(current, force).await
-    }
-
-    pub fn load_cached_data_sync(&self) -> ModelsData {
-        self.load_cached_snapshot_sync()
-            .map(|snapshot| snapshot.data)
-            .unwrap_or_default()
     }
 
     async fn refresh_locked(
@@ -144,7 +139,8 @@ impl ModelCatalogAuthority {
         let now = chrono::Utc::now().timestamp_millis();
         let url = format!("{}/api.json", MODELS_DEV_URL);
 
-        let mut request = reqwest::Client::new()
+        let mut request = self
+            .client
             .get(&url)
             .header("User-Agent", CATALOG_USER_AGENT)
             .timeout(std::time::Duration::from_secs(10));
@@ -272,18 +268,25 @@ impl ModelCatalogAuthority {
         *self.snapshot.write().await = Some(snapshot);
     }
 
-    fn load_cached_snapshot_sync(&self) -> Option<CatalogSnapshot> {
-        let data = load_catalog_data_from_path_sync(&self.snapshot_path);
+    async fn load_cached_snapshot(&self) -> Option<CatalogSnapshot> {
+        let raw = tokio::fs::read_to_string(&self.snapshot_path).await.ok()?;
+        let data = parse_models_data(&raw).unwrap_or_default();
         if data.is_empty() {
             return None;
         }
 
-        let metadata = read_metadata_sync(&self.metadata_path).unwrap_or_else(|| CatalogMetadata {
-            etag: None,
-            last_refresh_at: None,
-            last_success_at: None,
-            source_url: format!("{}/api.json", MODELS_DEV_URL),
-        });
+        let metadata = match tokio::fs::read_to_string(&self.metadata_path).await {
+            Ok(raw) => serde_json::from_str::<CatalogMetadata>(&raw).unwrap_or_default(),
+            Err(_) => CatalogMetadata::default(),
+        };
+        let metadata = CatalogMetadata {
+            source_url: if metadata.source_url.is_empty() {
+                format!("{}/api.json", MODELS_DEV_URL)
+            } else {
+                metadata.source_url
+            },
+            ..metadata
+        };
 
         Some(self.allocate_snapshot(data, metadata))
     }
@@ -351,17 +354,8 @@ pub fn metadata_path_for_snapshot(snapshot_path: &Path) -> PathBuf {
     parent.join(format!("{stem}.meta.json"))
 }
 
-pub fn load_default_catalog_data_sync() -> ModelsData {
-    load_catalog_data_from_path_sync(&default_catalog_snapshot_path())
-}
-
-fn read_metadata_sync(path: &Path) -> Option<CatalogMetadata> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<CatalogMetadata>(&raw).ok()
-}
-
-pub fn load_catalog_data_from_path_sync(path: &Path) -> ModelsData {
-    let Ok(raw) = std::fs::read_to_string(path) else {
+pub(crate) fn load_default_catalog_data_sync() -> ModelsData {
+    let Ok(raw) = std::fs::read_to_string(default_catalog_snapshot_path()) else {
         return HashMap::new();
     };
     parse_models_data(&raw).unwrap_or_default()
@@ -417,15 +411,15 @@ mod tests {
         dir.join(filename)
     }
 
-    #[test]
-    fn load_catalog_data_from_path_sync_returns_empty_for_missing_file() {
+    #[tokio::test]
+    async fn cached_snapshot_returns_none_for_missing_file() {
         let path = temp_snapshot_path("missing.snapshot.json");
-        let data = load_catalog_data_from_path_sync(&path);
-        assert!(data.is_empty());
+        let authority = ModelCatalogAuthority::with_snapshot_path(path);
+        assert!(authority.load_cached_snapshot().await.is_none());
     }
 
-    #[test]
-    fn load_catalog_data_from_path_sync_reads_snapshot_from_primary_path() {
+    #[tokio::test]
+    async fn cached_snapshot_reads_primary_path() {
         let path = temp_snapshot_path("models.snapshot.json");
         fs::write(
             &path,
@@ -440,7 +434,11 @@ mod tests {
         )
         .expect("write snapshot");
 
-        let data = load_catalog_data_from_path_sync(&path);
-        assert!(data.contains_key("openai"));
+        let authority = ModelCatalogAuthority::with_snapshot_path(path);
+        let snapshot = authority
+            .load_cached_snapshot()
+            .await
+            .expect("cached snapshot");
+        assert!(snapshot.data.contains_key("openai"));
     }
 }

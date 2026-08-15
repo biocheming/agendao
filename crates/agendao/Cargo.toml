@@ -24,7 +24,6 @@ product-shell = [
     "dep:agendao-tui-revue",
     "agendao-tui-revue/local-server",
     "dep:clap",
-    "dep:dirs",
     "dep:reqwest",
     "dep:tracing-subscriber",
     "dep:which",
@@ -34,7 +33,6 @@ product-cli-bin = [
     "agendao-cli/run-core",
     "agendao-cli/run-remote-stream",
     "agendao-cli/local-server",
-    "dep:dirs",
     "dep:tracing-subscriber",
 ]
 product-serve-bin = [
@@ -46,7 +44,6 @@ product-serve-bin = [
     "agendao-server/pty",
     "agendao-server/mcp",
     "dep:clap",
-    "dep:dirs",
     "dep:tracing-subscriber",
 ]
 
@@ -75,9 +72,7 @@ agendao-server = { path = "../agendao-server", optional = true, default-features
 agendao-tui-revue = { path = "../agendao-tui-revue", optional = true, default-features = false }
 tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 clap = { workspace = true, optional = true }
-dirs = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, default-features = false, features = ["charset", "http2", "json", "system-proxy"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }

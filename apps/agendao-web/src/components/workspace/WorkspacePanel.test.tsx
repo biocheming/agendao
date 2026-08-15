@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { resetAgendaoStore } from "../../test/store-test-utils";
@@ -31,7 +31,6 @@ function renderWorkspacePanel(props: Partial<Parameters<typeof WorkspacePanel>[0
       executionActivity={createExecutionActivityStub()}
       schedulerNavigation={{
         navigateToStage: vi.fn<(stageId: string) => void>(),
-        navigateToAttachedSession: vi.fn<(sessionId: string, context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null }) => void>(),
         previewStage: vi.fn<(stageId: string | null) => void>(),
         restoreActiveStage: vi.fn<() => void>(),
       }}
@@ -83,7 +82,7 @@ describe("WorkspacePanel", () => {
   it("keeps attach/reference disabled without a selection and enables them for a selected workspace node", () => {
     const onAttachSelectedWorkspaceNode = vi.fn<() => void>();
     const onInsertWorkspaceReference = vi.fn<() => void>();
-    const { rerender } = renderWorkspacePanel({
+    renderWorkspacePanel({
       onAttachSelectedWorkspaceNode,
       onInsertWorkspaceReference,
     });
@@ -91,29 +90,7 @@ describe("WorkspacePanel", () => {
     expect(screen.getByTestId("workspace-attach")).toBeDisabled();
     expect(screen.getByTestId("workspace-insert-reference")).toBeDisabled();
 
-    useAgendaoStore.setState({ selectedWorkspacePath: "/repo/main.ts" });
-    rerender(
-      <WorkspacePanel
-        apiJson={createApiJsonStub()}
-        workspaceRootLabel="/repo"
-        workspaceLinkLabel={null}
-        workspaceLinkStageId={null}
-        executionActivity={createExecutionActivityStub()}
-        schedulerNavigation={{
-          navigateToStage: vi.fn<(stageId: string) => void>(),
-          navigateToAttachedSession: vi.fn<(sessionId: string, context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null }) => void>(),
-          previewStage: vi.fn<(stageId: string | null) => void>(),
-          restoreActiveStage: vi.fn<() => void>(),
-        }}
-        onCreateWorkspaceFile={vi.fn<() => Promise<void>>(async () => undefined)}
-        onCreateWorkspaceDirectory={vi.fn<() => Promise<void>>(async () => undefined)}
-        onUploadWorkspaceFiles={vi.fn<(event: React.ChangeEvent<HTMLInputElement>) => void>()}
-        onSelectWorkspaceNode={vi.fn<(path: string, type: "file" | "directory") => void>()}
-        onExpandWorkspaceNode={vi.fn<(path: string) => void>()}
-        onInsertWorkspaceReference={onInsertWorkspaceReference}
-        onAttachSelectedWorkspaceNode={onAttachSelectedWorkspaceNode}
-      />,
-    );
+    act(() => useAgendaoStore.setState({ selectedWorkspacePath: "/repo/main.ts" }));
 
     expect(screen.getByTestId("workspace-attach")).not.toBeDisabled();
     expect(screen.getByTestId("workspace-insert-reference")).not.toBeDisabled();

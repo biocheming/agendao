@@ -71,15 +71,11 @@ impl ResolvedMultimodalConfig {
     }
 
     pub fn merged_voice_config(config: &Config) -> VoiceConfig {
-        let mut merged = config.voice.clone().unwrap_or_default();
-        merge_voice_config(
-            &mut merged,
-            config
-                .multimodal
-                .clone()
-                .and_then(|multimodal| multimodal.voice),
-        );
-        merged
+        config
+            .multimodal
+            .clone()
+            .and_then(|multimodal| multimodal.voice)
+            .unwrap_or_default()
     }
 }
 
@@ -93,43 +89,5 @@ impl MultimodalConfigView {
             allow_image_input: resolved.allow_image_input,
             allow_file_input: resolved.allow_file_input,
         }
-    }
-}
-
-fn merge_voice_config(target: &mut VoiceConfig, overlay: Option<VoiceConfig>) {
-    let Some(overlay) = overlay else {
-        return;
-    };
-
-    if overlay.duration_seconds.is_some() {
-        target.duration_seconds = overlay.duration_seconds;
-    }
-    if overlay.attach_audio.is_some() {
-        target.attach_audio = overlay.attach_audio;
-    }
-    if overlay.mime.is_some() {
-        target.mime = overlay.mime;
-    }
-    if overlay.language.is_some() {
-        target.language = overlay.language;
-    }
-    merge_voice_command(&mut target.record, overlay.record);
-    merge_voice_command(&mut target.transcribe, overlay.transcribe);
-}
-
-fn merge_voice_command(
-    target: &mut Option<VoiceCommandConfig>,
-    overlay: Option<VoiceCommandConfig>,
-) {
-    let Some(overlay) = overlay else {
-        return;
-    };
-
-    let target_command = target.get_or_insert_with(VoiceCommandConfig::default);
-    if !overlay.command.is_empty() {
-        target_command.command = overlay.command;
-    }
-    for (key, value) in overlay.env {
-        target_command.env.insert(key, value);
     }
 }

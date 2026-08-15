@@ -184,25 +184,18 @@ where agendao          # Windows (Command Prompt)
 AgenDao 需要至少一个 LLM Provider 的凭证才能工作。最简单的方式是设置环境变量：
 
 ```bash
-# 智谱 BigModel（推荐）
-export ZHIPUAI_API_KEY="zhipu-..."
+# OpenAI Responses / Chat Completions
+export OPENAI_API_KEY="sk-..."
 
-# 或阿里云百炼
-export ALIBABA_CN_API_KEY="dashscope-..."
-
-# 或 Moonshot Kimi
-export KIMI_FOR_CODING_API_KEY="kimi-..."
-
-# 或使用本地 Ollama（无需 API 密钥）
-# 先安装并启动 Ollama: https://ollama.ai
-ollama pull llama3.2
+# 或 Anthropic Messages
+export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 将环境变量写入 shell profile 使其持久化：
 
 ```bash
 # 添加到 ~/.bashrc 或 ~/.zshrc
-echo 'export ZHIPUAI_API_KEY="zhipu-..."' >> ~/.bashrc
+echo 'export OPENAI_API_KEY="sk-..."' >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -230,10 +223,10 @@ touch ~/.agendao/agendao.jsonc   # 或 ~/.agendao/agendao.json
 
 ```jsonc
 {
-  "model": "glm-5.1",
+  "model": "gpt-5",
   "provider": {
-    "zhipuai": {
-      "name": "Zhipu AI"
+    "openai": {
+      "name": "OpenAI"
     }
   }
 }
@@ -241,14 +234,8 @@ touch ~/.agendao/agendao.jsonc   # 或 ~/.agendao/agendao.json
 
 参见 [配置参考](configuration) 了解完整配置选项。
 
-如果你还想一起启用外部 scheduler 配置，不要再去找旧的平铺示例文件名。当前示例入口在：
-
-- `docs/examples/scheduler/presets/`
-- `docs/examples/scheduler/verifier/`
-- `docs/examples/scheduler/pso/`
-- `docs/examples/scheduler/autoresearch/`
-
-更稳妥的做法是把对应示例复制到你的项目里，再让 `schedulerPath` 指向项目内副本，这样示例里的 `workflowPath`、`agentTree` 和 `trees/` 相对路径不会丢。
+默认 scheduler 选择是 `auto`，无需在配置文件中设置路径。需要显式控制拓扑时，在 session 或
+prompt 请求的 `scheduler` 字段中选择模板或内联 Blueprint，见 [Scheduler](scheduler)。
 
 ### 3. 启动 AgenDao
 
@@ -265,7 +252,7 @@ agendao run "explain the project structure"
 
 ## 重要目录
 
-自 2026.7 起，AgenDao 把所有用户级数据统一收在一个目录（与 `~/.codex`、`~/.claude` 同一约定）：
+AgenDao 把所有用户级数据统一收在一个目录：
 
 | 目录 | 路径 | 用途 |
 |------|------|------|
@@ -288,7 +275,6 @@ agendao run "explain the project structure"
 └── prompt-history.json            # TUI prompt 历史
 ```
 
-- 首次启动会自动把旧 XDG 位置（`~/.config/agendao`、`~/.local/share/agendao`、`~/.cache/agendao`）的数据迁移进来；目标已存在时以新位置为准，旧目录只留空壳。
 - 可用 `AGENDAO_HOME` 环境变量整体换到别的位置（测试/便携场景）。
 
 使用 `agendao debug paths` 查看当前系统中的实际路径。
@@ -334,10 +320,6 @@ sudo rm -rf /usr/local/share/agendao/web
 
 # 移除配置和数据（可选）
 rm -rf ~/.agendao
-# 旧版 XDG 残留（如曾运行过 2026.7 之前的版本）
-rm -rf ~/.config/agendao
-rm -rf ~/.local/share/agendao
-rm -rf ~/.cache/agendao
 ```
 
 或使用内置卸载命令：

@@ -24,7 +24,6 @@ describe("MessageCard compaction block", () => {
       <MessageCard
         message={message}
         onNavigateStage={vi.fn<(stageId: string) => void>()}
-        onNavigateAttachedSession={vi.fn<(sessionId: string) => void>()}
       />,
     );
 

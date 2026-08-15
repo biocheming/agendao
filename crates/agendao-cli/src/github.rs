@@ -4,17 +4,13 @@ use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 
-use agendao_agent::{AgentExecutor, AgentInfo, AgentRegistry};
+use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_config::loader::load_config;
-use agendao_config::{Config, SkillTreeNodeConfig};
-use agendao_orchestrator::{
-    resolve_skill_markdown_repo, SkillTreeNode, SkillTreeRequestPlan, SkillTreeTruncationStrategy,
-};
 use agendao_session::system::{EnvironmentContext, SystemPrompt};
 use agendao_tool::registry::create_default_registry;
 
-use crate::agent_stream_adapter::stream_prompt_to_text;
 use crate::cli::GithubCommands;
+use crate::github_scheduler::run_github_prompt;
 use crate::providers::setup_providers;
 use crate::util::truncate_text;
 
@@ -36,56 +32,6 @@ fn parse_model_and_provider(model: Option<String>) -> (Option<String>, Option<St
         );
     }
     (None, Some(raw))
-}
-
-fn to_orchestrator_skill_tree(node: &SkillTreeNodeConfig) -> SkillTreeNode {
-    SkillTreeNode {
-        node_id: node.node_id.clone(),
-        markdown_path: node.markdown_path.clone(),
-        children: node
-            .children
-            .iter()
-            .map(to_orchestrator_skill_tree)
-            .collect(),
-    }
-}
-
-fn resolve_request_skill_tree_plan(config: &Config) -> Option<SkillTreeRequestPlan> {
-    let skill_tree = config.composition.as_ref()?.skill_tree.as_ref()?;
-    if matches!(skill_tree.enabled, Some(false)) {
-        return None;
-    }
-
-    let root = skill_tree.root.as_ref()?;
-    let root = to_orchestrator_skill_tree(root);
-    let markdown_repo = resolve_skill_markdown_repo(&config.skill_paths);
-    let truncation_strategy = skill_tree
-        .truncation_strategy
-        .as_deref()
-        .and_then(SkillTreeTruncationStrategy::from_label);
-    if skill_tree.truncation_strategy.is_some() && truncation_strategy.is_none() {
-        tracing::warn!(
-            strategy = skill_tree
-                .truncation_strategy
-                .as_deref()
-                .unwrap_or_default(),
-            "unknown skill tree truncation strategy; using default head-tail"
-        );
-    }
-
-    match SkillTreeRequestPlan::from_tree_with_options(
-        &root,
-        &markdown_repo,
-        skill_tree.separator.as_deref(),
-        skill_tree.token_budget,
-        truncation_strategy,
-    ) {
-        Ok(plan) => plan,
-        Err(error) => {
-            tracing::warn!(%error, "failed to build request skill tree plan");
-            None
-        }
-    }
 }
 
 fn parse_github_remote(url: &str) -> Option<(String, String)> {
@@ -113,7 +59,7 @@ fn parse_github_remote(url: &str) -> Option<(String, String)> {
 
 fn provider_secret_keys(provider: &str) -> Vec<&'static str> {
     match provider {
-        "ethnopic" => vec!["ANTHROPIC_API_KEY"],
+        "anthropic" => vec!["ANTHROPIC_API_KEY"],
         "openai" => vec!["OPENAI_API_KEY"],
         "openrouter" => vec!["OPENROUTER_API_KEY"],
         "google" => vec!["GOOGLE_API_KEY"],
@@ -1181,40 +1127,37 @@ async fn generate_agent_response(
         agent_info = agent_info.with_model(model_id, provider_id);
     }
 
-    let agent_registry_arc = Arc::new(agent_registry);
-    let mut executor = AgentExecutor::new(
-        agent_info.clone(),
-        provider_registry,
-        tool_registry,
-        agent_registry_arc,
-    )
-    .with_tool_runtime_config(agendao_tool::ToolRuntimeConfig::from_config(&config));
-
-    // Build model-specific system prompt + environment context (TS parity)
-    {
-        let (model_api_id, provider_id) = match &agent_info.model {
-            Some(m) => (m.model_id.clone(), m.provider_id.clone()),
-            None => ("unknown-model".to_string(), "unknown".to_string()),
-        };
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let model_prompt = SystemPrompt::for_model(&model_api_id);
-        let env_ctx = EnvironmentContext::from_current(
-            &model_api_id,
-            &provider_id,
-            cwd.to_string_lossy().as_ref(),
-        );
-        let env_prompt = SystemPrompt::environment(&env_ctx);
-        let full_prompt = format!("{}\n\n{}", model_prompt, env_prompt);
-        executor = executor.with_system_prompt(full_prompt);
-    }
-
-    if let Some(plan) = resolve_request_skill_tree_plan(&config) {
-        executor = executor.with_request_skill_tree_plan(plan);
-    }
+    let (model_api_id, provider_id) = match &agent_info.model {
+        Some(model) => (model.model_id.clone(), model.provider_id.clone()),
+        None => ("unknown-model".to_string(), "unknown".to_string()),
+    };
+    let environment = EnvironmentContext::from_current(
+        &model_api_id,
+        &provider_id,
+        cwd.to_string_lossy().as_ref(),
+    );
+    let system_policy = [
+        agent_info.resolved_system_prompt(),
+        Some(SystemPrompt::instructions().to_string()),
+        Some(SystemPrompt::environment(&environment)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    agent_info = agent_info.with_system_prompt(system_policy);
 
     // PLACEHOLDER_CHUNK_18
 
-    stream_prompt_to_text(&mut executor, prompt).await
+    run_github_prompt(
+        prompt,
+        agent_info,
+        provider_registry,
+        tool_registry,
+        agendao_tool::ToolRuntimeConfig::from_config(&config),
+        cwd.to_string_lossy().into_owned(),
+    )
+    .await
 }
 
 pub(super) async fn handle_github_command(action: GithubCommands) -> anyhow::Result<()> {

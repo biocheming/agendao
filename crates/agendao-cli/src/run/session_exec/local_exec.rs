@@ -14,6 +14,7 @@ pub(in crate::run) struct LocalPromptRequest<'a> {
     pub fork: bool,
     pub model: Option<&'a str>,
     pub agent: Option<&'a str>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub variant: Option<&'a str>,
     pub title: Option<&'a str>,
     pub directory: &'a str,
@@ -31,6 +32,7 @@ pub(in crate::run) async fn run_cli_prompt_local(
         fork,
         model,
         agent,
+        scheduler,
         variant,
         title,
         directory,
@@ -48,7 +50,7 @@ pub(in crate::run) async fn run_cli_prompt_local(
             idempotency_key: None,
             ingress_source: Some("cli".to_string()),
             agent: agent.map(|s| s.to_string()),
-            scheduler_profile: None,
+            scheduler,
             model: model.map(|s| s.to_string()),
             variant: variant.map(|s| s.to_string()),
             command: command.map(|s| s.to_string()),
@@ -96,7 +98,7 @@ async fn resolve_local_session(
     let created = local_server_bridge::local_create_session(
         Arc::clone(state),
         agendao_client::CreateSessionRequest {
-            scheduler_profile: None,
+            scheduler: None,
             directory: Some(directory.to_string()),
             project_id: None,
             title: title.map(|s| s.to_string()),

@@ -1,10 +1,8 @@
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n/I18nProvider";
 import type {
-  AppConfigSnapshot,
   ModeOption,
   ModelOption,
-  SchedulerConfigResponse,
   ThemeOption,
 } from "./types";
 
@@ -33,8 +31,6 @@ export interface GeneralTabProps {
   workspaceRootPath: string;
   workspaceConfigDir?: string | null;
   providerSummary: string;
-  schedulerConfig: SchedulerConfigResponse | null;
-  configSnapshot: AppConfigSnapshot | null;
   mcpConfigs: Record<string, unknown>;
   pluginConfigs: Record<string, unknown>;
   styles: GeneralTabStyles;
@@ -56,8 +52,6 @@ export function GeneralTab({
   workspaceRootPath,
   workspaceConfigDir,
   providerSummary,
-  schedulerConfig,
-  configSnapshot,
   mcpConfigs,
   pluginConfigs,
   styles,
@@ -175,14 +169,10 @@ export function GeneralTab({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className={summaryCardClass}>
           <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.general.providers")}</span>
           <strong>{providerSummary}</strong>
-        </div>
-        <div className={summaryCardClass}>
-          <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.general.schedulerPath")}</span>
-          <strong>{schedulerConfig?.raw_path || configSnapshot?.schedulerPath || "--"}</strong>
         </div>
         <div className={summaryCardClass}>
           <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">{t("settings.general.mcpServers")}</span>

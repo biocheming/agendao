@@ -166,24 +166,15 @@ pub enum StreamTermination {
 
 pub type StreamResult = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send>>;
 
-/// Convert runtime pipeline output (driver `StreamingEvent`) into agendao `StreamResult`.
-///
-/// The bridge path preserves tool-call assembly semantics by running through
-/// `bridge_streaming_events()`, which internally wraps with `assemble_tool_calls()`.
-pub fn pipeline_to_stream_result(
-    pipeline_output: Pin<
-        Box<dyn Stream<Item = Result<crate::driver::StreamingEvent, ProviderError>> + Send>,
-    >,
-) -> StreamResult {
-    crate::bridge::bridge_streaming_events(pipeline_output)
-}
-
 /// Idle watchdog for streaming responses.
 ///
 /// Wraps a stream and terminates it with a `StreamError` when no chunk/event
 /// arrives within `stall_timeout`. The timer resets on every received item, so
 /// only genuine stalls (not merely long streams) trip the watchdog.
-pub fn with_stall_watchdog(inner: StreamResult, stall_timeout: std::time::Duration) -> StreamResult {
+pub fn with_stall_watchdog(
+    inner: StreamResult,
+    stall_timeout: std::time::Duration,
+) -> StreamResult {
     Box::pin(stream::unfold(
         (inner, false),
         move |(mut inner, terminated)| async move {
@@ -408,11 +399,8 @@ impl ToolCallAssembler {
     }
 }
 
-/// Flush remaining incomplete tool call assemblers using tolerant JSON parsing.
-///
-/// Attempts `serde_json::from_str` on accumulated argument strings. On parse
-/// failure, wraps the raw string as `Value::String` so downstream recovery
-/// (normalize_tool_arguments / ultra) can handle it.
+/// Flush remaining tool call assemblers, preserving malformed payloads as strings
+/// so the canonical tool boundary can reject them with a typed argument error.
 fn flush_tool_call_assemblers(
     assemblers: &mut HashMap<String, ToolCallAssembler>,
     out: &mut VecDeque<Result<StreamEvent, ProviderError>>,
@@ -516,17 +504,17 @@ pub fn assemble_tool_calls(inner: StreamResult) -> StreamResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EthnopicEvent {
+pub(crate) struct AnthropicEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     pub index: Option<u32>,
-    pub delta: Option<EthnopicDelta>,
-    pub content_block: Option<EthnopicContentBlock>,
-    pub message: Option<EthnopicMessage>,
+    pub delta: Option<AnthropicDelta>,
+    pub content_block: Option<AnthropicContentBlock>,
+    pub message: Option<AnthropicMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EthnopicDelta {
+pub(crate) struct AnthropicDelta {
     #[serde(rename = "type")]
     pub delta_type: Option<String>,
     pub text: Option<String>,
@@ -536,7 +524,7 @@ pub(crate) struct EthnopicDelta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EthnopicContentBlock {
+pub(crate) struct AnthropicContentBlock {
     #[serde(rename = "type")]
     pub block_type: String,
     pub id: Option<String>,
@@ -545,12 +533,12 @@ pub(crate) struct EthnopicContentBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EthnopicMessage {
-    pub(crate) usage: Option<EthnopicUsage>,
+pub(crate) struct AnthropicMessage {
+    pub(crate) usage: Option<AnthropicUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EthnopicUsage {
+pub(crate) struct AnthropicUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
 }
@@ -657,18 +645,18 @@ pub async fn decode_sse_stream(
     Ok(Box::pin(sse_stream))
 }
 
-/// Parse a pre-decoded JSON value as an ethnopic-compatible SSE event.
+/// Parse a pre-decoded JSON value as an anthropic-compatible SSE event.
 ///
 /// Works on an already-parsed `serde_json::Value` from the SseDecoder pipeline.
-pub fn parse_ethnopic_value(value: serde_json::Value) -> Option<StreamEvent> {
-    parse_ethnopic_value_stateful(value, &mut std::collections::HashMap::new())
+pub fn parse_anthropic_value(value: serde_json::Value) -> Option<StreamEvent> {
+    parse_anthropic_value_stateful(value, &mut std::collections::HashMap::new())
 }
 
-pub fn parse_ethnopic_value_stateful(
+pub fn parse_anthropic_value_stateful(
     value: serde_json::Value,
     block_types: &mut std::collections::HashMap<u32, String>,
 ) -> Option<StreamEvent> {
-    let event: EthnopicEvent = serde_json::from_value(value).ok()?;
+    let event: AnthropicEvent = serde_json::from_value(value).ok()?;
 
     match event.event_type.as_str() {
         "content_block_delta" => {
@@ -956,10 +944,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_assembler_flush_recovers_malformed_json() {
+    fn tool_call_assembler_flush_preserves_malformed_json_for_rejection() {
         // Simulates the bug scenario: unescaped quotes make depth tracking
         // wrong, so try_emit never fires.  The batch flush wraps malformed
-        // JSON as String for downstream ultra recovery.
+        // JSON as String for the canonical tool boundary to reject.
         let mut assembler = ToolCallAssembler::new("tc-2".into(), "write".into());
         assembler.append("{\"content\":\"<html lang=\"en\">hello\",\"file_path\":\"/tmp/a\"}");
 
@@ -976,8 +964,7 @@ mod tests {
         let event = out.pop_front().unwrap().expect("should be Ok");
         match event {
             StreamEvent::ToolCallEnd { input, .. } => {
-                // Input is wrapped as String since serde_json can't parse it.
-                // Downstream normalize_tool_arguments + ultra recovery handles it.
+                // Input stays a string because serde_json cannot parse it.
                 assert!(
                     input.is_string() || input.is_object(),
                     "should be string (for recovery) or object (if parse succeeded)"
@@ -985,20 +972,6 @@ mod tests {
             }
             other => panic!("unexpected: {:?}", other),
         }
-    }
-
-    #[test]
-    fn ethnopic_parse_alias_matches_legacy_entrypoint() {
-        let frame = serde_json::json!({
-            "type": "content_block_delta",
-            "delta": { "text": "hello" }
-        });
-
-        let legacy = parse_ethnopic_value(frame.clone());
-        let neutral = parse_ethnopic_value(frame);
-
-        assert!(matches!(legacy, Some(StreamEvent::TextDelta(text)) if text == "hello"));
-        assert!(matches!(neutral, Some(StreamEvent::TextDelta(text)) if text == "hello"));
     }
 
     #[tokio::test]
@@ -1115,10 +1088,7 @@ mod tests {
             |mut delays| async move {
                 let delay = delays.next()?;
                 tokio::time::sleep(delay).await;
-                Some((
-                    Ok(StreamEvent::TextDelta("chunk".to_string())),
-                    delays,
-                ))
+                Some((Ok(StreamEvent::TextDelta("chunk".to_string())), delays))
             },
         ))
     }
@@ -1130,8 +1100,11 @@ mod tests {
             std::time::Duration::from_millis(5),
             std::time::Duration::from_millis(5),
         ]);
-        let events =
-            collect_events(with_stall_watchdog(stream, std::time::Duration::from_secs(5))).await;
+        let events = collect_events(with_stall_watchdog(
+            stream,
+            std::time::Duration::from_secs(5),
+        ))
+        .await;
         assert_eq!(events.len(), 3);
         assert!(events
             .iter()
@@ -1147,8 +1120,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(5),
         ]);
-        let mut stream =
-            with_stall_watchdog(stream, std::time::Duration::from_millis(50));
+        let mut stream = with_stall_watchdog(stream, std::time::Duration::from_millis(50));
 
         let first = stream.next().await.expect("first chunk");
         assert!(matches!(first, Ok(StreamEvent::TextDelta(_))));
@@ -1172,8 +1144,7 @@ mod tests {
     async fn stall_watchdog_idle_stream_errors_immediately_after_timeout() {
         // A stream that never yields must produce the stall error, not hang.
         let stream: StreamResult = Box::pin(futures::stream::pending());
-        let mut stream =
-            with_stall_watchdog(stream, std::time::Duration::from_millis(50));
+        let mut stream = with_stall_watchdog(stream, std::time::Duration::from_millis(50));
 
         match stream.next().await.expect("stall error item") {
             Err(ProviderError::StreamError(message)) => {

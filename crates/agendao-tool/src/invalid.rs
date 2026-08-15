@@ -4,15 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InvalidParams {
-    #[serde(alias = "tool_name")]
-    #[serde(alias = "toolName")]
     pub tool: String,
-    #[serde(alias = "error_message")]
-    #[serde(alias = "errorMessage")]
     pub error: String,
-    #[serde(alias = "receivedArgs")]
-    pub received_args: Option<serde_json::Value>,
 }
 
 pub struct InvalidTool;
@@ -93,10 +88,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_tool_accepts_legacy_shape() {
+    async fn invalid_tool_rejects_noncanonical_shape() {
         let tool = InvalidTool;
         let ctx = ToolContext::new("s".to_string(), "m".to_string(), ".".to_string());
-        let out = tool
+        let error = tool
             .execute(
                 serde_json::json!({
                     "toolName": "read_html",
@@ -105,8 +100,7 @@ mod tests {
                 ctx,
             )
             .await
-            .expect("invalid tool should accept legacy shape");
-        assert_eq!(out.title, "Invalid Tool");
-        assert!(out.output.contains("unknown tool"));
+            .expect_err("invalid tool should reject noncanonical fields");
+        assert!(matches!(error, ToolError::InvalidArguments(_)));
     }
 }

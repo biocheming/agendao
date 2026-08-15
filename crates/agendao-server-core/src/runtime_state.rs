@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use agendao_session::SessionUsage;
-use agendao_types::{ControlInputKind, ControlInputPhase, SessionContextKind};
+use agendao_types::{ControlInputKind, ControlInputPhase};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -49,7 +49,6 @@ pub struct SessionRuntimeState {
     pub pending_steering: Vec<PendingSteeringMessageSummary>,
     #[serde(default)]
     pub interrupt: InterruptRuntimeState,
-    pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
 impl SessionRuntimeState {
@@ -67,7 +66,6 @@ impl SessionRuntimeState {
             pending_followup_count: 0,
             pending_steering: Vec::new(),
             interrupt: InterruptRuntimeState::default(),
-            attached_sessions: Vec::new(),
         }
     }
 }
@@ -91,7 +89,6 @@ pub enum RunStatus {
     /// Session is intentionally sleeping.
     Sleeping,
 }
-
 
 /// Summary of a currently executing tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,14 +174,6 @@ pub enum RuntimeProtocolUpdate {
         phase: ControlInputPhase,
         at: i64,
     },
-}
-
-/// Summary of an attached session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachedSessionSummary {
-    pub attached_id: String,
-    pub parent_id: String,
-    pub context_kind: SessionContextKind,
 }
 
 // ── Store ───────────────────────────────────────────────────────────────────
@@ -347,8 +336,6 @@ impl RuntimeStateStore {
             s.pending_question = None;
             s.pending_permission = None;
             s.interrupt = InterruptRuntimeState::default();
-            // attached_sessions are NOT cleared here — they persist until
-            // explicit detach events.
         })
         .await;
     }
@@ -391,24 +378,6 @@ impl RuntimeStateStore {
                 request_id: request_id.to_string(),
                 questions,
             });
-        })
-        .await;
-    }
-
-    pub async fn scheduler_stage_started(&self, session_id: &str, stage_id: &str) {
-        self.update(session_id, |s| {
-            s.active_stage_id = Some(stage_id.to_string());
-            s.active_stage_count = s.active_stage_count.saturating_add(1);
-        })
-        .await;
-    }
-
-    pub async fn scheduler_stage_finished(&self, session_id: &str, stage_id: Option<&str>) {
-        self.update(session_id, |s| {
-            s.active_stage_count = s.active_stage_count.saturating_sub(1);
-            if s.active_stage_count == 0 || s.active_stage_id.as_deref() == stage_id {
-                s.active_stage_id = None;
-            }
         })
         .await;
     }
@@ -486,38 +455,6 @@ impl RuntimeStateStore {
                 target,
             },
         )
-        .await;
-    }
-
-    /// Register an attached session.
-    pub async fn attached_session_registered(
-        &self,
-        parent_id: &str,
-        attached_id: &str,
-        context_kind: SessionContextKind,
-    ) {
-        self.update(parent_id, |s| {
-            // Avoid duplicates.
-            if !s
-                .attached_sessions
-                .iter()
-                .any(|c| c.attached_id == attached_id)
-            {
-                s.attached_sessions.push(AttachedSessionSummary {
-                    attached_id: attached_id.to_string(),
-                    parent_id: parent_id.to_string(),
-                    context_kind,
-                });
-            }
-        })
-        .await;
-    }
-
-    /// Unregister an attached session.
-    pub async fn attached_session_unregistered(&self, parent_id: &str, attached_id: &str) {
-        self.update(parent_id, |s| {
-            s.attached_sessions.retain(|c| c.attached_id != attached_id);
-        })
         .await;
     }
 }
@@ -628,53 +565,6 @@ mod tests {
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::Running);
         assert!(state.pending_permission.is_none());
-    }
-
-    #[tokio::test]
-    async fn attached_session_register_unregister() {
-        let store = RuntimeStateStore::new();
-        store.mark_running("parent", None).await;
-
-        store
-            .attached_session_registered(
-                "parent",
-                "child_1",
-                SessionContextKind::SchedulerStageOutputSession,
-            )
-            .await;
-        store
-            .attached_session_registered(
-                "parent",
-                "child_2",
-                SessionContextKind::DelegatedSubsession,
-            )
-            .await;
-        let state = store.get("parent").await.unwrap();
-        assert_eq!(state.attached_sessions.len(), 2);
-        assert_eq!(
-            state.attached_sessions[0].context_kind,
-            SessionContextKind::SchedulerStageOutputSession
-        );
-
-        // Duplicate attach is idempotent.
-        store
-            .attached_session_registered(
-                "parent",
-                "child_1",
-                SessionContextKind::SchedulerStageOutputSession,
-            )
-            .await;
-        assert_eq!(
-            store.get("parent").await.unwrap().attached_sessions.len(),
-            2
-        );
-
-        store
-            .attached_session_unregistered("parent", "child_1")
-            .await;
-        let state = store.get("parent").await.unwrap();
-        assert_eq!(state.attached_sessions.len(), 1);
-        assert_eq!(state.attached_sessions[0].attached_id, "child_2");
     }
 
     #[tokio::test]
@@ -941,29 +831,5 @@ mod tests {
         store.mark_idle("ses_sleep").await;
         let state = store.get("ses_sleep").await.expect("state should exist");
         assert_eq!(state.run_status, RunStatus::Idle);
-    }
-
-    #[tokio::test]
-    async fn blocked_and_stage_blocked_are_separate_concepts() {
-        // Verify RunStatus::Blocked is a session-level concept and does not
-        // affect StageStatus (which lives in agendao-stage-protocol).
-        let store = RuntimeStateStore::new();
-        store
-            .mark_blocked("ses_stage_sep", Some("blocked".to_string()), None)
-            .await;
-        let state = store
-            .get("ses_stage_sep")
-            .await
-            .expect("state should exist");
-        assert_eq!(state.run_status, RunStatus::Blocked);
-        // StageStatus::Blocked is an entirely separate type in
-        // agendao_stage_protocol — they share a name but have different
-        // authority domains. This test ensures RunStatus::Blocked does not
-        // leak into nor require StageStatus.
-        assert_ne!(
-            format!("{:?}", state.run_status),
-            "StageBlocked",
-            "RunStatus::Blocked must not serialize as a stage concept"
-        );
     }
 }

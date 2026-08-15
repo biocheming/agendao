@@ -27,10 +27,9 @@ export function toolDisplaySummary(block: ToolOutputBlock): string | null {
   const displaySummary = block.display?.summary?.trim();
   if (displaySummary) return displaySummary;
 
-  const legacySummary = block.summary?.trim();
-  if (legacySummary) return legacySummary;
+  const directSummary = block.summary?.trim();
+  if (directSummary) return directSummary;
 
-  // Compatibility fallback: older payloads lack display.summary
   if (!hasDisplayContract(block)) {
     return block.detail?.trim() ?? block.text?.trim() ?? null;
   }
@@ -73,7 +72,7 @@ export function toolDisplayPreview(block: ToolOutputBlock): {
   return { previewText: null, previewKind: null, previewTruncated: false };
 }
 
-export function toolCompatDetail(block: ToolOutputBlock): string | null {
+export function toolPlainDetail(block: ToolOutputBlock): string | null {
   if (!hasDisplayContract(block) && !block.fields?.length) {
     return block.detail?.trim() ?? null;
   }

@@ -3,13 +3,12 @@
 //! Identity-driven state machine that consumes coalesced live output blocks
 //! (P3-B snapshots) and produces explicit semantic actions for frontends.
 //!
-//! This replaces the heuristic guessing in `TerminalStreamAccumulator` and
+//! This replaces heuristic message/part guessing and
 //! `render_terminal_stream_block_semantic` — no more "last same role" routing,
 //! no more `semantic_delta_suffix` prefix comparison, no more implicit
 //! `assistant_visible`/`assistant_open` boundary resets.
 //!
 //! Every live content must carry a `LiveMessagePartIdentity` (P3-A).
-//! Blocks without identity are passed through as legacy.
 
 use agendao_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 
@@ -46,11 +45,6 @@ pub enum SemanticAction {
     /// Assistant boundary: tool call or other non-text event occurred.
     /// Frontend should prepare for a potential new assistant segment.
     ToolBoundary,
-    /// Identity-bearing event that is not part of the live transcript state
-    /// machine and should be rendered directly by the caller.
-    NonTranscriptPassThrough,
-    /// Missing identity: caller must route through the legacy/no-identity path.
-    MissingIdentity,
     /// No action — block was fully consumed (e.g., Start/End identity phases).
     NoOp,
 }
@@ -67,13 +61,11 @@ struct ConsumerState {
     last_texts: std::collections::HashMap<String, String>,
     /// Currently open reasoning part key, if any.
     reasoning_key: Option<String>,
-    /// Last emitted message ID (for detecting message transitions).
-    last_message_id: Option<String>,
 }
 
 /// Core state machine for live output semantics.
 ///
-/// Input: a coalesced `OutputBlock` with optional `LiveMessagePartIdentity`.
+/// Input: a coalesced `OutputBlock` with its `LiveMessagePartIdentity`.
 /// Output: a `SemanticAction` telling the frontend what to do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveSemanticConsumer {
@@ -104,13 +96,9 @@ impl LiveSemanticConsumer {
     pub fn consume(
         &mut self,
         block_text: Option<&str>,
-        identity: Option<&LiveMessagePartIdentity>,
+        identity: &LiveMessagePartIdentity,
         mode: LiveContentMode,
     ) -> SemanticAction {
-        let Some(identity) = identity else {
-            return SemanticAction::MissingIdentity;
-        };
-
         match identity.part_kind {
             LiveMessagePartKind::AssistantText => match mode {
                 LiveContentMode::Delta => {
@@ -130,12 +118,10 @@ impl LiveSemanticConsumer {
             },
             LiveMessagePartKind::ToolCall => SemanticAction::ToolBoundary,
             LiveMessagePartKind::ToolResult => SemanticAction::ToolCallCompleted {
-                call_id: identity
-                    .legacy_block_id
-                    .clone()
-                    .unwrap_or_else(|| identity.part_key.clone()),
+                call_id: agendao_types::tool_id_from_part_key(&identity.part_key)
+                    .unwrap_or(&identity.part_key)
+                    .to_string(),
             },
-            LiveMessagePartKind::SchedulerStage => SemanticAction::NonTranscriptPassThrough,
         }
     }
 
@@ -147,34 +133,27 @@ impl LiveSemanticConsumer {
         text: &str,
     ) -> SemanticAction {
         let slot = self.part_slot(identity);
-        self.state.last_message_id = Some(identity.message_id.clone());
-
-        let previous = self.state.last_texts.get(&slot).cloned();
-        if !text.is_empty() || previous.is_none() {
-            self.state.last_texts.insert(slot.clone(), text.to_string());
-        }
-
         if identity.phase == LivePartPhase::End {
-            let final_text =
-                previous.or_else(|| self.state.last_texts.get(&slot).cloned());
-            // The part is finalized; drop its accumulated full text so the map
-            // does not grow unboundedly over a long-running session.
             self.state.last_texts.remove(&slot);
-            if let Some(final_text) = final_text {
-                if final_text.is_empty() && text.is_empty() {
-                    return SemanticAction::NoOp;
-                }
-                return SemanticAction::ReplaceTextFull {
-                    text: if text.is_empty() {
-                        final_text
-                    } else {
-                        text.to_string()
-                    },
-                };
-            }
+            return SemanticAction::NoOp;
+        }
+        if text.is_empty() {
+            return SemanticAction::NoOp;
         }
 
-        SemanticAction::NoOp
+        let previous = self.state.last_texts.insert(slot, text.to_string());
+        match previous {
+            None => SemanticAction::OpenAssistant {
+                text: text.to_string(),
+            },
+            Some(previous) if text == previous => SemanticAction::NoOp,
+            Some(previous) if text.starts_with(&previous) => SemanticAction::AppendTextDelta {
+                text: text[previous.len()..].to_string(),
+            },
+            Some(_) => SemanticAction::ReplaceTextFull {
+                text: text.to_string(),
+            },
+        }
     }
 
     fn consume_assistant_text_delta(
@@ -183,27 +162,27 @@ impl LiveSemanticConsumer {
         text: &str,
     ) -> SemanticAction {
         let slot = self.part_slot(identity);
-        self.state.last_message_id = Some(identity.message_id.clone());
-
-        if !text.is_empty() {
-            match self.state.last_texts.get_mut(&slot) {
-                Some(existing) => {
-                    existing.push_str(text);
-                }
-                None => {
-                    self.state.last_texts.insert(slot.clone(), text.to_string());
-                }
-            }
+        if identity.phase == LivePartPhase::End {
+            self.state.last_texts.remove(&slot);
+            return SemanticAction::NoOp;
+        }
+        if text.is_empty() {
+            return SemanticAction::NoOp;
         }
 
-        if identity.phase == LivePartPhase::End {
-            // The part is finalized; drop its accumulated full text so the map
-            // does not grow unboundedly over a long-running session.
-            SemanticAction::ReplaceTextFull {
-                text: self.state.last_texts.remove(&slot).unwrap_or_default(),
+        match self.state.last_texts.get_mut(&slot) {
+            Some(existing) => {
+                existing.push_str(text);
+                SemanticAction::AppendTextDelta {
+                    text: text.to_string(),
+                }
             }
-        } else {
-            SemanticAction::NoOp
+            None => {
+                self.state.last_texts.insert(slot, text.to_string());
+                SemanticAction::OpenAssistant {
+                    text: text.to_string(),
+                }
+            }
         }
     }
 
@@ -215,34 +194,29 @@ impl LiveSemanticConsumer {
         text: &str,
     ) -> SemanticAction {
         let slot = self.part_slot(identity);
-        self.state.reasoning_key = Some(slot.clone());
-        let previous = self.state.last_texts.get(&slot).cloned();
-        if !text.is_empty() {
-            self.state.last_texts.insert(slot.clone(), text.to_string());
-        }
-
         if identity.phase == LivePartPhase::End {
-            let final_text =
-                previous.or_else(|| self.state.last_texts.get(&slot).cloned());
-            // The part is finalized; drop its accumulated full text so the map
-            // does not grow unboundedly over a long-running session.
             self.state.last_texts.remove(&slot);
-            if let Some(final_text) = final_text {
-                if final_text.is_empty() && text.is_empty() {
-                    return SemanticAction::NoOp;
-                }
-                self.state.reasoning_key = None;
-                return SemanticAction::ReplaceReasoningFull {
-                    text: if text.is_empty() {
-                        final_text
-                    } else {
-                        text.to_string()
-                    },
-                };
-            }
+            self.state.reasoning_key = None;
+            return SemanticAction::CloseReasoning;
+        }
+        if text.is_empty() {
+            return SemanticAction::NoOp;
         }
 
-        SemanticAction::NoOp
+        self.state.reasoning_key = Some(slot.clone());
+        let previous = self.state.last_texts.insert(slot, text.to_string());
+        match previous {
+            None => SemanticAction::OpenReasoning {
+                text: text.to_string(),
+            },
+            Some(previous) if text == previous => SemanticAction::NoOp,
+            Some(previous) if text.starts_with(&previous) => SemanticAction::AppendReasoningDelta {
+                text: text[previous.len()..].to_string(),
+            },
+            Some(_) => SemanticAction::ReplaceReasoningFull {
+                text: text.to_string(),
+            },
+        }
     }
 
     fn consume_reasoning_delta(
@@ -251,24 +225,29 @@ impl LiveSemanticConsumer {
         text: &str,
     ) -> SemanticAction {
         let slot = self.part_slot(identity);
-        self.state.reasoning_key = Some(slot.clone());
-
-        if !text.is_empty() {
-            if let Some(existing) = self.state.last_texts.get_mut(&slot) {
-                existing.push_str(text);
-            } else {
-                self.state.last_texts.insert(slot.clone(), text.to_string());
-            }
-        }
         if identity.phase == LivePartPhase::End {
             self.state.reasoning_key = None;
-            // The part is finalized; drop its accumulated full text so the map
-            // does not grow unboundedly over a long-running session.
-            SemanticAction::ReplaceReasoningFull {
-                text: self.state.last_texts.remove(&slot).unwrap_or_default(),
+            self.state.last_texts.remove(&slot);
+            return SemanticAction::CloseReasoning;
+        }
+        if text.is_empty() {
+            return SemanticAction::NoOp;
+        }
+
+        self.state.reasoning_key = Some(slot.clone());
+        match self.state.last_texts.get_mut(&slot) {
+            Some(existing) => {
+                existing.push_str(text);
+                SemanticAction::AppendReasoningDelta {
+                    text: text.to_string(),
+                }
             }
-        } else {
-            SemanticAction::NoOp
+            None => {
+                self.state.last_texts.insert(slot, text.to_string());
+                SemanticAction::OpenReasoning {
+                    text: text.to_string(),
+                }
+            }
         }
     }
 
@@ -286,7 +265,7 @@ impl LiveSemanticConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agendao_types::{scheduler_stage_part_key, tool_call_part_key, tool_result_part_key};
+    use agendao_types::{tool_call_part_key, tool_result_part_key};
 
     fn identity(
         msg_id: &str,
@@ -299,7 +278,6 @@ mod tests {
             part_key: part_key.to_string(),
             part_kind: kind,
             phase,
-            legacy_block_id: Some("block-1".to_string()),
         }
     }
 
@@ -309,44 +287,49 @@ mod tests {
 
         let a = c.consume(
             Some("hello"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Snapshot,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            Some("hello world"),
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantText,
-                LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Snapshot,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            None,
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantText,
-                LivePartPhase::End,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(
             a,
-            SemanticAction::ReplaceTextFull {
-                text: "hello world".to_string()
+            SemanticAction::OpenAssistant {
+                text: "hello".to_string()
             }
         );
+
+        let a = c.consume(
+            Some("hello world"),
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantText,
+                LivePartPhase::Snapshot,
+            ),
+            LiveContentMode::Snapshot,
+        );
+        assert_eq!(
+            a,
+            SemanticAction::AppendTextDelta {
+                text: " world".to_string()
+            }
+        );
+
+        let a = c.consume(
+            None,
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantText,
+                LivePartPhase::End,
+            ),
+            LiveContentMode::Snapshot,
+        );
+        assert_eq!(a, SemanticAction::NoOp);
     }
 
     #[test]
@@ -355,44 +338,49 @@ mod tests {
 
         let a = c.consume(
             Some("hello"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Delta,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            Some(" world"),
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantText,
-                LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Delta,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            None,
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantText,
-                LivePartPhase::End,
-            )),
+            ),
             LiveContentMode::Delta,
         );
         assert_eq!(
             a,
-            SemanticAction::ReplaceTextFull {
-                text: "hello world".to_string()
+            SemanticAction::OpenAssistant {
+                text: "hello".to_string()
             }
         );
+
+        let a = c.consume(
+            Some(" world"),
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantText,
+                LivePartPhase::Snapshot,
+            ),
+            LiveContentMode::Delta,
+        );
+        assert_eq!(
+            a,
+            SemanticAction::AppendTextDelta {
+                text: " world".to_string()
+            }
+        );
+
+        let a = c.consume(
+            None,
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantText,
+                LivePartPhase::End,
+            ),
+            LiveContentMode::Delta,
+        );
+        assert_eq!(a, SemanticAction::NoOp);
     }
 
     #[test]
@@ -401,23 +389,23 @@ mod tests {
 
         c.consume(
             Some("msg1 text"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         // Same text, no action.
         let a = c.consume(
             Some("msg1 text"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(a, SemanticAction::NoOp);
@@ -425,15 +413,20 @@ mod tests {
         // New message ID → OpenAssistant.
         let a = c.consume(
             Some("msg2 text"),
-            Some(&identity(
+            &identity(
                 "msg-2",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
-        assert_eq!(a, SemanticAction::NoOp);
+        assert_eq!(
+            a,
+            SemanticAction::OpenAssistant {
+                text: "msg2 text".to_string()
+            }
+        );
     }
 
     #[test]
@@ -442,26 +435,31 @@ mod tests {
 
         c.consume(
             Some("old text"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         // Text completely changed (non-prefix) → replace, not append double.
         let a = c.consume(
             Some("new text"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
-        assert_eq!(a, SemanticAction::NoOp);
+        assert_eq!(
+            a,
+            SemanticAction::ReplaceTextFull {
+                text: "new text".to_string()
+            }
+        );
     }
 
     #[test]
@@ -470,44 +468,49 @@ mod tests {
 
         let a = c.consume(
             Some("thinking..."),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Snapshot,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            Some("thinking...done"),
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantReasoning,
-                LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Snapshot,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            None,
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantReasoning,
-                LivePartPhase::End,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(
             a,
-            SemanticAction::ReplaceReasoningFull {
-                text: "thinking...done".to_string()
+            SemanticAction::OpenReasoning {
+                text: "thinking...".to_string()
             }
         );
+
+        let a = c.consume(
+            Some("thinking...done"),
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantReasoning,
+                LivePartPhase::Snapshot,
+            ),
+            LiveContentMode::Snapshot,
+        );
+        assert_eq!(
+            a,
+            SemanticAction::AppendReasoningDelta {
+                text: "done".to_string()
+            }
+        );
+
+        let a = c.consume(
+            None,
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantReasoning,
+                LivePartPhase::End,
+            ),
+            LiveContentMode::Snapshot,
+        );
+        assert_eq!(a, SemanticAction::CloseReasoning);
 
         let a = c.close_reasoning();
         assert_eq!(a, SemanticAction::NoOp);
@@ -518,12 +521,12 @@ mod tests {
         let mut c = LiveSemanticConsumer::new();
         let a = c.consume(
             None,
-            Some(&identity(
+            &identity(
                 "msg-1",
                 &tool_call_part_key("call-1"),
                 LiveMessagePartKind::ToolCall,
                 LivePartPhase::Start,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(a, SemanticAction::ToolBoundary);
@@ -534,43 +537,20 @@ mod tests {
         let mut c = LiveSemanticConsumer::new();
         let a = c.consume(
             None,
-            Some(&identity(
+            &identity(
                 "msg-1",
                 &tool_result_part_key("call-1"),
                 LiveMessagePartKind::ToolResult,
                 LivePartPhase::End,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(
             a,
             SemanticAction::ToolCallCompleted {
-                call_id: "block-1".to_string()
+                call_id: "call-1".to_string()
             }
         );
-    }
-
-    #[test]
-    fn missing_identity_is_missing_identity_action() {
-        let mut c = LiveSemanticConsumer::new();
-        let a = c.consume(Some("text"), None, LiveContentMode::Snapshot);
-        assert_eq!(a, SemanticAction::MissingIdentity);
-    }
-
-    #[test]
-    fn scheduler_stage_is_non_transcript_pass_through() {
-        let mut c = LiveSemanticConsumer::new();
-        let a = c.consume(
-            Some("stage text"),
-            Some(&identity(
-                "msg-1",
-                &scheduler_stage_part_key("stage-1"),
-                LiveMessagePartKind::SchedulerStage,
-                LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Snapshot,
-        );
-        assert_eq!(a, SemanticAction::NonTranscriptPassThrough);
     }
 
     #[test]
@@ -578,12 +558,12 @@ mod tests {
         let mut c = LiveSemanticConsumer::new();
         let a = c.consume(
             Some(""),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
-            )),
+            ),
             LiveContentMode::Snapshot,
         );
         assert_eq!(a, SemanticAction::NoOp);
@@ -594,43 +574,48 @@ mod tests {
         let mut c = LiveSemanticConsumer::new();
         let a = c.consume(
             Some("alpha"),
-            Some(&identity(
+            &identity(
                 "msg-1",
                 agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Delta,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            Some(" beta"),
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantReasoning,
-                LivePartPhase::Snapshot,
-            )),
-            LiveContentMode::Delta,
-        );
-        assert_eq!(a, SemanticAction::NoOp);
-
-        let a = c.consume(
-            None,
-            Some(&identity(
-                "msg-1",
-                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
-                LiveMessagePartKind::AssistantReasoning,
-                LivePartPhase::End,
-            )),
+            ),
             LiveContentMode::Delta,
         );
         assert_eq!(
             a,
-            SemanticAction::ReplaceReasoningFull {
-                text: "alpha beta".to_string()
+            SemanticAction::OpenReasoning {
+                text: "alpha".to_string()
             }
         );
+
+        let a = c.consume(
+            Some(" beta"),
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantReasoning,
+                LivePartPhase::Snapshot,
+            ),
+            LiveContentMode::Delta,
+        );
+        assert_eq!(
+            a,
+            SemanticAction::AppendReasoningDelta {
+                text: " beta".to_string()
+            }
+        );
+
+        let a = c.consume(
+            None,
+            &identity(
+                "msg-1",
+                agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+                LiveMessagePartKind::AssistantReasoning,
+                LivePartPhase::End,
+            ),
+            LiveContentMode::Delta,
+        );
+        assert_eq!(a, SemanticAction::CloseReasoning);
     }
 }

@@ -62,12 +62,6 @@ pub fn unregister_custom_fetch_proxy(provider_id: &str) {
     }
 }
 
-pub fn clear_custom_fetch_proxies() {
-    if let Ok(mut guard) = CUSTOM_FETCH_PROXIES.write() {
-        guard.clear();
-    }
-}
-
 pub fn get_custom_fetch_proxy(provider_id: &str) -> Option<Arc<dyn CustomFetchProxy>> {
     CUSTOM_FETCH_PROXIES
         .read()

@@ -29,10 +29,7 @@ pub struct RepairQueryParams {
 impl RepairQueryParams {
     fn to_query(&self) -> RepairQuery {
         RepairQuery {
-            repair_kind: self
-                .repair_kind
-                .as_deref()
-                .and_then(RepairKind::from_legacy_str),
+            repair_kind: self.repair_kind.as_deref().and_then(RepairKind::parse),
             tool_name: self.tool_name.clone(),
             layer: self.layer.clone(),
             strict_only: Some(self.strict_only),

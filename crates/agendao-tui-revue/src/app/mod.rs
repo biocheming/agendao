@@ -8,19 +8,19 @@
 //! in any sibling module as long as the type and its fields are at least
 //! `pub(crate)`-visible.
 
-mod keymap;
 mod app_op;
 mod dispatch_outcome;
+mod keymap;
 mod panel_dispatch;
-mod slash_action;
 pub(crate) mod provider_actions;
 mod settings_catalog_actions;
 pub(crate) mod settings_edit_state;
+mod slash_action;
 
 use anyhow::Context;
 use revue::prelude::*;
-use tokio::sync::watch;
 use std::cell::RefCell;
+use tokio::sync::watch;
 
 /// Global publish slot for the SessionList dialog's interactive
 /// scrollbar. The dialog writes here every frame; the mouse
@@ -52,27 +52,23 @@ pub fn session_list_scrollbar_slot(
 
 use crate::bridge::api::ApiBridge;
 use crate::config::AppConfig;
+use crate::dialog::backdrop::PromptGeom;
 use crate::dialog::{
-    AgentSelectDialog,
-    HelpDialog,
-    ModelSelectDialog, ModeSelectDialog, SessionListDialog, SkillListDialog,
-    SkillProposalDialog, McpListDialog, RecoveryListDialog, TaskListDialog,
-    PermissionDialog, QuestionDialog,
-    ConfirmDialog, SessionRenameDialog, StashDialog, StashEntry,
-    SessionForkDialog, SessionExportDialog,
-    ModelEditDialog, McpEditDialog, PluginEditDialog, ProviderEditDialog,
+    AgentSelectDialog, ConfirmDialog, HelpDialog, McpEditDialog, McpListDialog, ModeSelectDialog,
+    ModelEditDialog, ModelSelectDialog, PermissionDialog, PluginEditDialog, ProviderEditDialog,
+    QuestionDialog, RecoveryListDialog, SessionExportDialog, SessionForkDialog, SessionListDialog,
+    SessionRenameDialog, SkillListDialog, SkillProposalDialog, StashDialog, StashEntry,
 };
 use crate::input::{PromptInput, SlashPopup};
-use crate::dialog::backdrop::PromptGeom;
 use crate::screen::{build_render_units, transcript_total_height};
-use crate::widget::bg_stack::BgStack;
-use crate::widget::VLine;
 use crate::store::app_store::{AppStore, Route};
-use crate::telemetry::event_bus::EventBus;
 use crate::store::session_store::SessionStore;
 use crate::store::types::{RunStatus, ToolPhase};
+use crate::telemetry::event_bus::EventBus;
 use crate::theme::colors;
 use crate::transport;
+use crate::widget::bg_stack::BgStack;
+use crate::widget::VLine;
 
 /// 区域失效（"哪里脏画哪里"）：按元素 id 把对应 DOM 节点 `state.dirty`
 /// 置真，框架 `collect_dirty_regions` 便只重画该区域，替代全屏
@@ -81,7 +77,9 @@ use crate::transport;
 fn mark_region_dirty(app: &mut App, region_id: &str) -> bool {
     use revue::prelude::Query as _;
     let tree = app.dom_renderer().tree_mut();
-    let found = tree.get_by_id(region_id).map(|node| (node.id, node.state.clone()));
+    let found = tree
+        .get_by_id(region_id)
+        .map(|node| (node.id, node.state.clone()));
     if let Some((dom_id, mut state)) = found {
         state.dirty = true;
         tree.set_state(dom_id, state);
@@ -105,7 +103,9 @@ pub(crate) fn short_err(e: &str) -> String {
     }
 }
 
-pub fn run_app() -> anyhow::Result<()> { run_app_with_config(AppConfig::default()) }
+pub fn run_app() -> anyhow::Result<()> {
+    run_app_with_config(AppConfig::default())
+}
 
 pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<()> {
     // 主题收口（阴面唯一注册点）：颜色真值的运行时载体是 theme::Palette，
@@ -116,17 +116,24 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
     crate::ds::theme::register_agendao_themes();
 
     let store = AppStore::new();
-    if let Some(ref dir) = config.working_dir { store.working_dir.set(dir.display().to_string()); }
+    if let Some(ref dir) = config.working_dir {
+        store.working_dir.set(dir.display().to_string());
+    }
     let rt = tokio::runtime::Runtime::new().map_err(|e| anyhow::anyhow!("tokio runtime: {}", e))?;
     let (sf_tx, sf_rx) = watch::channel::<Option<String>>(None);
     if let Some(ref sid) = config.session_id {
         sf_tx.send_replace(Some(sid.clone()));
-        store.navigate(Route::Session { session_id: sid.clone() });
+        store.navigate(Route::Session {
+            session_id: sid.clone(),
+        });
     }
     let eb = EventBus::new();
     let active_session = SessionStore::new();
     let tx = eb.sender();
-    let wd = config.working_dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let wd = config
+        .working_dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     // Build ApiBridge: local-direct uses in-process server, external uses HTTP
     let api: Option<ApiBridge> = if config.local_direct {
@@ -139,7 +146,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         } else {
             // Fallback: create server state on our own runtime
             tracing::info!("creating local server state internally");
-            match rt.block_on(agendao_server_local::new_local_server_for_workspace(wd.clone())) {
+            match rt.block_on(transport::local::new_local_server_for_workspace(wd.clone())) {
                 Ok(state) => Some(state),
                 Err(e) => {
                     tracing::error!(%e, "FAILED to init local server; data pipeline will be empty");
@@ -152,27 +159,57 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             Some(ApiBridge::new_local(ls, rt.handle().clone()))
         } else {
             // Server creation failed — fall back to transport-based mode
-            let _ = transport::spawn_event_source(tx, wd, rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
+            let _ = transport::spawn_event_source(
+                tx,
+                wd,
+                rt.handle(),
+                sf_rx,
+                config.unix_socket_path.clone(),
+                config.base_url.clone(),
+            );
             None
         }
     } else {
-        let _ = transport::spawn_event_source(tx, wd, rt.handle(), sf_rx, config.unix_socket_path.clone(), config.base_url.clone());
-        ApiBridge::new(&config.base_url.clone().unwrap_or_else(|| "http://127.0.0.1:3000".into()), rt.handle().clone()).ok()
+        let _ = transport::spawn_event_source(
+            tx,
+            wd,
+            rt.handle(),
+            sf_rx,
+            config.unix_socket_path.clone(),
+            config.base_url.clone(),
+        );
+        ApiBridge::new(
+            &config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:3000".into()),
+            rt.handle().clone(),
+        )
+        .ok()
     };
-    tracing::info!(api_present = api.is_some(), "ApiBridge construction complete");
-    if let Some(ref a) = config.agent_name { store.selected_agent.set(Some(a.clone())); }
-    if let Some(ref m) = config.model { store.selected_model.set(Some(m.clone())); }
+    tracing::info!(
+        api_present = api.is_some(),
+        "ApiBridge construction complete"
+    );
+    if let Some(ref a) = config.agent_name {
+        store.selected_agent.set(Some(a.clone()));
+    }
+    if let Some(ref m) = config.model {
+        store.selected_model.set(Some(m.clone()));
+    }
 
     // ── 主题初始化（土律归一）：持久化 > OSC11 > 默认 ──
     // apply_theme 单点收口：色板切换 + revue 主题信号 + CSS 变量表产出；
     // 变量在 App 构建后立即注入 stylesheet（见下），首帧即以真色渲染。
-    let initial_theme = api.as_ref()
+    let initial_theme = api
+        .as_ref()
         .and_then(|a| a.get_config().ok())
         .and_then(|c| c.theme)
         .and_then(|t| crate::ds::theme::ThemeId::from_id(&t))
         .or_else(|| match crate::ds::osc11::detect_bg() {
-            Some((r, g, b)) if crate::ds::osc11::is_light_bg(r, g, b)
-                => Some(crate::ds::theme::ThemeId::TokyoNightLight),
+            Some((r, g, b)) if crate::ds::osc11::is_light_bg(r, g, b) => {
+                Some(crate::ds::theme::ThemeId::TokyoNightLight)
+            }
             _ => None,
         })
         .unwrap_or(crate::ds::theme::ThemeId::TokyoNight);
@@ -192,10 +229,24 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         keymap::eager_load_session_messages(&active_session, api.as_ref(), sid);
     }
 
-    let mut app = App::builder().mouse_capture(true).style("styles/base.css").build();
+    let mut app = App::builder()
+        .mouse_capture(true)
+        .style("styles/base.css")
+        .build();
     // 初始主题 CSS `:root` 变量注入（stylesheet_mut 自动清样式缓存）。
-    app.dom_renderer().stylesheet_mut().variables.extend(initial_theme_vars);
-    let handler = RefCell::new(AppHandler::new(store.clone(), api.clone(), active_session.clone(), eb, sf_tx, dispatch_outcome::DispatchOutcomes::new(), app_op::AppOps::new()));
+    app.dom_renderer()
+        .stylesheet_mut()
+        .variables
+        .extend(initial_theme_vars);
+    let handler = RefCell::new(AppHandler::new(
+        store.clone(),
+        api.clone(),
+        active_session.clone(),
+        eb,
+        sf_tx,
+        dispatch_outcome::DispatchOutcomes::new(),
+        app_op::AppOps::new(),
+    ));
     // 初始化 sidebar session 导航树(从 session_list + cwd 构建 NavigateSession 节点)。
     handler.borrow_mut().refresh_sidebar_session_tree();
     // 初始 Home 路由聚焦 prompt——一进去就有块光标，可直接打字（Session 路由保持原 focus 行为）。
@@ -243,7 +294,9 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         }
         let tick_redraw_due = !is_tick || {
             let due = last_tick_redraw.elapsed().as_millis() >= 100;
-            if due { last_tick_redraw = std::time::Instant::now(); }
+            if due {
+                last_tick_redraw = std::time::Instant::now();
+            }
             due
         };
         if handled && tick_redraw_due {
@@ -272,10 +325,13 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             // heights differ. Without a layout rebuild, the new content
             // is rendered into the cached height slots from before the
             // toggle and the visible result is the same stale frame.
-            if layout_dirty { app.request_layout_rebuild(); }
+            if layout_dirty {
+                app.request_layout_rebuild();
+            }
         }
         handled
-    }).context("agendao TUI runtime exited with error")
+    })
+    .context("agendao TUI runtime exited with error")
 }
 
 /// Which overlay is currently active (only one at a time).
@@ -301,7 +357,6 @@ pub(crate) enum Panel {
     SkillProposal,
     McpList,
     Recovery,
-    TaskList,
     /// Settings Details 内 m / e → 弹 model 添加/编辑 form dialog。
     ModelEdit,
     /// Settings→MCP 内 a / e → 弹 MCP server 添加/编辑 form dialog。
@@ -322,13 +377,10 @@ pub(crate) enum Panel {
 #[derive(Clone, Debug)]
 pub(crate) enum PendingConfirm {
     DeleteSession(String),
-    CancelTask(String),
-    /// execute_session_recovery 需 session_id + action + target_id。session_id
-    /// 在 panel_dispatch 处理 Execute 时从 active_session 取（dialog 不持有）。
+    /// session_id 在 panel_dispatch 处理 Execute 时从 active_session 取。
     ExecuteRecovery {
         session_id: String,
         action: agendao_client::RecoveryActionKind,
-        target_id: Option<String>,
     },
     /// 批量删除会话（SessionList dialog 'x' 标记 + 'D' 触发）。
     /// 与 DeleteSession(单个) 共享 Confirm dialog 同栈,删一组 session id。
@@ -337,7 +389,10 @@ pub(crate) enum PendingConfirm {
     /// → server config_store.replace_with + AuthManager.remove(土律·第四条单点权威)。
     DeleteProvider(String),
     /// Settings Details 内 model 'd':确认后调 client.delete_provider_model_config(provider, key)。
-    DeleteProviderModel { provider_id: String, model_key: String },
+    DeleteProviderModel {
+        provider_id: String,
+        model_key: String,
+    },
     /// Settings Skills 列表 'x'/'d':确认后调 client.manage_skill(Delete)
     /// → server SkillGovernanceAuthority.delete_skill（土律·第四条单点权威）。
     /// 仅 writable == true（项目 .agendao/skills 内）的 catalog skill 可到此。
@@ -393,7 +448,6 @@ pub(crate) struct AppHandler {
     pub(crate) skill_proposal: SkillProposalDialog,
     pub(crate) mcp_list: McpListDialog,
     pub(crate) recovery_list: RecoveryListDialog,
-    pub(crate) task_list: TaskListDialog,
     /// U7③：通知中心（toast_history 只读回看，数据真相在 store signal）。
     pub(crate) notification_dialog: crate::dialog::NotificationDialog,
     /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
@@ -512,7 +566,8 @@ pub(crate) struct AppHandler {
     /// after `layout.render(ctx)` returns and the immutable borrow
     /// is released. Lives on `AppHandler` so the borrow for the
     /// handler's other fields can coexist with the publish clone.
-    pub(crate) transcript_scrollbar_publish: std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
+    pub(crate) transcript_scrollbar_publish:
+        std::rc::Rc<std::cell::RefCell<Option<TranscriptScrollbarPublish>>>,
     /// Sidebar 当前选中 tab 索引（0 Token / 1 Cache / 2 Context / 3 Sessions / 4 Tools / 5 MCP / 6 Pricing）。
     /// 默认 0（Token）。点击符号行切换。
     pub(crate) sidebar_active_tab: usize,
@@ -613,7 +668,8 @@ pub(crate) const HOME_INPUT_W: u16 = 64;
 /// 左气口包装：page_inner 内 footer/header 元素左留 PAD spacer，与 transcript 内
 /// messageblock 内容列对齐。transcript 自身已有 messageblock 级 PAD，不经此包装。
 fn gutter(content: impl View + 'static) -> revue::widget::Stack {
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(" ".repeat(PAD as usize)), PAD)
         .child_flex(content, 1.0)
 }
@@ -717,8 +773,17 @@ fn build_session_info_strip(
 /// 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）的宽/x/垂直位置都从此
 /// 派生——唯一真相（土律），避免两处各自算居中/宽度而漂移。Home 的 y_top 与
 /// `home_center` 的 flex 3:2 分配逐行同源（revue `stack.rs` 用 `.round()`）。
-fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool, prompt_input_rows: u16) -> PromptGeom {
-    let sidebar = if sidebar_visible { SIDEBAR_WIDTH + 1 } else { 0 }; // +1 VLine
+fn prompt_geometry(
+    route: &Route,
+    area: Rect,
+    sidebar_visible: bool,
+    prompt_input_rows: u16,
+) -> PromptGeom {
+    let sidebar = if sidebar_visible {
+        SIDEBAR_WIDTH + 1
+    } else {
+        0
+    }; // +1 VLine
     let main_x = area.x + sidebar;
     let main_w = area.width.saturating_sub(sidebar);
     match route {
@@ -731,7 +796,11 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool, prompt_inpu
             // 与 home_center 的 flex 分配同源（revue stack.rs 非 last flex 用 round）。
             let input_h = prompt_input_rows + 1; // 内容行 + 下边框(1)
             let upper = ((content_h.saturating_sub(input_h)) as f32 * 3.0 / 5.0).round() as u16;
-            PromptGeom { x, y_top: area.y + upper, w }
+            PromptGeom {
+                x,
+                y_top: area.y + upper,
+                w,
+            }
         }
         Route::Session { .. } => {
             // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(hint1+内容行+底线1)，
@@ -746,14 +815,28 @@ fn prompt_geometry(route: &Route, area: Rect, sidebar_visible: bool, prompt_inpu
         Route::Settings => {
             // Settings 路由不画 prompt_bar(对话框输入不在 Settings 出现);
             // 但 prompt_geometry 仍需返回合法 Rect 给 PromptOverlay 的 noop 渲染。
-            PromptGeom { x: main_x, y_top: area.y + area.height, w: 0 }
+            PromptGeom {
+                x: main_x,
+                y_top: area.y + area.height,
+                w: 0,
+            }
         }
     }
 }
 
 impl AppHandler {
-    fn new(s: AppStore, a: Option<ApiBridge>, ss: SessionStore, eb: EventBus, sf: watch::Sender<Option<String>>, outcomes: dispatch_outcome::DispatchOutcomes, ops: app_op::AppOps) -> Self {
-        let prompt = PromptInput::new().with_persistence().with_placeholders(HOME_PROMPT_PLACEHOLDERS, HOME_SHELL_PLACEHOLDERS);
+    fn new(
+        s: AppStore,
+        a: Option<ApiBridge>,
+        ss: SessionStore,
+        eb: EventBus,
+        sf: watch::Sender<Option<String>>,
+        outcomes: dispatch_outcome::DispatchOutcomes,
+        ops: app_op::AppOps,
+    ) -> Self {
+        let prompt = PromptInput::new()
+            .with_persistence()
+            .with_placeholders(HOME_PROMPT_PLACEHOLDERS, HOME_SHELL_PLACEHOLDERS);
         let mut model_select = ModelSelectDialog::new();
         let mut agent_select = AgentSelectDialog::new();
 
@@ -779,7 +862,8 @@ impl AppHandler {
             // 2. 模型列表
             match api.get_all_providers() {
                 Ok(resp) => {
-                    let connected: std::collections::HashSet<String> = resp.connected.iter().cloned().collect();
+                    let connected: std::collections::HashSet<String> =
+                        resp.connected.iter().cloned().collect();
                     let n_connected = connected.len();
                     let total = resp.all.len();
                     // ProviderInfo carries both `id` (registry key, e.g. "aihubmix",
@@ -789,19 +873,25 @@ impl AppHandler {
                     // with "Provider not found: AIHubMix". Group label still uses
                     // `name` for human-friendly display, and `connected` is keyed by
                     // id, matching how the server tracks connection state.
-                    let entries: Vec<crate::dialog::ModelEntry> = resp.all.into_iter().flat_map(|p| {
-                        let avail = connected.contains(&p.id);
-                        let display_name = p.name.clone();
-                        let provider_id = p.id.clone();
-                        p.models.into_iter().map(move |m| crate::dialog::ModelEntry {
-                            provider: provider_id.clone(),
-                            provider_display: display_name.clone(),
-                            model_id: m.id.clone(),
-                            display: format!("{} ({})", m.name, display_name),
-                            variants: vec![],
-                            available: avail,
+                    let entries: Vec<crate::dialog::ModelEntry> = resp
+                        .all
+                        .into_iter()
+                        .flat_map(|p| {
+                            let avail = connected.contains(&p.id);
+                            let display_name = p.name.clone();
+                            let provider_id = p.id.clone();
+                            p.models
+                                .into_iter()
+                                .map(move |m| crate::dialog::ModelEntry {
+                                    provider: provider_id.clone(),
+                                    provider_display: display_name.clone(),
+                                    model_id: m.id.clone(),
+                                    display: format!("{} ({})", m.name, display_name),
+                                    variants: vec![],
+                                    available: avail,
+                                })
                         })
-                    }).collect();
+                        .collect();
                     // Surface the connected providers so the user knows
                     // which models will actually work — useful when the
                     // dialog shows 5,140 entries but only 8 providers are
@@ -811,7 +901,8 @@ impl AppHandler {
                         "init: connected providers"
                     );
                     tracing::info!(
-                        providers_total = total, providers_connected = n_connected,
+                        providers_total = total,
+                        providers_connected = n_connected,
                         model_entries = entries.len(),
                         "init: providers loaded"
                     );
@@ -827,10 +918,16 @@ impl AppHandler {
             match api.list_agents() {
                 Ok(agents) => {
                     tracing::info!(count = agents.len(), "init: agents loaded");
-                    agent_select.set_agents(agents.into_iter().map(|a| crate::dialog::AgentEntry {
-                        name: a.name.clone(), display: a.name,
-                        description: a.description.unwrap_or_default(),
-                    }).collect());
+                    agent_select.set_agents(
+                        agents
+                            .into_iter()
+                            .map(|a| crate::dialog::AgentEntry {
+                                name: a.name.clone(),
+                                display: a.name,
+                                description: a.description.unwrap_or_default(),
+                            })
+                            .collect(),
+                    );
                 }
                 Err(e) => tracing::error!(%e, "init: list_agents FAILED"),
             }
@@ -844,7 +941,8 @@ impl AppHandler {
                     // store 契约：`"kind:id"` 复合（对齐 web `App.tsx:836`）；
                     // dispatch 处再 split 分流。取首个非 hidden 项作为默认。
                     if let Some(first) = modes.iter().find(|m| !m.hidden.unwrap_or(false)) {
-                        s.selected_mode.set(Some(format!("{}:{}", first.kind, first.id)));
+                        s.selected_mode
+                            .set(Some(format!("{}:{}", first.kind, first.id)));
                     }
                 }
                 Err(e) => tracing::error!(%e, "init: list_execution_modes FAILED"),
@@ -869,12 +967,17 @@ impl AppHandler {
             }
             tracing::info!(target: "agendao::startup", phase = "tui_sessions", elapsed_ms = phase_start.elapsed().as_millis() as u64, "startup phase done");
         } else {
-            tracing::error!("init: NO API BRIDGE — all data will be empty. Check local server creation.");
+            tracing::error!(
+                "init: NO API BRIDGE — all data will be empty. Check local server creation."
+            );
         }
         Self {
-            store: s, api: a, prompt,
+            store: s,
+            api: a,
+            prompt,
             slash_popup: SlashPopup::new(),
-            model_select, agent_select,
+            model_select,
+            agent_select,
             mode_select: ModeSelectDialog::new(),
             session_list: SessionListDialog::new(),
             sidebar_visible: true,
@@ -893,7 +996,6 @@ impl AppHandler {
             skill_proposal: SkillProposalDialog::new(),
             mcp_list: McpListDialog::new(),
             recovery_list: RecoveryListDialog::new(),
-            task_list: TaskListDialog::new(),
             notification_dialog: crate::dialog::NotificationDialog::new(),
             model_edit_dialog: ModelEditDialog::new(),
             mcp_edit_dialog: McpEditDialog::new(),
@@ -916,7 +1018,11 @@ impl AppHandler {
             compact_in_flight: false,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
-            active_session: ss, event_bus: eb, sf_tx: sf, dispatch_outcomes: outcomes, app_ops: ops,
+            active_session: ss,
+            event_bus: eb,
+            sf_tx: sf,
+            dispatch_outcomes: outcomes,
+            app_ops: ops,
             layout_dirty: false,
             transcript_viewport_h: 30, // overwritten on first render
             transcript_area_y: 3,      // after empty + header + divider
@@ -1018,7 +1124,9 @@ impl View for ScrollableTranscript {
     fn render(&self, ctx: &mut RenderContext) {
         use revue::layout::Rect;
         let area = ctx.area;
-        if area.width < 2 || area.height == 0 { return; }
+        if area.width < 2 || area.height == 0 {
+            return;
+        }
 
         // Build the offscreen content buffer at full content height,
         // render the entire stack into it, then let ScrollView copy
@@ -1098,7 +1206,10 @@ impl View for RootView {
         // 用户态，拉宽即恢复）。本帧全部布局站点统一用 sidebar_on，与 keymap
         // 命中同口径（effective_sidebar_visible，金律：几何不得漂移）。
         let sidebar_on = effective_sidebar_visible(h.sidebar_visible, ctx.area.width);
-        let is_running = matches!(h.active_session.run_status.get(), RunStatus::Sending | RunStatus::Running | RunStatus::Compacting);
+        let is_running = matches!(
+            h.active_session.run_status.get(),
+            RunStatus::Sending | RunStatus::Running | RunStatus::Compacting
+        );
         let is_slash = h.panel == Panel::Slash;
         // Transcript viewport height, hoisted out of the inner
         // session-route branch so we can publish it to the handler
@@ -1127,7 +1238,10 @@ impl View for RootView {
         let prompt_bar_h = prompt_input_rows + 2;
         // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+info1+status1=5）
         // - prompt_bar(prompt_bar_h) - attachment_h。
-        let transcript_viewport_h: u16 = ctx.area.height.saturating_sub(5 + prompt_bar_h + attachment_h);
+        let transcript_viewport_h: u16 = ctx
+            .area
+            .height
+            .saturating_sub(5 + prompt_bar_h + attachment_h);
 
         // ── Content area ──
         let mut content_stack = vstack();
@@ -1148,8 +1262,16 @@ impl View for RootView {
             let tools = h.active_session.active_tools.get();
             let active_sid = h.active_session.get_session_id();
             let (content, tab_y, nav_hits) = crate::telemetry::SessionSidebar::build(
-                &token, &cache, &price, ctx_pct, &trees, &mcp, &tools, h.sidebar_active_tab,
-                active_sid.as_deref(), ctx.area.height,
+                &token,
+                &cache,
+                &price,
+                ctx_pct,
+                &trees,
+                &mcp,
+                &tools,
+                h.sidebar_active_tab,
+                active_sid.as_deref(),
+                ctx.area.height,
             );
             sidebar_opt = Some((content, tab_y));
             sidebar_nav_hits = nav_hits;
@@ -1171,14 +1293,16 @@ impl View for RootView {
                     .max_width(HOME_INPUT_W)
                     .child(h.prompt.view(cursor_blink_on));
                 // 水平居中（左右 flex 楔子）+ 垂直居中（上下 flex 楔子），不占满主区。
-                let centered = hstack().gap(0)
+                let centered = hstack()
+                    .gap(0)
                     .child_flex(Text::new(""), 1.0)
                     .child_sized(input_border, HOME_INPUT_W)
                     .child_flex(Text::new(""), 1.0);
-                let home_center = vstack().gap(0)
-                    .child_flex(Text::new(""), 3.0)   // 上 spacer（3/5，给 SlashPopup 补全框让位）
-                    .child_sized(centered, prompt_input_rows + 1)  // 内容行 + 下边框(1)
-                    .child_flex(Text::new(""), 2.0);  // 下 spacer（2/5）
+                let home_center = vstack()
+                    .gap(0)
+                    .child_flex(Text::new(""), 3.0) // 上 spacer（3/5，给 SlashPopup 补全框让位）
+                    .child_sized(centered, prompt_input_rows + 1) // 内容行 + 下边框(1)
+                    .child_flex(Text::new(""), 2.0); // 下 spacer（2/5）
                 content_stack = content_stack.child(home_center);
             }
             Route::Session { .. } => {
@@ -1200,14 +1324,8 @@ impl View for RootView {
                 let dir_w = dir_short.chars().count() as u16;
                 let mut header = hstack().gap(2);
                 header = header
-                    .child_sized(
-                        Text::new(&title).bold().fg(colors::FG_PRIMARY()),
-                        title_w,
-                    )
-                    .child_sized(
-                        Text::new(dir_short).fg(colors::FG_MUTED()),
-                        dir_w,
-                    );
+                    .child_sized(Text::new(&title).bold().fg(colors::FG_PRIMARY()), title_w)
+                    .child_sized(Text::new(dir_short).fg(colors::FG_MUTED()), dir_w);
 
                 // dir 点击命中区：page_x = sidebar 显示 ? SIDEBAR_WIDTH+1(vline) : 0；
                 // header 经 gutter 左留 PAD=4；title 在前占 title_w（含尾随气口），gap(2)，dir 紧接其后。
@@ -1217,18 +1335,12 @@ impl View for RootView {
                 if let Some(ref m) = self.store.selected_model.get() {
                     let label = format!("· {}", m);
                     let w = label.chars().count() as u16 + 1;
-                    header = header.child_sized(
-                        Text::new(label).fg(colors::FG_MUTED()),
-                        w,
-                    );
+                    header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
                 }
                 if let Some(ref a) = self.store.selected_agent.get() {
                     let label = format!("· {}", a);
                     let w = label.chars().count() as u16 + 1;
-                    header = header.child_sized(
-                        Text::new(label).fg(colors::FG_MUTED()),
-                        w,
-                    );
+                    header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
                 }
                 // Run status indicator pinned to the right via a flex spacer.
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
@@ -1236,13 +1348,14 @@ impl View for RootView {
                     // U9：压缩相位独立可辨（◍ 琥珀，区别于 Running 的 ● 绿）。
                     RunStatus::Compacting => (Some(" ◍ Compacting".to_string()), colors::E_AMBER()),
                     RunStatus::Sending => (Some(" ○ Sending".to_string()), colors::ACCENT_YELLOW()),
-                    RunStatus::WaitingUser => (Some(" ⏸ Waiting".to_string()), colors::ACCENT_YELLOW()),
+                    RunStatus::WaitingUser => {
+                        (Some(" ⏸ Waiting".to_string()), colors::ACCENT_YELLOW())
+                    }
                     // U10：Error 带截断详情——GUI 惯例状态栏错误可读出原因，
                     // 全文仍在 transcript 的 Failed notice 里。
-                    RunStatus::Error(e) => (
-                        Some(format!(" ✕ {}", short_err(e))),
-                        colors::ACCENT_RED(),
-                    ),
+                    RunStatus::Error(e) => {
+                        (Some(format!(" ✕ {}", short_err(e))), colors::ACCENT_RED())
+                    }
                     RunStatus::Idle => (None, colors::FG_MUTED()),
                 };
                 // Spacer flex grows to push the status to the right edge.
@@ -1300,8 +1413,7 @@ impl View for RootView {
 
                 if msgs.is_empty() {
                     transcript = transcript.child(
-                        Text::new("   Type below to start a conversation.")
-                            .fg(colors::FG_MUTED())
+                        Text::new("   Type below to start a conversation.").fg(colors::FG_MUTED()),
                     );
                     main_area = main_area.child_flex(transcript, 1.0);
                 } else {
@@ -1327,7 +1439,12 @@ impl View for RootView {
                     // ❯ 引导）在 inner_w 内成形。
                     const PAD: u16 = 4;
                     let inner_w = transcript_w.saturating_sub(PAD.saturating_mul(2));
-                    let total_h = transcript_total_height(&msgs, self.store.show_thinking.get(), self.store.compact_density.get(), inner_w);
+                    let total_h = transcript_total_height(
+                        &msgs,
+                        self.store.show_thinking.get(),
+                        self.store.compact_density.get(),
+                        inner_w,
+                    );
                     // turn 级思考延续标记：UserPrompt 起一个新 turn，其后首个
                     // Thinking 用 ✻，同 turn 内被 text/tool 夹断的后续 Thinking
                     // 用 ┆ 续接符（避免 reasoning 流被拆成一串重复 ✻ 独立块）。
@@ -1376,10 +1493,12 @@ impl View for RootView {
                         let content = unit.content;
                         // 引导符（符号归一）：对话块 ❯，工具/思考 ┊。cursor 指示由
                         // 引导符加粗承担（替代 ▌ 竖线）。
-                        let mk_glyph = || if is_cursor_unit {
-                            Text::new(glyph).fg(accent).bold()
-                        } else {
-                            Text::new(glyph).fg(accent)
+                        let mk_glyph = || {
+                            if is_cursor_unit {
+                                Text::new(glyph).fg(accent).bold()
+                            } else {
+                                Text::new(glyph).fg(accent)
+                            }
                         };
                         // 块内成形（严格「禁止全宽通铺」）：井几何（is_well = 聚合井或
                         // 单个 ToolResult）走左缩进2 + 右断15% + bg=>BgStack；其余 glyph +
@@ -1388,19 +1507,24 @@ impl View for RootView {
                             let avail = inner_w.saturating_sub(glyph_w); // 扣引导符
                             let well_inner = avail.saturating_sub(2); // 左缩进 2
                             let well_w = (well_inner as u32 * 85 / 100) as u16; // 右断 15%
-                            let well = hstack().gap(0)
+                            let well = hstack()
+                                .gap(0)
                                 .child_sized(Text::new(" ".repeat(2)), 2)
                                 .child_sized(content, well_w);
                             let well_wrapped: Box<dyn View> = match bg {
                                 Some(c) => Box::new(BgStack::new(well, c)),
                                 None => Box::new(well),
                             };
-                            Box::new(hstack().gap(0)
-                                .child_sized(mk_glyph(), glyph_w)
-                                .child_sized(well_wrapped, well_w.saturating_add(2)) // 井总宽 = well_w + 左缩进2
-                                .child_flex(Text::new(""), 1.0)) // 右断留白
+                            Box::new(
+                                hstack()
+                                    .gap(0)
+                                    .child_sized(mk_glyph(), glyph_w)
+                                    .child_sized(well_wrapped, well_w.saturating_add(2)) // 井总宽 = well_w + 左缩进2
+                                    .child_flex(Text::new(""), 1.0),
+                            ) // 右断留白
                         } else {
-                            let with_glyph = hstack().gap(0)
+                            let with_glyph = hstack()
+                                .gap(0)
                                 .child_sized(mk_glyph(), glyph_w)
                                 .child_flex(content, 1.0);
                             match bg {
@@ -1409,7 +1533,8 @@ impl View for RootView {
                             }
                         };
                         // 气口层：左右各 PAD 字符留白，BG_PRIMARY 流白在两侧贯通。
-                        let padded = hstack().gap(0)
+                        let padded = hstack()
+                            .gap(0)
                             .child_sized(Text::new(" ".repeat(PAD as usize)), PAD)
                             .child_sized(inner, inner_w)
                             .child_sized(Text::new(" ".repeat(PAD as usize)), PAD);
@@ -1478,7 +1603,8 @@ impl View for RootView {
                     // U11①④：内容锚定 + 未读记账（单点回写，语义见
                     // SessionStore::sync_scroll_frame）。须在 user_offset
                     // 读取之前——锚定补的 Δ 本帧即生效。
-                    h.active_session.sync_scroll_frame(total_h, msgs.len(), pinned);
+                    h.active_session
+                        .sync_scroll_frame(total_h, msgs.len(), pinned);
                     let user_offset = if pinned {
                         0
                     } else {
@@ -1619,7 +1745,8 @@ impl View for RootView {
                 // 静止态：只留一点墨（◉）。去掉 "Type to start..." 静态提示——
                 // 输入框自带 placeholder,这里是冗余信息（用户反馈：用处不大）。
                 line = line.child_sized(
-                    Text::new(format!(" {}", crate::widget::spinner::INK_REST)).fg(crate::widget::spinner::ink_color()),
+                    Text::new(format!(" {}", crate::widget::spinner::INK_REST))
+                        .fg(crate::widget::spinner::ink_color()),
                     2,
                 );
             }
@@ -1637,7 +1764,7 @@ impl View for RootView {
         let input_widget = input_border.child(h.prompt.view(cursor_blink_on));
         // hint: 1 row, only_bottom 输入框: 内容行(自适应,封顶10) + 底线 1。
         let prompt_bar = vstack()
-            .element_id("prompt")           // 区域失效定位（输入/spinner 变只重画此条）
+            .element_id("prompt") // 区域失效定位（输入/spinner 变只重画此条）
             .child_sized(hint_text, 1)
             .child_sized(input_widget, prompt_input_rows + 1);
 
@@ -1674,7 +1801,6 @@ impl View for RootView {
             Panel::SkillProposal => "proposals",
             Panel::McpList => "mcps",
             Panel::Recovery => "recovery",
-            Panel::TaskList => "tasks",
             Panel::Notifications => "notifications",
             Panel::ModelEdit => "modelEdit",
             Panel::McpEdit => "mcpEdit",
@@ -1688,7 +1814,10 @@ impl View for RootView {
         // 份 token_usage——状态栏不再重复展示，金律·输出口径单点）。
         // Active tasks count
         let active_tools = h.active_session.active_tools.get();
-        let running = active_tools.iter().filter(|t| t.phase == ToolPhase::Running).count();
+        let running = active_tools
+            .iter()
+            .filter(|t| t.phase == ToolPhase::Running)
+            .count();
         let tasks_hint = if running > 0 {
             format!(" tasks:{}", running)
         } else {
@@ -1759,7 +1888,14 @@ impl View for RootView {
         };
         let status_prefix = format!(
             " {} │ [{}]{}{}{}{}{} │{}",
-            dir_short, panel_label, tasks_hint, fetch_hint, stale_hint, unread_hint, cursor_hint, nav_hint,
+            dir_short,
+            panel_label,
+            tasks_hint,
+            fetch_hint,
+            stale_hint,
+            unread_hint,
+            cursor_hint,
+            nav_hint,
         );
         let (bell_rect, pending_rect) = {
             use unicode_width::UnicodeWidthStr;
@@ -1794,10 +1930,8 @@ impl View for RootView {
         // Sidebar 全高左列（纯黑合一：不再 BG_DEEP，与主窗口共享终端纯黑背景）提到 page
         // 最外层 hstack 左 child——贯穿顶到底，不受 footer/header 高度影响；右侧以 VLine
         // （#2e3440 极暗淡 `│`）划界。sidebar 不显示（Home / Ctrl+B 关）→ 直接 page_inner。
-        let sidebar_tab_y_snapshot: u16 = sidebar_opt
-            .as_ref()
-            .map(|(_, tab_y)| *tab_y)
-            .unwrap_or(0);
+        let sidebar_tab_y_snapshot: u16 =
+            sidebar_opt.as_ref().map(|(_, tab_y)| *tab_y).unwrap_or(0);
         let page_inner = match &route {
             // Home：主区居中输入框 + 底部 status_bar（去掉 context/attachment/prompt_bar）。
             Route::Home => vstack()
@@ -1806,8 +1940,8 @@ impl View for RootView {
             Route::Session { .. } => vstack()
                 .child_flex(content_stack, 1.0)
                 .child_sized(gutter(attachment_strip), attachment_h)
-                .child_sized(gutter(prompt_bar), prompt_bar_h)   // hint(1) + 多行输入(自适应≤10) + 底线(1)
-                .child_sized(gutter(info_strip), 1)   // token + context 进度条
+                .child_sized(gutter(prompt_bar), prompt_bar_h) // hint(1) + 多行输入(自适应≤10) + 底线(1)
+                .child_sized(gutter(info_strip), 1) // token + context 进度条
                 .child_sized(gutter(status_bar), 1),
             // Settings:仅 content_stack(SettingsScreen 全屏)+ 底部 status_bar;
             // 不画 attachment/prompt_bar(Settings 不接受 prompt 输入)。
@@ -1818,7 +1952,8 @@ impl View for RootView {
         let layout = if let Some((sidebar_view, _)) = sidebar_opt {
             // 纯黑合一：sidebar 不再包 BgStack(BG_DEEP)——保持终端纯黑背景，与主窗口完全一致；
             // 两区之间仅一根极暗淡 VLine（SIDEBAR_DIVIDER #2e3440）划界。
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(sidebar_view, SIDEBAR_WIDTH)
                 .child_sized(VLine::new(colors::SIDEBAR_DIVIDER()), 1)
                 .child_flex(page_inner, 1.0)
@@ -1830,12 +1965,12 @@ impl View for RootView {
 
         // ── Render overlays (positioned above prompt bar) ──
         drop(h); // Release borrow before re-borrowing
-        // Publish the transcript viewport height so the NEXT event
-        // handler (Tab / j / k / fold) knows how much room is left for
-        // the cursor to land in. Without this, `ensure_cursor_visible`
-        // would have to guess, and on a 30-row terminal the cursor
-        // would sometimes scroll past the visible window when
-        // navigating to a far block.
+                 // Publish the transcript viewport height so the NEXT event
+                 // handler (Tab / j / k / fold) knows how much room is left for
+                 // the cursor to land in. Without this, `ensure_cursor_visible`
+                 // would have to guess, and on a 30-row terminal the cursor
+                 // would sometimes scroll past the visible window when
+                 // navigating to a far block.
         self.handler.borrow_mut().transcript_viewport_h = transcript_viewport_h;
         // Transcript area y：show_header 时 y=3（空行+header+divider），隐藏时 y=1（仅空行）。
         // 鼠标点击 click_y → transcript row 依赖此值，必须与 render 几何同口径。
@@ -1914,12 +2049,15 @@ impl View for RootView {
                 // 补全框几何同上(外层 geom);fill 用绝对坐标填输入框宽(非全屏宽),挡下层 transcript。
                 let popup = h.slash_popup.render_popup(geom.w);
                 // 上方空间上限 = 输入框上沿到屏顶，留 1 行顶 margin，避免压顶。
-                let ph = h.slash_popup.display_height()
+                let ph = h
+                    .slash_popup
+                    .display_height()
                     .min(geom.y_top.saturating_sub(ctx.area.y).saturating_sub(1));
                 let py_abs = geom.y_top.saturating_sub(ph).max(1);
                 let py_rel = py_abs.saturating_sub(ctx.area.y);
                 let px_rel = geom.x.saturating_sub(ctx.area.x);
-                h.slash_popup.fill_background(ctx.buffer, geom.x, py_abs, geom.w, ph);
+                h.slash_popup
+                    .fill_background(ctx.buffer, geom.x, py_abs, geom.w, ph);
                 revue::widget::positioned(popup)
                     .x(px_rel as i16)
                     .y(py_rel as i16)
@@ -1935,22 +2073,31 @@ impl View for RootView {
             Panel::Rename => h.rename_dialog.render(ctx, geom),
             Panel::Fork => h.fork_dialog.render(ctx, geom),
             Panel::Export => h.export_dialog.render(ctx, geom),
-            Panel::Confirm => { confirm_rect = h.confirm_dialog.render(ctx, geom); }
+            Panel::Confirm => {
+                confirm_rect = h.confirm_dialog.render(ctx, geom);
+            }
             Panel::Help => h.help.render(ctx, geom),
             Panel::SkillList => h.skill_list.render(ctx, geom),
             Panel::SkillProposal => h.skill_proposal.render(ctx, geom),
             Panel::McpList => h.mcp_list.render(ctx, geom),
             Panel::Recovery => h.recovery_list.render(ctx, geom),
-            Panel::TaskList => h.task_list.render(ctx, geom),
             Panel::Notifications => {
                 // 只读回看：数据真相在 store signal（土律·单一权威）。
                 let history = h.store.toast_history.get();
                 h.notification_dialog.render(ctx, geom, &history);
             }
-            Panel::ModelEdit => { model_edit_rect = h.model_edit_dialog.render(ctx, cursor_blink_on); }
-            Panel::McpEdit => { mcp_edit_rect = h.mcp_edit_dialog.render(ctx, cursor_blink_on); }
-            Panel::PluginEdit => { plugin_edit_rect = h.plugin_edit_dialog.render(ctx, cursor_blink_on); }
-            Panel::ProviderEdit => { provider_edit_rect = h.provider_edit_dialog.render(ctx, cursor_blink_on); }
+            Panel::ModelEdit => {
+                model_edit_rect = h.model_edit_dialog.render(ctx, cursor_blink_on);
+            }
+            Panel::McpEdit => {
+                mcp_edit_rect = h.mcp_edit_dialog.render(ctx, cursor_blink_on);
+            }
+            Panel::PluginEdit => {
+                plugin_edit_rect = h.plugin_edit_dialog.render(ctx, cursor_blink_on);
+            }
+            Panel::ProviderEdit => {
+                provider_edit_rect = h.provider_edit_dialog.render(ctx, cursor_blink_on);
+            }
             _ => {}
         }
         // 弹窗几何发布（render 后、借用于此处归还）——keymap 鼠标命中的唯一真相。
@@ -1984,9 +2131,9 @@ impl View for RootView {
             use crate::store::types::ToastMsgVariant;
             let (icon, color) = match t.variant {
                 ToastMsgVariant::Success => ("✓", colors::ACCENT_GREEN()),
-                ToastMsgVariant::Error   => ("✕", colors::ACCENT_RED()),
+                ToastMsgVariant::Error => ("✕", colors::ACCENT_RED()),
                 ToastMsgVariant::Warning => ("⚠", colors::ACCENT_YELLOW()),
-                ToastMsgVariant::Info    => ("•", colors::ACCENT_CYAN()),
+                ToastMsgVariant::Info => ("•", colors::ACCENT_CYAN()),
             };
             let max_w = ctx.area.width.saturating_sub(4).min(80);
             let raw = format!("{} {}", icon, t.text);
@@ -2064,7 +2211,13 @@ impl View for RootView {
                 let mut max_w: u16 = 10;
                 for d in diff_summary.iter().take(shown) {
                     let path_disp = if d.path.chars().count() > 40 {
-                        format!("…{}", d.path.chars().skip(d.path.chars().count() - 39).collect::<String>())
+                        format!(
+                            "…{}",
+                            d.path
+                                .chars()
+                                .skip(d.path.chars().count() - 39)
+                                .collect::<String>()
+                        )
                     } else {
                         d.path.clone()
                     };
@@ -2074,7 +2227,8 @@ impl View for RootView {
                     let add_w = add.chars().count() as u16;
                     max_w = max_w.max(path_w + add_w + del.chars().count() as u16);
                     lines = lines.child_sized(
-                        hstack().gap(0)
+                        hstack()
+                            .gap(0)
                             .child_sized(Text::new(path_disp).fg(colors::FG_SECONDARY()), path_w)
                             .child_sized(Text::new(add).fg(colors::ACCENT_GREEN()), add_w)
                             .child_flex(Text::new(del).fg(colors::ACCENT_RED()), 1.0),
@@ -2085,7 +2239,8 @@ impl View for RootView {
                 if diff_summary.len() > shown {
                     lines = lines.child_sized(
                         Text::new(format!("  … +{} more files", diff_summary.len() - shown))
-                            .fg(colors::FG_MUTED()).italic(),
+                            .fg(colors::FG_MUTED())
+                            .italic(),
                         1,
                     );
                     rows += 1;
@@ -2093,9 +2248,7 @@ impl View for RootView {
                 let w = max_w.min(ctx.area.width.saturating_sub(4));
                 let x = badge_x.min(ctx.area.width.saturating_sub(w + 2));
                 let y = badge_y.saturating_sub(rows + 2);
-                let detail_widget = Border::rounded()
-                    .fg(colors::FG_MUTED())
-                    .child(lines);
+                let detail_widget = Border::rounded().fg(colors::FG_MUTED()).child(lines);
                 revue::widget::positioned(detail_widget)
                     .x(x as i16)
                     .y(y as i16)
@@ -2183,7 +2336,10 @@ mod drain_publish_regression {
         // Fix: snapshot in one expression; all temporaries drop at `;`.
         let snapshot: Option<Payload> = {
             let _outer_guard = outer.borrow();
-            inner.try_borrow().ok().and_then(|opt| opt.as_ref().copied())
+            inner
+                .try_borrow()
+                .ok()
+                .and_then(|opt| opt.as_ref().copied())
         };
         // After this `;`, no `Ref`s are alive — safe to `borrow_mut`.
 
@@ -2199,7 +2355,11 @@ mod drain_publish_regression {
         }
         assert_eq!(
             outer.borrow().area,
-            Some(Payload { area: 7, content_h: 100, viewport_h: 30 })
+            Some(Payload {
+                area: 7,
+                content_h: 100,
+                viewport_h: 30
+            })
         );
         assert_eq!(outer.borrow().metrics, Some((100, 30)));
     }

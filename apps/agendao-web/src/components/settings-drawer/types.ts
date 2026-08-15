@@ -20,23 +20,6 @@ export interface ModelOption {
   label: string;
 }
 
-export interface SchedulerProfileSummary {
-  key: string;
-  orchestrator?: string | null;
-  description?: string | null;
-  stages: string[];
-}
-
-export interface SchedulerConfigResponse {
-  raw_path?: string | null;
-  resolved_path?: string | null;
-  exists: boolean;
-  content: string;
-  default_profile?: string | null;
-  profiles: SchedulerProfileSummary[];
-  parse_error?: string | null;
-}
-
 export interface McpStatusInfo {
   name: string;
   status: string;
@@ -64,7 +47,6 @@ export interface AppConfigSnapshot extends Record<string, unknown> {
   provider?: Record<string, unknown>;
   plugin?: Record<string, unknown>;
   mcp?: Record<string, unknown>;
-  schedulerPath?: string | null;
 }
 
 export interface ModelOverrideDraft {

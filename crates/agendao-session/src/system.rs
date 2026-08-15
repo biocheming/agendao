@@ -1,6 +1,4 @@
 const PROMPT_AGENDAO_HEADER: &str = include_str!("prompt_templates/agendao_header.txt");
-const PROMPT_COMPATIBILITY_OVERLAY: &str =
-    include_str!("prompt_templates/compatibility_overlay.txt");
 const MAX_MCP_RESOURCE_CHARS: usize = 12_000;
 
 pub struct SystemPrompt;
@@ -32,23 +30,10 @@ impl SystemPrompt {
         Self::system_reminder(&body)
     }
 
-    /// Build the composed system prompt for the target model family.
-    ///
-    /// AgenDao now uses a two-layer prompt surface:
-    ///   1. a single product header shared by all models
-    ///   2. a thin compatibility overlay for family-specific adaptation
-    pub fn for_model(_model_api_id: &str) -> String {
-        format!(
-            "{}\n\n{}",
-            PROMPT_AGENDAO_HEADER.trim(),
-            PROMPT_COMPATIBILITY_OVERLAY.trim()
-        )
-    }
-
     /// Build the environment context block.
     /// Produces a string like:
     /// ```text
-    /// You are powered by the model named test-model-large. The exact model ID is ethnopic/test-model-large
+    /// You are powered by the model named test-model-large. The exact model ID is anthropic/test-model-large
     /// Here is some useful information about the environment you are running in:
     /// <env>
     ///   Working directory: /home/user/project
@@ -130,52 +115,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_for_model_fallback() {
-        let prompt = SystemPrompt::for_model("some-unknown-model");
-        assert!(prompt.contains("You are AgenDao."));
-        assert!(prompt.contains("Compatibility overlay"));
-    }
-
-    #[test]
-    fn test_for_model_gpt4() {
-        let prompt = SystemPrompt::for_model("gpt-4o");
-        assert!(prompt.contains("You are AgenDao."));
-        assert!(prompt.contains("Compatibility overlay"));
-    }
-
-    #[test]
-    fn test_for_model_gpt5() {
-        let prompt = SystemPrompt::for_model("gpt-5-turbo");
-        assert!(prompt.contains("You are AgenDao."));
-        assert!(prompt.contains("Compatibility overlay"));
-    }
-
-    #[test]
-    fn test_for_model_gemini() {
-        let prompt = SystemPrompt::for_model("gemini-2.0-flash");
-        assert!(prompt.contains("You are AgenDao."));
-        assert!(prompt.contains("Compatibility overlay"));
-    }
-
-    #[test]
-    fn test_for_model_trinity() {
-        let prompt = SystemPrompt::for_model("Trinity-Large");
-        assert!(prompt.contains("You are AgenDao."));
-        assert!(prompt.contains("Compatibility overlay"));
-    }
-
-    #[test]
     fn test_environment_output() {
         let ctx = EnvironmentContext {
             model_api_id: "test-model-large".to_string(),
-            provider_id: "ethnopic".to_string(),
+            provider_id: "anthropic".to_string(),
             working_directory: "/tmp/test".to_string(),
             is_git_repo: true,
             platform: "linux".to_string(),
         };
         let env = SystemPrompt::environment(&ctx);
         assert!(env.contains("test-model-large"));
-        assert!(env.contains("ethnopic/test-model-large"));
+        assert!(env.contains("anthropic/test-model-large"));
         assert!(env.contains("/tmp/test"));
         assert!(env.contains("Is directory a git repo: yes"));
         assert!(env.contains("Platform: linux"));

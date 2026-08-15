@@ -11,25 +11,6 @@ use std::sync::Arc;
 use crate::execution_preflight::ExecutionPreflightReport;
 use crate::{Metadata, ToolContext, ToolError};
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct LoadedSkillsPromptContext {
-    pub prompt_context: String,
-    pub loaded_skills: Vec<SkillMetaView>,
-}
-
-impl LoadedSkillsPromptContext {
-    pub fn loaded_skill_names(&self) -> Vec<String> {
-        self.loaded_skills
-            .iter()
-            .map(|skill| skill.name.clone())
-            .collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.prompt_context.trim().is_empty()
-    }
-}
-
 pub(crate) fn map_skill_error(err: SkillError) -> ToolError {
     match err {
         SkillError::UnknownSkill {
@@ -230,7 +211,6 @@ pub(crate) fn list_runtime_visible_skill_meta(
 pub(crate) struct ResolvedSkillFilter {
     pub available_tools: Option<HashSet<String>>,
     pub available_toolsets: Option<HashSet<String>>,
-    pub current_stage: Option<String>,
     pub category: Option<String>,
 }
 
@@ -239,7 +219,6 @@ impl ResolvedSkillFilter {
         SkillFilter {
             available_tools: self.available_tools.as_ref(),
             available_toolsets: self.available_toolsets.as_ref(),
-            current_stage: self.current_stage.as_deref(),
             category: self.category.as_deref(),
         }
     }
@@ -274,55 +253,11 @@ pub(crate) async fn resolve_skill_filter(
     ResolvedSkillFilter {
         available_tools,
         available_toolsets,
-        current_stage: ctx
-            .extra
-            .get("scheduler_stage")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
         category: category
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
     }
-}
-
-pub(crate) fn load_skills_prompt_context(
-    base_dir: &Path,
-    config_store: Option<Arc<ConfigStore>>,
-    requested_skills: Option<&[String]>,
-    _extra: Option<&Metadata>,
-) -> Result<LoadedSkillsPromptContext, ToolError> {
-    let Some(requested_skills) = requested_skills else {
-        return Ok(LoadedSkillsPromptContext::default());
-    };
-    let requested_skills = normalize_requested_skill_names(requested_skills);
-    if requested_skills.is_empty() {
-        return Ok(LoadedSkillsPromptContext::default());
-    }
-
-    let mut rendered = Vec::new();
-    let mut loaded_skills = Vec::new();
-    let selected_skill_names = requested_skills.clone();
-    for requested_skill in requested_skills {
-        let packet = load_skill_prompt_packet_with_runtime_materialization(
-            base_dir,
-            config_store.clone(),
-            &requested_skill,
-            None,
-            Some(selected_skill_names.as_slice()),
-        )?;
-        let (output, _) = format_loaded_skill_output(&packet, None, None);
-        rendered.push(output);
-        loaded_skills.push(SkillMetaView::from(&packet.meta));
-    }
-
-    Ok(LoadedSkillsPromptContext {
-        prompt_context: format!(
-            "<loaded_skills>\n{}\n</loaded_skills>",
-            rendered.join("\n\n")
-        ),
-        loaded_skills,
-    })
 }
 
 pub(crate) fn format_loaded_skill_output(
@@ -701,24 +636,6 @@ fn file_extension(file_path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn normalize_requested_skill_names(raw_names: &[String]) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for raw_name in raw_names {
-        let trimmed = raw_name.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if normalized
-            .iter()
-            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
-        {
-            continue;
-        }
-        normalized.push(trimmed.to_string());
-    }
-    normalized
-}
-
 fn metadata_string_set(metadata: &Metadata, key: &str) -> Option<HashSet<String>> {
     let values = metadata.get(key)?.as_array()?;
     Some(
@@ -827,7 +744,6 @@ mod tests {
                         fallback_for_tools: Vec::new(),
                         requires_toolsets: Vec::new(),
                         fallback_for_toolsets: Vec::new(),
-                        stage_filter: vec!["implementation".to_string()],
                     }),
                 }),
                 required_environment_variables: vec![SkillRequiredEnvironmentVariable {
@@ -896,8 +812,7 @@ mod tests {
                     "related_skills": ["molecule-report"]
                 },
                 "agendao": {
-                    "requires_tools": ["skill_manage"],
-                    "stage_filter": ["implementation"]
+                    "requires_tools": ["skill_manage"]
                 }
             }))
         );

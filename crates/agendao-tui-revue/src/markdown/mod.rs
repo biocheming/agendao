@@ -245,7 +245,13 @@ fn render_lines_cached(text: &Arc<str>, width: u16) -> Arc<Vec<ratatui::text::Li
             }
         }
         c.lru.push_back(key);
-        c.map.insert(key, CacheEntry { text: Arc::clone(text), lines: Arc::clone(&lines) });
+        c.map.insert(
+            key,
+            CacheEntry {
+                text: Arc::clone(text),
+                lines: Arc::clone(&lines),
+            },
+        );
         lines
     })
 }
@@ -277,7 +283,10 @@ impl Default for RevueMarkdown {
 
 impl RevueMarkdown {
     pub fn new() -> Self {
-        Self { text: Arc::from(""), est_rows: 0 }
+        Self {
+            text: Arc::from(""),
+            est_rows: 0,
+        }
     }
 
     /// Store the markdown text. 行数估算在**实际内容宽**上进行——
@@ -318,7 +327,9 @@ impl View for MarkdownCellView {
         let area = ctx.area;
         let w = area.width.max(20) as usize;
         let h = area.height;
-        if w < 2 || h == 0 { return; }
+        if w < 2 || h == 0 {
+            return;
+        }
 
         // Render at the actual available width — adaptive!
         // Cached by (text hash, width): identical text re-renders at 20fps
@@ -326,7 +337,9 @@ impl View for MarkdownCellView {
         let lines = render_lines_cached(&self.text, area.width);
 
         for (y, line) in lines.iter().enumerate() {
-            if y as u16 >= h { break; }
+            if y as u16 >= h {
+                break;
+            }
             let cells = line_to_cells(line);
             // Guard: if a wide-char's main cell would land at x == w-1
             // (its continuation falls outside), drop the half-char.
@@ -355,49 +368,51 @@ use ratatui_markdown::theme::{Generation, RichTextTheme};
 struct NoopTheme;
 
 impl RichTextTheme for NoopTheme {
-    fn generation(&self) -> Generation { Generation(1) }
+    fn generation(&self) -> Generation {
+        Generation(1)
+    }
 
     fn get_text_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(192, 202, 245)  // FG_PRIMARY
+        ratatui::style::Color::Rgb(192, 202, 245) // FG_PRIMARY
     }
     fn get_muted_text_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(86, 95, 137)     // FG_MUTED
+        ratatui::style::Color::Rgb(86, 95, 137) // FG_MUTED
     }
     fn get_primary_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(125, 207, 255)   // ACCENT_CYAN
+        ratatui::style::Color::Rgb(125, 207, 255) // ACCENT_CYAN
     }
     fn get_popup_selected_background(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(47, 51, 70)      // BG_SURFACE
+        ratatui::style::Color::Rgb(47, 51, 70) // BG_SURFACE
     }
     fn get_border_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(59, 66, 97)      // BORDER
+        ratatui::style::Color::Rgb(59, 66, 97) // BORDER
     }
     fn get_focused_border_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(125, 207, 255)   // ACCENT_CYAN
+        ratatui::style::Color::Rgb(125, 207, 255) // ACCENT_CYAN
     }
     fn get_secondary_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(122, 162, 247)   // ACCENT_BLUE
+        ratatui::style::Color::Rgb(122, 162, 247) // ACCENT_BLUE
     }
     fn get_info_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(125, 207, 255)   // ACCENT_CYAN
+        ratatui::style::Color::Rgb(125, 207, 255) // ACCENT_CYAN
     }
     fn get_json_key_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(122, 162, 247)   // ACCENT_BLUE
+        ratatui::style::Color::Rgb(122, 162, 247) // ACCENT_BLUE
     }
     fn get_json_string_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(158, 206, 106)   // ACCENT_GREEN
+        ratatui::style::Color::Rgb(158, 206, 106) // ACCENT_GREEN
     }
     fn get_json_number_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(224, 175, 104)   // ACCENT_YELLOW
+        ratatui::style::Color::Rgb(224, 175, 104) // ACCENT_YELLOW
     }
     fn get_json_bool_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(187, 154, 247)   // ACCENT_PURPLE
+        ratatui::style::Color::Rgb(187, 154, 247) // ACCENT_PURPLE
     }
     fn get_json_null_color(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(86, 95, 137)     // FG_MUTED
+        ratatui::style::Color::Rgb(86, 95, 137) // FG_MUTED
     }
     fn get_accent_yellow(&self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(224, 175, 104)   // ACCENT_YELLOW
+        ratatui::style::Color::Rgb(224, 175, 104) // ACCENT_YELLOW
     }
 }
 
@@ -463,7 +478,11 @@ mod tests {
         let a = render_lines_cached(&text, 80);
         let b = render_lines_cached(&text, 80);
         let (misses_after, _) = render_cache_stats();
-        assert_eq!(misses_after - misses_before, 1, "same text+width must parse once");
+        assert_eq!(
+            misses_after - misses_before,
+            1,
+            "same text+width must parse once"
+        );
         assert!(Arc::ptr_eq(&a, &b), "cache hit must share the same Arc");
         assert_eq!(a, b);
     }
@@ -479,7 +498,11 @@ mod tests {
         // 同文本不同宽 → wrap 结果不同 → 重新 parse。
         render_lines_cached(&text, 40);
         let (m1, _) = render_cache_stats();
-        assert_eq!(m1 - m0, 3, "text change and width change must each re-parse");
+        assert_eq!(
+            m1 - m0,
+            3,
+            "text change and width change must each re-parse"
+        );
     }
 
     #[test]
@@ -517,4 +540,3 @@ mod tests {
         assert_eq!(m1 - m0, 0, "re-set of identical content must hit cache");
     }
 }
-

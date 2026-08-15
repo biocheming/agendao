@@ -77,7 +77,8 @@ impl AppHandler {
     /// `connect_provider`(改 auth);两步分离让"只改名字不重置 key"自然成立。
     pub(crate) fn submit_provider_edit(&mut self, s: ProviderEditSubmission) {
         let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+            self.store
+                .push_toast("No API bridge", ToastMsgVariant::Error);
             return;
         };
         let res: anyhow::Result<()> = match s.mode {
@@ -88,12 +89,8 @@ impl AppHandler {
             }
             ProviderEditMode::Edit => {
                 // 1) name/base_url/protocol → PUT /provider/{id}(server update_provider)
-                let r1 = api.update_provider(
-                    &s.id,
-                    Some(&s.name),
-                    Some(&s.base_url),
-                    Some(&s.protocol),
-                );
+                let r1 =
+                    api.update_provider(&s.id, Some(&s.name), Some(&s.base_url), Some(&s.protocol));
                 // 2) api_key 非空 → POST /provider/connect 改 auth(空 = 不改保留原)
                 let r2 = if s.api_key.is_empty() {
                     Ok(true)
@@ -122,10 +119,9 @@ impl AppHandler {
                 };
                 self.store.push_toast(&msg, ToastMsgVariant::Success);
             }
-            Err(e) => self.store.push_toast(
-                &format!("Save failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
+            Err(e) => self
+                .store
+                .push_toast(&format!("Save failed: {}", e), ToastMsgVariant::Error),
         }
     }
 
@@ -138,7 +134,8 @@ impl AppHandler {
     /// 其余字段原样保留(土律·第十条·避免半空覆写)。
     pub(crate) fn submit_model_edit(&mut self, s: ModelEditSubmission) {
         let Some(api) = self.api.as_ref() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+            self.store
+                .push_toast("No API bridge", ToastMsgVariant::Error);
             return;
         };
         use agendao_config::{ModelConfig, ModelLimitConfig};
@@ -172,10 +169,9 @@ impl AppHandler {
                 };
                 self.store.push_toast(&msg, ToastMsgVariant::Success);
             }
-            Err(e) => self.store.push_toast(
-                &format!("Model save failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
+            Err(e) => self
+                .store
+                .push_toast(&format!("Model save failed: {}", e), ToastMsgVariant::Error),
         }
     }
 
@@ -191,20 +187,15 @@ impl AppHandler {
                     ToastMsgVariant::Success,
                 );
             }
-            Err(e) => self.store.push_toast(
-                &format!("Delete failed: {}", e),
-                ToastMsgVariant::Error,
-            ),
+            Err(e) => self
+                .store
+                .push_toast(&format!("Delete failed: {}", e), ToastMsgVariant::Error),
         }
     }
 
     /// 删 model:DELETE /config/provider/{id}/models/{key}。
     /// 由 `PendingConfirm::DeleteProviderModel` 二次确认后调用。
-    pub(crate) fn delete_provider_model_action(
-        &mut self,
-        provider_id: &str,
-        model_key: &str,
-    ) {
+    pub(crate) fn delete_provider_model_action(&mut self, provider_id: &str, model_key: &str) {
         let Some(api) = self.api.as_ref() else { return };
         match api.delete_provider_model_config(provider_id, model_key) {
             Ok(_) => {
@@ -255,10 +246,8 @@ impl AppHandler {
             }
             SettingsEditMode::Edit => {
                 if base_url.is_empty() {
-                    self.store.push_toast(
-                        "Base URL cannot be empty",
-                        ToastMsgVariant::Error,
-                    );
+                    self.store
+                        .push_toast("Base URL cannot be empty", ToastMsgVariant::Error);
                     return;
                 }
             }

@@ -35,16 +35,6 @@ use agendao_types::{
     SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
 };
 
-type LegacyToolResult = (
-    String,
-    bool,
-    Option<String>,
-    Option<HashMap<String, serde_json::Value>>,
-    Option<Vec<serde_json::Value>>,
-);
-
-type LegacyToolResultMap = HashMap<String, LegacyToolResult>;
-
 const CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT: u64 = 90;
 const AUTO_COMPACTION_RECENT_WINDOW_MESSAGES: usize = 12;
 const AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST: usize = 4;
@@ -65,7 +55,7 @@ const REQUEST_BOUNDARY_TOOL_RESULT_MAX_CHARS: usize = 24_000;
 const REQUEST_BOUNDARY_TOOL_RESULT_PREVIEW_CHARS: usize = 1_200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContinuityPacketFallbackReason {
+enum ContinuityPacketError {
     MissingPacket,
     InvalidPacket,
     EmptyAllowedMessageIds,
@@ -79,37 +69,24 @@ pub(crate) struct CompactionAssessment {
     pub body_chars: Option<usize>,
 }
 
-struct LegacyToolStateInput<'a> {
-    tool_call_id: &'a str,
-    tool_name: &'a str,
-    input: &'a serde_json::Value,
-    status: &'a crate::ToolCallStatus,
-    raw: &'a str,
-    tool_result: Option<&'a LegacyToolResult>,
-    session_id: &'a str,
-    message_id: &'a str,
-}
-
 impl SessionPrompt {
     pub(crate) fn build_compaction_record(
         trigger: &str,
         phase: Option<&str>,
         reason: Option<&str>,
         forced: bool,
-        request_context_tokens: Option<u64>,
-        live_context_tokens: Option<u64>,
+        usage: super::ContextUsageSnapshot,
         limit_tokens: Option<u64>,
-        body_chars: Option<usize>,
     ) -> serde_json::Value {
         serde_json::json!({
             "trigger": trigger,
             "phase": phase,
             "reason": reason,
             "forced": forced,
-            "request_context_tokens": request_context_tokens,
-            "live_context_tokens": live_context_tokens,
+            "request_context_tokens": usage.request_context_tokens,
+            "live_context_tokens": usage.live_context_tokens,
             "limit_tokens": limit_tokens,
-            "body_chars": body_chars,
+            "body_chars": usage.request_body_chars,
         })
     }
 
@@ -169,7 +146,7 @@ impl SessionPrompt {
             }
 
             // Skip messages with no parts — empty Tool/Assistant messages
-            // confuse providers, especially the Ethnopic-compatible family
+            // confuse providers, especially the Anthropic-compatible family
             // which rejects empty content.
             if msg.parts.is_empty() {
                 continue;
@@ -186,29 +163,10 @@ impl SessionPrompt {
                     .iter()
                     .any(|p| matches!(p.part_type, PartType::ToolResult { .. }))
             {
-                // Backward-compat: old sessions may carry tool_result parts on
-                // assistant messages. Split those into a synthetic tool-role
-                // message using shared constructors (P1 replay authority).
-                // 只收集引用：后续转换函数直接从 &MessagePart 构造 ContentPart，
-                // 避免先整体克隆一层 part 再逐字段克隆的双重复制。
-                let mut assistant_parts = Vec::new();
-                let mut tool_parts = Vec::new();
-                for part in &msg.parts {
-                    if matches!(part.part_type, PartType::ToolResult { .. }) {
-                        if Self::is_model_visible_part(part) {
-                            tool_parts.push(part);
-                        }
-                    } else if Self::is_model_visible_part(part) {
-                        assistant_parts.push(part);
-                    }
-                }
-
-                if let Some(assistant_msg) = Self::build_assistant_replay_message(&assistant_parts)
-                {
-                    messages.push(assistant_msg);
-                }
-                messages.extend(Self::build_tool_replay_messages(&tool_parts));
-                continue;
+                anyhow::bail!(
+                    "assistant message `{}` contains a tool result; tool results require role=tool",
+                    msg.id
+                );
             }
 
             let visible_parts: Vec<_> = msg
@@ -797,19 +755,17 @@ impl SessionPrompt {
             compaction_index,
             compaction_message,
         ) {
-            Ok(filtered) => return filtered,
-            Err(ContinuityPacketFallbackReason::MissingPacket) => {}
+            Ok(filtered) => filtered,
             Err(reason) => {
-                tracing::debug!(
+                tracing::warn!(
                     session_id = %compaction_message.session_id,
                     message_id = %compaction_message.id,
                     ?reason,
-                    "continuity packet rejected; falling back to legacy compaction replay filter"
+                    "compacted history rejected because its continuity packet is invalid"
                 );
+                Vec::new()
             }
         }
-
-        Self::filter_compacted_messages_legacy(messages, compaction_index)
     }
 
     #[cfg(test)]
@@ -830,18 +786,18 @@ impl SessionPrompt {
         messages: &[SessionMessage],
         compaction_index: usize,
         compaction_message: &SessionMessage,
-    ) -> Result<Vec<SessionMessage>, ContinuityPacketFallbackReason> {
+    ) -> Result<Vec<SessionMessage>, ContinuityPacketError> {
         let Some(packet_value) = compaction_message
             .metadata
             .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
         else {
-            return Err(ContinuityPacketFallbackReason::MissingPacket);
+            return Err(ContinuityPacketError::MissingPacket);
         };
         let packet = SessionContinuityPacket::from_value(packet_value)
-            .ok_or(ContinuityPacketFallbackReason::InvalidPacket)?;
+            .ok_or(ContinuityPacketError::InvalidPacket)?;
         let allowed_ids = packet.allowed_message_ids();
         if allowed_ids.is_empty() {
-            return Err(ContinuityPacketFallbackReason::EmptyAllowedMessageIds);
+            return Err(ContinuityPacketError::EmptyAllowedMessageIds);
         }
         let allowed_set = allowed_ids.into_iter().collect::<HashSet<_>>();
         let filtered = messages
@@ -856,7 +812,7 @@ impl SessionPrompt {
         if Self::filter_compacted_messages_packet_result_valid(messages, &packet, &filtered) {
             Ok(filtered)
         } else {
-            Err(ContinuityPacketFallbackReason::IncompleteCurrentTurnChain)
+            Err(ContinuityPacketError::IncompleteCurrentTurnChain)
         }
     }
 
@@ -910,44 +866,7 @@ impl SessionPrompt {
         })
     }
 
-    fn filter_compacted_messages_legacy(
-        messages: &[SessionMessage],
-        compaction_index: usize,
-    ) -> Vec<SessionMessage> {
-        let tail = messages[compaction_index..].to_vec();
-        if tail.iter().any(|m| matches!(m.role, MessageRole::User)) {
-            return tail;
-        }
-
-        // Keep the latest user anchor before the compaction boundary so prompt
-        // loop invariants hold (`last_user_idx` must exist), and preserve the
-        // entire current turn chain between that user and the compaction
-        // boundary. Provider continuations may depend on assistant/tool rounds
-        // that occurred earlier in the same turn.
-        if let Some(last_user_idx) = messages
-            .iter()
-            .rposition(|m| matches!(m.role, MessageRole::User))
-        {
-            if last_user_idx < compaction_index {
-                let mut anchored = Vec::with_capacity(messages.len() - last_user_idx);
-                anchored.extend_from_slice(&messages[last_user_idx..compaction_index]);
-                anchored.extend_from_slice(&messages[compaction_index..]);
-                return anchored;
-            }
-        }
-
-        tail
-    }
-
     /// Build a compaction continuity packet from session state.
-    ///
-    /// # Migration path (Phase 5 → 7)
-    ///
-    /// The packet construction and filtering rules remain the single
-    /// authority for continuity semantics. Session / scheduler /
-    /// diagnostics readers consume it through `PromptReflowContext::build()`;
-    /// the packet construction itself does NOT change — only the shared
-    /// interpretation path.
     fn build_compaction_continuity_packet(
         session: &Session,
         messages: &[SessionMessage],
@@ -1161,35 +1080,13 @@ impl SessionPrompt {
         };
 
         for msg in messages {
-            // Prefer the strongly-typed usage field populated by provider stream/final responses.
             if let Some(msg_usage) = msg.usage.as_ref() {
                 usage.input += msg_usage.input_tokens;
                 usage.output += msg_usage.output_tokens;
                 usage.cache_read += msg_usage.cache_read_tokens;
                 usage.cache_miss += msg_usage.cache_miss_tokens;
                 usage.cache_write += msg_usage.cache_write_tokens;
-                continue;
             }
-
-            // Fallback to metadata for backward compatibility with legacy snapshots.
-            let read_metadata_u64 = |key: &str, usage_key: &str| -> u64 {
-                msg.metadata
-                    .get(key)
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| {
-                        msg.metadata
-                            .get("usage")
-                            .and_then(|v| v.get(usage_key))
-                            .and_then(|v| v.as_u64())
-                    })
-                    .unwrap_or(0)
-            };
-
-            usage.input += read_metadata_u64("tokens_input", "prompt_tokens");
-            usage.output += read_metadata_u64("tokens_output", "completion_tokens");
-            usage.cache_read += read_metadata_u64("tokens_cache_read", "cache_read_tokens");
-            usage.cache_miss += read_metadata_u64("tokens_cache_miss", "cache_miss_tokens");
-            usage.cache_write += read_metadata_u64("tokens_cache_write", "cache_write_tokens");
         }
         usage.total =
             usage.input + usage.output + usage.cache_read + usage.cache_miss + usage.cache_write;
@@ -1631,16 +1528,20 @@ impl SessionPrompt {
     }
 
     pub(crate) fn assess_compaction(
-        messages: &[SessionMessage],
+        context_messages: &[SessionMessage],
+        lifecycle_messages: &[SessionMessage],
         provider: &dyn Provider,
         model_id: &str,
         max_output_tokens: Option<u64>,
         compaction_config: &CompactionConfig,
-        live_context_tokens: Option<u64>,
-        request_context_tokens: Option<u64>,
-        request_body_chars: Option<usize>,
+        usage_snapshot: super::ContextUsageSnapshot,
     ) -> Option<CompactionAssessment> {
-        if Self::should_back_off_auto_compaction(messages) {
+        let super::ContextUsageSnapshot {
+            live_context_tokens,
+            request_context_tokens,
+            request_body_chars,
+        } = usage_snapshot;
+        if Self::should_back_off_auto_compaction(lifecycle_messages) {
             return None;
         }
         if !compaction_config.auto {
@@ -1659,7 +1560,7 @@ impl SessionPrompt {
         };
         let engine = CompactionEngine::new(compaction_config.clone());
         let compaction_limit = Self::effective_compaction_limit(&limits, compaction_config);
-        let usage = Self::token_usage_from_messages(messages);
+        let usage = Self::token_usage_from_messages(context_messages);
         let request_context_tokens = request_context_tokens.filter(|tokens| *tokens > 0);
         let usage_count = if usage.total > 0 {
             usage.total
@@ -1759,7 +1660,10 @@ impl SessionPrompt {
         // Estimate total content size across ALL part types (not just text).
         // This catches large tool results and tool call inputs that the
         // token-based check misses (it relies on cached API response counts).
-        let total_chars: usize = messages.iter().map(Self::model_context_char_len).sum();
+        let total_chars: usize = context_messages
+            .iter()
+            .map(Self::model_context_char_len)
+            .sum();
 
         let estimated_input_tokens = (total_chars as u64) / 4;
         let estimated_usage = TokenUsage {
@@ -1822,13 +1726,12 @@ impl SessionPrompt {
     ) -> bool {
         Self::assess_compaction(
             messages,
+            messages,
             provider,
             model_id,
             max_output_tokens,
             compaction_config,
-            live_context_tokens,
-            None,
-            None,
+            super::ContextUsageSnapshot::new(live_context_tokens, None, None),
         )
         .is_some()
     }
@@ -1869,31 +1772,6 @@ impl SessionPrompt {
         model_id: &str,
         session_directory: &str,
     ) -> Vec<MessageWithParts> {
-        let legacy_tool_results: LegacyToolResultMap = messages
-            .iter()
-            .flat_map(|m| m.parts.iter())
-            .filter_map(|part| match &part.part_type {
-                PartType::ToolResult {
-                    tool_call_id,
-                    content,
-                    is_error,
-                    title,
-                    metadata,
-                    attachments,
-                } => Some((
-                    tool_call_id.clone(),
-                    (
-                        content.clone(),
-                        *is_error,
-                        title.clone(),
-                        metadata.clone(),
-                        attachments.clone(),
-                    ),
-                )),
-                _ => None,
-            })
-            .collect();
-
         let mut out = Vec::with_capacity(messages.len());
         let mut last_user_id = String::new();
 
@@ -1937,25 +1815,9 @@ impl SessionPrompt {
                         auto: true,
                     })),
                     PartType::ToolCall {
-                        id,
-                        name,
-                        input,
-                        status,
-                        raw,
-                        state,
+                        id, name, state, ..
                     } => {
-                        let state = state.clone().unwrap_or_else(|| {
-                            Self::legacy_tool_state_to_v2(LegacyToolStateInput {
-                                tool_call_id: id,
-                                tool_name: name,
-                                input,
-                                status,
-                                raw: raw.as_deref().unwrap_or_default(),
-                                tool_result: legacy_tool_results.get(id),
-                                session_id: &msg.session_id,
-                                message_id: &msg.id,
-                            })
-                        });
+                        let state = state.clone()?;
                         Some(V2Part::Tool(crate::message_v2::ToolPart {
                             id: part.id.clone(),
                             session_id: msg.session_id.clone(),
@@ -2151,87 +2013,6 @@ impl SessionPrompt {
         }
 
         out
-    }
-
-    fn legacy_tool_state_to_v2(input_data: LegacyToolStateInput<'_>) -> crate::ToolState {
-        let now = chrono::Utc::now().timestamp_millis();
-        match input_data.status {
-            crate::ToolCallStatus::Pending => crate::ToolState::Pending {
-                input: input_data.input.clone(),
-                raw: input_data.raw.to_string(),
-            },
-            crate::ToolCallStatus::Running => crate::ToolState::Running {
-                input: input_data.input.clone(),
-                title: None,
-                metadata: None,
-                time: crate::RunningTime { start: now },
-            },
-            crate::ToolCallStatus::Completed => {
-                let (output, title, mut metadata, part_attachments) = input_data
-                    .tool_result
-                    .map(|(content, _, title, metadata, attachments)| {
-                        (
-                            content.clone(),
-                            title
-                                .clone()
-                                .unwrap_or_else(|| input_data.tool_name.to_string()),
-                            metadata.clone().unwrap_or_default(),
-                            attachments.clone(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        (
-                            String::new(),
-                            input_data.tool_name.to_string(),
-                            HashMap::new(),
-                            None,
-                        )
-                    });
-
-                let mut merged_attachments = Vec::new();
-                if let Some(values) = part_attachments {
-                    merged_attachments.extend(values);
-                }
-                if let Some(values) = Self::take_attachment_values(&mut metadata) {
-                    merged_attachments.extend(values);
-                }
-                let (_, normalized_attachments) = Self::normalize_tool_attachments(
-                    (!merged_attachments.is_empty()).then_some(merged_attachments),
-                    input_data.session_id,
-                    input_data.message_id,
-                );
-
-                crate::ToolState::Completed {
-                    input: input_data.input.clone(),
-                    output,
-                    title,
-                    metadata,
-                    time: crate::CompletedTime {
-                        start: now,
-                        end: now,
-                        compacted: None,
-                    },
-                    attachments: normalized_attachments,
-                }
-            }
-            crate::ToolCallStatus::Error => {
-                let error = input_data
-                    .tool_result
-                    .map(|(content, _, _, _, _)| content.clone())
-                    .unwrap_or_else(|| {
-                        format!("Tool execution failed: {}", input_data.tool_call_id)
-                    });
-                crate::ToolState::Error {
-                    input: input_data.input.clone(),
-                    error,
-                    metadata: None,
-                    time: crate::ErrorTime {
-                        start: now,
-                        end: now,
-                    },
-                }
-            }
-        }
     }
 
     pub(super) async fn summarize_session(
@@ -2481,6 +2262,7 @@ impl SessionPrompt {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ContextUsageSnapshot;
     use super::*;
     use agendao_config::{CompactionConfig as AppCompactionConfig, Config, ConfigStore};
     use agendao_orchestrator::output_projection::{
@@ -2547,7 +2329,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_compacted_messages_keeps_tail_after_last_compaction() {
+    fn filter_compacted_messages_rejects_missing_continuity_packet() {
         let session_id = "ses_test".to_string();
         let before = SessionMessage::user(session_id.clone(), "before");
         let mut compact = SessionMessage::assistant(session_id.clone());
@@ -2562,11 +2344,7 @@ mod tests {
         let after = SessionMessage::user(session_id, "after");
 
         let filtered = SessionPrompt::filter_compacted_messages(&[before, compact, after]);
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered[0]
-            .parts
-            .iter()
-            .any(|p| matches!(p.part_type, PartType::Compaction { .. })));
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -2697,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_compacted_messages_preserves_latest_user_anchor_when_tail_has_no_user() {
+    fn filter_compacted_messages_does_not_infer_user_anchor_without_packet() {
         let session_id = "ses_test_anchor".to_string();
         let user = SessionMessage::user(session_id.clone(), "user anchor");
 
@@ -2715,13 +2493,11 @@ mod tests {
         let filtered =
             SessionPrompt::filter_compacted_messages(&[user.clone(), compact, assistant_after]);
 
-        assert_eq!(filtered.len(), 3);
-        assert!(matches!(filtered[0].role, MessageRole::User));
-        assert_eq!(filtered[0].id, user.id);
+        assert!(filtered.is_empty());
     }
 
     #[test]
-    fn filter_compacted_messages_preserves_current_turn_assistant_tool_chain_after_user_anchor() {
+    fn filter_compacted_messages_does_not_infer_tool_chain_without_packet() {
         let session_id = "ses_test_turn_chain".to_string();
         let user = SessionMessage::user(session_id.clone(), "continue the same turn");
 
@@ -2766,17 +2542,11 @@ mod tests {
             tool_after_compaction.clone(),
         ]);
 
-        assert_eq!(filtered.len(), 6);
-        assert_eq!(filtered[0].id, user.id);
-        assert_eq!(filtered[1].parts.len(), 2);
-        assert_eq!(filtered[2].parts.len(), 1);
-        assert_eq!(filtered[3].id, compact.id);
-        assert_eq!(filtered[4].id, assistant_after.id);
-        assert_eq!(filtered[5].id, tool_after_compaction.id);
+        assert!(filtered.is_empty());
     }
 
     #[test]
-    fn filter_compacted_messages_preserves_current_turn_chain_when_compaction_is_latest_message() {
+    fn filter_compacted_messages_rejects_latest_compaction_without_packet() {
         let session_id = "ses_test_turn_chain_latest_compact".to_string();
         let user = SessionMessage::user(session_id.clone(), "continue the same turn");
 
@@ -2808,15 +2578,11 @@ mod tests {
             compact.clone(),
         ]);
 
-        assert_eq!(filtered.len(), 4);
-        assert_eq!(filtered[0].id, user.id);
-        assert_eq!(filtered[1].id, assistant.id);
-        assert_eq!(filtered[2].id, tool.id);
-        assert_eq!(filtered[3].id, compact.id);
+        assert!(filtered.is_empty());
     }
 
     #[test]
-    fn filter_compacted_messages_falls_back_when_packet_omits_current_turn_chain() {
+    fn filter_compacted_messages_rejects_packet_that_omits_current_turn_chain() {
         let session_id = "ses_test_packet_fallback".to_string();
         let user = SessionMessage::user(session_id.clone(), "continue the same turn");
 
@@ -2882,11 +2648,7 @@ mod tests {
             tool_after_compaction.clone(),
         ]);
 
-        assert_eq!(filtered.len(), 6);
-        assert_eq!(filtered[0].id, user.id);
-        assert_eq!(filtered[3].id, compact.id);
-        assert_eq!(filtered[4].id, assistant_after.id);
-        assert_eq!(filtered[5].id, tool_after_compaction.id);
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -3033,8 +2795,10 @@ mod tests {
     fn should_compact_prefers_provider_model_limits() {
         let provider = StaticModelProvider::with_model("tiny-model", 1000, 100);
         let mut msg = SessionMessage::user("ses_test", "hello");
-        msg.metadata
-            .insert("tokens_input".to_string(), serde_json::json!(950_u64));
+        msg.usage = Some(crate::message::MessageUsage {
+            input_tokens: 950,
+            ..Default::default()
+        });
 
         let compact = SessionPrompt::should_compact(
             &[msg],
@@ -3100,8 +2864,10 @@ mod tests {
             }),
         };
         let mut msg = SessionMessage::user("ses_test", "hello");
-        msg.metadata
-            .insert("tokens_input".to_string(), serde_json::json!(48_000_u64));
+        msg.usage = Some(crate::message::MessageUsage {
+            input_tokens: 48_000,
+            ..Default::default()
+        });
 
         let compact = SessionPrompt::should_compact(
             &[msg],
@@ -3160,8 +2926,10 @@ mod tests {
     fn should_compact_respects_reserved_token_budget() {
         let provider = StaticModelProvider::with_model("reserved-model", 10_000, 2048);
         let mut msg = SessionMessage::user("ses_test", "hello");
-        msg.metadata
-            .insert("tokens_input".to_string(), serde_json::json!(9_300_u64));
+        msg.usage = Some(crate::message::MessageUsage {
+            input_tokens: 9_300,
+            ..Default::default()
+        });
 
         let compact = SessionPrompt::should_compact(
             &[msg],
@@ -3298,10 +3066,8 @@ mod tests {
             Some("prompt.provider_overflow"),
             Some("provider_overflow"),
             true,
-            Some(120_000),
-            None,
+            ContextUsageSnapshot::new(None, Some(120_000), Some(480_000)),
             Some(100_000),
-            Some(480_000),
         );
 
         let summary = SessionPrompt::trigger_compaction_with_record(
@@ -3487,13 +3253,12 @@ mod tests {
 
         let assessment = SessionPrompt::assess_compaction(
             &messages,
+            &messages,
             &provider,
             "request-view-model",
             None,
             &CompactionConfig::default(),
-            None,
-            Some(38_000),
-            Some(152_000),
+            ContextUsageSnapshot::new(None, Some(38_000), Some(152_000)),
         )
         .expect("request view should trigger proactive compaction");
 
@@ -3532,14 +3297,13 @@ mod tests {
         });
 
         let assessment = SessionPrompt::assess_compaction(
-            &[msg],
+            std::slice::from_ref(&msg),
+            std::slice::from_ref(&msg),
             &provider,
             "request-view-model",
             None,
             &CompactionConfig::default(),
-            None,
-            Some(12_000),
-            Some(48_000),
+            ContextUsageSnapshot::new(None, Some(12_000), Some(48_000)),
         );
 
         assert!(
@@ -3567,13 +3331,12 @@ mod tests {
         let messages = vec![compaction_message, assistant_after];
         let assessment = SessionPrompt::assess_compaction(
             &messages,
+            &messages,
             &provider,
             "test-model",
             None,
             &CompactionConfig::default(),
-            Some(180_000),
-            None,
-            None,
+            ContextUsageSnapshot::new(Some(180_000), None, None),
         );
 
         assert!(
@@ -3865,21 +3628,6 @@ mod tests {
         assert_eq!(usage.total, 350);
     }
 
-    // P1 replay authority: legacy assistant tool_result split must emit
-    // tool results as Role::Tool.
-    #[test]
-    fn build_chat_messages_routes_tool_results_to_role_tool_even_after_legacy_split() {
-        let mut msg = SessionMessage::assistant("ses_test");
-        msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
-        msg.add_tool_result("call-1", "ok", false);
-        let messages = SessionPrompt::build_chat_messages(&[msg], None, &[]).expect("build");
-        assert_eq!(messages.len(), 2);
-        // Assistant with tool call.
-        assert!(matches!(messages[0].role, Role::Assistant));
-        // Tool result as Role::Tool.
-        assert!(matches!(messages[1].role, Role::Tool));
-    }
-
     #[test]
     fn request_boundary_hygiene_drops_orphan_tool_result_from_provider_history() {
         let mut tool = SessionMessage::tool("ses_test");
@@ -3972,9 +3720,8 @@ mod tests {
         let mut closing = SessionMessage::assistant("ses_test");
         closing.add_text("done");
 
-        let messages =
-            SessionPrompt::build_chat_messages(&[assistant, tool, closing], None, &[])
-                .expect("build");
+        let messages = SessionPrompt::build_chat_messages(&[assistant, tool, closing], None, &[])
+            .expect("build");
         let golden = serde_json::to_value(&messages).expect("serialize golden");
 
         let (messages, summary) =
@@ -4185,7 +3932,7 @@ mod tests {
     // PLACEHOLDER_TESTS_CONTINUE_4
 
     #[test]
-    fn token_usage_from_messages_falls_back_to_usage_metadata_object() {
+    fn token_usage_from_messages_ignores_untyped_usage_metadata() {
         let mut msg = SessionMessage::assistant("ses_test");
         msg.metadata.insert(
             "usage".to_string(),
@@ -4199,24 +3946,23 @@ mod tests {
         );
 
         let usage = SessionPrompt::token_usage_from_messages(&[msg]);
-        assert_eq!(usage.input, 77);
-        assert_eq!(usage.output, 33);
-        assert_eq!(usage.cache_read, 5);
-        assert_eq!(usage.cache_write, 2);
-        assert_eq!(usage.total, 117);
+        assert_eq!(usage.input, 0);
+        assert_eq!(usage.output, 0);
+        assert_eq!(usage.cache_read, 0);
+        assert_eq!(usage.cache_write, 0);
+        assert_eq!(usage.total, 0);
     }
 
     #[test]
-    fn build_chat_messages_splits_legacy_assistant_tool_results() {
+    fn build_chat_messages_rejects_assistant_tool_results() {
         let sid = "sid".to_string();
         let mut assistant = SessionMessage::assistant(sid);
         assistant.add_text("working");
         assistant.add_tool_result("call_1", "ok", false);
 
-        let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert!(matches!(messages[0].role, Role::Assistant));
-        assert!(matches!(messages[1].role, Role::Tool));
+        let error = SessionPrompt::build_chat_messages(&[assistant], None, &[])
+            .expect_err("assistant tool result must be rejected");
+        assert!(error.to_string().contains("tool results require role=tool"));
     }
 
     #[test]
@@ -4245,13 +3991,13 @@ mod tests {
     }
 
     #[test]
-    fn build_chat_messages_keeps_legacy_projection_without_policy() {
+    fn build_chat_messages_ignores_projection_without_policy() {
         let sid = "sid".to_string();
         let mut assistant = SessionMessage::assistant(sid);
-        assistant.add_text("legacy large assistant text");
+        assistant.add_text("visible assistant text");
         assistant.metadata.insert(
             SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
-            serde_json::json!("legacy summary"),
+            serde_json::json!("unsanctioned summary"),
         );
 
         let messages = SessionPrompt::build_chat_messages(&[assistant], None, &[]).unwrap();
@@ -4260,7 +4006,7 @@ mod tests {
         assert!(matches!(messages[0].role, Role::Assistant));
         assert!(matches!(
             &messages[0].content,
-            Content::Text(text) if text == "legacy summary"
+            Content::Text(text) if text == "visible assistant text"
         ));
     }
 
@@ -4462,6 +4208,11 @@ mod tests {
             SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
             serde_json::json!("short summary"),
         );
+        assistant.metadata.insert(
+            SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
+            serde_json::to_value(ContextProjectionPolicy::Summary)
+                .expect("policy should serialize"),
+        );
 
         assert_eq!(
             SessionPrompt::model_context_char_len(&assistant),
@@ -4523,58 +4274,6 @@ mod tests {
                 );
             }
             other => panic!("expected parts content, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn legacy_tool_state_to_v2_recovers_attachments_from_tool_result_metadata() {
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "attachment".to_string(),
-            serde_json::json!({ "mime": "application/pdf", "url": "data:application/pdf;base64,AA==" }),
-        );
-        metadata.insert(
-            "preview".to_string(),
-            serde_json::json!("PDF read successfully"),
-        );
-
-        let tool_result = (
-            "PDF read successfully".to_string(),
-            false,
-            Some("Read".to_string()),
-            Some(metadata),
-            None,
-        );
-
-        let input = serde_json::json!({ "file_path": "report.pdf" });
-        let state = SessionPrompt::legacy_tool_state_to_v2(LegacyToolStateInput {
-            tool_call_id: "tool-call-1",
-            tool_name: "read",
-            input: &input,
-            status: &crate::ToolCallStatus::Completed,
-            raw: "",
-            tool_result: Some(&tool_result),
-            session_id: "ses_1",
-            message_id: "msg_1",
-        });
-
-        match state {
-            crate::ToolState::Completed {
-                metadata,
-                attachments,
-                ..
-            } => {
-                assert!(!metadata.contains_key("attachment"));
-                assert_eq!(attachments.as_ref().map(|v| v.len()), Some(1));
-                assert_eq!(
-                    attachments
-                        .as_ref()
-                        .and_then(|v| v.first())
-                        .map(|f| f.mime.as_str()),
-                    Some("application/pdf")
-                );
-            }
-            _ => panic!("expected completed state"),
         }
     }
 

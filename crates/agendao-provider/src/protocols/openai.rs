@@ -3,7 +3,6 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use tracing;
 
@@ -16,9 +15,8 @@ use super::thinking_continuation::{
     request_has_tool_call_continuation_missing_reasoning_replay,
     strip_reasoning_provider_options_for_new_continuation,
 };
-use crate::custom_fetch::get_custom_fetch_proxy;
-use crate::responses::*;
-use crate::runtime::runtime_pipeline_enabled;
+use crate::responses::types::*;
+use crate::responses::validation::*;
 use crate::tools::InputTool;
 use crate::{
     ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderApiShape, ProviderConfig,
@@ -59,7 +57,7 @@ fn chat_completions_base_url(config: &ProviderConfig) -> Result<Option<&str>, Pr
     if base.is_empty() {
         if config.provider_id != "openai" {
             return Err(ProviderError::ConfigError(format!(
-                "provider `{}` requires `base_url` for closeai-compatible routing",
+                "provider `{}` requires `base_url` for openai-compatible routing",
                 config.provider_id
             )));
         }
@@ -85,10 +83,6 @@ fn provider_requires_thinking_replay(config: &ProviderConfig) -> bool {
     }
 }
 
-fn provider_defaults_thinking_enabled(config: &ProviderConfig) -> bool {
-    config.provider_id.eq_ignore_ascii_case("deepseek")
-}
-
 fn start_fresh_non_thinking_continuation_boundary(request: &mut ChatRequest) -> Vec<String> {
     let (provider_options, removed) = strip_reasoning_provider_options_for_new_continuation(
         request.provider_options.take(),
@@ -100,9 +94,6 @@ fn start_fresh_non_thinking_continuation_boundary(request: &mut ChatRequest) -> 
 
 fn maybe_start_new_continuation_boundary(config: &ProviderConfig, request: &mut ChatRequest) {
     if !provider_requires_thinking_replay(config) {
-        return;
-    }
-    if !provider_defaults_thinking_enabled(config) {
         return;
     }
     if request_explicitly_enables_thinking(request) || request_explicitly_disables_thinking(request)
@@ -128,7 +119,7 @@ fn validate_thinking_replay_request(
     if !provider_requires_thinking_replay(config) {
         return Ok(());
     }
-    if !request_effectively_enables_thinking(request, provider_defaults_thinking_enabled(config)) {
+    if !request_effectively_enables_thinking(request, true) {
         return Ok(());
     }
     if !request_has_tool_call_continuation_missing_reasoning_replay(&request.messages) {
@@ -179,7 +170,7 @@ fn chat_completions_url(base_url: Option<&str>) -> String {
                 return base.to_string();
             }
             // 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
-            let base = crate::transport::normalize_provider_base_url(base, "openai");
+            let base = crate::transport::normalize_provider_base_url(base);
             format!("{base}/chat/completions")
         }
     }
@@ -194,7 +185,7 @@ fn responses_url(base_url: Option<&str>, path: &str) -> String {
                 return format!("{}/{}", base.trim_end_matches("/chat/completions"), path);
             }
             // 与 connection_test 同一套归一：无版本段时补 /v1，已有 /vN 原样保留。
-            let base = crate::transport::normalize_provider_base_url(base, "openai");
+            let base = crate::transport::normalize_provider_base_url(base);
             format!("{base}/{}", path)
         }
     }
@@ -253,7 +244,7 @@ fn finish_reason_to_string(reason: FinishReason) -> String {
 
 fn responses_chat_response(
     request: &ChatRequest,
-    result: crate::responses::ResponsesGenerateResult,
+    result: crate::responses::validation::ResponsesGenerateResult,
 ) -> ChatResponse {
     let usage = Usage {
         prompt_tokens: result.usage.input_tokens,
@@ -364,21 +355,6 @@ fn responses_model(
     )
 }
 
-async fn resolve_with_fallback<T, PFut, FFut, F>(
-    primary: PFut,
-    fallback: F,
-) -> Result<T, ProviderError>
-where
-    PFut: Future<Output = Result<T, ProviderError>>,
-    F: FnOnce(ProviderError) -> FFut,
-    FFut: Future<Output = Result<T, ProviderError>>,
-{
-    match primary.await {
-        Ok(value) => Ok(value),
-        Err(err) => fallback(err).await,
-    }
-}
-
 // ===========================================================================
 // Layer 7a — chat/completions HTTP path
 // ===========================================================================
@@ -440,7 +416,7 @@ async fn chat_completions_chat(
         ProviderError::ApiError(msg)
     })?;
 
-    // Some closeai-compatible providers (e.g. ZhipuAI) return SSE-formatted
+    // Some openai-compatible providers (e.g. ZhipuAI) return SSE-formatted
     // streaming data even for non-streaming requests. Detect and reassemble.
     let raw: RawChatResponse = if body.trim_start().starts_with("data:") {
         reassemble_sse_chunks(&body)?
@@ -464,7 +440,6 @@ async fn chat_stream_openai_compatible(
     client: &Client,
     config: &ProviderConfig,
     mut request: ChatRequest,
-    use_pipeline: bool,
 ) -> Result<StreamResult, ProviderError> {
     maybe_start_new_continuation_boundary(config, &mut request);
     validate_thinking_replay_request(config, &request)?;
@@ -508,12 +483,6 @@ async fn chat_stream_openai_compatible(
         return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
     }
 
-    if use_pipeline {
-        let pipeline = crate::runtime::pipeline::Pipeline::openai_default();
-        let pipeline_stream = pipeline.process_stream(Box::pin(response.bytes_stream()));
-        return Ok(crate::stream::pipeline_to_stream_result(pipeline_stream));
-    }
-
     let json_stream = crate::stream::decode_sse_stream(response.bytes_stream()).await?;
 
     let stream = json_stream.flat_map(|result| {
@@ -535,38 +504,29 @@ async fn chat_completions_stream(
     config: &ProviderConfig,
     request: ChatRequest,
 ) -> Result<StreamResult, ProviderError> {
-    chat_stream_openai_compatible(client, config, request, false).await
-}
-
-async fn chat_stream_runtime_pipeline(
-    client: &Client,
-    config: &ProviderConfig,
-    request: ChatRequest,
-) -> Result<StreamResult, ProviderError> {
-    chat_stream_openai_compatible(client, config, request, true).await
+    chat_stream_openai_compatible(client, config, request).await
 }
 
 // ===========================================================================
-// CloseAiCompatibleAdapter struct + ProviderAdapter
+// OpenAiCompatibleAdapter struct + ProviderAdapter
 // ===========================================================================
 
-pub struct CloseAiCompatibleAdapter;
+pub struct OpenAiCompatibleAdapter;
 
-impl Default for CloseAiCompatibleAdapter {
+impl Default for OpenAiCompatibleAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CloseAiCompatibleAdapter {
+impl OpenAiCompatibleAdapter {
     pub fn new() -> Self {
         Self
     }
 }
 
-// Phase 3: Full dual routing — Responses API with chat-completions fallback.
 #[async_trait]
-impl ProviderAdapter for CloseAiCompatibleAdapter {
+impl ProviderAdapter for OpenAiCompatibleAdapter {
     async fn chat(
         &self,
         client: &Client,
@@ -579,41 +539,10 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
 
         let response_model = responses_model(client, config, &request.model);
         let options = responses_generate_options(config, &request);
-        // Share the request between the primary path and the fallback via Arc
-        // so the happy path pays no deep clone; the fallback path unwraps the
-        // Arc (cloning only in the unlikely case a reference is still held).
-        let request = std::sync::Arc::new(request);
-        let request_for_primary = request.clone();
-        let model_for_log = request.model.clone();
-        let client_for_fallback = client.clone();
-        let config_for_fallback = config.clone();
-        resolve_with_fallback(
-            async move {
-                response_model
-                    .do_generate(options)
-                    .await
-                    .map(|result| responses_chat_response(&request_for_primary, result))
-            },
-            move |err| async move {
-                if get_custom_fetch_proxy("openai").is_some() {
-                    tracing::warn!(
-                        model = %model_for_log,
-                        error = %err,
-                        "Responses generate failed while custom fetch proxy is active; skipping chat-completions fallback"
-                    );
-                    return Err(err);
-                }
-                tracing::warn!(
-                    model = %model_for_log,
-                    error = %err,
-                    "Responses generate failed, falling back to chat-completions"
-                );
-                let request = std::sync::Arc::try_unwrap(request)
-                    .unwrap_or_else(|request| (*request).clone());
-                chat_completions_chat(&client_for_fallback, &config_for_fallback, request).await
-            },
-        )
-        .await
+        response_model
+            .do_generate(options)
+            .await
+            .map(|result| responses_chat_response(&request, result))
     }
 
     async fn chat_stream(
@@ -622,48 +551,15 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
-        let use_pipeline = runtime_pipeline_enabled(config);
         if uses_chat_completions_shape(config)? {
-            return if use_pipeline {
-                chat_stream_runtime_pipeline(client, config, request).await
-            } else {
-                chat_completions_stream(client, config, request).await
-            };
+            return chat_completions_stream(client, config, request).await;
         }
 
         let response_model = responses_model(client, config, &request.model);
         let options = StreamOptions {
             generate: responses_generate_options(config, &request),
         };
-        let model_for_log = request.model.clone();
-        let client_for_fallback = client.clone();
-        let config_for_fallback = config.clone();
-        resolve_with_fallback(
-            async move { response_model.do_stream(options).await },
-            move |err| async move {
-                if get_custom_fetch_proxy("openai").is_some() {
-                    tracing::warn!(
-                        model = %model_for_log,
-                        error = %err,
-                        "Responses stream failed while custom fetch proxy is active; skipping chat-completions fallback"
-                    );
-                    return Err(err);
-                }
-                tracing::warn!(
-                    model = %model_for_log,
-                    error = %err,
-                    "Responses stream failed, falling back to chat-completions stream"
-                );
-                if use_pipeline {
-                    chat_stream_runtime_pipeline(&client_for_fallback, &config_for_fallback, request)
-                        .await
-                } else {
-                    chat_completions_stream(&client_for_fallback, &config_for_fallback, request)
-                        .await
-                }
-            },
-        )
-        .await
+        response_model.do_stream(options).await
     }
 }
 
@@ -673,105 +569,49 @@ mod tests {
     use super::super::openai_response::{
         RawChatResponse, RawChoice, RawFunction, RawMessage, RawToolCall,
     };
-    use super::super::openai_tool_recovery::{
-        normalize_tool_call_arguments_for_request, parse_tool_call_input,
+    use super::super::openai_tool_arguments::{
+        parse_tool_call_input, serialize_historical_tool_call,
     };
     use super::*;
-    use crate::custom_fetch::{
-        register_custom_fetch_proxy, unregister_custom_fetch_proxy, CustomFetchProxy,
-        CustomFetchRequest, CustomFetchResponse, CustomFetchStreamResponse,
-    };
-    use async_trait::async_trait;
-    use futures::stream;
     use serde_json::json;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
-    struct NoopProxy;
-
-    #[async_trait]
-    impl CustomFetchProxy for NoopProxy {
-        async fn fetch(
-            &self,
-            _request: CustomFetchRequest,
-        ) -> Result<CustomFetchResponse, ProviderError> {
-            Ok(CustomFetchResponse {
-                status: 200,
-                headers: HashMap::new(),
-                body: String::new(),
-            })
-        }
-
-        async fn fetch_stream(
-            &self,
-            _request: CustomFetchRequest,
-        ) -> Result<CustomFetchStreamResponse, ProviderError> {
-            Ok(CustomFetchStreamResponse {
-                status: 200,
-                headers: HashMap::new(),
-                stream: Box::pin(stream::empty()),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_with_fallback_returns_primary_when_successful() {
-        let result =
-            resolve_with_fallback(async { Ok::<_, ProviderError>(7usize) }, |_err| async {
-                Ok::<_, ProviderError>(0usize)
-            })
-            .await
-            .expect("primary result should be returned");
-        assert_eq!(result, 7);
-    }
-
-    #[tokio::test]
-    async fn resolve_with_fallback_calls_fallback_on_error() {
-        let result = resolve_with_fallback(
-            async {
-                Err::<usize, ProviderError>(ProviderError::ApiError("responses failed".to_string()))
-            },
-            |_err| async { Ok::<_, ProviderError>(9usize) },
-        )
-        .await
-        .expect("fallback should handle primary error");
-        assert_eq!(result, 9);
-    }
-
-    #[tokio::test]
-    async fn resolve_with_fallback_skips_chat_completions_when_custom_fetch_active() {
-        register_custom_fetch_proxy("openai", Arc::new(NoopProxy));
-
-        let result = resolve_with_fallback(
-            async {
-                Err::<usize, ProviderError>(ProviderError::ApiError("responses failed".to_string()))
-            },
-            |e| async move {
-                if get_custom_fetch_proxy("openai").is_some() {
-                    return Err(e);
-                }
-                Ok::<_, ProviderError>(9usize)
-            },
-        )
-        .await;
-
-        unregister_custom_fetch_proxy("openai");
-        assert!(result.is_err());
+    fn reasoning_replay_config() -> ProviderConfig {
+        ProviderConfig::new("custom-thinking", "https://example.com/v1", "test-key")
+            .with_option("npm", json!("@ai-sdk/openai-compatible"))
+            .with_option(
+                "provider_profile",
+                json!({
+                    "api_style": "openai-compatible",
+                    "api_shape": "chat-completions",
+                    "transport": "bearer",
+                    "usage_shape": "openai-cached-tokens",
+                    "quirks": ["requires-thinking-replay"]
+                }),
+            )
     }
 
     #[test]
-    fn openai_native_provider_defaults_to_chat_completions_shape() {
+    fn openai_native_provider_defaults_to_responses_shape() {
         let config = ProviderConfig::new("openai", "https://example.com/v1", "test-key")
             .with_option("npm", serde_json::json!("@ai-sdk/openai"));
-        assert!(uses_chat_completions_shape(&config).unwrap());
+        assert!(!uses_chat_completions_shape(&config).unwrap());
     }
 
     #[test]
-    fn responses_shape_routes_away_from_chat_completions_path() {
-        let config = ProviderConfig::new("deepseek", "https://example.com/v1", "test-key")
+    fn explicit_chat_profile_routes_to_chat_completions_path() {
+        let config = ProviderConfig::new("custom", "https://example.com/v1", "test-key")
             .with_option("npm", serde_json::json!("@ai-sdk/openai-compatible"))
-            .with_option("useResponsesApi", serde_json::json!(true));
-        assert!(!uses_chat_completions_shape(&config).unwrap());
+            .with_option(
+                "provider_profile",
+                serde_json::json!({
+                    "api_style": "openai-compatible",
+                    "api_shape": "chat-completions",
+                    "transport": "bearer",
+                    "usage_shape": "openai-cached-tokens"
+                }),
+            );
+        assert!(uses_chat_completions_shape(&config).unwrap());
     }
 
     #[test]
@@ -834,7 +674,7 @@ mod tests {
         assert!(matches!(
             err,
             ProviderError::ConfigError(msg)
-                if msg.contains("requires `base_url` for closeai-compatible routing")
+                if msg.contains("requires `base_url` for openai-compatible routing")
         ));
     }
 
@@ -867,8 +707,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         let err = validate_thinking_replay_request(&config, &request).unwrap_err();
         assert!(
@@ -909,8 +748,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         assert!(validate_thinking_replay_request(&config, &request).is_ok());
     }
@@ -961,8 +799,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         let err = validate_thinking_replay_request(&config, &request).unwrap_err();
         assert!(
@@ -995,8 +832,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         assert!(validate_thinking_replay_request(&config, &request).is_ok());
     }
@@ -1027,8 +863,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         let err = validate_thinking_replay_request(&config, &request).unwrap_err();
         assert!(
@@ -1066,8 +901,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         maybe_start_new_continuation_boundary(&config, &mut request);
 
@@ -1114,8 +948,7 @@ mod tests {
             stream_stall_timeout_secs: None,
         };
 
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
 
         maybe_start_new_continuation_boundary(&config, &mut request);
 
@@ -1134,8 +967,7 @@ mod tests {
 
     #[test]
     fn map_reasoning_replay_api_error_rewrites_deepseek_400() {
-        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
-            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+        let config = reasoning_replay_config();
         let body = r#"{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API.","type":"invalid_request_error","code":"invalid_request_error"}}"#;
 
         let err = map_reasoning_replay_api_error(&config, reqwest::StatusCode::BAD_REQUEST, body)
@@ -1725,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_chat_response_recovers_truncated_write_arguments_into_object() {
+    fn raw_chat_response_preserves_truncated_write_arguments_as_string() {
         let truncated_json = "{\"file_path\":\"t2.html\",\"content\":\"line1";
         let raw = RawChatResponse {
             id: Some("resp_2".to_string()),
@@ -1760,18 +1592,11 @@ mod tests {
             .expect("missing tool_use")
             .input
             .clone();
-        assert!(
-            input.is_object(),
-            "truncated write arguments should be recovered into object"
-        );
-        assert_eq!(input["file_path"], "t2.html");
-        assert_eq!(input["content"], "line1");
+        assert_eq!(input, Value::String(truncated_json.to_string()));
     }
 
     #[test]
-    fn raw_chat_response_recovers_truncated_unknown_tool_arguments() {
-        // Truncated JSON like {"foo":"bar is now recoverable by the robust
-        // repair pipeline, so we expect it to be parsed into an object.
+    fn raw_chat_response_preserves_truncated_unknown_tool_arguments_as_string() {
         let truncated_json = "{\"foo\":\"bar";
         let raw = RawChatResponse {
             id: Some("resp_2b".to_string()),
@@ -1806,15 +1631,11 @@ mod tests {
             .expect("missing tool_use")
             .input
             .clone();
-        assert!(
-            input.is_object(),
-            "truncated JSON should be recovered into an object"
-        );
-        assert_eq!(input["foo"], "bar");
+        assert_eq!(input, Value::String(truncated_json.to_string()));
     }
 
     #[test]
-    fn raw_chat_response_recovers_literal_control_characters_into_object() {
+    fn raw_chat_response_preserves_invalid_literal_control_arguments_as_string() {
         let raw = RawChatResponse {
             id: Some("resp_3".to_string()),
             model: Some("test-model".to_string()),
@@ -1851,31 +1672,26 @@ mod tests {
             .expect("missing tool_use")
             .input
             .clone();
-        assert!(
-            input.is_object(),
-            "literal control characters should be recovered into JSON object"
+        assert_eq!(
+            input,
+            Value::String("{\"file_path\":\"t2.html\",\"content\":\"line1\nline2\"}".to_string())
         );
-        assert_eq!(input["file_path"], "t2.html");
     }
 
     #[test]
-    fn normalize_tool_call_arguments_recovers_json_object_from_raw_string() {
+    fn serialize_historical_tool_call_routes_json_string_to_invalid() {
         let input = Value::String("{\"file_path\":\"t2.html\",\"content\":\"ok\"}".to_string());
-        let normalized = normalize_tool_call_arguments_for_request("write", "call_1", &input);
+        let normalized = serialize_historical_tool_call("write", "call_1", &input);
         let parsed: Value =
             serde_json::from_str(&normalized.arguments).expect("normalized must be valid JSON");
-        assert_eq!(normalized.tool_name, "write");
-        assert!(
-            parsed.is_object(),
-            "normalized args should be a JSON object"
-        );
-        assert_eq!(parsed["file_path"], "t2.html");
+        assert_eq!(normalized.tool_name, "invalid");
+        assert_eq!(parsed["receivedArgs"]["type"], "string");
     }
 
     #[test]
-    fn normalize_tool_call_arguments_routes_unrecoverable_non_json_string_to_invalid() {
+    fn serialize_historical_tool_call_routes_non_json_string_to_invalid() {
         let input = Value::String("not-json".to_string());
-        let normalized = normalize_tool_call_arguments_for_request("write", "call_1", &input);
+        let normalized = serialize_historical_tool_call("write", "call_1", &input);
         let parsed: Value =
             serde_json::from_str(&normalized.arguments).expect("normalized must be valid JSON");
         assert_eq!(normalized.tool_name, "invalid");
@@ -1885,38 +1701,28 @@ mod tests {
         assert!(parsed["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("malformed/truncated"));
+            .contains("non-object"));
     }
 
     #[test]
-    fn normalize_tool_call_arguments_routes_legacy_sentinel_object_to_invalid() {
+    fn serialize_historical_tool_call_keeps_object_unchanged() {
         let input = json!({
             "_agendao_unrecoverable_tool_args": true,
             "tool": "write",
             "raw_len": 128,
             "raw_preview": "{\"content\":\"<html>"
         });
-        let normalized = normalize_tool_call_arguments_for_request("write", "call_legacy", &input);
-        assert_eq!(normalized.tool_name, "invalid");
+        let normalized = serialize_historical_tool_call("write", "call_legacy", &input);
+        assert_eq!(normalized.tool_name, "write");
         let parsed: Value =
             serde_json::from_str(&normalized.arguments).expect("normalized must be valid JSON");
-        assert_eq!(parsed["tool"], "write");
-        assert_eq!(parsed["toolCallId"], "call_legacy");
-        assert_eq!(
-            parsed["receivedArgs"]["source"],
-            "legacy-unrecoverable-sentinel"
-        );
+        assert_eq!(parsed, input);
     }
 
     #[test]
-    fn parse_tool_call_input_recovers_truncated_write_jsonish_payload() {
+    fn parse_tool_call_input_preserves_malformed_wire_string() {
         let truncated = "{\"file_path\":\"t2.html\",\"content\":\"<html><body>hello";
-        let parsed = parse_tool_call_input("write", truncated);
-        assert!(
-            parsed.is_object(),
-            "truncated write payload should be recovered"
-        );
-        assert_eq!(parsed["file_path"], "t2.html");
-        assert_eq!(parsed["content"], "<html><body>hello");
+        let parsed = parse_tool_call_input(truncated);
+        assert_eq!(parsed, Value::String(truncated.to_string()));
     }
 }

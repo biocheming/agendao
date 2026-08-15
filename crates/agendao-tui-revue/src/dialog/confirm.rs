@@ -1,9 +1,9 @@
 //! 金 — Simple confirm/cancel dialog.
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop;
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 pub struct ConfirmDialog {
     pub visible: bool,
@@ -21,7 +21,13 @@ impl Default for ConfirmDialog {
 
 impl ConfirmDialog {
     pub fn new() -> Self {
-        Self { visible: false, title: String::new(), message: String::new(), confirm_label: "Yes".into(), confirmed: false }
+        Self {
+            visible: false,
+            title: String::new(),
+            message: String::new(),
+            confirm_label: "Yes".into(),
+            confirmed: false,
+        }
     }
 
     pub fn ask(&mut self, title: &str, message: &str, confirm_label: &str) {
@@ -32,10 +38,14 @@ impl ConfirmDialog {
         self.visible = true;
     }
 
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) {
+        self.visible = false;
+    }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<bool> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         match key {
             Key::Enter | Key::Char('y') => {
                 self.confirmed = true;
@@ -50,13 +60,25 @@ impl ConfirmDialog {
         }
     }
 
-    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) -> Option<revue::prelude::Rect> {
-        if !self.visible { return None; }
-        let content = vstack().child(
-            Text::new(&self.message).fg(colors::FG_SECONDARY())
-        );
+    pub fn render(
+        &self,
+        ctx: &mut RenderContext,
+        geom: backdrop::PromptGeom,
+    ) -> Option<revue::prelude::Rect> {
+        if !self.visible {
+            return None;
+        }
+        let content = vstack().child(Text::new(&self.message).fg(colors::FG_SECONDARY()));
         let hint = format!("y/Enter: {}  n/Esc/q: cancel", self.confirm_label);
         // 返回外框 Rect（绝对坐标）：发布给 keymap 做按钮命中（几何同源）。
-        Some(backdrop::render_dialog_bottom(&self.title, colors::ACCENT_YELLOW(), content, &hint, ctx, geom, 5))
+        Some(backdrop::render_dialog_bottom(
+            &self.title,
+            colors::ACCENT_YELLOW(),
+            content,
+            &hint,
+            ctx,
+            geom,
+            5,
+        ))
     }
 }

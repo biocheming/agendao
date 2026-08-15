@@ -9,8 +9,6 @@ const RAW_TOOL_LABELS: Record<string, string> = {
   ls: "Ls",
   websearch: "WebSearch",
   webfetch: "WebFetch",
-  task: "Task",
-  task_flow: "TaskFlow",
   question: "Question",
   todo_read: "TodoRead",
   todo_write: "TodoWrite",
@@ -27,8 +25,6 @@ const RAW_TOOL_LABELS: Record<string, string> = {
   shell_session: "ShellSession",
   ast_grep_search: "AstGrepSearch",
   ast_grep_replace: "AstGrepReplace",
-  plan_enter: "PlanEnter",
-  plan_exit: "PlanExit",
 };
 
 function looksLikeToolIdentifier(value: string) {

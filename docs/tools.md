@@ -325,10 +325,6 @@
 | `name` | string | 是 | 技能名称 |
 | `file_path` | string | 否 | 技能根目录下的相对文件路径 |
 
-### skill
-
-加载并执行技能（兼容性别名，建议使用 `skill_view`）。
-
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `skill_name` | string | 是 | 技能名称 |
@@ -416,53 +412,6 @@ AgenDao 当前把 memory 做成正式可观测能力，而不只是内部实验�
 
 ---
 
-## 任务管理工具
-
-### task
-
-创建和管理后台智能体任务。支持子智能体分发和后台执行。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `description` | string | 否 | 任务描述 |
-| `prompt` | string | 否 | 任务提示词 |
-| `subagentType` | string | 否 | 子智能体类型 |
-| `category` | string | 否 | 任务分类 |
-| `taskId` | string | 否 | 任务 ID |
-| `command` | string | 否 | 命令 |
-| `loadSkills` | string[] | 否 | 加载的技能列表 |
-| `runInBackground` | boolean | 否 | 后台运行（默认 false） |
-| `agentPrompt` | string | 否 | 自定义智能体系统提示 |
-| `agentTools` | string[] | 否 | 自定义智能体工具列表 |
-
-文档理解原则：
-
-- `task` 现在应被理解为 direct subagent dispatch 入口。
-- 推荐按 canonical shape 组织参数，不要依赖别名或旧 wrapper。
-- 兼容性别名仍可能被自动归一化，但它们的定位是 recovery-only，不是推荐写法。
-
-### task_flow
-
-任务生命周期编排门面。提供稳定的请求级接口。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `operation` | enum | 是 | 操作: `create`, `resume`, `get`, `list`, `cancel` |
-| `taskId` | string | 否 | 任务 ID |
-| `prompt` | string | 否 | 任务提示 |
-| `subagentType` | string | 否 | 子智能体类型 |
-| `todos` | array | 否 | Todo 项数组 |
-
-`task_flow cancel` 用于按 `taskId` 精确取消已登记的 agent task。它和 `/abort` 的边界不同: `/abort` 取消当前会话的活动执行边界，`task_flow cancel` / `/tasks kill` 则针对具体任务记录。
-
-当前应按 canonical-first 理解它：
-
-- `create` / `resume` / `get` / `list` / `cancel` 是正式操作面。
-- 文档、参数描述和错误 hint 都以 canonical shape 为主，不再鼓励“随便挑一个 alias”。
-- 如果模型传了旧别名，系统会尽量做 recovery；但 recovery 成功不代表该写法值得继续推广。
-
----
-
 ## Todo 工具
 
 ### todoread
@@ -490,22 +439,6 @@ AgenDao 当前把 memory 做成正式可观测能力，而不只是内部实验�
 | `content` | string | 内容 |
 | `status` | string | 状态: `pending`, `in_progress`, `completed` |
 | `priority` | string | 优先级: `low`, `medium`, `high` |
-
----
-
-## 计划模式工具
-
-### plan_enter (PlanEnterTool)
-
-进入计划模式。在计划模式下，所有写入和执行工具被阻止。智能体只能读取文件、搜索和推理。
-
-无参数。
-
-### plan_exit (PlanExitTool)
-
-退出计划模式，恢复到进入前的权限模式。
-
-无参数。
 
 ---
 
@@ -624,19 +557,6 @@ Language Server Protocol 操作，用于代码导航和分析。
 | `prepareCallHierarchy` | 调用层级 |
 | `incomingCalls` | 入调用 |
 | `outgoingCalls` | 出调用 |
-
----
-
-## 媒体工具
-
-### media_inspect
-
-检查本地媒体文件。通过 `media-reader` 智能体处理。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `filePath` | string | 是 | 本地文件路径 |
-| `question` | string | 否 | 关于文件的问题（默认: 描述相关内容） |
 
 ---
 

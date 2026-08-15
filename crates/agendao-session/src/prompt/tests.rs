@@ -7,7 +7,6 @@ use super::*;
 use crate::message::MessagePart;
 use crate::tool_result_governance::{
     default_tool_result_artifacts_root, govern_tool_result_output, ToolResultBudget,
-    SINGLE_TOOL_RESULT_MAX_CHARS,
 };
 use crate::SessionMessage;
 use agendao_config::ConfigStore;
@@ -31,6 +30,24 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tempfile::tempdir;
+
+fn mock_chat_profile_fingerprint() -> agendao_provider::cache::ProviderProfileFingerprint {
+    let options = std::collections::HashMap::from([(
+        "provider_profile".to_string(),
+        serde_json::json!({
+            "api_style": "openai-compatible",
+            "api_shape": "chat-completions",
+            "transport": "bearer",
+            "usage_shape": "openai-cached-tokens"
+        }),
+    )]);
+    let profile = agendao_provider::ProviderProfileResolver::resolve_with_npm(
+        "mock",
+        "@ai-sdk/openai-compatible",
+        &options,
+    );
+    agendao_provider::cache::ProviderProfileFingerprint::from_profile(&profile)
+}
 
 struct StaticModelProvider {
     model: Option<ModelInfo>,
@@ -65,6 +82,12 @@ impl Provider for StaticModelProvider {
 
     fn name(&self) -> &str {
         "Mock"
+    }
+
+    fn provider_profile_fingerprint(
+        &self,
+    ) -> Option<agendao_provider::cache::ProviderProfileFingerprint> {
+        Some(mock_chat_profile_fingerprint())
     }
 
     fn models(&self) -> Vec<ModelInfo> {
@@ -109,6 +132,7 @@ fn write_methodology_skill(
 async fn prompt_with_memory_and_proposals(
     root: &std::path::Path,
 ) -> (SessionPrompt, Arc<SkillEvolutionProposalRepository>) {
+    isolate_test_config_home();
     let config_store =
         Arc::new(ConfigStore::from_project_dir(root).expect("project config store should load"));
     let db = Database::in_memory().await.expect("db should initialize");
@@ -117,6 +141,16 @@ async fn prompt_with_memory_and_proposals(
         .with_config_store(config_store)
         .with_proposal_repo(proposal_repo.clone());
     (prompt, proposal_repo)
+}
+
+fn isolate_test_config_home() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let path =
+            std::env::temp_dir().join(format!("agendao-session-test-home-{}", std::process::id()));
+        fs::create_dir_all(&path).expect("session test config home should be created");
+        std::env::set_var("AGENDAO_HOME", path);
+    });
 }
 
 fn methodology_candidate_record(
@@ -160,7 +194,8 @@ async fn large_tool_result_is_governed_into_preview_and_artifact() {
     let dir = tempdir().expect("tempdir");
     let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
     let mut metadata = std::collections::HashMap::new();
-    let large = "A".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 2048);
+    let budget = ToolResultBudget::default();
+    let large = "A".repeat(budget.max_single_chars + 2048);
 
     let governed = govern_tool_result_output(
         "session-1",
@@ -168,7 +203,7 @@ async fn large_tool_result_is_governed_into_preview_and_artifact() {
         large,
         &mut metadata,
         &artifacts_root,
-        ToolResultBudget::legacy(),
+        budget,
     )
     .await;
 
@@ -201,7 +236,7 @@ async fn small_tool_result_is_not_governed() {
         "short tool output".to_string(),
         &mut metadata,
         &artifacts_root,
-        ToolResultBudget::legacy(),
+        ToolResultBudget::default(),
     )
     .await;
 
@@ -218,13 +253,14 @@ async fn append_stream_tool_results_as_message_preserves_governed_preview() {
     let session_id = session.id.clone();
     let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
     let mut metadata = std::collections::HashMap::new();
+    let budget = ToolResultBudget::default();
     let governed = govern_tool_result_output(
         &session_id,
         "call-1",
-        "Z".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 4096),
+        "Z".repeat(budget.max_single_chars + 4096),
         &mut metadata,
         &artifacts_root,
-        ToolResultBudget::legacy(),
+        budget,
     )
     .await;
     let stream_results = vec![(
@@ -418,6 +454,12 @@ impl Provider for ScriptedStreamProvider {
         "Mock"
     }
 
+    fn provider_profile_fingerprint(
+        &self,
+    ) -> Option<agendao_provider::cache::ProviderProfileFingerprint> {
+        Some(mock_chat_profile_fingerprint())
+    }
+
     fn models(&self) -> Vec<ModelInfo> {
         vec![self.model.clone()]
     }
@@ -460,14 +502,14 @@ fn pre_dispatch_governance_is_ready_when_context_is_within_budget() {
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(24),
-        Some(96),
-        Some("short request"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("short request"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(24), Some(96)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -493,14 +535,14 @@ fn pre_dispatch_governance_forces_compaction_for_small_overflowing_request_view(
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(120),
-        Some(480),
-        Some("second"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("second"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(120), Some(480)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -590,14 +632,14 @@ fn pre_dispatch_governance_persists_lightweight_trim_summary_when_trim_succeeds(
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(120),
-        Some(480),
-        Some("latest user"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("latest user"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(120), Some(480)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -664,14 +706,14 @@ fn pre_dispatch_governance_records_auto_compaction_backoff_reason() {
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(120),
-        Some(480),
-        Some("after compact"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("after compact"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(120), Some(480)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -719,14 +761,14 @@ fn pre_dispatch_governance_clears_stale_lightweight_trim_summary_when_no_trim_oc
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(40),
-        Some(120),
-        Some("only message"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("only message"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(40), Some(120)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     assert!(
@@ -752,14 +794,14 @@ fn pre_dispatch_governance_blocks_when_single_message_remains_over_limit() {
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(120),
-        Some(480),
-        Some("only message"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("only message"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(120), Some(480)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Blocked(summary) = outcome else {
@@ -800,14 +842,14 @@ fn pre_dispatch_governance_records_compaction_when_reduction_succeeds() {
         "ctx-model",
         Some(20),
         None,
-        None,
-        Some(95),
-        Some(380),
-        Some("message 9"),
-        "pre_dispatch_hard_gate",
-        "scheduler.pre_dispatch",
-        None,
-        None,
+        PreDispatchContextGovernance {
+            focus: Some("message 9"),
+            trigger: "pre_dispatch_hard_gate",
+            phase: "scheduler.pre_dispatch",
+            usage: ContextUsageSnapshot::new(None, Some(95), Some(380)),
+            update_hook: None,
+            compaction_lifecycle_hook: None,
+        },
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -867,6 +909,12 @@ impl Provider for MultiTurnScriptedProvider {
 
     fn name(&self) -> &str {
         "Mock"
+    }
+
+    fn provider_profile_fingerprint(
+        &self,
+    ) -> Option<agendao_provider::cache::ProviderProfileFingerprint> {
+        Some(mock_chat_profile_fingerprint())
     }
 
     fn models(&self) -> Vec<ModelInfo> {
@@ -986,42 +1034,6 @@ impl Tool for AlwaysInvalidArgsTool {
     }
 }
 #[test]
-fn insert_reminders_adds_plan_prompt_for_plan_agent() {
-    let messages = vec![SessionMessage::user("ses_test", "plan this")];
-    let output = insert_reminders(messages, "plan", false);
-    let last = output.last().unwrap();
-    let injected = last
-        .parts
-        .iter()
-        .filter_map(|p| match &p.part_type {
-            PartType::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(injected.contains("You are in PLAN mode"));
-}
-
-#[test]
-fn insert_reminders_adds_build_switch_after_plan() {
-    let mut user = SessionMessage::user("ses_test", "execute this");
-    user.metadata
-        .insert("agent".to_string(), serde_json::json!("plan"));
-    let output = insert_reminders(vec![user], "build", true);
-    let last = output.last().unwrap();
-    let injected = last
-        .parts
-        .iter()
-        .filter_map(|p| match &p.part_type {
-            PartType::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(injected.contains("The user has approved your plan"));
-}
-
-#[test]
 fn provider_error_summary_from_anyhow_reads_wrapped_prompt_error() {
     let summary = agendao_provider::ProviderErrorSummary {
         kind: agendao_provider::ProviderErrorKind::InvalidRequest,
@@ -1040,10 +1052,8 @@ fn provider_error_summary_from_anyhow_reads_wrapped_prompt_error() {
             message: "missing replay".to_string(),
         }),
     };
-    let error = anyhow::Error::new(PromptError::ProviderFailure(
-        agendao_orchestrator::runtime::events::ModelFailure::Provider(summary.clone()),
-    ))
-    .context("session prompt failed");
+    let error = anyhow::Error::new(PromptError::ProviderFailure(summary.clone()))
+        .context("session prompt failed");
 
     let loaded = provider_error_summary_from_anyhow(&error).expect("typed summary should load");
 
@@ -1052,11 +1062,9 @@ fn provider_error_summary_from_anyhow_reads_wrapped_prompt_error() {
 
 #[test]
 fn provider_failure_from_anyhow_reads_wrapped_untyped_provider_message() {
-    let error = anyhow::Error::new(PromptError::ProviderFailure(
-        agendao_orchestrator::runtime::events::ModelFailure::Message(
+    let error = anyhow::Error::new(PromptError::Provider(
             "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
                 .to_string(),
-        ),
     ))
     .context("session prompt failed");
 
@@ -1712,6 +1720,18 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
     };
 
     let session_id = session.id.clone();
+    let tools = vec![agendao_provider::ToolDefinition {
+        name: "read".to_string(),
+        description: Some("Read a file".to_string()),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file_path": { "type": "string" }
+            },
+            "required": ["file_path"]
+        }),
+    }];
+    let tool_catalog_hash = agendao_provider::cache::tool_surface_fingerprint(&tools);
     prompt
         .prompt_with_update_hook(
             input,
@@ -1721,6 +1741,13 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
                 super::surface_authority::PromptSurfaceInputs::builder(
                     session_id,
                     CompiledExecutionRequest::default(),
+                )
+                .set_tool_surface(
+                    tools,
+                    Vec::new(),
+                    std::collections::BTreeMap::new(),
+                    super::tools_and_output::ToolCatalogMode::FullSchema,
+                    tool_catalog_hash,
                 ),
                 CompiledExecutionRequest::default(),
                 PromptHooks::default(),
@@ -1744,52 +1771,6 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
     assert_eq!(final_text, "Read complete");
 }
 
-#[tokio::test]
-async fn create_user_message_persists_pending_subtask_payload() {
-    let prompt = SessionPrompt::default();
-    let mut session = Session::new("proj", ".");
-    let input = PromptInput {
-        session_id: session.id.clone(),
-        message_id: None,
-        model: None,
-        agent: None,
-        no_reply: false,
-        system: None,
-        variant: None,
-        tools: None,
-        ingress: None,
-        parts: vec![PartInput::Subtask {
-            prompt: "Inspect codegen path".to_string(),
-            description: Some("Inspect codegen".to_string()),
-            agent: "explore".to_string(),
-        }],
-    };
-
-    prompt
-        .create_user_message(&input, &mut session)
-        .await
-        .expect("create_user_message should succeed");
-
-    let msg = session.messages.last().expect("user message should exist");
-    let pending = msg
-        .metadata
-        .get("pending_subtasks")
-        .and_then(|v| v.as_array())
-        .expect("pending_subtasks metadata should exist");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(
-        pending[0].get("agent").and_then(|v| v.as_str()),
-        Some("explore")
-    );
-    assert_eq!(
-        pending[0].get("prompt").and_then(|v| v.as_str()),
-        Some("Inspect codegen path")
-    );
-    assert!(msg.parts.iter().any(|p| match &p.part_type {
-        PartType::Subtask { status, .. } => status == "pending",
-        _ => false,
-    }));
-}
 #[test]
 fn shell_exec_uses_zsh_login_invocation() {
     let invocation = resolve_shell_invocation(Some("/bin/zsh"), "echo hello");
@@ -1861,21 +1842,11 @@ async fn execute_tool_calls_ignores_empty_tool_name() {
     });
     assistant.add_tool_call("call_ok", "noarg_echo", serde_json::json!({}));
     session.messages_mut().push(assistant);
-
-    let provider: Arc<dyn Provider> =
-        Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
     let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-    SessionPrompt::execute_tool_calls(
-        &mut session,
-        tool_registry,
-        ctx,
-        provider,
-        "mock",
-        "test-model",
-    )
-    .await
-    .expect("execute_tool_calls should succeed");
+    SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+        .await
+        .expect("execute_tool_calls should succeed");
 
     let tool_msg = session
         .messages
@@ -1907,21 +1878,11 @@ async fn execute_tool_calls_runs_no_arg_tool() {
     let mut assistant = SessionMessage::assistant(sid);
     assistant.add_tool_call("call_noarg", "noarg_echo", serde_json::json!({}));
     session.messages_mut().push(assistant);
-
-    let provider: Arc<dyn Provider> =
-        Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
     let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-    SessionPrompt::execute_tool_calls(
-        &mut session,
-        tool_registry,
-        ctx,
-        provider,
-        "mock",
-        "test-model",
-    )
-    .await
-    .expect("execute_tool_calls should succeed");
+    SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+        .await
+        .expect("execute_tool_calls should succeed");
 
     let tool_msg = session
         .messages
@@ -1964,21 +1925,11 @@ async fn execute_tool_calls_routes_invalid_arguments_to_invalid_tool() {
     let mut assistant = SessionMessage::assistant(sid);
     assistant.add_tool_call("call_invalid", "needs_path", serde_json::json!({}));
     session.messages_mut().push(assistant);
-
-    let provider: Arc<dyn Provider> =
-        Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
     let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-    SessionPrompt::execute_tool_calls(
-        &mut session,
-        tool_registry,
-        ctx,
-        provider,
-        "mock",
-        "test-model",
-    )
-    .await
-    .expect("execute_tool_calls should succeed");
+    SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+        .await
+        .expect("execute_tool_calls should succeed");
 
     let assistant_msg = session
         .messages
@@ -2060,21 +2011,11 @@ async fn execute_tool_calls_only_runs_running_tool_calls() {
     });
     assistant.add_tool_call("call_running", "noarg_echo", serde_json::json!({}));
     session.messages_mut().push(assistant);
-
-    let provider: Arc<dyn Provider> =
-        Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
     let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-    SessionPrompt::execute_tool_calls(
-        &mut session,
-        tool_registry,
-        ctx,
-        provider,
-        "mock",
-        "test-model",
-    )
-    .await
-    .expect("execute_tool_calls should succeed");
+    SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+        .await
+        .expect("execute_tool_calls should succeed");
 
     let tool_msg = session
         .messages
@@ -2117,21 +2058,11 @@ async fn execute_tool_calls_reused_call_id_in_new_turn_still_executes() {
     let mut assistant_2 = SessionMessage::assistant(sid);
     assistant_2.add_tool_call("tool-call-0", "noarg_echo", serde_json::json!({}));
     session.messages_mut().push(assistant_2);
-
-    let provider: Arc<dyn Provider> =
-        Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
     let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-    SessionPrompt::execute_tool_calls(
-        &mut session,
-        tool_registry,
-        ctx,
-        provider,
-        "mock",
-        "test-model",
-    )
-    .await
-    .expect("execute_tool_calls should succeed");
+    SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+        .await
+        .expect("execute_tool_calls should succeed");
 
     let tool_msgs: Vec<&SessionMessage> = session
         .messages
@@ -2189,34 +2120,6 @@ fn part_input_file_round_trip() {
 }
 
 #[test]
-fn part_input_agent_round_trip() {
-    let part = PartInput::Agent {
-        name: "explore".to_string(),
-    };
-    let json = serde_json::to_value(&part).unwrap();
-    assert_eq!(json["type"], "agent");
-    assert_eq!(json["name"], "explore");
-
-    let back: PartInput = serde_json::from_value(json).unwrap();
-    assert!(matches!(back, PartInput::Agent { name } if name == "explore"));
-}
-
-#[test]
-fn part_input_subtask_round_trip() {
-    let part = PartInput::Subtask {
-        prompt: "do stuff".to_string(),
-        description: Some("stuff".to_string()),
-        agent: "build".to_string(),
-    };
-    let json = serde_json::to_value(&part).unwrap();
-    assert_eq!(json["type"], "subtask");
-    assert_eq!(json["agent"], "build");
-
-    let back: PartInput = serde_json::from_value(json).unwrap();
-    assert!(matches!(back, PartInput::Subtask { agent, .. } if agent == "build"));
-}
-
-#[test]
 fn part_input_try_from_value() {
     let val = serde_json::json!({"type": "text", "text": "hi"});
     let part = PartInput::try_from(val).unwrap();
@@ -2233,15 +2136,13 @@ fn part_input_try_from_invalid_value() {
 fn part_input_parse_array_mixed() {
     let arr = serde_json::json!([
         {"type": "text", "text": "hello"},
-        {"type": "agent", "name": "explore"},
         {"type": "bogus"},
         {"type": "file", "url": "file:///x", "filename": "x", "mime": "text/plain"}
     ]);
     let parts = PartInput::parse_array(&arr);
-    assert_eq!(parts.len(), 3); // bogus entry skipped
+    assert_eq!(parts.len(), 2);
     assert!(matches!(&parts[0], PartInput::Text { text } if text == "hello"));
-    assert!(matches!(&parts[1], PartInput::Agent { name } if name == "explore"));
-    assert!(matches!(&parts[2], PartInput::File { url, .. } if url == "file:///x"));
+    assert!(matches!(&parts[1], PartInput::File { url, .. } if url == "file:///x"));
 }
 
 #[test]
@@ -2266,36 +2167,9 @@ fn part_input_file_skips_none_fields_in_json() {
 
 #[tokio::test]
 async fn resolve_prompt_parts_plain_text() {
-    let parts = resolve_prompt_parts("just plain text", std::path::Path::new("/tmp"), &[]).await;
+    let parts = resolve_prompt_parts("just plain text", std::path::Path::new("/tmp")).await;
     assert_eq!(parts.len(), 1);
     assert!(matches!(&parts[0], PartInput::Text { text } if text == "just plain text"));
-}
-
-#[tokio::test]
-async fn resolve_prompt_parts_agent_fallback() {
-    // @explore doesn't exist as a file, but is a known agent
-    let agents = vec!["explore".to_string(), "build".to_string()];
-    let parts = resolve_prompt_parts(
-        "check @explore for details",
-        std::path::Path::new("/tmp"),
-        &agents,
-    )
-    .await;
-    assert_eq!(parts.len(), 2);
-    assert!(matches!(&parts[0], PartInput::Text { .. }));
-    assert!(matches!(&parts[1], PartInput::Agent { name } if name == "explore"));
-}
-
-#[tokio::test]
-async fn resolve_prompt_parts_deduplicates() {
-    let parts = resolve_prompt_parts(
-        "see @explore and @explore again",
-        std::path::Path::new("/tmp"),
-        &["explore".to_string()],
-    )
-    .await;
-    // text + one agent (deduplicated)
-    assert_eq!(parts.len(), 2);
 }
 
 #[tokio::test]
@@ -2304,7 +2178,7 @@ async fn resolve_prompt_parts_real_file() {
     let file = dir.path().join("test.rs");
     tokio::fs::write(&file, "fn main() {}").await.unwrap();
 
-    let parts = resolve_prompt_parts("look at @test.rs", dir.path(), &[]).await;
+    let parts = resolve_prompt_parts("look at @test.rs", dir.path()).await;
     assert_eq!(parts.len(), 2);
     assert!(
         matches!(&parts[1], PartInput::File { mime, .. } if mime.as_deref() == Some("text/plain"))
@@ -2317,7 +2191,7 @@ async fn resolve_prompt_parts_directory() {
     let sub = dir.path().join("src");
     tokio::fs::create_dir(&sub).await.unwrap();
 
-    let parts = resolve_prompt_parts("look at @src", dir.path(), &[]).await;
+    let parts = resolve_prompt_parts("look at @src", dir.path()).await;
     assert_eq!(parts.len(), 2);
     assert!(
         matches!(&parts[1], PartInput::File { mime, .. } if mime.as_deref() == Some("application/x-directory"))
@@ -2373,40 +2247,6 @@ fn early_exit_does_not_break_on_tool_calls_finish() {
     assert!(
         !should_break,
         "early-exit must NOT trigger when finish='tool-calls'"
-    );
-}
-
-#[test]
-fn current_context_estimate_ignores_completed_scheduler_stage_metadata() {
-    let mut assistant = SessionMessage::assistant("s1");
-    assistant.metadata.insert(
-        "scheduler_stage_status".to_string(),
-        serde_json::json!("done"),
-    );
-    assistant.metadata.insert(
-        "scheduler_stage_context_tokens".to_string(),
-        serde_json::json!(1_388_907_u64),
-    );
-    assistant.metadata.insert(
-        "scheduler_stage_prompt_tokens".to_string(),
-        serde_json::json!(1_388_907_u64),
-    );
-    assistant.parts.push(MessagePart {
-        id: "prt_text".to_string(),
-        part_type: PartType::Text {
-            text: "done".to_string(),
-            synthetic: None,
-            ignored: None,
-        },
-        created_at: chrono::Utc::now(),
-        message_id: None,
-    });
-
-    let estimated = estimate_current_context_tokens(&[assistant]).unwrap();
-
-    assert!(
-        estimated < 1_000,
-        "completed scheduler stage peak telemetry must not drive live context pressure: {estimated}"
     );
 }
 

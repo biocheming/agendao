@@ -6,7 +6,8 @@ use futures::{stream, StreamExt};
 use serde_json::json;
 
 use super::helpers::{parse_output_items, process_stream_chunk, StreamChunkState};
-use super::*;
+use super::types::*;
+use super::validation::*;
 use crate::custom_fetch::{
     register_custom_fetch_proxy, unregister_custom_fetch_proxy, CustomFetchProxy,
     CustomFetchRequest, CustomFetchResponse, CustomFetchStreamResponse,

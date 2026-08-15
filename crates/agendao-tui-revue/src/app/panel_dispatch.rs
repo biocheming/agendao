@@ -5,10 +5,10 @@
 //! 语义不变：每个 panel 独占键；Panel::None 贯穿返回 false，让键继续
 //! 流向 transcript 滚动与 prompt 输入。
 
-use revue::event::{Key, KeyEvent};
-use agendao_command::UiActionId;
 use crate::app::{AppHandler, Panel, PendingConfirm};
 use crate::dialog::PermissionReply;
+use agendao_command::UiActionId;
+use revue::event::{Key, KeyEvent};
 
 impl AppHandler {
     /// U17③：当前 panel 是否拥有滚轮（↑↓ 语义的列表类弹窗）。表单/确认类
@@ -25,7 +25,6 @@ impl AppHandler {
                 | Panel::SkillProposal
                 | Panel::McpList
                 | Panel::Recovery
-                | Panel::TaskList
                 | Panel::Notifications
                 | Panel::Stash
                 | Panel::Fork
@@ -41,7 +40,10 @@ impl AppHandler {
                 // 输入框文本重新派生，popup 不再自维字符缓冲）。
                 use crate::input::slash_popup::SlashKeyOutcome;
                 let consumed = match self.slash_popup.handle_key(key) {
-                    SlashKeyOutcome::FillBack { command, takes_args } => {
+                    SlashKeyOutcome::FillBack {
+                        command,
+                        takes_args,
+                    } => {
                         self.prompt.set_text(&command);
                         if !takes_args {
                             self.panel = Panel::None;
@@ -94,13 +96,18 @@ impl AppHandler {
                         // F2：选中即记入 recent（置顶去重 cap）并异步持久化——
                         // 此前仅启动时把 workspace context 原样回写，用户选择
                         // 从不落盘，"★ Recent" 永不填充。
-                        let recent = self.model_select.record_recent(&selected.provider, &selected.model_id);
+                        let recent = self
+                            .model_select
+                            .record_recent(&selected.provider, &selected.model_id);
                         if let Some(ref api) = self.api {
                             let api_c = api.clone();
                             api.handle().spawn(async move {
                                 let entries: Vec<agendao_state::RecentModelEntry> = recent
                                     .into_iter()
-                                    .map(|(provider, model)| agendao_state::RecentModelEntry { provider, model })
+                                    .map(|(provider, model)| agendao_state::RecentModelEntry {
+                                        provider,
+                                        model,
+                                    })
                                     .collect();
                                 if let Err(e) = api_c.put_recent_models_async(entries).await {
                                     tracing::warn!(%e, "put_recent_models failed");
@@ -108,7 +115,8 @@ impl AppHandler {
                             });
                         }
                         let msg = format!("Model: {} ({})", selected.display, qualified);
-                        self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
+                        self.store
+                            .push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
                         self.panel = Panel::None;
                     }
                     crate::dialog::ModelDialogOutcome::Notice(reason) => {
@@ -116,34 +124,43 @@ impl AppHandler {
                         // so the user sees why Enter didn't close the dialog.
                         // Without this, the previous silent return left the
                         // dialog "stuck open" with no clue.
-                        self.store.push_toast(&reason, crate::store::types::ToastMsgVariant::Warning);
+                        self.store
+                            .push_toast(&reason, crate::store::types::ToastMsgVariant::Warning);
                     }
                     crate::dialog::ModelDialogOutcome::None => {}
                 }
-                if !self.model_select.is_open() { self.panel = Panel::None; }
+                if !self.model_select.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::ModeSelect => {
                 if let Some(picked) = self.mode_select.handle_key(key) {
                     // store 契约：`"kind:id"` 复合（对齐 web `App.tsx:836`）；
-                    // dispatch 处再 split 分流到 agent / scheduler_profile。
+                    // dispatch 处再 split 分流到 agent / scheduler。
                     let composite = picked.composite();
                     self.store.selected_mode.set(Some(composite.clone()));
                     let msg = format!("Mode: {} ({})", picked.display, composite);
-                    self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
+                    self.store
+                        .push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
                     self.panel = Panel::None;
                 }
-                if !self.mode_select.is_open() { self.panel = Panel::None; }
+                if !self.mode_select.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::AgentSelect => {
                 if let Some(selected) = self.agent_select.handle_key(key) {
                     self.store.selected_agent.set(Some(selected.name.clone()));
                     let msg = format!("Switched to agent: {}", selected.display);
-                    self.store.push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
+                    self.store
+                        .push_toast(&msg, crate::store::types::ToastMsgVariant::Success);
                     self.panel = Panel::None;
                 }
-                if !self.agent_select.visible { self.panel = Panel::None; }
+                if !self.agent_select.visible {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Confirm => {
@@ -157,13 +174,16 @@ impl AppHandler {
                                     match api.delete_session(&sid) {
                                         Ok(true) => self.store.push_toast(
                                             "Session deleted",
-                                            crate::store::types::ToastMsgVariant::Success),
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        ),
                                         Ok(false) => self.store.push_toast(
                                             "Session not found",
-                                            crate::store::types::ToastMsgVariant::Warning),
+                                            crate::store::types::ToastMsgVariant::Warning,
+                                        ),
                                         Err(e) => self.store.push_toast(
                                             &format!("Delete failed: {}", e),
-                                            crate::store::types::ToastMsgVariant::Error),
+                                            crate::store::types::ToastMsgVariant::Error,
+                                        ),
                                     }
                                 }
                                 self.reload_session_list();
@@ -172,27 +192,17 @@ impl AppHandler {
                                 self.active_session.reset_for_new_session();
                                 self.store.navigate_home();
                             }
-                            Some(PendingConfirm::CancelTask(task_id)) => {
+                            Some(PendingConfirm::ExecuteRecovery { session_id, action }) => {
                                 if let Some(ref api) = self.api {
-                                    match api.cancel_task(&task_id) {
-                                        Ok(_) => self.store.push_toast(
-                                            &format!("Task cancelled: {}", task_id),
-                                            crate::store::types::ToastMsgVariant::Success),
-                                        Err(e) => self.store.push_toast(
-                                            &format!("Cancel failed: {}", e),
-                                            crate::store::types::ToastMsgVariant::Error),
-                                    }
-                                }
-                            }
-                            Some(PendingConfirm::ExecuteRecovery { session_id, action, target_id }) => {
-                                if let Some(ref api) = self.api {
-                                    match api.execute_session_recovery(&session_id, action, target_id) {
+                                    match api.execute_session_recovery(&session_id, action) {
                                         Ok(_) => self.store.push_toast(
                                             "Recovery action executed",
-                                            crate::store::types::ToastMsgVariant::Success),
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        ),
                                         Err(e) => self.store.push_toast(
                                             &format!("Recovery failed: {}", e),
-                                            crate::store::types::ToastMsgVariant::Error),
+                                            crate::store::types::ToastMsgVariant::Error,
+                                        ),
                                     }
                                 }
                             }
@@ -222,14 +232,20 @@ impl AppHandler {
                                     }
                                 }
                                 let (variant, msg) = if fail == 0 {
-                                    (crate::store::types::ToastMsgVariant::Success,
-                                     format!("Deleted {} session(s)", ok_n))
+                                    (
+                                        crate::store::types::ToastMsgVariant::Success,
+                                        format!("Deleted {} session(s)", ok_n),
+                                    )
                                 } else if ok_n == 0 {
-                                    (crate::store::types::ToastMsgVariant::Error,
-                                     format!("Failed to delete {} session(s)", fail))
+                                    (
+                                        crate::store::types::ToastMsgVariant::Error,
+                                        format!("Failed to delete {} session(s)", fail),
+                                    )
                                 } else {
-                                    (crate::store::types::ToastMsgVariant::Warning,
-                                     format!("Deleted {}, failed {}", ok_n, fail))
+                                    (
+                                        crate::store::types::ToastMsgVariant::Warning,
+                                        format!("Deleted {}, failed {}", ok_n, fail),
+                                    )
                                 };
                                 self.store.push_toast(&msg, variant);
                             }
@@ -238,7 +254,10 @@ impl AppHandler {
                             Some(PendingConfirm::DeleteProvider(id)) => {
                                 self.delete_provider_action(&id);
                             }
-                            Some(PendingConfirm::DeleteProviderModel { provider_id, model_key }) => {
+                            Some(PendingConfirm::DeleteProviderModel {
+                                provider_id,
+                                model_key,
+                            }) => {
                                 self.delete_provider_model_action(&provider_id, &model_key);
                             }
                             Some(PendingConfirm::DeleteSkill(name)) => {
@@ -284,7 +303,9 @@ impl AppHandler {
                     self.stash_entries = cur;
                     crate::dialog::prompt_stash::save_stash(&self.stash_entries);
                 }
-                if !self.stash_dialog.is_open() { self.panel = Panel::None; }
+                if !self.stash_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Rename => {
@@ -296,7 +317,9 @@ impl AppHandler {
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.rename_dialog.is_open() { self.panel = Panel::None; }
+                if !self.rename_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::SessionList => {
@@ -332,12 +355,16 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.session_list.is_open() { self.panel = Panel::None; }
+                if !self.session_list.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Help => {
                 self.help.handle_key(key);
-                if !self.help.visible { self.panel = Panel::None; }
+                if !self.help.visible {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::SkillList => {
@@ -371,10 +398,8 @@ impl AppHandler {
                                         lines.extend(
                                             detail.skill.content.lines().map(str::to_string),
                                         );
-                                        self.skill_list.show_detail(
-                                            format!("Skill: {}", meta.name),
-                                            lines,
-                                        );
+                                        self.skill_list
+                                            .show_detail(format!("Skill: {}", meta.name), lines);
                                     }
                                     Err(e) => self.store.push_toast(
                                         &format!("Skill detail failed: {e}"),
@@ -392,7 +417,9 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.skill_list.is_open() { self.panel = Panel::None; }
+                if !self.skill_list.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::SkillProposal => {
@@ -414,7 +441,9 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.skill_proposal.is_open() { self.panel = Panel::None; }
+                if !self.skill_proposal.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::McpList => {
@@ -517,14 +546,20 @@ impl AppHandler {
                                     self.settings_open_edit_mcp();
                                 }
                                 None => self.store.push_toast(
-                                    &format!("No config entry for `{}` — open Settings to add", e.name),
+                                    &format!(
+                                        "No config entry for `{}` — open Settings to add",
+                                        e.name
+                                    ),
                                     crate::store::types::ToastMsgVariant::Warning,
                                 ),
                             }
                         }
                         crate::dialog::McpAction::View(e) => {
                             self.store.push_toast(
-                                &format!("[{}] {} · tools:{} res:{}", e.status, e.name, e.tools, e.resources),
+                                &format!(
+                                    "[{}] {} · tools:{} res:{}",
+                                    e.status, e.name, e.tools, e.resources
+                                ),
                                 crate::store::types::ToastMsgVariant::Info,
                             );
                             self.panel = Panel::None;
@@ -532,13 +567,15 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.mcp_list.is_open() { self.panel = Panel::None; }
+                if !self.mcp_list.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Recovery => {
                 if let Some(action) = self.recovery_list.handle_key(key) {
                     match action {
-                        crate::dialog::RecoveryAction::Execute { label, action_kind, target_id } => {
+                        crate::dialog::RecoveryAction::Execute { label, action_kind } => {
                             // session_id 从 active_session 取（dialog 不持有；modal 不变量
                             // 保证 open→confirm 期间不变）。None→toast 不伪执行（道纪第十条）。
                             if let Some(sid) = self.active_session.get_session_id() {
@@ -547,18 +584,10 @@ impl AppHandler {
                                 let consequence = match &action_kind {
                                     agendao_client::RecoveryActionKind::AbortRun =>
                                         "This stops the entire run; in-flight tool calls are cancelled.",
-                                    agendao_client::RecoveryActionKind::AbortStage =>
-                                        "This stops the current stage; later stages are skipped.",
                                     agendao_client::RecoveryActionKind::Retry =>
                                         "This re-runs the failed step; side effects already applied may repeat.",
                                     agendao_client::RecoveryActionKind::Resume =>
-                                        "This continues the run from the last checkpoint.",
-                                    agendao_client::RecoveryActionKind::PartialReplay =>
-                                        "This replays part of the run; later results are recomputed.",
-                                    agendao_client::RecoveryActionKind::RestartStage =>
-                                        "This restarts the stage from scratch; its results so far are discarded.",
-                                    agendao_client::RecoveryActionKind::RestartSubtask =>
-                                        "This restarts the subtask from scratch; its results so far are discarded.",
+                                        "This continues the request while preserving verified prior work.",
                                 };
                                 self.confirm_dialog.ask(
                                     "Execute Recovery",
@@ -568,7 +597,6 @@ impl AppHandler {
                                 self.pending_confirm = Some(PendingConfirm::ExecuteRecovery {
                                     session_id: sid,
                                     action: action_kind,
-                                    target_id,
                                 });
                                 self.recovery_list.close();
                                 self.panel = Panel::Confirm;
@@ -589,42 +617,18 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.recovery_list.is_open() { self.panel = Panel::None; }
-                return true;
-            }
-            Panel::TaskList => {
-                if let Some(action) = self.task_list.handle_key(key) {
-                    match action {
-                        crate::dialog::TaskAction::Cancel(e) => {
-                            // confirm 类：关 list → 开 ConfirmDialog → 确认后 Panel::None。
-                            // cancel 影响运行中任务，需二次确认（道纪第九条：写入即承诺回收）。
-                            self.confirm_dialog.ask(
-                                "Cancel Task",
-                                &format!("Cancel task {} ({})?", e.id, e.agent_name),
-                                "Cancel",
-                            );
-                            self.pending_confirm = Some(PendingConfirm::CancelTask(e.id));
-                            self.task_list.close();
-                            self.panel = Panel::Confirm;
-                        }
-                        crate::dialog::TaskAction::View(e) => {
-                            self.store.push_toast(
-                                &format!("[{}] {} ({})", e.status, e.agent_name, e.id),
-                                crate::store::types::ToastMsgVariant::Info,
-                            );
-                            self.panel = Panel::None;
-                        }
-                    }
-                    return true;
+                if !self.recovery_list.is_open() {
+                    self.panel = Panel::None;
                 }
-                if !self.task_list.is_open() { self.panel = Panel::None; }
                 return true;
             }
             Panel::Notifications => {
                 // 只读回看：导航 + Esc（条目无可执行语义，道纪第十条）。
                 let count = self.store.toast_history.get().len();
                 self.notification_dialog.handle_key(key, count);
-                if !self.notification_dialog.is_open() { self.panel = Panel::None; }
+                if !self.notification_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::ModelEdit => {
@@ -638,7 +642,9 @@ impl AppHandler {
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.model_edit_dialog.is_open() { self.panel = Panel::None; }
+                if !self.model_edit_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::McpEdit => {
@@ -652,7 +658,9 @@ impl AppHandler {
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.mcp_edit_dialog.is_open() { self.panel = Panel::None; }
+                if !self.mcp_edit_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::PluginEdit => {
@@ -666,7 +674,9 @@ impl AppHandler {
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.plugin_edit_dialog.is_open() { self.panel = Panel::None; }
+                if !self.plugin_edit_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::ProviderEdit => {
@@ -682,7 +692,9 @@ impl AppHandler {
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.provider_edit_dialog.is_open() { self.panel = Panel::None; }
+                if !self.provider_edit_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Fork => {
@@ -694,17 +706,21 @@ impl AppHandler {
                                 self.switch_to_forked_session(&info);
                                 self.store.push_toast(
                                     &format!("Forked → {}", info.title),
-                                    crate::store::types::ToastMsgVariant::Success);
+                                    crate::store::types::ToastMsgVariant::Success,
+                                );
                             }
                             Err(e) => self.store.push_toast(
                                 &format!("Fork failed: {}", e),
-                                crate::store::types::ToastMsgVariant::Error),
+                                crate::store::types::ToastMsgVariant::Error,
+                            ),
                         }
                     }
                     self.panel = Panel::None;
                     return true;
                 }
-                if !self.fork_dialog.is_open() { self.panel = Panel::None; }
+                if !self.fork_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::Export => {
@@ -720,10 +736,12 @@ impl AppHandler {
                                 Ok(CopyOutcome::Clipboard) => {}
                                 Ok(CopyOutcome::FileFallback(path)) => self.store.push_toast(
                                     &format!("Clipboard unavailable — saved to {}", path.display()),
-                                    crate::store::types::ToastMsgVariant::Warning),
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                ),
                                 Err(e) => self.store.push_toast(
                                     &format!("Copy failed: {}", e),
-                                    crate::store::types::ToastMsgVariant::Error),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                ),
                             }
                         }
                         crate::dialog::ExportAction::Share(sid) => {
@@ -737,11 +755,13 @@ impl AppHandler {
                                         };
                                         self.store.push_toast(
                                             &msg,
-                                            crate::store::types::ToastMsgVariant::Success);
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        );
                                     }
                                     Err(e) => self.store.push_toast(
                                         &format!("Share failed: {}", e),
-                                        crate::store::types::ToastMsgVariant::Error),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    ),
                                 }
                             }
                             self.export_dialog.close();
@@ -750,7 +770,9 @@ impl AppHandler {
                     }
                     return true;
                 }
-                if !self.export_dialog.is_open() { self.panel = Panel::None; }
+                if !self.export_dialog.is_open() {
+                    self.panel = Panel::None;
+                }
                 return true;
             }
             Panel::None => {
@@ -818,11 +840,7 @@ impl AppHandler {
     /// approve/reject proposal 共用：调 update_skill_proposal_status，
     /// Ok → remove_by_id 回流 + toast Success；Err → toast Error + 列表不变
     /// （悲观执行，无需回滚）。dialog 保持打开支持批量（水生木闭环）。
-    fn execute_proposal_status(
-        &mut self,
-        entry: &crate::dialog::SkillProposalEntry,
-        status: &str,
-    ) {
+    fn execute_proposal_status(&mut self, entry: &crate::dialog::SkillProposalEntry, status: &str) {
         if let Some(ref api) = self.api {
             match api.update_skill_proposal_status(&entry.id, status) {
                 Ok(_) => {
@@ -853,14 +871,20 @@ impl AppHandler {
                 Ok(_) => {
                     self.refresh_mcp_into_store();
                     self.store.push_toast(
-                        &format!("MCP {}: {}",
-                            if connect { "connected" } else { "disconnected" }, entry.name),
+                        &format!(
+                            "MCP {}: {}",
+                            if connect { "connected" } else { "disconnected" },
+                            entry.name
+                        ),
                         crate::store::types::ToastMsgVariant::Success,
                     );
                 }
                 Err(e) => self.store.push_toast(
-                    &format!("{} failed: {}",
-                        if connect { "Connect" } else { "Disconnect" }, e),
+                    &format!(
+                        "{} failed: {}",
+                        if connect { "Connect" } else { "Disconnect" },
+                        e
+                    ),
                     crate::store::types::ToastMsgVariant::Error,
                 ),
             }

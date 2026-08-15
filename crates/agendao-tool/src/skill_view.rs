@@ -4,7 +4,8 @@ use std::path::Path;
 
 use crate::skill_support::{
     attach_skill_runtime_preflight, authority_for, format_loaded_skill_file_output,
-    format_loaded_skill_output, format_supporting_files_hint, load_skill_file_with_runtime_materialization,
+    format_loaded_skill_output, format_supporting_files_hint,
+    load_skill_file_with_runtime_materialization,
     load_skill_prompt_packet_with_runtime_materialization, map_skill_error, resolve_skill_filter,
     resolve_skill_with_runtime_materialization,
 };
@@ -13,9 +14,10 @@ use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 pub struct SkillViewTool;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkillViewInput {
     name: String,
-    #[serde(default, alias = "filepath")]
+    #[serde(default)]
     file_path: Option<String>,
 }
 
@@ -91,16 +93,12 @@ impl Tool for SkillViewTool {
                         Some(&filter),
                         Some(std::slice::from_ref(&input.name)),
                     )?;
-                    let (output, mut metadata) =
-                        format_loaded_skill_output(&packet, None, None);
+                    let (output, mut metadata) = format_loaded_skill_output(&packet, None, None);
                     metadata.insert(
                         "requested_file_path".to_string(),
                         serde_json::json!(file_path),
                     );
-                    metadata.insert(
-                        "file_path_error".to_string(),
-                        serde_json::json!(message.clone()),
-                    );
+                    metadata.insert("file_path_error".to_string(), serde_json::json!(message));
                     metadata.insert(
                         "hint".to_string(),
                         serde_json::json!(format_supporting_files_hint(&meta.supporting_files)),
@@ -295,13 +293,12 @@ Use PubMed APIs.
     }
 
     #[test]
-    fn skill_view_accepts_filepath_alias() {
-        let input: SkillViewInput = serde_json::from_value(serde_json::json!({
+    fn skill_view_rejects_filepath_alias() {
+        let error = serde_json::from_value::<SkillViewInput>(serde_json::json!({
             "name": "pubmed-database",
             "filepath": "references/api.md"
         }))
-        .expect("filepath alias should deserialize");
-
-        assert_eq!(input.file_path.as_deref(), Some("references/api.md"));
+        .expect_err("filepath alias should be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 }

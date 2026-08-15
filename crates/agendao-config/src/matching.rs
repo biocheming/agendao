@@ -62,7 +62,10 @@ mod tests {
         let list = patterns(&["literature-research/*"]);
         assert!(is_disabled(&list, "literature-research"));
         assert!(is_disabled(&list, "literature-research/skills"));
-        assert!(is_disabled(&list, "literature-research/skills/semantic-scholar"));
+        assert!(is_disabled(
+            &list,
+            "literature-research/skills/semantic-scholar"
+        ));
         assert!(!is_disabled(&list, "literature-researchx"));
         assert!(!is_disabled(&list, "other/literature-research"));
     }

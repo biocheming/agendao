@@ -3,12 +3,12 @@
 //! Old TUI: socket_event_subscriber() async loop.
 //! New: same agendao_client::UnixSocketTransport, events → EventBus sender.
 
+use agendao_client::transport::UnixSocketTransport;
+use agendao_server_core::frontend_events::FrontendEvent;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use agendao_client::transport::UnixSocketTransport;
-use agendao_server_core::frontend_events::FrontendEvent;
 
 /// Spawn a background task that subscribes to Unix socket events.
 /// Mirrors old TUI's socket_event_subscriber().

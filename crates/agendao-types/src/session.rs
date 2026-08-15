@@ -1,4 +1,3 @@
-use agendao_stage_protocol::{StageStatus, StageSummary};
 use agendao_util::util::format::truncate_chars;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -354,15 +353,13 @@ pub enum PromptSurfaceDriftCategory {
     ToolPolicy,
     OutputProjection,
     IngressPolicy,
-    CloseAiPromptCacheKey,
+    OpenAiPromptCacheKey,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptSurfaceVolatilityKind {
     VolatileEnvField,
-    DynamicCatalogBeforeStableGovernance,
-    OversizedCapabilityProjection,
     ProviderOptionsAffectSurface,
 }
 
@@ -463,14 +460,12 @@ pub struct SessionContextClosureContract {
     pub prefix_stability: SessionPrefixStabilityContract,
     pub compaction_boundary: SessionCompactionBoundaryContract,
     pub cache_explainability: SessionCacheExplainabilityContract,
-    pub child_history_isolation: SessionChildHistoryIsolationContract,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionCompactionContinuityInspectionSource {
     ContinuityPacket,
-    RawSummaryFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -519,32 +514,6 @@ impl SessionCompactionContinuityInspection {
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string),
         }
-    }
-
-    pub fn from_raw_summary(
-        summary: &ContextCompactionSummary,
-        summary_message_id: Option<String>,
-    ) -> Option<Self> {
-        let summary_text = summary
-            .summary
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
-        if summary_text.is_none() && summary_message_id.is_none() {
-            return None;
-        }
-        Some(Self {
-            source: SessionCompactionContinuityInspectionSource::RawSummaryFallback,
-            summary_message_id,
-            summary_text,
-            eligible_message_count: summary.message_count_before,
-            exact_recent_tail_count: summary.kept_message_count,
-            omitted_older_turns: summary.compacted_message_count,
-            has_working_ledger: false,
-            has_memory_anchors: false,
-            recall_policy: None,
-        })
     }
 }
 
@@ -626,22 +595,6 @@ pub struct SessionCacheExplainabilityContract {
     pub explanation: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionChildHistoryIsolationContract {
-    #[serde(default)]
-    pub attached_subtree_session_count: usize,
-    pub owner_session_cumulative_tokens: u64,
-    pub workflow_cumulative_tokens: u64,
-    pub attached_subtree_cumulative_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_live_context_tokens: Option<u64>,
-    #[serde(default)]
-    pub owner_local_live_prefix: bool,
-    #[serde(default)]
-    pub child_history_in_live_prefix_detected: bool,
-    pub explanation: String,
-}
-
 impl SessionPrefixStabilityContract {
     pub fn status_label(&self) -> &'static str {
         if self.prefix_change_detected {
@@ -670,18 +623,6 @@ impl SessionCacheExplainabilityContract {
             "cache explained"
         } else {
             "cache unexplained"
-        }
-    }
-}
-
-impl SessionChildHistoryIsolationContract {
-    pub fn status_label(&self) -> &'static str {
-        if self.child_history_in_live_prefix_detected {
-            "leak detected"
-        } else if self.owner_local_live_prefix {
-            "isolated"
-        } else {
-            "not owner-local"
         }
     }
 }
@@ -787,8 +728,6 @@ pub enum SessionStatus {
 pub enum SessionContextKind {
     #[default]
     RootSessionContinuity,
-    DelegatedSubsession,
-    SchedulerStageOutputSession,
     ExplicitFullHistoryFork,
 }
 
@@ -796,8 +735,6 @@ pub enum SessionContextKind {
 #[serde(rename_all = "snake_case")]
 pub enum SessionHandoffMode {
     SelfContinuity,
-    BoundedHandoff,
-    StageOutputSink,
     FullHistoryFork,
 }
 
@@ -1318,131 +1255,6 @@ pub fn message_latest_compaction_summary(
     })
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SubsessionHandoffRichness {
-    #[default]
-    Bounded,
-    Enriched,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SubsessionHandoffFieldKind {
-    Goal,
-    Constraint,
-    Fact,
-    RequiredPath,
-    SupportingContext,
-    PreflightContext,
-    RecentConclusion,
-    SanctionedRecentTail,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SubsessionHandoffField {
-    pub kind: SubsessionHandoffFieldKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub text: String,
-}
-
-impl SubsessionHandoffField {
-    pub fn new(kind: SubsessionHandoffFieldKind, text: impl Into<String>) -> Self {
-        Self {
-            kind,
-            title: None,
-            text: text.into(),
-        }
-    }
-
-    pub fn titled(
-        kind: SubsessionHandoffFieldKind,
-        title: impl Into<String>,
-        text: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind,
-            title: Some(title.into()),
-            text: text.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct SubsessionHandoffPacket {
-    #[serde(default)]
-    pub richness: SubsessionHandoffRichness,
-    #[serde(default)]
-    pub fields: Vec<SubsessionHandoffField>,
-}
-
-impl SubsessionHandoffPacket {
-    pub fn bounded_goal(goal: impl Into<String>) -> Self {
-        let mut packet = Self::default();
-        packet.push_text(SubsessionHandoffFieldKind::Goal, goal);
-        packet
-    }
-
-    pub fn push_field(&mut self, field: SubsessionHandoffField) {
-        self.fields.push(field);
-    }
-
-    pub fn push_text(&mut self, kind: SubsessionHandoffFieldKind, text: impl Into<String>) {
-        self.push_field(SubsessionHandoffField::new(kind, text));
-    }
-
-    pub fn push_titled_text(
-        &mut self,
-        kind: SubsessionHandoffFieldKind,
-        title: impl Into<String>,
-        text: impl Into<String>,
-    ) {
-        self.push_field(SubsessionHandoffField::titled(kind, title, text));
-    }
-
-    pub fn effective_richness(&self) -> SubsessionHandoffRichness {
-        if self.fields.iter().any(|field| {
-            matches!(
-                field.kind,
-                SubsessionHandoffFieldKind::SupportingContext
-                    | SubsessionHandoffFieldKind::PreflightContext
-                    | SubsessionHandoffFieldKind::RecentConclusion
-                    | SubsessionHandoffFieldKind::SanctionedRecentTail
-            )
-        }) {
-            SubsessionHandoffRichness::Enriched
-        } else {
-            self.richness
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SubsessionResultAbsorbMode {
-    SummaryOnly,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SubsessionResultEnvelope {
-    pub absorb_mode: SubsessionResultAbsorbMode,
-    pub text: String,
-}
-
-impl SubsessionResultEnvelope {
-    pub fn summary(text: impl Into<String>) -> Self {
-        Self {
-            absorb_mode: SubsessionResultAbsorbMode::SummaryOnly,
-            text: text.into(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionOwnershipSummary {
     pub context_kind: SessionContextKind,
@@ -1459,14 +1271,12 @@ impl SessionContextKind {
     /// Whether this session kind is expected to own an ongoing prompt surface
     /// that can accumulate context pressure and may need compaction.
     pub fn owns_prompt_continuity(self) -> bool {
-        !matches!(self, Self::SchedulerStageOutputSession)
+        true
     }
 
     pub fn handoff_mode(self) -> SessionHandoffMode {
         match self {
             Self::RootSessionContinuity => SessionHandoffMode::SelfContinuity,
-            Self::DelegatedSubsession => SessionHandoffMode::BoundedHandoff,
-            Self::SchedulerStageOutputSession => SessionHandoffMode::StageOutputSink,
             Self::ExplicitFullHistoryFork => SessionHandoffMode::FullHistoryFork,
         }
     }
@@ -1474,8 +1284,6 @@ impl SessionContextKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::RootSessionContinuity => "root continuity",
-            Self::DelegatedSubsession => "delegated subsession",
-            Self::SchedulerStageOutputSession => "stage output sink",
             Self::ExplicitFullHistoryFork => "full-history fork",
         }
     }
@@ -1689,7 +1497,7 @@ pub struct SessionListHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 }
@@ -1832,8 +1640,6 @@ pub struct SessionEffectivePolicyView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<SessionEffectiveProviderPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_tree: Option<SessionEffectiveSkillTreePolicy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionEffectiveMemoryPolicy>,
     pub compaction: SessionEffectiveCompactionPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1843,45 +1649,17 @@ pub struct SessionEffectivePolicyView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionEffectiveSchedulerTraceStepKind {
-    RequestedProfile,
-    CommandWorkflowOverride,
-    SessionPinnedProfile,
-    LegacySessionPinnedProfile,
-    ConfigDefaultProfile,
-    AutoRoute,
-    SoftFallback,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionEffectiveSchedulerTraceStep {
-    pub kind: SessionEffectiveSchedulerTraceStepKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    pub applied: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionEffectiveSchedulerPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_profile: Option<String>,
+    pub requested_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_profile: Option<String>,
+    pub blueprint_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blueprint_fingerprint: Option<String>,
     pub source: String,
     pub applied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode_kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_agent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_agent: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selection_trace: Vec<SessionEffectiveSchedulerTraceStep>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1903,22 +1681,6 @@ pub struct SessionEffectiveProviderPolicy {
     pub configured_descriptor_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_profile: Option<SessionEffectiveProviderRuntimeProfile>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionEffectiveSkillTreePolicy {
-    pub configured: bool,
-    pub enabled: bool,
-    pub applied: bool,
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimated_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncation_strategy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1989,93 +1751,11 @@ pub struct SessionStatusInfo {
     pub next: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PersistedStageTelemetrySummary {
-    pub stage_id: String,
-    pub stage_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_total: Option<u64>,
-    pub status: StageStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_write_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_event: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_on: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimated_context_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_tree_budget: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_tree_truncation_strategy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_tree_truncated: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_attempt: Option<u64>,
-    pub active_agent_count: u32,
-    pub active_tool_count: u32,
-    pub attached_session_count: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary_attached_session_id: Option<String>,
-}
-
-impl From<StageSummary> for PersistedStageTelemetrySummary {
-    fn from(value: StageSummary) -> Self {
-        Self {
-            stage_id: value.stage_id,
-            stage_name: value.stage_name,
-            index: value.index,
-            total: value.total,
-            step: value.step,
-            step_total: value.step_total,
-            status: value.status,
-            prompt_tokens: value.prompt_tokens,
-            completion_tokens: value.completion_tokens,
-            reasoning_tokens: value.reasoning_tokens,
-            cache_read_tokens: value.cache_read_tokens,
-            cache_write_tokens: value.cache_write_tokens,
-            focus: value.focus,
-            last_event: value.last_event,
-            waiting_on: value.waiting_on,
-            activity: value.activity,
-            estimated_context_tokens: value.estimated_context_tokens,
-            skill_tree_budget: value.skill_tree_budget,
-            skill_tree_truncation_strategy: value.skill_tree_truncation_strategy,
-            skill_tree_truncated: value.skill_tree_truncated,
-            retry_attempt: value.retry_attempt,
-            active_agent_count: value.active_agent_count,
-            active_tool_count: value.active_tool_count,
-            attached_session_count: value.attached_session_count,
-            primary_attached_session_id: value.primary_attached_session_id,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub version: SessionTelemetrySnapshotVersion,
     pub usage: SessionUsage,
-    #[serde(default)]
-    pub stage_summaries: Vec<PersistedStageTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2122,65 +1802,6 @@ pub struct SessionTelemetrySnapshot {
     pub last_permission_pending_ms: Option<u64>,
     pub last_run_status: String,
     pub updated_at: i64,
-}
-
-// ── Preset prompt extension (shared type, Commit 6) ───────────────────
-
-/// A preset's contribution to the prompt surface.
-///
-/// Owned by both `agendao-session` (prompt surface assembly) and
-/// `agendao-orchestrator` (preset definitions).  Residing in
-/// `agendao-types` avoids a circular dependency between the two crates.
-///
-/// # Authority
-///
-/// Presets own their role definition, instruction text, and capability
-/// projection.  They do NOT own the system header, tool surface, or
-/// memory reflow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresetPromptExtension {
-    /// Preset identity (e.g. "sisyphus").
-    pub preset_name: String,
-
-    /// One-line role summary.
-    pub role_summary: String,
-
-    /// Preset-authored sections `(title, body)` appended after the
-    /// product header and before the tool surface.
-    pub extra_sections: Vec<(String, String)>,
-
-    /// Capability projection (agent/tool/skill table text).
-    pub capability_projection: Option<String>,
-
-    /// Tone and constraints augment.
-    pub tone_augment: Option<String>,
-}
-
-impl PresetPromptExtension {
-    pub fn new(preset_name: impl Into<String>, role_summary: impl Into<String>) -> Self {
-        Self {
-            preset_name: preset_name.into(),
-            role_summary: role_summary.into(),
-            extra_sections: Vec::new(),
-            capability_projection: None,
-            tone_augment: None,
-        }
-    }
-
-    pub fn with_section(mut self, title: impl Into<String>, body: impl Into<String>) -> Self {
-        self.extra_sections.push((title.into(), body.into()));
-        self
-    }
-
-    pub fn with_capability(mut self, text: impl Into<String>) -> Self {
-        self.capability_projection = Some(text.into());
-        self
-    }
-
-    pub fn with_tone_augment(mut self, text: impl Into<String>) -> Self {
-        self.tone_augment = Some(text.into());
-        self
-    }
 }
 
 /// Long-lived prompt constraint that should remain stable across
@@ -2293,7 +1914,7 @@ mod continuity_packet_tests {
         assert!(SessionContinuityPacket::from_value(&value).is_some());
 
         // Bump version → rejected.
-        let mut bad = value.clone();
+        let mut bad = value;
         bad["version"] = serde_json::json!(99);
         assert!(SessionContinuityPacket::from_value(&bad).is_none());
     }

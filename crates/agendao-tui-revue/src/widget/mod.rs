@@ -24,15 +24,15 @@
 //!   `EditorView` 视图层）：细化 `revue::TextArea`，自带 ❯ 箭头、
 //!   滚动窗、闪烁光标与命中几何回流；prompt 输入框的编辑/渲染权威。
 
-pub mod scrollbar;
-pub mod scroll_view;
-pub mod status_icon;
-pub mod spinner;
-pub mod blink;
 pub mod bg_stack;
+pub mod blink;
+pub mod scroll_view;
+pub mod scrollbar;
+pub mod spinner;
+pub mod status_icon;
 pub mod vline;
 pub mod wrap_editor;
 
-pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use scroll_view::{scroll_view, ScrollView, ScrollbarOverlay};
+pub use scrollbar::{Scrollbar, ScrollbarDrag, ScrollbarHit};
 pub use vline::VLine;

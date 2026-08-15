@@ -3,23 +3,11 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-// Legacy constants — prefer reading from agendao_config::RuntimeBudgetConfig.
-// These exist for backward compatibility; new code should use budget_authority().
-pub const SINGLE_TOOL_RESULT_MAX_CHARS: usize = 32_000;
-pub const TOOL_RESULT_BATCH_MAX_CHARS: usize = 120_000;
-const TOOL_RESULT_PREVIEW_CHARS: usize = 8_000;
-
 /// Read tool result budget from the canonical authority.
-/// Falls back to the legacy constants when no config store is available
-/// (standalone / non-server contexts).
 pub fn tool_result_budget(
     config: Option<&agendao_config::RuntimeBudgetConfig>,
 ) -> ToolResultBudget {
-    config.map_or_else(ToolResultBudget::legacy, |b| ToolResultBudget {
-        max_single_chars: b.tool_result_max_chars,
-        max_batch_chars: b.tool_batch_aggregate_max_chars,
-        preview_chars: b.tool_result_preview_chars,
-    })
+    config.map_or_else(ToolResultBudget::default, ToolResultBudget::from)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -30,12 +18,18 @@ pub struct ToolResultBudget {
 }
 
 impl ToolResultBudget {
-    pub fn legacy() -> Self {
+    pub fn from(config: &agendao_config::RuntimeBudgetConfig) -> Self {
         Self {
-            max_single_chars: SINGLE_TOOL_RESULT_MAX_CHARS,
-            max_batch_chars: TOOL_RESULT_BATCH_MAX_CHARS,
-            preview_chars: TOOL_RESULT_PREVIEW_CHARS,
+            max_single_chars: config.tool_result_max_chars,
+            max_batch_chars: config.tool_batch_aggregate_max_chars,
+            preview_chars: config.tool_result_preview_chars,
         }
+    }
+}
+
+impl Default for ToolResultBudget {
+    fn default() -> Self {
+        Self::from(&agendao_config::RuntimeBudgetConfig::default())
     }
 }
 
@@ -284,7 +278,7 @@ mod tests {
             "short output".to_string(),
             &mut metadata,
             dir.path(),
-            ToolResultBudget::legacy(),
+            ToolResultBudget::default(),
         )
         .await;
         assert!(!governed.degraded);
@@ -297,14 +291,15 @@ mod tests {
     async fn large_output_is_persisted_and_previewed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut metadata = HashMap::new();
-        let large = "x".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 1024);
+        let budget = ToolResultBudget::default();
+        let large = "x".repeat(budget.max_single_chars + 1024);
         let governed = govern_tool_result_output(
             "session-1",
             "call-1",
             large,
             &mut metadata,
             dir.path(),
-            ToolResultBudget::legacy(),
+            budget,
         )
         .await;
         assert!(governed.degraded);
@@ -328,7 +323,9 @@ mod tests {
         assert!(governed
             .output
             .contains("artifact_read_hint: this artifact is a local file."));
-        assert!(governed.output.contains("Do not pass it to `webfetch` or `browser_session`"));
+        assert!(governed
+            .output
+            .contains("Do not pass it to `webfetch` or `browser_session`"));
     }
 
     #[tokio::test]
@@ -362,7 +359,7 @@ mod tests {
         ];
 
         let governed =
-            govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy())
+            govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::default())
                 .await;
         assert_eq!(governed.len(), 3);
         assert_eq!(governed[0].0, "call-1");

@@ -12,12 +12,13 @@ const MAX_BATCH_SIZE: usize = 25;
 const DISALLOWED_TOOLS: &[&str] = &["batch"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BatchParams {
-    #[serde(default, alias = "toolCalls")]
     pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub tool: String,
     pub parameters: serde_json::Value,
@@ -342,9 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn batch_params_defaults_tool_calls_when_missing() {
-        let parsed: BatchParams =
-            serde_json::from_value(serde_json::json!({})).expect("should parse empty object");
-        assert!(parsed.tool_calls.is_empty());
+    fn batch_params_rejects_noncanonical_or_missing_tool_calls() {
+        assert!(serde_json::from_value::<BatchParams>(serde_json::json!({
+            "tool_calls": []
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<BatchParams>(serde_json::json!({})).is_err());
     }
 }

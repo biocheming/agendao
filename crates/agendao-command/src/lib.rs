@@ -5,8 +5,8 @@
 //! - MCP prompts
 //! - Built-in commands
 pub mod actions;
-#[cfg(feature = "agent-presenter")]
-pub mod agent_presenter;
+#[cfg(feature = "block-projection")]
+pub mod block_projection;
 #[path = "../../agendao-command-render/src/branding.rs"]
 pub mod branding;
 #[cfg(feature = "terminal-ui")]
@@ -36,7 +36,6 @@ pub mod live_semantic_consumer;
 pub mod output_blocks;
 #[path = "../../agendao-command-render/src/run_status_labels.rs"]
 pub mod run_status_labels;
-pub mod stage_protocol;
 #[cfg(feature = "terminal-ui")]
 #[path = "../../agendao-command-render/src/terminal_presentation.rs"]
 pub mod terminal_presentation;
@@ -46,15 +45,10 @@ pub mod terminal_segment_display;
 #[cfg(feature = "terminal-ui")]
 #[path = "../../agendao-command-render/src/terminal_tool_block_display.rs"]
 pub mod terminal_tool_block_display;
-#[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/terminal_tool_cli_render.rs"]
-mod terminal_tool_cli_render;
 pub use actions::{
     ui_command_argument_kind, UiActionId, UiCommandArgumentKind, UiCommandCategory, UiCommandSpec,
     UiSlashCommandSpec,
 };
-pub use stage_protocol::*;
-mod start_work;
 
 #[cfg(feature = "runtime-hooks")]
 use agendao_plugin::{HookContext, HookEvent};
@@ -104,8 +98,6 @@ pub struct CommandArgumentField {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandInvocationSpec {
     pub mode: CommandExecutionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_scheduler_profile: Option<String>,
     #[serde(default)]
     pub allow_inline_arguments: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -144,8 +136,6 @@ pub struct Command {
     pub name: String,
     pub description: String,
     pub template: String,
-    #[serde(default)]
-    pub scheduler_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,7 +231,6 @@ impl CommandRegistry {
             name: "init".to_string(),
             description: "Initialize AgenDao in the current project".to_string(),
             template: include_str!("../commands/init.md").to_string(),
-            scheduler_profile: None,
             aliases: Vec::new(),
             invocation: None,
             interactive: None,
@@ -252,7 +241,6 @@ impl CommandRegistry {
             name: "review".to_string(),
             description: "Review the current changes in the project".to_string(),
             template: include_str!("../commands/review.md").to_string(),
-            scheduler_profile: None,
             aliases: Vec::new(),
             invocation: None,
             interactive: None,
@@ -263,7 +251,6 @@ impl CommandRegistry {
             name: "commit".to_string(),
             description: "Create a git commit with the current changes".to_string(),
             template: include_str!("../commands/commit.md").to_string(),
-            scheduler_profile: None,
             aliases: Vec::new(),
             invocation: None,
             interactive: None,
@@ -274,18 +261,6 @@ impl CommandRegistry {
             name: "test".to_string(),
             description: "Run tests for the project".to_string(),
             template: include_str!("../commands/test.md").to_string(),
-            scheduler_profile: None,
-            aliases: Vec::new(),
-            invocation: None,
-            interactive: None,
-            source: CommandSource::Builtin,
-        });
-
-        self.register(Command {
-            name: "start-work".to_string(),
-            description: "Start Atlas execution session from Prometheus plan".to_string(),
-            template: include_str!("../commands/start-work.md").to_string(),
-            scheduler_profile: Some("atlas".to_string()),
             aliases: Vec::new(),
             invocation: None,
             interactive: None,
@@ -386,11 +361,9 @@ impl CommandRegistry {
             name: "autoresearch".to_string(),
             description: "Run the bounded autoresearch scheduler workflow".to_string(),
             template: include_str!("../commands/autoresearch.md").to_string(),
-            scheduler_profile: Some("autoresearch-run".to_string()),
             aliases: vec!["ar".to_string()],
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-run".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: autoresearch_fields.clone(),
             }),
@@ -405,11 +378,9 @@ impl CommandRegistry {
             name: "autoresearch:plan".to_string(),
             description: "Plan an autoresearch workflow from a plain-language goal".to_string(),
             template: include_str!("../commands/autoresearch-plan.md").to_string(),
-            scheduler_profile: Some("autoresearch-plan".to_string()),
             aliases: Vec::new(),
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-plan".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: vec![CommandArgumentField {
                     key: "goal".to_string(),
@@ -438,11 +409,9 @@ impl CommandRegistry {
             name: "autoresearch:debug".to_string(),
             description: "Run the autoresearch debug workflow".to_string(),
             template: include_str!("../commands/autoresearch-debug.md").to_string(),
-            scheduler_profile: Some("autoresearch-debug".to_string()),
             aliases: Vec::new(),
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-debug".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: vec![
                     CommandArgumentField {
@@ -482,11 +451,9 @@ impl CommandRegistry {
             name: "autoresearch:fix".to_string(),
             description: "Run the autoresearch fix workflow".to_string(),
             template: include_str!("../commands/autoresearch-fix.md").to_string(),
-            scheduler_profile: Some("autoresearch-fix".to_string()),
             aliases: Vec::new(),
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-fix".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: vec![CommandArgumentField {
                     key: "verify".to_string(),
@@ -516,11 +483,9 @@ impl CommandRegistry {
             name: "autoresearch:security".to_string(),
             description: "Run the autoresearch security workflow".to_string(),
             template: include_str!("../commands/autoresearch-security.md").to_string(),
-            scheduler_profile: Some("autoresearch-security".to_string()),
             aliases: Vec::new(),
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-security".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: vec![CommandArgumentField {
                     key: "scope".to_string(),
@@ -539,11 +504,9 @@ impl CommandRegistry {
             name: "autoresearch:ship".to_string(),
             description: "Run the autoresearch ship workflow".to_string(),
             template: include_str!("../commands/autoresearch-ship.md").to_string(),
-            scheduler_profile: Some("autoresearch-ship".to_string()),
             aliases: Vec::new(),
             invocation: Some(CommandInvocationSpec {
                 mode: CommandExecutionMode::Scheduler,
-                default_scheduler_profile: Some("autoresearch-ship".to_string()),
                 allow_inline_arguments: true,
                 argument_schema: vec![CommandArgumentField {
                     key: "target".to_string(),
@@ -645,7 +608,6 @@ impl CommandRegistry {
                 name: name.clone(),
                 description,
                 template,
-                scheduler_profile: None,
                 aliases: Vec::new(),
                 invocation: None,
                 interactive: None,
@@ -757,10 +719,7 @@ impl CommandRegistry {
 
     fn render_command(&self, command: &Command, ctx: CommandContext) -> anyhow::Result<String> {
         let rendered = self.render_template(&command.template, ctx.clone());
-        match command.name.as_str() {
-            "start-work" => start_work::render(rendered, &ctx),
-            _ => Ok(rendered),
-        }
+        Ok(rendered)
     }
 
     fn render_template(&self, template: &str, ctx: CommandContext) -> String {
@@ -957,13 +916,6 @@ mod tests {
     }
 
     #[test]
-    fn start_work_builtin_sets_atlas_profile() {
-        let registry = CommandRegistry::new();
-        let command = registry.get("start-work").unwrap();
-        assert_eq!(command.scheduler_profile.as_deref(), Some("atlas"));
-    }
-
-    #[test]
     fn ui_command_aliases_resolve_to_same_action() {
         let registry = CommandRegistry::new();
         let abort = registry.ui_slash_command("/abort").expect("abort command");
@@ -975,12 +927,8 @@ mod tests {
         assert_eq!(primary.action_id, UiActionId::ToggleCommandPalette);
         assert_eq!(alias.action_id, UiActionId::ToggleCommandPalette);
 
-        let preset = registry
-            .ui_slash_command("/preset")
-            .expect("preset command");
         let agent = registry.ui_slash_command("/agent").expect("agent command");
         let mode = registry.ui_slash_command("/mode").expect("mode command");
-        assert_eq!(preset.action_id, UiActionId::OpenPresetList);
         assert_eq!(agent.action_id, UiActionId::OpenAgentList);
         assert_eq!(mode.action_id, UiActionId::OpenModeList);
     }
@@ -1006,9 +954,7 @@ mod tests {
     fn ui_command_argument_kinds_match_shared_semantics() {
         let registry = CommandRegistry::new();
         let model = registry.ui_slash_command("/model").expect("model command");
-        let preset = registry
-            .ui_slash_command("/preset")
-            .expect("preset command");
+        let mode = registry.ui_slash_command("/mode").expect("mode command");
         let sessions = registry
             .ui_slash_command("/session")
             .expect("session command");
@@ -1018,7 +964,7 @@ mod tests {
         let copy = registry.ui_slash_command("/copy").expect("copy command");
 
         assert_eq!(model.argument_kind(), UiCommandArgumentKind::ModelRef);
-        assert_eq!(preset.argument_kind(), UiCommandArgumentKind::PresetRef);
+        assert_eq!(mode.argument_kind(), UiCommandArgumentKind::ModeRef);
         assert_eq!(
             sessions.argument_kind(),
             UiCommandArgumentKind::SessionTarget
@@ -1069,21 +1015,14 @@ mod tests {
     }
 
     #[test]
-    fn autoresearch_builtin_commands_expose_scheduler_metadata() {
+    fn autoresearch_builtin_commands_expose_scheduler_execution_mode() {
         let registry = CommandRegistry::new();
         let command = registry.get("autoresearch").expect("autoresearch command");
         let invocation = command.invocation.as_ref().expect("invocation metadata");
         let interactive = command.interactive.as_ref().expect("interactive metadata");
 
-        assert_eq!(
-            command.scheduler_profile.as_deref(),
-            Some("autoresearch-run")
-        );
         assert_eq!(command.aliases, vec!["ar".to_string()]);
-        assert_eq!(
-            invocation.default_scheduler_profile.as_deref(),
-            Some("autoresearch-run")
-        );
+        assert_eq!(invocation.mode, CommandExecutionMode::Scheduler);
         assert!(invocation
             .argument_schema
             .iter()

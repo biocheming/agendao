@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agendao_orchestrator::SkillTreeRequestPlan;
+use agendao_orchestrator::selector::SchedulerChoice;
 use agendao_provider::{
     cache::ProviderProfileFingerprint,
     provider_connection_descriptor_candidate_from_config_provider, Provider,
@@ -11,35 +11,19 @@ use agendao_session::{resolved_compaction_config, Session};
 use agendao_types::{
     SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
-    SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
-    SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-    SessionEffectiveSkillTreePolicy, SessionMemoryInsight,
+    SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy, SessionMemoryInsight,
 };
 
 use crate::server::bootstrap_config_from_config;
 use crate::ServerState;
 
 use super::scheduler::{
-    resolve_prompt_request_config, resolve_scheduler_request_defaults, scheduler_mode_kind,
-    PromptRequestConfigInput, PromptRequestSchedulerProfileSource, ResolvedPromptRequestConfig,
+    resolve_prompt_request_config, PromptRequestConfigInput, ResolvedPromptRequestConfig,
 };
 use super::session_crud::{
-    session_agent_override, session_model_override, session_scheduler_profile_override,
+    session_agent_override, session_model_override, session_scheduler_override,
     session_variant_override,
 };
-
-const SCHEDULER_SOURCE_NONE: &str = "none";
-const SCHEDULER_SOURCE_CONFIG_DEFAULT: &str = "config_default";
-const SCHEDULER_SOURCE_SESSION_METADATA: &str = "session_pinned_profile";
-const SKILL_TREE_SOURCE_CONFIG: &str = "config_composition";
-const SKILL_TREE_SOURCE_SCHEDULER: &str = "scheduler_profile";
-
-#[derive(Debug, Clone, Default)]
-struct PersistedSchedulerSelectionProjection {
-    source: Option<String>,
-    trace: Vec<SessionEffectiveSchedulerTraceStep>,
-    warning: Option<String>,
-}
 
 pub(super) async fn build_session_effective_policy(
     state: &Arc<ServerState>,
@@ -48,17 +32,14 @@ pub(super) async fn build_session_effective_policy(
 ) -> SessionEffectivePolicyView {
     let config = state.config_store.config();
     let metadata = &session.record().metadata;
-    let raw_scheduler_profile = metadata_string(metadata, "scheduler_profile");
-    let requested_scheduler_profile = session_scheduler_profile_override(session);
-    let requested_scheduler_profile_source = if raw_scheduler_profile.is_some() {
-        Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile)
-    } else {
-        None
-    };
     let requested_agent = session_agent_override(session);
+    let requested_scheduler = super::scheduler::resolve_effective_scheduler_choice(
+        None,
+        session_scheduler_override(session),
+        requested_agent.is_some(),
+    );
     let requested_model = session_model_override(session);
     let requested_variant = session_variant_override(session);
-    let persisted_scheduler_selection = persisted_scheduler_selection_projection(metadata);
     let mut warnings = Vec::new();
 
     let memory = build_memory_policy(state, session, memory_insight, &mut warnings).await;
@@ -70,22 +51,18 @@ pub(super) async fn build_session_effective_policy(
         config: &config,
         session_id: &session.record().id,
         requested_agent: requested_agent.as_deref(),
-        requested_scheduler_profile: requested_scheduler_profile.as_deref(),
-        requested_scheduler_profile_source,
-        scheduler_profile_override: None,
+        requested_scheduler: requested_scheduler.as_ref(),
         request_model: requested_model.as_deref(),
         request_variant: requested_variant.as_deref(),
         route: "session_effective_policy",
     })
     .await;
 
-    let (scheduler, provider, skill_tree) = match resolution {
+    let (scheduler, provider) = match resolution {
         Ok(resolved) => (
             Some(build_scheduler_policy(
-                raw_scheduler_profile.as_deref(),
-                requested_scheduler_profile.as_deref(),
-                requested_scheduler_profile_source,
-                &persisted_scheduler_selection,
+                metadata,
+                requested_scheduler.as_ref(),
                 &resolved,
             )),
             Some(build_provider_policy(
@@ -96,12 +73,6 @@ pub(super) async fn build_session_effective_policy(
                 resolved.compiled_request.variant.as_deref(),
                 &mut warnings,
             )),
-            build_skill_tree_policy(
-                &config,
-                resolved.request_skill_tree_plan.as_ref(),
-                resolved.scheduler_skill_tree_applied,
-                &mut warnings,
-            ),
         ),
         Err(error) => {
             warnings.push(format!(
@@ -109,15 +80,12 @@ pub(super) async fn build_session_effective_policy(
                 error
             ));
             (
-                Some(build_scheduler_fallback_policy(
-                    &config,
-                    raw_scheduler_profile.as_deref(),
-                    requested_scheduler_profile.as_deref(),
-                    requested_scheduler_profile_source,
-                    &persisted_scheduler_selection,
+                Some(build_scheduler_policy_from_metadata(
+                    metadata,
+                    requested_scheduler.as_ref(),
+                    None,
                 )),
                 None,
-                build_skill_tree_policy(&config, None, false, &mut warnings),
             )
         }
     };
@@ -126,7 +94,6 @@ pub(super) async fn build_session_effective_policy(
         session_id: session.record().id.clone(),
         scheduler,
         provider,
-        skill_tree,
         memory,
         compaction,
         external_adapter,
@@ -135,211 +102,53 @@ pub(super) async fn build_session_effective_policy(
 }
 
 fn build_scheduler_policy(
-    raw_scheduler_profile: Option<&str>,
-    requested_scheduler_profile: Option<&str>,
-    requested_scheduler_profile_source: Option<PromptRequestSchedulerProfileSource>,
-    persisted_selection: &PersistedSchedulerSelectionProjection,
+    metadata: &HashMap<String, serde_json::Value>,
+    requested_scheduler: Option<&SchedulerChoice>,
     resolved: &ResolvedPromptRequestConfig,
 ) -> SessionEffectiveSchedulerPolicy {
-    let effective_profile = resolved.scheduler_profile_name.clone();
-    let mode_kind = effective_profile
-        .as_deref()
-        .map(scheduler_mode_kind)
-        .map(str::to_string);
-    let source = persisted_selection.source.clone().unwrap_or_else(|| {
-        scheduler_source_label(
-            raw_scheduler_profile,
-            requested_scheduler_profile,
-            requested_scheduler_profile_source,
-            resolved.scheduler_applied,
-        )
-        .to_string()
-    });
-    let selection_trace = if persisted_selection.trace.is_empty() {
-        resolved.scheduler_selection_trace.clone()
-    } else {
-        persisted_selection.trace.clone()
-    };
-    let warning = persisted_selection
-        .warning
-        .clone()
-        .or_else(|| resolved.scheduler_selection_warning.clone());
-
-    SessionEffectiveSchedulerPolicy {
-        requested_profile: requested_scheduler_profile.map(str::to_string),
-        effective_profile,
-        source,
-        applied: resolved.scheduler_applied,
-        mode_kind,
-        root_agent: resolved.scheduler_root_agent.clone(),
-        resolved_agent: resolved
+    build_scheduler_policy_from_metadata(
+        metadata,
+        requested_scheduler,
+        resolved
             .resolved_agent
             .as_ref()
             .map(|agent| agent.name.clone()),
-        selection_trace,
-        warning,
-    }
+    )
 }
 
-fn build_scheduler_fallback_policy(
-    config: &agendao_config::Config,
-    raw_scheduler_profile: Option<&str>,
-    requested_scheduler_profile: Option<&str>,
-    requested_scheduler_profile_source: Option<PromptRequestSchedulerProfileSource>,
-    persisted_selection: &PersistedSchedulerSelectionProjection,
+fn build_scheduler_policy_from_metadata(
+    metadata: &HashMap<String, serde_json::Value>,
+    requested_scheduler: Option<&SchedulerChoice>,
+    resolved_agent: Option<String>,
 ) -> SessionEffectiveSchedulerPolicy {
-    let defaults = resolve_scheduler_request_defaults(config, requested_scheduler_profile);
-    let effective_profile = defaults
-        .as_ref()
-        .and_then(|defaults| defaults.profile_name.clone())
-        .or_else(|| requested_scheduler_profile.map(str::to_string));
-    let applied = defaults.is_some();
-    let mode_kind = effective_profile
-        .as_deref()
-        .map(scheduler_mode_kind)
-        .map(str::to_string);
-    let warning = persisted_selection.warning.clone().or_else(|| {
-        if persisted_selection.source.is_some() {
-            None
-        } else if requested_scheduler_profile.is_none()
-            && config
-                .scheduler_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_some()
-            && !applied
-        {
-            Some(
-                "configured scheduler defaults could not be resolved; continuing without scheduler profile"
-                    .to_string(),
-            )
-        } else {
-            None
-        }
-    });
-    let selection_trace = if !persisted_selection.trace.is_empty() {
-        persisted_selection.trace.clone()
-    } else {
-        fallback_scheduler_selection_trace(
-            requested_scheduler_profile,
-            requested_scheduler_profile_source,
-            effective_profile.as_deref(),
-            applied,
-            warning.as_deref(),
-        )
-    };
-
+    let blueprint = metadata.get("scheduler_blueprint");
     SessionEffectiveSchedulerPolicy {
-        requested_profile: requested_scheduler_profile.map(str::to_string),
-        effective_profile,
-        source: persisted_selection.source.clone().unwrap_or_else(|| {
-            scheduler_source_label(
-                raw_scheduler_profile,
-                requested_scheduler_profile,
-                requested_scheduler_profile_source,
-                applied,
-            )
+        requested_kind: requested_scheduler.map(scheduler_choice_kind),
+        blueprint_name: blueprint
+            .and_then(|value| value.get("name"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        blueprint_fingerprint: metadata_string(metadata, "scheduler_blueprint_fingerprint"),
+        source: metadata_string(metadata, "scheduler_selection_source").unwrap_or_else(|| {
+            if requested_scheduler.is_some() {
+                "session"
+            } else {
+                "none"
+            }
             .to_string()
         }),
-        applied,
-        mode_kind,
-        root_agent: defaults.and_then(|defaults| defaults.root_agent_name),
-        resolved_agent: None,
-        selection_trace,
-        warning,
+        applied: blueprint.is_some() || requested_scheduler.is_some(),
+        resolved_agent,
     }
 }
 
-fn scheduler_source_label(
-    raw_scheduler_profile: Option<&str>,
-    requested_scheduler_profile: Option<&str>,
-    requested_scheduler_profile_source: Option<PromptRequestSchedulerProfileSource>,
-    scheduler_applied: bool,
-) -> &'static str {
-    if matches!(
-        requested_scheduler_profile_source,
-        Some(PromptRequestSchedulerProfileSource::ExplicitRequest)
-    ) && requested_scheduler_profile.is_some()
-    {
-        return "explicit_request";
+fn scheduler_choice_kind(choice: &SchedulerChoice) -> String {
+    match choice {
+        SchedulerChoice::Auto => "auto",
+        SchedulerChoice::Template { .. } => "template",
+        SchedulerChoice::Blueprint { .. } => "blueprint",
     }
-    if matches!(
-        requested_scheduler_profile_source,
-        Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
-    ) && requested_scheduler_profile.is_some()
-    {
-        return "command_workflow";
-    }
-    if raw_scheduler_profile.is_some() && requested_scheduler_profile.is_some() {
-        return SCHEDULER_SOURCE_SESSION_METADATA;
-    }
-    if scheduler_applied {
-        return SCHEDULER_SOURCE_CONFIG_DEFAULT;
-    }
-    SCHEDULER_SOURCE_NONE
-}
-
-fn fallback_scheduler_selection_trace(
-    requested_scheduler_profile: Option<&str>,
-    requested_scheduler_profile_source: Option<PromptRequestSchedulerProfileSource>,
-    effective_profile: Option<&str>,
-    applied: bool,
-    warning: Option<&str>,
-) -> Vec<SessionEffectiveSchedulerTraceStep> {
-    let mut trace = Vec::new();
-
-    if let Some(profile_name) = requested_scheduler_profile {
-        let (kind, detail) = match requested_scheduler_profile_source {
-            Some(PromptRequestSchedulerProfileSource::CommandWorkflow) => (
-                SessionEffectiveSchedulerTraceStepKind::CommandWorkflowOverride,
-                "command/workflow requested this scheduler profile",
-            ),
-            Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile) => (
-                SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile,
-                "session metadata pinned this scheduler profile",
-            ),
-            _ => (
-                SessionEffectiveSchedulerTraceStepKind::RequestedProfile,
-                "request explicitly selected this scheduler profile",
-            ),
-        };
-        trace.push(SessionEffectiveSchedulerTraceStep {
-            kind,
-            profile: Some(profile_name.to_string()),
-            detail: Some(detail.to_string()),
-            applied,
-        });
-        if profile_name == "auto" {
-            trace.push(SessionEffectiveSchedulerTraceStep {
-                kind: SessionEffectiveSchedulerTraceStepKind::AutoRoute,
-                profile: Some(profile_name.to_string()),
-                detail: Some(
-                    "auto routing remained scheduler-owned; route layer only forwarded the auto preset"
-                        .to_string(),
-                ),
-                applied,
-            });
-        }
-    } else if let Some(profile_name) = effective_profile {
-        trace.push(SessionEffectiveSchedulerTraceStep {
-            kind: SessionEffectiveSchedulerTraceStepKind::ConfigDefaultProfile,
-            profile: Some(profile_name.to_string()),
-            detail: Some("scheduler defaults from config selected this profile".to_string()),
-            applied: true,
-        });
-    }
-
-    if let Some(warning) = warning {
-        trace.push(SessionEffectiveSchedulerTraceStep {
-            kind: SessionEffectiveSchedulerTraceStepKind::SoftFallback,
-            profile: effective_profile.map(str::to_string),
-            detail: Some(warning.to_string()),
-            applied: false,
-        });
-    }
-
-    trace
+    .to_string()
 }
 
 fn build_provider_policy(
@@ -412,58 +221,6 @@ fn runtime_profile_from_fingerprint(
     }
 }
 
-fn build_skill_tree_policy(
-    config: &agendao_config::Config,
-    plan: Option<&SkillTreeRequestPlan>,
-    scheduler_skill_tree_applied: bool,
-    warnings: &mut Vec<String>,
-) -> Option<SessionEffectiveSkillTreePolicy> {
-    let configured_skill_tree = config
-        .composition
-        .as_ref()
-        .and_then(|composition| composition.skill_tree.as_ref());
-    let enabled = configured_skill_tree
-        .map(|skill_tree| !matches!(skill_tree.enabled, Some(false)))
-        .unwrap_or(true);
-
-    if let Some(plan) = plan {
-        let source = if scheduler_skill_tree_applied {
-            SKILL_TREE_SOURCE_SCHEDULER
-        } else {
-            SKILL_TREE_SOURCE_CONFIG
-        };
-        return Some(SessionEffectiveSkillTreePolicy {
-            configured: true,
-            enabled,
-            applied: true,
-            source: source.to_string(),
-            estimated_tokens: Some(plan.estimated_tokens() as u64),
-            token_budget: plan.token_budget.map(|value| value as u64),
-            truncation_strategy: Some(plan.truncation_strategy.as_label().to_string()),
-            truncated: Some(plan.is_truncated()),
-        });
-    }
-
-    let skill_tree = configured_skill_tree?;
-
-    if enabled {
-        warnings.push(
-            "skill tree config is present but no request skill tree plan resolved".to_string(),
-        );
-    }
-
-    Some(SessionEffectiveSkillTreePolicy {
-        configured: true,
-        enabled,
-        applied: false,
-        source: SKILL_TREE_SOURCE_CONFIG.to_string(),
-        estimated_tokens: None,
-        token_budget: skill_tree.token_budget.map(|value| value as u64),
-        truncation_strategy: skill_tree.truncation_strategy.clone(),
-        truncated: None,
-    })
-}
-
 async fn build_memory_policy(
     state: &Arc<ServerState>,
     session: &Session,
@@ -530,22 +287,6 @@ fn build_external_adapter_policy(
     })
 }
 
-fn persisted_scheduler_selection_projection(
-    metadata: &HashMap<String, serde_json::Value>,
-) -> PersistedSchedulerSelectionProjection {
-    PersistedSchedulerSelectionProjection {
-        source: metadata_string(metadata, "scheduler_selection_source"),
-        trace: metadata
-            .get("scheduler_selection_trace")
-            .and_then(|value| {
-                serde_json::from_value::<Vec<SessionEffectiveSchedulerTraceStep>>(value.clone())
-                    .ok()
-            })
-            .unwrap_or_default(),
-        warning: metadata_string(metadata, "scheduler_selection_warning"),
-    }
-}
-
 fn metadata_string(metadata: &HashMap<String, serde_json::Value>, key: &str) -> Option<String> {
     metadata
         .get(key)
@@ -559,8 +300,7 @@ fn metadata_string(metadata: &HashMap<String, serde_json::Value>, key: &str) -> 
 mod tests {
     use super::*;
     use agendao_config::{
-        CompactionConfig as AppCompactionConfig, CompositionConfig, Config, ConfigStore,
-        ProviderConfig, SkillTreeConfig, SkillTreeNodeConfig,
+        CompactionConfig as AppCompactionConfig, Config, ConfigStore, ProviderConfig,
     };
     use agendao_provider::{
         cache::ProviderProfileFingerprint, ModelInfo, ProviderError, ProviderProfileResolver,
@@ -635,36 +375,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effective_policy_resolves_scheduler_provider_skill_tree_and_external_adapter() {
+    async fn effective_policy_resolves_scheduler_provider_and_external_adapter() {
         let mut state = ServerState::new();
         state.config_store = Arc::new(ConfigStore::new(Config {
             model: Some("openai/gpt-4o".to_string()),
-            skill_paths: HashMap::from([(
-                "skill://root".to_string(),
-                "# Root Rule\nUse the shared coding policy.".to_string(),
-            )]),
-            composition: Some(CompositionConfig {
-                skill_tree: Some(SkillTreeConfig {
-                    enabled: Some(true),
-                    root: Some(SkillTreeNodeConfig {
-                        node_id: "root".to_string(),
-                        markdown_path: "skill://root".to_string(),
-                        children: Vec::new(),
-                    }),
-                    separator: None,
-                    token_budget: Some(64),
-                    truncation_strategy: Some("tail".to_string()),
-                }),
-            }),
             provider: Some(HashMap::from([(
                 "openai".to_string(),
                 ProviderConfig {
                     name: Some("OpenAI".to_string()),
                     base_url: Some("https://api.openai.com/v1".to_string()),
-                    api_style: Some("closeai-compatible".to_string()),
+                    api_style: Some("openai-compatible".to_string()),
                     api_shape: Some("chat-completions".to_string()),
                     transport: Some("bearer".to_string()),
-                    usage_shape: Some("closeai-cached-tokens".to_string()),
+                    usage_shape: Some("openai-cached-tokens".to_string()),
                     env: Some(vec!["OPENAI_API_KEY".to_string()]),
                     ..Default::default()
                 },
@@ -679,25 +402,16 @@ mod tests {
 
         let runtime_profile = ProviderProfileResolver::resolve_with_options(
             "openai",
-            &HashMap::from([
-                (
-                    "api_style".to_string(),
-                    serde_json::json!("closeai-compatible"),
-                ),
-                (
-                    "api_shape".to_string(),
-                    serde_json::json!("chat-completions"),
-                ),
-                ("transport".to_string(), serde_json::json!("bearer")),
-                (
-                    "usage_shape".to_string(),
-                    serde_json::json!("closeai-cached-tokens"),
-                ),
-                (
-                    "quirks".to_string(),
-                    serde_json::json!(["requires-thinking-replay"]),
-                ),
-            ]),
+            &HashMap::from([(
+                "provider_profile".to_string(),
+                serde_json::json!({
+                    "api_style": "openai-compatible",
+                    "api_shape": "chat-completions",
+                    "transport": "bearer",
+                    "usage_shape": "openai-cached-tokens",
+                    "quirks": ["requires-thinking-replay"]
+                }),
+            )]),
         );
         state
             .providers
@@ -713,7 +427,10 @@ mod tests {
 
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let session_id = session.record().id.clone();
-        session.insert_metadata("scheduler_profile", serde_json::json!("prometheus"));
+        session.insert_metadata(
+            "scheduler",
+            serde_json::json!({"kind": "template", "template": "verify"}),
+        );
         session.insert_metadata(
             "last_ingress_source".to_string(),
             serde_json::json!("external:generic-webhook:generic"),
@@ -732,16 +449,11 @@ mod tests {
         assert!(policy.warnings.is_empty(), "{:?}", policy.warnings);
 
         let scheduler = policy.scheduler.expect("scheduler policy");
-        assert_eq!(scheduler.requested_profile.as_deref(), Some("prometheus"));
-        assert_eq!(scheduler.effective_profile.as_deref(), Some("prometheus"));
-        assert_eq!(scheduler.source, "session_pinned_profile");
+        assert_eq!(scheduler.requested_kind.as_deref(), Some("template"));
+        assert_eq!(scheduler.blueprint_name, None);
+        assert_eq!(scheduler.blueprint_fingerprint, None);
+        assert_eq!(scheduler.source, "session");
         assert!(scheduler.applied);
-        assert_eq!(scheduler.selection_trace.len(), 1);
-        assert_eq!(
-            scheduler.selection_trace[0].kind,
-            SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile
-        );
-        assert_eq!(scheduler.warning, None);
 
         let provider = policy.provider.expect("provider policy");
         assert_eq!(provider.provider_id, "openai");
@@ -761,7 +473,7 @@ mod tests {
                 .as_ref()
                 .and_then(|descriptor| descriptor.profile.as_ref())
                 .map(|profile| profile.api_family.as_str()),
-            Some("closeai-compatible")
+            Some("openai-compatible")
         );
         assert_eq!(
             provider
@@ -784,14 +496,6 @@ mod tests {
                 .map(|profile| profile.profile.quirks.clone()),
             Some(vec!["requires-thinking-replay".to_string()])
         );
-
-        let skill_tree = policy.skill_tree.expect("skill tree policy");
-        assert!(skill_tree.configured);
-        assert!(skill_tree.enabled);
-        assert!(skill_tree.applied);
-        assert_eq!(skill_tree.source, "config_composition");
-        assert_eq!(skill_tree.token_budget, Some(64));
-        assert_eq!(skill_tree.truncation_strategy.as_deref(), Some("tail"));
 
         assert!(!policy.compaction.auto);
         assert!(policy.compaction.prune);

@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 
 pub use discovery::resolve_configured_path;
 pub use transforms::{
-    deduplicate_plugins, get_plugin_name, load_config, update_config, update_global_config,
-    write_config,
+    get_plugin_name, load_config, update_config, update_global_config, write_config,
 };
 pub use workspace::{
     ConfigAuthority, ResolvedConfig, ResolvedConfigInputs, WorkspaceIdentity, WorkspaceMode,
@@ -28,16 +27,15 @@ pub use workspace::{
 
 use discovery::{
     collect_agendao_directories, detect_worktree_stop, find_up, get_managed_config_dir,
-    load_agents_from_dir, load_commands_from_dir, load_modes_from_dir,
-    normalize_existing_path,
+    load_agents_from_dir, load_commands_from_dir, normalize_existing_path,
 };
 pub use discovery::{
     collect_plugin_roots, collect_plugin_roots as get_plugin_roots, discover_web_plugins,
     load_plugins_from_path, WebPluginInfo,
 };
 use file_ops::{
-    get_global_config_paths, migrate_legacy_toml_config, parse_external_tool_catalog_jsonc,
-    parse_jsonc, resolve_file_references, substitute_env_vars,
+    get_global_config_paths, parse_external_tool_catalog_jsonc, parse_jsonc,
+    resolve_file_references, substitute_env_vars,
 };
 use transforms::{apply_post_load_transforms, merge_agent_config};
 
@@ -150,17 +148,6 @@ impl ConfigLoader {
             self.load_from_file(global_config_path)?;
         }
 
-        if let Some(global_config_dir) = global_config_paths.first().and_then(|path| path.parent())
-        {
-            if let Some(migrated_path) =
-                migrate_legacy_toml_config(global_config_dir, &mut self.config)
-            {
-                if !self.config_paths.contains(&migrated_path) {
-                    self.config_paths.push(migrated_path);
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -215,7 +202,7 @@ impl ConfigLoader {
     /// 5. Inline config (AGENDAO_CONFIG_CONTENT)
     /// 6. Managed config directory (enterprise, highest priority)
     ///
-    /// Then: plugin_paths/default plugin dir scan, legacy migrations, flag overrides, plugin dedup
+    /// Then: canonical plugin directory scan and runtime environment overrides.
     pub fn load_all<P: AsRef<Path>>(&mut self, project_dir: P) -> Result<Config> {
         let project_dir = project_dir.as_ref();
 
@@ -239,7 +226,7 @@ impl ConfigLoader {
                 }
             }
 
-            // Load commands, agents, modes from markdown files
+            // Load commands and agents from markdown files.
             let commands = load_commands_from_dir(dir);
             if !commands.is_empty() {
                 let mut cmd_map = self.config.command.take().unwrap_or_default();
@@ -255,19 +242,6 @@ impl ConfigLoader {
                 for (name, agent) in agents {
                     if let Some(existing) = agent_configs.entries.get_mut(&name) {
                         // Deep merge
-                        merge_agent_config(existing, agent);
-                    } else {
-                        agent_configs.entries.insert(name, agent);
-                    }
-                }
-                self.config.agent = Some(agent_configs);
-            }
-
-            let modes = load_modes_from_dir(dir);
-            if !modes.is_empty() {
-                let mut agent_configs = self.config.agent.take().unwrap_or_default();
-                for (name, agent) in modes {
-                    if let Some(existing) = agent_configs.entries.get_mut(&name) {
                         merge_agent_config(existing, agent);
                     } else {
                         agent_configs.entries.insert(name, agent);
@@ -300,7 +274,7 @@ impl ConfigLoader {
         // Load managed config (enterprise, highest priority)
         self.load_managed_config()?;
 
-        // Apply legacy migrations and flag overrides
+        // Apply runtime environment overrides.
         apply_post_load_transforms(&mut self.config);
 
         Ok(self.config.clone())
@@ -328,15 +302,6 @@ impl ConfigLoader {
 }
 
 fn normalize_config_paths(config: &mut Config, base_dir: &Path) {
-    if let Some(path) = config.scheduler_path.as_deref().map(str::trim) {
-        if !path.is_empty() {
-            config.scheduler_path = Some(
-                resolve_configured_path(base_dir, path)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-    }
     if let Some(path) = config.task_category_path.as_deref().map(str::trim) {
         if !path.is_empty() {
             config.task_category_path = Some(

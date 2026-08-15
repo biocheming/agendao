@@ -16,6 +16,7 @@ fn run_agendao_json(current_dir: &Path, args: &[&str]) -> serde_json::Value {
         .expect("cargo run lock should not be poisoned");
 
     let manifest_path = repo_root().join("crates/agendao/Cargo.toml");
+    let config_home = make_temp_project_dir("agendao-debug-docs-home");
     let output = Command::new("cargo")
         .arg("run")
         .arg("-q")
@@ -28,9 +29,11 @@ fn run_agendao_json(current_dir: &Path, args: &[&str]) -> serde_json::Value {
         .arg("agendao-cli/db,agendao-cli/lsp")
         .arg("--")
         .args(args)
+        .env("AGENDAO_HOME", &config_home)
         .current_dir(current_dir)
         .output()
         .expect("agendao should execute");
+    fs::remove_dir_all(&config_home).expect("isolated config home should clean up");
 
     if !output.status.success() {
         panic!(

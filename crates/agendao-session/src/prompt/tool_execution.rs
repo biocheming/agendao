@@ -1,46 +1,21 @@
-// Tool execution + subsession methods for SessionPrompt
+// Tool execution methods for SessionPrompt.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
+use agendao_provider::ToolDefinition;
+use agendao_types::{RepairEvent, ToolBatchSummary};
 
-use agendao_orchestrator::inline_subtask_request_defaults;
-use agendao_provider::{Provider, ToolDefinition};
-use agendao_types::{
-    RepairEvent, SubsessionHandoffFieldKind, SubsessionHandoffPacket, SubsessionHandoffRichness,
-    SubsessionResultEnvelope, ToolBatchSummary,
-};
+use crate::{MessageRole, PartType, Session, SessionMessage};
 
-use crate::{FilePart, MessageRole, PartType, Session, SessionMessage};
-
-use super::subtask::SubtaskExecutor;
-use super::{
-    AgentLookup, AgentParams, AskPermissionHook, AskQuestionHook, ModelRef, PersistedSubsession,
-    PersistedSubsessionTurn, PromptHooks, SessionPrompt,
-};
-
-#[derive(Debug, Clone)]
-struct PendingSyntheticMessage {
-    agent: Option<String>,
-    text: String,
-    attachments: Vec<agendao_tool::SyntheticAttachment>,
-}
+use super::{PromptHooks, SessionPrompt};
 
 #[derive(Clone)]
 struct ToolExecutionOptions {
-    provider_id: String,
-    model_id: String,
     hooks: PromptHooks,
     repair_policy: agendao_types::RepairPolicy,
     tool_result_budget: crate::tool_result_governance::ToolResultBudget,
 }
-
-const MAX_PERSISTED_SUBSESSION_HISTORY_TURNS: usize = 8;
-const MAX_SUBSESSION_HANDOFF_TAIL_FIELDS: usize = 3;
-const MAX_SUBSESSION_FIELD_CHARS: usize = 4_000;
-const MAX_SUBSESSION_TAIL_FIELD_CHARS: usize = 1_200;
 
 // ── P2.2: Tool batch fact extraction ────────────────────────────────────
 
@@ -82,7 +57,7 @@ fn collect_tool_batch_facts(assistant_msg: &SessionMessage) -> Vec<ToolCallBatch
                         | crate::ToolState::Error {
                             metadata: Some(metadata),
                             ..
-                        } => Some(agendao_tool::structured_repair_events(metadata)),
+                        } => Some(agendao_tool::repair_events(metadata)),
                         _ => None,
                     })
                     .unwrap_or_default();
@@ -191,7 +166,7 @@ fn classify_block_reason(
     // When a tool call was permissively rerouted, infer the block reason
     // from repair events that carry the original error classification.
     for e in repair_events {
-        let Some(kind) = agendao_types::RepairKind::from_legacy_str(&e.repair_kind) else {
+        let Some(kind) = agendao_types::RepairKind::parse(&e.repair_kind) else {
             continue;
         };
         match kind {
@@ -275,25 +250,11 @@ fn derive_recommended_next_step(facts: &[ToolCallBatchFact]) -> Option<String> {
     None
 }
 
-#[derive(Clone)]
-pub(super) struct PersistedSubsessionPromptOptions {
-    pub(super) default_model: String,
-    pub(super) fallback_directory: Option<String>,
-    pub(super) hooks: PromptHooks,
-    pub(super) question_session_id: Option<String>,
-    pub(super) abort: Option<CancellationToken>,
-    pub(super) tool_runtime_config: agendao_tool::ToolRuntimeConfig,
-    pub(super) config_store: Option<Arc<agendao_config::ConfigStore>>,
-}
-
 impl SessionPrompt {
     pub async fn execute_tool_calls(
         session: &mut Session,
         tool_registry: Arc<agendao_tool::ToolRegistry>,
         ctx: agendao_tool::ToolContext,
-        provider: Arc<dyn Provider>,
-        provider_id: &str,
-        model_id: &str,
     ) -> anyhow::Result<()> {
         let repair_policy = crate::compaction::effective_repair_policy(ctx.config_store.as_deref());
         let tool_result_budget = crate::tool_result_governance::tool_result_budget(
@@ -307,10 +268,7 @@ impl SessionPrompt {
             session,
             tool_registry,
             ctx,
-            provider,
             ToolExecutionOptions {
-                provider_id: provider_id.to_string(),
-                model_id: model_id.to_string(),
                 hooks: PromptHooks::default(),
                 repair_policy,
                 tool_result_budget,
@@ -324,7 +282,6 @@ impl SessionPrompt {
         session: &mut Session,
         tool_registry: Arc<agendao_tool::ToolRegistry>,
         ctx: agendao_tool::ToolContext,
-        provider: Arc<dyn Provider>,
         options: ToolExecutionOptions,
     ) -> anyhow::Result<usize> {
         let Some(last_assistant_index) = session
@@ -411,38 +368,7 @@ impl SessionPrompt {
         // Emit update so TUI shows tools in "Running" state immediately.
         Self::emit_session_update(options.hooks.update_hook.as_ref(), session);
 
-        let subsessions = Arc::new(Mutex::new(Self::load_persisted_subsessions(session)));
-        let pending_synthetic_messages =
-            Arc::new(Mutex::new(Vec::<PendingSyntheticMessage>::new()));
-        let default_model = format!("{}:{}", options.provider_id, options.model_id);
-        let ctx = Self::with_persistent_subsession_callbacks(
-            ctx,
-            subsessions.clone(),
-            provider,
-            tool_registry.clone(),
-            default_model,
-            options.hooks.agent_lookup.clone(),
-            options.hooks.ask_question_hook.clone(),
-            options.hooks.ask_permission_hook.clone(),
-        )
-        .with_create_synthetic_message({
-            let pending_synthetic_messages = pending_synthetic_messages.clone();
-            move |_session_id, agent, text, attachments| {
-                let pending_synthetic_messages = pending_synthetic_messages.clone();
-                async move {
-                    pending_synthetic_messages
-                        .lock()
-                        .await
-                        .push(PendingSyntheticMessage {
-                            agent,
-                            text,
-                            attachments,
-                        });
-                    Ok(())
-                }
-            }
-        })
-        .with_registry(tool_registry.clone());
+        let ctx = ctx.with_registry(tool_registry.clone());
         let available_tool_ids: HashSet<String> =
             tool_registry.list_ids().await.into_iter().collect();
 
@@ -467,42 +393,19 @@ impl SessionPrompt {
                     Self::repair_tool_call_name(&tool_name, &available_tool_ids);
                 let mut repair_metadata = agendao_tool::Metadata::new();
                 if repaired_tool_name != tool_name {
-                    let mut event = agendao_tool::tool_repair_event(
+                    let event = agendao_tool::repair_event_builder(
                         agendao_types::RepairKind::ToolNameRepair.as_str(),
                         "session_prompt",
                         &repaired_tool_name,
-                    );
-                    event.insert("from".to_string(), serde_json::json!(tool_name));
-                    event.insert("to".to_string(), serde_json::json!(repaired_tool_name));
-                    event.insert(
-                        "reason".to_string(),
-                        serde_json::json!("case_insensitive_exact_match"),
-                    );
-                    agendao_tool::append_tool_repair_event_map(&mut repair_metadata, event);
+                    )
+                    .reason("case-insensitive exact tool name match")
+                    .raw_shape(serde_json::json!(tool_name))
+                    .normalized_shape(serde_json::json!(repaired_tool_name))
+                    .build();
+                    agendao_tool::append_repair_event(&mut repair_metadata, event);
                 }
                 let mut effective_tool_name = repaired_tool_name.clone();
                 let mut effective_input = input.clone();
-                let (normalized_input, normalization_telemetry) =
-                    agendao_tool::normalize_tool_arguments_with_telemetry(
-                        &effective_tool_name,
-                        effective_input,
-                    );
-                effective_input = normalized_input;
-                if !normalization_telemetry.is_empty() {
-                    let mut event = agendao_tool::tool_repair_event(
-                        agendao_types::RepairKind::ArgumentNormalization.as_str(),
-                        "session_prompt",
-                        &effective_tool_name,
-                    );
-                    event.insert(
-                        "modes".to_string(),
-                        serde_json::json!(normalization_telemetry.modes),
-                    );
-                    // P1.1: Record the raw model output and the normalized execution args.
-                    event.insert("raw_shape".to_string(), raw_shape.clone());
-                    event.insert("normalized_shape".to_string(), effective_input.clone());
-                    agendao_tool::append_tool_repair_event_map(&mut repair_metadata, event);
-                }
                 let mut strict_prevalidation_error: Option<String> = None;
                 if let Some(payload) =
                     Self::prevalidate_tool_arguments(&effective_tool_name, &effective_input)
@@ -515,27 +418,18 @@ impl SessionPrompt {
                         policy = %options.repair_policy.label(),
                         "tool arguments failed prevalidation"
                     );
-                    let mut event = agendao_tool::tool_repair_event(
+                    let mut event = agendao_tool::repair_event_builder(
                         agendao_types::RepairKind::ArgumentPrevalidationFallback.as_str(),
                         "session_prompt",
                         &effective_tool_name,
-                    );
+                    )
+                    .raw_shape(raw_shape.clone())
+                    .normalized_shape(payload.clone())
+                    .strict_mode_would_fail(is_strict);
                     if let Some(reason) = payload.get("error").and_then(|value| value.as_str()) {
-                        event.insert("reason".to_string(), serde_json::json!(reason));
+                        event = event.reason(reason);
                     }
-                    if let Some(received_args) = payload.get("receivedArgs") {
-                        event.insert("receivedArgs".to_string(), received_args.clone());
-                    }
-                    // P1.1: record the raw model output and the replacement payload.
-                    event.insert("raw_shape".to_string(), raw_shape.clone());
-                    event.insert("normalized_shape".to_string(), payload.clone());
-                    if is_strict {
-                        event.insert(
-                            "strict_mode_would_fail".to_string(),
-                            serde_json::json!(true),
-                        );
-                    }
-                    agendao_tool::append_tool_repair_event_map(&mut repair_metadata, event);
+                    agendao_tool::append_repair_event(&mut repair_metadata, event.build());
                     if is_strict {
                         // Strict: do not rewrite the execution input or reroute
                         // through the invalid tool. Record the failure and stop
@@ -558,7 +452,7 @@ impl SessionPrompt {
                             format!("Invalid arguments: {}", error),
                             true,
                             Some("Tool Error".to_string()),
-                            (!agendao_tool::tool_repair_events(&repair_metadata).is_empty())
+                            (!agendao_tool::repair_events(&repair_metadata).is_empty())
                                 .then_some(repair_metadata.clone()),
                             None,
                             None,
@@ -574,7 +468,7 @@ impl SessionPrompt {
                             match execution {
                                 Ok(result) => {
                                     let mut metadata = result.metadata;
-                                    agendao_tool::merge_tool_repair_telemetry(
+                                    agendao_tool::merge_repair_telemetry(
                                         &mut metadata,
                                         &repair_metadata,
                                     );
@@ -604,20 +498,15 @@ impl SessionPrompt {
                                         // Record the reroute as a repair event for telemetry.
                                         let error_text = format!("Error: {}", e);
                                         let original_kind = classify_error_kind(&error_text);
-                                        let mut reroute_event = agendao_tool::tool_repair_event(
+                                        let reroute_event = agendao_tool::repair_event_builder(
                                             agendao_types::RepairKind::InvalidToolReroute.as_str(),
                                             "session_prompt",
                                             &effective_tool_name,
-                                        );
-                                        reroute_event.insert(
-                                            "reason".to_string(),
-                                            serde_json::json!(error_text),
-                                        );
-                                        reroute_event.insert(
-                                            "original_error_kind".to_string(),
-                                            serde_json::json!(original_kind),
-                                        );
-                                        agendao_tool::append_tool_repair_event_map(
+                                        )
+                                        .reason(error_text)
+                                        .original_error_kind(original_kind)
+                                        .build();
+                                        agendao_tool::append_repair_event(
                                             &mut repair_metadata,
                                             reroute_event,
                                         );
@@ -637,7 +526,7 @@ impl SessionPrompt {
                                                 effective_tool_name = "invalid".to_string();
                                                 effective_input = invalid_input;
                                                 let mut metadata = result.metadata;
-                                                agendao_tool::merge_tool_repair_telemetry(
+                                                agendao_tool::merge_repair_telemetry(
                                                     &mut metadata,
                                                     &repair_metadata,
                                                 );
@@ -663,10 +552,8 @@ impl SessionPrompt {
                                         ),
                                                 true,
                                                 Some("Tool Error".to_string()),
-                                                (!agendao_tool::tool_repair_events(
-                                                    &repair_metadata,
-                                                )
-                                                .is_empty())
+                                                (!agendao_tool::repair_events(&repair_metadata)
+                                                    .is_empty())
                                                 .then_some(repair_metadata.clone()),
                                                 None,
                                                 None,
@@ -675,28 +562,18 @@ impl SessionPrompt {
                                     } else {
                                         // Strict mode (or no invalid tool): return the raw error.
                                         if is_strict {
-                                            let mut event = agendao_tool::tool_repair_event(
+                                            let event = agendao_tool::repair_event_builder(
                                                 agendao_types::RepairKind::ExecutionErrorNoReroute
                                                     .as_str(),
                                                 "session_prompt",
                                                 &effective_tool_name,
-                                            );
-                                            event.insert(
-                                                "reason".to_string(),
-                                                serde_json::json!(format!("Error: {}", e)),
-                                            );
-                                            // P1.1: record the failing input shape.
-                                            event
-                                                .insert("raw_shape".to_string(), raw_shape.clone());
-                                            event.insert(
-                                                "normalized_shape".to_string(),
-                                                effective_input.clone(),
-                                            );
-                                            event.insert(
-                                                "strict_mode_would_fail".to_string(),
-                                                serde_json::json!(true),
-                                            );
-                                            agendao_tool::append_tool_repair_event_map(
+                                            )
+                                            .reason(format!("Error: {}", e))
+                                            .raw_shape(raw_shape.clone())
+                                            .normalized_shape(effective_input.clone())
+                                            .strict_mode_would_fail(true)
+                                            .build();
+                                            agendao_tool::append_repair_event(
                                                 &mut repair_metadata,
                                                 event,
                                             );
@@ -705,7 +582,7 @@ impl SessionPrompt {
                                             format!("Error: {}", e),
                                             true,
                                             Some("Tool Error".to_string()),
-                                            (!agendao_tool::tool_repair_events(&repair_metadata)
+                                            (!agendao_tool::repair_events(&repair_metadata)
                                                 .is_empty())
                                             .then_some(repair_metadata.clone()),
                                             None,
@@ -805,45 +682,12 @@ impl SessionPrompt {
             session.push_message(tool_results_msg);
         }
 
-        // Capture synthetic attachment filenames before the messages are consumed.
-        let synthetic_artifacts: Vec<String> = {
-            let pending = pending_synthetic_messages.lock().await;
-            pending
-                .iter()
-                .flat_map(|m| {
-                    m.attachments.iter().filter_map(|a| {
-                        a.filename.clone().or_else(|| {
-                            if a.url.is_empty() {
-                                None
-                            } else {
-                                Some(a.url.clone())
-                            }
-                        })
-                    })
-                })
-                .collect()
-        };
-
-        let pending_synthetic_messages = {
-            let mut pending = pending_synthetic_messages.lock().await;
-            std::mem::take(&mut *pending)
-        };
-        if !pending_synthetic_messages.is_empty() {
-            for message in pending_synthetic_messages {
-                Self::append_synthetic_user_message(session, message);
-            }
-            Self::emit_session_update(options.hooks.update_hook.as_ref(), session);
-        }
-
-        let persisted = subsessions.lock().await.clone();
-        Self::save_persisted_subsessions(session, &persisted);
-
         // Build and persist a tool batch summary for telemetry / compaction.
         if executed_calls > 0 {
             let summary = session
                 .messages
                 .get(last_assistant_index)
-                .and_then(|msg| Self::build_tool_batch_summary(msg, &synthetic_artifacts));
+                .and_then(|msg| Self::build_tool_batch_summary(msg, &[]));
             if let Some(summary) = summary {
                 session.insert_metadata(
                     "latest_tool_batch_summary".to_string(),
@@ -855,8 +699,7 @@ impl SessionPrompt {
         Ok(executed_calls)
     }
 
-    /// Build a structured `ToolBatchSummary` from the completed tool calls in
-    /// an assistant message, enriched with pending synthetic attachment info.
+    /// Build a structured `ToolBatchSummary` from the completed tool calls.
     pub(super) fn build_tool_batch_summary(
         assistant_msg: &SessionMessage,
         synthetic_artifacts: &[String],
@@ -952,39 +795,6 @@ impl SessionPrompt {
         });
     }
 
-    fn append_synthetic_user_message(session: &mut Session, message: PendingSyntheticMessage) {
-        let attachments = message
-            .attachments
-            .iter()
-            .enumerate()
-            .map(|(index, attachment)| FilePart {
-                id: format!("prt_{}", uuid::Uuid::new_v4()),
-                session_id: session.id.clone(),
-                message_id: String::new(),
-                mime: attachment.mime.clone(),
-                url: attachment.url.clone(),
-                filename: Some(
-                    attachment
-                        .filename
-                        .clone()
-                        .unwrap_or_else(|| synthetic_attachment_filename(attachment, index)),
-                ),
-                source: None,
-            })
-            .collect::<Vec<_>>();
-
-        let text = if message.text.trim().is_empty() && !attachments.is_empty() {
-            " ".to_string()
-        } else {
-            message.text
-        };
-        let msg = session.add_synthetic_user_message(text, &attachments);
-        if let Some(agent) = message.agent {
-            msg.metadata
-                .insert("synthetic_agent".to_string(), serde_json::json!(agent));
-        }
-    }
-
     pub(super) fn repair_tool_call_name(
         tool_name: &str,
         available_tool_ids: &HashSet<String>,
@@ -1038,427 +848,6 @@ impl SessionPrompt {
             })
             .unwrap_or_default()
     }
-
-    pub(super) fn load_persisted_subsessions(
-        session: &Session,
-    ) -> HashMap<String, PersistedSubsession> {
-        session
-            .metadata
-            .get("subsessions")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
-    }
-
-    pub(super) fn save_persisted_subsessions(
-        session: &mut Session,
-        subsessions: &HashMap<String, PersistedSubsession>,
-    ) {
-        if subsessions.is_empty() {
-            session.remove_metadata("subsessions");
-            return;
-        }
-        if let Ok(value) = serde_json::to_value(subsessions) {
-            session.insert_metadata("subsessions".to_string(), value);
-        }
-    }
-
-    pub(super) fn with_persistent_subsession_callbacks(
-        ctx: agendao_tool::ToolContext,
-        subsessions: Arc<Mutex<HashMap<String, PersistedSubsession>>>,
-        provider: Arc<dyn Provider>,
-        tool_registry: Arc<agendao_tool::ToolRegistry>,
-        default_model: String,
-        agent_lookup: Option<AgentLookup>,
-        ask_question_hook: Option<AskQuestionHook>,
-        ask_permission_hook: Option<AskPermissionHook>,
-    ) -> agendao_tool::ToolContext {
-        let parent_directory = ctx.directory.clone();
-        let agent_lookup_for_subsessions = agent_lookup.clone();
-        let ctx = if let Some(ref lookup) = agent_lookup {
-            let lookup = lookup.clone();
-            ctx.with_get_agent_info(move |name| {
-                let lookup = lookup.clone();
-                async move { Ok(lookup(&name)) }
-            })
-        } else {
-            ctx
-        };
-
-        let ctx = if let Some(ref question_hook) = ask_question_hook {
-            let session_id = ctx.session_id.clone();
-            let question_hook = question_hook.clone();
-            ctx.with_ask_question(move |questions| {
-                let question_hook = question_hook.clone();
-                let session_id = session_id.clone();
-                async move { question_hook(session_id, questions).await }
-            })
-        } else {
-            ctx
-        };
-
-        let ctx = if let Some(ref permission_hook) = ask_permission_hook {
-            let session_id = ctx.session_id.clone();
-            let permission_hook = permission_hook.clone();
-            ctx.with_ask(move |request| {
-                let permission_hook = permission_hook.clone();
-                let session_id = session_id.clone();
-                async move { permission_hook(session_id, request).await }
-            })
-        } else {
-            ctx
-        };
-
-        let ctx = ctx.with_get_last_model({
-            let default_model = default_model.clone();
-            move |_session_id| {
-                let default_model = default_model.clone();
-                async move { Ok(Some(default_model)) }
-            }
-        });
-
-        let ctx = ctx.with_create_subsession({
-            let subsessions = subsessions.clone();
-            let parent_directory = parent_directory.clone();
-            move |agent, _title, model, disabled_tools| {
-                let subsessions = subsessions.clone();
-                let parent_directory = parent_directory.clone();
-                async move {
-                    let session_id = format!("task_{}_{}", agent, uuid::Uuid::new_v4().simple());
-                    let mut state = subsessions.lock().await;
-                    state.insert(
-                        session_id.clone(),
-                        PersistedSubsession {
-                            kind: agendao_types::SessionContextKind::DelegatedSubsession,
-                            agent,
-                            model,
-                            directory: Some(parent_directory),
-                            disabled_tools,
-                            history: Vec::new(),
-                        },
-                    );
-                    Ok(session_id)
-                }
-            }
-        });
-
-        let abort_token = ctx.abort.clone();
-        let tool_runtime_config = ctx.runtime_config.clone();
-        let config_store = ctx.config_store.clone();
-
-        ctx.with_prompt_subsession(move |session_id, handoff| {
-            let subsessions = subsessions.clone();
-            let provider = provider.clone();
-            let tool_registry = tool_registry.clone();
-            let default_model = default_model.clone();
-            let parent_directory = parent_directory.clone();
-            let ask_question_hook = ask_question_hook.clone();
-            let agent_lookup = agent_lookup_for_subsessions.clone();
-            let abort_token = abort_token.clone();
-            let tool_runtime_config = tool_runtime_config.clone();
-            let config_store = config_store.clone();
-
-            async move {
-                let current = {
-                    let state = subsessions.lock().await;
-                    state.get(&session_id).cloned()
-                }
-                .ok_or_else(|| {
-                    agendao_tool::ToolError::ExecutionError(format!(
-                        "Unknown subagent session: {}. Start without task_id first.",
-                        session_id
-                    ))
-                })?;
-
-                let output = Self::execute_persisted_subsession_prompt(
-                    &current,
-                    &handoff,
-                    provider,
-                    tool_registry,
-                    PersistedSubsessionPromptOptions {
-                        default_model: default_model.clone(),
-                        fallback_directory: Some(parent_directory.clone()),
-                        hooks: PromptHooks {
-                            agent_lookup: agent_lookup.clone(),
-                            ask_question_hook: ask_question_hook.clone(),
-                            ..Default::default()
-                        },
-                        question_session_id: Some(session_id.clone()),
-                        abort: Some(abort_token),
-                        tool_runtime_config: tool_runtime_config.clone(),
-                        config_store,
-                    },
-                )
-                .await
-                .map_err(|e| agendao_tool::ToolError::ExecutionError(e.to_string()))?;
-
-                let mut state = subsessions.lock().await;
-                if let Some(existing) = state.get_mut(&session_id) {
-                    existing.history.push(PersistedSubsessionTurn {
-                        handoff: Some(handoff),
-                        result: Some(output.clone()),
-                        prompt: None,
-                        output: None,
-                    });
-                }
-                Ok(output)
-            }
-        })
-    }
-
-    pub(super) async fn execute_persisted_subsession_prompt(
-        subsession: &PersistedSubsession,
-        handoff: &SubsessionHandoffPacket,
-        provider: Arc<dyn Provider>,
-        tool_registry: Arc<agendao_tool::ToolRegistry>,
-        options: PersistedSubsessionPromptOptions,
-    ) -> anyhow::Result<SubsessionResultEnvelope> {
-        let model = Self::resolve_subsession_model(
-            subsession.model.as_deref(),
-            &options.default_model,
-            provider.id(),
-        );
-
-        // Cross-session handoff stays bounded: only the delegated subsession's
-        // own history and the new explicit prompt cross this boundary.
-        let composed_prompt = Self::compose_subsession_prompt(&subsession.history, handoff);
-        let working_directory = subsession
-            .directory
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-            .or_else(|| {
-                options
-                    .fallback_directory
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|d| !d.is_empty())
-            });
-        let mut executor = SubtaskExecutor::new(&subsession.agent, &composed_prompt)
-            .with_model(model)
-            .with_tool_runtime_config(options.tool_runtime_config.clone());
-        if let Some(config_store) = options.config_store.clone() {
-            executor = executor.with_config_store(config_store);
-        }
-        if let Some(directory) = working_directory {
-            executor = executor.with_working_directory(directory);
-        }
-        if let Some(question_hook) = options.hooks.ask_question_hook.clone() {
-            let session_id = options
-                .question_session_id
-                .clone()
-                .unwrap_or_else(|| "subtask".to_string());
-            executor = executor.with_ask_question_hook(question_hook, session_id);
-        }
-        if let Some(permission_hook) = options.hooks.ask_permission_hook.clone() {
-            executor = executor.with_ask_permission_hook(permission_hook);
-        }
-        if let Some(token) = options.abort.clone() {
-            executor = executor.with_abort(token);
-        }
-        let agent_info = options
-            .hooks
-            .agent_lookup
-            .as_ref()
-            .and_then(|lookup| lookup(&subsession.agent));
-        let request_defaults = inline_subtask_request_defaults(
-            agent_info.as_ref().and_then(|info| info.variant.clone()),
-        );
-        executor = executor.with_max_steps(agent_info.as_ref().and_then(|info| info.steps));
-        executor = executor
-            .with_execution_context(agent_info.as_ref().and_then(|info| info.execution.clone()));
-        executor = executor.with_variant(
-            agent_info
-                .as_ref()
-                .and_then(|info| info.variant.clone())
-                .or_else(|| request_defaults.variant.clone()),
-        );
-        executor.agent_params = AgentParams {
-            max_tokens: agent_info
-                .as_ref()
-                .and_then(|info| info.max_tokens)
-                .or(request_defaults.max_tokens),
-            temperature: agent_info
-                .as_ref()
-                .and_then(|info| info.temperature)
-                .or(request_defaults.temperature),
-            top_p: agent_info
-                .as_ref()
-                .and_then(|info| info.top_p)
-                .or(request_defaults.top_p),
-        };
-
-        let output = executor
-            .execute_inline(provider, &tool_registry, &subsession.disabled_tools)
-            .await?;
-        Ok(SubsessionResultEnvelope::summary(output))
-    }
-
-    pub(super) fn resolve_subsession_model(
-        requested_model: Option<&str>,
-        default_model: &str,
-        current_provider_id: &str,
-    ) -> ModelRef {
-        let mut model = Self::parse_model_string(requested_model.unwrap_or(default_model));
-        if model.provider_id == "default" && model.model_id == "default" {
-            model = Self::parse_model_string(default_model);
-        }
-
-        // Subsession execution reuses the parent provider object.
-        // If a subagent model comes from another provider namespace (for example
-        // plugin config like "opencode/big-pickle"), running it against the
-        // current provider causes model-not-found errors. Fallback to the
-        // parent's default model in that mismatch case.
-        if model.provider_id != "default" && model.provider_id != current_provider_id {
-            tracing::warn!(
-                requested_provider = %model.provider_id,
-                requested_model = %model.model_id,
-                current_provider = %current_provider_id,
-                fallback_model = %default_model,
-                "subsession model provider differs from current provider; falling back to default model"
-            );
-            return Self::parse_model_string(default_model);
-        }
-
-        model
-    }
-
-    pub(super) fn parse_model_string(raw: &str) -> ModelRef {
-        if let Some((provider_id, model_id)) = raw.split_once(':').or_else(|| raw.split_once('/')) {
-            return ModelRef {
-                provider_id: provider_id.to_string(),
-                model_id: model_id.to_string(),
-            };
-        }
-        if raw.is_empty() {
-            return ModelRef {
-                provider_id: "default".to_string(),
-                model_id: "default".to_string(),
-            };
-        }
-        ModelRef {
-            provider_id: "default".to_string(),
-            model_id: raw.to_string(),
-        }
-    }
-
-    pub(super) fn compose_subsession_prompt(
-        history: &[PersistedSubsessionTurn],
-        handoff: &SubsessionHandoffPacket,
-    ) -> String {
-        let rendered_handoff = Self::render_subsession_handoff(handoff);
-        if history.is_empty() {
-            return rendered_handoff;
-        }
-
-        let history_text = history
-            .iter()
-            .rev()
-            .take(MAX_PERSISTED_SUBSESSION_HISTORY_TURNS)
-            .rev()
-            .map(Self::render_persisted_subsession_turn)
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n");
-
-        format!(
-            "Continue this delegated subsession.\n\nPrevious delegated work:\n{}\n\nNew handoff:\n{}",
-            history_text, rendered_handoff
-        )
-    }
-
-    fn render_persisted_subsession_turn(turn: &PersistedSubsessionTurn) -> String {
-        let handoff = turn.handoff.clone().unwrap_or_else(|| {
-            SubsessionHandoffPacket::bounded_goal(turn.prompt.clone().unwrap_or_default())
-        });
-        let result = turn.result.clone().unwrap_or_else(|| {
-            SubsessionResultEnvelope::summary(turn.output.clone().unwrap_or_default())
-        });
-
-        format!(
-            "Delegated handoff:\n{}\n\nRecovered result ({}):\n{}",
-            Self::indent_block(&Self::render_subsession_handoff(&handoff)),
-            match result.absorb_mode {
-                agendao_types::SubsessionResultAbsorbMode::SummaryOnly => "summary only",
-            },
-            Self::indent_block(&Self::truncate_subsession_field(
-                &result.text,
-                MAX_SUBSESSION_FIELD_CHARS
-            ))
-        )
-    }
-
-    fn render_subsession_handoff(handoff: &SubsessionHandoffPacket) -> String {
-        let mut lines = vec![format!(
-            "Delegated handoff mode: {}",
-            match handoff.effective_richness() {
-                SubsessionHandoffRichness::Bounded => "bounded",
-                SubsessionHandoffRichness::Enriched => "enriched",
-            }
-        )];
-
-        let mut sanctioned_tail_count = 0usize;
-        for field in &handoff.fields {
-            let trimmed = field.text.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let limit = if matches!(field.kind, SubsessionHandoffFieldKind::SanctionedRecentTail) {
-                if sanctioned_tail_count >= MAX_SUBSESSION_HANDOFF_TAIL_FIELDS {
-                    continue;
-                }
-                sanctioned_tail_count += 1;
-                MAX_SUBSESSION_TAIL_FIELD_CHARS
-            } else {
-                MAX_SUBSESSION_FIELD_CHARS
-            };
-            let text = Self::truncate_subsession_field(trimmed, limit);
-            let label = Self::subsession_handoff_field_label(field.kind);
-            let title = field
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let header = match title {
-                Some(title) => format!("## {}: {}", label, title),
-                None => format!("## {}", label),
-            };
-            lines.push(header);
-            lines.push(text);
-        }
-
-        lines.join("\n\n")
-    }
-
-    fn subsession_handoff_field_label(kind: SubsessionHandoffFieldKind) -> &'static str {
-        match kind {
-            SubsessionHandoffFieldKind::Goal => "Goal",
-            SubsessionHandoffFieldKind::Constraint => "Constraints",
-            SubsessionHandoffFieldKind::Fact => "Facts",
-            SubsessionHandoffFieldKind::RequiredPath => "Required Paths",
-            SubsessionHandoffFieldKind::SupportingContext => "Supporting Context",
-            SubsessionHandoffFieldKind::PreflightContext => "Preflight Context",
-            SubsessionHandoffFieldKind::RecentConclusion => "Recent Conclusions",
-            SubsessionHandoffFieldKind::SanctionedRecentTail => "Sanctioned Recent Tail",
-        }
-    }
-
-    fn truncate_subsession_field(text: &str, max_chars: usize) -> String {
-        let normalized = text.trim();
-        let truncated = normalized.chars().take(max_chars).collect::<String>();
-        if normalized.chars().count() > max_chars {
-            format!("{}...", truncated)
-        } else {
-            truncated
-        }
-    }
-
-    fn indent_block(text: &str) -> String {
-        text.lines()
-            .map(|line| format!("  {}", line))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 }
 
 fn classify_error_kind(error: &str) -> String {
@@ -1495,137 +884,18 @@ fn classify_error_kind(error: &str) -> String {
     }
 }
 
-fn synthetic_attachment_filename(
-    attachment: &agendao_tool::SyntheticAttachment,
-    index: usize,
-) -> String {
-    if let Some(filename) = attachment
-        .filename
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return filename.clone();
-    }
-
-    let ext = match attachment.mime.as_str() {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "application/pdf" => "pdf",
-        _ => "bin",
-    };
-    format!("attachment-{}.{}", index + 1, ext)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Session;
-    use agendao_provider::{
-        ChatRequest, ChatResponse, ModelInfo, Provider, ProviderError, StreamResult,
-    };
     use agendao_tool::{Tool, ToolContext, ToolError, ToolResult};
     use async_trait::async_trait;
-    use futures::stream;
     use std::collections::HashSet;
     use std::sync::Arc;
 
-    struct StaticModelProvider {
-        model: Option<ModelInfo>,
-    }
-
-    impl StaticModelProvider {
-        fn with_model(model_id: &str, context_window: u64, max_output_tokens: u64) -> Self {
-            Self {
-                model: Some(ModelInfo {
-                    id: model_id.to_string(),
-                    name: "Static Model".to_string(),
-                    provider: "mock".to_string(),
-                    context_window,
-                    max_input_tokens: None,
-                    max_output_tokens,
-                    supports_vision: false,
-                    supports_tools: false,
-                    cost_per_million_input: 0.0,
-                    cost_per_million_output: 0.0,
-                    cost_per_million_cache_read: None,
-                    cost_per_million_cache_write: None,
-                }),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Provider for StaticModelProvider {
-        fn id(&self) -> &str {
-            "mock"
-        }
-
-        fn name(&self) -> &str {
-            "Mock"
-        }
-
-        fn models(&self) -> Vec<ModelInfo> {
-            self.model.clone().into_iter().collect()
-        }
-
-        fn get_model(&self, id: &str) -> Option<&ModelInfo> {
-            self.model.as_ref().filter(|model| model.id == id)
-        }
-
-        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
-            Err(ProviderError::InvalidRequest(
-                "chat() not used in this test".to_string(),
-            ))
-        }
-
-        async fn chat_stream(&self, _request: ChatRequest) -> Result<StreamResult, ProviderError> {
-            Ok(Box::pin(stream::empty()))
-        }
-    }
-
-    struct SyntheticAttachmentTool;
     struct EchoTool;
     struct AlwaysFailTool;
     struct ExecutionErrorTool;
-
-    #[async_trait]
-    impl Tool for SyntheticAttachmentTool {
-        fn id(&self) -> &str {
-            "synthetic_attachment"
-        }
-
-        fn description(&self) -> &str {
-            "Emits a synthetic attachment message for tests"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "properties": {}
-            })
-        }
-
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            ctx: ToolContext,
-        ) -> Result<ToolResult, ToolError> {
-            ctx.do_create_synthetic_message_with_attachments(
-                Some("docs-researcher".to_string()),
-                String::new(),
-                vec![agendao_tool::SyntheticAttachment {
-                    url: "file:///tmp/artifact.png".to_string(),
-                    mime: "image/png".to_string(),
-                    filename: Some("artifact.png".to_string()),
-                }],
-            )
-            .await?;
-
-            Ok(ToolResult::simple("Synthetic Attachment", "queued"))
-        }
-    }
 
     #[async_trait]
     impl Tool for EchoTool {
@@ -1719,7 +989,7 @@ mod tests {
     fn tool_state_repair_events(
         session: &Session,
         assistant_index: usize,
-    ) -> Vec<serde_json::Value> {
+    ) -> Vec<agendao_types::RepairEvent> {
         session.messages[assistant_index]
             .parts
             .iter()
@@ -1727,7 +997,7 @@ mod tests {
                 PartType::ToolCall {
                     state: Some(crate::ToolState::Completed { metadata, .. }),
                     ..
-                } => Some(agendao_tool::tool_repair_events(metadata)),
+                } => Some(agendao_tool::repair_events(metadata)),
                 PartType::ToolCall {
                     state:
                         Some(crate::ToolState::Error {
@@ -1735,191 +1005,14 @@ mod tests {
                             ..
                         }),
                     ..
-                } => Some(agendao_tool::tool_repair_events(metadata)),
+                } => Some(agendao_tool::repair_events(metadata)),
                 _ => None,
             })
             .unwrap_or_default()
     }
 
-    #[test]
-    fn persisted_subsessions_roundtrip_via_session_metadata() {
-        let mut session = Session::new("proj", ".");
-        let mut map = HashMap::new();
-        map.insert(
-            "task_explore_1".to_string(),
-            PersistedSubsession {
-                kind: agendao_types::SessionContextKind::DelegatedSubsession,
-                agent: "explore".to_string(),
-                model: Some("ethnopic:test-model".to_string()),
-                directory: Some("/tmp/project".to_string()),
-                disabled_tools: vec!["task".to_string()],
-                history: vec![PersistedSubsessionTurn {
-                    handoff: Some(SubsessionHandoffPacket::bounded_goal("Inspect src")),
-                    result: Some(SubsessionResultEnvelope::summary("Done")),
-                    prompt: None,
-                    output: None,
-                }],
-            },
-        );
-
-        SessionPrompt::save_persisted_subsessions(&mut session, &map);
-        let loaded = SessionPrompt::load_persisted_subsessions(&session);
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(
-            loaded["task_explore_1"].kind,
-            agendao_types::SessionContextKind::DelegatedSubsession
-        );
-        assert_eq!(loaded["task_explore_1"].agent, "explore");
-        assert_eq!(loaded["task_explore_1"].history.len(), 1);
-    }
-
-    #[test]
-    fn parse_model_string_supports_provider_prefix() {
-        let model = SessionPrompt::parse_model_string("openai:gpt-4o");
-        assert_eq!(model.provider_id, "openai");
-        assert_eq!(model.model_id, "gpt-4o");
-    }
-
-    #[test]
-    fn resolve_subsession_model_falls_back_on_provider_mismatch() {
-        let model = SessionPrompt::resolve_subsession_model(
-            Some("opencode:big-pickle"),
-            "zhipuai-coding-plan:glm-4.6",
-            "zhipuai-coding-plan",
-        );
-        assert_eq!(model.provider_id, "zhipuai-coding-plan");
-        assert_eq!(model.model_id, "glm-4.6");
-    }
-
-    #[test]
-    fn resolve_subsession_model_keeps_same_provider_model() {
-        let model = SessionPrompt::resolve_subsession_model(
-            Some("zhipuai-coding-plan:GLM-5"),
-            "zhipuai-coding-plan:glm-4.6",
-            "zhipuai-coding-plan",
-        );
-        assert_eq!(model.provider_id, "zhipuai-coding-plan");
-        assert_eq!(model.model_id, "GLM-5");
-    }
-
-    #[test]
-    fn compose_subsession_prompt_includes_recent_history() {
-        let history = vec![PersistedSubsessionTurn {
-            handoff: Some(SubsessionHandoffPacket::bounded_goal("Find files")),
-            result: Some(SubsessionResultEnvelope::summary("Found 10 files")),
-            prompt: None,
-            output: None,
-        }];
-        let composed = SessionPrompt::compose_subsession_prompt(
-            &history,
-            &SubsessionHandoffPacket::bounded_goal("Continue"),
-        );
-        assert!(composed.contains("Previous delegated work"));
-        assert!(composed.contains("Find files"));
-        assert!(composed.contains("Continue"));
-    }
-
-    #[test]
-    fn compose_subsession_prompt_limits_sanctioned_recent_tail_fields() {
-        let mut handoff = SubsessionHandoffPacket::bounded_goal("Continue");
-        handoff.push_text(SubsessionHandoffFieldKind::SanctionedRecentTail, "tail one");
-        handoff.push_text(SubsessionHandoffFieldKind::SanctionedRecentTail, "tail two");
-        handoff.push_text(
-            SubsessionHandoffFieldKind::SanctionedRecentTail,
-            "tail three",
-        );
-        handoff.push_text(
-            SubsessionHandoffFieldKind::SanctionedRecentTail,
-            "tail four",
-        );
-
-        let composed = SessionPrompt::compose_subsession_prompt(&[], &handoff);
-
-        assert!(composed.contains("tail one"));
-        assert!(composed.contains("tail two"));
-        assert!(composed.contains("tail three"));
-        assert!(!composed.contains("tail four"));
-    }
-
     #[tokio::test]
-    async fn execute_tool_calls_appends_synthetic_attachment_message() {
-        let tool_registry = Arc::new(agendao_tool::ToolRegistry::new());
-        tool_registry.register(SyntheticAttachmentTool).await;
-
-        let mut session = Session::new("proj", ".");
-        let sid = session.id.clone();
-        session.messages_mut().push(SessionMessage::user(
-            sid.clone(),
-            "run synthetic attachment",
-        ));
-        let mut assistant = SessionMessage::assistant(sid);
-        assistant.add_tool_call(
-            "call_synthetic",
-            "synthetic_attachment",
-            serde_json::json!({}),
-        );
-        session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
-
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
-
-        let synthetic_msg = session
-            .messages
-            .last()
-            .expect("synthetic user message should be appended");
-        assert!(matches!(synthetic_msg.role, MessageRole::User));
-        assert_eq!(
-            synthetic_msg
-                .metadata
-                .get("synthetic_agent")
-                .and_then(|value| value.as_str()),
-            Some("docs-researcher")
-        );
-
-        let text_part = synthetic_msg
-            .parts
-            .iter()
-            .find_map(|part| match &part.part_type {
-                PartType::Text {
-                    text, synthetic, ..
-                } => Some((text.as_str(), *synthetic)),
-                _ => None,
-            })
-            .expect("synthetic text part should exist");
-        assert_eq!(text_part.0, " ");
-        assert_eq!(text_part.1, Some(true));
-
-        let file_part = synthetic_msg
-            .parts
-            .iter()
-            .find_map(|part| match &part.part_type {
-                PartType::File {
-                    url,
-                    filename,
-                    mime,
-                } => Some((url.as_str(), filename.as_str(), mime.as_str())),
-                _ => None,
-            })
-            .expect("synthetic file part should exist");
-        assert_eq!(file_part.0, "file:///tmp/artifact.png");
-        assert_eq!(file_part.1, "artifact.png");
-        assert_eq!(file_part.2, "image/png");
-    }
-
-    #[tokio::test]
-    async fn execute_tool_calls_persists_prompt_layer_repair_telemetry_on_success() {
+    async fn execute_tool_calls_records_tool_name_repair_only() {
         let tool_registry = Arc::new(agendao_tool::ToolRegistry::new());
         tool_registry.register(EchoTool).await;
 
@@ -1932,49 +1025,28 @@ mod tests {
         assistant.add_tool_call(
             "call_echo",
             "ECHO_TOOL",
-            serde_json::json!("{\"value\":\"hello\"}"),
+            serde_json::json!({"value": "hello"}),
         );
         session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should succeed");
 
         let repair_events = tool_state_repair_events(&session, 1);
         assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("tool_name_repair")
-                && event.get("from").and_then(|value| value.as_str()) == Some("ECHO_TOOL")
-                && event.get("to").and_then(|value| value.as_str()) == Some("echo_tool")
-        }));
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("argument_normalization")
+            event.repair_kind == "tool_name_repair"
+                && event.raw_shape.as_ref().and_then(|value| value.as_str()) == Some("ECHO_TOOL")
                 && event
-                    .get("modes")
-                    .and_then(|value| value.as_array())
-                    .is_some_and(|modes| {
-                        modes
-                            .iter()
-                            .any(|value| value.as_str() == Some("robust_json_object_parse"))
-                    })
+                    .normalized_shape
+                    .as_ref()
+                    .and_then(|value| value.as_str())
+                    == Some("echo_tool")
         }));
-        // P1.1: verify the three-layer arg contract — raw_shape and normalized_shape
-        // are populated on the argument_normalization repair event.
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("argument_normalization")
-                && event.get("raw_shape").is_some()
-                && event.get("normalized_shape").is_some()
-        }));
+        assert!(!repair_events
+            .iter()
+            .any(|event| event.repair_kind == "argument_normalization"));
     }
 
     #[tokio::test]
@@ -1990,26 +1062,20 @@ mod tests {
         let mut assistant = SessionMessage::assistant(sid);
         assistant.add_tool_call("call_fail", "FAIL_TOOL", serde_json::json!({}));
         session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should complete despite tool failure");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should complete despite tool failure");
 
         let repair_events = tool_state_repair_events(&session, 1);
         assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("tool_name_repair")
-                && event.get("to").and_then(|value| value.as_str()) == Some("fail_tool")
+            event.repair_kind == "tool_name_repair"
+                && event
+                    .normalized_shape
+                    .as_ref()
+                    .and_then(|value| value.as_str())
+                    == Some("fail_tool")
         }));
     }
 
@@ -2202,9 +1268,6 @@ mod tests {
         assistant.add_tool_call("call_fail", "fail_tool", serde_json::json!({}));
         session.messages_mut().push(assistant);
 
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-
         // Strict policy via config store.
         let config = agendao_config::Config {
             repair_policy: Some(agendao_types::RepairPolicy::Strict),
@@ -2214,16 +1277,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should complete");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should complete");
 
         // In strict mode, the tool call name should NOT be changed to "invalid".
         let assistant_msg = session
@@ -2264,9 +1320,6 @@ mod tests {
         );
         session.messages_mut().push(assistant);
 
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-
         let config = agendao_config::Config {
             runtime_budget: Some(agendao_config::RuntimeBudgetConfig {
                 tool_result_max_chars: 128,
@@ -2279,16 +1332,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should succeed");
 
         let tool_message = session
             .messages
@@ -2342,9 +1388,6 @@ mod tests {
         );
         session.messages_mut().push(assistant);
 
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-
         let config = agendao_config::Config {
             repair_policy: Some(agendao_types::RepairPolicy::Strict),
             ..Default::default()
@@ -2353,16 +1396,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should complete");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should complete");
 
         let assistant_msg = session
             .messages
@@ -2414,9 +1450,6 @@ mod tests {
             .register(agendao_tool::invalid::InvalidTool)
             .await;
 
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-
         // ── Permissive ────────────────────────────────────────────
         let mut session = Session::new("proj", ".");
         let sid = session.id.clone();
@@ -2435,16 +1468,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry.clone(),
-            ctx,
-            provider.clone(),
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("permissive should succeed");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry.clone(), ctx)
+            .await
+            .expect("permissive should succeed");
 
         let p_name = session
             .messages
@@ -2480,16 +1506,9 @@ mod tests {
         let ctx2 = ToolContext::new(session2.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store2);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session2,
-            tool_registry,
-            ctx2,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("strict should complete");
+        SessionPrompt::execute_tool_calls(&mut session2, tool_registry, ctx2)
+            .await
+            .expect("strict should complete");
 
         let s_name = session2
             .messages
@@ -2532,9 +1551,6 @@ mod tests {
         // reroute to invalid. The batch summary must reflect the block reason.
         assistant.add_tool_call("call_fail", "fail_tool", serde_json::json!({}));
         session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
         // Permissive policy so the reroute happens.
         let config = agendao_config::Config {
             repair_policy: Some(agendao_types::RepairPolicy::Permissive),
@@ -2544,16 +1560,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should succeed");
 
         // Read the persisted summary from session metadata.
         let summary_value = session
@@ -2577,64 +1586,6 @@ mod tests {
         );
     }
 
-    // P2.3: synthetic attachment names captured from the real
-    // execute_tool_calls → pending_synthetic_messages pipeline must survive
-    // into the persisted batch summary.
-    #[tokio::test]
-    async fn p23_tool_batch_summary_preserves_synthetic_artifact_names() {
-        let tool_registry = Arc::new(agendao_tool::ToolRegistry::new());
-        tool_registry.register(SyntheticAttachmentTool).await;
-
-        let mut session = Session::new("proj", ".");
-        let sid = session.id.clone();
-        session.messages_mut().push(SessionMessage::user(
-            sid.clone(),
-            "run synthetic attachment",
-        ));
-        let mut assistant = SessionMessage::assistant(sid);
-        assistant.add_tool_call(
-            "call_synthetic",
-            "synthetic_attachment",
-            serde_json::json!({}),
-        );
-        session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
-        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
-
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
-
-        // Read from session metadata — the path that execute_tool_calls writes.
-        let summary_value = session
-            .record()
-            .metadata
-            .get("latest_tool_batch_summary")
-            .expect("batch summary should be persisted");
-        let summary: ToolBatchSummary =
-            serde_json::from_value(summary_value.clone()).expect("should deserialize");
-
-        // SyntheticAttachmentTool emits "artifact.png" as an attachment filename.
-        assert!(
-            summary
-                .artifacts_created
-                .iter()
-                .any(|a| a == "artifact.png"),
-            "synthetic artifact name should survive into persisted summary"
-        );
-        let formatted = summary.format_for_context();
-        assert!(formatted.contains("artifacts: artifact.png"));
-    }
-
     // P2.3: an ordinary execution error permissive reroute must NOT be
     // misclassified as invalid_arguments in the batch summary.
     #[tokio::test]
@@ -2655,9 +1606,6 @@ mod tests {
         let mut assistant = SessionMessage::assistant(sid);
         assistant.add_tool_call("call_exec_err", "exec_err_tool", serde_json::json!({}));
         session.messages_mut().push(assistant);
-
-        let provider: Arc<dyn Provider> =
-            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
         let config = agendao_config::Config {
             repair_policy: Some(agendao_types::RepairPolicy::Permissive),
             ..Default::default()
@@ -2666,16 +1614,9 @@ mod tests {
         let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
             .with_config_store(config_store);
 
-        SessionPrompt::execute_tool_calls(
-            &mut session,
-            tool_registry,
-            ctx,
-            provider,
-            "mock",
-            "test-model",
-        )
-        .await
-        .expect("execute_tool_calls should succeed");
+        SessionPrompt::execute_tool_calls(&mut session, tool_registry, ctx)
+            .await
+            .expect("execute_tool_calls should succeed");
 
         let summary_value = session
             .record()

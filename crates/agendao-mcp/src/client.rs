@@ -10,6 +10,7 @@ use crate::oauth::McpOAuthManager;
 use crate::protocol::*;
 use crate::tool::McpToolRegistry;
 use crate::transport::{HttpTransport, McpTransport, SseTransport, StdioTransport};
+use agendao_core::jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 /// Maximum number of log lines retained per server in the registry.
 const MAX_LOG_LINES_PER_SERVER: usize = 100;
@@ -433,8 +434,7 @@ impl McpClient {
                     }
                     Ok(Some(JsonRpcMessage::Notification(notif))) => {
                         if McpClient::is_progress_notification(&notif) {
-                            let senders: Vec<_> =
-                                pending.lock().await.values().cloned().collect();
+                            let senders: Vec<_> = pending.lock().await.values().cloned().collect();
                             for tx in senders {
                                 let _ = tx.send(JsonRpcMessage::Notification(notif.clone()));
                             }
@@ -886,14 +886,6 @@ impl McpClientRegistry {
         }
     }
 
-    /// Backwards-compatible alias for `add_stdio`.
-    pub async fn add_client(
-        &self,
-        config: McpServerConfig,
-    ) -> Result<Arc<McpClient>, McpClientError> {
-        self.add_stdio(config).await
-    }
-
     pub async fn get(&self, name: &str) -> Option<Arc<McpClient>> {
         self.clients.read().await.get(name).cloned()
     }
@@ -1087,8 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_requests_receive_out_of_order_responses() {
         let tool_registry = Arc::new(McpToolRegistry::new());
-        let client =
-            McpClient::new("test-server".to_string(), tool_registry).with_timeout(1000);
+        let client = McpClient::new("test-server".to_string(), tool_registry).with_timeout(1000);
 
         // Response for the second request arrives before the first one's.
         // With a shared receive loop the first waiter would drop it.

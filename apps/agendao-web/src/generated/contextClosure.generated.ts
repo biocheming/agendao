@@ -29,11 +29,7 @@ export const CONTEXT_CLOSURE_STATUS_LABELS = {
   cache_stable: "cache stable",
   cache_explained: "cache explained",
   cache_unexplained: "cache unexplained",
-  leak_detected: "leak detected",
-  isolated: "isolated",
-  not_owner_local: "not owner-local",
   continuity_packet: "packet installed",
-  raw_summary_fallback: "legacy summary fallback",
 } as const;
 
 export function contextClosureGovernanceStatusLabel(value?: string | null) {
@@ -64,14 +60,8 @@ export function contextClosureCacheStatusLabel(cache: { issue_present: boolean; 
   return cache.explained ? CONTEXT_CLOSURE_STATUS_LABELS.cache_explained : CONTEXT_CLOSURE_STATUS_LABELS.cache_unexplained;
 }
 
-export function contextClosureIsolationStatusLabel(isolation: { child_history_in_live_prefix_detected: boolean; owner_local_live_prefix: boolean }) {
-  if (isolation.child_history_in_live_prefix_detected) return CONTEXT_CLOSURE_STATUS_LABELS.leak_detected;
-  return isolation.owner_local_live_prefix ? CONTEXT_CLOSURE_STATUS_LABELS.isolated : CONTEXT_CLOSURE_STATUS_LABELS.not_owner_local;
-}
-
 export function compactionContinuitySourceLabel(continuity: { source: string }) {
   if (continuity.source === "continuity_packet") return CONTEXT_CLOSURE_STATUS_LABELS.continuity_packet;
-  if (continuity.source === "raw_summary_fallback") return CONTEXT_CLOSURE_STATUS_LABELS.raw_summary_fallback;
   return continuity.source.replace(/[._-]+/g, " ").trim() || "--";
 }
 

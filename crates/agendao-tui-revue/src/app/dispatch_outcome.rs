@@ -16,10 +16,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 pub enum DispatchOutcome {
     /// `send_prompt_with` 成功。`status` 来自 `PromptResponse`
     ///（queued / awaiting_user / ...）。成功时无需回收乐观消息。
-    Sent {
-        session_id: String,
-        status: String,
-    },
+    Sent { session_id: String, status: String },
     /// `send_prompt_with` 失败。dispatch 已乐观 push 的 user message
     /// 需在 Tick drain 回收（生命周期对称：push ↔ remove）。
     /// `prompt_text` 是原始输入（U10：Ctrl+R 重试要重发同一 prompt，
@@ -33,10 +30,7 @@ pub enum DispatchOutcome {
     /// `execute_shell` 成功（`!command` shell 输入）。shell 不是 LLM 轮次，
     /// 回执到达即本轮结束：run_status 复位 Idle、补渲染 assistant
     /// "Shell command queued" 行（与后端 `execute_shell` handler 落库文案一致）。
-    ShellSent {
-        session_id: String,
-        command: String,
-    },
+    ShellSent { session_id: String, command: String },
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。

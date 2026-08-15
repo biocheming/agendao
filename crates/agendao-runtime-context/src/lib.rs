@@ -48,21 +48,7 @@ impl ResolvedWorkspaceContextAuthority {
             .workspace_identity()
             .unwrap_or_else(|| WorkspaceIdentity::fallback(std::path::Path::new(".")));
         let mode = self.config_store.workspace_mode();
-        let legacy_recent = config
-            .ui_preferences
-            .as_ref()
-            .map(|prefs| {
-                prefs
-                    .recent_models
-                    .iter()
-                    .map(RecentModelEntry::from)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let recent_models = self
-            .user_state
-            .resolved_recent_models(&legacy_recent)
-            .await?;
+        let recent_models = self.user_state.resolved_recent_models().await?;
 
         Ok(ResolvedWorkspaceContext {
             identity,

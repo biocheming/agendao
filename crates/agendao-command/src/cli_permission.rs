@@ -229,7 +229,6 @@ fn format_permission_summary(ctx: &PermissionPromptContext<'_>, style: &CliStyle
         "browser" => ("🌐", "Browser Session"),
         "context_docs" => ("📚", "Context Docs"),
         "media" | "media_inspect" => ("🖼️ ", "Media Inspect"),
-        "task" | "task_flow" => ("📋", "Task Management"),
         _ => ("🔧", permission),
     };
 
@@ -400,7 +399,7 @@ pub fn prompt_permission(
     }
 }
 
-/// Build a CLI permission callback that can be passed to `AgentExecutor::with_ask_permission()`.
+/// Build an interactive CLI permission callback for a tool runtime.
 ///
 /// Returns a closure that:
 /// - Checks the scoped `PermissionMemory` for prior grants

@@ -49,10 +49,6 @@ interface WorkspacePanelProps {
   executionActivity: ReturnType<typeof useExecutionActivity>;
   schedulerNavigation: {
     navigateToStage: (stageId: string) => void;
-    navigateToAttachedSession: (
-      sessionId: string,
-      context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
-    ) => void | Promise<void>;
     previewStage: (stageId: string | null) => void;
     restoreActiveStage: () => void;
   };

@@ -125,8 +125,7 @@ impl McpEditDialog {
             transport: McpTransport::Local,
             command_input: revue::widget::Input::new()
                 .placeholder("e.g. npx -y @modelcontextprotocol/server-filesystem /tmp"),
-            url_input: revue::widget::Input::new()
-                .placeholder("e.g. https://mcp.example.com/sse"),
+            url_input: revue::widget::Input::new().placeholder("e.g. https://mcp.example.com/sse"),
             enabled: true,
             focus: McpEditField::Name,
             validation_error: None,
@@ -140,8 +139,8 @@ impl McpEditDialog {
         self.transport = McpTransport::Local;
         self.command_input = revue::widget::Input::new()
             .placeholder("e.g. npx -y @modelcontextprotocol/server-filesystem /tmp");
-        self.url_input = revue::widget::Input::new()
-            .placeholder("e.g. https://mcp.example.com/sse");
+        self.url_input =
+            revue::widget::Input::new().placeholder("e.g. https://mcp.example.com/sse");
         self.enabled = true;
         self.focus = McpEditField::Name;
         self.validation_error = None;
@@ -357,7 +356,10 @@ impl McpEditDialog {
 
         // U5：校验错误红字行（footer 上方），高度随行 +1。
         let (content, err_h) = if let Some(e) = &self.validation_error {
-            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+            (
+                content.child_sized(backdrop::validation_error_line(e), 1),
+                1,
+            )
         } else {
             (content, 0)
         };
@@ -433,7 +435,9 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
+    input = input
+        .focused(focused && !readonly)
+        .cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {
@@ -573,7 +577,7 @@ mod tests {
         }
         d.focus = McpEditField::Transport;
         d.handle_key(&Key::Right); // → remote
-        // remote 缺 url → 不提交。
+                                   // remote 缺 url → 不提交。
         assert!(d.handle_key(&Key::Enter).is_none());
         d.focus = McpEditField::Url;
         for c in "https://x".chars() {
@@ -603,7 +607,10 @@ mod tests {
         d.open_add();
         d.name_input = revue::widget::Input::new().value("fs".to_string());
         // transport=Local（默认），command 空
-        assert!(d.handle_key(&Key::Enter).is_none(), "local 缺 command 不提交");
+        assert!(
+            d.handle_key(&Key::Enter).is_none(),
+            "local 缺 command 不提交"
+        );
         assert_eq!(
             d.validation_error.as_deref(),
             Some("Command is required for local transport")
@@ -633,7 +640,12 @@ mod tests {
         );
         assert_eq!(d.focus(), McpEditField::Url);
         // ctrl chord 编辑也清错误态。
-        d.handle_ctrl_key(&KeyEvent { key: Key::Char('u'), ctrl: true, alt: false, shift: false });
+        d.handle_ctrl_key(&KeyEvent {
+            key: Key::Char('u'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        });
         assert_eq!(d.validation_error, None);
     }
 

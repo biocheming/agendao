@@ -187,7 +187,7 @@ mod tests {
                 "key": "CORP_TOKEN",
                 "token": "secret-123"
             },
-            "ethnopic": {
+            "anthropic": {
                 "type": "api",
                 "key": "sk-ant-xxx"
             }

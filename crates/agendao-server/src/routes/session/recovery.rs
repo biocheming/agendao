@@ -7,9 +7,7 @@ use axum::{
 };
 
 use crate::recovery::{
-    build_session_recovery_protocol, collect_stage_recovery_targets,
-    collect_subtask_recovery_targets, compose_restart_stage_prompt, compose_resume_prompt,
-    compose_retry_prompt, compose_stage_recovery_prompt, compose_subtask_recovery_prompt,
+    build_session_recovery_protocol, compose_resume_prompt, compose_retry_prompt,
     protocol_allows_recovery_action, ExecuteRecoveryRequest, RecoveryActionKind,
     RecoveryExecutionContext, RecoveryProtocolStatus, SessionRecoveryProtocol,
 };
@@ -18,7 +16,7 @@ use crate::{ApiError, Result, ServerState};
 use super::cancel::{abort_session_execution, ensure_session_exists};
 use super::prompt::{session_prompt, SessionPromptRequest};
 use super::session_crud::{
-    session_agent_override, session_model_override, session_scheduler_profile_override,
+    session_agent_override, session_model_override, session_scheduler_override,
     session_variant_override,
 };
 
@@ -76,30 +74,18 @@ pub(super) async fn execute_session_recovery(
     let protocol =
         build_session_recovery_protocol(&session_id, &session, &topology, pending_question_count);
 
-    if !protocol_allows_recovery_action(&protocol, &req.action, req.target_id.as_deref()) {
+    if !protocol_allows_recovery_action(&protocol, &req.action) {
         return Err(ApiError::BadRequest(format!(
             "Recovery action `{:?}` is not available for the current session state",
             req.action
         )));
     }
 
-    if matches!(
-        req.action,
-        RecoveryActionKind::AbortRun | RecoveryActionKind::AbortStage
-    ) {
-        let response = abort_session_execution(
-            &state,
-            &session_id,
-            matches!(req.action, RecoveryActionKind::AbortStage),
-        )
-        .await;
+    if matches!(req.action, RecoveryActionKind::AbortRun) {
+        let response = abort_session_execution(&state, &session_id).await;
         let mut value = response;
         if let Some(object) = value.as_object_mut() {
             object.insert("recovery_action".to_string(), serde_json::json!(req.action));
-            object.insert(
-                "recovery_target_id".to_string(),
-                serde_json::json!(req.target_id),
-            );
         }
         return Ok(Json(value));
     }
@@ -117,10 +103,8 @@ pub(super) async fn execute_session_recovery(
         ApiError::BadRequest("No prior user prompt is available for recovery".to_string())
     })?;
 
-    let stage_targets = collect_stage_recovery_targets(&session);
-    let subtask_targets = collect_subtask_recovery_targets(&session);
-    let (composed_message, target_kind, target_label) = match req.action {
-        RecoveryActionKind::AbortRun | RecoveryActionKind::AbortStage => {
+    let (composed_message, target_label) = match req.action {
+        RecoveryActionKind::AbortRun => {
             debug_assert!(
                 false,
                 "abort recovery actions should be handled before composing a recovery prompt"
@@ -129,55 +113,11 @@ pub(super) async fn execute_session_recovery(
                 "Abort actions must be handled via the abort recovery path".to_string(),
             ));
         }
-        RecoveryActionKind::Retry => (
-            compose_retry_prompt(&base_prompt),
-            None,
-            "last run".to_string(),
-        ),
+        RecoveryActionKind::Retry => (compose_retry_prompt(&base_prompt), "last run".to_string()),
         RecoveryActionKind::Resume => (
             compose_resume_prompt(&base_prompt),
-            None,
             "latest boundary".to_string(),
         ),
-        RecoveryActionKind::PartialReplay | RecoveryActionKind::RestartStage => {
-            let target_id = req.target_id.as_deref().ok_or_else(|| {
-                ApiError::BadRequest("`target_id` is required for stage recovery".to_string())
-            })?;
-            let target = stage_targets
-                .iter()
-                .find(|target| target.checkpoint.id == target_id)
-                .ok_or_else(|| {
-                    ApiError::BadRequest(format!("Stage recovery target not found: {}", target_id))
-                })?;
-            (
-                if matches!(req.action, RecoveryActionKind::RestartStage) {
-                    compose_restart_stage_prompt(&base_prompt, target)
-                } else {
-                    compose_stage_recovery_prompt(&base_prompt, target)
-                },
-                Some("stage"),
-                target.checkpoint.label.clone(),
-            )
-        }
-        RecoveryActionKind::RestartSubtask => {
-            let target_id = req.target_id.as_deref().ok_or_else(|| {
-                ApiError::BadRequest("`target_id` is required for subtask recovery".to_string())
-            })?;
-            let target = subtask_targets
-                .iter()
-                .find(|target| target.checkpoint.id == target_id)
-                .ok_or_else(|| {
-                    ApiError::BadRequest(format!(
-                        "Subtask recovery target not found: {}",
-                        target_id
-                    ))
-                })?;
-            (
-                compose_subtask_recovery_prompt(&base_prompt, target),
-                Some("subtask"),
-                target.checkpoint.label.clone(),
-            )
-        }
     };
 
     let response = session_prompt(
@@ -192,16 +132,13 @@ pub(super) async fn execute_session_recovery(
             model: session_model_override(&session),
             variant: session_variant_override(&session),
             agent: session_agent_override(&session),
-            scheduler_profile: session_scheduler_profile_override(&session),
+            scheduler: session_scheduler_override(&session),
             command: None,
             arguments: None,
             source_origin: Some(agendao_types::MessageSourceOrigin::System),
             source_surface: None,
             recovery: Some(RecoveryExecutionContext {
                 action: Some(req.action.clone()),
-                target_id: req.target_id.clone(),
-                target_kind: target_kind.map(|value| value.to_string()),
-                target_label: Some(target_label.clone()),
             }),
         }),
     )
@@ -210,14 +147,6 @@ pub(super) async fn execute_session_recovery(
     let mut value = response.0;
     if let Some(object) = value.as_object_mut() {
         object.insert("recovery_action".to_string(), serde_json::json!(req.action));
-        object.insert(
-            "recovery_target_kind".to_string(),
-            serde_json::json!(target_kind),
-        );
-        object.insert(
-            "recovery_target_id".to_string(),
-            serde_json::json!(req.target_id.clone()),
-        );
         object.insert(
             "recovery_target_label".to_string(),
             serde_json::json!(target_label),

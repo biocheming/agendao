@@ -32,7 +32,12 @@ pub struct ScrollbarDrag {
 
 impl Scrollbar {
     pub fn new(area: Rect, content_height: u16, viewport_height: u16, offset: u16) -> Self {
-        Self { area, content_height, viewport_height, offset }
+        Self {
+            area,
+            content_height,
+            viewport_height,
+            offset,
+        }
     }
 
     pub fn is_scrollable(&self) -> bool {
@@ -43,14 +48,24 @@ impl Scrollbar {
         self.content_height.saturating_sub(self.viewport_height)
     }
 
-    fn arrow_up_y(&self) -> u16 { self.area.y }
-    fn arrow_down_y(&self) -> u16 { self.area.y + self.area.height.saturating_sub(1) }
-    fn track_height(&self) -> u16 { self.area.height.saturating_sub(2) }
-    fn track_y(&self) -> u16 { self.area.y + 1 }
+    fn arrow_up_y(&self) -> u16 {
+        self.area.y
+    }
+    fn arrow_down_y(&self) -> u16 {
+        self.area.y + self.area.height.saturating_sub(1)
+    }
+    fn track_height(&self) -> u16 {
+        self.area.height.saturating_sub(2)
+    }
+    fn track_y(&self) -> u16 {
+        self.area.y + 1
+    }
 
     fn thumb_height(&self) -> u16 {
         let track = self.track_height();
-        if track == 0 || self.content_height == 0 { return 1; }
+        if track == 0 || self.content_height == 0 {
+            return 1;
+        }
         let raw = (self.viewport_height as f32 / self.content_height as f32) * track as f32;
         (raw.max(1.0) as u16).clamp(1, track)
     }
@@ -58,7 +73,9 @@ impl Scrollbar {
     fn thumb_top_y(&self) -> u16 {
         let track = self.track_height();
         let thumb = self.thumb_height();
-        if track <= thumb || self.max_offset() == 0 { return self.track_y(); }
+        if track <= thumb || self.max_offset() == 0 {
+            return self.track_y();
+        }
         let ratio = self.offset as f32 / self.max_offset() as f32;
         let off = ((track - thumb) as f32 * ratio).round() as u16;
         self.track_y() + off
@@ -71,33 +88,54 @@ impl Scrollbar {
     }
 
     pub fn hit_test(&self, x: u16, y: u16) -> Option<ScrollbarHit> {
-        if !self.is_scrollable() { return None; }
-        if x != self.area.x { return None; }
-        if y < self.area.y || y >= self.area.y + self.area.height { return None; }
-        if y == self.arrow_up_y() { return Some(ScrollbarHit::ArrowUp); }
-        if y == self.arrow_down_y() { return Some(ScrollbarHit::ArrowDown); }
+        if !self.is_scrollable() {
+            return None;
+        }
+        if x != self.area.x {
+            return None;
+        }
+        if y < self.area.y || y >= self.area.y + self.area.height {
+            return None;
+        }
+        if y == self.arrow_up_y() {
+            return Some(ScrollbarHit::ArrowUp);
+        }
+        if y == self.arrow_down_y() {
+            return Some(ScrollbarHit::ArrowDown);
+        }
         if self.is_in_thumb(x, y) {
             return Some(ScrollbarHit::BeginDrag(ScrollbarDrag {
-                origin_y: y, origin_offset: self.offset,
+                origin_y: y,
+                origin_offset: self.offset,
             }));
         }
-        if y < self.thumb_top_y() { Some(ScrollbarHit::PageUp) } else { Some(ScrollbarHit::PageDown) }
+        if y < self.thumb_top_y() {
+            Some(ScrollbarHit::PageUp)
+        } else {
+            Some(ScrollbarHit::PageDown)
+        }
     }
 
     pub fn drag_to_offset(&self, drag: ScrollbarDrag, current_y: u16) -> u16 {
         let track = self.track_height();
         let thumb = self.thumb_height();
-        if track <= thumb { return self.offset; }
+        if track <= thumb {
+            return self.offset;
+        }
         let dy = current_y as i32 - drag.origin_y as i32;
         let usable = (track - thumb) as i32;
-        if usable == 0 { return drag.origin_offset; }
+        if usable == 0 {
+            return drag.origin_offset;
+        }
         let max = self.max_offset() as i32;
         let new_offset_i = drag.origin_offset as i32 + (dy * max + usable / 2) / usable;
         new_offset_i.clamp(0, max) as u16
     }
 
     pub fn render(&self, ctx: &mut RenderContext) {
-        if self.area.width == 0 || self.area.height < 3 { return; }
+        if self.area.width == 0 || self.area.height < 3 {
+            return;
+        }
         if !self.is_scrollable() {
             for dy in 0..self.area.height {
                 self.put(ctx, self.area.y + dy, ' ', None, None);
@@ -116,22 +154,33 @@ impl Scrollbar {
         let track_bot = track_top + self.track_height();
         let thumb_top = self.thumb_top_y();
         let thumb_bot = thumb_top + self.thumb_height();
-        for y in thumb_top..thumb_bot.min(track_bot) { self.put_bold(ctx, y, '█', thumb_color, None); }
+        for y in thumb_top..thumb_bot.min(track_bot) {
+            self.put_bold(ctx, y, '█', thumb_color, None);
+        }
     }
 
     fn put(&self, ctx: &mut RenderContext, y: u16, ch: char, fg: Option<Color>, bg: Option<Color>) {
         let rel_x = self.area.x.saturating_sub(ctx.area.x);
         let rel_y = y.saturating_sub(ctx.area.y);
         let mut cell = Cell::new(ch);
-        cell.fg = fg; cell.bg = bg;
+        cell.fg = fg;
+        cell.bg = bg;
         ctx.set(rel_x, rel_y, cell);
     }
 
-    fn put_bold(&self, ctx: &mut RenderContext, y: u16, ch: char, fg: Option<Color>, bg: Option<Color>) {
+    fn put_bold(
+        &self,
+        ctx: &mut RenderContext,
+        y: u16,
+        ch: char,
+        fg: Option<Color>,
+        bg: Option<Color>,
+    ) {
         let rel_x = self.area.x.saturating_sub(ctx.area.x);
         let rel_y = y.saturating_sub(ctx.area.y);
         let mut cell = Cell::new(ch);
-        cell.fg = fg; cell.bg = bg;
+        cell.fg = fg;
+        cell.bg = bg;
         cell.modifier |= Modifier::BOLD;
         ctx.set(rel_x, rel_y, cell);
     }
@@ -201,7 +250,10 @@ mod tests {
     #[test]
     fn drag_translates_y_delta_to_offset() {
         let s = sb(200, 20, 0);
-        let drag = ScrollbarDrag { origin_y: 3, origin_offset: 0 };
+        let drag = ScrollbarDrag {
+            origin_y: 3,
+            origin_offset: 0,
+        };
         let new_off = s.drag_to_offset(drag, 11);
         assert_eq!(new_off, 85);
     }
@@ -209,7 +261,10 @@ mod tests {
     #[test]
     fn drag_clamps_to_max_offset() {
         let s = sb(100, 20, 0);
-        let drag = ScrollbarDrag { origin_y: 3, origin_offset: 0 };
+        let drag = ScrollbarDrag {
+            origin_y: 3,
+            origin_offset: 0,
+        };
         let new_off = s.drag_to_offset(drag, 999);
         assert_eq!(new_off, s.max_offset());
     }
@@ -217,7 +272,10 @@ mod tests {
     #[test]
     fn drag_clamps_to_zero() {
         let s = sb(100, 20, 50);
-        let drag = ScrollbarDrag { origin_y: 10, origin_offset: 50 };
+        let drag = ScrollbarDrag {
+            origin_y: 10,
+            origin_offset: 50,
+        };
         let new_off = s.drag_to_offset(drag, 0);
         assert_eq!(new_off, 0);
     }

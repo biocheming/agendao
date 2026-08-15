@@ -32,7 +32,6 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub struct SkillFilter<'a> {
     pub available_tools: Option<&'a HashSet<String>>,
     pub available_toolsets: Option<&'a HashSet<String>>,
-    pub current_stage: Option<&'a str>,
     pub category: Option<&'a str>,
 }
 
@@ -98,8 +97,7 @@ impl SkillAuthority {
             .into_iter()
             .filter(|skill| skill_matches_filter(skill, filter))
             .map(|skill| {
-                let is_disabled =
-                    matched_disabled_skill_pattern(disabled, &skill).is_some();
+                let is_disabled = matched_disabled_skill_pattern(disabled, &skill).is_some();
                 (skill, is_disabled)
             })
             .collect())
@@ -606,7 +604,7 @@ impl SkillAuthority {
         }
 
         delete_skill_directory(&skill_dir)?;
-        let result = SkillWriteResult::deleted(meta.name.clone(), meta.location.clone());
+        let result = SkillWriteResult::deleted(meta.name.clone(), meta.location);
         let _ = self.refresh_after_mutation()?;
         Ok(result)
     }
@@ -656,7 +654,7 @@ impl SkillAuthority {
             }
         }
 
-        let next_snapshot = self.build_snapshot(Some((config.clone(), roots.clone())));
+        let next_snapshot = self.build_snapshot(Some((config, roots)));
         self.persist_snapshot(&next_snapshot);
         let mut guard = self.write_cache()?;
         guard.set_snapshot(next_snapshot.clone(), config_revision);
@@ -815,12 +813,14 @@ where
 /// name or a `category/*` wildcard matched against the skill's category.
 /// Shared by [`filter_disabled_skills`] (runtime filtering) and the
 /// `include_disabled` inspection listing (flagging).
-fn matched_disabled_skill_pattern<'a>(disabled: &'a [String], skill: &SkillMeta) -> Option<&'a str> {
+fn matched_disabled_skill_pattern<'a>(
+    disabled: &'a [String],
+    skill: &SkillMeta,
+) -> Option<&'a str> {
     agendao_config::matching::matching_disabled_pattern(disabled, &skill.name).or_else(|| {
-        skill
-            .category
-            .as_deref()
-            .and_then(|category| agendao_config::matching::matching_disabled_pattern(disabled, category))
+        skill.category.as_deref().and_then(|category| {
+            agendao_config::matching::matching_disabled_pattern(disabled, category)
+        })
     })
 }
 
@@ -856,7 +856,8 @@ fn filter_disabled_skills(snapshot: &mut SkillCatalogSnapshot, config: Option<&C
     }
 }
 
-fn skill_matches_filter(skill: &SkillMeta, filter: Option<&SkillFilter<'_>>) -> bool {    let Some(filter) = filter else {
+fn skill_matches_filter(skill: &SkillMeta, filter: Option<&SkillFilter<'_>>) -> bool {
+    let Some(filter) = filter else {
         return true;
     };
 
@@ -917,20 +918,6 @@ fn skill_matches_filter(skill: &SkillMeta, filter: Option<&SkillFilter<'_>>) -> 
             {
                 return false;
             }
-        }
-    }
-
-    if !skill.conditions.stage_filter.is_empty() {
-        let Some(stage) = filter.current_stage else {
-            return false;
-        };
-        if !skill
-            .conditions
-            .stage_filter
-            .iter()
-            .any(|allowed| allowed == stage)
-        {
-            return false;
         }
     }
 

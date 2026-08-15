@@ -45,7 +45,6 @@ pub const FORK_HISTORY_MODE_METADATA_KEY: &str = "fork_history_mode";
 pub const FORK_HISTORY_MESSAGE_LIMIT_METADATA_KEY: &str = "fork_history_message_limit";
 pub const FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY: &str =
     "fork_source_history_message_count";
-const LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX: &str = "Stage: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionForkSpec<'a> {
@@ -279,14 +278,6 @@ impl SessionStateManager {
         self.states.remove(session_id);
     }
 
-    pub fn busy_sessions(&self) -> Vec<&str> {
-        self.states
-            .iter()
-            .filter(|(_, s)| matches!(s, RunStatus::Busy | RunStatus::Retrying { .. }))
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
-
     /// List all session statuses.
     /// Matches TS `SessionStatus.list()` returning all tracked states.
     pub fn list(&self) -> &HashMap<String, RunStatus> {
@@ -391,32 +382,6 @@ impl Session {
         serde_json::to_value(kind).expect("session context kind should serialize")
     }
 
-    fn infer_legacy_context_kind(&self) -> SessionContextKind {
-        if self.fork_origin_session_id().is_some()
-            || self.fork_policy_frozen()
-            || self
-                .inner
-                .messages
-                .iter()
-                .any(Self::is_imported_fork_history_message)
-        {
-            return SessionContextKind::ExplicitFullHistoryFork;
-        }
-
-        if self.inner.parent_id.is_some() {
-            if self
-                .inner
-                .title
-                .starts_with(LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX)
-            {
-                return SessionContextKind::SchedulerStageOutputSession;
-            }
-            return SessionContextKind::DelegatedSubsession;
-        }
-
-        SessionContextKind::RootSessionContinuity
-    }
-
     /// Create a new session
     pub fn new(project_id: impl Into<String>, directory: impl Into<String>) -> Self {
         let now = Utc::now();
@@ -451,16 +416,14 @@ impl Session {
         }
     }
 
-    /// Create an attached session with an explicit context kind so attached-session
-    /// ownership is never inferred from `parent_id` alone.
-    pub fn attached_with_context_kind(parent: &Session, kind: SessionContextKind) -> Self {
+    fn fork_from(parent: &Session) -> Self {
         let now = Utc::now();
         let slug = Self::generate_slug();
         let parent_record = parent.record();
         let mut metadata = HashMap::new();
         metadata.insert(
             SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
-            Self::serialize_context_kind(kind),
+            Self::serialize_context_kind(SessionContextKind::ExplicitFullHistoryFork),
         );
 
         Self {
@@ -470,7 +433,7 @@ impl Session {
                 project_id: parent_record.project_id.clone(),
                 directory: parent_record.directory.clone(),
                 parent_id: Some(parent_record.id.clone()),
-                title: format!("Attached session - {}", now.to_rfc3339()),
+                title: format!("Forked session - {}", now.to_rfc3339()),
                 version: Self::VERSION.to_string(),
                 time: SessionTime::default(),
                 messages: Vec::new(),
@@ -491,8 +454,11 @@ impl Session {
         self.inner
             .metadata
             .get(SESSION_CONTEXT_KIND_METADATA_KEY)
-            .and_then(|value| serde_json::from_value::<SessionContextKind>(value.clone()).ok())
-            .unwrap_or_else(|| self.infer_legacy_context_kind())
+            .cloned()
+            .map(serde_json::from_value::<SessionContextKind>)
+            .transpose()
+            .expect("session context kind metadata must match the typed contract")
+            .expect("session context kind metadata is required")
     }
 
     pub fn ownership_summary(&self) -> SessionOwnershipSummary {
@@ -1349,10 +1315,7 @@ impl SessionManager {
             .ok_or(SessionForkError::SessionNotFound)?;
         let forked_title = original.get_forked_title();
 
-        let mut forked = Session::attached_with_context_kind(
-            original,
-            SessionContextKind::ExplicitFullHistoryFork,
-        );
+        let mut forked = Session::fork_from(original);
         Session::copy_fork_policy_metadata_from(original, &mut forked);
 
         let forked_id = forked.record().id.clone();
@@ -1628,26 +1591,8 @@ impl SessionManager {
             .collect()
     }
 
-    /// Get attached sessions of a session.
-    pub fn attached_sessions(&self, parent_id: &str) -> Vec<&Session> {
-        self.sessions
-            .values()
-            .filter(|s| s.record().parent_id.as_deref() == Some(parent_id))
-            .map(Arc::as_ref)
-            .collect()
-    }
-
     /// Delete a session
     pub fn delete(&mut self, id: &str) -> Option<Session> {
-        let attached_sessions: Vec<String> = self
-            .attached_sessions(id)
-            .iter()
-            .map(|s| s.record().id.clone())
-            .collect();
-        for attached_id in attached_sessions {
-            self.delete(&attached_id);
-        }
-
         let session = self.sessions.remove(id)?;
         // 共享句柄仍存活时退化为一次深拷贝；独占时直接取出，零拷贝。
         let session = Arc::try_unwrap(session).unwrap_or_else(|shared| (*shared).clone());
@@ -1672,16 +1617,9 @@ impl SessionManager {
         Some(session)
     }
 
-    /// Update a session
-    pub fn update(&mut self, session: Session) {
-        self.update_shared(Arc::new(session));
-    }
-
-    /// Update a session from a shared snapshot without deep-cloning it.
-    ///
-    /// 流式热路径入口：调用方持有的 `Arc<Session>` 直接存入 manager，
-    /// 同一 Arc 可同时被持久化 worker / 订阅者持有，零额外拷贝。
-    pub fn update_shared(&mut self, session: Arc<Session>) {
+    /// Update from an owned session or a shared snapshot.
+    pub fn update(&mut self, session: impl Into<Arc<Session>>) {
+        let session = session.into();
         let id = session.record().id.clone();
         self.sessions.insert(id.clone(), session);
         // 借回 map 中的副本发事件,避免为事件再深拷贝一次完整会话
@@ -1894,65 +1832,6 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_attached_session() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let child =
-            Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
-
-        assert!(child.parent_id.is_some());
-        assert_eq!(child.parent_id.clone().unwrap(), parent.id);
-        assert!(child.title.starts_with("Attached session"));
-        assert_eq!(
-            child.context_kind(),
-            SessionContextKind::DelegatedSubsession
-        );
-    }
-
-    #[test]
-    fn test_explicit_attached_session_kind() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let child = Session::attached_with_context_kind(
-            &parent,
-            SessionContextKind::SchedulerStageOutputSession,
-        );
-
-        assert_eq!(
-            child.context_kind(),
-            SessionContextKind::SchedulerStageOutputSession
-        );
-        assert!(!child.context_kind().owns_prompt_continuity());
-    }
-
-    #[test]
-    fn test_legacy_attached_session_without_context_kind_infers_delegated_subsession() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let mut child =
-            Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
-        child.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
-
-        assert_eq!(
-            child.context_kind(),
-            SessionContextKind::DelegatedSubsession
-        );
-    }
-
-    #[test]
-    fn test_legacy_stage_attached_session_without_context_kind_infers_stage_output_sink() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let mut child = Session::attached_with_context_kind(
-            &parent,
-            SessionContextKind::SchedulerStageOutputSession,
-        );
-        child.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
-        child.set_title("Stage: Execution Orchestration - atlas");
-
-        assert_eq!(
-            child.context_kind(),
-            SessionContextKind::SchedulerStageOutputSession
-        );
-    }
-
-    #[test]
     fn test_ownership_summary_marks_provider_model_as_request_shape_only() {
         let session = Session::new("project-1", "/path/to/project");
 
@@ -1975,24 +1854,6 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_output_sink_is_not_compact_owner() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let child = Session::attached_with_context_kind(
-            &parent,
-            SessionContextKind::SchedulerStageOutputSession,
-        );
-
-        let ownership = child.ownership_summary();
-
-        assert_eq!(
-            ownership.handoff_mode,
-            agendao_types::SessionHandoffMode::StageOutputSink
-        );
-        assert!(!ownership.owns_prompt_continuity);
-        assert!(!ownership.compact_owner);
-    }
-
-    #[test]
     fn test_add_messages() {
         let mut session = Session::new("project-1", "/path/to/project");
 
@@ -2011,12 +1872,17 @@ mod tests {
         assert!(manager.get(&session.id).is_some());
         assert_eq!(manager.count(), 1);
 
-        let child =
-            Session::attached_with_context_kind(&session, SessionContextKind::DelegatedSubsession);
-        manager.update(child.clone());
-        assert!(child.parent_id.is_some());
+        let child = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::None, None),
+            )
+            .expect("fork should succeed");
+        assert!(child.parent_id.is_none());
 
         manager.delete(&session.id);
+        assert_eq!(manager.count(), 1);
+        manager.delete(&child.id);
         assert_eq!(manager.count(), 0);
     }
 
@@ -2051,30 +1917,12 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_fork_without_context_kind_infers_full_history_fork() {
-        let mut manager = SessionManager::new();
-        let session = manager.create("project-1", "/path/to/project");
-        let mut forked = manager
-            .fork(
-                &session.id,
-                fork_spec(None, SessionForkHistoryMode::All, None),
-            )
-            .expect("expected forked session");
-        forked.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
-
-        assert_eq!(
-            forked.context_kind(),
-            SessionContextKind::ExplicitFullHistoryFork
-        );
-    }
-
-    #[test]
     fn test_session_manager_fork_freezes_policy_and_marks_imported_history() {
         let mut manager = SessionManager::new();
         let mut session = manager.create("project-1", "/path/to/project");
         session.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
         session.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
-        session.insert_metadata("scheduler_profile".to_string(), serde_json::json!("atlas"));
+        session.insert_metadata("scheduler".to_string(), serde_json::json!("atlas"));
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata("custom_session_key".to_string(), serde_json::json!(true));
         session.add_user_message("hello");
@@ -2126,7 +1974,7 @@ mod tests {
             Some(&serde_json::json!("gpt-4.1"))
         );
         assert_eq!(
-            forked.metadata.get("scheduler_profile"),
+            forked.metadata.get("scheduler"),
             Some(&serde_json::json!("atlas"))
         );
         assert!(!forked.metadata.contains_key("last_ingress_source"));
@@ -2391,8 +2239,7 @@ mod tests {
         session.insert_metadata(
             "telemetry".to_string(),
             serde_json::json!({
-                "last_run_status": "completed",
-                "stage_summaries": [{"stage_name": "Route"}]
+                "last_run_status": "completed"
             }),
         );
         manager.update(session.clone());
@@ -2688,18 +2535,18 @@ mod tests {
 
     // ── Arc-shared session storage (streaming hot path) ──────────────────
 
-    /// `update_shared` must store the exact Arc it was given — the manager,
+    /// `update` must store the exact Arc it was given — the manager,
     /// the persist worker, and any reader all hold the same allocation with
     /// zero deep copies.
     #[test]
-    fn update_shared_stores_the_same_arc_allocation() {
+    fn update_stores_the_same_arc_allocation() {
         let mut manager = SessionManager::new();
         let mut session = Session::new("project-1", "/tmp");
         session.push_message(SessionMessage::user(session.id.clone(), "hello"));
         let shared = Arc::new(session);
         let id = shared.record().id.clone();
 
-        manager.update_shared(shared.clone());
+        manager.update(shared.clone());
 
         let stored = manager.get_shared(&id).expect("session stored");
         assert!(
@@ -2716,18 +2563,18 @@ mod tests {
     /// later replaces the session with a newer streaming snapshot — and the
     /// replacement must again share (not copy) the new Arc.
     #[test]
-    fn update_shared_replacement_keeps_prior_snapshot_alive() {
+    fn update_replacement_keeps_prior_snapshot_alive() {
         let mut manager = SessionManager::new();
         let mut first = Session::new("project-1", "/tmp");
         first.push_message(SessionMessage::user(first.id.clone(), "turn 1"));
         let id = first.record().id.clone();
         let first_shared = Arc::new(first);
-        manager.update_shared(first_shared.clone());
+        manager.update(first_shared.clone());
 
         let mut second_snapshot = (*first_shared).clone();
         second_snapshot.push_message(SessionMessage::assistant(id.clone()));
         let second_shared = Arc::new(second_snapshot);
-        manager.update_shared(second_shared.clone());
+        manager.update(second_shared.clone());
 
         // The new snapshot is shared as-is.
         let stored = manager.get_shared(&id).expect("session stored");
@@ -2748,7 +2595,7 @@ mod tests {
         session.push_message(SessionMessage::user(session.id.clone(), "before"));
         let id = session.record().id.clone();
         let snapshot = Arc::new(session);
-        manager.update_shared(snapshot.clone());
+        manager.update(snapshot.clone());
 
         // Simulated persist worker still holding the snapshot.
         let held_by_worker = snapshot.clone();
@@ -2771,7 +2618,7 @@ mod tests {
             Some(&serde_json::json!("value"))
         );
         // … while the shared snapshot is byte-identical to before.
-        assert!(held_by_worker.record().metadata.get("key").is_none());
+        assert!(!held_by_worker.record().metadata.contains_key("key"));
         assert_eq!(held_by_worker.record().messages.len(), 1);
         assert_eq!(Arc::strong_count(&snapshot), 2);
     }
@@ -2784,7 +2631,7 @@ mod tests {
         let session = Session::new("project-1", "/tmp");
         let id = session.record().id.clone();
         let shared = Arc::new(session);
-        manager.update_shared(shared.clone());
+        manager.update(shared.clone());
         drop(shared);
 
         // 注意：get_shared 会临时抬高引用计数，取裸指针后立即释放，
@@ -2801,11 +2648,9 @@ mod tests {
         );
     }
 
-    /// Owned `update` and shared `update_shared` must produce byte-identical
-    /// observable state (serialized form), keeping the legacy entry point a
-    /// pure wrapper.
+    /// Owned and shared inputs must produce byte-identical observable state.
     #[test]
-    fn update_and_update_shared_produce_identical_state() {
+    fn owned_and_shared_update_inputs_produce_identical_state() {
         let build = || {
             let mut session = Session::new("project-1", "/tmp");
             session.push_message(SessionMessage::user(session.id.clone(), "hello"));
@@ -2816,7 +2661,7 @@ mod tests {
         let session = build();
         let id = session.record().id.clone();
         owned_manager.update(session.clone());
-        shared_manager.update_shared(Arc::new(session));
+        shared_manager.update(Arc::new(session));
 
         let owned_json = serde_json::to_value(owned_manager.get(&id).unwrap()).unwrap();
         let shared_json = serde_json::to_value(shared_manager.get(&id).unwrap()).unwrap();

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use agendao_tool::structured_repair_events;
+use agendao_tool::repair_events;
 use agendao_types::{
     ModelRepairQuerySummary, RepairAggregateRow, RepairKind, RepairOutcomeKind, RepairQuery,
     RepairQueryResponse, RepairSample, SessionRepairQuerySnapshot, SessionRepairQuerySummary,
@@ -67,16 +67,13 @@ struct RepairAggregateAccumulator {
 }
 
 impl RepairAggregateAccumulator {
-    fn record(
-        &mut self,
-        tool_name: &str,
-        repair_kind: RepairKind,
-        layer: &str,
-        strict_mode_would_fail: bool,
-        injected: bool,
-        outcome: Option<RepairOutcomeKind>,
-        sample: RepairSample,
-    ) {
+    fn record(&mut self, sample: RepairSample) {
+        let tool_name = sample.tool_name.clone();
+        let repair_kind = sample.repair_kind;
+        let layer = sample.layer.clone();
+        let strict_mode_would_fail = sample.strict_mode_would_fail;
+        let injected = sample.injected_into_model_context;
+        let outcome = sample.outcome;
         self.total_events += 1;
         if strict_mode_would_fail {
             self.strict_would_fail_count += 1;
@@ -85,13 +82,13 @@ impl RepairAggregateAccumulator {
             self.injected_count += 1;
         }
 
-        let key = (tool_name.to_string(), repair_kind, layer.to_string());
+        let key = (tool_name.clone(), repair_kind, layer.clone());
         let row = self.rows.entry(key).or_insert_with(|| RepairAggregateRow {
             provider_id: sample.provider_id.clone(),
             model_id: sample.model_id.clone(),
-            tool_name: tool_name.to_string(),
+            tool_name,
             repair_kind,
-            layer: layer.to_string(),
+            layer,
             count: 0,
             strict_would_fail_count: 0,
             injected_count: 0,
@@ -212,7 +209,7 @@ pub fn build_session_repair_query_snapshot(
                 continue;
             };
 
-            let events = structured_repair_events(metadata);
+            let events = repair_events(metadata);
             for event in &events {
                 let Some(repair_kind) = event.normalized_kind() else {
                     continue;
@@ -235,15 +232,7 @@ pub fn build_session_repair_query_snapshot(
                     created_at: now,
                 };
 
-                acc.record(
-                    &tool_name,
-                    repair_kind,
-                    &event.layer,
-                    event.strict_mode_would_fail,
-                    event.injected_into_model_context,
-                    outcome,
-                    sample,
-                );
+                acc.record(sample);
             }
         }
     }
@@ -551,9 +540,9 @@ mod tests {
 
     fn repair_metadata_with_kind(kind: &str) -> Metadata {
         let mut metadata = Metadata::new();
-        agendao_tool::append_tool_repair_event_map(
+        agendao_tool::append_repair_event(
             &mut metadata,
-            agendao_tool::tool_repair_event(kind, "tool", "test_tool"),
+            agendao_types::RepairEvent::new(kind, "tool", "test_tool"),
         );
         metadata
     }
@@ -615,16 +604,14 @@ mod tests {
         let mut session = Session::new("proj", ".");
         let mut assistant = SessionMessage::assistant(session.id.clone());
         let mut metadata = Metadata::new();
-        let mut event = agendao_tool::tool_repair_event(
+        let event = agendao_tool::repair_event_builder(
             RepairKind::ArgumentNormalization.as_str(),
             "session_prompt",
             "write",
-        );
-        event.insert(
-            "strict_mode_would_fail".to_string(),
-            serde_json::json!(true),
-        );
-        agendao_tool::append_tool_repair_event_map(&mut metadata, event);
+        )
+        .strict_mode_would_fail(true)
+        .build();
+        agendao_tool::append_repair_event(&mut metadata, event);
 
         assistant.parts.push(build_tool_call_part(
             "call-1",

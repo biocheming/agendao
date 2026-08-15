@@ -264,7 +264,8 @@ pub struct ServerState {
     /// Canonical bus for projected FrontendEvents. All transports (SSE, Unix,
     /// Direct) consume from this bus once wired. Populated by the single
     /// FrontendProjector subscriber.
-    pub(crate) frontend_bus: broadcast::Sender<Arc<agendao_server_core::frontend_events::FrontendBusEvent>>,
+    pub(crate) frontend_bus:
+        broadcast::Sender<Arc<agendao_server_core::frontend_events::FrontendBusEvent>>,
     /// Guards `ensure_frontend_projector()`: `true` once the background
     /// projector task has been spawned. The guard tracks projector lifecycle
     /// directly, independent of downstream transport subscriber count.
@@ -333,14 +334,10 @@ impl ServerState {
             config_store.clone(),
             user_state.clone(),
         ));
-        let runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
-            Arc::new(MemoryAuthority::new(
-                user_state.clone(),
-                resolved_context_authority.clone(),
-            )),
-            workspace_root.clone(),
-            Some(config_store.clone()),
-        ));
+        let runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(MemoryAuthority::new(
+            user_state.clone(),
+            resolved_context_authority.clone(),
+        ))));
         let (tx, _) = broadcast::channel(1024);
         let (frontend_tx, _) = broadcast::channel(1024);
         let event_bus_telemetry = Arc::new(EventBusTelemetry::default());
@@ -501,14 +498,11 @@ impl ServerState {
         state.config_store = config_store.clone();
         state.user_state = user_state;
         state.resolved_context_authority = resolved_context_authority.clone();
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
-            Arc::new(MemoryAuthority::new(
+        state.runtime_memory =
+            Arc::new(RuntimeMemoryAuthority::new(Arc::new(MemoryAuthority::new(
                 state.user_state.clone(),
                 state.resolved_context_authority.clone(),
-            )),
-            workspace_root.clone(),
-            Some(config_store.clone()),
-        ));
+            ))));
         let _ = state.refresh_resolved_context().await;
         startup_timing!("resolved_context", phase_start);
         phase_start = std::time::Instant::now();
@@ -565,11 +559,7 @@ impl ServerState {
             )
             .with_repository(memory_repo.clone()),
         );
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
-            memory_authority.clone(),
-            workspace_root.clone(),
-            Some(config_store.clone()),
-        ));
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(memory_authority.clone()));
         let proposal_repo = Arc::new(agendao_storage::SkillEvolutionProposalRepository::new(
             pool.clone(),
         ));
@@ -608,13 +598,6 @@ impl ServerState {
         self.send_on_event_bus(ServerBusEvent::event(event));
     }
 
-    /// Broadcast a raw (non-ServerEvent) JSON payload on the event bus.
-    /// Reserved for wire payloads that are not part of the ServerEvent
-    /// contract (e.g. `tui.request`).
-    pub fn broadcast_raw(&self, raw: String) {
-        self.send_on_event_bus(ServerBusEvent::raw(raw));
-    }
-
     fn send_on_event_bus(&self, payload: ServerBusEvent) {
         let receiver_count = self.event_bus.receiver_count();
         if self.event_bus.send(Arc::new(payload)).is_err() {
@@ -635,10 +618,7 @@ impl ServerState {
     /// any server entry point; the projector is spawned at most once.
     pub fn ensure_frontend_projector(&self) {
         use std::sync::atomic::Ordering;
-        if !self
-            .frontend_projector_spawned
-            .swap(true, Ordering::SeqCst)
-        {
+        if !self.frontend_projector_spawned.swap(true, Ordering::SeqCst) {
             crate::session_runtime::frontend_projection::spawn_frontend_projector(
                 self.event_bus.clone(),
                 self.frontend_bus.clone(),
@@ -668,8 +648,7 @@ impl ServerState {
     /// `Arc<ToolRegistry>` observe the new tool set on their next lookup.
     pub async fn rebuild_tool_registry(&self) {
         let config = self.config_store.config();
-        let new_registry =
-            agendao_tool::create_default_registry_with_config(Some(&config)).await;
+        let new_registry = agendao_tool::create_default_registry_with_config(Some(&config)).await;
         self.tool_registry.replace_with(new_registry).await;
     }
 
@@ -729,10 +708,7 @@ impl ServerState {
             }
         }
         drop(manager);
-        self.dehydrated_sessions
-            .write()
-            .await
-            .remove(session_id);
+        self.dehydrated_sessions.write().await.remove(session_id);
         Ok(())
     }
 
@@ -769,13 +745,6 @@ impl ServerState {
             .flush_with_messages(&persisted, &messages)
             .await?;
         self.runtime_memory.ingest_session_record(&stored).await?;
-        let stage_summaries = self
-            .runtime_telemetry
-            .list_stage_summaries(session_id)
-            .await;
-        self.runtime_memory
-            .ingest_stage_summaries(session_id, &stage_summaries)
-            .await?;
 
         Ok(())
     }
@@ -811,7 +780,12 @@ impl ServerState {
 
             // 懒加载守卫：dehydrated 会话的内存消息为空——只写 session 行，
             // 跳过 messages 的 upsert/delete-stale（防库存消息被空镜像清掉）。
-            if self.dehydrated_sessions.read().await.contains(&stored_session.id) {
+            if self
+                .dehydrated_sessions
+                .read()
+                .await
+                .contains(&stored_session.id)
+            {
                 session_repo.upsert(&persisted_session).await?;
                 continue;
             }
@@ -821,13 +795,6 @@ impl ServerState {
                 .await?;
             self.runtime_memory
                 .ingest_session_record(&stored_session)
-                .await?;
-            let stage_summaries = self
-                .runtime_telemetry
-                .list_stage_summaries(&stored_session.id)
-                .await;
-            self.runtime_memory
-                .ingest_stage_summaries(&stored_session.id, &stage_summaries)
                 .await?;
         }
 
@@ -859,13 +826,8 @@ impl ServerState {
         session_repo
             .flush_with_messages(&persisted_session, &stored_messages)
             .await?;
-        self.runtime_memory.ingest_session_record(&stored_session).await?;
-        let stage_summaries = self
-            .runtime_telemetry
-            .list_stage_summaries(&stored_session.id)
-            .await;
         self.runtime_memory
-            .ingest_stage_summaries(&stored_session.id, &stage_summaries)
+            .ingest_session_record(&stored_session)
             .await?;
         Ok(())
     }
@@ -897,17 +859,7 @@ pub(crate) fn bootstrap_config_from_config(config: &agendao_config::Config) -> B
 }
 
 fn provider_to_bootstrap(provider: &agendao_config::ProviderConfig) -> BootstrapConfigProvider {
-    let mut options = provider.options.clone().unwrap_or_default();
-    if let Some(api_key) = &provider.api_key {
-        options
-            .entry("apiKey".to_string())
-            .or_insert_with(|| serde_json::Value::String(api_key.clone()));
-    }
-    if let Some(base_url) = &provider.base_url {
-        options
-            .entry("baseURL".to_string())
-            .or_insert_with(|| serde_json::Value::String(base_url.clone()));
-    }
+    let options = provider.options.clone().unwrap_or_default();
 
     let models = provider.models.as_ref().map(|models| {
         models
@@ -918,6 +870,7 @@ fn provider_to_bootstrap(provider: &agendao_config::ProviderConfig) -> Bootstrap
 
     BootstrapConfigProvider {
         name: provider.name.clone(),
+        api_key: provider.api_key.clone(),
         api: provider.base_url.clone(),
         npm: provider.npm.clone(),
         api_style: provider.api_style.clone(),
@@ -934,14 +887,6 @@ fn provider_to_bootstrap(provider: &agendao_config::ProviderConfig) -> Bootstrap
 }
 
 fn model_to_bootstrap(id: &str, model: &agendao_config::ModelConfig) -> BootstrapConfigModel {
-    let mut options = HashMap::new();
-    if let Some(api_key) = &model.api_key {
-        options.insert(
-            "apiKey".to_string(),
-            serde_json::Value::String(api_key.clone()),
-        );
-    }
-
     let variants = model.variants.as_ref().map(|variants| {
         variants
             .iter()
@@ -958,7 +903,7 @@ fn model_to_bootstrap(id: &str, model: &agendao_config::ModelConfig) -> Bootstra
                 npm: None,
             }
         }),
-        options: (!options.is_empty()).then_some(options),
+        options: model.options.clone(),
         variants,
         ..Default::default()
     }
@@ -1515,22 +1460,8 @@ pub async fn run_unix_socket_only(
     );
     state.ensure_frontend_projector();
 
-    // Shared authorities: config, sessions, providers are the same
-    // Arc instances as ServerState — HTTP route changes are immediately
-    // visible to the Unix socket prompt path (no restart needed).
-    // ToolRegistry uses a separate instance (type mismatch:
-    // server stores Arc<ToolRegistry>, core stores Arc<RwLock<ToolRegistry>>).
-    let core = Arc::new(agendao_orchestrator::OrchestrationCore::<
-        agendao_session::SessionManager,
-    >::new_with_shared_authorities(
-        Arc::clone(&state.config_store),
-        Arc::clone(&state.sessions),
-        Arc::clone(&state.providers),
-        Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new())),
-    ));
-
     let unix_server =
-        crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), core, socket_path.clone());
+        crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), socket_path.clone());
 
     tracing::info!("Unix-socket-only mode: listening on {}", socket_path);
     unix_server.serve().await
@@ -1554,22 +1485,8 @@ async fn run_server_with_unix_socket(
 
     // Start Unix socket server if path is provided
     if let Some(socket_path) = unix_socket_path {
-        // Shared authorities: config, sessions, providers are the same
-        // Arc instances as ServerState — no per-startup copy needed.
-        let core = Arc::new(agendao_orchestrator::OrchestrationCore::<
-            agendao_session::SessionManager,
-        >::new_with_shared_authorities(
-            Arc::clone(&state.config_store),
-            Arc::clone(&state.sessions),
-            Arc::clone(&state.providers),
-            Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new())),
-        ));
-
-        let unix_server = crate::unix_socket::UnixSocketServer::new(
-            Arc::clone(&state),
-            core,
-            socket_path.clone(),
-        );
+        let unix_server =
+            crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), socket_path.clone());
 
         tokio::spawn(async move {
             if let Err(e) = unix_server.serve().await {
@@ -1799,7 +1716,11 @@ mod tests {
             .list_for_session(&session_id)
             .await
             .expect("messages should be readable");
-        assert_eq!(messages.len(), 1, "dehydrated flush must not delete messages");
+        assert_eq!(
+            messages.len(),
+            1,
+            "dehydrated flush must not delete messages"
+        );
         assert_eq!(messages[0].get_text(), "keep me");
 
         // 水合后再 sync 则恢复完整 flush 语义（消息仍在）。

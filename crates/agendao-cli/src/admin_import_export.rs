@@ -58,7 +58,7 @@ pub(super) async fn import_session_data(file_or_url: String) -> anyhow::Result<(
     } else {
         std::fs::read_to_string(&file_or_url)?
     };
-    let payload: agendao_types::SessionArtifactImportEnvelope = serde_json::from_str(&raw)?;
+    let payload: agendao_types::SessionArtifactBundle = serde_json::from_str(&raw)?;
     let imported = cli_session_store::import_session_bundle(payload).await?;
 
     println!("Imported {} session(s) from {}", imported, file_or_url);
@@ -98,7 +98,7 @@ pub(super) async fn export_memory_data(_output: Option<PathBuf>) -> anyhow::Resu
 #[cfg(all(feature = "memory-db", feature = "memory"))]
 pub(super) async fn import_memory_data(file: String) -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(&file)?;
-    let payload: agendao_types::MemoryArtifactImportEnvelope = serde_json::from_str(&raw)?;
+    let payload: agendao_types::MemoryArtifactBundle = serde_json::from_str(&raw)?;
     let db = agendao_storage::Database::new().await?;
     let memory_repo = agendao_storage::MemoryRepository::new(db.pool().clone());
     let imported = agendao_memory::import_memory_artifact_bundle(&memory_repo, payload).await?;

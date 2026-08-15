@@ -1,10 +1,10 @@
 //! 金 — Session rename dialog: inline text input for new title.
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop;
 use crate::input::readline::InputReadlineExt;
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 pub struct SessionRenameDialog {
     pub visible: bool,
@@ -43,10 +43,14 @@ impl SessionRenameDialog {
         self.input.clear();
     }
 
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<(String, String)> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         match key {
             Key::Enter => {
                 let new_title = self.input.text().trim().to_string();
@@ -59,8 +63,14 @@ impl SessionRenameDialog {
                 self.close();
                 None
             }
-            Key::Escape => { self.close(); None }
-            _ => { self.input.handle_key(key); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
+            _ => {
+                self.input.handle_key(key);
+                None
+            }
         }
     }
 
@@ -82,15 +92,24 @@ impl SessionRenameDialog {
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
-        let content = vstack().gap(1)
-            .child(Text::new("Rename session:").bold().fg(colors::ACCENT_CYAN()))
+        if !self.visible {
+            return;
+        }
+        let content = vstack()
+            .gap(1)
+            .child(
+                Text::new("Rename session:")
+                    .bold()
+                    .fg(colors::ACCENT_CYAN()),
+            )
             // child_sized(border, 3)：revue Border 是 unsized 子件，stack 只给自然高
             // (≈2 行)→ inner_h=height-2=0，Input 输入域不渲染，只剩 ╭╰ 紧贴。显式
             // 要 3 行（╭/│input│/╰），inner_h=1 容纳 Input。max_h 同步抬到 8 让
             // content 区(label1+gap1+border3=5 行)放得下。既有 sizing 缺陷，验证时暴露。
             .child_sized(
-                Border::rounded().fg(colors::BORDER()).child(self.input.clone()),
+                Border::rounded()
+                    .fg(colors::BORDER())
+                    .child(self.input.clone()),
                 3,
             );
 
@@ -99,7 +118,9 @@ impl SessionRenameDialog {
             colors::ACCENT_CYAN(),
             content,
             "Enter: confirm  Esc: cancel",
-            ctx, geom, 8,
+            ctx,
+            geom,
+            8,
         );
     }
 }

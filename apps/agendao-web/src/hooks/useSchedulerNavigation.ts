@@ -5,7 +5,6 @@ import type { useExecutionActivity } from "./useExecutionActivity";
 import { useAgendaoStore } from "../store";
 
 interface UseSchedulerNavigationOptions {
-  apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   executionActivity: ReturnType<typeof useExecutionActivity>;
   jumpToConversationTarget: (target: ConversationJumpTarget) => void;
   queueConversationJumpTarget: (target: ConversationJumpTarget) => void;
@@ -39,32 +38,12 @@ interface StageFocusOptions {
   sessionId?: string | null;
 }
 
-interface AttachedSessionNavigateContext {
-  stageId?: string | null;
-  toolCallId?: string | null;
-  label?: string | null;
-}
-
-function normalizeSession(session: SessionRecord): SessionRecord {
-  return {
-    ...session,
-    title: session.title || "(untitled)",
-    updated: session.time?.updated ?? session.updated ?? Date.now(),
-  };
-}
-
-function upsertSession(current: SessionRecord[], incoming: SessionRecord) {
-  return [incoming, ...current.filter((session) => session.id !== incoming.id)];
-}
-
 export function useSchedulerNavigation({
-  apiJson,
   executionActivity,
   jumpToConversationTarget,
   queueConversationJumpTarget,
 }: UseSchedulerNavigationOptions) {
   const sessions = useAgendaoStore((s) => s.sessions);
-  const setSessions = useAgendaoStore((s) => s.setSessions);
   const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
   const setSelectedSessionId = useAgendaoStore((s) => s.setSelectedSessionId);
   const setBanner = useAgendaoStore((s) => s.setBanner);
@@ -102,7 +81,6 @@ export function useSchedulerNavigation({
   // identity on every render and defeats memo(MessageCard).
   const executionNodes = executionActivity.executionNodes;
   const setSelectedExecutionId = executionActivity.setSelectedExecutionId;
-  const patchActivityFilters = executionActivity.patchActivityFilters;
   const focusStageInActivity = useCallback(
     (stageId: string, preferredExecutionId?: string | null) => {
       if (!stageId.trim()) return;
@@ -116,22 +94,9 @@ export function useSchedulerNavigation({
       if (matchingNode) {
         setSelectedExecutionId(matchingNode.id);
       }
-      patchActivityFilters({ stageId, executionId: "" });
     },
-    [executionNodes, patchActivityFilters, setSelectedExecutionId],
+    [executionNodes, setSelectedExecutionId],
   );
-
-  const currentTrail = useCallback(() => {
-    if (!selectedSessionId) return [];
-    if (!sessionBreadcrumbs.length) {
-      return [breadcrumbForSession(selectedSessionId, currentSession)];
-    }
-    const selectedIndex = sessionBreadcrumbs.findIndex((crumb) => crumb.sessionId === selectedSessionId);
-    if (selectedIndex >= 0) {
-      return sessionBreadcrumbs.slice(0, selectedIndex + 1);
-    }
-    return [breadcrumbForSession(selectedSessionId, currentSession)];
-  }, [breadcrumbForSession, currentSession, selectedSessionId, sessionBreadcrumbs]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -222,72 +187,6 @@ export function useSchedulerNavigation({
       });
     },
     [focusStage, jumpToConversationTarget],
-  );
-
-  const navigateToAttachedSession = useCallback(
-    async (sessionId: string, context?: AttachedSessionNavigateContext) => {
-      if (!sessionId.trim()) return;
-
-      let nextSession = sessions.find((session) => session.id === sessionId) ?? null;
-      if (!nextSession) {
-        try {
-          nextSession = normalizeSession(await apiJson<SessionRecord>(`/session/${sessionId}`));
-          setSessions((current) => upsertSession(current, nextSession!));
-        } catch (error) {
-          setBanner(
-            `Failed to open attached session ${sessionId}: ${error instanceof Error ? error.message : "Unknown error"}`,
-          );
-          return;
-        }
-      }
-
-      const trail = currentTrail();
-      const sourceSessionId = selectedSessionId;
-      const sourceCrumb = sourceSessionId
-        ? trail[trail.length - 1] ?? breadcrumbForSession(sourceSessionId, currentSession)
-        : null;
-      setSessionBreadcrumbs(
-        sourceCrumb
-          ? [
-              ...trail.slice(0, -1),
-              {
-                ...sourceCrumb,
-                viaLabel:
-                  context?.label ||
-                  (context?.toolCallId ? `tool ${context.toolCallId}` : null) ||
-                  (context?.stageId ? `stage ${context.stageId}` : null) ||
-                  `session ${sessionId}`,
-                viaStageId: context?.stageId ?? null,
-                viaToolCallId: context?.toolCallId ?? null,
-              },
-              breadcrumbForSession(nextSession.id, nextSession),
-            ]
-          : [breadcrumbForSession(nextSession.id, nextSession)],
-      );
-      if (context?.stageId && sourceSessionId) {
-        setActiveStageContext({
-          stageId: context.stageId,
-          toolCallId: context.toolCallId ?? null,
-          label: context.label ?? context.stageId,
-          sessionId: sourceSessionId,
-        });
-      }
-      setSelectedSessionId(nextSession.id);
-      setBanner(`Opened session ${nextSession.title || nextSession.id}`);
-    },
-    [
-      apiJson,
-      breadcrumbForSession,
-      currentSession,
-      currentTrail,
-      selectedSessionId,
-      sessions,
-      setActiveStageContext,
-      setBanner,
-      setSessionBreadcrumbs,
-      setSelectedSessionId,
-      setSessions,
-    ],
   );
 
   const navigateToSession = useCallback(
@@ -399,7 +298,6 @@ export function useSchedulerNavigation({
     previewStage,
     navigateToStage,
     navigateToToolCall,
-    navigateToAttachedSession,
     navigateToSession,
     navigateToBreadcrumb,
     navigateToProvenanceSession,

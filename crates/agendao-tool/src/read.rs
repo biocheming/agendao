@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use walkdir::WalkDir;
@@ -8,8 +9,8 @@ use crate::tool_access::{
     self, read_block_message, read_warning_message, ToolAccessKey, ToolAccessOutcome,
 };
 use crate::{
-    append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata, Tool,
-    ToolContext, ToolError, ToolResult,
+    append_repair_event, merge_repair_telemetry, repair_event_builder, Metadata, Tool, ToolContext,
+    ToolError, ToolResult,
 };
 
 const DEFAULT_READ_LIMIT: usize = 2000;
@@ -20,14 +21,7 @@ const MAX_BYTES: usize = 50 * 1024;
 const BINARY_SNIFF_BYTES: usize = 4096;
 const DESCRIPTION: &str = include_str!("read.txt");
 
-const INSTRUCTION_FILES: &[&str] = &[
-    "AGENTS.md",
-    "CONTEXT.md",
-    "CONTEXT.txt",
-    ".context",
-    ".cursorrules",
-    ".opencoderules",
-];
+const INSTRUCTION_FILES: &[&str] = &["AGENTS.md"];
 
 const BASENAME_REPAIR_MAX_MATCHES: usize = 8;
 const BASENAME_REPAIR_SKIP_DIRS: &[&str] = &[
@@ -44,6 +38,24 @@ const BASENAME_REPAIR_SKIP_DIRS: &[&str] = &[
 
 pub struct ReadTool {
     directory: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadInput {
+    file_path: String,
+    #[serde(default = "default_read_offset")]
+    offset: usize,
+    #[serde(default = "default_read_limit")]
+    limit: usize,
+}
+
+fn default_read_offset() -> usize {
+    1
+}
+
+fn default_read_limit() -> usize {
+    DEFAULT_READ_LIMIT
 }
 
 impl ReadTool {
@@ -103,20 +115,9 @@ impl Tool for ReadTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let file_path: String = args
-            .get("file_path")
-            .or_else(|| args.get("filePath"))
-            .or_else(|| args.get("filepath"))
-            .or_else(|| args.get("path"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments(format!(
-                    "file_path is required. Got args: {}. If you are unsure of the correct path, use glob first.",
-                    serde_json::to_string(&args).unwrap_or_else(|_| format!("{:?}", args))
-                ))
-            })?
-            .to_string();
-        let file_path = file_path.trim().to_string();
+        let input: ReadInput = serde_json::from_value(args)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let file_path = input.file_path.trim().to_string();
         if file_path.is_empty() {
             return Err(ToolError::InvalidArguments(
                 "file_path cannot be empty. If you do not know the path, call glob first (for example: pattern='**/*.html')."
@@ -124,9 +125,8 @@ impl Tool for ReadTool {
             ));
         }
 
-        let offset: usize = args["offset"].as_u64().unwrap_or(1) as usize;
-
-        let limit: usize = args["limit"].as_u64().unwrap_or(DEFAULT_READ_LIMIT as u64) as usize;
+        let offset = input.offset;
+        let limit = input.limit;
 
         if offset < 1 {
             return Err(ToolError::InvalidArguments("offset must be >= 1".into()));
@@ -167,24 +167,17 @@ impl Tool for ReadTool {
         let path_str = path.to_string_lossy().to_string();
         let mut repair_metadata = Metadata::new();
         if repaired_from.is_some() {
-            let mut event = tool_repair_event(
+            let event = repair_event_builder(
                 agendao_types::RepairKind::BasenameAutoRepair.as_str(),
                 "tool",
                 "read",
-            );
-            event.insert("from".to_string(), serde_json::json!(file_path));
-            event.insert("to".to_string(), serde_json::json!(path_str.clone()));
-            event.insert(
-                "strategy".to_string(),
-                serde_json::json!("unique_workspace_basename_match"),
-            );
-            // P1.1: raw_shape is the model's basename input, normalized_shape is the resolved path.
-            event.insert("raw_shape".to_string(), serde_json::json!(file_path));
-            event.insert(
-                "normalized_shape".to_string(),
-                serde_json::json!(path_str.clone()),
-            );
-            append_tool_repair_event_map(&mut repair_metadata, event);
+            )
+            .field("file_path")
+            .reason("resolved a unique workspace path from a basename")
+            .raw_shape(serde_json::json!(file_path))
+            .normalized_shape(serde_json::json!(path_str.clone()))
+            .build();
+            append_repair_event(&mut repair_metadata, event);
         }
 
         if ctx.is_external_path(&path_str) {
@@ -264,7 +257,7 @@ impl Tool for ReadTool {
             ctx.do_file_time_read(path_str.clone()).await?;
             ctx.do_lsp_touch_file(path_str.clone(), false).await?;
             let mut result = read_directory(&path, offset, limit, title)?;
-            merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
+            merge_repair_telemetry(&mut result.metadata, &repair_metadata);
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
@@ -288,7 +281,7 @@ impl Tool for ReadTool {
             ctx.do_file_time_read(path_str.clone()).await?;
             ctx.do_lsp_touch_file(path_str.clone(), false).await?;
             let mut result = handle_binary_file(&path, &content, &mime, title)?;
-            merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
+            merge_repair_telemetry(&mut result.metadata, &repair_metadata);
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
@@ -321,7 +314,7 @@ impl Tool for ReadTool {
             &ctx.project_root,
         )
         .await?;
-        merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
+        merge_repair_telemetry(&mut result.metadata, &repair_metadata);
         Ok(apply_repeated_access_feedback(result, outcome))
     }
 }
@@ -1036,12 +1029,13 @@ mod tests {
 
         assert!(result.output.contains("voicecraft/src/Game.ts"));
         assert!(result.output.contains("export const GAME = true;"));
-        let repair_events = crate::tool_repair_events(&result.metadata);
+        let repair_events = crate::repair_events(&result.metadata);
         assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("basename_auto_repair")
+            event.repair_kind == "basename_auto_repair"
                 && event
-                    .get("to")
-                    .and_then(|value| value.as_str())
+                    .normalized_shape
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
                     .is_some_and(|path| path.ends_with("voicecraft/src/Game.ts"))
         }));
     }

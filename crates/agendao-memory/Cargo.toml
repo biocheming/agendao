@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 agendao-config = { path = "../agendao-config" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
-agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-state = { path = "../agendao-state" }
 agendao-storage = { path = "../agendao-storage" }
 agendao-types = { path = "../agendao-types" }

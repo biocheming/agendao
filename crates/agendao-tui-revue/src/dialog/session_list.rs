@@ -1,9 +1,9 @@
 //! 金 — Session list dialog: browse and switch sessions.
 
-use revue::prelude::*;
-use revue::event::Key;
+use crate::dialog::backdrop::{self, ListDialogLayout, ListItem};
 use crate::theme::colors;
-use crate::dialog::backdrop::{self, ListItem, ListDialogLayout};
+use revue::event::Key;
+use revue::prelude::*;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug)]
@@ -87,7 +87,9 @@ impl SessionListDialog {
         self.marked.clear();
     }
 
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// Record the canonical directory the list is scoped to. Used purely
     /// for display in the dialog title; the actual filtering is done at
@@ -119,8 +121,12 @@ impl SessionListDialog {
         if q.is_empty() {
             return (0..self.sessions.len()).collect();
         }
-        self.sessions.iter().enumerate()
-            .filter(|(_, s)| s.title.to_lowercase().contains(&q) || s.id.to_lowercase().contains(&q))
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.title.to_lowercase().contains(&q) || s.id.to_lowercase().contains(&q)
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -130,7 +136,9 @@ impl SessionListDialog {
     /// - `Some(SessionListAction::DeleteBatch(ids))` — 'D' 触发批量删除(非空 marked)
     /// - `None` — 其它按键(导航/输入/标记 toggle/关闭)
     pub fn handle_key(&mut self, key: &Key) -> Option<SessionListAction> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         match key {
             Key::Up => {
                 self.selected = self.selected.saturating_sub(1);
@@ -145,19 +153,27 @@ impl SessionListDialog {
                 let filtered = self.filtered_indices();
                 // U17④：无命中时 Enter 不再静默关框（死端）——原地无操作，
                 // 用户继续改 query 或 Esc 显式退出。有命中才关框返回 Open。
-                if filtered.is_empty() { return None; }
+                if filtered.is_empty() {
+                    return None;
+                }
                 // U17④：防御性 clamp——selected 永不超过 filtered 尾（高亮
                 // 消失/越界读取的保险，正常键流已钳制，这里兜最后一道）。
                 self.selected = self.selected.min(filtered.len() - 1);
-                let s = filtered.get(self.selected)
+                let s = filtered
+                    .get(self.selected)
                     .and_then(|&i| self.sessions.get(i))
                     .cloned();
                 self.close();
                 s.map(SessionListAction::Open)
             }
-            Key::Escape => { self.close(); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
             Key::Backspace => {
-                if self.query.pop().is_some() { self.selected = 0; }
+                if self.query.pop().is_some() {
+                    self.selected = 0;
+                }
                 None
             }
             // 'x' = 批量选择标记,作用于当前 cursor 项(filtered_indices 索引映射)。
@@ -165,7 +181,9 @@ impl SessionListDialog {
             // 必须先于 graphic arm 匹配——故放在 graphic arm 之上(match 顺序优先)。
             Key::Char('x') => {
                 if let Some(&abs) = self.filtered_indices().get(self.selected) {
-                    if let Some(m) = self.marked.get_mut(abs) { *m = !*m; }
+                    if let Some(m) = self.marked.get_mut(abs) {
+                        *m = !*m;
+                    }
                 }
                 None
             }
@@ -173,7 +191,10 @@ impl SessionListDialog {
             // (panel_dispatch 收到 None 不做事;若想 toast 让用户知道未标记,
             //  在 panel_dispatch 侧加一次提示——这里保持 dialog 纯查询)。
             Key::Char('D') => {
-                let ids: Vec<String> = self.marked.iter().enumerate()
+                let ids: Vec<String> = self
+                    .marked
+                    .iter()
+                    .enumerate()
                     .filter(|(_, &m)| m)
                     .filter_map(|(i, _)| self.sessions.get(i).map(|s| s.id.clone()))
                     .collect();
@@ -240,7 +261,9 @@ impl SessionListDialog {
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
 
         // Compose dialog title: include directory scope (basename) so the
         // user always sees whether the list is scoped or global.
@@ -257,12 +280,27 @@ impl SessionListDialog {
         if self.loading {
             let title = format!("Sessions{}", scope_suffix);
             let content = vstack().child(Text::new("Loading sessions...").fg(colors::FG_MUTED()));
-            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN(), content,
-                "Loading...", ctx, geom, 5);
+            backdrop::render_dialog_bottom(
+                &title,
+                colors::ACCENT_CYAN(),
+                content,
+                "Loading...",
+                ctx,
+                geom,
+                5,
+            );
         } else if let Some(ref err) = self.error {
-            let content = vstack().child(Text::new(format!("Error: {}", err)).fg(colors::ACCENT_RED()));
-            backdrop::render_dialog_bottom("Sessions", colors::ACCENT_RED(), content,
-                "Esc: close", ctx, geom, 5);
+            let content =
+                vstack().child(Text::new(format!("Error: {}", err)).fg(colors::ACCENT_RED()));
+            backdrop::render_dialog_bottom(
+                "Sessions",
+                colors::ACCENT_RED(),
+                content,
+                "Esc: close",
+                ctx,
+                geom,
+                5,
+            );
         } else if self.sessions.is_empty() {
             // 空状态：极简一行，scope 信息靠 title 的 "in <name>" 表达。
             // U15②：文案只承诺真实可达的动作（'n' 开新会话 / Esc 关框）——
@@ -274,8 +312,15 @@ impl SessionListDialog {
                 "本目录下暂无会话 — n 开新会话，Esc 返回"
             };
             let body = vstack().child(Text::new(msg).fg(colors::FG_MUTED()));
-            backdrop::render_dialog_bottom(&title, colors::ACCENT_CYAN(), body,
-                "n: new session  Esc: close", ctx, geom, 5);
+            backdrop::render_dialog_bottom(
+                &title,
+                colors::ACCENT_CYAN(),
+                body,
+                "n: new session  Esc: close",
+                ctx,
+                geom,
+                5,
+            );
         } else {
             let filtered = self.filtered_indices();
             // U17①：过滤无命中 → 明示行（原渲染零行空框，用户分不清是
@@ -286,31 +331,43 @@ impl SessionListDialog {
                     muted: true,
                 }]
             } else {
-            filtered.iter().map(|&i| {
-                let s = &self.sessions[i];
-                let status = if s.status_hint.is_empty() { String::new() } else { format!(" [{}]", s.status_hint) };
-                // 标记位前缀:已 'x' 标记的项前面打 `[*]`(2列宽),未标记空白对齐。
-                // 复用现有 ListItem::Row(display 单字段),前缀直接拼进 display
-                // ——比给 backdrop 加 marked 形参侵入小(金律:成形点单一)。
-                let mark = if self.marked.get(i).copied().unwrap_or(false) {
-                    "[*] "
-                } else {
-                    "    "
-                };
-                ListItem::Row {
-                    display: format!("{}{}{}", mark, s.title, status),
-                    muted: false,
-                }
-            }).collect()
+                filtered
+                    .iter()
+                    .map(|&i| {
+                        let s = &self.sessions[i];
+                        let status = if s.status_hint.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", s.status_hint)
+                        };
+                        // 标记位前缀:已 'x' 标记的项前面打 `[*]`(2列宽),未标记空白对齐。
+                        // 复用现有 ListItem::Row(display 单字段),前缀直接拼进 display
+                        // ——比给 backdrop 加 marked 形参侵入小(金律:成形点单一)。
+                        let mark = if self.marked.get(i).copied().unwrap_or(false) {
+                            "[*] "
+                        } else {
+                            "    "
+                        };
+                        ListItem::Row {
+                            display: format!("{}{}{}", mark, s.title, status),
+                            muted: false,
+                        }
+                    })
+                    .collect()
             };
             let marked_n = self.marked_count();
             let marked_hint = if marked_n > 0 {
                 format!(" — {} marked", marked_n)
-            } else { String::new() };
+            } else {
+                String::new()
+            };
             let title = if self.query.is_empty() {
                 format!("Sessions{}{}", scope_suffix, marked_hint)
             } else {
-                format!("Sessions{} — query: {}{}", scope_suffix, self.query, marked_hint)
+                format!(
+                    "Sessions{} — query: {}{}",
+                    scope_suffix, self.query, marked_hint
+                )
             };
             let footer = if marked_n > 0 {
                 "type filter  ⌫ erase  ↑↓ nav  Enter open  x mark  D delete marked  Esc close"
@@ -318,12 +375,16 @@ impl SessionListDialog {
                 "type filter  ⌫ erase  ↑↓ nav  Enter open  x mark  Esc close"
             };
             let layout = backdrop::render_list_dialog_bottom_with_layout(
-                &title,
-                colors::ACCENT_CYAN(),
+                backdrop::ListDialogHeading {
+                    title: &title,
+                    border_color: colors::ACCENT_CYAN(),
+                },
                 &items,
                 self.selected,
                 footer,
-                ctx, geom, 18,
+                ctx,
+                geom,
+                18,
             );
 
             // Publish scrollbar geometry for the mouse handler.
@@ -354,8 +415,12 @@ impl SessionListDialog {
         layout: ListDialogLayout,
     ) {
         // Only Row items get a tooltip; headers don't have a `display`.
-        let Some(_row_y) = layout.selected_row_y else { return; };
-        let Some(item) = items.get(self.selected) else { return; };
+        let Some(_row_y) = layout.selected_row_y else {
+            return;
+        };
+        let Some(item) = items.get(self.selected) else {
+            return;
+        };
         let display = match item {
             ListItem::Row { display, .. } => display.as_str(),
             ListItem::Header(_) => return,
@@ -377,7 +442,9 @@ impl SessionListDialog {
         let entry_id = filtered
             .get(self.selected)
             .and_then(|&i| self.sessions.get(i));
-        let Some(entry) = entry_id else { return; };
+        let Some(entry) = entry_id else {
+            return;
+        };
 
         // Popover sizing: max width = dialog width, max 4 lines wrapped.
         let pop_w = layout.dialog_w.min(80);
@@ -396,7 +463,9 @@ impl SessionListDialog {
             }
             line.push(ch);
             line_w += cw;
-            if wrapped.len() >= 4 { break; }
+            if wrapped.len() >= 4 {
+                break;
+            }
         }
         if !line.is_empty() && wrapped.len() < 4 {
             wrapped.push(line);
@@ -418,10 +487,7 @@ impl SessionListDialog {
 
         let mut body = vstack().gap(0);
         for line in &wrapped {
-            body = body.child_sized(
-                Text::new(line.as_str()).fg(colors::FG_PRIMARY()),
-                1,
-            );
+            body = body.child_sized(Text::new(line.as_str()).fg(colors::FG_PRIMARY()), 1);
         }
         let pop = Border::rounded()
             .title(" full title ")
@@ -447,7 +513,11 @@ mod tests {
     use super::*;
 
     fn entry(id: &str) -> SessionEntry {
-        SessionEntry { id: id.into(), title: format!("t-{id}"), status_hint: String::new() }
+        SessionEntry {
+            id: id.into(),
+            title: format!("t-{id}"),
+            status_hint: String::new(),
+        }
     }
 
     /// U15②：空态下 'n' 是"开新会话"动作（空态文案承诺的键必须真实可达）。

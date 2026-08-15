@@ -36,7 +36,7 @@ impl SkillGovernanceAuthority {
             self.artifact_policy().fetch_timeout_ms,
         ) {
             Ok(resolved) => {
-                let record = resolved.record.clone();
+                let record = resolved.record;
                 self.upsert_distribution(record.clone())?;
                 self.record_lifecycle(
                     Some(actor),
@@ -172,7 +172,7 @@ impl SkillGovernanceAuthority {
             SkillManagedLifecycleRecord {
                 distribution_id: distribution.distribution_id.clone(),
                 source_id: source.source_id.clone(),
-                skill_name: distribution.skill_name.clone(),
+                skill_name: distribution.skill_name,
                 state: SkillManagedLifecycleState::PlannedInstall,
                 updated_at: now_unix_timestamp(),
                 error: None,
@@ -523,11 +523,10 @@ impl SkillGovernanceAuthority {
                 self.evaluate_imported_skill_guard_report(
                     &package.skill_name,
                     &package.markdown_content(),
-                    &package
+                    package
                         .supporting_files
                         .iter()
-                        .map(|file| (file.relative_path.clone(), file.content.clone()))
-                        .collect::<Vec<_>>(),
+                        .map(|file| (file.relative_path.as_str(), file.content.as_str())),
                     duplicate_conflict,
                     package.category.as_deref().or(current_meta
                         .as_ref()
@@ -573,7 +572,7 @@ impl SkillGovernanceAuthority {
             distribution.lifecycle = SkillManagedLifecycleState::Installed;
             self.upsert_distribution(distribution.clone())?;
             self.upsert_managed_skill(ManagedSkillRecord {
-                skill_name: package.skill_name.clone(),
+                skill_name: package.skill_name,
                 source: Some(source.clone()),
                 installed_revision: release_identity(&distribution.release).map(ToOwned::to_owned),
                 local_hash: Some(local_hash),
@@ -586,7 +585,7 @@ impl SkillGovernanceAuthority {
                 self.lifecycle.build_record(
                     distribution.distribution_id.clone(),
                     source.source_id.clone(),
-                    distribution.skill_name.clone(),
+                    distribution.skill_name,
                     SkillManagedLifecycleState::Installed,
                     installed_at,
                     None,
@@ -629,7 +628,7 @@ impl SkillGovernanceAuthority {
                     self.lifecycle.build_record(
                         plan.distribution.distribution_id.clone(),
                         source.source_id.clone(),
-                        plan.distribution.skill_name.clone(),
+                        plan.distribution.skill_name,
                         SkillManagedLifecycleState::ApplyFailed,
                         now_unix_timestamp(),
                         Some(error.to_string()),

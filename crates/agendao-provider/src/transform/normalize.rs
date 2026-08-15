@@ -5,59 +5,38 @@ use crate::{CacheControl, Content, ContentPart, Message};
 use serde::{Deserialize, Serialize};
 
 use super::model_config::remap_provider_options;
-use crate::cache::{plan_ethnopic_message_breakpoints, EthnopicCachePolicy, EthnopicCacheTtl};
+use crate::cache::{plan_anthropic_message_breakpoints, AnthropicCachePolicy, AnthropicCacheTtl};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderType {
-    Ethnopic,
-    OpenRouter,
-    Bedrock,
+    Anthropic,
     OpenAI,
-    Gateway,
     Other,
 }
 
 impl ProviderType {
-    pub fn from_provider_id(id: &str) -> Self {
-        let id_lower = id.to_lowercase();
-        if is_ethnopic_compatible_hint(&id_lower) {
-            ProviderType::Ethnopic
-        } else if id_lower == "openrouter" {
-            ProviderType::OpenRouter
-        } else if id_lower == "bedrock" || id_lower.contains("bedrock") {
-            ProviderType::Bedrock
-        } else if id_lower == "gateway" {
-            ProviderType::Gateway
-        } else if id_lower == "openai" {
-            ProviderType::OpenAI
-        } else {
-            ProviderType::Other
+    pub fn from_api_family(family: crate::ProviderApiFamily) -> Self {
+        match family {
+            crate::ProviderApiFamily::OpenAiCompatible => Self::OpenAI,
+            crate::ProviderApiFamily::AnthropicMessages => Self::Anthropic,
+        }
+    }
+
+    pub fn from_supported_npm(npm: &str) -> Option<Self> {
+        match npm.trim().to_ascii_lowercase().as_str() {
+            "@ai-sdk/openai" | "@ai-sdk/openai-compatible" => Some(Self::OpenAI),
+            "@ai-sdk/anthropic" => Some(Self::Anthropic),
+            _ => None,
         }
     }
 
     pub fn supports_caching(&self) -> bool {
-        matches!(
-            self,
-            ProviderType::Ethnopic
-                | ProviderType::OpenRouter
-                | ProviderType::Bedrock
-                | ProviderType::Gateway
-        )
+        matches!(self, ProviderType::Anthropic)
     }
 
     pub fn supports_interleaved_thinking(&self) -> bool {
-        matches!(self, ProviderType::Ethnopic | ProviderType::OpenRouter)
+        matches!(self, ProviderType::Anthropic)
     }
-}
-
-pub(crate) fn is_ethnopic_compatible_hint(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.contains("anthropic") || lower.contains("ethnopic")
-}
-
-pub(crate) fn is_ethnopic_compatible_npm(npm: &str) -> bool {
-    let lower = npm.trim().to_ascii_lowercase();
-    lower.contains("anthropic") || lower.contains("ethnopic")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,26 +50,6 @@ pub struct ReasoningContent {
 pub const OUTPUT_TOKEN_MAX: u64 = 32_000;
 
 pub(super) const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high"];
-pub(super) const OPENAI_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
-
-/// Maps model ID prefix to provider slug used in providerOptions.
-/// Examples:
-/// - "amazon/nova-2-lite" -> "bedrock"
-/// - "ethnopic-compatible/..." -> "ethnopic"
-const SLUG_OVERRIDES: &[(&str, &str)] = &[
-    ("amazon", "bedrock"),
-    ("ethnopic-compatible", "ethnopic"),
-    ("closeai-compatible", "openai"),
-    ("openai-compatible", "openai"),
-];
-
-pub(super) fn slug_override(key: &str) -> Option<&'static str> {
-    SLUG_OVERRIDES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| *v)
-}
-
 // ---------------------------------------------------------------------------
 // dedup_messages
 // ---------------------------------------------------------------------------
@@ -118,19 +77,19 @@ pub fn apply_caching(messages: &mut [Message], provider_type: ProviderType) {
         return;
     }
 
-    apply_caching_with_policy(messages, provider_type, &EthnopicCachePolicy::default());
+    apply_caching_with_policy(messages, provider_type, &AnthropicCachePolicy::default());
 }
 
 pub fn apply_caching_with_policy(
     messages: &mut [Message],
     provider_type: ProviderType,
-    policy: &EthnopicCachePolicy,
+    policy: &AnthropicCachePolicy,
 ) {
     if !provider_type.supports_caching() || !policy.enabled {
         return;
     }
 
-    let plan = plan_ethnopic_message_breakpoints(messages);
+    let plan = plan_anthropic_message_breakpoints(messages);
     for idx in plan.message_indices() {
         if let Some(msg) = messages.get_mut(idx) {
             apply_cache_to_message(msg, provider_type, policy);
@@ -141,18 +100,13 @@ pub fn apply_caching_with_policy(
 fn apply_cache_to_message(
     message: &mut Message,
     provider_type: ProviderType,
-    policy: &EthnopicCachePolicy,
+    policy: &AnthropicCachePolicy,
 ) {
     // TS applyCaching uses providerOptions with multiple provider keys merged via mergeDeep.
     // We replicate that by setting provider_options on the message or its last content part.
     let provider_opts = build_cache_provider_options(policy);
 
-    let provider_id_str = match provider_type {
-        ProviderType::Ethnopic => "ethnopic",
-        ProviderType::Bedrock => "bedrock",
-        _ => "",
-    };
-    let use_message_level = provider_id_str == "ethnopic" || provider_id_str.contains("bedrock");
+    let use_message_level = matches!(provider_type, ProviderType::Anthropic);
 
     if !use_message_level {
         if let Content::Parts(parts) = &mut message.content {
@@ -170,39 +124,23 @@ fn apply_cache_to_message(
 }
 
 fn build_cache_provider_options(
-    policy: &EthnopicCachePolicy,
+    policy: &AnthropicCachePolicy,
 ) -> HashMap<String, serde_json::Value> {
     use serde_json::json;
     let mut opts = HashMap::new();
     let cache_control = cache_control_provider_value(policy);
     opts.insert(
-        "ethnopic".to_string(),
-        json!({"cacheControl": cache_control.clone()}),
-    );
-    opts.insert(
-        "openrouter".to_string(),
-        json!({"cacheControl": cache_control.clone()}),
-    );
-    opts.insert(
-        "bedrock".to_string(),
-        json!({"cachePoint": {"type": "default"}}),
-    );
-    opts.insert(
-        "openaiCompatible".to_string(),
-        json!({"cache_control": cache_control.clone()}),
-    );
-    opts.insert(
-        "copilot".to_string(),
-        json!({"copilot_cache_control": cache_control}),
+        "anthropic".to_string(),
+        json!({"cacheControl": cache_control}),
     );
     opts
 }
 
-fn cache_control_provider_value(policy: &EthnopicCachePolicy) -> serde_json::Value {
+fn cache_control_provider_value(policy: &AnthropicCachePolicy) -> serde_json::Value {
     use serde_json::{json, Map, Value};
     let mut cache_control = Map::new();
     cache_control.insert("type".to_string(), json!("ephemeral"));
-    if policy.ttl == EthnopicCacheTtl::OneHour {
+    if policy.ttl == AnthropicCacheTtl::OneHour {
         cache_control.insert("ttl".to_string(), json!("1h"));
     }
     if policy.global_scope {
@@ -266,7 +204,7 @@ pub fn apply_interleaved_thinking(messages: &mut [Message], provider_type: Provi
     }
 
     // Reasoning parts are preserved in the message content so that the
-    // provider can convert them to the appropriate format (e.g. ethnopic
+    // provider can convert them to the appropriate format (e.g. anthropic
     // `thinking` blocks).  We only apply cache control hints here.
     for msg in messages.iter_mut() {
         if matches!(msg.role, crate::Role::Assistant) {
@@ -309,51 +247,11 @@ pub fn extract_reasoning_from_response(content: &str) -> (Option<String>, String
 // normalize_messages
 // ---------------------------------------------------------------------------
 
-pub fn normalize_messages(
-    messages: &mut Vec<Message>,
-    provider_type: ProviderType,
-    model_id: &str,
-    ethnopic_protocol: bool,
-) {
-    match provider_type {
-        ProviderType::Ethnopic => {
-            normalize_for_ethnopic_messages(messages);
-            normalize_tool_call_ids_ethnopic_family(messages);
-        }
-        ProviderType::OpenRouter => {
-            if ethnopic_protocol {
-                normalize_tool_call_ids_ethnopic_family(messages);
-            }
-            if model_id.to_lowercase().contains("mistral")
-                || model_id.to_lowercase().contains("devstral")
-            {
-                normalize_for_mistral(messages);
-            }
-        }
-        ProviderType::Other => {
-            if ethnopic_protocol {
-                normalize_tool_call_ids_ethnopic_family(messages);
-            } else if model_id.to_lowercase().contains("mistral")
-                || model_id.to_lowercase().contains("devstral")
-            {
-                normalize_for_mistral(messages);
-            }
-        }
-        _ => {}
+pub fn normalize_messages(messages: &mut Vec<Message>, provider_type: ProviderType) {
+    if provider_type == ProviderType::Anthropic {
+        normalize_for_anthropic_messages(messages);
+        normalize_tool_call_ids_anthropic_family(messages);
     }
-
-    // Handle interleaved thinking field (move reasoning to providerOptions)
-    normalize_interleaved_field(messages, model_id);
-}
-
-/// For models with interleaved thinking that use a specific field
-/// (reasoning_content or reasoning_details), move reasoning parts
-/// from content into providerOptions.openaiCompatible.<field>.
-fn normalize_interleaved_field(_messages: &mut Vec<Message>, _model_id: &str) {
-    // This is handled at a higher level via the ModelInfo.interleaved field.
-    // The caller should check model.interleaved and pass the field name.
-    // For now this is a no-op; the full implementation is in
-    // normalize_messages_with_interleaved_field below.
 }
 
 /// Normalize messages for models that store reasoning in a specific provider field.
@@ -388,7 +286,7 @@ pub fn normalize_messages_with_interleaved_field(messages: &mut [Message], field
     }
 }
 
-fn normalize_for_ethnopic_messages(messages: &mut Vec<Message>) {
+fn normalize_for_anthropic_messages(messages: &mut Vec<Message>) {
     // Filter out messages with empty content
     messages.retain(|msg| match &msg.content {
         Content::Text(text) => !text.is_empty(),
@@ -415,7 +313,7 @@ fn normalize_for_ethnopic_messages(messages: &mut Vec<Message>) {
     }
 }
 
-fn normalize_tool_call_ids_ethnopic_family(messages: &mut [Message]) {
+fn normalize_tool_call_ids_anthropic_family(messages: &mut [Message]) {
     for msg in messages.iter_mut() {
         if matches!(msg.role, crate::Role::Assistant | crate::Role::Tool) {
             if let Content::Parts(parts) = &mut msg.content {
@@ -430,35 +328,6 @@ fn normalize_tool_call_ids_ethnopic_family(messages: &mut [Message]) {
                 }
             }
         }
-    }
-}
-
-fn normalize_for_mistral(messages: &mut Vec<Message>) {
-    for msg in messages.iter_mut() {
-        if matches!(msg.role, crate::Role::Assistant | crate::Role::Tool) {
-            if let Content::Parts(parts) = &mut msg.content {
-                for part in parts.iter_mut() {
-                    if let Some(ref mut tool_use) = part.tool_use {
-                        tool_use.id = normalize_tool_call_id_mistral(&tool_use.id);
-                    }
-                    if let Some(ref mut tool_result) = part.tool_result {
-                        tool_result.tool_use_id =
-                            normalize_tool_call_id_mistral(&tool_result.tool_use_id);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut i = 0;
-    while i < messages.len().saturating_sub(1) {
-        let current_is_tool = matches!(messages[i].role, crate::Role::Tool);
-        let next_is_user = matches!(messages[i + 1].role, crate::Role::User);
-
-        if current_is_tool && next_is_user {
-            messages.insert(i + 1, Message::assistant("Done."));
-        }
-        i += 1;
     }
 }
 
@@ -478,12 +347,6 @@ pub(super) fn normalize_tool_call_id(id: &str, allow_underscore: bool) -> String
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect()
     }
-}
-
-pub(super) fn normalize_tool_call_id_mistral(id: &str) -> String {
-    let alphanumeric: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    let first_9: String = alphanumeric.chars().take(9).collect();
-    format!("{:0<9}", first_9)
 }
 
 // ---------------------------------------------------------------------------
@@ -603,88 +466,19 @@ pub fn unsupported_parts(messages: &mut [Message], supported_modalities: &[Modal
 }
 
 // ---------------------------------------------------------------------------
-// temperature / topP / topK
-// ---------------------------------------------------------------------------
-
-pub fn temperature_for_model(model_id: &str) -> Option<f32> {
-    let id = model_id.to_lowercase();
-    if id.contains("qwen") {
-        return Some(0.55);
-    }
-    if id.contains("gemini") {
-        return Some(1.0);
-    }
-    if id.contains("glm-4.6") || id.contains("glm-4.7") {
-        return Some(1.0);
-    }
-    if id.contains("minimax-m2") {
-        return Some(1.0);
-    }
-    if id.contains("kimi-k2") {
-        if id.contains("thinking") || id.contains("k2.") || id.contains("k2p") {
-            return Some(1.0);
-        }
-        return Some(0.6);
-    }
-    None
-}
-
-pub fn top_p_for_model(model_id: &str) -> Option<f32> {
-    let id = model_id.to_lowercase();
-    if id.contains("qwen") {
-        return Some(1.0);
-    }
-    if id.contains("minimax-m2")
-        || id.contains("kimi-k2.5")
-        || id.contains("kimi-k2p5")
-        || id.contains("gemini")
-    {
-        return Some(0.95);
-    }
-    None
-}
-
-pub fn top_k_for_model(model_id: &str) -> Option<u32> {
-    let id = model_id.to_lowercase();
-    if id.contains("minimax-m2") {
-        if id.contains("m2.1") {
-            return Some(40);
-        }
-        return Some(20);
-    }
-    if id.contains("gemini") {
-        return Some(64);
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
 // transform_messages (top-level entry point matching TS `message()`)
 // ---------------------------------------------------------------------------
 
 pub fn transform_messages(
     messages: &mut Vec<Message>,
     provider_type: ProviderType,
-    model_id: &str,
     supported_modalities: &[Modality],
     npm: &str,
     provider_id: &str,
 ) {
     unsupported_parts(messages, supported_modalities);
-
-    let id_lower = model_id.to_lowercase();
-    let pid_lower = provider_id.to_lowercase();
-    let is_ethnopic_like = is_ethnopic_compatible_hint(&pid_lower)
-        || is_ethnopic_compatible_hint(&id_lower)
-        || is_ethnopic_compatible_npm(npm);
-
-    normalize_messages(messages, provider_type, model_id, is_ethnopic_like);
-
-    // Apply caching for providers/models that follow the ethnopic-compatible
-    // family, plus the existing bedrock path, but not gateway.
-    if is_ethnopic_like && npm != "@ai-sdk/gateway" {
-        apply_caching(messages, provider_type);
-    }
+    normalize_messages(messages, provider_type);
+    apply_caching(messages, provider_type);
 
     // Remap providerOptions keys from stored providerID to expected SDK key
     remap_provider_options(messages, npm, provider_id);

@@ -3,23 +3,13 @@ use agendao_skill::{
     RemoveSkillFileRequest, SkillGovernedWriteResult, SkillWriteAction, WriteSkillFileRequest,
 };
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{Map, Value};
 use std::path::Path;
 
 use crate::skill_support::{governance_authority_for, map_skill_error};
-use crate::{
-    append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata,
-    PermissionRequest, Tool, ToolContext, ToolError, ToolResult,
-};
+use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
 pub struct SkillManageTool;
-
-struct NormalizedSkillManageArgs {
-    args: Value,
-    repair_metadata: Metadata,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +23,7 @@ enum SkillManageAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkillManageInput {
     action: SkillManageAction,
     #[serde(default)]
@@ -43,15 +34,9 @@ struct SkillManageInput {
     description: Option<String>,
     #[serde(default)]
     body: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_json_object_or_string"
-    )]
+    #[serde(default)]
     methodology: Option<agendao_skill::SkillMethodologyTemplate>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_json_object_or_string"
-    )]
+    #[serde(default)]
     frontmatter: Option<agendao_skill::SkillFrontmatterPatch>,
     #[serde(default)]
     content: Option<String>,
@@ -59,40 +44,8 @@ struct SkillManageInput {
     category: Option<String>,
     #[serde(default)]
     directory_name: Option<String>,
-    #[serde(default, alias = "filepath")]
+    #[serde(default)]
     file_path: Option<String>,
-}
-
-fn deserialize_optional_json_object_or_string<'de, D, T>(
-    deserializer: D,
-) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    let Some(value) = value else {
-        return Ok(None);
-    };
-
-    match value {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::String(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-
-            let parsed = agendao_util::json::try_parse_json_object_robust(trimmed)
-                .ok_or_else(|| serde::de::Error::custom("expected JSON object string"))?;
-            serde_json::from_value(parsed)
-                .map(Some)
-                .map_err(serde::de::Error::custom)
-        }
-        other => serde_json::from_value(other)
-            .map(Some)
-            .map_err(serde::de::Error::custom),
-    }
 }
 
 #[async_trait]
@@ -112,14 +65,7 @@ Minimal create shape (body variant, for simple free-form skills):
 
 Other actions: patch, edit, delete. Patch when instructions are stale, steps are missing, or a skill failed in a specific environment. Skip simple one-offs.
 
-Canonical content fields (use these directly on create/patch):
-- `body` for free-form markdown skills; `methodology` for structured skills
-
-Compatibility wrappers accepted for recovery only (prefer the canonical fields above):
-- `input` / `payload` / `arguments` — root-level wrappers that get normalized automatically
-- `trigger_conditions` / `when_to_use`  ·  `boundaries` / `pitfalls`
-- `steps` / `core_steps`  ·  per-step `name` / `description` -> `title` / `action`
-- `methodology` and `frontmatter` accept either nested objects or JSON strings"
+Canonical content fields: use `body` for free-form markdown skills or `methodology` for structured skills. Methodology and frontmatter must be nested objects."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -148,18 +94,12 @@ Compatibility wrappers accepted for recovery only (prefer the canonical fields a
                     "description": "Full SKILL.md markdown body for create or patch. Use this OR `methodology`, not both."
                 },
                 "methodology": {
-                    "description": "Structured methodology template for create or patch. Use this OR `body`, not both. May be either a nested object or a JSON string containing that object. Recommended minimal shape: {\"when_to_use\":[...],\"core_steps\":[{\"title\":\"...\",\"action\":\"...\",\"outcome\":\"...\"}],\"success_criteria\":[...],\"validation\":[...],\"pitfalls\":[...]}. Common aliases are accepted and normalized automatically: `trigger_conditions`, `boundaries`, `steps`, and per-step `name` / `description`.",
-                    "oneOf": [
-                        { "type": "object" },
-                        { "type": "string" }
-                    ]
+                    "description": "Structured methodology template for create or patch. Use this OR `body`, not both. Required canonical fields include `when_to_use` and `core_steps`; each step uses `title`, `action`, and optional `outcome`.",
+                    "type": "object"
                 },
                 "frontmatter": {
-                    "description": "Optional structured YAML frontmatter patch for rich metadata such as version, author, license, tags, required_commands, metadata blocks, or structured setup prerequisites. May be either a nested object or a JSON string containing that object. Put human-readable prerequisite bullet lists in `methodology.prerequisites`; reserve `frontmatter.prerequisites` for the structured shape `{ \"env_vars\": [...], \"commands\": [...] }`.",
-                    "oneOf": [
-                        { "type": "object" },
-                        { "type": "string" }
-                    ]
+                    "description": "Optional structured YAML frontmatter patch for rich metadata such as version, author, license, tags, required_commands, metadata blocks, or structured setup prerequisites.",
+                    "type": "object"
                 },
                 "content": {
                     "type": "string",
@@ -238,9 +178,8 @@ Compatibility wrappers accepted for recovery only (prefer the canonical fields a
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let normalized = normalize_skill_manage_args(args)?;
-        let input: SkillManageInput = serde_json::from_value(normalized.args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let input: SkillManageInput =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         let authority =
             governance_authority_for(Path::new(&ctx.directory), ctx.config_store.clone());
 
@@ -338,8 +277,7 @@ Compatibility wrappers accepted for recovery only (prefer the canonical fields a
         .await;
 
         let output = format_output(&result);
-        let mut metadata = format_metadata(&result);
-        merge_tool_repair_telemetry(&mut metadata, &normalized.repair_metadata);
+        let metadata = format_metadata(&result);
         Ok(ToolResult {
             title: format!("Skill {}", write_action_label(&result.result.action)),
             output,
@@ -494,346 +432,6 @@ fn optional_trimmed_multiline(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.replace("\r\n", "\n"))
         .filter(|value| !value.trim().is_empty())
-}
-
-fn normalize_skill_manage_args(args: Value) -> Result<NormalizedSkillManageArgs, ToolError> {
-    let mut repair_metadata = Metadata::new();
-    let args = match args {
-        Value::String(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                Value::String(raw)
-            } else if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(trimmed) {
-                let mut event = tool_repair_event(
-                    agendao_types::RepairKind::JsonStringObjectParse.as_str(),
-                    "tool",
-                    "skill_manage",
-                );
-                event.insert("field".to_string(), serde_json::json!("$root"));
-                // P1.1: capture the raw string and the parsed object.
-                event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-                event.insert("normalized_shape".to_string(), parsed.clone());
-                append_tool_repair_event_map(&mut repair_metadata, event);
-                parsed
-            } else {
-                Value::String(raw)
-            }
-        }
-        other => other,
-    };
-    let mut root = match args {
-        Value::Object(map) => map,
-        other => {
-            return Ok(NormalizedSkillManageArgs {
-                args: other,
-                repair_metadata,
-            });
-        }
-    };
-
-    for wrapper_key in ["input", "payload", "arguments"] {
-        if root.get("action").is_some() {
-            break;
-        }
-        let Some(wrapper_value) = root.remove(wrapper_key) else {
-            continue;
-        };
-        let Some(wrapper_map) =
-            take_nested_root_object(wrapper_key, wrapper_value, &mut repair_metadata)?
-        else {
-            continue;
-        };
-        if wrapper_map.get("action").is_none() {
-            root.insert(wrapper_key.to_string(), Value::Object(wrapper_map));
-            continue;
-        }
-        for (key, value) in wrapper_map {
-            root.entry(key).or_insert(value);
-        }
-        let mut event = tool_repair_event("fallback_normalization", "tool", "skill_manage");
-        event.insert("source".to_string(), serde_json::json!(wrapper_key));
-        event.insert("target".to_string(), serde_json::json!("$root"));
-        append_tool_repair_event_map(&mut repair_metadata, event);
-        break;
-    }
-
-    if matches!(root.get("action").and_then(Value::as_str), Some("create"))
-        && root.get("body").is_none()
-        && root.get("methodology").is_none()
-        && root.get("content").is_some()
-    {
-        if let Some(content) = root.remove("content") {
-            root.insert("body".to_string(), content);
-            let mut event = tool_repair_event("field_alias_normalization", "tool", "skill_manage");
-            event.insert("from".to_string(), serde_json::json!("content"));
-            event.insert("to".to_string(), serde_json::json!("body"));
-            append_tool_repair_event_map(&mut repair_metadata, event);
-        }
-    }
-
-    let mut methodology = take_object_like(&mut root, "methodology", &mut repair_metadata)?;
-    let mut frontmatter = take_object_like(&mut root, "frontmatter", &mut repair_metadata)?;
-
-    if let Some(methodology_map) = methodology.as_mut() {
-        let aliases = normalize_methodology_aliases(methodology_map);
-        if !aliases.is_empty() {
-            let mut event = tool_repair_event("alias_normalization", "tool", "skill_manage");
-            event.insert("aliases".to_string(), serde_json::json!(aliases));
-            event.insert("scope".to_string(), serde_json::json!("methodology"));
-            append_tool_repair_event_map(&mut repair_metadata, event);
-        }
-    }
-
-    if let Some(frontmatter_map) = frontmatter.as_mut() {
-        if let Some(target) =
-            normalize_frontmatter_shorthands(frontmatter_map, methodology.as_mut())
-        {
-            let mut event = tool_repair_event("fallback_normalization", "tool", "skill_manage");
-            event.insert(
-                "source".to_string(),
-                serde_json::json!("frontmatter.prerequisites"),
-            );
-            event.insert("target".to_string(), serde_json::json!(target));
-            append_tool_repair_event_map(&mut repair_metadata, event);
-        }
-    }
-
-    if let Some(methodology_map) = methodology {
-        root.insert("methodology".to_string(), Value::Object(methodology_map));
-    }
-    if let Some(frontmatter_map) = frontmatter {
-        root.insert("frontmatter".to_string(), Value::Object(frontmatter_map));
-    }
-
-    Ok(NormalizedSkillManageArgs {
-        args: Value::Object(root),
-        repair_metadata,
-    })
-}
-
-fn take_nested_root_object(
-    field: &str,
-    value: Value,
-    repair_metadata: &mut Metadata,
-) -> Result<Option<Map<String, Value>>, ToolError> {
-    match value {
-        Value::Null => Ok(None),
-        Value::Object(map) => Ok(Some(map)),
-        Value::String(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            let mut event = tool_repair_event(
-                agendao_types::RepairKind::JsonStringObjectParse.as_str(),
-                "tool",
-                "skill_manage",
-            );
-            event.insert("field".to_string(), serde_json::json!(field));
-            // P1.1: raw_shape is the JSON string, normalized_shape is the parsed object.
-            event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-            let parsed =
-                agendao_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
-                    ToolError::InvalidArguments(format!(
-                        "{field} must be a JSON object or object string"
-                    ))
-                })?;
-            event.insert("normalized_shape".to_string(), parsed.clone());
-            append_tool_repair_event_map(repair_metadata, event);
-            match parsed {
-                Value::Object(map) => Ok(Some(map)),
-                _ => Err(ToolError::InvalidArguments(format!(
-                    "{field} must be a JSON object or object string"
-                ))),
-            }
-        }
-        _ => Err(ToolError::InvalidArguments(format!(
-            "{field} must be a JSON object or object string"
-        ))),
-    }
-}
-
-fn take_object_like(
-    root: &mut Map<String, Value>,
-    field: &str,
-    repair_metadata: &mut Metadata,
-) -> Result<Option<Map<String, Value>>, ToolError> {
-    let Some(value) = root.remove(field) else {
-        return Ok(None);
-    };
-
-    let value = match value {
-        Value::Null => return Ok(None),
-        Value::String(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            let mut event = tool_repair_event(
-                agendao_types::RepairKind::JsonStringObjectParse.as_str(),
-                "tool",
-                "skill_manage",
-            );
-            event.insert("field".to_string(), serde_json::json!(field));
-            event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-            let parsed =
-                agendao_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
-                    ToolError::InvalidArguments(format!(
-                        "{field} must be a JSON object or object string"
-                    ))
-                })?;
-            event.insert("normalized_shape".to_string(), parsed.clone());
-            append_tool_repair_event_map(repair_metadata, event);
-            parsed
-        }
-        other => other,
-    };
-
-    match value {
-        Value::Object(map) => Ok(Some(map)),
-        _ => Err(ToolError::InvalidArguments(format!(
-            "{field} must be a JSON object or object string"
-        ))),
-    }
-}
-
-fn normalize_methodology_aliases(methodology: &mut Map<String, Value>) -> Vec<String> {
-    let mut aliases = Vec::new();
-    move_array_alias(
-        methodology,
-        "trigger_conditions",
-        "when_to_use",
-        &mut aliases,
-        "methodology",
-    );
-    move_array_alias(
-        methodology,
-        "steps",
-        "core_steps",
-        &mut aliases,
-        "methodology",
-    );
-
-    if let Some(boundaries) = methodology.remove("boundaries") {
-        if methodology.get("pitfalls").is_none() {
-            methodology.insert("pitfalls".to_string(), boundaries);
-        } else {
-            append_value_array(methodology, "pitfalls", boundaries);
-        }
-        aliases.push("methodology.boundaries->pitfalls".to_string());
-    }
-
-    if let Some(Value::Array(steps)) = methodology.get_mut("core_steps") {
-        for (index, step) in steps.iter_mut().enumerate() {
-            let Some(step_map) = step.as_object_mut() else {
-                continue;
-            };
-            if step_map.get("title").is_none() {
-                if let Some(name) = step_map.remove("name") {
-                    step_map.insert("title".to_string(), name);
-                    aliases.push(format!("methodology.core_steps[{index}].name->title"));
-                }
-            }
-            if step_map.get("action").is_none() {
-                if let Some(description) = step_map.remove("description") {
-                    step_map.insert("action".to_string(), description);
-                    aliases.push(format!(
-                        "methodology.core_steps[{index}].description->action"
-                    ));
-                }
-            }
-        }
-    }
-    aliases
-}
-
-fn normalize_frontmatter_shorthands(
-    frontmatter: &mut Map<String, Value>,
-    methodology: Option<&mut Map<String, Value>>,
-) -> Option<&'static str> {
-    let prerequisites_value = frontmatter.get("prerequisites").cloned()?;
-    let prerequisites = string_array_from_value(&prerequisites_value)?;
-
-    if let Some(methodology) = methodology {
-        frontmatter.remove("prerequisites");
-        append_string_array(methodology, "prerequisites", prerequisites);
-        return Some("methodology.prerequisites");
-    }
-
-    if frontmatter.get("required_commands").is_none() && strings_look_like_commands(&prerequisites)
-    {
-        frontmatter.remove("prerequisites");
-        frontmatter.insert(
-            "required_commands".to_string(),
-            Value::Array(prerequisites.into_iter().map(Value::String).collect()),
-        );
-        return Some("frontmatter.required_commands");
-    }
-    None
-}
-
-fn move_array_alias(
-    target: &mut Map<String, Value>,
-    from: &str,
-    to: &str,
-    aliases: &mut Vec<String>,
-    scope: &str,
-) {
-    if target.get(to).is_some() {
-        return;
-    }
-    if let Some(value) = target.remove(from) {
-        target.insert(to.to_string(), value);
-        aliases.push(format!("{scope}.{from}->{to}"));
-    }
-}
-
-fn append_value_array(target: &mut Map<String, Value>, key: &str, incoming: Value) {
-    let mut current = target
-        .remove(key)
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default();
-    if let Value::Array(mut incoming_items) = incoming {
-        current.append(&mut incoming_items);
-    }
-    target.insert(key.to_string(), Value::Array(current));
-}
-
-fn append_string_array(target: &mut Map<String, Value>, key: &str, incoming: Vec<String>) {
-    let mut current = target
-        .remove(key)
-        .and_then(|value| string_array_from_value(&value))
-        .unwrap_or_default();
-    for item in incoming {
-        if !current.iter().any(|existing| existing == &item) {
-            current.push(item);
-        }
-    }
-    target.insert(
-        key.to_string(),
-        Value::Array(current.into_iter().map(Value::String).collect()),
-    );
-}
-
-fn string_array_from_value(value: &Value) -> Option<Vec<String>> {
-    let Value::Array(items) = value else {
-        return None;
-    };
-    let values = items
-        .iter()
-        .map(|item| item.as_str().map(str::trim).map(str::to_string))
-        .collect::<Option<Vec<_>>>()?;
-    Some(values.into_iter().filter(|item| !item.is_empty()).collect())
-}
-
-fn strings_look_like_commands(values: &[String]) -> bool {
-    !values.is_empty()
-        && values.iter().all(|value| {
-            !value.chars().any(char::is_whitespace)
-                && value
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
-        })
 }
 
 fn write_action_label(action: &SkillWriteAction) -> &'static str {
@@ -1061,62 +659,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_accepts_stringified_methodology_and_frontmatter() {
-        let dir = tempdir().unwrap();
-        let tool = SkillManageTool;
-        let ctx = ToolContext::new(
-            "session".to_string(),
-            "message".to_string(),
-            dir.path().to_string_lossy().to_string(),
-        )
-        .with_ask(|_| async { Ok(()) });
-
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "action": "create",
-                    "name": "stringified-skill",
-                    "description": "structured from strings",
-                    "methodology": "{\"when_to_use\":[\"Use when the model stringifies nested JSON.\"],\"core_steps\":[{\"title\":\"Parse\",\"action\":\"Accept stringified methodology objects.\",\"outcome\":\"Create succeeds.\"}],\"success_criteria\":[\"The skill is created.\"],\"validation\":[\"Load the generated skill.\"],\"pitfalls\":[\"Do not require the model to emit a raw nested object every time.\"]}",
-                    "frontmatter": "{\"author\":\"agendao\",\"license\":\"MIT\",\"tags\":[\"skills\",\"ergonomics\"]}"
-                }),
-                ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.output.contains("stringified-skill"));
-        let authority = crate::skill_support::authority_for(dir.path(), None);
-        let loaded = authority
-            .load_skill_for_inspection("stringified-skill", None)
-            .unwrap();
-        let source = authority
-            .load_skill_source_for_inspection("stringified-skill", None)
-            .unwrap();
-        assert!(loaded.content.contains("## Core Steps"));
-        assert!(loaded
-            .content
-            .contains("Use when the model stringifies nested JSON."));
-        assert!(source.contains("author: agendao"));
-        assert!(source.contains("license: MIT"));
-        assert!(source.contains("tags:"));
-        assert!(source.contains("- skills"));
-        let repair_events = crate::tool_repair_events(&result.metadata);
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
-                && event.get("field").and_then(|value| value.as_str()) == Some("methodology")
-                && event.get("raw_shape").is_some()
-                && event.get("normalized_shape").is_some()
-        }));
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
-                && event.get("field").and_then(|value| value.as_str()) == Some("frontmatter")
-                && event.get("raw_shape").is_some()
-                && event.get("normalized_shape").is_some()
-        }));
-    }
-
-    #[tokio::test]
     async fn create_without_body_or_methodology_returns_helpful_shape() {
         let dir = tempdir().unwrap();
         let tool = SkillManageTool;
@@ -1146,192 +688,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_normalizes_common_methodology_aliases_and_frontmatter_prereq_lists() {
+    async fn rejects_noncanonical_input_shapes() {
         let dir = tempdir().unwrap();
         let tool = SkillManageTool;
-        let ctx = ToolContext::new(
-            "session".to_string(),
-            "message".to_string(),
-            dir.path().to_string_lossy().to_string(),
-        )
-        .with_ask(|_| async { Ok(()) });
+        let inputs = [
+            serde_json::json!("{\"action\":\"delete\",\"name\":\"legacy\"}"),
+            serde_json::json!({"payload": {"action": "delete", "name": "legacy"}}),
+            serde_json::json!({
+                "action": "create",
+                "name": "legacy",
+                "description": "legacy",
+                "content": "legacy body"
+            }),
+            serde_json::json!({
+                "action": "create",
+                "name": "legacy",
+                "description": "legacy",
+                "methodology": "{}"
+            }),
+            serde_json::json!({
+                "action": "write_file",
+                "name": "legacy",
+                "filepath": "references/api.md",
+                "content": "legacy"
+            }),
+        ];
 
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "action": "create",
-                    "name": "alias-friendly-skill",
-                    "description": "alias normalization",
-                    "methodology": {
-                        "trigger_conditions": ["Use when repeated audit work needs to be saved."],
-                        "boundaries": ["Do not use for one-off experiments."],
-                        "steps": [
-                            {
-                                "name": "Survey",
-                                "description": "Read the project and capture risk surfaces.",
-                                "outcome": "The scope is clear."
-                            }
-                        ],
-                        "success_criteria": ["The workflow is reusable."],
-                        "validation": ["Apply it to a second repository."]
-                    },
-                    "frontmatter": {
-                        "author": "agendao",
-                        "prerequisites": ["Ability to read the target codebase", "Basic security review literacy"]
-                    }
-                }),
-                ctx,
+        for input in inputs {
+            let ctx = ToolContext::new(
+                "session".to_string(),
+                "message".to_string(),
+                dir.path().to_string_lossy().to_string(),
             )
-            .await
-            .unwrap();
-
-        assert!(result.output.contains("alias-friendly-skill"));
-        let authority = crate::skill_support::authority_for(dir.path(), None);
-        let loaded = authority
-            .load_skill_for_inspection("alias-friendly-skill", None)
-            .unwrap();
-        assert!(loaded.content.contains("## When To Use"));
-        assert!(loaded
-            .content
-            .contains("Use when repeated audit work needs to be saved."));
-        assert!(loaded.content.contains("## Prerequisites"));
-        assert!(loaded
-            .content
-            .contains("Ability to read the target codebase"));
-        assert!(loaded.content.contains("## Core Steps"));
-        assert!(loaded.content.contains("**Survey**"));
-        assert!(loaded.content.contains("## Boundaries"));
-        assert!(loaded
-            .content
-            .contains("Do not use for one-off experiments."));
-        let repair_events = crate::tool_repair_events(&result.metadata);
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("alias_normalization")
-                && event
-                    .get("aliases")
-                    .and_then(|value| value.as_array())
-                    .is_some_and(|aliases| {
-                        aliases.iter().any(|value| {
-                            value.as_str() == Some("methodology.trigger_conditions->when_to_use")
-                        })
-                    })
-        }));
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("fallback_normalization")
-                && event.get("target").and_then(|value| value.as_str())
-                    == Some("methodology.prerequisites")
-        }));
-    }
-
-    #[tokio::test]
-    async fn create_treats_content_as_body_alias() {
-        let dir = tempdir().unwrap();
-        let tool = SkillManageTool;
-        let ctx = ToolContext::new(
-            "session".to_string(),
-            "message".to_string(),
-            dir.path().to_string_lossy().to_string(),
-        )
-        .with_ask(|_| async { Ok(()) });
-
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "action": "create",
-                    "name": "content-alias-skill",
-                    "description": "content alias",
-                    "content": "# Content Alias\n\nBody"
-                }),
-                ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.output.contains("content-alias-skill"));
-        let repair_events = crate::tool_repair_events(&result.metadata);
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("field_alias_normalization")
-                && event.get("from").and_then(|value| value.as_str()) == Some("content")
-                && event.get("to").and_then(|value| value.as_str()) == Some("body")
-        }));
-    }
-
-    #[tokio::test]
-    async fn create_accepts_root_json_string_payload() {
-        let dir = tempdir().unwrap();
-        let tool = SkillManageTool;
-        let ctx = ToolContext::new(
-            "session".to_string(),
-            "message".to_string(),
-            dir.path().to_string_lossy().to_string(),
-        )
-        .with_ask(|_| async { Ok(()) });
-
-        let result = tool
-            .execute(
-                serde_json::json!(
-                    "{\"action\":\"create\",\"name\":\"root-json-skill\",\"description\":\"root string\",\"methodology\":{\"when_to_use\":[\"Use when the model stringifies the whole tool payload.\"],\"core_steps\":[{\"title\":\"Parse\",\"action\":\"Accept the root JSON string.\",\"outcome\":\"Create succeeds.\"}],\"success_criteria\":[\"The skill is created.\"],\"validation\":[\"Load the created skill.\"],\"pitfalls\":[\"Do not reject a valid object string at the root.\"]}}"
-                ),
-                ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.output.contains("root-json-skill"));
-        let repair_events = crate::tool_repair_events(&result.metadata);
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
-                && event.get("field").and_then(|value| value.as_str()) == Some("$root")
-                && event.get("raw_shape").is_some()
-                && event.get("normalized_shape").is_some()
-        }));
-    }
-
-    #[tokio::test]
-    async fn create_unwraps_nested_payload_object() {
-        let dir = tempdir().unwrap();
-        let tool = SkillManageTool;
-        let ctx = ToolContext::new(
-            "session".to_string(),
-            "message".to_string(),
-            dir.path().to_string_lossy().to_string(),
-        )
-        .with_ask(|_| async { Ok(()) });
-
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "payload": {
-                        "action": "create",
-                        "name": "payload-skill",
-                        "description": "payload wrapper",
-                        "methodology": {
-                            "when_to_use": ["Use when arguments are wrapped under payload."],
-                            "core_steps": [
-                                {
-                                    "title": "Unwrap",
-                                    "action": "Promote payload fields to the root.",
-                                    "outcome": "The request uses the normal create shape."
-                                }
-                            ],
-                            "success_criteria": ["The skill is created."],
-                            "validation": ["Load the generated skill."],
-                            "pitfalls": ["Do not duplicate fields when root fields already exist."]
-                        }
-                    }
-                }),
-                ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.output.contains("payload-skill"));
-        let repair_events = crate::tool_repair_events(&result.metadata);
-        assert!(repair_events.iter().any(|event| {
-            event.get("kind").and_then(|value| value.as_str()) == Some("fallback_normalization")
-                && event.get("source").and_then(|value| value.as_str()) == Some("payload")
-                && event.get("target").and_then(|value| value.as_str()) == Some("$root")
-        }));
+            .with_ask(|_| async { Ok(()) });
+            assert!(matches!(
+                tool.execute(input, ctx).await,
+                Err(ToolError::InvalidArguments(_))
+            ));
+        }
     }
 
     #[test]
@@ -1340,8 +734,7 @@ mod tests {
         assert!(description.contains("complex task succeeded (5+ tool calls)"));
         assert!(description.contains("methodology"));
         assert!(description.contains("create"));
-        assert!(description.contains("nested objects or JSON strings"));
-        assert!(description.contains("Compatibility wrappers"));
+        assert!(description.contains("must be nested objects"));
         assert!(description.contains("Patch when instructions are stale"));
         assert!(description.contains("Confirm with the user before creating or deleting"));
         assert!(description.contains("Skip simple one-offs"));
@@ -1366,23 +759,6 @@ mod tests {
             .get("properties")
             .and_then(|value| value.get("methodology"))
             .expect("methodology property should exist");
-        let methodology_one_of = methodology
-            .get("oneOf")
-            .and_then(|value| value.as_array())
-            .expect("methodology should accept object or string");
-        assert_eq!(methodology_one_of.len(), 2);
-    }
-
-    #[test]
-    fn skill_manage_accepts_filepath_alias() {
-        let input: SkillManageInput = serde_json::from_value(serde_json::json!({
-            "action": "write_file",
-            "name": "pubmed-database",
-            "filepath": "references/api.md",
-            "content": "hello"
-        }))
-        .expect("filepath alias should deserialize");
-
-        assert_eq!(input.file_path.as_deref(), Some("references/api.md"));
+        assert_eq!(methodology.get("type"), Some(&serde_json::json!("object")));
     }
 }

@@ -3,8 +3,8 @@
 //! Every Signal has exactly one writer and one primary consumer.
 //! SessionStore is Clone (all Signals are Copy).
 
-use revue::prelude::*;
 use crate::store::types::*;
+use revue::prelude::*;
 
 /// Per-session state — all fields are Signals for reactive rendering.
 #[derive(Clone)]
@@ -135,9 +135,13 @@ impl SessionStore {
 
     /// Append a user message block.
     pub fn push_user_message(&self, id: &str, content: &str) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::UserPrompt {
-            id: id.into(), content: content.into(), fold: FoldState::Truncated,
-        }));
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptBlock::UserPrompt {
+                id: id.into(),
+                content: content.into(),
+                fold: FoldState::Truncated,
+            })
+        });
     }
 
     /// 回收一条乐观 push 的 user message（发送失败时由 `Event::Tick` drain 调用）。
@@ -153,15 +157,15 @@ impl SessionStore {
 
     /// Append or stream-append an assistant message.
     pub fn push_assistant_delta(&self, block_id: &str, text: &str) {
-        self.messages.update(|msgs| {
-            match msgs.last_mut() {
-                Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
-                    content.push_str(text);
-                }
-                _ => msgs.push(TranscriptBlock::AssistantMsg {
-                    id: block_id.into(), content: text.into(), fold: FoldState::Truncated,
-                }),
+        self.messages.update(|msgs| match msgs.last_mut() {
+            Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
+                content.push_str(text);
             }
+            _ => msgs.push(TranscriptBlock::AssistantMsg {
+                id: block_id.into(),
+                content: text.into(),
+                fold: FoldState::Truncated,
+            }),
         });
     }
 
@@ -190,30 +194,31 @@ impl SessionStore {
     ///
     /// 线上 `full` 块有两种真实形态（实测 wire 取证）：
     ///   1. **单生命周期累积流**：一次 `start` 后逐帧 `full`（累积全文，经
-    ///      direct_bridge coalesce 归并 delta 而来）——段内后续 `full` 必须
+    ///      local frontend receiver coalesce 归并 delta 而来）——段内后续 `full` 必须
     ///      按快照合并（前缀替换），否则追加出 "TheThe answer to..."（Bug B）。
     ///   2. **逐 chunk 生命周期**（deepseek-v4-flash / qwen 实测）：每个 chunk
     ///      都是独立 `start`/`full`/`end`，`full` 只携带该 chunk 的**片段**
     ///      （coalesce 的累积器被逐 chunk 的 End 清零）——`start` 后的首个
     ///      `full` 必须**追加**为新段，否则替换到只剩最后一截。
+    ///
     /// `start` 由 `mark_stream_segment_start` 记录；无 `start` 的 `full`
     /// （一次性错误文本、历史回填、turn-final 完成帧）按 merge 口径处理：
     /// 累积→前缀替换、重复→去重、多 part→拼接。
     pub fn apply_assistant_snapshot(&self, block_id: &str, text: &str) {
         let new_segment = self.take_stream_segment("m", block_id);
-        self.messages.update(|msgs| {
-            match msgs.last_mut() {
-                Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
-                    if new_segment {
-                        content.push_str(text);
-                    } else {
-                        merge_snapshot_text_in_place(content, text);
-                    }
+        self.messages.update(|msgs| match msgs.last_mut() {
+            Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
+                if new_segment {
+                    content.push_str(text);
+                } else {
+                    merge_snapshot_text_in_place(content, text);
                 }
-                _ => msgs.push(TranscriptBlock::AssistantMsg {
-                    id: block_id.into(), content: text.into(), fold: FoldState::Truncated,
-                }),
             }
+            _ => msgs.push(TranscriptBlock::AssistantMsg {
+                id: block_id.into(),
+                content: text.into(),
+                fold: FoldState::Truncated,
+            }),
         });
     }
 
@@ -224,14 +229,20 @@ impl SessionStore {
     /// blocks in the transcript.
     pub fn push_thinking(&self, id: &str, text: &str) {
         self.messages.update(|msgs| {
-            if let Some(TranscriptBlock::Thinking { id: bid, content, .. }) = msgs.last_mut() {
+            if let Some(TranscriptBlock::Thinking {
+                id: bid, content, ..
+            }) = msgs.last_mut()
+            {
                 if bid == id {
                     content.push_str(text);
                     return;
                 }
             }
             msgs.push(TranscriptBlock::Thinking {
-                id: id.into(), content: text.into(), fold: FoldState::Truncated, duration_ms: 0,
+                id: id.into(),
+                content: text.into(),
+                fold: FoldState::Truncated,
+                duration_ms: 0,
             });
         });
     }
@@ -241,7 +252,10 @@ impl SessionStore {
     pub fn apply_thinking_snapshot(&self, id: &str, text: &str) {
         let new_segment = self.take_stream_segment("r", id);
         self.messages.update(|msgs| {
-            if let Some(TranscriptBlock::Thinking { id: bid, content, .. }) = msgs.last_mut() {
+            if let Some(TranscriptBlock::Thinking {
+                id: bid, content, ..
+            }) = msgs.last_mut()
+            {
                 if bid == id {
                     if new_segment {
                         content.push_str(text);
@@ -252,7 +266,10 @@ impl SessionStore {
                 }
             }
             msgs.push(TranscriptBlock::Thinking {
-                id: id.into(), content: text.into(), fold: FoldState::Truncated, duration_ms: 0,
+                id: id.into(),
+                content: text.into(),
+                fold: FoldState::Truncated,
+                duration_ms: 0,
             });
         });
     }
@@ -264,11 +281,16 @@ impl SessionStore {
                 if let TranscriptBlock::ToolCall { id: bid, .. } = block {
                     // NOTE: 历史上这里因绑定遮蔽是 no-op（`*phase = phase.clone()` 自赋值），
                     // 保持既有行为；若要让 upsert 真正更新 phase，应改为 `*block_phase = phase`。
-                    if bid == id { return; }
+                    if bid == id {
+                        return;
+                    }
                 }
             }
             msgs.push(TranscriptBlock::ToolCall {
-                id: id.into(), name: name.into(), params: params.into(), phase,
+                id: id.into(),
+                name: name.into(),
+                params: params.into(),
+                phase,
             });
         });
     }
@@ -284,20 +306,36 @@ impl SessionStore {
     ///
     /// 例外：`diff` 预览（edit/write/apply_patch）默认 Truncated——diff 就是
     /// 用户要审阅的本体（3 行预览 + hint），不是背景噪音。
-    pub fn push_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool, diff: Option<DiffPreview>) {
+    pub fn push_tool_result(
+        &self,
+        id: &str,
+        name: &str,
+        result: &str,
+        is_error: bool,
+        diff: Option<DiffPreview>,
+    ) {
         self.messages.update(|msgs| {
-            let fold = if diff.is_some() { FoldState::Truncated } else { FoldState::Folded };
+            let fold = if diff.is_some() {
+                FoldState::Truncated
+            } else {
+                FoldState::Folded
+            };
             let block = TranscriptBlock::ToolResult {
-                id: id.into(), name: name.into(), result: result.into(), is_error, fold, diff,
+                id: id.into(),
+                name: name.into(),
+                result: result.into(),
+                is_error,
+                fold,
+                diff,
             };
             // 插到对应 ToolCall 之后（同 tool_call_id），让调用与结果紧邻配对显示，
             // 而非 append 末尾——避免 LLM 并行发起多个 tool 时调用与结果割裂
             // （先一串 call、很久后一串 result）。找不到对应 ToolCall（事件乱序
             // 等异常）时 fallback append 末尾，保证结果不丢。ToolCall 与 ToolResult
             // 同 id 共存不冲突：fold/phase 查找均按 block 类型过滤。
-            let pos = msgs.iter().rposition(|b| {
-                matches!(b, TranscriptBlock::ToolCall { id: bid, .. } if bid == id)
-            });
+            let pos = msgs
+                .iter()
+                .rposition(|b| matches!(b, TranscriptBlock::ToolCall { id: bid, .. } if bid == id));
             match pos {
                 Some(i) => msgs.insert(i + 1, block),
                 None => msgs.push(block),
@@ -307,30 +345,45 @@ impl SessionStore {
 
     /// Append a stage update with optional JSON metadata.
     pub fn push_stage(&self, id: &str, name: &str, status: &str, metadata: Option<String>) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::StageUpdate {
-            id: id.into(), name: name.into(), status: status.into(), metadata,
-        }));
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptBlock::StageUpdate {
+                id: id.into(),
+                name: name.into(),
+                status: status.into(),
+                metadata,
+            })
+        });
     }
 
     /// Append a skill activation notice.
     pub fn push_skill(&self, id: &str, name: &str) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::SkillActivated {
-            id: id.into(), name: name.into(),
-        }));
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptBlock::SkillActivated {
+                id: id.into(),
+                name: name.into(),
+            })
+        });
     }
 
     /// Append a compaction hint.
     pub fn push_compaction(&self, id: &str, before: u64, after: u64) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::CompactionHint {
-            id: id.into(), before_tokens: before, after_tokens: after,
-        }));
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptBlock::CompactionHint {
+                id: id.into(),
+                before_tokens: before,
+                after_tokens: after,
+            })
+        });
     }
 
     /// Append a system notice.
     pub fn push_notice(&self, id: &str, text: &str) {
-        self.messages.update(|msgs| msgs.push(TranscriptBlock::SystemNotice {
-            id: id.into(), text: text.into(),
-        }));
+        self.messages.update(|msgs| {
+            msgs.push(TranscriptBlock::SystemNotice {
+                id: id.into(),
+                text: text.into(),
+            })
+        });
     }
 
     /// Push or update a todo list block.  Deduplicates by `block_id`:
@@ -357,7 +410,10 @@ impl SessionStore {
             // Replace existing TodoList with same id, or append
             if let Some(TranscriptBlock::TodoList { id, .. }) = msgs.last() {
                 if id == block_id {
-                    if let Some(TranscriptBlock::TodoList { items: ref mut old, .. }) = msgs.last_mut() {
+                    if let Some(TranscriptBlock::TodoList {
+                        items: ref mut old, ..
+                    }) = msgs.last_mut()
+                    {
                         *old = items;
                         return;
                     }
@@ -393,22 +449,24 @@ impl SessionStore {
 
     // ── 水：遥测更新（EventBus → Signals）──
 
-    pub fn set_token_usage(&self, input: u64, output: u64, reasoning: u64,
-                           cache_read: u64, cache_miss: u64, cache_write: u64,
-                           context_tokens: u64, total_cost: f64) {
-        self.token_usage.set(TokenUsage {
-            input, output, reasoning, total: input + output + reasoning,
-            cache_read, cache_miss, cache_write,
-            context_tokens, total_cost,
-        });
+    pub fn set_token_usage(&self, usage: TokenUsage) {
+        self.token_usage.set(usage);
     }
 
     pub fn set_cache_stats(&self, hits: u64, misses: u64, writes: u64) {
-        self.cache_stats.set(CacheStats { hits, misses, writes });
+        self.cache_stats.set(CacheStats {
+            hits,
+            misses,
+            writes,
+        });
     }
 
     pub fn set_pricing(&self, input_per_1k: f64, output_per_1k: f64) {
-        self.pricing.set(Pricing { input_per_1k, output_per_1k, total: 0.0 });
+        self.pricing.set(Pricing {
+            input_per_1k,
+            output_per_1k,
+            total: 0.0,
+        });
     }
 
     pub fn set_context_pct(&self, pct: u8) {
@@ -416,7 +474,11 @@ impl SessionStore {
     }
 
     pub fn set_mcp_lsp(&self, mcp_connected: usize, mcp_total: usize, lsp_active: Vec<String>) {
-        self.mcp_lsp.set(McpLspInfo { mcp_connected, mcp_total, lsp_active });
+        self.mcp_lsp.set(McpLspInfo {
+            mcp_connected,
+            mcp_total,
+            lsp_active,
+        });
     }
 
     /// `FrontendEvent::DiffReplaced` 落地（replace 语义：全量替换，不累加）。
@@ -439,12 +501,17 @@ impl SessionStore {
     pub fn set_active_tool(&self, id: &str, name: &str, phase: ToolPhase) {
         self.active_tools.update(|tools| {
             tools.retain(|t| t.id != id);
-            tools.push(ActiveTool { id: id.into(), name: name.into(), phase });
+            tools.push(ActiveTool {
+                id: id.into(),
+                name: name.into(),
+                phase,
+            });
         });
     }
 
     pub fn remove_active_tool(&self, id: &str) {
-        self.active_tools.update(|tools| tools.retain(|t| t.id != id));
+        self.active_tools
+            .update(|tools| tools.retain(|t| t.id != id));
     }
 
     // ── 木：输入附面（附件）──
@@ -550,28 +617,40 @@ impl SessionStore {
         let msgs = self.messages.get();
         let mut idx = self.transcript_cursor.get().unwrap_or(msgs.len());
         loop {
-            if idx == 0 { idx = msgs.len(); }
-            if idx == 0 { return; }
+            if idx == 0 {
+                idx = msgs.len();
+            }
+            if idx == 0 {
+                return;
+            }
             idx -= 1;
-            if Self::is_foldable(&msgs[idx]) { break; }
+            if Self::is_foldable(&msgs[idx]) {
+                break;
+            }
         }
         self.transcript_cursor.set(Some(idx));
     }
 
     pub fn cursor_next_foldable(&self) {
         let msgs = self.messages.get();
-        if msgs.is_empty() { return; }
+        if msgs.is_empty() {
+            return;
+        }
         let mut idx = self.transcript_cursor.get().map(|i| i + 1).unwrap_or(0);
         let start = idx;
         loop {
-            if idx >= msgs.len() { idx = 0; }
+            if idx >= msgs.len() {
+                idx = 0;
+            }
             if Self::is_foldable(&msgs[idx]) {
                 self.transcript_cursor.set(Some(idx));
                 return;
             }
             idx += 1;
             // Loop guard: if we walked the whole list back to the start.
-            if idx == start { return; }
+            if idx == start {
+                return;
+            }
         }
     }
 
@@ -579,9 +658,9 @@ impl SessionStore {
         matches!(
             block,
             TranscriptBlock::UserPrompt { .. }
-            | TranscriptBlock::Thinking { .. }
-            | TranscriptBlock::ToolResult { .. }
-            | TranscriptBlock::AssistantMsg { .. }
+                | TranscriptBlock::Thinking { .. }
+                | TranscriptBlock::ToolResult { .. }
+                | TranscriptBlock::AssistantMsg { .. }
         )
     }
 
@@ -590,7 +669,9 @@ impl SessionStore {
     /// plus a 1-row gap (matching the `vstack().gap(1)` the renderer
     /// uses). Returns 0 if no cursor is set.
     pub fn cursor_top_row(&self) -> u16 {
-        let Some(cursor) = self.transcript_cursor.get() else { return 0 };
+        let Some(cursor) = self.transcript_cursor.get() else {
+            return 0;
+        };
         let msgs = self.messages.get();
         msgs.iter()
             .take(cursor)
@@ -621,14 +702,18 @@ impl SessionStore {
     /// upper third of the viewport (mirroring how vim's `zz` recenter
     /// works after a jump).
     pub fn ensure_cursor_visible(&self, viewport_h: u16) {
-        let Some(cursor) = self.transcript_cursor.get() else { return };
+        let Some(cursor) = self.transcript_cursor.get() else {
+            return;
+        };
         // U13⑤：原 `cursor == 0 → return` 假设"首块总在 scroll_top=0
         // 可见"——错误：钉底时 scroll_top=max_offset，首块远在视口外，
         // j/k 绕回首块时视口不跟随（块被折叠/展开却看不见）。删掉该
         // 早退，下方数学天然处理：cursor_top=0 → new_scroll_top=0 →
         // offset=max_offset（真实顶）。
         let total = self.total_transcript_height();
-        if total <= viewport_h { return; } // everything fits, nothing to scroll
+        if total <= viewport_h {
+            return;
+        } // everything fits, nothing to scroll
         let max_offset = total.saturating_sub(viewport_h);
         let user_offset = self.scroll_offset.get().min(max_offset);
         let scroll_top = max_offset.saturating_sub(user_offset);
@@ -684,21 +769,34 @@ impl SessionStore {
         if idx.is_none() {
             // Find the most recent foldable block.
             for i in (0..msgs.len()).rev() {
-                if Self::is_foldable(&msgs[i]) { idx = Some(i); break; }
+                if Self::is_foldable(&msgs[i]) {
+                    idx = Some(i);
+                    break;
+                }
             }
         }
-        let Some(i) = idx else { return false; };
+        let Some(i) = idx else {
+            return false;
+        };
         // 单井聚合：cursor 落在折叠的 ToolResult 组内（段首 fold=Folded 且项数 >
         // TOOL_GROUP_PREVIEW）时，Space 展开整组（切段首 fold）——让「[+N more]」
         // 行也能点开。组未折叠（项数 ≤ 阈值，或段首已 Expanded）则切 cursor 块自己
         // 的 fold（段首块的 fold 即组开关：展开态下 Space 折叠组）。
         let expand_group_head = Self::tool_group_head(&msgs, i).and_then(|(head, len)| {
             use crate::screen::session::TOOL_GROUP_PREVIEW;
-            let collapsed = len > TOOL_GROUP_PREVIEW && matches!(
-                &msgs[head],
-                TranscriptBlock::ToolResult { fold: FoldState::Folded, .. }
-            );
-            if collapsed { Some(head) } else { None }
+            let collapsed = len > TOOL_GROUP_PREVIEW
+                && matches!(
+                    &msgs[head],
+                    TranscriptBlock::ToolResult {
+                        fold: FoldState::Folded,
+                        ..
+                    }
+                );
+            if collapsed {
+                Some(head)
+            } else {
+                None
+            }
         });
         drop(msgs);
         let target = expand_group_head.unwrap_or(i);
@@ -707,12 +805,16 @@ impl SessionStore {
         // 上时它是无声 no-op）——不切则如实报 false，让 Space 落回编辑器。
         let toggleable = {
             let msgs = self.messages.get();
-            matches!(msgs.get(target), Some(
-                TranscriptBlock::UserPrompt { .. }
-                | TranscriptBlock::Thinking { .. }
-                | TranscriptBlock::ToolResult { .. }
-                | TranscriptBlock::TodoList { .. }
-                | TranscriptBlock::AssistantMsg { .. }))
+            matches!(
+                msgs.get(target),
+                Some(
+                    TranscriptBlock::UserPrompt { .. }
+                        | TranscriptBlock::Thinking { .. }
+                        | TranscriptBlock::ToolResult { .. }
+                        | TranscriptBlock::TodoList { .. }
+                        | TranscriptBlock::AssistantMsg { .. }
+                )
+            )
         };
         if !toggleable {
             return false;
@@ -750,9 +852,7 @@ impl SessionStore {
         let msgs = self.messages.get();
         let block = msgs.get(cursor)?;
         match block {
-            TranscriptBlock::UserPrompt { id, content, .. } => {
-                Some((id.clone(), content.clone()))
-            }
+            TranscriptBlock::UserPrompt { id, content, .. } => Some((id.clone(), content.clone())),
             _ => None,
         }
     }
@@ -804,7 +904,12 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
             }
             out
         }
-        TranscriptBlock::StageUpdate { name, status, metadata, .. } => {
+        TranscriptBlock::StageUpdate {
+            name,
+            status,
+            metadata,
+            ..
+        } => {
             let mut out = format!("Stage: {name} — {status}");
             if let Some(meta) = metadata {
                 out.push('\n');
@@ -812,7 +917,11 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
             }
             out
         }
-        TranscriptBlock::CompactionHint { before_tokens, after_tokens, .. } => {
+        TranscriptBlock::CompactionHint {
+            before_tokens,
+            after_tokens,
+            ..
+        } => {
             format!("Compaction: {before_tokens} → {after_tokens} tokens")
         }
         TranscriptBlock::SystemNotice { text, .. } => format!("Notice: {text}"),
@@ -821,7 +930,7 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
 }
 
 /// 快照归并（与服务端 `merge_snapshot_text_in_place` 同口径——
-/// routes/event_stream.rs 与 session_runtime/direct_bridge.rs 两处副本的
+/// routes/event_stream.rs 与 session_runtime/local_frontend.rs 两处副本的
 /// 第三种消费方副本），原地增量更新版本。
 ///
 /// 逐字节等价于旧的"分配新 String 返回"版本：`merged` 在所有分支下都以
@@ -1010,7 +1119,7 @@ mod tests {
     fn merge_snapshot_in_place_allocates_linear_not_quadratic() {
         const CHUNKS: usize = 400;
         const CHUNK: &str = "abcdefghijklmnopqrstuvwxy"; // 25 bytes
-        // 预先构造好输入帧（不计入测量）：第 i 帧是长度 i*25 的累积快照。
+                                                         // 预先构造好输入帧（不计入测量）：第 i 帧是长度 i*25 的累积快照。
         let mut frames = Vec::with_capacity(CHUNKS);
         let mut truth = String::new();
         for _ in 0..CHUNKS {
@@ -1048,7 +1157,7 @@ mod tests {
         let mut truth = String::new();
 
         for step in 0..400 {
-            let new_segment = rng.next() % 10 == 0;
+            let new_segment = rng.next().is_multiple_of(10);
             if new_segment {
                 s.mark_stream_segment_start("m", block_id);
             }
@@ -1160,7 +1269,12 @@ mod tests {
         // 各自的 ToolCall（配对相邻），而非全 append 末尾造成调用与结果割裂。
         let s = SessionStore::new();
         for i in 1..=5 {
-            s.upsert_tool_call(&format!("t{i}"), "read", &format!("f{i}"), ToolPhase::Starting);
+            s.upsert_tool_call(
+                &format!("t{i}"),
+                "read",
+                &format!("f{i}"),
+                ToolPhase::Starting,
+            );
         }
         for i in 1..=5 {
             s.upsert_tool_call(&format!("t{i}"), "read", "", ToolPhase::Done);
@@ -1171,8 +1285,12 @@ mod tests {
         // 期望顺序：TC1, TR1, TC2, TR2, …, TC5, TR5
         for i in 0..5 {
             match (&msgs[i * 2], &msgs[i * 2 + 1]) {
-                (TranscriptBlock::ToolCall { id: cid, .. },
-                 TranscriptBlock::ToolResult { id: rid, result, .. }) => {
+                (
+                    TranscriptBlock::ToolCall { id: cid, .. },
+                    TranscriptBlock::ToolResult {
+                        id: rid, result, ..
+                    },
+                ) => {
                     assert_eq!(cid, rid, "pair {} id mismatch", i);
                     assert_eq!(result, &format!("out{}", i + 1));
                 }
@@ -1196,9 +1314,16 @@ mod tests {
     #[test]
     fn diff_result_defaults_truncated_and_summary_replaces() {
         let s = SessionStore::new();
-        s.push_tool_result("t1", "edit", "", false, Some(DiffPreview {
-            text: "+a\n-b".into(), truncated: false,
-        }));
+        s.push_tool_result(
+            "t1",
+            "edit",
+            "",
+            false,
+            Some(DiffPreview {
+                text: "+a\n-b".into(),
+                truncated: false,
+            }),
+        );
         s.push_tool_result("t2", "read", "out", false, None);
         let msgs = s.messages.get();
         match &msgs[0] {
@@ -1216,13 +1341,23 @@ mod tests {
             _ => panic!("expected ToolResult"),
         }
 
-        s.set_diff_summary(vec![
-            DiffStat { path: "a.rs".into(), additions: 1, deletions: 2 },
-        ]);
+        s.set_diff_summary(vec![DiffStat {
+            path: "a.rs".into(),
+            additions: 1,
+            deletions: 2,
+        }]);
         assert_eq!(s.diff_summary.get().len(), 1);
         s.set_diff_summary(vec![
-            DiffStat { path: "b.rs".into(), additions: 3, deletions: 0 },
-            DiffStat { path: "c.rs".into(), additions: 0, deletions: 1 },
+            DiffStat {
+                path: "b.rs".into(),
+                additions: 3,
+                deletions: 0,
+            },
+            DiffStat {
+                path: "c.rs".into(),
+                additions: 0,
+                deletions: 1,
+            },
         ]);
         let summary = s.diff_summary.get();
         assert_eq!(summary.len(), 2, "replace 而非累加");
@@ -1245,9 +1380,15 @@ mod tests {
         s.push_thinking("m1", "step 2 ");
         s.push_thinking("m1", "step 3");
         let msgs = s.messages.get();
-        assert_eq!(count_thinking(&msgs), 1, "consecutive same-id reasoning must merge into one Thinking");
+        assert_eq!(
+            count_thinking(&msgs),
+            1,
+            "consecutive same-id reasoning must merge into one Thinking"
+        );
         match &msgs[0] {
-            TranscriptBlock::Thinking { content, .. } => assert_eq!(content, "step 1 step 2 step 3"),
+            TranscriptBlock::Thinking { content, .. } => {
+                assert_eq!(content, "step 1 step 2 step 3")
+            }
             _ => panic!("expected Thinking"),
         }
     }
@@ -1264,8 +1405,11 @@ mod tests {
         s.push_assistant_delta("m1", "先输出一部分");
         s.push_thinking("m1", "再继续思考");
         let msgs = s.messages.get();
-        assert_eq!(count_thinking(&msgs), 2,
-            "interleaved assistant delta keeps reasoning as 2 separate Thinking blocks");
+        assert_eq!(
+            count_thinking(&msgs),
+            2,
+            "interleaved assistant delta keeps reasoning as 2 separate Thinking blocks"
+        );
     }
 
     #[test]
@@ -1278,8 +1422,11 @@ mod tests {
         s.upsert_tool_call("t1", "read", "f.txt", ToolPhase::Done);
         s.push_thinking("m1", "思考阶段二");
         let msgs = s.messages.get();
-        assert_eq!(count_thinking(&msgs), 2,
-            "interleaved tool call keeps reasoning as 2 separate Thinking blocks");
+        assert_eq!(
+            count_thinking(&msgs),
+            2,
+            "interleaved tool call keeps reasoning as 2 separate Thinking blocks"
+        );
     }
 
     #[test]
@@ -1289,7 +1436,11 @@ mod tests {
         s.push_thinking("m1", "第一轮思考");
         s.push_thinking("m2", "第二轮思考");
         let msgs = s.messages.get();
-        assert_eq!(count_thinking(&msgs), 2, "different-id reasoning yields separate Thinking blocks");
+        assert_eq!(
+            count_thinking(&msgs),
+            2,
+            "different-id reasoning yields separate Thinking blocks"
+        );
     }
 
     #[test]
@@ -1361,7 +1512,17 @@ mod tests {
     #[test]
     fn token_usage_update() {
         let s = SessionStore::new();
-        s.set_token_usage(100, 50, 20, 10, 5, 3, 2000, 0.015);
+        s.set_token_usage(TokenUsage {
+            input: 100,
+            output: 50,
+            reasoning: 20,
+            total: 170,
+            cache_read: 10,
+            cache_miss: 5,
+            cache_write: 3,
+            context_tokens: 2000,
+            total_cost: 0.015,
+        });
         let usage = s.token_usage.get();
         assert_eq!(usage.input, 100);
         assert_eq!(usage.output, 50);
@@ -1371,7 +1532,13 @@ mod tests {
     #[test]
     fn attachments_add_and_clear() {
         let s = SessionStore::new();
-        s.add_attachment(Attachment { name: "f".into(), kind: AttachmentKind::File { path: "p".into(), lines: 10 } });
+        s.add_attachment(Attachment {
+            name: "f".into(),
+            kind: AttachmentKind::File {
+                path: "p".into(),
+                lines: 10,
+            },
+        });
         assert_eq!(s.attachments.get().len(), 1);
         s.clear_attachments();
         assert!(s.attachments.get().is_empty());
@@ -1421,7 +1588,10 @@ mod tests {
 
         // cursor 在 UserPrompt → Some
         s.transcript_cursor.set(Some(0));
-        assert_eq!(s.cursor_user_prompt(), Some(("u1".into(), "edit me".into())));
+        assert_eq!(
+            s.cursor_user_prompt(),
+            Some(("u1".into(), "edit me".into()))
+        );
 
         // cursor 在 ToolResult → None（光标范围里有这个 block 但不是 UserPrompt）
         s.transcript_cursor.set(Some(1));
@@ -1454,7 +1624,10 @@ mod tests {
 
         // AssistantMsg
         s.transcript_cursor.set(Some(1));
-        assert_eq!(s.cursor_block_to_text().as_deref(), Some("Assistant: world"));
+        assert_eq!(
+            s.cursor_block_to_text().as_deref(),
+            Some("Assistant: world")
+        );
 
         // ToolCall
         s.transcript_cursor.set(Some(2));
@@ -1465,7 +1638,10 @@ mod tests {
 
         // Thinking
         s.transcript_cursor.set(Some(3));
-        assert_eq!(s.cursor_block_to_text().as_deref(), Some("Thinking: ponder"));
+        assert_eq!(
+            s.cursor_block_to_text().as_deref(),
+            Some("Thinking: ponder")
+        );
 
         // SkillActivated（U18②：原 None，现可读序列化）
         s.transcript_cursor.set(Some(4));
@@ -1482,28 +1658,124 @@ mod tests {
     fn block_to_text_covers_all_variants() {
         use crate::store::types::{FoldState, TodoStatus, ToolPhase};
         let cases: Vec<(TranscriptBlock, &str)> = vec![
-            (TranscriptBlock::UserPrompt { id: "1".into(), content: "hi".into(), fold: FoldState::Expanded }, "User: hi"),
-            (TranscriptBlock::AssistantMsg { id: "2".into(), content: "yo".into(), fold: FoldState::Expanded }, "Assistant: yo"),
-            (TranscriptBlock::ToolCall { id: "3".into(), name: "Bash".into(), params: "ls".into(), phase: ToolPhase::Done }, "Tool: Bash(ls)"),
-            (TranscriptBlock::ToolResult { id: "4".into(), name: "Bash".into(), result: "ok".into(), is_error: false, fold: FoldState::Expanded, diff: None }, "Result [Bash]: ok"),
-            (TranscriptBlock::Thinking { id: "5".into(), content: "hmm".into(), fold: FoldState::Expanded, duration_ms: 0 }, "Thinking: hmm"),
-            (TranscriptBlock::SkillActivated { id: "6".into(), name: "pdf".into() }, "Skill: pdf"),
-            (TranscriptBlock::TodoList {
-                id: "7".into(),
-                items: vec![
-                    TodoItem { content: "done".into(), status: TodoStatus::Completed },
-                    TodoItem { content: "doing".into(), status: TodoStatus::InProgress },
-                    TodoItem { content: "todo".into(), status: TodoStatus::Pending },
-                    TodoItem { content: "dropped".into(), status: TodoStatus::Cancelled },
-                ],
-                fold: FoldState::Expanded,
-                summary: None,
-            }, "Todo:\n- [x] done\n- [~] doing\n- [ ] todo\n- [-] dropped"),
-            (TranscriptBlock::StageUpdate { id: "8".into(), name: "plan".into(), status: "running".into(), metadata: None }, "Stage: plan — running"),
-            (TranscriptBlock::StageUpdate { id: "9".into(), name: "exec".into(), status: "done".into(), metadata: Some("{\"k\":1}".into()) }, "Stage: exec — done\n{\"k\":1}"),
-            (TranscriptBlock::CompactionHint { id: "10".into(), before_tokens: 9000, after_tokens: 3000 }, "Compaction: 9000 → 3000 tokens"),
-            (TranscriptBlock::SystemNotice { id: "11".into(), text: "note".into() }, "Notice: note"),
-            (TranscriptBlock::ImageRef { id: "12".into(), mime: "image/png".into() }, "[Image: image/png]"),
+            (
+                TranscriptBlock::UserPrompt {
+                    id: "1".into(),
+                    content: "hi".into(),
+                    fold: FoldState::Expanded,
+                },
+                "User: hi",
+            ),
+            (
+                TranscriptBlock::AssistantMsg {
+                    id: "2".into(),
+                    content: "yo".into(),
+                    fold: FoldState::Expanded,
+                },
+                "Assistant: yo",
+            ),
+            (
+                TranscriptBlock::ToolCall {
+                    id: "3".into(),
+                    name: "Bash".into(),
+                    params: "ls".into(),
+                    phase: ToolPhase::Done,
+                },
+                "Tool: Bash(ls)",
+            ),
+            (
+                TranscriptBlock::ToolResult {
+                    id: "4".into(),
+                    name: "Bash".into(),
+                    result: "ok".into(),
+                    is_error: false,
+                    fold: FoldState::Expanded,
+                    diff: None,
+                },
+                "Result [Bash]: ok",
+            ),
+            (
+                TranscriptBlock::Thinking {
+                    id: "5".into(),
+                    content: "hmm".into(),
+                    fold: FoldState::Expanded,
+                    duration_ms: 0,
+                },
+                "Thinking: hmm",
+            ),
+            (
+                TranscriptBlock::SkillActivated {
+                    id: "6".into(),
+                    name: "pdf".into(),
+                },
+                "Skill: pdf",
+            ),
+            (
+                TranscriptBlock::TodoList {
+                    id: "7".into(),
+                    items: vec![
+                        TodoItem {
+                            content: "done".into(),
+                            status: TodoStatus::Completed,
+                        },
+                        TodoItem {
+                            content: "doing".into(),
+                            status: TodoStatus::InProgress,
+                        },
+                        TodoItem {
+                            content: "todo".into(),
+                            status: TodoStatus::Pending,
+                        },
+                        TodoItem {
+                            content: "dropped".into(),
+                            status: TodoStatus::Cancelled,
+                        },
+                    ],
+                    fold: FoldState::Expanded,
+                    summary: None,
+                },
+                "Todo:\n- [x] done\n- [~] doing\n- [ ] todo\n- [-] dropped",
+            ),
+            (
+                TranscriptBlock::StageUpdate {
+                    id: "8".into(),
+                    name: "plan".into(),
+                    status: "running".into(),
+                    metadata: None,
+                },
+                "Stage: plan — running",
+            ),
+            (
+                TranscriptBlock::StageUpdate {
+                    id: "9".into(),
+                    name: "exec".into(),
+                    status: "done".into(),
+                    metadata: Some("{\"k\":1}".into()),
+                },
+                "Stage: exec — done\n{\"k\":1}",
+            ),
+            (
+                TranscriptBlock::CompactionHint {
+                    id: "10".into(),
+                    before_tokens: 9000,
+                    after_tokens: 3000,
+                },
+                "Compaction: 9000 → 3000 tokens",
+            ),
+            (
+                TranscriptBlock::SystemNotice {
+                    id: "11".into(),
+                    text: "note".into(),
+                },
+                "Notice: note",
+            ),
+            (
+                TranscriptBlock::ImageRef {
+                    id: "12".into(),
+                    mime: "image/png".into(),
+                },
+                "[Image: image/png]",
+            ),
         ];
         assert_eq!(cases.len(), 12, "13 变体减 StageUpdate 两例 = 12 条用例");
         for (block, want) in cases {

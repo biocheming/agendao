@@ -104,7 +104,7 @@ fn hub_store_persists_operational_snapshots() {
                 runtime_success_count: 2,
                 runtime_error_count: 0,
                 last_stage_id: Some("stage_ui".to_string()),
-                last_tool_name: Some("task".to_string()),
+                last_tool_name: Some("bash".to_string()),
                 last_category: Some("frontend".to_string()),
             }),
             writes: Some(agendao_types::SkillWriteLedgerEntry {
@@ -291,7 +291,7 @@ fn governance_records_runtime_skill_usage_in_operational_snapshot() {
     let snapshot = governance
         .record_runtime_skill_usage(
             "frontend-ui-ux",
-            "task",
+            "bash",
             Some("stage_exec"),
             Some("frontend"),
             false,
@@ -312,7 +312,7 @@ fn governance_records_runtime_skill_usage_in_operational_snapshot() {
             .usage
             .as_ref()
             .and_then(|entry| entry.last_tool_name.as_deref()),
-        Some("task")
+        Some("bash")
     );
 }
 
@@ -597,7 +597,7 @@ fn governance_negative_entropy_review_candidate_tracks_canonical_family_owner() 
     governance
         .record_runtime_skill_usage(
             "provider-refresh",
-            "task",
+            "bash",
             Some("implementation"),
             Some("ops"),
             false,
@@ -896,7 +896,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -912,7 +911,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -923,7 +921,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -932,7 +930,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -971,7 +969,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -987,7 +984,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -998,7 +994,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -1007,7 +1003,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -1058,7 +1054,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1074,7 +1069,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1085,7 +1079,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -1094,7 +1088,7 @@ Review code changes carefully and verify evidence before reporting.
     governance
         .record_runtime_skill_usage(
             "repo-review",
-            "task",
+            "bash",
             Some("implementation"),
             Some("review"),
             false,
@@ -1159,7 +1153,6 @@ related_skills: [provider-refresh]
 metadata:
   agendao:
     requires_tools: [read, http]
-    stage_filter: [implementation]
 ---
 Refresh provider credentials and configuration safely across GitLab integrations.
 "#,
@@ -1187,7 +1180,7 @@ Refresh provider credentials and configuration safely across GitLab integrations
     assert!(edge
         .reasons
         .iter()
-        .any(|reason| reason.contains("narrows runtime stage scope")));
+        .any(|reason| reason.contains("runtime tool requirements")));
 
     let groups = governance.skill_capability_group_candidates().unwrap();
     let family = groups
@@ -1218,7 +1211,6 @@ related_skills: [frontend-ui-a11y]
 metadata:
   agendao:
     requires_tools: [read]
-    stage_filter: [implementation]
 ---
 Shape interface flow maps and layout decisions for shipped product screens.
 "#,
@@ -1235,7 +1227,6 @@ related_skills: [frontend-ui-ux]
 metadata:
   agendao:
     requires_tools: [grep]
-    stage_filter: [implementation]
 ---
 Audit accessibility semantics and keyboard focus behavior for shipped product screens.
 "#,
@@ -1379,7 +1370,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1403,7 +1393,6 @@ Review repository changes carefully and verify evidence before reporting.
                             fallback_for_tools: Vec::new(),
                             requires_toolsets: Vec::new(),
                             fallback_for_toolsets: Vec::new(),
-                            stage_filter: vec!["implementation".to_string()],
                         }),
                     }),
                     ..SkillFrontmatterPatch::default()
@@ -1451,7 +1440,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1469,7 +1457,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,

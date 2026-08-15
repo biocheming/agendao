@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use agendao_core::bus::Bus;
-use agendao_orchestrator::message_title_request;
+use agendao_execution_types::message_title_request;
 use agendao_provider::{Content, Message, Provider, Role};
 
 use crate::message_v2::{MessageInfo, MessageWithParts, Part, StepFinishPart, StepStartPart};

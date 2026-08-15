@@ -47,12 +47,12 @@ impl RepoHistoryOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RepoHistoryInput {
     operation: RepoHistoryOperation,
     #[serde(default)]
     path: Option<String>,
-    #[serde(default, alias = "sha")]
+    #[serde(default)]
     commit: Option<String>,
     #[serde(default)]
     line_start: Option<u64>,
@@ -310,7 +310,7 @@ impl RepoHistoryTool {
                 MAX_OUTPUT_CHARS
             )
         } else {
-            combined.clone()
+            combined
         };
         let mut metadata = base_metadata(input, repo_root);
         metadata.insert(
@@ -402,10 +402,6 @@ impl Tool for RepoHistoryTool {
                 "commit": {
                     "type": "string",
                     "description": "Commit SHA or ref for show_commit"
-                },
-                "sha": {
-                    "type": "string",
-                    "description": "Alias for commit"
                 },
                 "lineStart": {
                     "type": "integer",

@@ -17,8 +17,6 @@ process-registry = [
     "dep:once_cell",
     "dep:parking_lot",
 ]
-agent-task-registry = ["dep:chrono", "dep:once_cell", "dep:parking_lot"]
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

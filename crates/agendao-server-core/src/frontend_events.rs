@@ -18,15 +18,13 @@
 //! All transports forward the same `FrontendEvent`. Frontends (TUI / Web / CLI)
 //! apply them through a single applier.
 
-use agendao_api::{
-    ContextCompactionLifecycleSummary, ContextCompactionSummary,
-    PermissionRequestInfo, QuestionInfo, SessionCacheSemanticsSummary,
-    SessionContextClosureContract, SessionExecutionTopology, SessionRuntimeState,
-    SessionUsage, SessionUsageBooks,
-};
-use agendao_stage_protocol::StageSummary;
-use agendao_types::LiveMessagePartIdentity;
 use crate::runtime_events::{DiffEntry, ToolCallPhase};
+use agendao_api::{
+    ContextCompactionLifecycleSummary, ContextCompactionSummary, PermissionRequestInfo,
+    QuestionInfo, SessionCacheSemanticsSummary, SessionContextClosureContract,
+    SessionExecutionTopology, SessionRuntimeState, SessionUsage, SessionUsageBooks,
+};
+use agendao_types::LiveMessagePartIdentity;
 use serde::{Deserialize, Serialize};
 
 /// Canonical frontend authority event.
@@ -40,7 +38,6 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendEvent {
     // ── Runtime ──────────────────────────────────────────────────────
-
     /// Replace the entire session runtime state.
     /// Emitted on: run start, run end, status change, tool lifecycle change.
     #[serde(rename = "session.runtime.replaced")]
@@ -50,30 +47,24 @@ pub enum FrontendEvent {
         runtime: SessionRuntimeState,
     },
 
-    // ── Projection (topology / stages / attached sessions) ───────────
-
-    /// Replace the projection snapshot (topology, stages, usage,
+    // ── Projection ──────────────────────────────────────────────────
+    /// Replace the projection snapshot (topology, usage,
     /// usage_books, compaction, cache, closure).
-    /// Emitted on: topology change, stage change, usage update,
+    /// Emitted on: topology change, usage update,
     /// telemetry projection change.
     ///
     /// This is the single authority for the "projection" layer of session
     /// telemetry — the fields below cover everything the TUI sidebar / status /
     /// insights panels need without a follow-up get_session_telemetry() query.
     ///
-    /// Note: attached sessions are NOT carried here. The TUI derives them
-    /// locally from `stages` via `collect_attached_sessions_from_stage_summaries`,
-    /// which carries richer per-stage metadata than `AttachedSessionSummary`.
     #[serde(rename = "session.projection.replaced")]
     SessionProjectionReplaced {
         #[serde(rename = "sessionID")]
         session_id: String,
-        /// Topology may not be established yet when stages/usage change;
+        /// Topology may not be established yet when usage changes;
         /// Optional so the projector never fabricates a fake authority.
         #[serde(default)]
         topology: Option<SessionExecutionTopology>,
-        #[serde(default)]
-        stages: Vec<StageSummary>,
         #[serde(default)]
         usage: Option<SessionUsage>,
         #[serde(default)]
@@ -89,7 +80,6 @@ pub enum FrontendEvent {
     },
 
     // ── Question ─────────────────────────────────────────────────────
-
     /// A question has been created or updated — upsert into pending queue.
     #[serde(rename = "question.upsert")]
     QuestionUpsert {
@@ -108,7 +98,6 @@ pub enum FrontendEvent {
     },
 
     // ── Permission ───────────────────────────────────────────────────
-
     /// A permission request has been created — upsert into pending queue.
     #[serde(rename = "permission.upsert")]
     PermissionUpsert {
@@ -129,7 +118,6 @@ pub enum FrontendEvent {
     },
 
     // ── Tool lifecycle ───────────────────────────────────────────────
-
     /// A tool call started or completed — upsert into active tool set.
     #[serde(rename = "tool_call.upsert")]
     ToolCallUpsert {
@@ -143,7 +131,6 @@ pub enum FrontendEvent {
     },
 
     // ── Diff ─────────────────────────────────────────────────────────
-
     /// Diff list has changed — replace the entire diff view.
     #[serde(rename = "diff.replaced")]
     DiffReplaced {
@@ -153,7 +140,6 @@ pub enum FrontendEvent {
     },
 
     // ── Todo ─────────────────────────────────────────────────────────
-
     /// Todo list has changed — replace the entire todo view.
     /// Emitted on: todowrite tool invocation (TodoManager update).
     #[serde(rename = "todo.replaced")]
@@ -164,7 +150,6 @@ pub enum FrontendEvent {
     },
 
     // ── Config ───────────────────────────────────────────────────────────
-
     /// Global configuration has changed — frontends should reload
     /// config-derived state (providers, modes, settings). Global event with
     /// no session scope.
@@ -172,7 +157,6 @@ pub enum FrontendEvent {
     ConfigUpdated,
 
     // ── Errors ───────────────────────────────────────────────────────────
-
     /// A run-time error occurred in a session (e.g. mid-turn provider
     /// failure). Projected from `ServerEvent::Error` so frontends can surface
     /// it immediately instead of waiting for the next runtime snapshot.
@@ -186,7 +170,6 @@ pub enum FrontendEvent {
     },
 
     // ── Output ───────────────────────────────────────────────────────
-
     /// An output block has been appended to the session transcript.
     #[serde(rename = "output_block")]
     OutputBlockAppended {
@@ -303,7 +286,9 @@ mod tests {
     fn bus_event_into_event_recovers_typed_event() {
         let bus = sample_bus_event();
         match bus.into_event() {
-            FrontendEvent::OutputBlockAppended { session_id, block, .. } => {
+            FrontendEvent::OutputBlockAppended {
+                session_id, block, ..
+            } => {
                 assert_eq!(session_id, "ses_1");
                 assert_eq!(block["text"], "hello");
             }
@@ -326,7 +311,6 @@ mod tests {
                 pending_question: None,
                 pending_permission: None,
                 pending_followup_count: 0,
-                attached_sessions: vec![],
             },
         };
         let json = serde_json::to_value(&event).expect("serialize");
@@ -336,7 +320,10 @@ mod tests {
 
         let roundtrip: FrontendEvent = serde_json::from_value(json).expect("deserialize");
         match roundtrip {
-            FrontendEvent::SessionRuntimeReplaced { session_id, runtime } => {
+            FrontendEvent::SessionRuntimeReplaced {
+                session_id,
+                runtime,
+            } => {
                 assert_eq!(session_id, "ses_1");
                 assert_eq!(runtime.run_status, agendao_api::SessionRunStatusKind::Idle);
             }
@@ -351,9 +338,12 @@ mod tests {
             question: QuestionInfo {
                 id: "q_1".to_string(),
                 session_id: "ses_1".to_string(),
-                questions: vec!["Proceed?".to_string()],
-                options: None,
-                items: vec![],
+                items: vec![agendao_api::QuestionItemInfo {
+                    question: "Proceed?".to_string(),
+                    header: None,
+                    options: vec![],
+                    multiple: false,
+                }],
             },
         };
         let json = serde_json::to_value(&upsert).expect("serialize");
@@ -423,7 +413,12 @@ mod tests {
 
         let roundtrip: FrontendEvent = serde_json::from_value(json).expect("deserialize");
         match roundtrip {
-            FrontendEvent::ToolCallUpsert { tool_call_id, tool_name, phase, .. } => {
+            FrontendEvent::ToolCallUpsert {
+                tool_call_id,
+                tool_name,
+                phase,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "tc_1");
                 assert_eq!(tool_name, "bash");
                 assert_eq!(phase, ToolCallPhase::Start);
@@ -447,7 +442,12 @@ mod tests {
 
         let roundtrip: FrontendEvent = serde_json::from_value(json).expect("deserialize");
         match roundtrip {
-            FrontendEvent::OutputBlockAppended { session_id, block, id, .. } => {
+            FrontendEvent::OutputBlockAppended {
+                session_id,
+                block,
+                id,
+                ..
+            } => {
                 assert_eq!(session_id, "ses_1");
                 assert_eq!(block["text"], "hello");
                 assert_eq!(id.unwrap(), "msg_1");
@@ -473,26 +473,32 @@ mod tests {
                     pending_question: None,
                     pending_permission: None,
                     pending_followup_count: 0,
-                    attached_sessions: vec![],
                 },
-            }).unwrap(),
+            })
+            .unwrap(),
             serde_json::to_value(FrontendEvent::QuestionRemoved {
                 session_id: "s".into(),
                 question_id: "q".into(),
-            }).unwrap(),
+            })
+            .unwrap(),
             serde_json::to_value(FrontendEvent::PermissionRemoved {
                 session_id: "s".into(),
                 permission_id: "p".into(),
                 reply: "once".into(),
-            }).unwrap(),
+            })
+            .unwrap(),
             serde_json::to_value(FrontendEvent::DiffReplaced {
                 session_id: "s".into(),
                 diffs: vec![],
-            }).unwrap(),
+            })
+            .unwrap(),
         ];
         for json in &events {
-            assert!(json.get("type").and_then(|v| v.as_str()).is_some(),
-                "missing 'type' field in: {}", json);
+            assert!(
+                json.get("type").and_then(|v| v.as_str()).is_some(),
+                "missing 'type' field in: {}",
+                json
+            );
         }
     }
 }

@@ -58,7 +58,7 @@ impl PluginAuthBridge {
 
     // -- Accessors ----------------------------------------------------------
 
-    /// The provider ID this auth plugin serves (e.g. "openai", "ethnopic").
+    /// The provider ID this auth plugin serves (e.g. "openai", "anthropic").
     pub fn provider(&self) -> &str {
         &self.meta.provider
     }

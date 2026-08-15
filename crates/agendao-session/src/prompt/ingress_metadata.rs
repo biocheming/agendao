@@ -33,12 +33,6 @@ pub(crate) fn annotate_message_ingress_metadata(
             serde_json::json!(context_key),
         );
     }
-    if let Some(stage_id) = ingress.scheduler_stage_id.as_deref() {
-        msg.metadata.insert(
-            "ingress_scheduler_stage_id".to_string(),
-            serde_json::json!(stage_id),
-        );
-    }
     if let Some(origin) = ingress.source_origin {
         msg.metadata.insert(
             agendao_types::MESSAGE_SOURCE_ORIGIN_KEY.to_string(),

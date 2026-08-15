@@ -28,7 +28,7 @@ fn test_provider_instance_metadata() {
         "test".to_string(),
         "Test Provider".to_string(),
         config,
-        Arc::new(agendao_provider::protocols::CloseAiCompatibleAdapter::new()),
+        Arc::new(agendao_provider::protocols::OpenAiCompatibleAdapter::new()),
         models,
     );
 
@@ -51,7 +51,7 @@ fn test_provider_instance_models_iterator() {
         "test".to_string(),
         "Test".to_string(),
         config,
-        Arc::new(agendao_provider::protocols::CloseAiCompatibleAdapter::new()),
+        Arc::new(agendao_provider::protocols::OpenAiCompatibleAdapter::new()),
         models,
     );
 
@@ -61,13 +61,13 @@ fn test_provider_instance_models_iterator() {
 }
 
 #[test]
-fn test_closeai_compatible_adapter_creation() {
-    let adapter = agendao_provider::protocols::CloseAiCompatibleAdapter::new();
+fn test_openai_compatible_adapter_creation() {
+    let adapter = agendao_provider::protocols::OpenAiCompatibleAdapter::new();
     let _arc: Arc<dyn agendao_provider::ProviderAdapter> = Arc::new(adapter);
 }
 
 #[test]
-fn test_ethnopic_adapter_creation() {
-    let adapter = agendao_provider::protocols::EthnopicAdapter::new();
+fn test_anthropic_adapter_creation() {
+    let adapter = agendao_provider::protocols::AnthropicAdapter::new();
     let _arc: Arc<dyn agendao_provider::ProviderAdapter> = Arc::new(adapter);
 }

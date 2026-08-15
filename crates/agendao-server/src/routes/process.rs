@@ -54,7 +54,7 @@ async fn list_processes() -> Json<Vec<ProcessResponse>> {
 }
 
 async fn kill_process(Path(pid): Path<u32>) -> Result<Json<serde_json::Value>> {
-    agendao_orchestrator::global_lifecycle()
+    agendao_execution_types::global_lifecycle()
         .kill_process(pid)
         .map_err(|e| {
             ApiError::NotFound(format!(

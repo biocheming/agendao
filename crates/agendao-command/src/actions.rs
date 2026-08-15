@@ -23,7 +23,6 @@ pub enum UiActionId {
     OpenModelList,
     OpenModeList,
     OpenAgentList,
-    OpenPresetList,
     OpenMcpList,
     ConnectProvider,
     /// 打开 Settings 全屏页面(三栏:分类 | Providers | Details)。
@@ -48,7 +47,6 @@ pub enum UiActionId {
     OpenStash,
     OpenSkills,
     OpenSkillProposals,
-    ListTasks,
     SubmitPrompt,
     VoiceInput,
     ClearPrompt,
@@ -119,7 +117,6 @@ pub enum UiCommandArgumentKind {
     ThemeId,
     ModeRef,
     AgentRef,
-    PresetRef,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,7 +144,6 @@ pub fn ui_command_argument_kind(action_id: UiActionId) -> UiCommandArgumentKind 
         UiActionId::OpenModelList => UiCommandArgumentKind::ModelRef,
         UiActionId::OpenModeList => UiCommandArgumentKind::ModeRef,
         UiActionId::OpenAgentList => UiCommandArgumentKind::AgentRef,
-        UiActionId::OpenPresetList => UiCommandArgumentKind::PresetRef,
         UiActionId::OpenThemeList => UiCommandArgumentKind::ThemeId,
         _ => UiCommandArgumentKind::None,
     }
@@ -412,19 +408,6 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
             slash: Some(UiSlashCommandSpec {
                 name: "/agent",
                 aliases: &["/agents"],
-                suggested: true,
-            }),
-        },
-        UiCommandSpec {
-            action_id: UiActionId::OpenPresetList,
-            title: "Switch Preset",
-            description: "Choose a different preset or profile",
-            category: UiCommandCategory::ModelAgent,
-            keybind: None,
-            include_in_palette: true,
-            slash: Some(UiSlashCommandSpec {
-                name: "/preset",
-                aliases: &["/presets"],
                 suggested: true,
             }),
         },
@@ -707,19 +690,6 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
             slash: Some(UiSlashCommandSpec {
                 name: "/proposals",
                 aliases: &[],
-                suggested: false,
-            }),
-        },
-        UiCommandSpec {
-            action_id: UiActionId::ListTasks,
-            title: "Agent Tasks",
-            description: "List, inspect, and cancel agent tasks",
-            category: UiCommandCategory::System,
-            keybind: None,
-            include_in_palette: false,
-            slash: Some(UiSlashCommandSpec {
-                name: "/tasks",
-                aliases: &["/task"],
                 suggested: false,
             }),
         },

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::api_client::{
-    CliApiClient, RepairQuery, RepairQueryResponse, SessionRepairSummaryResponse,
-    SkillCatalogQuery, SkillDetailQuery, SkillHubGuardRunRequest, SkillHubIndexRefreshRequest,
-    SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest, SkillHubRemoteInstallApplyRequest,
+    CliApiClient, RepairQuery, RepairQueryResponse, SessionRepairSummaryResponse, SkillDetailQuery,
+    SkillHubGuardRunRequest, SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest,
+    SkillHubManagedRemoveRequest, SkillHubRemoteInstallApplyRequest,
     SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
     SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
     SkillHubTimelineQuery, SkillSourceKind, SkillSourceRef,
@@ -25,7 +25,7 @@ use agendao_tool::{registry::create_default_registry, ToolContext};
 use crate::cli::*;
 #[cfg(feature = "session-db")]
 use crate::cli_session_store;
-use crate::server_lifecycle::CliRuntimeContext;
+use crate::CliRuntimeContext;
 
 fn resolve_document_input_to_path(input: &str) -> anyhow::Result<PathBuf> {
     if input.starts_with("file://") {
@@ -172,16 +172,11 @@ fn resolve_context_docs_registry_path_from_config() -> anyhow::Result<PathBuf> {
 }
 
 async fn resolve_server_skill_catalog(
-    session_id: Option<&str>,
     runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
-    let query = session_id.map(|session_id| SkillCatalogQuery {
-        session_id: Some(session_id.to_string()),
-        ..Default::default()
-    });
-    let mut skills = client.list_skills(query.as_ref()).await?;
+    let mut skills = client.list_skills(None).await?;
     skills.sort_by(|left, right| {
         left.name
             .to_ascii_lowercase()
@@ -195,7 +190,6 @@ async fn resolve_server_skill_catalog(
 
 async fn resolve_server_skill_detail(
     name: &str,
-    session_id: Option<&str>,
     runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
@@ -203,7 +197,6 @@ async fn resolve_server_skill_detail(
     let detail = client
         .get_skill_detail(&SkillDetailQuery {
             name: name.to_string(),
-            session_id: session_id.map(ToOwned::to_owned),
             ..Default::default()
         })
         .await?;
@@ -713,7 +706,7 @@ pub(super) async fn handle_debug_command(
             println!(
                 "  {:<12} {}",
                 "agendao",
-                agendao_util::agendao_home().display().to_string()
+                agendao_util::agendao_home().display()
             );
             println!(
                 "  {:<12} {}",
@@ -744,19 +737,16 @@ pub(super) async fn handle_debug_command(
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
         DebugCommands::Skill => {
-            let list = resolve_server_skill_catalog(None, runtime_context).await?;
+            let list = resolve_server_skill_catalog(runtime_context).await?;
             println!("{}", serde_json::to_string_pretty(&list)?);
         }
         DebugCommands::Skills { action } => match action {
-            DebugSkillsCommands::List { session_id } => {
-                let list =
-                    resolve_server_skill_catalog(session_id.as_deref(), runtime_context).await?;
+            DebugSkillsCommands::List => {
+                let list = resolve_server_skill_catalog(runtime_context).await?;
                 println!("{}", serde_json::to_string_pretty(&list)?);
             }
-            DebugSkillsCommands::View { name, session_id } => {
-                let detail =
-                    resolve_server_skill_detail(&name, session_id.as_deref(), runtime_context)
-                        .await?;
+            DebugSkillsCommands::View { name } => {
+                let detail = resolve_server_skill_detail(&name, runtime_context).await?;
                 println!("{}", serde_json::to_string_pretty(&detail)?);
             }
             DebugSkillsCommands::Managed => {
@@ -1205,7 +1195,7 @@ pub(super) async fn handle_debug_command(
                         tool_name,
                         repair_kind: repair_kind
                             .as_deref()
-                            .and_then(crate::api_client::RepairKind::from_legacy_str),
+                            .and_then(crate::api_client::RepairKind::parse),
                         layer,
                         strict_only: Some(strict_only),
                         include_samples: Some(include_samples),

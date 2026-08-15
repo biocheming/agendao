@@ -15,8 +15,7 @@ AgenDao 通过分层的 JSON/JSONC 配置系统进行配置。本文档描述 `a
 
 如果不存在，AgenDao 会在首次运行时使用默认值。
 
-> 自 2026.7 起，全局配置与数据统一收在 `~/.agendao`（可用 `AGENDAO_HOME` 覆盖）。
-> 旧位置 `~/.config/agendao/agendao.json{,c}` 会在首次启动时自动迁移过来。
+全局配置与数据统一收在 `~/.agendao`（可用 `AGENDAO_HOME` 覆盖）。
 
 ### 项目级配置
 
@@ -96,7 +95,6 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
   "toolImports": [],
   "agent": { ... },
   "mode": { ... },
-  "composition": { ... },
   "provider": { ... },
   "mcp": { ... },
   "formatter": { ... },
@@ -113,7 +111,6 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
   "disabledProviders": [],
   "enabledProviders": [],
   "instructions": [],
-  "schedulerPath": null,
   "taskCategoryPath": null,
   "skillPaths": {},
   "pluginPaths": {}
@@ -138,7 +135,6 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | `share` | string | null | 分享模式。可选 `"manual"`、`"auto"`、`"disabled"` |
 | `autoshare` | boolean | null | 自动分享会话 |
 | `autoupdate` | boolean 或 string | null | 自动更新。`true` 启用，`false` 禁用，`"notify"` 仅通知 |
-| `schedulerPath` | string | null | 调度器配置文件路径（相对于项目根） |
 | `taskCategoryPath` | string | null | 任务分类配置路径 |
 | `toolImports` | string[] | `[]` | 外部 tool catalog 文件导入列表。支持相对于声明该配置文件的相对路径，也支持绝对路径 |
 
@@ -220,32 +216,28 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 ```jsonc
 {
   "provider": {
-    "zhipuai": {
-      "name": "Zhipu AI",
-      "apiKey": "zhipu-...",
-      "whitelist": ["glm-5.1"]
-    },
-    "alibaba-cn": {
-      "name": "Alibaba Cloud Bailian",
+    "openai": {
+      "name": "OpenAI",
+      "api_key": "sk-...",
       "models": {
-        "qwen3.6-plus": {
-          "toolCall": true,
+        "gpt-5": {
+          "tool_call": true,
           "reasoning": true,
           "limit": { "context": 128000, "output": 16384 }
         }
       }
     },
-    "kimi-for-coding": {
-      "name": "Moonshot Kimi",
-      "whitelist": ["kimi-k2.5"]
-    },
-    "ollama": {
-      "name": "Ollama",
-      "baseURL": "http://localhost:11434"
+    "anthropic": {
+      "name": "Anthropic",
+      "api_key": "sk-ant-..."
     }
   }
 }
 ```
+
+运行时只实现三种 API shape：OpenAI Responses、OpenAI Chat Completions 和 Anthropic
+Messages。OpenAI-compatible endpoint 可以配置自定义 `base_url`，但不会启用 Google、Bedrock、
+Vertex、Copilot 或 GitLab 的专用协议。
 
 ### ProviderConfig 字段
 
@@ -253,8 +245,8 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 |------|------|------|
 | `name` | string | Provider 显示名称 |
 | `id` | string | Provider 标识符 |
-| `apiKey` | string | API 密钥（别名：`apikey`） |
-| `baseURL` | string | API 基础 URL（别名：`baseUrl`、`api`） |
+| `api_key` | string | API 密钥 |
+| `base_url` | string | API 基础 URL |
 | `models` | object | 自定义模型定义（见 ModelConfig） |
 | `options` | object | Provider 级别的额外选项 |
 | `npm` | string | 对应的 npm 包名 |
@@ -269,10 +261,9 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | string | 模型显示名称 |
-| `model` | string | 模型 API 标识符（别名：`id`） |
-| `apiKey` | string | 模型级别 API 密钥 |
-| `baseURL` | string | 模型级别 API 基础 URL |
-| `toolCall` | boolean | 是否支持工具调用（别名：`tools`） |
+| `model` | string | 模型 API 标识符 |
+| `base_url` | string | 模型级别 API 基础 URL |
+| `tool_call` | boolean | 是否支持工具调用 |
 | `reasoning` | boolean | 是否支持推理 |
 | `attachment` | boolean | 是否支持附件 |
 | `temperature` | boolean | 是否支持温度参数 |
@@ -284,10 +275,10 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | `headers` | object | 自定义请求头 |
 | `family` | string | 模型家族 |
 | `status` | string | 模型状态 |
-| `releaseDate` | string | 发布日期 |
+| `release_date` | string | 发布日期 |
 | `provider` | object | 模型级别 Provider 配置 |
 
-`cost` 子字段：`input`、`output`（每百万 Token 美元价格），可选 `cacheRead`、`cacheWrite`。
+`cost` 子字段：`input`、`output`（每百万 Token 美元价格），可选 `cache_read`、`cache_write`。
 
 `limit` 子字段：`context`（上下文窗口）、`output`（最大输出 Token），可选 `input`。
 
@@ -295,8 +286,8 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 
 ```jsonc
 {
-  "disabledProviders": ["groq", "cerebras"],
-  "enabledProviders": ["zhipuai", "alibaba-cn", "kimi-for-coding"]
+  "disabledProviders": ["internal-test"],
+  "enabledProviders": ["openai", "anthropic"]
 }
 ```
 
@@ -315,7 +306,7 @@ Agent 定义在 `agent` 字段中，也可以从 `.agendao/agent/` 或 `.agendao
     "code": {
       "name": "Code", "model": "glm-5.1",
       "mode": "primary", "temperature": 0.3,
-      "maxSteps": 30, "color": "cyan",
+      "max_steps": 30, "color": "cyan",
       "prompt": "You are an expert software engineer."
     }
   }
@@ -330,7 +321,7 @@ Agent 定义在 `agent` 字段中，也可以从 `.agendao/agent/` 或 `.agendao
 | `model` | string | 使用的模型 ID |
 | `variant` | string | 模型变体 |
 | `temperature` | float | 采样温度 |
-| `topP` | float | Top-p 采样参数 |
+| `top_p` | float | Top-p 采样参数 |
 | `prompt` | string | 系统 prompt 前缀 |
 | `disable` | boolean | 禁用此 Agent |
 | `description` | string | Agent 描述 |
@@ -339,8 +330,8 @@ Agent 定义在 `agent` 字段中，也可以从 `.agendao/agent/` 或 `.agendao
 | `options` | object | Agent 级别额外选项 |
 | `color` | string | ANSI 显示颜色 |
 | `steps` | integer | 最大步数 |
-| `maxSteps` | integer | 最大步数（别名） |
-| `maxTokens` | integer | 最大输出 Token |
+| `max_steps` | integer | 最大步数 |
+| `max_tokens` | integer | 最大输出 Token |
 | `permission` | object | 工具权限规则（见 PermissionConfig） |
 | `tools` | object | 工具启用/禁用映射 |
 
@@ -349,35 +340,6 @@ Agent 定义在 `agent` 字段中，也可以从 `.agendao/agent/` 或 `.agendao
 在 `.agendao/agents/` 目录放置 Markdown 文件定义 Agent，YAML frontmatter 支持 `name`、`description`、`mode`、`model` 等字段，正文作为 prompt。
 
 CLI 创建：`agendao agent create <name> --description "..." --mode subagent`。
-
----
-
-## Composition 配置（Skill Tree）
-
-```jsonc
-{
-  "composition": {
-    "skillTree": {
-      "enabled": true, "separator": "/", "tokenBudget": 4000,
-      "truncationStrategy": "priority",
-      "root": {
-        "nodeId": "root", "markdownPath": "./docs/skills/root.md",
-        "children": [
-          { "nodeId": "arch", "markdownPath": "./docs/skills/arch.md" }
-        ]
-      }
-    }
-  }
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `enabled` | boolean | 启用 Skill Tree |
-| `root` | object | 根节点（递归 `nodeId`、`markdownPath`、`children`） |
-| `separator` | string | 节点路径分隔符 |
-| `tokenBudget` | integer | Token 预算 |
-| `truncationStrategy` | string | 截断策略 |
 
 ---
 
@@ -436,9 +398,7 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 
 ## Plugin 配置
 
-当前真实接通的插件运行面是 `npm`、`file`、`dylib`。
-
-`pip` / `cargo` 字段仍然保留在 schema 里，用于兼容和未来扩展，但今天的自动加载器不会把它们转成可执行 loader spec，所以不要把它们当成已经接通的用户插件主路径。
+插件运行面只包含 `npm`、`file`、`dylib`。
 
 ```jsonc
 {
@@ -450,20 +410,18 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 }
 ```
 
-也支持旧版数组格式 `["pkg@ver", "file://./plugins/my-plugin.ts"]`。
-
 ### PluginConfig 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | string | 当前真实运行面：`"npm"`、`"file"`、`"dylib"`；兼容 / 预留字段：`"pip"`、`"cargo"` |
+| `type` | string | `"npm"`、`"file"` 或 `"dylib"` |
 | `package` | string | 包名 |
 | `version` | string | 版本约束 |
 | `path` | string | 文件路径（`file` 或 `dylib`） |
 | `runtime` | string | 运行时覆盖（如 `"python3.11"`） |
 | `options` | object | 插件特定选项 |
 
-自动发现路径：`~/.agendao/plugins/`（权威位置）、`<project>/.agendao/plugins/`、旧版遗留 `~/.config/agendao/plugins/`，以及 `pluginPaths` 中配置的自定义路径。
+自动发现路径：`~/.agendao/plugins/`、`<project>/.agendao/plugins/`，以及 `plugin_paths` 中配置的显式路径。
 
 如果你要看一张更硬的“插件类型 -> 是否真实可用 -> hook 面”矩阵，见 [plugins-capability-matrix](plugins-capability-matrix)。
 
@@ -488,7 +446,6 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 | `description` | 命令描述 |
 | `model` | 模型覆盖 |
 | `agent` | Agent 覆盖 |
-| `subtask` | 作为子任务执行 |
 
 也可从 `.agendao/command/` 或 `.agendao/commands/` 中的 Markdown 文件加载。
 
@@ -550,7 +507,6 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 | `showToolDetails` | 显示工具调用详情 |
 | `messageDensity` | 消息密度 |
 | `semanticHighlight` | 语义高亮 |
-| `recentModels` | 最近使用的模型列表 `[{provider, model}]` |
 | `tipsHidden` | 隐藏提示 |
 
 ---
@@ -627,7 +583,7 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `baseUrl` | null | MCP 搜索端点 URL（如 `https://mcp.exa.ai`） |
+| `base_url` | null | MCP 搜索端点 URL（如 `https://mcp.exa.ai`） |
 | `endpoint` | `"/mcp"` | URL 路径 |
 | `method` | `"web_search_exa"` | MCP 工具方法名 |
 | `defaultSearchType` | null | `"auto"`、`"fast"`、`"deep"` |
@@ -679,30 +635,16 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 
 ## Scheduler 配置
 
-调度器通过外部 JSON/JSONC 文件配置，在 `agendao.jsonc` 中引用：
+Scheduler 不从 `agendao.jsonc` 加载路径。session 创建和 prompt 请求直接携带统一的
+`SchedulerChoice`：
 
-```jsonc
-{
-  "schedulerPath": "./scheduler.jsonc"
-}
+```json
+{ "scheduler": { "kind": "auto" } }
 ```
 
-### Scheduler Profile 结构
-
-每个 profile 包含 `orchestrator`（preset 名）、`stages`（阶段列表）、`agentTree`（agent 树）和 `skillTree`（知识树）。stages 可以是字符串或带 override 的对象。`agentTree` 支持内联对象或外部文件路径。详见 [Scheduler 示例](examples/scheduler/README)。
-
-当前 checked-in scheduler 示例不再平铺在一个目录里，而是按语义分组：
-
-- `examples/scheduler/presets/`
-  - `sisyphus`、`prometheus`、`atlas`、`hephaestus` 这些公开内置 preset
-- `examples/scheduler/verifier/`
-  - verifier 的最小配置、完整 profile 和外置 workflow
-- `examples/scheduler/pso/`
-  - PSO 这类用户自定义 topology
-- `examples/scheduler/autoresearch/`
-  - 嵌入 scheduler profile 的 workflow 级 autoresearch 示例
-
-如果你从仓库里的示例起步，推荐把对应目录复制到项目内，再让 `schedulerPath` 指向项目里的副本。因为这些示例经常依赖同目录下的相对路径文件，比如 `workflowPath`、`agentTree` 或 `trees/`。
+`kind` 可以是 `auto`、`template` 或 `blueprint`。`blueprint` 直接内联当前
+`SchedulerBlueprint` schema；不存在路径加载、旧 profile 转换或失败回退。详见
+[Scheduler](scheduler) 和 [当前示例](examples/scheduler/README)。
 
 ---
 
@@ -710,5 +652,5 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 
 - [认证](auth) -- API 密钥和多 Provider 配置
 - [安装指南](installation) -- 构建和环境设置
-- [Scheduler 示例](examples/scheduler/README) -- 调度器 presets / verifier / pso / autoresearch 示例入口
-- [Scheduler 指南](examples/scheduler/SCHEDULER_GUIDE) -- 完整调度器使用教程
+- [Scheduler](scheduler) -- 统一 Blueprint、模板、auto selector 和执行边界
+- [Scheduler 示例](examples/scheduler/README) -- 当前内联 Blueprint 示例

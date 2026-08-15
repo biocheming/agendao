@@ -3,8 +3,8 @@ use agendao_command_render::live_semantic_consumer::LiveSemanticConsumer;
 use agendao_command_render::output_blocks::{render_cli_block_rich, OutputBlock};
 use agendao_command_render::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
-    TerminalStreamAccumulator,
 };
+use agendao_server_core::frontend_events::FrontendEvent;
 use futures::StreamExt;
 use std::io::IsTerminal;
 use std::io::{self, Write};
@@ -21,7 +21,6 @@ use super::transcript::{
 };
 
 pub(super) struct RemoteSemanticRenderState {
-    pub(super) accumulator: TerminalStreamAccumulator,
     pub(super) semantic: TerminalSemanticStreamRenderState,
     pub(super) transcript: CliVisibleTranscript,
     pub(super) is_terminal: bool,
@@ -31,7 +30,6 @@ impl RemoteSemanticRenderState {
     fn new() -> Self {
         let is_terminal = std::io::stdout().is_terminal();
         Self {
-            accumulator: TerminalStreamAccumulator::default(),
             semantic: TerminalSemanticStreamRenderState::default(),
             transcript: CliVisibleTranscript::new(is_terminal),
             is_terminal,
@@ -45,12 +43,20 @@ impl Default for RemoteSemanticRenderState {
     }
 }
 
+struct RemoteEventContext<'a> {
+    client: &'a reqwest::Client,
+    base_url: &'a str,
+    show_thinking: &'a Arc<AtomicBool>,
+    format: &'a RunOutputFormat,
+    style: &'a CliStyle,
+}
+
 pub(super) fn remote_apply_output_block(
     semantic_state: &mut RemoteSemanticRenderState,
     block: &OutputBlock,
     live_identity: Option<&agendao_types::LiveMessagePartIdentity>,
     style: &CliStyle,
-    show_thinking: bool,
+    _show_thinking: bool,
 ) {
     if let Some(identity) = live_identity {
         if !semantic_state.is_terminal {
@@ -70,14 +76,8 @@ pub(super) fn remote_apply_output_block(
         return;
     }
 
-    let rendered = render_terminal_stream_block_semantic(
-        &mut semantic_state.semantic,
-        &semantic_state.accumulator,
-        block,
-        None,
-        style,
-        show_thinking,
-    );
+    let rendered =
+        render_terminal_stream_block_semantic(&mut semantic_state.semantic, block, None, style);
     semantic_state.transcript.append_committed(&rendered);
 }
 
@@ -116,23 +116,29 @@ fn remote_emit_transcript(semantic_state: &mut RemoteSemanticRenderState) -> io:
     io::stdout().flush()
 }
 
-pub(super) async fn consume_remote_sse(
+pub(super) async fn consume_remote_events(
     response: reqwest::Response,
     client: &reqwest::Client,
     base_url: &str,
-    session_id: &str,
     format: RunOutputFormat,
     show_thinking: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
-    let mut current_event: Option<String> = None;
     let mut current_data: Vec<String> = Vec::new();
     let mut semantic_state = RemoteSemanticRenderState::new();
+    let mut saw_active = false;
     // Detected once per stream: `detect()` does an is_terminal check plus a
     // terminal-width ioctl, which is wasteful per SSE event. Trade-off: a
     // terminal resize mid-stream no longer updates the render width.
     let style = CliStyle::detect();
+    let dispatch_context = RemoteEventContext {
+        client,
+        base_url,
+        show_thinking: &show_thinking,
+        format: &format,
+        style: &style,
+    };
 
     loop {
         let Some(chunk) = StreamExt::next(&mut stream).await else {
@@ -151,147 +157,114 @@ pub(super) async fn consume_remote_sse(
             }
             if line.is_empty() {
                 let data = current_data.join("\n");
-                dispatch_remote_sse_event(
-                    client,
-                    base_url,
-                    &show_thinking,
-                    session_id,
-                    &format,
+                if dispatch_remote_event(
+                    &dispatch_context,
                     &mut semantic_state,
-                    &style,
-                    current_event.take(),
+                    &mut saw_active,
                     data,
                 )
-                .await?;
+                .await?
+                {
+                    finish_remote_output(&mut semantic_state, &format)?;
+                    return Ok(());
+                }
                 current_data.clear();
                 continue;
             }
-            if let Some(event) = line.strip_prefix("event:") {
-                current_event = Some(event.trim().to_string());
-            } else if let Some(data) = line.strip_prefix("data:") {
+            if let Some(data) = line.strip_prefix("data:") {
                 current_data.push(data.trim_start().to_string());
             }
         }
     }
 
     if !current_data.is_empty() {
-        dispatch_remote_sse_event(
-            client,
-            base_url,
-            &show_thinking,
-            session_id,
-            &format,
+        dispatch_remote_event(
+            &dispatch_context,
             &mut semantic_state,
-            &style,
-            current_event.take(),
+            &mut saw_active,
             current_data.join("\n"),
         )
         .await?;
     }
 
+    finish_remote_output(&mut semantic_state, &format)?;
+    anyhow::bail!("Remote event stream closed before the session became idle")
+}
+
+fn finish_remote_output(
+    semantic_state: &mut RemoteSemanticRenderState,
+    format: &RunOutputFormat,
+) -> io::Result<()> {
     if !matches!(format, RunOutputFormat::Json) && !semantic_state.is_terminal {
         print!("{}", semantic_state.transcript.rendered_text());
         io::stdout().flush()?;
     }
-
     Ok(())
 }
 
-async fn dispatch_remote_sse_event(
-    client: &reqwest::Client,
-    base_url: &str,
-    show_thinking: &Arc<AtomicBool>,
-    session_id: &str,
-    format: &RunOutputFormat,
+async fn dispatch_remote_event(
+    context: &RemoteEventContext<'_>,
     semantic_state: &mut RemoteSemanticRenderState,
-    style: &CliStyle,
-    event_name: Option<String>,
+    saw_active: &mut bool,
     data: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let RemoteEventContext {
+        client,
+        base_url,
+        show_thinking,
+        format,
+        style,
+    } = *context;
     if data.trim().is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({ "raw": data }));
-    let event_type = event_name
-        .or_else(|| {
-            parsed
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "message".to_string());
-
-    if event_type == "config.updated" {
+    let event: FrontendEvent = serde_json::from_str(&data)?;
+    if matches!(event, FrontendEvent::ConfigUpdated) {
         if let Some(enabled) = refresh_show_thinking_from_context(client, base_url).await {
             show_thinking.store(enabled, Ordering::SeqCst);
         }
     }
 
     if matches!(format, &RunOutputFormat::Json) {
-        let mut output = serde_json::Map::new();
-        output.insert(
-            "type".to_string(),
-            serde_json::Value::String(event_type.clone()),
-        );
-        output.insert(
-            "timestamp".to_string(),
-            serde_json::json!(chrono::Utc::now().timestamp_millis()),
-        );
-        output.insert(
-            "sessionID".to_string(),
-            serde_json::Value::String(session_id.to_string()),
-        );
-        match parsed {
-            serde_json::Value::Object(map) => {
-                for (k, v) in map {
-                    output.insert(k, v);
+        println!("{}", serde_json::to_string(&event)?);
+    }
+
+    match event {
+        FrontendEvent::OutputBlockAppended {
+            block: payload,
+            live_identity,
+            ..
+        } if !matches!(format, &RunOutputFormat::Json) => {
+            if let Some(block) = parse_output_block(&payload) {
+                if matches!(block, OutputBlock::Reasoning(_))
+                    && !show_thinking.load(Ordering::SeqCst)
+                {
+                    return Ok(false);
                 }
-            }
-            other => {
-                output.insert("data".to_string(), other);
+                let transcript_identity = live_identity.as_ref().filter(|identity| {
+                    LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
+                });
+                remote_apply_output_block(
+                    semantic_state,
+                    &block,
+                    transcript_identity.or(live_identity.as_ref()),
+                    style,
+                    show_thinking.load(Ordering::SeqCst),
+                );
+                remote_emit_transcript(semantic_state)?;
             }
         }
-        println!("{}", serde_json::Value::Object(output));
-        return Ok(());
-    }
-
-    if event_type == "output_block" {
-        let payload = parsed.get("block").unwrap_or(&parsed);
-        if let Some(block) = parse_output_block(payload) {
-            if matches!(block, OutputBlock::Reasoning(_)) && !show_thinking.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            let block_id = parsed.get("id").and_then(|value| value.as_str());
-            semantic_state
-                .accumulator
-                .apply_output_block(block_id, &block);
-            let live_identity: Option<agendao_types::LiveMessagePartIdentity> = parsed
-                .get("live_identity")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
-            let transcript_identity = live_identity.as_ref().filter(|identity| {
-                LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
-            });
-            remote_apply_output_block(
-                semantic_state,
-                &block,
-                transcript_identity.or(live_identity.as_ref()),
-                style,
-                show_thinking.load(Ordering::SeqCst),
-            );
-            remote_emit_transcript(semantic_state)?;
+        FrontendEvent::SessionError { error, .. } => {
+            eprintln!("\nError: {error}");
         }
-        return Ok(());
+        FrontendEvent::SessionRuntimeReplaced { runtime, .. } => {
+            if runtime.run_status == agendao_api::SessionRunStatusKind::Idle {
+                return Ok(*saw_active);
+            }
+            *saw_active = true;
+        }
+        _ => {}
     }
-
-    if event_type.as_str() == "error" {
-        let message = parsed
-            .get("error")
-            .and_then(|v| v.as_str())
-            .or_else(|| parsed.get("message").and_then(|v| v.as_str()))
-            .unwrap_or("unknown remote stream error");
-        eprintln!("\nError: {}", message);
-    }
-    Ok(())
+    Ok(false)
 }

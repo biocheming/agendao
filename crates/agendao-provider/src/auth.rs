@@ -181,15 +181,6 @@ pub enum AuthError {
     ApiKeyNotSet(String),
 }
 
-pub fn get_env_key(provider_id: &str) -> Option<String> {
-    let env_var = format!("{}_API_KEY", provider_id.to_uppercase().replace("-", "_"));
-    std::env::var(&env_var).ok()
-}
-
-pub fn get_env_key_or(provider_id: &str, default: &str) -> String {
-    get_env_key(provider_id).unwrap_or_else(|| default.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,9 +210,9 @@ mod tests {
             .await;
         manager
             .set(
-                "github-copilot",
+                "anthropic",
                 AuthInfo::Api {
-                    key: "copilot-key".to_string(),
+                    key: "anthropic-key".to_string(),
                 },
             )
             .await;
@@ -249,8 +240,8 @@ mod tests {
             other => panic!("unexpected oauth entry: {other:?}"),
         }
 
-        match reloaded.get("github-copilot").await {
-            Some(AuthInfo::Api { key }) => assert_eq!(key, "copilot-key"),
+        match reloaded.get("anthropic").await {
+            Some(AuthInfo::Api { key }) => assert_eq!(key, "anthropic-key"),
             other => panic!("unexpected api entry: {other:?}"),
         }
 

@@ -7,8 +7,6 @@ license.workspace = true
 
 [dependencies]
 agendao-plugin = { path = "../agendao-plugin" }
-glob = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

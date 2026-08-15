@@ -1,4 +1,4 @@
-use agendao_config::{ConfigStore, UiRecentModelConfig, WorkspaceIdentity, WorkspaceMode};
+use agendao_config::{ConfigStore, WorkspaceIdentity, WorkspaceMode};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,24 +12,6 @@ pub const MAX_RECENT_MODELS: usize = 5;
 pub struct RecentModelEntry {
     pub provider: String,
     pub model: String,
-}
-
-impl From<UiRecentModelConfig> for RecentModelEntry {
-    fn from(value: UiRecentModelConfig) -> Self {
-        Self {
-            provider: value.provider,
-            model: value.model,
-        }
-    }
-}
-
-impl From<&UiRecentModelConfig> for RecentModelEntry {
-    fn from(value: &UiRecentModelConfig) -> Self {
-        Self {
-            provider: value.provider.clone(),
-            model: value.model.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -99,18 +81,11 @@ impl UserStateAuthority {
         )
     }
 
-    pub async fn resolved_recent_models(
-        &self,
-        legacy_recent: &[RecentModelEntry],
-    ) -> Result<Vec<RecentModelEntry>> {
+    pub async fn resolved_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
         let recent = match self.mode {
             WorkspaceMode::Isolated => {
                 let state = self.read_workspace_state().await?;
-                if !state.recent_models.is_empty() {
-                    state.recent_models
-                } else {
-                    legacy_recent.to_vec()
-                }
+                state.recent_models
             }
             WorkspaceMode::Shared => {
                 let state = self.read_global_state().await?;
@@ -119,11 +94,7 @@ impl UserStateAuthority {
                         return Ok(normalize_recent_models(&workspace.recent_models));
                     }
                 }
-                if !state.recent_models.is_empty() {
-                    state.recent_models
-                } else {
-                    legacy_recent.to_vec()
-                }
+                state.recent_models
             }
         };
         Ok(normalize_recent_models(&recent))
@@ -379,14 +350,14 @@ mod tests {
             .expect("save workspace a");
         assert_eq!(
             authority_a
-                .resolved_recent_models(&[])
+                .resolved_recent_models()
                 .await
                 .expect("resolve workspace a"),
             recent_a
         );
         assert_eq!(
             authority_b
-                .resolved_recent_models(&[])
+                .resolved_recent_models()
                 .await
                 .expect("resolve workspace b fallback"),
             recent_a
@@ -399,14 +370,14 @@ mod tests {
             .expect("save workspace b");
         assert_eq!(
             authority_a
-                .resolved_recent_models(&[])
+                .resolved_recent_models()
                 .await
                 .expect("resolve workspace a after workspace b write"),
             recent_a
         );
         assert_eq!(
             authority_b
-                .resolved_recent_models(&[])
+                .resolved_recent_models()
                 .await
                 .expect("resolve workspace b"),
             recent_b
@@ -486,7 +457,7 @@ mod tests {
             .await
             .expect("save recent models");
         let resolved = authority
-            .resolved_recent_models(&[])
+            .resolved_recent_models()
             .await
             .expect("resolve recent models");
 

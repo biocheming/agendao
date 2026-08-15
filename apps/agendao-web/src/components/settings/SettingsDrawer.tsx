@@ -24,11 +24,6 @@ const ProvidersTab = lazy(async () => {
   return { default: module.ProvidersTab };
 });
 
-const SchedulerTab = lazy(async () => {
-  const module = await import("../settings-drawer/SchedulerTab");
-  return { default: module.SchedulerTab };
-});
-
 const ValidationTab = lazy(async () => {
   const module = await import("../settings-drawer/ValidationTab");
   return { default: module.ValidationTab };
@@ -98,15 +93,6 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               loadingLabel={t("settings.loading.providers")}
             >
               <ProvidersTab {...view.providersTabProps} />
-            </SettingsTabSuspense>
-          ) : null}
-
-          {!view.loading && view.activeTab === "scheduler" ? (
-            <SettingsTabSuspense
-              loadingTestId="settings-panel-scheduler-loading"
-              loadingLabel={t("settings.loading.scheduler")}
-            >
-              <SchedulerTab {...view.schedulerTabProps} />
             </SettingsTabSuspense>
           ) : null}
 

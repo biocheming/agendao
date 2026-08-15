@@ -222,13 +222,18 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         local_direct: use_direct && local_server.is_some(),
         local_server,
     };
-    let mode = if use_direct { "Direct" } else if use_socket { "Unix socket" } else { "HTTP" };
+    let mode = if use_direct {
+        "Direct"
+    } else if use_socket {
+        "Unix socket"
+    } else {
+        "HTTP"
+    };
     eprintln!("Starting agendao TUI in {} mode", mode);
-    let run_result = tokio::task::spawn_blocking(move || {
-        agendao_tui_revue::run_app_with_config(cfg)
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("agendao TUI task failed to join: {}", error))?;
+    let run_result =
+        tokio::task::spawn_blocking(move || agendao_tui_revue::run_app_with_config(cfg))
+            .await
+            .map_err(|error| anyhow::anyhow!("agendao TUI task failed to join: {}", error))?;
     run_result
 }
 
@@ -249,7 +254,6 @@ async fn create_local_server_state(
     state.ensure_frontend_projector();
     Ok(state)
 }
-
 
 fn current_server_password() -> Option<String> {
     std::env::var("AGENDAO_SERVER_PASSWORD")

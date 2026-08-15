@@ -1,19 +1,8 @@
 //! MCP protocol types.
 //!
-//! JSON-RPC 2.0 envelope types are re-exported from `agendao_core::jsonrpc`
-//! (the single authority per Constitution Article 1). This module adds
-//! MCP-specific domain types on top.
+//! MCP-specific domain types.
 
 use serde::{Deserialize, Serialize};
-
-// Re-export JSON-RPC 2.0 envelope from the single authority.
-pub use agendao_core::jsonrpc::{
-    JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-};
-
-// ---------------------------------------------------------------------------
-// MCP domain types (not duplicated — these are MCP-specific)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeParams {

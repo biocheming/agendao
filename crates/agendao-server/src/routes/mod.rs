@@ -19,11 +19,10 @@ mod provider_diagnostics;
 #[cfg(feature = "pty")]
 mod pty;
 mod session;
+pub(crate) use session::{scheduler_host_tool_definitions, SessionSchedulerToolExecutor};
 mod skill_catalog;
 mod skill_hub;
 mod skill_proposal;
-mod stream;
-mod task;
 mod tool_catalog;
 mod tui;
 mod web_plugin;
@@ -42,7 +41,6 @@ use self::skill_catalog::{
 };
 use self::skill_hub::skill_hub_routes;
 use self::skill_proposal::skill_proposal_routes;
-use self::task::task_routes;
 use self::web_plugin::web_plugin_routes;
 use self::workspace::workspace_routes;
 pub use config::*;
@@ -84,7 +82,6 @@ use agendao_command::{
     ResolvedUiCommand, UiCommandArgumentKind, UiCommandSpec,
 };
 use agendao_config::Config as AppConfig;
-use agendao_orchestrator::{SchedulerConfig, SchedulerPresetKind, AUTO_SCHEDULER_PROFILE_NAME};
 use agendao_permission::PermissionRuleset;
 use agendao_plugin::subprocess::{PluginLoader, PluginSubprocessError};
 use agendao_provider::AuthInfo;
@@ -133,7 +130,6 @@ pub fn router() -> Router<Arc<ServerState>> {
         .nest("/question", question_routes())
         .nest("/tui", tui_routes())
         .nest("/process", process_routes())
-        .nest("/task", task_routes())
         .nest("/workspace", workspace_routes())
         .nest("/global", global_routes())
         .nest("/experimental", experimental_routes())
@@ -249,8 +245,6 @@ async fn get_vcs_info() -> Result<Json<VcsInfo>> {
 struct CommandApiSpec {
     name: String,
     description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scheduler_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     aliases: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,7 +275,6 @@ async fn list_commands(State(state): State<Arc<ServerState>>) -> Result<Json<Vec
         .map(|command| CommandApiSpec {
             name: command.name.clone(),
             description: command.description.clone(),
-            scheduler_profile: command.scheduler_profile.clone(),
             aliases: command.aliases.clone(),
             invocation: command.invocation.clone(),
             interactive: command.interactive.clone(),
@@ -328,11 +321,10 @@ struct AgentApiModelRef {
     provider_id: String,
 }
 
-/// Matches the TS `Agent.Info` schema returned by the original OpenCode `/agent` endpoint.
+/// Rich server projection of the canonical agent identity and runtime options.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentInfo {
-    /// Extra field for TUI backward compat (not in TS schema, harmless).
     id: String,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -378,8 +370,6 @@ pub(crate) struct ExecutionModeInfo {
     hidden: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    orchestrator: Option<String>,
 }
 
 static MODE_LIST_CACHE: Lazy<RwLock<Option<Vec<ExecutionModeInfo>>>> =
@@ -482,87 +472,26 @@ fn build_agent_list(config: Option<&AppConfig>) -> Vec<AgentInfo> {
         .collect()
 }
 
-fn builtin_preset_mode_description(preset: SchedulerPresetKind) -> &'static str {
-    match preset {
-        SchedulerPresetKind::Sisyphus => "OMO-aligned delegation-first orchestration preset",
-        SchedulerPresetKind::Prometheus => "OMO-aligned planning-first orchestration preset",
-        SchedulerPresetKind::Atlas => "OMO-aligned graph-oriented orchestration preset",
-        SchedulerPresetKind::Hephaestus => "OMO-aligned autonomous execution preset",
-        SchedulerPresetKind::Verifier => {
-            "Workflow-backed verifier preset for repeated candidate comparison and selection"
-        }
-    }
-}
-
-fn build_builtin_preset_mode_list() -> Vec<ExecutionModeInfo> {
-    let mut items = vec![ExecutionModeInfo {
-        id: AUTO_SCHEDULER_PROFILE_NAME.to_string(),
-        name: AUTO_SCHEDULER_PROFILE_NAME.to_string(),
-        kind: "preset".to_string(),
-        description: Some("Automatic routing preset: choose the workflow per request".to_string()),
+fn build_scheduler_mode_list() -> Vec<ExecutionModeInfo> {
+    [
+        ("auto", "Choose or generate a scheduler for the request"),
+        ("direct", "Single-agent scheduler"),
+        ("plan", "Plan then execute"),
+        ("coordinate", "Coordinate parallel collaborators"),
+        ("verify", "Execute with a verification gate"),
+        ("autoresearch", "Bounded iterative research loop"),
+    ]
+    .into_iter()
+    .map(|(id, description)| ExecutionModeInfo {
+        id: id.to_string(),
+        name: id.to_string(),
+        kind: "scheduler".to_string(),
+        description: Some(description.to_string()),
         mode: None,
         hidden: None,
         color: None,
-        orchestrator: Some("sisyphus".to_string()),
-    }];
-    items.extend(
-        SchedulerPresetKind::public_presets()
-            .iter()
-            .copied()
-            .map(|preset| ExecutionModeInfo {
-                id: preset.as_str().to_string(),
-                name: preset.as_str().to_string(),
-                kind: "preset".to_string(),
-                description: Some(builtin_preset_mode_description(preset).to_string()),
-                mode: None,
-                hidden: None,
-                color: None,
-                orchestrator: Some(preset.as_str().to_string()),
-            }),
-    );
-    items
-}
-
-fn build_external_scheduler_profile_mode_list(
-    config: Option<&AppConfig>,
-) -> Result<Vec<ExecutionModeInfo>> {
-    let Some(config) = config else {
-        return Ok(Vec::new());
-    };
-
-    let Some(scheduler_path) = config
-        .scheduler_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(Vec::new());
-    };
-
-    let scheduler_config = match SchedulerConfig::load_from_file(scheduler_path) {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!(path = %scheduler_path, %error, "failed to load external scheduler profiles for execution modes");
-            return Ok(Vec::new());
-        }
-    };
-
-    let mut profiles = scheduler_config
-        .profiles
-        .into_iter()
-        .map(|(profile_name, profile)| ExecutionModeInfo {
-            id: profile_name.clone(),
-            name: profile_name,
-            kind: "profile".to_string(),
-            description: profile.description.clone(),
-            mode: None,
-            hidden: None,
-            color: None,
-            orchestrator: profile.orchestrator.clone(),
-        })
-        .collect::<Vec<_>>();
-    profiles.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(profiles)
+    })
+    .collect()
 }
 
 fn build_execution_mode_list(config: Option<&AppConfig>) -> Result<Vec<ExecutionModeInfo>> {
@@ -580,11 +509,9 @@ fn build_execution_mode_list(config: Option<&AppConfig>) -> Result<Vec<Execution
             }),
             hidden: agent.hidden,
             color: agent.color,
-            orchestrator: None,
         })
         .collect::<Vec<_>>();
-    items.extend(build_builtin_preset_mode_list());
-    items.extend(build_external_scheduler_profile_mode_list(config)?);
+    items.extend(build_scheduler_mode_list());
     Ok(items)
 }
 
@@ -778,61 +705,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn execution_modes_include_builtin_public_presets_without_scheduler_path() {
+    fn execution_modes_include_scheduler_templates() {
         let modes = build_execution_mode_list(Some(&AppConfig::default()))
             .expect("builtin mode list should resolve without external scheduler config");
-        let preset_names = modes
+        let scheduler_names = modes
             .into_iter()
-            .filter(|mode| mode.kind == "preset")
+            .filter(|mode| mode.kind == "scheduler")
             .map(|mode| mode.name)
             .collect::<Vec<_>>();
 
         assert_eq!(
-            preset_names,
+            scheduler_names,
             vec![
                 "auto",
-                "sisyphus",
-                "prometheus",
-                "atlas",
-                "hephaestus",
-                "verifier",
+                "direct",
+                "plan",
+                "coordinate",
+                "verify",
+                "autoresearch",
             ]
         );
-    }
-
-    #[test]
-    fn execution_modes_skip_external_profiles_when_scheduler_config_cannot_be_loaded() {
-        let config = AppConfig {
-            scheduler_path: Some("/definitely/missing/agendao.scheduler.jsonc".to_string()),
-            ..Default::default()
-        };
-
-        let modes = build_execution_mode_list(Some(&config))
-            .expect("broken external scheduler config should not fail built-in mode listing");
-
-        let preset_names = modes
-            .iter()
-            .filter(|mode| mode.kind == "preset")
-            .map(|mode| mode.name.as_str())
-            .collect::<Vec<_>>();
-        let profile_names = modes
-            .iter()
-            .filter(|mode| mode.kind == "profile")
-            .map(|mode| mode.name.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            preset_names,
-            vec![
-                "auto",
-                "sisyphus",
-                "prometheus",
-                "atlas",
-                "hephaestus",
-                "verifier",
-            ]
-        );
-        assert!(profile_names.is_empty());
     }
 
     #[test]
@@ -914,7 +806,6 @@ mod tests {
             part_key: agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: agendao_types::LiveMessagePartKind::AssistantReasoning,
             phase: agendao_types::LivePartPhase::Snapshot,
-            legacy_block_id: Some("reasoning-1".to_string()),
         };
         let mut current = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
@@ -1071,7 +962,6 @@ mod tests {
                 part_key: part_key.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         }
     }
@@ -1132,7 +1022,6 @@ mod tests {
                 part_key: agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantReasoning,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         });
 
@@ -1196,7 +1085,6 @@ mod tests {
                 part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::End,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         };
         c.coalesce(end);
@@ -1247,7 +1135,6 @@ mod tests {
                 part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("block-2".to_string()),
             }),
         };
         let s2 = c.coalesce(session_scoped);
@@ -1288,7 +1175,6 @@ mod tests {
                 part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::Snapshot,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         };
         let second = ServerEvent::OutputBlock {
@@ -1300,7 +1186,6 @@ mod tests {
                 part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::Snapshot,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         };
 
@@ -1327,7 +1212,6 @@ mod tests {
                     part_key: agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
                     part_kind: agendao_types::LiveMessagePartKind::AssistantReasoning,
                     phase: agendao_types::LivePartPhase::Snapshot,
-                    legacy_block_id: Some("block-1".to_string()),
                 }),
             }));
         }
@@ -1400,7 +1284,6 @@ mod tests {
                 part_key: agendao_types::tool_call_part_key("call-1"),
                 part_kind: agendao_types::LiveMessagePartKind::ToolCall,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("tool-1".to_string()),
             }),
         };
         let second = ServerEvent::OutputBlock {
@@ -1417,7 +1300,6 @@ mod tests {
                 part_key: agendao_types::tool_call_part_key("call-1"),
                 part_kind: agendao_types::LiveMessagePartKind::ToolCall,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("tool-1".to_string()),
             }),
         };
 
@@ -1484,7 +1366,6 @@ mod tests {
                 part_key: agendao_types::tool_call_part_key("call-1"),
                 part_kind: agendao_types::LiveMessagePartKind::ToolCall,
                 phase: agendao_types::LivePartPhase::Append,
-                legacy_block_id: Some("tool-1".to_string()),
             }),
         };
         c.coalesce(delta);
@@ -1502,7 +1383,6 @@ mod tests {
                 part_key: agendao_types::tool_call_part_key("call-1"),
                 part_kind: agendao_types::LiveMessagePartKind::ToolCall,
                 phase: agendao_types::LivePartPhase::End,
-                legacy_block_id: Some("tool-1".to_string()),
             }),
         };
         c.coalesce(end);
@@ -1642,8 +1522,7 @@ mod tests {
                     "message_id": "msg-1",
                     "part_key": agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     "part_kind": "assistant_text",
-                    "phase": "append",
-                    "legacy_block_id": "block-1"
+                    "phase": "append"
                 }
             }),
             "first delta",
@@ -1659,8 +1538,7 @@ mod tests {
                     "message_id": "msg-1",
                     "part_key": agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     "part_kind": "assistant_text",
-                    "phase": "append",
-                    "legacy_block_id": "block-1"
+                    "phase": "append"
                 }
             }),
             "second delta",
@@ -1756,7 +1634,6 @@ mod tests {
                 part_key: part_key.to_string(),
                 part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                 phase: agendao_types::LivePartPhase::Snapshot,
-                legacy_block_id: Some("block-1".to_string()),
             }),
         }
     }
@@ -1805,7 +1682,7 @@ mod tests {
                 // 完整重复（incoming == 现有内容）。
                 _ => truth.clone(),
             };
-            merge_snapshot_text_in_place(&mut in_place, &incoming);
+            crate::live_snapshot::merge_snapshot_text_in_place(&mut in_place, &incoming);
             reference = reference_merge_snapshot_text(Some(&reference), &incoming);
             assert_eq!(
                 in_place, reference,
@@ -1829,7 +1706,7 @@ mod tests {
         for step in 0..400 {
             let event = match rng.next() % 8 {
                 // Append delta：累积器纯追加。
-                0 | 1 | 2 => {
+                0..=2 => {
                     let frag = rng.pick(&COALESCE_FRAGS);
                     truth.push_str(frag);
                     reference.push_str(frag);
@@ -1874,7 +1751,6 @@ mod tests {
                             part_key: part_key.to_string(),
                             part_kind: agendao_types::LiveMessagePartKind::AssistantText,
                             phase: agendao_types::LivePartPhase::End,
-                            legacy_block_id: Some("block-1".to_string()),
                         }),
                     };
                     let out = c.coalesce(end);
@@ -1941,7 +1817,7 @@ mod tests {
 
     /// 分配量级断言（Snapshot 流）：旧实现每帧 merge 分配 + clone 入累积器
     /// + json! 共三份全文（≈3× 下界）；原地归并 + 单次克隆必须压在
-    /// 1.5× 下界以内。
+    ///   1.5× 下界以内。
     #[test]
     fn coalescer_snapshot_stream_allocates_one_frame_copy_per_chunk() {
         const CHUNKS: usize = 400;

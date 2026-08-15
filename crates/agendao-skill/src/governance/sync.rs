@@ -75,7 +75,9 @@ impl SkillGovernanceAuthority {
         let report = self.guard_engine.evaluate_imported_skill(
             &meta.name,
             &markdown_content,
-            &supporting_files,
+            supporting_files
+                .iter()
+                .map(|(path, content)| (path.as_str(), content.as_str())),
             false,
             now_unix_timestamp(),
         );
@@ -130,11 +132,10 @@ impl SkillGovernanceAuthority {
             let report = self.guard_engine.evaluate_imported_skill(
                 &entry.skill_name,
                 &entry.markdown_content,
-                &entry
+                entry
                     .supporting_files
                     .iter()
-                    .map(|file| (file.relative_path.clone(), file.content.clone()))
-                    .collect::<Vec<_>>(),
+                    .map(|file| (file.relative_path.as_str(), file.content.as_str())),
                 duplicate_conflict,
                 now_unix_timestamp(),
             );
@@ -393,11 +394,10 @@ impl SkillGovernanceAuthority {
         let report = self.evaluate_imported_skill_guard_report(
             &entry.skill_name,
             &entry.markdown_content,
-            &entry
+            entry
                 .supporting_files
                 .iter()
-                .map(|file| (file.relative_path.clone(), file.content.clone()))
-                .collect::<Vec<_>>(),
+                .map(|file| (file.relative_path.as_str(), file.content.as_str())),
             duplicate_conflict,
             entry.category.as_deref(),
             current_skill_name,

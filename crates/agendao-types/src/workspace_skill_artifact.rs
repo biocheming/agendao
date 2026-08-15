@@ -49,8 +49,6 @@ pub struct WorkspaceSkillArtifactAgendaoMetadata {
     pub requires_toolsets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_for_toolsets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stage_filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -137,27 +135,11 @@ impl WorkspaceSkillArtifactBundle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum WorkspaceSkillArtifactImportEnvelope {
-    Bundle(WorkspaceSkillArtifactBundle),
-    Legacy(WorkspaceSkillArtifactLegacyPayload),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceSkillArtifactLegacyPayload {
-    pub legacy_format: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<serde_json::Value>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         WorkspaceSkillArtifactBundle, WorkspaceSkillArtifactEntry, WorkspaceSkillArtifactFile,
-        WorkspaceSkillArtifactFrontmatter, WorkspaceSkillArtifactImportEnvelope,
-        WorkspaceSkillArtifactVersion,
+        WorkspaceSkillArtifactFrontmatter, WorkspaceSkillArtifactVersion,
     };
 
     fn sample_entry() -> WorkspaceSkillArtifactEntry {
@@ -195,25 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn bundle_roundtrips_through_import_envelope() {
+    fn bundle_roundtrips_through_current_schema() {
         let bundle = WorkspaceSkillArtifactBundle::new(123, vec![sample_entry()]);
 
         let payload = serde_json::to_string(&bundle).expect("bundle should serialize");
-        let envelope: WorkspaceSkillArtifactImportEnvelope =
+        let parsed: WorkspaceSkillArtifactBundle =
             serde_json::from_str(&payload).expect("bundle should parse");
-
-        match envelope {
-            WorkspaceSkillArtifactImportEnvelope::Bundle(parsed) => {
-                assert_eq!(parsed.exported_at, 123);
-                assert_eq!(parsed.skills.len(), 1);
-                assert_eq!(parsed.skills[0].frontmatter.name, "reviewer");
-                assert_eq!(
-                    parsed.skills[0].supporting_files[0].relative_path,
-                    "templates/checklist.md"
-                );
-            }
-            WorkspaceSkillArtifactImportEnvelope::Legacy(_) => panic!("expected bundle envelope"),
-        }
+        assert_eq!(parsed.exported_at, 123);
+        assert_eq!(parsed.skills.len(), 1);
+        assert_eq!(parsed.skills[0].frontmatter.name, "reviewer");
+        assert_eq!(
+            parsed.skills[0].supporting_files[0].relative_path,
+            "templates/checklist.md"
+        );
     }
 
     #[test]
@@ -224,33 +200,12 @@ mod tests {
             "skills": [sample_entry()]
         });
 
-        let error = serde_json::from_value::<WorkspaceSkillArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<WorkspaceSkillArtifactBundle>(payload)
             .expect_err("unknown version should fail closed");
         assert!(
             error.to_string().contains("did not match any variant")
                 || error.to_string().contains("unknown variant")
         );
-    }
-
-    #[test]
-    fn import_envelope_accepts_only_explicit_legacy_shape() {
-        let payload = serde_json::json!({
-            "legacy_format": "workspace-skill-alpha",
-            "payload": {
-                "skills": [{"name": "legacy-reviewer"}]
-            }
-        });
-
-        let envelope: WorkspaceSkillArtifactImportEnvelope =
-            serde_json::from_value(payload).expect("explicit legacy shape should parse");
-
-        match envelope {
-            WorkspaceSkillArtifactImportEnvelope::Legacy(legacy) => {
-                assert_eq!(legacy.legacy_format, "workspace-skill-alpha");
-                assert!(legacy.payload.is_some());
-            }
-            WorkspaceSkillArtifactImportEnvelope::Bundle(_) => panic!("expected legacy envelope"),
-        }
     }
 
     #[test]
@@ -262,7 +217,7 @@ mod tests {
             "managed_skills": []
         });
 
-        let error = serde_json::from_value::<WorkspaceSkillArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<WorkspaceSkillArtifactBundle>(payload)
             .expect_err("unknown bundle fields should fail closed");
         assert!(!error.to_string().is_empty());
     }

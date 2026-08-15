@@ -1,5 +1,7 @@
 use super::semantic::SkillSemanticDescriptor;
-use super::{dedupe_string_reasons, normalize_name, required_nonempty_text, set_intersection_count};
+use super::{
+    dedupe_string_reasons, normalize_name, required_nonempty_text, set_intersection_count,
+};
 use crate::SkillError;
 use agendao_types::{
     SkillCapabilityMemberRole, SkillOperationalSnapshot, SkillRelationshipEdge,
@@ -25,7 +27,10 @@ pub(super) fn relationship_other_skill_name(
     None
 }
 
-pub(super) fn relationship_pair_key(left_skill_name: &str, right_skill_name: &str) -> (String, String) {
+pub(super) fn relationship_pair_key(
+    left_skill_name: &str,
+    right_skill_name: &str,
+) -> (String, String) {
     let left = normalize_name(left_skill_name);
     let right = normalize_name(right_skill_name);
     if left <= right {
@@ -35,7 +40,10 @@ pub(super) fn relationship_pair_key(left_skill_name: &str, right_skill_name: &st
     }
 }
 
-pub(super) fn ordered_skill_names(left_skill_name: &str, right_skill_name: &str) -> (String, String) {
+pub(super) fn ordered_skill_names(
+    left_skill_name: &str,
+    right_skill_name: &str,
+) -> (String, String) {
     if left_skill_name <= right_skill_name {
         (left_skill_name.to_string(), right_skill_name.to_string())
     } else {
@@ -162,11 +170,6 @@ pub(super) fn build_skill_complementary_relationship_candidate(
     let shared_related = set_intersection_count(&left.related_skills, &right.related_skills);
     let shared_tools = set_intersection_count(&left.requires_tools, &right.requires_tools);
     let shared_toolsets = set_intersection_count(&left.requires_toolsets, &right.requires_toolsets);
-    let shared_stages = if left.stage_filter.is_empty() || right.stage_filter.is_empty() {
-        0
-    } else {
-        set_intersection_count(&left.stage_filter, &right.stage_filter)
-    };
     let shared_last_category = shared_usage_value(
         left_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_category.as_deref()),
         right_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_category.as_deref()),
@@ -179,7 +182,6 @@ pub(super) fn build_skill_complementary_relationship_candidate(
     let has_anchor = direct_related || shared_related > 0 || same_category;
     let has_domain = shared_tools > 0
         || shared_toolsets > 0
-        || shared_stages > 0
         || shared_last_category.is_some()
         || shared_last_stage.is_some()
         || conflict.is_some();
@@ -219,13 +221,6 @@ pub(super) fn build_skill_complementary_relationship_candidate(
                 left.requires_toolsets
                     .intersection(&right.requires_toolsets)
             )
-        ));
-    }
-    if shared_stages > 0 {
-        score += 10;
-        reasons.push(format!(
-            "stage filters intersect at {shared_stages} stage(s): {}",
-            join_terms(left.stage_filter.intersection(&right.stage_filter))
         ));
     }
     if let Some(category) = shared_last_category {
@@ -345,57 +340,11 @@ fn skill_narrowing_reasons(
         ));
     }
 
-    match stage_filter_specialization_state(candidate, broad) {
-        StageFilterSpecializationState::Narrower(reason) => {
-            strict_signal_count += 1;
-            reasons.push(reason);
-        }
-        StageFilterSpecializationState::Equal => {}
-        StageFilterSpecializationState::Incompatible => return None,
-    }
-
     if strict_signal_count == 0 {
         return None;
     }
 
     Some((reasons, strict_signal_count))
-}
-
-enum StageFilterSpecializationState {
-    Equal,
-    Narrower(String),
-    Incompatible,
-}
-
-fn stage_filter_specialization_state(
-    candidate: &SkillSemanticDescriptor,
-    broad: &SkillSemanticDescriptor,
-) -> StageFilterSpecializationState {
-    match (candidate.stage_filter.is_empty(), broad.stage_filter.is_empty()) {
-        (true, true) => StageFilterSpecializationState::Equal,
-        (true, false) => StageFilterSpecializationState::Incompatible,
-        (false, true) => StageFilterSpecializationState::Narrower(format!(
-            "`{}` narrows runtime stage scope relative to broad `{}` by restricting execution to {}",
-            candidate.skill_name,
-            broad.skill_name,
-            join_terms(candidate.stage_filter.iter())
-        )),
-        (false, false) => {
-            if !candidate.stage_filter.is_subset(&broad.stage_filter) {
-                return StageFilterSpecializationState::Incompatible;
-            }
-            if candidate.stage_filter.len() == broad.stage_filter.len() {
-                return StageFilterSpecializationState::Equal;
-            }
-            StageFilterSpecializationState::Narrower(format!(
-                "`{}` narrows runtime stage scope from {} to {} relative to `{}`",
-                candidate.skill_name,
-                join_terms(broad.stage_filter.iter()),
-                join_terms(candidate.stage_filter.iter()),
-                broad.skill_name
-            ))
-        }
-    }
 }
 
 fn shared_usage_value(left: Option<&str>, right: Option<&str>) -> Option<String> {
@@ -530,7 +479,9 @@ fn canonicalize_pair_skill_name(
     })
 }
 
-pub(super) fn format_skill_relationship_kind(kind: agendao_types::SkillRelationshipKind) -> &'static str {
+pub(super) fn format_skill_relationship_kind(
+    kind: agendao_types::SkillRelationshipKind,
+) -> &'static str {
     match kind {
         agendao_types::SkillRelationshipKind::RedundantOverlap => "redundant_overlap",
         agendao_types::SkillRelationshipKind::SpecializationVariant => "specialization_variant",
@@ -538,7 +489,9 @@ pub(super) fn format_skill_relationship_kind(kind: agendao_types::SkillRelations
     }
 }
 
-pub(super) fn format_skill_relationship_state(state: agendao_types::SkillRelationshipState) -> &'static str {
+pub(super) fn format_skill_relationship_state(
+    state: agendao_types::SkillRelationshipState,
+) -> &'static str {
     match state {
         agendao_types::SkillRelationshipState::Observed => "observed",
         agendao_types::SkillRelationshipState::Accepted => "accepted",

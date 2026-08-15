@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
 
 pub const SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY: &str =
     "scheduler_output_projection_policy";
@@ -26,34 +24,11 @@ pub enum ArtifactKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceRef {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactSectionRef {
-    pub anchor: String,
-    pub title: String,
-    pub token_estimate: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: String,
     pub kind: ArtifactKind,
     pub summary: String,
-    pub sections: Vec<ArtifactSectionRef>,
     pub token_estimate: Option<u64>,
-    pub provenance: Vec<SourceRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ArtifactLoadPolicy {
-    SummaryOnly,
-    SectionByAnchor(Vec<String>),
-    EvidenceOnly,
-    Full,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,9 +71,7 @@ pub fn project_assistant_output(
         id: artifact_id_for_content(content),
         kind: ArtifactKind::Report,
         summary: projection_summary(content, options.summary_char_limit),
-        sections: Vec::new(),
         token_estimate: Some(estimate_tokens(content)),
-        provenance: Vec::new(),
     };
 
     AssistantOutputProjection {
@@ -109,36 +82,6 @@ pub fn project_assistant_output(
         ),
         artifacts: vec![artifact],
         model_context_policy: ContextProjectionPolicy::OnDemandArtifact,
-    }
-}
-
-pub fn append_assistant_output_projection(
-    metadata: &mut HashMap<String, Value>,
-    content: &str,
-    options: &AssistantOutputProjectionOptions,
-) {
-    let projection = project_assistant_output(content, options);
-
-    if let Ok(value) = serde_json::to_value(projection.model_context_policy) {
-        metadata.insert(
-            SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
-            value,
-        );
-    }
-
-    if projection.model_context_policy != ContextProjectionPolicy::Full {
-        metadata.insert(
-            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
-            Value::String(projection.model_context_summary),
-        );
-    } else {
-        metadata.remove(SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY);
-    }
-
-    if projection.artifacts.is_empty() {
-        metadata.remove(SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY);
-    } else if let Ok(value) = serde_json::to_value(projection.artifacts) {
-        metadata.insert(SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY.to_string(), value);
     }
 }
 

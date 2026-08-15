@@ -2094,8 +2094,8 @@ mod tests {
     #[test]
     fn tab_mode_cycle_blocked_for_slash_command_prefix() {
         assert!(!tab_mode_cycle_allowed(
-            "/preset at",
-            "/preset at".chars().count()
+            "/mode verify",
+            "/mode verify".chars().count()
         ));
         assert!(!tab_mode_cycle_allowed(
             "  /agent build",

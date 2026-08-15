@@ -79,36 +79,6 @@ export interface ModelToolRepairTelemetrySummaryRecord
   repaired_session_count: number;
 }
 
-export interface StageSummaryRecord {
-  stage_id: string;
-  stage_name: string;
-  index?: number | null;
-  total?: number | null;
-  step?: number | null;
-  step_total?: number | null;
-  status: string;
-  prompt_tokens?: number | null;
-  context_tokens?: number | null;
-  completion_tokens?: number | null;
-  reasoning_tokens?: number | null;
-  cache_read_tokens?: number | null;
-  cache_miss_tokens?: number | null;
-  cache_write_tokens?: number | null;
-  focus?: string | null;
-  last_event?: string | null;
-  waiting_on?: string | null;
-  activity?: string | null;
-  estimated_context_tokens?: number | null;
-  skill_tree_budget?: number | null;
-  skill_tree_truncation_strategy?: string | null;
-  skill_tree_truncated?: boolean | null;
-  retry_attempt?: number | null;
-  active_agent_count: number;
-  active_tool_count: number;
-  attached_session_count: number;
-  primary_attached_session_id?: string | null;
-}
-
 export interface SessionInsightsMemoryRecord {
   summary: SessionMemoryTelemetryRecord;
   frozen_snapshot?: MemoryRetrievalPacketRecord | null;
@@ -116,23 +86,13 @@ export interface SessionInsightsMemoryRecord {
   recent_session_records: MemoryCardRecord[];
 }
 
-export interface SessionEffectiveSchedulerTraceStepRecord {
-  kind: string;
-  profile?: string | null;
-  detail?: string | null;
-  applied: boolean;
-}
-
 export interface SessionEffectiveSchedulerPolicyRecord {
-  requested_profile?: string | null;
-  effective_profile?: string | null;
+  requested_kind?: string | null;
+  blueprint_name?: string | null;
+  blueprint_fingerprint?: string | null;
   source: string;
   applied: boolean;
-  mode_kind?: string | null;
-  root_agent?: string | null;
   resolved_agent?: string | null;
-  selection_trace: SessionEffectiveSchedulerTraceStepRecord[];
-  warning?: string | null;
 }
 
 export interface SessionEffectivePolicyViewRecord {
@@ -191,22 +151,10 @@ export interface SessionCacheExplainabilityContractRecord {
   explanation?: string | null;
 }
 
-export interface SessionChildHistoryIsolationContractRecord {
-  attached_subtree_session_count: number;
-  owner_session_cumulative_tokens: number;
-  workflow_cumulative_tokens: number;
-  attached_subtree_cumulative_tokens: number;
-  owner_live_context_tokens?: number | null;
-  owner_local_live_prefix: boolean;
-  child_history_in_live_prefix_detected: boolean;
-  explanation: string;
-}
-
 export interface SessionContextClosureContractRecord {
   prefix_stability: SessionPrefixStabilityContractRecord;
   compaction_boundary: SessionCompactionBoundaryContractRecord;
   cache_explainability: SessionCacheExplainabilityContractRecord;
-  child_history_isolation: SessionChildHistoryIsolationContractRecord;
 }
 
 export interface SessionCompactionContinuityInspectionRecord {
@@ -258,7 +206,6 @@ export interface ContextCompactionLifecycleSummaryRecord {
 
 export interface SessionTelemetrySnapshotRecord {
   runtime: SessionRuntimeRecord;
-  stages: StageSummaryRecord[];
   topology: SessionExecutionTopologyRecord;
   usage: SessionUsageRecord;
   tool_repair_summary?: SessionToolRepairTelemetrySummaryRecord | null;
@@ -328,15 +275,4 @@ export interface SessionRuntimeProtocolRecord {
   permission: PermissionRuntimeSummaryRecord;
   steering: SteeringRuntimeSummaryRecord;
   interrupt: InterruptRuntimeSummaryRecord;
-}
-
-export interface ActivityEventRecord {
-  event_id?: string;
-  scope?: string;
-  ts?: number;
-  event_type?: string;
-  stage_id?: string | null;
-  execution_id?: string | null;
-  summary?: string | null;
-  payload?: Record<string, unknown> | null;
 }

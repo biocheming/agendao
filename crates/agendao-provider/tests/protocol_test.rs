@@ -5,92 +5,58 @@ use agendao_provider::{
 use std::collections::HashMap;
 
 #[test]
-fn test_adapter_from_profile_ethnopic_family() {
-    let adapter = adapter_from_resolved_profile("ethnopic", "@ai-sdk/anthropic");
-    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
-}
-
-#[test]
-fn test_adapter_from_profile_ethnopic_alias() {
-    let adapter = adapter_from_resolved_profile("ethnopic", "ethnopic-compatible");
-    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
+fn test_adapter_from_profile_anthropic_family() {
+    let adapter = adapter_from_resolved_profile("anthropic", "@ai-sdk/anthropic");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Anthropic);
 }
 
 #[test]
 fn test_adapter_from_profile_openai() {
     let adapter = adapter_from_resolved_profile("openai", "@ai-sdk/openai");
-    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
+    assert_eq!(adapter, ProviderRuntimeAdapter::OpenAiCompatible);
 }
 
 #[test]
-fn test_adapter_from_profile_closeai_and_openai_aliases() {
+fn test_adapter_from_explicit_custom_chat_profile() {
+    let options = custom_chat_options();
+    let profile =
+        ProviderProfileResolver::resolve_with_npm("custom", "@ai-sdk/openai-compatible", &options);
     assert_eq!(
-        adapter_from_resolved_profile("custom-closeai", "closeai-compatible"),
-        ProviderRuntimeAdapter::CloseAiCompatible
-    );
-    assert_eq!(
-        adapter_from_resolved_profile("custom-closeai", "openai-compatible"),
-        ProviderRuntimeAdapter::CloseAiCompatible
-    );
-}
-
-#[test]
-fn test_adapter_from_profile_openrouter_and_perplexity() {
-    assert_eq!(
-        adapter_from_resolved_profile("openrouter", "@openrouter/ai-sdk-provider"),
-        ProviderRuntimeAdapter::CloseAiCompatible
-    );
-    assert_eq!(
-        adapter_from_resolved_profile("perplexity", "@ai-sdk/perplexity"),
-        ProviderRuntimeAdapter::CloseAiCompatible
+        ProviderRuntimeAdapter::from_profile(&profile),
+        ProviderRuntimeAdapter::OpenAiCompatible
     );
 }
 
 #[test]
-fn test_adapter_from_profile_unknown_defaults_to_closeai_compatible() {
-    let adapter = adapter_from_resolved_profile("custom", "@custom/unknown-provider");
-    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
-}
+fn test_unknown_and_removed_sdk_shapes_are_rejected() {
+    let options = HashMap::new();
+    for (provider_id, npm) in [
+        ("google", "@ai-sdk/google"),
+        ("google-vertex", "@ai-sdk/google-vertex"),
+        ("amazon-bedrock", "@ai-sdk/amazon-bedrock"),
+        ("github-copilot", "@ai-sdk/github-copilot"),
+        ("gitlab", "@gitlab/gitlab-ai-provider"),
+    ] {
+        assert!(ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options).is_err());
+    }
 
-#[test]
-fn test_adapter_from_profile_vertex() {
-    let adapter = adapter_from_resolved_profile("google-vertex", "@ai-sdk/google-vertex");
-    assert_eq!(adapter, ProviderRuntimeAdapter::VertexGemini);
-}
-
-#[test]
-fn test_adapter_from_profile_google() {
-    let adapter = adapter_from_resolved_profile("google", "@ai-sdk/google");
-    assert_eq!(adapter, ProviderRuntimeAdapter::Gemini);
-}
-
-#[test]
-fn test_adapter_from_profile_bedrock() {
-    let adapter = adapter_from_resolved_profile("amazon-bedrock", "@ai-sdk/bedrock");
-    assert_eq!(adapter, ProviderRuntimeAdapter::BedrockConverse);
-}
-
-#[test]
-fn test_adapter_from_profile_github_copilot() {
-    let adapter = adapter_from_resolved_profile("github-copilot", "@ai-sdk/github-copilot");
-    assert_eq!(adapter, ProviderRuntimeAdapter::GitHubCopilotCloseAi);
-}
-
-#[test]
-fn test_adapter_from_profile_gitlab() {
-    let adapter = adapter_from_resolved_profile("gitlab", "@ai-sdk/gitlab");
-    assert_eq!(adapter, ProviderRuntimeAdapter::GitLabCloseAi);
+    assert!(ProviderProfileResolver::try_resolve_with_npm(
+        "custom",
+        "@custom/unknown-provider",
+        &custom_chat_options(),
+    )
+    .is_err());
 }
 
 #[test]
 fn test_adapter_resolution_is_case_insensitive() {
     assert_eq!(
-        adapter_from_resolved_profile("ethnopic", "@AI-SDK/ANTHROPIC"),
-        ProviderRuntimeAdapter::Ethnopic
+        adapter_from_resolved_profile("anthropic", "@AI-SDK/ANTHROPIC"),
+        ProviderRuntimeAdapter::Anthropic
     );
     assert_eq!(
         adapter_from_resolved_profile("openai", "@Ai-Sdk/Openai"),
-        ProviderRuntimeAdapter::CloseAiCompatible
+        ProviderRuntimeAdapter::OpenAiCompatible
     );
 }
 
@@ -100,51 +66,24 @@ fn adapter_from_resolved_profile(provider_id: &str, npm: &str) -> ProviderRuntim
     ProviderRuntimeAdapter::from_profile(&profile)
 }
 
-#[test]
-fn test_adapter_display_labels() {
-    assert_eq!(ProviderRuntimeAdapter::Ethnopic.to_string(), "ethnopic");
-    assert_eq!(
-        ProviderRuntimeAdapter::CloseAiCompatible.to_string(),
-        "closeai-compatible"
-    );
+fn custom_chat_options() -> HashMap<String, serde_json::Value> {
+    HashMap::from([(
+        "provider_profile".to_string(),
+        serde_json::json!({
+            "api_style": "openai-compatible",
+            "api_shape": "chat-completions",
+            "transport": "bearer",
+            "usage_shape": "openai-cached-tokens"
+        }),
+    )])
 }
 
 #[test]
-fn test_adapter_from_profile_projects_vendor_specific_adapters() {
-    let options = HashMap::new();
-    let gitlab =
-        ProviderProfileResolver::resolve_with_npm("gitlab", "@gitlab/gitlab-ai-provider", &options);
-    let copilot = ProviderProfileResolver::resolve_with_npm(
-        "github-copilot",
-        "@ai-sdk/github-copilot",
-        &options,
-    );
-    let vertex = ProviderProfileResolver::resolve_with_npm(
-        "google-vertex",
-        "@ai-sdk/google-vertex",
-        &options,
-    );
-    let closeai = ProviderProfileResolver::resolve_with_npm(
-        "custom-closeai",
-        "@ai-sdk/openai-compatible",
-        &options,
-    );
-
+fn test_adapter_display_labels() {
+    assert_eq!(ProviderRuntimeAdapter::Anthropic.to_string(), "anthropic");
     assert_eq!(
-        ProviderRuntimeAdapter::from_profile(&gitlab),
-        ProviderRuntimeAdapter::GitLabCloseAi
-    );
-    assert_eq!(
-        ProviderRuntimeAdapter::from_profile(&copilot),
-        ProviderRuntimeAdapter::GitHubCopilotCloseAi
-    );
-    assert_eq!(
-        ProviderRuntimeAdapter::from_profile(&vertex),
-        ProviderRuntimeAdapter::VertexGemini
-    );
-    assert_eq!(
-        ProviderRuntimeAdapter::from_profile(&closeai),
-        ProviderRuntimeAdapter::CloseAiCompatible
+        ProviderRuntimeAdapter::OpenAiCompatible.to_string(),
+        "openai-compatible"
     );
 }
 
@@ -234,14 +173,14 @@ fn test_provider_adapter_trait_bounds() {
 }
 
 #[test]
-fn test_create_provider_adapter_closeai_compatible() {
-    let adapter = create_provider_adapter(ProviderRuntimeAdapter::CloseAiCompatible);
+fn test_create_provider_adapter_openai_compatible() {
+    let adapter = create_provider_adapter(ProviderRuntimeAdapter::OpenAiCompatible);
     let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }
 
 #[test]
-fn test_create_provider_adapter_ethnopic() {
-    let adapter = create_provider_adapter(ProviderRuntimeAdapter::Ethnopic);
+fn test_create_provider_adapter_anthropic() {
+    let adapter = create_provider_adapter(ProviderRuntimeAdapter::Anthropic);
     let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }
 
@@ -249,7 +188,7 @@ fn test_create_provider_adapter_ethnopic() {
 fn test_create_provider_adapter_for_profile() {
     let options = HashMap::new();
     let profile =
-        ProviderProfileResolver::resolve_with_npm("ethnopic", "@ai-sdk/anthropic", &options);
+        ProviderProfileResolver::resolve_with_npm("anthropic", "@ai-sdk/anthropic", &options);
     let adapter = create_provider_adapter_for_profile(&profile);
     let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }

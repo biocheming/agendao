@@ -1,10 +1,6 @@
 use crate::schema::{AgentConfig, CommandConfig};
 use std::fs;
 use std::path::Path;
-use std::sync::LazyLock;
-
-static YAML_TOP_LEVEL_KV_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$").unwrap());
 
 /// Parse a markdown file as a command definition.
 /// Extracts YAML frontmatter and body content.
@@ -35,7 +31,7 @@ pub(super) fn parse_markdown_agent(path: &Path, base_dir: &Path) -> Option<(Stri
     let content = fs::read_to_string(path).ok()?;
     let (frontmatter, body) = split_frontmatter(&content);
 
-    let name = derive_name_from_path(path, base_dir, &["agent", "agents", "mode", "modes"]);
+    let name = derive_name_from_path(path, base_dir, &["agent", "agents"]);
 
     let mut config = if let Some(fm) = frontmatter {
         serde_json::from_value::<AgentConfig>(serde_yaml_frontmatter_to_json(&fm))
@@ -70,54 +66,6 @@ pub(super) fn split_frontmatter(content: &str) -> (Option<String>, String) {
     } else {
         (None, content.to_string())
     }
-}
-
-/// Fallback sanitization for invalid YAML frontmatter.
-/// Matches TS `ConfigMarkdown.fallbackSanitization`: if a top-level value
-/// contains a colon (which confuses simple YAML parsers), convert it to a
-/// block scalar so the value is preserved verbatim.
-pub(super) fn fallback_sanitize_yaml(yaml: &str) -> String {
-    let mut result: Vec<String> = Vec::new();
-    for line in yaml.lines() {
-        let trimmed = line.trim();
-        // Pass through comments and empty lines
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            result.push(line.to_string());
-            continue;
-        }
-        // Pass through continuation/indented lines
-        if line.starts_with(char::is_whitespace) {
-            result.push(line.to_string());
-            continue;
-        }
-        // Match top-level key: value
-        let Some(caps) = YAML_TOP_LEVEL_KV_RE.captures(line) else {
-            result.push(line.to_string());
-            continue;
-        };
-        let key = &caps[1];
-        let value = caps[2].trim();
-        // Skip if value is empty, already quoted, or uses block scalar indicator
-        if value.is_empty()
-            || value == ">"
-            || value == "|"
-            || value == "|-"
-            || value == ">-"
-            || value.starts_with('"')
-            || value.starts_with('\'')
-        {
-            result.push(line.to_string());
-            continue;
-        }
-        // If value contains a colon, convert to block scalar
-        if value.contains(':') {
-            result.push(format!("{}: |-", key));
-            result.push(format!("  {}", value));
-            continue;
-        }
-        result.push(line.to_string());
-    }
-    result.join("\n")
 }
 
 /// Parse a YAML scalar value string into a JSON value.
@@ -198,17 +146,9 @@ fn indent_level(line: &str) -> usize {
 /// YAML frontmatter to JSON conversion.
 /// Handles: flat key-value, inline lists/maps, multi-line dash lists,
 /// nested objects (indentation-based), and block scalars (| and >).
-/// Falls back to sanitized re-parse on failure.
+/// Invalid frontmatter produces an empty object and is never rewritten.
 pub(super) fn serde_yaml_frontmatter_to_json(yaml: &str) -> serde_json::Value {
-    match parse_yaml_mapping(yaml) {
-        Some(value) => value,
-        None => {
-            // Fallback: sanitize and retry
-            let sanitized = fallback_sanitize_yaml(yaml);
-            parse_yaml_mapping(&sanitized)
-                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
-        }
-    }
+    parse_yaml_mapping(yaml).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
 }
 
 /// Parse a YAML mapping (object) from a string. Returns None on structural failure.

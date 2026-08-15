@@ -12,7 +12,7 @@ use crate::mcp_oauth::{
     McpServerInfo as McpServerInfoStruct, McpServerLogEntry, RemoteMcpConfig,
 };
 use crate::{ApiError, Result, ServerState};
-use agendao_config::McpServerConfig as LoadedMcpServerConfig;
+use agendao_config::{McpOAuthConfig, McpServerConfig as LoadedMcpServerConfig};
 
 pub(crate) fn mcp_routes() -> Router<Arc<ServerState>> {
     Router::new()
@@ -107,26 +107,16 @@ pub struct AddMcpRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum McpCommandInput {
-    String(String),
-    Array(Vec<String>),
-}
-
-#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpConfigInput {
     #[serde(rename = "type")]
     pub server_type: Option<String>,
-    pub command: Option<McpCommandInput>,
-    pub args: Option<Vec<String>>,
-    pub env: Option<HashMap<String, String>>,
+    pub command: Option<Vec<String>>,
     pub environment: Option<HashMap<String, String>>,
     pub url: Option<String>,
     pub enabled: Option<bool>,
     pub timeout: Option<u64>,
-    pub oauth: Option<serde_json::Value>,
-    pub client_id: Option<String>,
-    pub authorization_url: Option<String>,
+    pub oauth: Option<McpOAuthConfig>,
 }
 
 async fn add_mcp_server(
@@ -304,67 +294,38 @@ fn parse_runtime_from_request(config: McpConfigInput) -> Result<(McpRuntimeConfi
         let url = config
             .url
             .ok_or_else(|| ApiError::BadRequest("MCP remote config requires `url`".to_string()))?;
-        let oauth_enabled = !matches!(config.oauth, Some(serde_json::Value::Bool(false)));
+        let oauth_enabled = !matches!(config.oauth, Some(McpOAuthConfig::Disabled));
+        let (client_id, authorization_url) = match config.oauth {
+            Some(McpOAuthConfig::Config(oauth)) => (oauth.client_id, oauth.authorization_url),
+            _ => (None, None),
+        };
         return Ok((
             McpRuntimeConfig::Remote(RemoteMcpConfig {
                 url,
                 oauth_enabled,
-                client_id: config.client_id,
-                authorization_url: config.authorization_url,
+                client_id,
+                authorization_url,
             }),
             enabled,
         ));
     }
 
-    let (command, args) = parse_command_and_args(config.command, config.args.unwrap_or_default())?;
+    let mut command = config.command.unwrap_or_default().into_iter();
+    let program = command
+        .next()
+        .filter(|program| !program.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::BadRequest("MCP local config requires non-empty `command`".to_string())
+        })?;
     Ok((
         McpRuntimeConfig::Local(LocalMcpConfig {
-            command,
-            args,
-            env: config.env.or(config.environment),
+            command: program,
+            args: command.collect(),
+            env: config.environment,
             timeout: config.timeout,
         }),
         enabled,
     ))
-}
-
-fn parse_command_and_args(
-    command: Option<McpCommandInput>,
-    extra_args: Vec<String>,
-) -> Result<(String, Vec<String>)> {
-    match command {
-        Some(McpCommandInput::String(cmd)) => {
-            if cmd.trim().is_empty() {
-                return Err(ApiError::BadRequest(
-                    "MCP local config `command` cannot be empty".to_string(),
-                ));
-            }
-            Ok((cmd, extra_args))
-        }
-        Some(McpCommandInput::Array(parts)) => {
-            let mut iter = parts.into_iter();
-            let cmd = iter
-                .next()
-                .ok_or_else(|| {
-                    ApiError::BadRequest(
-                        "MCP local config `command` array cannot be empty".to_string(),
-                    )
-                })?
-                .trim()
-                .to_string();
-            if cmd.is_empty() {
-                return Err(ApiError::BadRequest(
-                    "MCP local config `command` cannot be empty".to_string(),
-                ));
-            }
-            let mut args: Vec<String> = iter.collect();
-            args.extend(extra_args);
-            Ok((cmd, args))
-        }
-        None => Err(ApiError::BadRequest(
-            "MCP local config requires `command`".to_string(),
-        )),
-    }
 }
 
 fn parse_runtime_from_loaded_config(
@@ -377,12 +338,19 @@ fn parse_runtime_from_loaded_config(
             let enabled = server.enabled.unwrap_or(true);
 
             if let Some(url) = server.url {
+                let (oauth_enabled, client_id, authorization_url) = match server.oauth {
+                    Some(McpOAuthConfig::Disabled) => (false, None, None),
+                    Some(McpOAuthConfig::Config(oauth)) => {
+                        (true, oauth.client_id, oauth.authorization_url)
+                    }
+                    _ => (true, None, None),
+                };
                 return Ok(Some((
                     McpRuntimeConfig::Remote(RemoteMcpConfig {
                         url,
-                        oauth_enabled: true,
-                        client_id: server.client_id,
-                        authorization_url: server.authorization_url,
+                        oauth_enabled,
+                        client_id,
+                        authorization_url,
                     }),
                     enabled,
                 )));
@@ -391,13 +359,11 @@ fn parse_runtime_from_loaded_config(
             if !server.command.is_empty() {
                 let mut cmd_iter = server.command.into_iter();
                 let command = cmd_iter.next().unwrap();
-                let mut args: Vec<String> = cmd_iter.collect();
-                args.extend(server.args);
                 return Ok(Some((
                     McpRuntimeConfig::Local(LocalMcpConfig {
                         command,
-                        args,
-                        env: server.env,
+                        args: cmd_iter.collect(),
+                        env: server.environment,
                         timeout: server.timeout,
                     }),
                     enabled,

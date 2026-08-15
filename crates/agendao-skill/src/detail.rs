@@ -309,13 +309,10 @@ fn parse_metadata_blocks(
             &["metadata", "agendao"],
             "fallback_for_toolsets",
         );
-        let stage_filter =
-            parse_nested_list(&frontmatter.raw, &["metadata", "agendao"], "stage_filter");
         if requires_tools.is_empty()
             && fallback_for_tools.is_empty()
             && requires_toolsets.is_empty()
             && fallback_for_toolsets.is_empty()
-            && stage_filter.is_empty()
         {
             None
         } else {
@@ -324,7 +321,6 @@ fn parse_metadata_blocks(
                 fallback_for_tools,
                 requires_toolsets,
                 fallback_for_toolsets,
-                stage_filter,
             })
         }
     };
@@ -820,7 +816,6 @@ metadata:
     related_skills: [molecule-report]
   agendao:
     requires_tools: [skill_manage]
-    stage_filter: [implementation]
 ---
 # Example
 "#,
@@ -853,7 +848,6 @@ metadata:
                     fallback_for_tools: Vec::new(),
                     requires_toolsets: Vec::new(),
                     fallback_for_toolsets: Vec::new(),
-                    stage_filter: vec!["implementation".to_string()],
                 }),
             })
         );

@@ -14,10 +14,10 @@ mod tests {
 
     #[test]
     fn first_half_visible_second_half_hidden() {
-        assert!(blink_visible(0));    // 0-11 帧：可见
+        assert!(blink_visible(0)); // 0-11 帧：可见
         assert!(blink_visible(11));
-        assert!(!blink_visible(12));  // 12-23 帧：空白
+        assert!(!blink_visible(12)); // 12-23 帧：空白
         assert!(!blink_visible(23));
-        assert!(blink_visible(24));   // 24+ 周期重复
+        assert!(blink_visible(24)); // 24+ 周期重复
     }
 }

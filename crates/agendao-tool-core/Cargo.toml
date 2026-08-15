@@ -7,15 +7,13 @@ license.workspace = true
 
 [features]
 default = []
-lsp = ["agendao-lsp", "lsp-types"]
+lsp = ["agendao-lsp"]
 
 [dependencies]
 agendao-config = { path = "../agendao-config" }
-agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-permission = { path = "../agendao-permission" }
 agendao-types = { path = "../agendao-types" }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
-lsp-types = { version = "0.97", optional = true }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
@@ -23,5 +21,3 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true }
-

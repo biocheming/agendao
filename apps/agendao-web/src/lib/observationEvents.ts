@@ -16,26 +16,23 @@ export type ObservationEventKind =
   | "block_routed"
   | "block_accumulated"
   | "block_committed"
-  | "history_rebuilt"
-  | "legacy_fallback_used";
+  | "history_rebuilt";
 
 export interface ObservationEvent {
   /** Wall-clock timestamp (Date.now()). */
   ts: number;
   /** Pipeline stage that emitted this event. */
   kind: ObservationEventKind;
-  /** Block kind (message, reasoning, tool, scheduler_stage, status, etc.). */
+  /** Block kind (message, reasoning, tool, status, etc.). */
   blockKind: string;
   /** Block phase (start, delta, full, end, snapshot) or undefined. */
-  phase: string | undefined;
+  phase?: string;
   /** Normalized stable block ID (undefined before normalization). */
-  blockId: string | undefined;
+  blockId?: string;
   /** Route assigned by liveTranscriptRoute(). */
-  route: "transcript" | "non_transcript_live" | "compatibility" | undefined;
-  /** For legacy_fallback_used: which code path triggered the fallback. */
-  legacyPath: string | undefined;
+  route?: "transcript" | "non_transcript_live";
   /** For history_rebuilt: number of history messages processed. */
-  historyMessageCount: number | undefined;
+  historyMessageCount?: number;
 }
 
 export type ObservationSink = (event: ObservationEvent) => void;

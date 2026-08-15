@@ -3,10 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{
-    MessagePart, MessageRole, PartType, Session, SessionMessage, SessionTelemetrySnapshot,
-    ToolState,
-};
+use crate::{MessageRole, PartType, Session, SessionMessage, SessionTelemetrySnapshot, ToolState};
 
 const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",
@@ -29,13 +26,11 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "prompt_surface_state_snapshot",
     "request_boundary_hygiene_summary",
     "scheduler_applied",
-    "scheduler_profile",
+    "scheduler",
     "scheduler_root_agent",
     "scheduler_session_context_packet",
-    "scheduler_skill_tree_applied",
     "session_context_kind",
     "skill_reflection",
-    "subsessions",
     "telemetry",
     "runtime_skill_instructions",
 ];
@@ -82,8 +77,7 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "resolved_user_prompt",
     "runtime_hint",
     "scheduler_applied",
-    "scheduler_profile",
-    "scheduler_stage",
+    "scheduler",
     "scheduler_steps",
     "scheduler_tool_calls",
     "snapshot",
@@ -96,12 +90,8 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "workflowModeArtifacts",
 ];
 
-const MESSAGE_SANCTIONED_METADATA_PREFIXES: &[&str] = &[
-    "ingress_",
-    "scheduler_decision_",
-    "scheduler_output_",
-    "scheduler_stage_",
-];
+const MESSAGE_SANCTIONED_METADATA_PREFIXES: &[&str] =
+    &["ingress_", "scheduler_decision_", "scheduler_output_"];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SessionArtifactVersion {
@@ -574,97 +564,6 @@ impl SessionArtifactBundle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SessionArtifactImportEnvelope {
-    Bundle(SessionArtifactImportBundle),
-    Single(SessionArtifactImportEntry),
-    Legacy(LegacySessionArtifactPayload),
-}
-
-impl SessionArtifactImportEnvelope {
-    pub fn into_entries(self) -> Vec<SessionArtifactEntry> {
-        match self {
-            Self::Bundle(bundle) => bundle.into_entries(),
-            Self::Single(entry) => vec![entry.into_entry()],
-            Self::Legacy(legacy) => vec![legacy.into_entry()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionArtifactImportBundle {
-    pub version: SessionArtifactVersion,
-    pub exported_at: i64,
-    pub sessions: Vec<SessionArtifactImportEntry>,
-}
-
-impl SessionArtifactImportBundle {
-    fn into_entries(self) -> Vec<SessionArtifactEntry> {
-        let _ = self.version;
-        let _ = self.exported_at;
-        self.sessions
-            .into_iter()
-            .map(SessionArtifactImportEntry::into_entry)
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionArtifactImportEntry {
-    #[serde(rename = "info")]
-    pub session: Session,
-    pub messages: Vec<SessionMessage>,
-    #[serde(default, rename = "metadata_authority")]
-    pub _metadata_authority: Option<serde_json::Value>,
-    #[serde(default, rename = "diagnostics_sidecar")]
-    pub _diagnostics_sidecar: Option<serde_json::Value>,
-}
-
-impl SessionArtifactImportEntry {
-    fn into_entry(self) -> SessionArtifactEntry {
-        let _ = self._metadata_authority;
-        let _ = self._diagnostics_sidecar;
-        SessionArtifactEntry::new(self.session, self.messages)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LegacySessionArtifactPayload {
-    #[serde(rename = "info")]
-    pub session: Session,
-    pub messages: Vec<LegacySessionArtifactMessage>,
-}
-
-impl LegacySessionArtifactPayload {
-    pub fn into_entry(self) -> SessionArtifactEntry {
-        let messages = self
-            .messages
-            .into_iter()
-            .map(LegacySessionArtifactMessage::into_message)
-            .collect();
-        SessionArtifactEntry::new(self.session, messages)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LegacySessionArtifactMessage {
-    #[serde(rename = "info")]
-    pub message: SessionMessage,
-    #[serde(default)]
-    pub parts: Vec<MessagePart>,
-}
-
-impl LegacySessionArtifactMessage {
-    pub fn into_message(self) -> SessionMessage {
-        let mut message = self.message;
-        if message.parts.is_empty() {
-            message.parts = self.parts;
-        }
-        message
-    }
-}
-
 fn classify_metadata_keys(
     metadata: &HashMap<String, serde_json::Value>,
     sanctioned_keys: &[&str],
@@ -841,12 +740,11 @@ mod tests {
 
     use crate::{
         CompletedTime, MessageRole, PartType, SessionArtifactBundle, SessionArtifactEntry,
-        SessionArtifactImportEnvelope, SessionArtifactVersion, SessionMessage, SessionStatus,
-        SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionTime, SessionUsage,
-        ToolState,
+        SessionArtifactVersion, SessionMessage, SessionStatus, SessionTelemetrySnapshot,
+        SessionTelemetrySnapshotVersion, SessionTime, SessionUsage, ToolState,
     };
 
-    use super::{LegacySessionArtifactPayload, SessionDiagnosticsSidecar};
+    use super::SessionDiagnosticsSidecar;
 
     fn sample_session() -> crate::Session {
         let now = Utc::now();
@@ -903,7 +801,6 @@ mod tests {
         SessionTelemetrySnapshot {
             version: SessionTelemetrySnapshotVersion::V1,
             usage: SessionUsage::default(),
-            stage_summaries: Vec::new(),
             tool_repair_summary: None,
             memory: None,
             compaction_continuity: None,
@@ -950,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_roundtrips_through_import_envelope() {
+    fn bundle_roundtrips_through_current_schema() {
         let bundle = SessionArtifactBundle::new(
             123,
             vec![SessionArtifactEntry::new(
@@ -960,13 +857,12 @@ mod tests {
         );
 
         let payload = serde_json::to_string(&bundle).expect("bundle should serialize");
-        let envelope: SessionArtifactImportEnvelope =
+        let imported: SessionArtifactBundle =
             serde_json::from_str(&payload).expect("bundle should parse");
-        let entries = envelope.into_entries();
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].session.id, "session-1");
-        assert_eq!(entries[0].messages.len(), 1);
+        assert_eq!(imported.sessions.len(), 1);
+        assert_eq!(imported.sessions[0].session.id, "session-1");
+        assert_eq!(imported.sessions[0].messages.len(), 1);
     }
 
     #[test]
@@ -1430,75 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn import_envelope_normalizes_single_entry() {
-        let entry = SessionArtifactEntry::new(sample_session(), vec![sample_message()]);
-        let payload = serde_json::to_string(&entry).expect("entry should serialize");
-        let envelope: SessionArtifactImportEnvelope =
-            serde_json::from_str(&payload).expect("single entry should parse");
-
-        let entries = envelope.into_entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].session.id, "session-1");
-        assert_eq!(entries[0].messages.len(), 1);
-    }
-
-    #[test]
-    fn import_envelope_ignores_invalid_diagnostics_sidecar_payload() {
-        let payload = serde_json::json!({
-            "info": sample_session(),
-            "messages": [sample_message()],
-            "diagnostics_sidecar": {
-                "version": "agendao-rust/diagnostics/v999",
-                "runtime": {"state": "active"}
-            }
-        });
-
-        let envelope: SessionArtifactImportEnvelope =
-            serde_json::from_value(payload).expect("single entry should still parse");
-        let entries = envelope.into_entries();
-
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].diagnostics_sidecar.is_none());
-    }
-
-    #[test]
-    fn import_envelope_normalizes_legacy_messages() {
-        let legacy = LegacySessionArtifactPayload {
-            session: sample_session(),
-            messages: vec![super::LegacySessionArtifactMessage {
-                message: SessionMessage {
-                    parts: Vec::new(),
-                    ..sample_message()
-                },
-                parts: vec![crate::MessagePart {
-                    id: "legacy-part".to_string(),
-                    part_type: PartType::Text {
-                        text: "legacy".to_string(),
-                        synthetic: None,
-                        ignored: None,
-                    },
-                    created_at: Utc::now(),
-                    message_id: Some("message-1".to_string()),
-                }],
-            }],
-        };
-
-        let payload = serde_json::to_string(&legacy).expect("legacy should serialize");
-        let envelope: SessionArtifactImportEnvelope =
-            serde_json::from_str(&payload).expect("legacy should parse");
-        let entries = envelope.into_entries();
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].messages.len(), 1);
-        assert_eq!(entries[0].messages[0].parts.len(), 1);
-        match &entries[0].messages[0].parts[0].part_type {
-            PartType::Text { text, .. } => assert_eq!(text, "legacy"),
-            other => panic!("expected text part, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn import_envelope_rejects_unknown_bundle_version() {
+    fn current_schema_rejects_unknown_bundle_version() {
         let payload = serde_json::json!({
             "version": "agendao-rust/v999",
             "exported_at": 123,
@@ -1508,11 +1336,8 @@ mod tests {
             }]
         });
 
-        let error = serde_json::from_value::<SessionArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<SessionArtifactBundle>(payload)
             .expect_err("unknown version should fail closed");
-        assert!(
-            error.to_string().contains("did not match any variant")
-                || error.to_string().contains("unknown variant")
-        );
+        assert!(error.to_string().contains("unknown variant"));
     }
 }

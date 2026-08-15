@@ -3,20 +3,21 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[cfg(feature = "lsp")]
+use std::path::Path;
+
+#[cfg(feature = "lsp")]
 use lsp_types;
 
 use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LspParams {
     pub operation: LspOperation,
-    #[serde(alias = "file_path", alias = "filepath")]
     pub file_path: String,
     pub line: Option<u32>,
     pub character: Option<u32>,
     pub query: Option<String>,
-    #[serde(alias = "new_name")]
     pub new_name: Option<String>,
 }
 
@@ -150,7 +151,7 @@ impl Tool for LspTool {
 #[cfg(feature = "lsp")]
 async fn execute_with_lsp(
     params: &LspParams,
-    path: &PathBuf,
+    path: &Path,
     line: u32,
     character: u32,
     ctx: &ToolContext,
@@ -195,7 +196,7 @@ async fn execute_with_lsp(
                         match client.references(path, line, character).await {
                             Ok(locs) if !locs.is_empty() => locs
                                 .iter()
-                                .map(|l| format_location(l))
+                                .map(format_location)
                                 .collect::<Vec<_>>()
                                 .join("\n"),
                             Ok(_) => "No references found.".to_string(),
@@ -232,7 +233,7 @@ async fn execute_with_lsp(
                         match client.goto_implementation(path, line, character).await {
                             Ok(locs) if !locs.is_empty() => locs
                                 .iter()
-                                .map(|l| format_location(l))
+                                .map(format_location)
                                 .collect::<Vec<_>>()
                                 .join("\n"),
                             Ok(_) => "No implementations found.".to_string(),
@@ -243,7 +244,7 @@ async fn execute_with_lsp(
                         match client.type_definition(path, line, character).await {
                             Ok(locs) if !locs.is_empty() => locs
                                 .iter()
-                                .map(|l| format_location(l))
+                                .map(format_location)
                                 .collect::<Vec<_>>()
                                 .join("\n"),
                             Ok(_) => "No type definitions found.".to_string(),
@@ -253,7 +254,7 @@ async fn execute_with_lsp(
                     LspOperation::Rename => {
                         let new_name = params.new_name.as_deref().unwrap_or("new_name");
                         match client.rename(path, line, character, new_name).await {
-                            Ok(Some(edit)) => format!(
+                            Ok(Some(_)) => format!(
                                 "Rename preview available. Workspace edit ready for: {}",
                                 new_name
                             ),
@@ -282,7 +283,7 @@ async fn execute_with_lsp(
                                         "{} ({:?}) - {}:{}",
                                         item.name,
                                         item.kind,
-                                        item.uri.to_string(),
+                                        *item.uri,
                                         item.range.start.line + 1
                                     )
                                 })
@@ -302,7 +303,7 @@ async fn execute_with_lsp(
                                         "{} ({:?}) calls from {}:{}",
                                         from.name,
                                         from.kind,
-                                        from.uri.to_string(),
+                                        *from.uri,
                                         from.range.start.line + 1
                                     )
                                 })
@@ -322,7 +323,7 @@ async fn execute_with_lsp(
                                         "{} ({:?}) calls to {}:{}",
                                         to.name,
                                         to.kind,
-                                        to.uri.to_string(),
+                                        *to.uri,
                                         to.range.start.line + 1
                                     )
                                 })
@@ -437,17 +438,15 @@ fn format_lsp_placeholder(
 
 #[cfg(test)]
 mod tests {
-    use super::{LspOperation, LspParams};
+    use super::LspParams;
 
     #[test]
-    fn lsp_accepts_filepath_alias() {
-        let input: LspParams = serde_json::from_value(serde_json::json!({
+    fn lsp_rejects_filepath_alias() {
+        let error = serde_json::from_value::<LspParams>(serde_json::json!({
             "operation": "hover",
             "filepath": "src/main.rs"
         }))
-        .expect("filepath alias should deserialize");
-
-        assert!(matches!(input.operation, LspOperation::Hover));
-        assert_eq!(input.file_path, "src/main.rs");
+        .expect_err("filepath alias should be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 }

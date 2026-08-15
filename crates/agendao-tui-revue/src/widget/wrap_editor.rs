@@ -30,8 +30,8 @@ use std::rc::Rc;
 
 use revue::event::Key;
 use revue::render::{Cell as BufCell, Modifier};
-use revue::widget::TextArea;
 use revue::widget::traits::{RenderContext, View};
+use revue::widget::TextArea;
 
 use crate::theme::colors;
 
@@ -60,7 +60,11 @@ pub(crate) struct EditorGeom {
 
 /// Up/Down 视觉行移动结果（AtTop/AtBottom 供调用方进历史导航）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VisualMove { Moved, AtTop, AtBottom }
+pub enum VisualMove {
+    Moved,
+    AtTop,
+    AtBottom,
+}
 
 // ── 折行布局（soft-wrap 单点权威）──
 
@@ -123,7 +127,12 @@ fn wrap_line(logical: usize, line: &str, w: u16, out: &mut Vec<WrapLine>) {
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
         // 空行占一视觉行。
-        out.push(WrapLine { logical, start: 0, end: 0, width: 0 });
+        out.push(WrapLine {
+            logical,
+            start: 0,
+            end: 0,
+            width: 0,
+        });
         return;
     }
     let widths: Vec<u16> = chars.iter().map(|&c| char_width(c)).collect();
@@ -152,7 +161,12 @@ fn wrap_line(logical: usize, line: &str, w: u16, out: &mut Vec<WrapLine>) {
             i.max(start + 1) // 超长无断点词：按列硬折（保证前进）
         };
         let width: u16 = widths[start..end].iter().sum();
-        out.push(WrapLine { logical, start, end, width });
+        out.push(WrapLine {
+            logical,
+            start,
+            end,
+            width,
+        });
         start = end;
     }
 }
@@ -191,7 +205,13 @@ fn layout_cached(shared: &SharedLayout, content: &str, area_w: u16) -> WrapCache
         }
     }
     let (layout, text_w, scrollbar) = compute_layout(content, area_w);
-    let cache = WrapCache { content: content.to_string(), area_w, text_w, layout, scrollbar };
+    let cache = WrapCache {
+        content: content.to_string(),
+        area_w,
+        text_w,
+        layout,
+        scrollbar,
+    };
     *shared.borrow_mut() = Some(cache.clone());
     cache
 }
@@ -228,10 +248,18 @@ impl WrapLayout {
 /// 下一段起点）——钳回本段最后一个字符，否则 Up/Down 会在边界处
 /// 被下一段认领而"卡住跳行"。
 fn col_at_visual_col(line: &str, seg: WrapLine, last_of_line: bool, vcol: usize) -> usize {
-    let seg_text: String = line.chars().skip(seg.start).take(seg.end - seg.start).collect();
+    let seg_text: String = line
+        .chars()
+        .skip(seg.start)
+        .take(seg.end - seg.start)
+        .collect();
     let idx = char_index_at_display_col(&seg_text, vcol);
     let seg_len = seg.end - seg.start;
-    let idx = if !last_of_line && idx >= seg_len { seg_len - 1 } else { idx };
+    let idx = if !last_of_line && idx >= seg_len {
+        seg_len - 1
+    } else {
+        idx
+    };
     seg.start + idx
 }
 
@@ -268,7 +296,9 @@ impl WrapEditor {
 
     // ── TextArea 调用面转发 ────────────────────────────────
 
-    pub fn text(&self) -> String { self.text_area.get_content() }
+    pub fn text(&self) -> String {
+        self.text_area.get_content()
+    }
     pub fn set_content(&mut self, text: &str) {
         self.desired_col = None;
         self.text_area.set_content(text);
@@ -286,12 +316,16 @@ impl WrapEditor {
         self.desired_col = None;
         self.text_area.handle_key(&Key::Enter);
     }
-    pub fn cursor_position(&self) -> (usize, usize) { self.text_area.cursor_position() }
+    pub fn cursor_position(&self) -> (usize, usize) {
+        self.text_area.cursor_position()
+    }
     pub fn set_cursor(&mut self, line: usize, col: usize) {
         self.desired_col = None;
         self.text_area.set_cursor(line, col);
     }
-    pub fn line_count(&self) -> usize { self.text_area.line_count() }
+    pub fn line_count(&self) -> usize {
+        self.text_area.line_count()
+    }
     pub fn move_document_end(&mut self) {
         self.desired_col = None;
         self.text_area.move_document_end();
@@ -391,14 +425,16 @@ impl WrapEditor {
     /// Ctrl+W：删光标前一词（readline 口径：先空白后非空白）。
     fn kill_word_before_cursor(&mut self, before_change: &mut impl FnMut(&Self)) {
         let cursor = self.cursor_linear();
-        let start = crate::input::readline::word_start_before(&self.text_area.get_content(), cursor);
+        let start =
+            crate::input::readline::word_start_before(&self.text_area.get_content(), cursor);
         self.kill_range(start, cursor, before_change);
     }
 
     /// Ctrl+U：删到行首（多行时只动当前行，readline 口径）。
     fn kill_to_line_start(&mut self, before_change: &mut impl FnMut(&Self)) {
         let (line, _) = self.text_area.cursor_position();
-        let start = crate::input::readline::line_col_to_linear(&self.text_area.get_content(), line, 0);
+        let start =
+            crate::input::readline::line_col_to_linear(&self.text_area.get_content(), line, 0);
         self.kill_range(start, self.cursor_linear(), before_change);
     }
 
@@ -406,7 +442,11 @@ impl WrapEditor {
     fn kill_to_line_end(&mut self, before_change: &mut impl FnMut(&Self)) {
         let (line, _) = self.text_area.cursor_position();
         let content = self.text_area.get_content();
-        let line_len = content.split('\n').nth(line).map(|l| l.chars().count()).unwrap_or(0);
+        let line_len = content
+            .split('\n')
+            .nth(line)
+            .map(|l| l.chars().count())
+            .unwrap_or(0);
         let end = crate::input::readline::line_col_to_linear(&content, line, line_len);
         self.kill_range(self.cursor_linear(), end, before_change);
     }
@@ -449,8 +489,8 @@ impl WrapEditor {
             return VisualMove::AtBottom;
         }
         let seg = layout.lines[vrow + 1];
-        let last_of_line = vrow + 2 >= layout.lines.len()
-            || layout.lines[vrow + 2].logical != seg.logical;
+        let last_of_line =
+            vrow + 2 >= layout.lines.len() || layout.lines[vrow + 2].logical != seg.logical;
         let col = col_at_visual_col(&lines[seg.logical], seg, last_of_line, desired);
         self.text_area.set_cursor(seg.logical, col);
         self.desired_col = Some(desired);
@@ -507,7 +547,12 @@ impl WrapEditor {
     /// 口径不归本层）。
     pub fn view(&self, cursor_on: bool, focused: bool, placeholder: String) -> EditorView {
         EditorView {
-            lines: self.text_area.get_content().split('\n').map(|s| s.to_string()).collect(),
+            lines: self
+                .text_area
+                .get_content()
+                .split('\n')
+                .map(|s| s.to_string())
+                .collect(),
             cursor: self.text_area.cursor_position(),
             focused,
             cursor_on,
@@ -542,11 +587,16 @@ impl View for EditorView {
         // copy 旧 buffer 只清脏区——本 view 不绘的 cell（续行缩进 x0-1、行尾
         // 余白、滚动条出现前的右缘列、内容收缩后的空行）会原样保留前几帧
         // 残字（实测滚动后行首漏出 ❯/历史字符）。自绘全区后输出只取决于本帧。
-        ctx.buffer.fill(area.x, area.y, area.width, area.height, BufCell::new(' '));
+        ctx.buffer
+            .fill(area.x, area.y, area.width, area.height, BufCell::new(' '));
         let rows = area.height as usize;
         // 折行布局：以本帧实际宽度复核缓存（resize 一帧延迟可接受）。
         let content = self.lines.join("\n");
-        let cache = layout_cached(&self.shared, &content, area.width.saturating_sub(PROMPT_INDENT));
+        let cache = layout_cached(
+            &self.shared,
+            &content,
+            area.width.saturating_sub(PROMPT_INDENT),
+        );
         let layout = &cache.layout;
         let text_w = cache.text_w;
         let need_scrollbar = cache.scrollbar;
@@ -609,14 +659,18 @@ impl View for EditorView {
             let line = &self.lines[seg.logical];
 
             let mut x: u16 = 0;
-            for (ci, ch) in line.chars().enumerate().skip(seg.start).take(seg.end - seg.start) {
+            for (ci, ch) in line
+                .chars()
+                .enumerate()
+                .skip(seg.start)
+                .take(seg.end - seg.start)
+            {
                 let cw = char_width(ch);
                 if x + cw > text_w {
                     break;
                 }
-                let is_cursor = self.cursor_on
-                    && self.cursor.0 == seg.logical
-                    && self.cursor.1 == ci;
+                let is_cursor =
+                    self.cursor_on && self.cursor.0 == seg.logical && self.cursor.1 == ci;
                 let draw = if ch == '\t' { ' ' } else { ch };
                 let mut cell = BufCell::new(draw);
                 if is_cursor {
@@ -716,8 +770,11 @@ mod tests {
         let (layout, text_w, scrollbar) = compute_layout(&"a".repeat(20), 8);
         assert!(!scrollbar);
         assert_eq!(text_w, 8);
-        let segs: Vec<(usize, usize, u16)> =
-            layout.lines.iter().map(|s| (s.start, s.end, s.width)).collect();
+        let segs: Vec<(usize, usize, u16)> = layout
+            .lines
+            .iter()
+            .map(|s| (s.start, s.end, s.width))
+            .collect();
         assert_eq!(segs, vec![(0, 8, 8), (8, 16, 8), (16, 20, 4)]);
         assert!(layout.lines.iter().all(|s| s.logical == 0));
     }
@@ -734,8 +791,11 @@ mod tests {
     fn cjk_wrap_never_splits_wide_char() {
         // "你好世界"（每字 2 列）宽 5：4 列放下两字 → 断在字界，不错列。
         let (layout, _, _) = compute_layout("你好世界", 5);
-        let segs: Vec<(usize, usize, u16)> =
-            layout.lines.iter().map(|s| (s.start, s.end, s.width)).collect();
+        let segs: Vec<(usize, usize, u16)> = layout
+            .lines
+            .iter()
+            .map(|s| (s.start, s.end, s.width))
+            .collect();
         assert_eq!(segs, vec![(0, 2, 4), (2, 4, 4)]);
         // CJK→ASCII 过渡可断："你好ab" 宽 4 → "你好" / "ab"。
         let (layout, _, _) = compute_layout("你好ab", 4);
@@ -747,13 +807,24 @@ mod tests {
     fn empty_line_occupies_one_visual_row() {
         let (layout, _, _) = compute_layout("a\n\nb", 10);
         assert_eq!(layout.lines.len(), 3);
-        assert_eq!(layout.lines[1], WrapLine { logical: 1, start: 0, end: 0, width: 0 });
+        assert_eq!(
+            layout.lines[1],
+            WrapLine {
+                logical: 1,
+                start: 0,
+                end: 0,
+                width: 0
+            }
+        );
     }
 
     #[test]
     fn scrollbar_column_shrink_rewraps() {
         // 11 个短逻辑行：视觉行 > MAX_VISIBLE_LINES → 让出 1 列滚动条重排。
-        let content = (0..11).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n");
+        let content = (0..11)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (layout, text_w, scrollbar) = compute_layout(&content, 10);
         assert!(scrollbar);
         assert_eq!(text_w, 9);
@@ -780,7 +851,12 @@ mod tests {
         e.set_content(&"a".repeat(24));
         assert_eq!(e.wrapped_height(10), 3);
         // 超 MAX 封顶。
-        e.set_content(&(0..30).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
+        e.set_content(
+            &(0..30)
+                .map(|i| format!("L{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         assert_eq!(e.wrapped_height(20), MAX_VISIBLE_LINES);
     }
 
@@ -810,8 +886,8 @@ mod tests {
         e.set_content("aaaa\naaa bbb");
         e.wrapped_height(4);
         e.set_cursor(0, 4); // 行 0 行尾：视觉行 0、视觉列 4
-        // Down → desired=4 超过 "aaa " 段内可放位置：段尾是折行边界
-        // （归下一段起点）——必须钳回本段，不得被下一段认领卡住。
+                            // Down → desired=4 超过 "aaa " 段内可放位置：段尾是折行边界
+                            // （归下一段起点）——必须钳回本段，不得被下一段认领卡住。
         assert_eq!(e.move_visual_down(), VisualMove::Moved);
         assert_eq!(e.cursor_position(), (1, 3), "边界列钳回本段最后一字符");
         // 继续 Down（desired 仍 4）→ 下一段 "bbb" 视觉列 4 → 段尾（逻辑行末段）。
@@ -837,7 +913,11 @@ mod tests {
         e.move_document_end();
         // 模拟 render 发布的几何：内容区 (10, 20)，宽 40，3 行可见
         e.geom.set(Some(EditorGeom {
-            x: 10, y: 20, width: 40, hit_rows: 3, scroll_row: 0,
+            x: 10,
+            y: 20,
+            width: 40,
+            hit_rows: 3,
+            scroll_row: 0,
         }));
         // 点击第 2 行 "world" 的 'r'（col 2）→ x = 10 + 2(indent) + 2
         assert!(e.handle_click(14, 21));
@@ -853,7 +933,11 @@ mod tests {
         let mut e = WrapEditor::new();
         e.set_content("你好ab");
         e.geom.set(Some(EditorGeom {
-            x: 10, y: 20, width: 40, hit_rows: 2, scroll_row: 0,
+            x: 10,
+            y: 20,
+            width: 40,
+            hit_rows: 2,
+            scroll_row: 0,
         }));
         assert!(e.handle_click(10 + PROMPT_INDENT + 4, 20));
         assert_eq!(e.cursor_position(), (0, 2));
@@ -868,7 +952,11 @@ mod tests {
         e.set_content("aaaa bbbb"); // 宽 6 → "aaaa " / "bbbb"
         e.wrapped_height(6);
         e.geom.set(Some(EditorGeom {
-            x: 10, y: 20, width: 40, hit_rows: 3, scroll_row: 0,
+            x: 10,
+            y: 20,
+            width: 40,
+            hit_rows: 3,
+            scroll_row: 0,
         }));
         // 点视觉行 1 的第 2 显示列 → 逻辑 (0, 5+2=7)。
         assert!(e.handle_click(10 + PROMPT_INDENT + 2, 21));
@@ -881,11 +969,14 @@ mod tests {
     // ── 滚动窗口渲染回归（12 行滚进 10 行窗）──
 
     const SCROLL_REPRO_LINES: [&str; 12] = [
-        "first", "second", "third", "L4", "L5", "L6",
-        "L7", "L8", "L9", "L10", "L11", "L12",
+        "first", "second", "third", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12",
     ];
 
-    fn mk_view(lines: &[&str], cursor: (usize, usize), geom: Rc<Cell<Option<EditorGeom>>>) -> EditorView {
+    fn mk_view(
+        lines: &[&str],
+        cursor: (usize, usize),
+        geom: Rc<Cell<Option<EditorGeom>>>,
+    ) -> EditorView {
         EditorView {
             lines: lines.iter().map(|s| s.to_string()).collect(),
             cursor,
@@ -917,11 +1008,18 @@ mod tests {
             );
             view.render(&mut ctx);
         }
-        let expected = ["third", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12"];
+        let expected = [
+            "third", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12",
+        ];
         // 文本区 = 宽 30 - 滚动条列(29)；逐行 trim_end 后必须恰为 "  <line>"。
         for (row, want) in expected.iter().enumerate() {
             let got = row_string(&buf, row as u16, 29);
-            assert_eq!(got.trim_end(), format!("  {}", want), "row {} 渲染错位/残留", row);
+            assert_eq!(
+                got.trim_end(),
+                format!("  {}", want),
+                "row {} 渲染错位/残留",
+                row
+            );
         }
     }
 
@@ -951,7 +1049,9 @@ mod tests {
             );
             view.render(&mut ctx);
         }
-        let expected = ["third", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12"];
+        let expected = [
+            "third", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12",
+        ];
         for (row, want) in expected.iter().enumerate() {
             let got = row_string(&buf, row as u16, 29);
             assert_eq!(

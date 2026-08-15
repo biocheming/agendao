@@ -52,7 +52,7 @@ export function displayProtocolLabel(protocol: string | null | undefined): strin
   const value = (protocol ?? "").trim();
   const lower = value.toLowerCase();
   if (lower === "anthropic" || lower === "anthropic-messages" || lower === "messages") {
-    return "Ethnopic";
+    return "Anthropic";
   }
   return value;
 }

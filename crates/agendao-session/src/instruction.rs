@@ -6,12 +6,9 @@ use tracing::warn;
 use agendao_util::agendao_home;
 
 pub const AGENTS_MD: &str = "AGENTS.md";
-pub const CONTEXT_MD: &str = "CONTEXT.md"; // deprecated
-pub const CURSOR_MD: &str = ".cursorrules";
-pub const COPILOT_MD: &str = ".github/copilot-instructions.md";
 
 /// Well-known instruction file names searched in project directories.
-const PROJECT_FILES: &[&str] = &[AGENTS_MD, CONTEXT_MD];
+const PROJECT_FILES: &[&str] = &[AGENTS_MD];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionFile {
@@ -23,13 +20,9 @@ pub struct InstructionFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstructionSource {
     AgentsMd,
-    ContextMd,
-    CursorRules,
-    CopilotInstructions,
     Global(String),
     ConfigInstruction(String),
     Url(String),
-    Custom(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -67,11 +60,6 @@ fn agendao_config_dir_env() -> Option<String> {
 // Path helpers
 // ---------------------------------------------------------------------------
 
-/// Return the legacy XDG config directory for agendao (e.g. `~/.config/agendao`).
-fn legacy_xdg_config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agendao"))
-}
-
 /// Build the list of global instruction file paths to probe.
 fn global_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -83,11 +71,6 @@ fn global_files() -> Vec<PathBuf> {
 
     // ~/.agendao/AGENTS.md（权威位置）
     files.push(agendao_home().join(AGENTS_MD));
-
-    // ~/.config/agendao/AGENTS.md（旧版遗留，兜底）
-    if let Some(cfg) = legacy_xdg_config_dir() {
-        files.push(cfg.join(AGENTS_MD));
-    }
 
     files
 }
@@ -177,10 +160,7 @@ fn is_url(s: &str) -> bool {
 fn instruction_source_from_filename(name: &str) -> InstructionSource {
     match name {
         AGENTS_MD => InstructionSource::AgentsMd,
-        CONTEXT_MD => InstructionSource::ContextMd,
-        CURSOR_MD => InstructionSource::CursorRules,
-        COPILOT_MD => InstructionSource::CopilotInstructions,
-        other => InstructionSource::Custom(other.to_string()),
+        _ => unreachable!("only canonical instruction filenames are resolved"),
     }
 }
 
@@ -242,8 +222,7 @@ async fn resolve_for_file_candidates(
 ///
 /// Mirrors TS `InstructionPrompt.resolve(...)` behavior at a filesystem level:
 /// while walking from the file's directory up to `project_root`, collect the
-/// first matching instruction file in each directory (`AGENTS.md`,
-/// `CONTEXT.md`), skipping duplicates and the target file itself.
+/// `AGENTS.md` in each directory, skipping duplicates and the target file itself.
 pub async fn resolve_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
     resolve_for_file_candidates(file_path, project_root, PROJECT_FILES).await
 }
@@ -252,7 +231,10 @@ pub async fn resolve_for_file(file_path: &Path, project_root: &Path) -> Vec<Inst
 ///
 /// This is used by file-read flows to mimic TS behavior where reading a file
 /// should consult nearby AGENTS instructions in the same directory hierarchy.
-pub async fn resolve_agents_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
+pub async fn resolve_agents_for_file(
+    file_path: &Path,
+    project_root: &Path,
+) -> Vec<InstructionFile> {
     resolve_for_file_candidates(file_path, project_root, &[AGENTS_MD]).await
 }
 
@@ -465,82 +447,12 @@ impl InstructionLoader {
             }
         }
     }
-    // -----------------------------------------------------------------------
-    // Backward-compatible helpers (kept from original API)
-    // -----------------------------------------------------------------------
-
-    /// Load instruction files from a single directory (original API).
-    pub async fn load_from_directory(dir: &Path) -> Vec<InstructionFile> {
-        let mut instructions = Vec::new();
-
-        if let Ok(content) = tokio::fs::read_to_string(dir.join(AGENTS_MD)).await {
-            instructions.push(InstructionFile {
-                path: AGENTS_MD.to_string(),
-                content,
-                source: InstructionSource::AgentsMd,
-            });
-        }
-
-        if let Ok(content) = tokio::fs::read_to_string(dir.join(CONTEXT_MD)).await {
-            instructions.push(InstructionFile {
-                path: CONTEXT_MD.to_string(),
-                content,
-                source: InstructionSource::ContextMd,
-            });
-        }
-
-        if let Ok(content) = tokio::fs::read_to_string(dir.join(CURSOR_MD)).await {
-            instructions.push(InstructionFile {
-                path: CURSOR_MD.to_string(),
-                content,
-                source: InstructionSource::CursorRules,
-            });
-        }
-
-        let copilot_path = dir.join(".github").join("copilot-instructions.md");
-        if let Ok(content) = tokio::fs::read_to_string(&copilot_path).await {
-            instructions.push(InstructionFile {
-                path: COPILOT_MD.to_string(),
-                content,
-                source: InstructionSource::CopilotInstructions,
-            });
-        }
-
-        instructions
-    }
-
     pub fn merge_instructions(instructions: &[InstructionFile]) -> String {
         instructions
             .iter()
             .map(|i| format!("Instructions from: {}\n{}", i.path, i.content))
             .collect::<Vec<_>>()
             .join("\n\n")
-    }
-
-    pub fn find_instruction_files(dir: &Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        let candidates = [AGENTS_MD, CONTEXT_MD, CURSOR_MD];
-        for name in candidates {
-            let path = dir.join(name);
-            if path.exists() {
-                files.push(path);
-            }
-        }
-        let copilot_path = dir.join(".github").join("copilot-instructions.md");
-        if copilot_path.exists() {
-            files.push(copilot_path);
-        }
-        files
-    }
-
-    /// Return the set of already-loaded paths/URLs.
-    pub fn loaded_set(&self) -> &HashSet<String> {
-        &self.loaded
-    }
-
-    /// Mark a path/URL as already loaded (for external dedup, e.g. tool reads).
-    pub fn mark_loaded(&mut self, key: &str) {
-        self.loaded.insert(key.to_string());
     }
 }
 
@@ -575,30 +487,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_load_from_directory_finds_agents_md() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join(AGENTS_MD), "agent instructions").unwrap();
-        let files = InstructionLoader::load_from_directory(tmp.path()).await;
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].content, "agent instructions");
-    }
-
-    #[tokio::test]
-    async fn test_load_from_directory_finds_multiple() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
-        fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
-        fs::write(tmp.path().join(CURSOR_MD), "cursor").unwrap();
-        fs::create_dir_all(tmp.path().join(".github")).unwrap();
-        fs::write(
-            tmp.path().join(".github/copilot-instructions.md"),
-            "copilot",
-        )
-        .unwrap();
-        let files = InstructionLoader::load_from_directory(tmp.path()).await;
-        assert_eq!(files.len(), 4);
-    }
     #[test]
     fn test_find_up_walks_parents() {
         let tmp = TempDir::new().unwrap();
@@ -654,23 +542,14 @@ mod tests {
 
     #[test]
     fn test_merge_instructions_format() {
-        let files = vec![
-            InstructionFile {
-                path: "/a.md".to_string(),
-                content: "content a".to_string(),
-                source: InstructionSource::AgentsMd,
-            },
-            InstructionFile {
-                path: "/b.md".to_string(),
-                content: "content b".to_string(),
-                source: InstructionSource::ContextMd,
-            },
-        ];
+        let files = vec![InstructionFile {
+            path: "/a.md".to_string(),
+            content: "content a".to_string(),
+            source: InstructionSource::AgentsMd,
+        }];
         let merged = InstructionLoader::merge_instructions(&files);
         assert!(merged.contains("Instructions from: /a.md"));
         assert!(merged.contains("content a"));
-        assert!(merged.contains("Instructions from: /b.md"));
-        assert!(merged.contains("content b"));
     }
 
     #[test]
@@ -693,11 +572,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_project_files_first_match_wins() {
-        // If AGENTS.md exists, CONTEXT.md should not be loaded
+    async fn test_project_files_loads_agents_md() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
-        fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
 
         let mut loader = InstructionLoader::new();
         let files = loader.load_project_instructions(tmp.path()).await;
@@ -740,7 +617,7 @@ mod tests {
         let nested_dir = project_root.join("src/deep");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(project_root.join(AGENTS_MD), "root rules").unwrap();
-        fs::write(project_root.join("src").join(CONTEXT_MD), "src rules").unwrap();
+        fs::write(project_root.join("src").join(AGENTS_MD), "src rules").unwrap();
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
@@ -773,14 +650,18 @@ mod tests {
         let nested_dir = project_root.join("src/deep");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(project_root.join(AGENTS_MD), "root agents").unwrap();
-        fs::write(project_root.join("src").join(CONTEXT_MD), "src context").unwrap();
+        fs::write(
+            project_root.join("src").join("CONTEXT.md"),
+            "ignored context",
+        )
+        .unwrap();
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
         let instructions = resolve_agents_for_file(&file_path, &project_root).await;
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].content.contains("root agents"));
-        assert!(!instructions[0].content.contains("src context"));
+        assert!(!instructions[0].content.contains("ignored context"));
     }
 
     #[tokio::test]

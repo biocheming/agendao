@@ -1,6 +1,6 @@
 use serde_json::{json, Map, Value};
 
-use super::openai_tool_recovery::normalize_tool_call_arguments_for_request;
+use super::openai_tool_arguments::serialize_historical_tool_call;
 use super::request_sanitizer::{
     interrupted_tool_result_text, sanitize_messages_for_protocol, SanitizerOptions,
 };
@@ -143,7 +143,7 @@ fn assistant_message_to_openai(message: &Message) -> (Value, Vec<String>) {
                     }
                     "tool_use" => {
                         if let Some(tool_use) = &part.tool_use {
-                            let normalized = normalize_tool_call_arguments_for_request(
+                            let normalized = serialize_historical_tool_call(
                                 &tool_use.name,
                                 &tool_use.id,
                                 &tool_use.input,

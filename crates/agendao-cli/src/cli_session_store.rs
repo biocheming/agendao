@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use agendao_session::SESSION_TELEMETRY_METADATA_KEY;
 use agendao_storage::{Database, MessageRepository, SessionRepository};
 use agendao_types::{
-    Session, SessionArtifactBundle, SessionArtifactEntry, SessionArtifactImportEnvelope,
-    SessionTelemetrySnapshot, SessionUsage,
+    Session, SessionArtifactBundle, SessionArtifactEntry, SessionTelemetrySnapshot, SessionUsage,
 };
 use agendao_util::agendao_home;
 
@@ -21,7 +20,6 @@ pub(crate) struct SessionStatsReport {
     pub total_cache_miss: u64,
     pub total_cache_write: u64,
     pub persisted_telemetry_sessions: usize,
-    pub persisted_stage_summaries: usize,
     pub last_run_status_usage: Vec<(String, usize)>,
     pub model_usage: Vec<(String, usize)>,
     pub tool_usage: Vec<(String, usize)>,
@@ -37,7 +35,6 @@ pub(crate) struct SessionDetailRow {
 struct SessionStatsUsageSummary {
     usage: SessionUsage,
     used_persisted_snapshot: bool,
-    stage_summary_count: usize,
     last_run_status: Option<String>,
 }
 
@@ -107,10 +104,8 @@ pub(crate) async fn export_session_bundle(
     ]))
 }
 
-pub(crate) async fn import_session_bundle(
-    payload: SessionArtifactImportEnvelope,
-) -> anyhow::Result<usize> {
-    let entries = payload.into_entries();
+pub(crate) async fn import_session_bundle(payload: SessionArtifactBundle) -> anyhow::Result<usize> {
+    let entries = payload.sessions;
     if entries.is_empty() {
         anyhow::bail!("No session entries found in import payload");
     }
@@ -186,7 +181,6 @@ pub(crate) async fn collect_session_stats(
     let mut total_cache_miss = 0u64;
     let mut total_cache_write = 0u64;
     let mut persisted_telemetry_sessions = 0usize;
-    let mut persisted_stage_summaries = 0usize;
     let mut last_run_status_usage: BTreeMap<String, usize> = BTreeMap::new();
     let mut tool_usage: BTreeMap<String, usize> = BTreeMap::new();
     let mut model_usage: BTreeMap<String, usize> = BTreeMap::new();
@@ -202,7 +196,6 @@ pub(crate) async fn collect_session_stats(
         total_cache_write += usage_summary.usage.cache_write_tokens;
         if usage_summary.used_persisted_snapshot {
             persisted_telemetry_sessions += 1;
-            persisted_stage_summaries += usage_summary.stage_summary_count;
             if let Some(status) = usage_summary.last_run_status {
                 *last_run_status_usage.entry(status).or_insert(0) += 1;
             }
@@ -267,7 +260,6 @@ pub(crate) async fn collect_session_stats(
         total_cache_miss,
         total_cache_write,
         persisted_telemetry_sessions,
-        persisted_stage_summaries,
         last_run_status_usage: last_run_status_usage.into_iter().collect(),
         model_usage,
         tool_usage,
@@ -280,10 +272,6 @@ fn session_stats_usage_summary(session: &Session) -> SessionStatsUsageSummary {
         .get(SESSION_TELEMETRY_METADATA_KEY)
         .and_then(|value| serde_json::from_value::<SessionTelemetrySnapshot>(value.clone()).ok());
 
-    let stage_summary_count = persisted_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.stage_summaries.len())
-        .unwrap_or(0);
     let last_run_status = persisted_snapshot
         .as_ref()
         .map(|snapshot| snapshot.last_run_status.clone());
@@ -297,7 +285,6 @@ fn session_stats_usage_summary(session: &Session) -> SessionStatsUsageSummary {
     SessionStatsUsageSummary {
         usage,
         used_persisted_snapshot: persisted_snapshot.is_some(),
-        stage_summary_count,
         last_run_status,
     }
 }

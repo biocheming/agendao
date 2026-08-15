@@ -28,6 +28,14 @@ pub struct Database {
 }
 
 pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
+type MemoryRecordSignatureRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
 
 impl Database {
     pub async fn new() -> Result<Self, DatabaseError> {
@@ -139,15 +147,13 @@ impl Database {
             .await
             .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
 
-        // 一次性数据修复用 PRAGMA user_version 门控：此前每次启动都对 messages
-        // 全表（可达百 MB）做 SELECT + 逐行 JSON 反序列化，是启动数据库阶段
-        // 的主要开销。修复幂等，跑过一次即置版标记，后续启动直接跳过。
+        // Gate the one-time tool-call input migration so later starts avoid a
+        // full messages-table scan and per-row JSON decoding.
         let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
         if user_version < 1 {
-            self.repair_shifted_message_payload_rows().await?;
             self.run_tool_call_input_data_migration().await?;
             sqlx::query("PRAGMA user_version = 1")
                 .execute(&self.pool)
@@ -170,14 +176,7 @@ impl Database {
     }
 
     async fn backfill_memory_record_signatures(&self) -> Result<(), DatabaseError> {
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-        )> = sqlx::query_as(
+        let rows: Vec<MemoryRecordSignatureRow> = sqlx::query_as(
             r#"SELECT id, scope, title, summary, trigger_conditions, normalized_facts
                    FROM memory_records
                    WHERE signature IS NULL"#,
@@ -223,79 +222,6 @@ impl Database {
         Ok(())
     }
 
-    async fn repair_shifted_message_payload_rows(&self) -> Result<(), DatabaseError> {
-        let result = sqlx::query(
-            r#"
-            UPDATE messages
-            SET
-                data = CAST(tokens_input AS TEXT),
-                metadata = CASE
-                    WHEN typeof(model_id) = 'text' AND trim(CAST(model_id AS TEXT)) LIKE '{%'
-                    THEN CAST(model_id AS TEXT)
-                    ELSE metadata
-                END,
-                model_id = NULL,
-                finish = CASE
-                    WHEN finish IS NULL
-                         AND provider_id IS NOT NULL
-                         AND trim(CAST(provider_id AS TEXT)) <> ''
-                    THEN CAST(provider_id AS TEXT)
-                    ELSE finish
-                END,
-                provider_id = NULL,
-                tokens_input = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_prompt_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_context = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_context_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_output = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_completion_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_reasoning = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_reasoning_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_cache_read = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_read_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_cache_miss = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_miss_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                tokens_cache_write = CASE
-                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
-                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_write_tokens'), 0) AS INTEGER)
-                    ELSE 0
-                END,
-                cost = 0.0
-            WHERE (data IS NULL OR data = '')
-              AND typeof(tokens_input) = 'text'
-              AND trim(CAST(tokens_input AS TEXT)) LIKE '[%'
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-
-        let repaired = result.rows_affected();
-        if repaired > 0 {
-            info!(repaired, "repaired shifted message payload rows");
-        }
-
-        Ok(())
-    }
-
     async fn run_tool_call_input_data_migration(&self) -> Result<(), DatabaseError> {
         #[derive(Debug, FromRow)]
         struct MessageRow {
@@ -313,7 +239,6 @@ impl Database {
         .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
 
         let mut updated_rows = 0usize;
-        let mut recovered_inputs = 0usize;
         let mut invalid_reroutes = 0usize;
 
         for row in rows {
@@ -336,14 +261,11 @@ impl Database {
             let mut changed = false;
             for part in &mut parts {
                 if let PartType::ToolCall { name, input, .. } = &mut part.part_type {
-                    let (sanitized, was_recovered, rerouted_invalid) =
+                    let (sanitized, rerouted_invalid) =
                         sanitize_tool_call_input_for_storage(name, input);
                     if *input != sanitized {
                         *input = sanitized;
                         changed = true;
-                    }
-                    if was_recovered {
-                        recovered_inputs += 1;
                     }
                     if rerouted_invalid {
                         invalid_reroutes += 1;
@@ -366,10 +288,10 @@ impl Database {
             updated_rows += 1;
         }
 
-        if updated_rows > 0 || recovered_inputs > 0 || invalid_reroutes > 0 {
+        if updated_rows > 0 || invalid_reroutes > 0 {
             info!(
                 updated_rows,
-                recovered_inputs, invalid_reroutes, "tool call input data migration complete"
+                invalid_reroutes, "tool call input data migration complete"
             );
         }
 
@@ -391,43 +313,12 @@ fn invalid_tool_payload_for_storage(tool_name: &str, error: &str, received_args:
     })
 }
 
-fn sanitize_tool_call_input_for_storage(tool_name: &str, input: &Value) -> (Value, bool, bool) {
-    if let Some(obj) = input.as_object() {
-        let is_legacy_unrecoverable = obj
-            .get("_agendao_unrecoverable_tool_args")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if !is_legacy_unrecoverable {
-            return (input.clone(), false, false);
-        }
-
-        let received_args = serde_json::json!({
-            "type": "object",
-            "source": "legacy-unrecoverable-sentinel",
-            "raw_len": obj.get("raw_len").and_then(Value::as_u64),
-            "preview": obj.get("raw_preview").and_then(Value::as_str),
-        });
-        return (
-            invalid_tool_payload_for_storage(
-                tool_name,
-                "Stored tool arguments were previously marked unrecoverable.",
-                received_args,
-            ),
-            false,
-            true,
-        );
+fn sanitize_tool_call_input_for_storage(tool_name: &str, input: &Value) -> (Value, bool) {
+    if input.is_object() {
+        return (input.clone(), false);
     }
 
     if let Some(raw) = input.as_str() {
-        if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(raw) {
-            return (parsed, true, false);
-        }
-        if let Some(recovered) =
-            agendao_util::json::recover_tool_arguments_from_jsonish(tool_name, raw)
-        {
-            return (recovered, true, false);
-        }
-
         return (
             invalid_tool_payload_for_storage(
                 tool_name,
@@ -438,7 +329,6 @@ fn sanitize_tool_call_input_for_storage(tool_name: &str, input: &Value) -> (Valu
                     "preview": raw.chars().take(240).collect::<String>(),
                 }),
             ),
-            false,
             true,
         );
     }
@@ -459,7 +349,6 @@ fn sanitize_tool_call_input_for_storage(tool_name: &str, input: &Value) -> (Valu
                 "type": input_type,
             }),
         ),
-        false,
         true,
     )
 }
@@ -501,7 +390,9 @@ mod tests {
             .unwrap();
 
         let db = super::Database { pool };
-        db.run_migrations().await.expect("migrations should succeed");
+        db.run_migrations()
+            .await
+            .expect("migrations should succeed");
 
         let columns: Vec<String> =
             sqlx::query_scalar("SELECT name FROM pragma_table_info('memory_records')")
@@ -584,25 +475,21 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_tool_call_input_for_storage_recovers_jsonish() {
+    fn sanitize_tool_call_input_for_storage_rejects_jsonish() {
         let raw = serde_json::Value::String(
             "{\"file_path\":\"t2.html\",\"content\":\"<!DOCTYPE html>".to_string(),
         );
-        let (sanitized, recovered, rerouted_invalid) =
-            sanitize_tool_call_input_for_storage("write", &raw);
+        let (sanitized, rerouted_invalid) = sanitize_tool_call_input_for_storage("write", &raw);
         assert!(sanitized.is_object());
-        assert!(recovered);
-        assert!(!rerouted_invalid);
-        assert_eq!(sanitized["file_path"], "t2.html");
+        assert!(rerouted_invalid);
+        assert_eq!(sanitized["tool"], "write");
     }
 
     #[test]
     fn sanitize_tool_call_input_for_storage_routes_unrecoverable_to_invalid_payload() {
         let raw = serde_json::Value::String("not-json".to_string());
-        let (sanitized, recovered, rerouted_invalid) =
-            sanitize_tool_call_input_for_storage("write", &raw);
+        let (sanitized, rerouted_invalid) = sanitize_tool_call_input_for_storage("write", &raw);
         assert!(sanitized.is_object());
-        assert!(!recovered);
         assert!(rerouted_invalid);
         assert_eq!(sanitized["tool"], "write");
         assert_eq!(sanitized["receivedArgs"]["type"], "string");
@@ -613,21 +500,15 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_tool_call_input_for_storage_rewrites_legacy_sentinel_object() {
+    fn sanitize_tool_call_input_for_storage_keeps_object_without_sentinel_semantics() {
         let raw = serde_json::json!({
             "_agendao_unrecoverable_tool_args": true,
             "raw_len": 42,
             "raw_preview": "{\"content\":\"<html>"
         });
-        let (sanitized, recovered, rerouted_invalid) =
-            sanitize_tool_call_input_for_storage("write", &raw);
+        let (sanitized, rerouted_invalid) = sanitize_tool_call_input_for_storage("write", &raw);
         assert!(sanitized.is_object());
-        assert!(!recovered);
-        assert!(rerouted_invalid);
-        assert_eq!(sanitized["tool"], "write");
-        assert_eq!(
-            sanitized["receivedArgs"]["source"],
-            "legacy-unrecoverable-sentinel"
-        );
+        assert!(!rerouted_invalid);
+        assert_eq!(sanitized, raw);
     }
 }

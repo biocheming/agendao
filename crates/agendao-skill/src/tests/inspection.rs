@@ -133,8 +133,6 @@ metadata:
     requires_tools: [grep]
     requires_toolsets:
       - search
-    stage_filter:
-      - review
 ---
 
 Only review here.
@@ -154,28 +152,22 @@ Only review here.
         loaded.meta.conditions.requires_toolsets,
         vec!["search".to_string()]
     );
-    assert_eq!(
-        loaded.meta.conditions.stage_filter,
-        vec!["review".to_string()]
-    );
-
     let available_tools = std::collections::HashSet::from(["grep".to_string()]);
     let available_toolsets = std::collections::HashSet::from(["search".to_string()]);
     let filtered = authority
         .list_skill_meta(Some(&SkillFilter {
             available_tools: Some(&available_tools),
             available_toolsets: Some(&available_toolsets),
-            current_stage: Some("review"),
             category: None,
         }))
         .unwrap();
     assert!(filtered.iter().any(|skill| skill.name == "reviewer"));
 
+    let unavailable_tools = std::collections::HashSet::new();
     let hidden = authority
         .list_skill_meta(Some(&SkillFilter {
-            available_tools: Some(&available_tools),
+            available_tools: Some(&unavailable_tools),
             available_toolsets: Some(&available_toolsets),
-            current_stage: Some("execution"),
             category: None,
         }))
         .unwrap();
@@ -536,16 +528,32 @@ fn disabled_skills_are_filtered_from_catalog_by_name_and_category() {
     let root = dir.path();
     let skills_root = root.join(".agendao/skills");
 
-    write_directory_skill(&skills_root, "review", "review-skill", "review", "body", &[]);
-    write_directory_skill(&skills_root, "web/search", "web-search", "search", "body", &[]);
+    write_directory_skill(
+        &skills_root,
+        "review",
+        "review-skill",
+        "review",
+        "body",
+        &[],
+    );
+    write_directory_skill(
+        &skills_root,
+        "web/search",
+        "web-search",
+        "search",
+        "body",
+        &[],
+    );
     write_directory_skill(&skills_root, "web/fetch", "web-fetch", "fetch", "body", &[]);
     write_directory_skill(&skills_root, "code/lint", "code-lint", "lint", "body", &[]);
 
-    let mut config = Config::default();
-    config.skills = Some(SkillsConfig {
-        disabled: vec!["review-skill".to_string(), "web/*".to_string()],
+    let config = Config {
+        skills: Some(SkillsConfig {
+            disabled: vec!["review-skill".to_string(), "web/*".to_string()],
+            ..Default::default()
+        }),
         ..Default::default()
-    });
+    };
     let authority = SkillAuthority::new(root, Some(Arc::new(ConfigStore::new(config))));
 
     let names: Vec<String> = authority
@@ -573,8 +581,12 @@ fn disabled_skills_are_filtered_from_catalog_by_name_and_category() {
     assert!(web_category_skills.is_empty());
 
     // A disabled skill is no longer resolvable by name either.
-    assert!(authority.load_skill_for_inspection("review-skill", None).is_err());
-    assert!(authority.load_skill_for_inspection("code-lint", None).is_ok());
+    assert!(authority
+        .load_skill_for_inspection("review-skill", None)
+        .is_err());
+    assert!(authority
+        .load_skill_for_inspection("code-lint", None)
+        .is_ok());
 }
 
 #[test]
@@ -582,10 +594,19 @@ fn empty_disabled_list_leaves_catalog_untouched() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     let skills_root = root.join(".agendao/skills");
-    write_directory_skill(&skills_root, "web/search", "web-search", "search", "body", &[]);
+    write_directory_skill(
+        &skills_root,
+        "web/search",
+        "web-search",
+        "search",
+        "body",
+        &[],
+    );
 
-    let mut config = Config::default();
-    config.skills = Some(SkillsConfig::default());
+    let config = Config {
+        skills: Some(SkillsConfig::default()),
+        ..Default::default()
+    };
     let authority = SkillAuthority::new(root, Some(Arc::new(ConfigStore::new(config))));
 
     let names: Vec<String> = authority

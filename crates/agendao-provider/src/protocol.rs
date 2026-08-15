@@ -1,6 +1,5 @@
 use crate::{
-    ChatRequest, ChatResponse, ProviderApiFamily, ProviderError, ProviderProfile,
-    ProviderTransportKind, StreamResult,
+    ChatRequest, ChatResponse, ProviderApiFamily, ProviderError, ProviderProfile, StreamResult,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -9,38 +8,17 @@ use std::fmt;
 /// Runtime adapter selector derived from a typed `ProviderProfile`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderRuntimeAdapter {
-    /// closeai-compatible chat completions family
-    CloseAiCompatible,
-    /// Ethnopic-compatible provider family
-    Ethnopic,
-    /// Google Gemini generateContent API
-    Gemini,
-    /// AWS Bedrock converse API (SigV4 auth)
-    BedrockConverse,
-    /// Google Vertex AI (Bearer token, Gemini SSE parsing)
-    VertexGemini,
-    /// GitHub Copilot adapter (OAuth + hybrid routing)
-    GitHubCopilotCloseAi,
-    /// GitLab AI Gateway adapter (PRIVATE-TOKEN)
-    GitLabCloseAi,
+    /// openai-compatible chat completions family
+    OpenAiCompatible,
+    /// Anthropic-compatible provider family
+    Anthropic,
 }
 
 impl ProviderRuntimeAdapter {
     pub fn from_profile(profile: &ProviderProfile) -> Self {
         match profile.api_family {
-            ProviderApiFamily::EthnopicMessages => ProviderRuntimeAdapter::Ethnopic,
-            ProviderApiFamily::GeminiGenerate => match profile.transport {
-                ProviderTransportKind::VertexBearer => ProviderRuntimeAdapter::VertexGemini,
-                _ => ProviderRuntimeAdapter::Gemini,
-            },
-            ProviderApiFamily::BedrockConverse => ProviderRuntimeAdapter::BedrockConverse,
-            ProviderApiFamily::CloseAiCompatible | ProviderApiFamily::Custom => {
-                match profile.transport {
-                    ProviderTransportKind::PrivateToken => ProviderRuntimeAdapter::GitLabCloseAi,
-                    ProviderTransportKind::OAuth => ProviderRuntimeAdapter::GitHubCopilotCloseAi,
-                    _ => ProviderRuntimeAdapter::CloseAiCompatible,
-                }
-            }
+            ProviderApiFamily::AnthropicMessages => ProviderRuntimeAdapter::Anthropic,
+            ProviderApiFamily::OpenAiCompatible => ProviderRuntimeAdapter::OpenAiCompatible,
         }
     }
 }
@@ -48,13 +26,8 @@ impl ProviderRuntimeAdapter {
 impl fmt::Display for ProviderRuntimeAdapter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProviderRuntimeAdapter::CloseAiCompatible => write!(f, "closeai-compatible"),
-            ProviderRuntimeAdapter::Ethnopic => write!(f, "ethnopic"),
-            ProviderRuntimeAdapter::Gemini => write!(f, "gemini"),
-            ProviderRuntimeAdapter::BedrockConverse => write!(f, "bedrock-converse"),
-            ProviderRuntimeAdapter::VertexGemini => write!(f, "vertex-gemini"),
-            ProviderRuntimeAdapter::GitHubCopilotCloseAi => write!(f, "github-copilot-closeai"),
-            ProviderRuntimeAdapter::GitLabCloseAi => write!(f, "gitlab-closeai"),
+            ProviderRuntimeAdapter::OpenAiCompatible => write!(f, "openai-compatible"),
+            ProviderRuntimeAdapter::Anthropic => write!(f, "anthropic"),
         }
     }
 }

@@ -17,16 +17,10 @@ impl ProviderArtifactVersion {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderArtifactApiFamily {
-    #[serde(rename = "closeai-compatible")]
-    CloseAiCompatible,
-    #[serde(rename = "ethnopic-compatible")]
-    EthnopicCompatible,
-    #[serde(rename = "gemini-generate")]
-    GeminiGenerate,
-    #[serde(rename = "bedrock-converse")]
-    BedrockConverse,
-    #[serde(rename = "custom")]
-    Custom,
+    #[serde(rename = "openai-compatible")]
+    OpenAiCompatible,
+    #[serde(rename = "anthropic-compatible")]
+    AnthropicCompatible,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,54 +29,34 @@ pub enum ProviderArtifactApiShape {
     ChatCompletions,
     #[serde(rename = "responses")]
     Responses,
-    #[serde(rename = "ethnopic-messages")]
-    EthnopicMessages,
-    #[serde(rename = "gemini-generate-content")]
-    GeminiGenerateContent,
-    #[serde(rename = "bedrock-converse")]
-    BedrockConverse,
-    #[serde(rename = "custom")]
-    Custom,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderArtifactTransport {
     #[serde(rename = "bearer")]
     Bearer,
-    #[serde(rename = "vertex-bearer")]
-    VertexBearer,
-    #[serde(rename = "sigv4")]
-    SigV4,
     #[serde(rename = "oauth")]
     OAuth,
-    #[serde(rename = "private-token")]
-    PrivateToken,
-    #[serde(rename = "header-set")]
-    HeaderSet,
-    #[serde(rename = "custom")]
-    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderArtifactUsageShape {
-    #[serde(rename = "closeai-cached-tokens")]
-    CloseAiCachedTokens,
-    #[serde(rename = "ethnopic-read-write")]
-    EthnopicReadWrite,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "bedrock")]
-    Bedrock,
+    #[serde(rename = "openai-cached-tokens")]
+    OpenAiCachedTokens,
+    #[serde(rename = "anthropic-read-write")]
+    AnthropicReadWrite,
     #[serde(rename = "unknown")]
     Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderArtifactCacheFamily {
-    #[serde(rename = "closeai-compatible")]
-    CloseAiCompatible,
-    #[serde(rename = "ethnopic-compatible")]
-    EthnopicCompatible,
+    #[serde(rename = "openai-compatible")]
+    OpenAiCompatible,
+    #[serde(rename = "anthropic-compatible")]
+    AnthropicCompatible,
     #[serde(rename = "disabled")]
     Disabled,
 }
@@ -95,8 +69,6 @@ pub enum ProviderArtifactQuirk {
     RawJsonLines,
     #[serde(rename = "requires-thinking-replay")]
     RequiresThinkingReplay,
-    #[serde(rename = "responses-fallback-to-chat")]
-    ResponsesFallbackToChat,
     #[serde(rename = "ignores-unknown-fields")]
     IgnoresUnknownFields,
 }
@@ -150,43 +122,28 @@ impl ProviderArtifactBundle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum ProviderArtifactImportEnvelope {
-    Bundle(ProviderArtifactBundle),
-    Legacy(ProviderArtifactLegacyPayload),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderArtifactLegacyPayload {
-    pub legacy_format: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<serde_json::Value>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ProviderArtifactApiFamily, ProviderArtifactApiShape, ProviderArtifactBundle,
-        ProviderArtifactCacheFamily, ProviderArtifactEntry, ProviderArtifactImportEnvelope,
-        ProviderArtifactProfile, ProviderArtifactQuirk, ProviderArtifactTransport,
-        ProviderArtifactUsageShape, ProviderArtifactVersion,
+        ProviderArtifactCacheFamily, ProviderArtifactEntry, ProviderArtifactProfile,
+        ProviderArtifactQuirk, ProviderArtifactTransport, ProviderArtifactUsageShape,
+        ProviderArtifactVersion,
     };
 
     fn sample_entry() -> ProviderArtifactEntry {
         ProviderArtifactEntry {
-            provider_id: "openrouter".to_string(),
-            name: Some("OpenRouter".to_string()),
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
-            env: vec!["OPENROUTER_API_KEY".to_string()],
+            provider_id: "custom-openai".to_string(),
+            name: Some("Custom OpenAI endpoint".to_string()),
+            base_url: Some("https://models.example/v1".to_string()),
+            env: vec!["CUSTOM_OPENAI_API_KEY".to_string()],
             profile: ProviderArtifactProfile {
-                npm: "@openrouter/ai-sdk-provider".to_string(),
-                api_family: ProviderArtifactApiFamily::CloseAiCompatible,
+                npm: "@ai-sdk/openai-compatible".to_string(),
+                api_family: ProviderArtifactApiFamily::OpenAiCompatible,
                 api_shape: ProviderArtifactApiShape::ChatCompletions,
                 transport: ProviderArtifactTransport::Bearer,
-                usage_shape: ProviderArtifactUsageShape::CloseAiCachedTokens,
-                cache_family: ProviderArtifactCacheFamily::CloseAiCompatible,
+                usage_shape: ProviderArtifactUsageShape::OpenAiCachedTokens,
+                cache_family: ProviderArtifactCacheFamily::OpenAiCompatible,
                 quirks: vec![ProviderArtifactQuirk::NonStreamingSse],
             },
         }
@@ -208,25 +165,16 @@ mod tests {
     }
 
     #[test]
-    fn bundle_roundtrips_through_import_envelope() {
+    fn bundle_roundtrips_through_current_schema() {
         let bundle = ProviderArtifactBundle::new(123, vec![sample_entry()]);
 
         let payload = serde_json::to_string(&bundle).expect("bundle should serialize");
-        let envelope: ProviderArtifactImportEnvelope =
+        let parsed: ProviderArtifactBundle =
             serde_json::from_str(&payload).expect("bundle should parse");
-
-        match envelope {
-            ProviderArtifactImportEnvelope::Bundle(parsed) => {
-                assert_eq!(parsed.exported_at, 123);
-                assert_eq!(parsed.providers.len(), 1);
-                assert_eq!(parsed.providers[0].provider_id, "openrouter");
-                assert_eq!(
-                    parsed.providers[0].profile.npm,
-                    "@openrouter/ai-sdk-provider"
-                );
-            }
-            ProviderArtifactImportEnvelope::Legacy(_) => panic!("expected bundle envelope"),
-        }
+        assert_eq!(parsed.exported_at, 123);
+        assert_eq!(parsed.providers.len(), 1);
+        assert_eq!(parsed.providers[0].provider_id, "custom-openai");
+        assert_eq!(parsed.providers[0].profile.npm, "@ai-sdk/openai-compatible");
     }
 
     #[test]
@@ -237,33 +185,12 @@ mod tests {
             "providers": [sample_entry()]
         });
 
-        let error = serde_json::from_value::<ProviderArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<ProviderArtifactBundle>(payload)
             .expect_err("unknown version should fail closed");
         assert!(
             error.to_string().contains("did not match any variant")
                 || error.to_string().contains("unknown variant")
         );
-    }
-
-    #[test]
-    fn import_envelope_accepts_only_explicit_legacy_shape() {
-        let payload = serde_json::json!({
-            "legacy_format": "provider-alpha",
-            "payload": {
-                "providers": [{"provider_id": "legacy-openai"}]
-            }
-        });
-
-        let envelope: ProviderArtifactImportEnvelope =
-            serde_json::from_value(payload).expect("explicit legacy shape should parse");
-
-        match envelope {
-            ProviderArtifactImportEnvelope::Legacy(legacy) => {
-                assert_eq!(legacy.legacy_format, "provider-alpha");
-                assert!(legacy.payload.is_some());
-            }
-            ProviderArtifactImportEnvelope::Bundle(_) => panic!("expected legacy envelope"),
-        }
     }
 
     #[test]
@@ -275,7 +202,7 @@ mod tests {
             "extra": true
         });
 
-        let error = serde_json::from_value::<ProviderArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<ProviderArtifactBundle>(payload)
             .expect_err("unknown top-level field should fail closed");
         assert!(
             error.to_string().contains("unknown field")
@@ -292,17 +219,17 @@ mod tests {
                 "provider_id": "openai",
                 "profile": {
                     "npm": "@ai-sdk/openai",
-                    "api_family": "closeai-compatible",
+                    "api_family": "openai-compatible",
                     "api_shape": "chat-completions",
                     "transport": "bearer",
-                    "usage_shape": "closeai-cached-tokens",
-                    "cache_family": "closeai-compatible",
+                    "usage_shape": "openai-cached-tokens",
+                    "cache_family": "openai-compatible",
                     "prompt_cache_key": "must-not-be-accepted"
                 }
             }]
         });
 
-        let error = serde_json::from_value::<ProviderArtifactImportEnvelope>(payload)
+        let error = serde_json::from_value::<ProviderArtifactBundle>(payload)
             .expect_err("unknown nested profile field should fail closed");
         assert!(
             error.to_string().contains("unknown field")

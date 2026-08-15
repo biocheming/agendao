@@ -97,18 +97,7 @@ function generatedContent(source) {
   const cacheUnexplained = rustStringLiteralToJson(
     readRustStringLiteral(source, /("cache unexplained")/, "cache unexplained label"),
   );
-  const leakDetected = rustStringLiteralToJson(
-    readRustStringLiteral(source, /("leak detected")/, "leak detected label"),
-  );
-  const isolated = rustStringLiteralToJson(
-    readRustStringLiteral(source, /("isolated")/, "isolated label"),
-  );
-  const notOwnerLocal = rustStringLiteralToJson(
-    readRustStringLiteral(source, /("not owner-local")/, "not owner-local label"),
-  );
-
   const continuityPacket = rustStringLiteralToJson('"packet installed"');
-  const continuityFallback = rustStringLiteralToJson('"legacy summary fallback"');
 
   return `// Generated from crates/agendao-types/src/session.rs. Do not edit by hand.\n` +
     `\n` +
@@ -141,11 +130,7 @@ function generatedContent(source) {
     `  cache_stable: ${cacheStable},\n` +
     `  cache_explained: ${cacheExplained},\n` +
     `  cache_unexplained: ${cacheUnexplained},\n` +
-    `  leak_detected: ${leakDetected},\n` +
-    `  isolated: ${isolated},\n` +
-    `  not_owner_local: ${notOwnerLocal},\n` +
     `  continuity_packet: ${continuityPacket},\n` +
-    `  raw_summary_fallback: ${continuityFallback},\n` +
     `} as const;\n` +
     `\n` +
     `export function contextClosureGovernanceStatusLabel(value?: string | null) {\n` +
@@ -176,14 +161,8 @@ function generatedContent(source) {
     `  return cache.explained ? CONTEXT_CLOSURE_STATUS_LABELS.cache_explained : CONTEXT_CLOSURE_STATUS_LABELS.cache_unexplained;\n` +
     `}\n` +
     `\n` +
-    `export function contextClosureIsolationStatusLabel(isolation: { child_history_in_live_prefix_detected: boolean; owner_local_live_prefix: boolean }) {\n` +
-    `  if (isolation.child_history_in_live_prefix_detected) return CONTEXT_CLOSURE_STATUS_LABELS.leak_detected;\n` +
-    `  return isolation.owner_local_live_prefix ? CONTEXT_CLOSURE_STATUS_LABELS.isolated : CONTEXT_CLOSURE_STATUS_LABELS.not_owner_local;\n` +
-    `}\n` +
-    `\n` +
     `export function compactionContinuitySourceLabel(continuity: { source: string }) {\n` +
     `  if (continuity.source === "continuity_packet") return CONTEXT_CLOSURE_STATUS_LABELS.continuity_packet;\n` +
-    `  if (continuity.source === "raw_summary_fallback") return CONTEXT_CLOSURE_STATUS_LABELS.raw_summary_fallback;\n` +
     `  return continuity.source.replace(/[._-]+/g, " ").trim() || "--";\n` +
     `}\n` +
     `\n` +

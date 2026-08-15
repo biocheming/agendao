@@ -13,30 +13,18 @@ use agendao_permission::{
 
 impl AgentRegistry {
     pub(crate) fn apply_config(&mut self, config: &LoadedConfig) {
-        if let Some(mode_configs) = &config.mode {
-            self.apply_agent_configs(mode_configs, Some(AgentMode::Primary));
-        }
         if let Some(agent_configs) = &config.agent {
-            self.apply_agent_configs(agent_configs, None);
+            self.apply_agent_configs(agent_configs);
         }
     }
 
-    fn apply_agent_configs(
-        &mut self,
-        configs: &LoadedAgentConfigs,
-        forced_mode: Option<AgentMode>,
-    ) {
+    fn apply_agent_configs(&mut self, configs: &LoadedAgentConfigs) {
         for (key, cfg) in &configs.entries {
-            self.apply_agent_config(key, cfg, forced_mode);
+            self.apply_agent_config(key, cfg);
         }
     }
 
-    fn apply_agent_config(
-        &mut self,
-        key: &str,
-        cfg: &LoadedAgentConfig,
-        forced_mode: Option<AgentMode>,
-    ) {
+    fn apply_agent_config(&mut self, key: &str, cfg: &LoadedAgentConfig) {
         if cfg.disable.unwrap_or(false) {
             self.agents.remove(key);
             return;
@@ -72,9 +60,7 @@ impl AgentRegistry {
         if let Some(hidden) = cfg.hidden {
             agent.hidden = hidden;
         }
-        if let Some(mode) = forced_mode {
-            agent.mode = mode;
-        } else if let Some(mode) = cfg.mode.clone() {
+        if let Some(mode) = cfg.mode.clone() {
             agent.mode = map_loaded_agent_mode(mode);
         }
         if let Some(steps) = cfg.steps.or(cfg.max_steps) {

@@ -44,7 +44,7 @@ graph TB
     subgraph 根基["🟤 土 · 根基（承载一切）"]
         UTIL["agendao-util<br/>~/.agendao home/日志/公共函数"]
         CONFIG["agendao-config<br/>schema/loader/discovery/matching"]
-        TYPES["agendao-types / execution-types<br/>stage-protocol / api"]
+        TYPES["agendao-types / execution-types<br/>server-core events / api"]
         STATE["agendao-state / runtime-context<br/>全局状态/工作区上下文"]
     end
 
@@ -121,7 +121,7 @@ sequenceDiagram
 | `agendao-config` | 分层配置加载（全局→项目→.agendao→企业）；schema 与 merge；skills/plugins/commands 发现；`matching`（启停通配）；`disabled_tools/plugins/skills.disabled` 过滤语义 |
 | `agendao-types` | session/message/usage/telemetry 等核心类型 |
 | `agendao-execution-types` | 执行面共享类型 |
-| `agendao-stage-protocol` | stage 三层协议类型（正交三层、各自单一 authority） |
+| `agendao-server-core` | canonical `ServerEvent`、runtime control 与唯一 frontend event 投影契约 |
 | `agendao-api` | 前后端共享 API 类型（client 经此与 server 对齐） |
 | `agendao-state` | global-state.json（最近模型等用户态） |
 | `agendao-runtime-context` | 工作区上下文解析（wellknown/workspace identity） |
@@ -130,15 +130,15 @@ sequenceDiagram
 
 | 模块 | 功能 |
 |------|------|
-| `agendao-provider` | 协议族适配（openai/anthropic/google/bedrock/vertex/copilot/gitlab/ethnopic）；传输与 connect timeout；auth.json（0600）；模型 catalog 缓存 |
+| `agendao-provider` | OpenAI Responses、OpenAI Chat Completions、Anthropic Messages；传输与 connect timeout；auth.json（0600）；模型 catalog 缓存 |
 | `agendao-session` | prompt loop 生命周期；工具面（SearchFacade 门面化）；instruction 加载（~/.agendao/AGENTS.md 优先）；**遗忘**：compaction 压缩上下文 |
 | `agendao-session-core` | session 实体与不变量 |
-| `agendao-orchestrator` | 调度运行时循环；scheduler profiles；autoresearch 工作流；verifier |
-| `agendao-tool` | 内置工具 registry（bash/read/edit/task/skill_manage 等）；启停过滤（含门面豁免） |
+| `agendao-orchestrator` | 唯一 SchedulerBlueprint validator/selector/engine、唯一 AgentLoop、typed execution events |
+| `agendao-tool` | 内置工具 registry（bash/read/edit/skill_manage 等）；启停过滤（含门面豁免） |
 | `agendao-tool-core` | Tool trait 与 schema |
 | `agendao-tool-web` | websearch（内置，直连 exa MCP 端点）/webfetch/browser_session；SSRF 防护 + 测试逃生门 |
 | `agendao-mcp` | MCP server 连接/工具注册；OAuth（mcp-auth.json 0600）；启停（Enabled 变体） |
-| `agendao-agent` | 子代理注册与执行 |
+| `agendao-agent` | Agent 身份、配置与 catalog registry；拓扑执行由 SchedulerEngine 负责 |
 | `agendao-plugin` | 插件运行时（npm/file/dylib/subprocess）；hook 触发 |
 | `agendao-permission` | 权限规则集（bash 命令解析、~/ 展开） |
 | `agendao-lsp` | LSP 集成 |

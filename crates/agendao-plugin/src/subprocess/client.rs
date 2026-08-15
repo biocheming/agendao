@@ -15,9 +15,11 @@ use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
-use super::protocol::{RpcError, RpcRequest, RpcResponse};
 use super::runtime::JsRuntime;
 use agendao_core::codec::{self, CodecError};
+use agendao_core::jsonrpc::{
+    JsonRpcError, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+};
 use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
 use agendao_types::ToolCatalogMetadata;
@@ -47,8 +49,8 @@ pub enum PluginSubprocessError {
     Protocol(String),
 }
 
-impl From<RpcError> for PluginSubprocessError {
-    fn from(e: RpcError) -> Self {
+impl From<JsonRpcError> for PluginSubprocessError {
+    fn from(e: JsonRpcError) -> Self {
         Self::Rpc {
             code: e.code,
             message: e.message,
@@ -380,7 +382,7 @@ impl PluginSubprocess {
                 }
                 message = self.read_message() => {
                     match message? {
-                        super::protocol::RpcMessage::Response(resp) if resp.id == id => {
+                        JsonRpcMessage::Response(resp) if resp.id == id => {
                             if let Some(err) = resp.error {
                                 return Err(err.into());
                             }
@@ -558,7 +560,7 @@ impl PluginSubprocess {
                 };
 
                 if raw.get("id").and_then(Value::as_u64) == Some(id) {
-                    let response: RpcResponse = match serde_json::from_value(raw) {
+                    let response: JsonRpcResponse = match serde_json::from_value(raw) {
                         Ok(response) => response,
                         Err(err) => {
                             let send_err = PluginSubprocessError::Json(err);
@@ -844,7 +846,7 @@ impl PluginSubprocess {
                 }
                 message = self.read_message() => {
                     match message? {
-                        super::protocol::RpcMessage::Response(resp) if resp.id == id => {
+                        JsonRpcMessage::Response(resp) if resp.id == id => {
                             if let Some(err) = resp.error {
                                 return Err(err.into());
                             }
@@ -872,7 +874,7 @@ impl PluginSubprocess {
         method: &str,
         params: Option<Value>,
     ) -> Result<(), PluginSubprocessError> {
-        let request = RpcRequest::new(id, method, params);
+        let request = JsonRpcRequest::new(id, method, params);
         let mut transport = self.transport.write().await;
         codec::write_frame(&mut transport.stdin, &request).await?;
         Ok(())
@@ -883,7 +885,7 @@ impl PluginSubprocess {
         method: &str,
         params: Option<Value>,
     ) -> Result<(), PluginSubprocessError> {
-        let notification = super::protocol::RpcNotification::new(method, params);
+        let notification = JsonRpcNotification::new(method, params);
         let mut transport = self.transport.write().await;
         codec::write_frame(&mut transport.stdin, &notification).await?;
         Ok(())
@@ -903,7 +905,7 @@ impl PluginSubprocess {
     async fn read_response_for_id(
         &self,
         expected_id: u64,
-    ) -> Result<RpcResponse, PluginSubprocessError> {
+    ) -> Result<JsonRpcResponse, PluginSubprocessError> {
         let mut transport = self.transport.write().await;
         let reader = &mut transport.stdout;
         loop {
@@ -911,16 +913,16 @@ impl PluginSubprocess {
             if raw.get("id").and_then(Value::as_u64) != Some(expected_id) {
                 continue;
             }
-            let response: RpcResponse = serde_json::from_value(raw)?;
+            let response: JsonRpcResponse = serde_json::from_value(raw)?;
             return Ok(response);
         }
     }
 
-    async fn read_message(&self) -> Result<super::protocol::RpcMessage, PluginSubprocessError> {
+    async fn read_message(&self) -> Result<JsonRpcMessage, PluginSubprocessError> {
         let mut transport = self.transport.write().await;
         let reader = &mut transport.stdout;
         let raw = Self::read_raw_message(reader).await?;
-        super::protocol::RpcMessage::from_value(raw).map_err(Into::into)
+        JsonRpcMessage::from_value(raw).map_err(Into::into)
     }
 
     /// Read one Content-Length framed JSON-RPC message from stdout.

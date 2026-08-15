@@ -18,19 +18,23 @@ impl SpinnerGlyph {
     pub fn frames(&self) -> &'static [&'static str] {
         match self {
             Self::Braille => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-            Self::Dots    => &["·", "✢", "✳", "✶", "✻", "✽"],
+            Self::Dots => &["·", "✢", "✳", "✶", "✻", "✽"],
             // 正放 + 倒放构成完整往返周期（SpinnerGlyph 往返点阵）
-            Self::Claude  => &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"],
+            Self::Claude => &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"],
             // 相生序：木生火、火生土、土生金、金生水、水生木——
             // 运行中的一回合就是一次完整的五行流转（土律·阴阳闭环）。
-            Self::Wuxing  => &["木", "火", "土", "金", "水"],
+            Self::Wuxing => &["木", "火", "土", "金", "水"],
         }
     }
 }
 
 /// 平台默认 glyph：Linux 用 Dots，其它用 Braille。
 pub fn platform_default() -> SpinnerGlyph {
-    if cfg!(target_os = "linux") { SpinnerGlyph::Dots } else { SpinnerGlyph::Braille }
+    if cfg!(target_os = "linux") {
+        SpinnerGlyph::Dots
+    } else {
+        SpinnerGlyph::Braille
+    }
 }
 
 /// 按 tick 取当前帧。tick 是单调递增的帧计数（调用方可先 `/3` 降速）。
@@ -107,10 +111,10 @@ mod tests {
         // 点阵来回帧：正放 6 + 倒放 4 = 10。中心 ✽ 为峰值，两侧对称。
         let f = SpinnerGlyph::Claude.frames();
         assert_eq!(f.len(), 10);
-        assert_eq!(f[0], "·");      // 起点
-        assert_eq!(f[5], "✽");      // 峰值（正放到底）
-        assert_eq!(f[1], f[9]);     // ✢ ... ✢（倒放止于 ✢，省略重复的 ·）
-        assert_eq!(f[4], f[6]);     // ✻ ... ✻
+        assert_eq!(f[0], "·"); // 起点
+        assert_eq!(f[5], "✽"); // 峰值（正放到底）
+        assert_eq!(f[1], f[9]); // ✢ ... ✢（倒放止于 ✢，省略重复的 ·）
+        assert_eq!(f[4], f[6]); // ✻ ... ✻
     }
 
     #[test]
@@ -120,7 +124,10 @@ mod tests {
         assert_eq!(frames[0], "·");
         assert_eq!(frames[4], "●", "晕开顶点居中");
         assert_eq!(frames[1], frames[7], "晕形首尾对称（∘ 回环）");
-        assert_eq!(crate::widget::spinner::ink_frame(8), crate::widget::spinner::ink_frame(0));
+        assert_eq!(
+            crate::widget::spinner::ink_frame(8),
+            crate::widget::spinner::ink_frame(0)
+        );
         assert_eq!(crate::widget::spinner::INK_REST, "◉");
     }
 
@@ -131,7 +138,10 @@ mod tests {
         assert_eq!(frames[0], "▁");
         assert_eq!(frames[7], "█", "涨潮顶点居中");
         assert_eq!(frames[1], frames[13], "潮形首尾对称（▂ 回环）");
-        assert_eq!(crate::widget::spinner::tide_frame(14), crate::widget::spinner::tide_frame(0));
+        assert_eq!(
+            crate::widget::spinner::tide_frame(14),
+            crate::widget::spinner::tide_frame(0)
+        );
     }
 
     #[test]

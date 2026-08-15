@@ -438,7 +438,7 @@ async function maybeRunProviderSoak(client, record) {
   await waitForExpression(
     client,
     `(window.__agendaoTracker?.fetches ?? []).some((entry) =>
-      entry.url.includes('/session/${sessionId}/stream') && entry.method === 'POST'
+      entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
     )`,
     5000,
   );
@@ -702,68 +702,6 @@ async function run() {
 
     const activeSessionAfterReload = await activeSessionId(client);
     assert(activeSessionAfterReload, "no active session after workspace reload");
-    const childSession = await postJson(
-      `${BASE_URL}/session/${activeSessionAfterReload}/fork`,
-      {
-        message_id: null,
-      },
-    );
-    await postJson(`${BASE_URL}/experimental/frontend-smoke/output-block`, {
-      session_id: activeSessionAfterReload,
-      id: "smoke-stage-block",
-      block: {
-        kind: "scheduler_stage",
-        role: "assistant",
-        id: "smoke-stage-block",
-        stage_id: "stage-smoke",
-        tool_call_id: "call_smoke_tool",
-        title: "Smoke Attached Session Stage",
-        status: "running",
-        profile: "smoke",
-        attached_session_id: childSession.id,
-        focus: "Validate attached-session jump from the message feed",
-        text: "synthetic scheduler stage for frontend smoke",
-      },
-    });
-    await postJson(`${BASE_URL}/experimental/frontend-smoke/output-block`, {
-      session_id: activeSessionAfterReload,
-      id: "call_smoke_tool",
-      block: {
-        kind: "tool",
-        role: "assistant",
-        id: "call_smoke_tool",
-        stage_id: "stage-smoke",
-        title: "Smoke Tool Call",
-        text: "synthetic tool block for provenance jump coverage",
-      },
-    });
-    await waitForExpression(
-      client,
-      `Boolean(document.querySelector('[data-testid="scheduler-stage-card"][data-attached-session-id="${childSession.id}"]'))`,
-    );
-    await clickLast(client, "[data-testid='scheduler-stage-open-child']");
-    await waitForExpression(
-      client,
-      `document.querySelector('[data-testid="session-item"][data-session-id="${childSession.id}"]')?.dataset.active === "true"`,
-    );
-    await waitForExpression(
-      client,
-      "document.querySelectorAll('[data-testid=\"session-breadcrumb\"]').length >= 2",
-    );
-    record("attached-session-jump", "scheduler stage card opened the real attached session and preserved breadcrumbs");
-
-    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"provenance-tool\"]'))");
-    await click(client, "[data-testid='provenance-tool']");
-    await waitForExpression(
-      client,
-      `document.querySelector('[data-testid="session-item"][data-session-id="${activeSessionAfterReload}"]')?.dataset.active === "true"`,
-    );
-    await waitForExpression(
-      client,
-      "document.querySelector('[data-testid=\"message-card\"][data-block-id=\"call_smoke_tool\"]')?.querySelector('[data-active=\"true\"]') !== null",
-    );
-    record("provenance-tool-jump", "attached-session provenance tool link returned to the parent tool block and highlighted it");
-
     await maybeRunProviderSoak(client, record);
 
     console.log("");

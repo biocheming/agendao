@@ -3,13 +3,15 @@
 //! 这些是对 revue 原语的薄封装，目的只在一个：统一 class 命名 +
 //! 让"哪些 class 存在"有单一清单（本文件 + base.css 的 ds-* 规则）。
 
-use revue::prelude::Text;
-use super::color::{Semantic, resolve_color};
+use super::color::{resolve_color, Semantic};
 use super::text::semantic_class;
+use revue::prelude::Text;
 
 /// 带角色色彩的 chip（如工具名标签）。替代裸 Text 拼色。
 pub fn ds_tag(label: impl Into<String>, s: Semantic) -> Text {
-    Text::new(label).class(semantic_class(s)).fg(resolve_color(s))
+    Text::new(label)
+        .class(semantic_class(s))
+        .fg(resolve_color(s))
 }
 
 /// 状态徽章文本（Ok/Warn/Error/Info）。

@@ -1,5 +1,3 @@
-#[cfg(test)]
-use agendao_stage_protocol::{ExecutionNode, ExecutionNodeKind, ExecutionNodeStatus};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,9 +22,8 @@ pub type TopologyChangedCallback = Arc<dyn Fn(&TopologyChangeContext) + Send + S
 pub enum ExecutionKind {
     PromptRun,
     SchedulerRun,
-    SchedulerStage,
+    SchedulerNode,
     ToolCall,
-    AgentTask,
     Question,
 }
 
@@ -50,9 +47,7 @@ pub struct ExecutionRecord {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
-    /// First-class stage identifier. For `SchedulerStage` nodes this equals
-    /// `id`; for child nodes (tool, agent, question, subsession) it points to
-    /// the owning stage.
+    /// Optional grouping identifier for child execution records.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,54 +58,6 @@ pub struct ExecutionRecord {
     pub updated_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
-}
-
-impl ExecutionRecord {
-    /// Project this internal record into a protocol-level [`ExecutionNode`].
-    ///
-    /// The protocol shape is defined in `agendao-command::stage_protocol` so
-    /// that CLI, TUI, and Web can consume it without depending on server internals.
-    #[cfg(test)]
-    pub fn to_node(&self) -> ExecutionNode {
-        ExecutionNode {
-            execution_id: self.id.clone(),
-            parent_execution_id: self.parent_id.clone(),
-            // Prefer first-class field; fall back to metadata for backward compat.
-            stage_id: self.stage_id.clone().or_else(|| {
-                self.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("scheduler_stage_id"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            }),
-            kind: match self.kind {
-                ExecutionKind::SchedulerStage => ExecutionNodeKind::Stage,
-                ExecutionKind::AgentTask => ExecutionNodeKind::Agent,
-                ExecutionKind::ToolCall => ExecutionNodeKind::Tool,
-                ExecutionKind::Question => ExecutionNodeKind::Question,
-                // PromptRun / SchedulerRun are top-level orchestration → Stage
-                ExecutionKind::PromptRun | ExecutionKind::SchedulerRun => ExecutionNodeKind::Stage,
-            },
-            label: self.label.clone(),
-            status: match self.status {
-                ExecutionStatus::Running => ExecutionNodeStatus::Running,
-                ExecutionStatus::Waiting => ExecutionNodeStatus::Waiting,
-                ExecutionStatus::Cancelling => ExecutionNodeStatus::Cancelling,
-                ExecutionStatus::Retry => ExecutionNodeStatus::Retry,
-                ExecutionStatus::Done => ExecutionNodeStatus::Done,
-            },
-            waiting_on: self.waiting_on.clone(),
-            started_at: self.started_at,
-            updated_at: self.updated_at,
-            session_id: self.session_id.clone(),
-            attached_session_id: self
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("attached_session_id"))
-                .and_then(|v| v.as_str())
-                .map(String::from),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +143,7 @@ pub enum SessionRunStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionOptionInfo {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +151,7 @@ pub struct QuestionOptionInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionItemInfo {
     pub question: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,15 +163,10 @@ pub struct QuestionItemInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionInfo {
     pub id: String,
     pub session_id: String,
-    /// Legacy: flat question strings (kept for backward compat).
-    pub questions: Vec<String>,
-    /// Legacy: flat option labels per question (kept for backward compat).
-    pub options: Option<Vec<Vec<String>>>,
-    /// Full-fidelity question items with descriptions, headers, multi-select.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<QuestionItemInfo>,
 }
 
@@ -530,34 +474,27 @@ impl RuntimeControlRegistry {
         self.cleanup_done_executions(session_id).await;
     }
 
-    pub async fn register_scheduler_stage(
-        &self,
-        session_id: &str,
-        execution_id: String,
-        label: String,
-        metadata: serde_json::Value,
-    ) {
-        // A stage's own stage_id equals its execution_id.
-        let stage_id = execution_id.clone();
+    pub async fn register_scheduler_node(&self, session_id: &str, path: &str) {
+        let execution_id = scheduler_node_execution_id(session_id, path);
         self.upsert_execution(ExecutionRecord {
-            id: execution_id.clone(),
+            id: execution_id,
             session_id: session_id.to_string(),
-            kind: ExecutionKind::SchedulerStage,
+            kind: ExecutionKind::SchedulerNode,
             status: ExecutionStatus::Running,
-            label: Some(label),
+            label: Some(path.to_string()),
             parent_id: Some(scheduler_execution_id(session_id)),
-            stage_id: Some(stage_id),
+            stage_id: None,
             waiting_on: Some("model".to_string()),
-            recent_event: Some("Stage started".to_string()),
+            recent_event: Some("Node started".to_string()),
             started_at: now_millis(),
             updated_at: now_millis(),
-            metadata: Some(metadata),
+            metadata: Some(serde_json::json!({ "path": path })),
         })
         .await;
         self.update_execution(
             &scheduler_execution_id(session_id),
             ExecutionPatch {
-                recent_event: FieldUpdate::Set("Scheduler stage started".to_string()),
+                recent_event: FieldUpdate::Set(format!("Node started: {path}")),
                 waiting_on: FieldUpdate::Set("model".to_string()),
                 ..ExecutionPatch::default()
             },
@@ -565,25 +502,19 @@ impl RuntimeControlRegistry {
         .await;
     }
 
-    pub async fn update_scheduler_stage(&self, execution_id: &str, patch: ExecutionPatch) {
-        self.update_execution(execution_id, patch).await;
+    pub async fn update_scheduler_node(&self, session_id: &str, path: &str, patch: ExecutionPatch) {
+        self.update_execution(&scheduler_node_execution_id(session_id, path), patch)
+            .await;
     }
 
-    pub async fn mark_scheduler_stage_cancelling(&self, execution_id: &str) {
-        self.update_execution(
-            execution_id,
-            ExecutionPatch {
-                status: Some(ExecutionStatus::Cancelling),
-                waiting_on: FieldUpdate::Clear,
-                recent_event: FieldUpdate::Set("Cancellation requested".to_string()),
-                ..ExecutionPatch::default()
-            },
-        )
-        .await;
+    pub async fn update_scheduler_run(&self, session_id: &str, patch: ExecutionPatch) {
+        self.update_execution(&scheduler_execution_id(session_id), patch)
+            .await;
     }
 
-    pub async fn finish_scheduler_stage(&self, execution_id: &str) {
-        self.finish_execution(execution_id).await;
+    pub async fn finish_scheduler_node(&self, session_id: &str, path: &str) {
+        self.finish_execution(&scheduler_node_execution_id(session_id, path))
+            .await;
     }
 
     // ── ToolCall lifecycle ──
@@ -649,64 +580,6 @@ impl RuntimeControlRegistry {
         self.finish_execution(&execution_id).await;
     }
 
-    // ── AgentTask lifecycle ──
-
-    pub async fn register_agent_task(
-        &self,
-        task_id: &str,
-        session_id: &str,
-        agent_name: &str,
-        parent_id: Option<String>,
-        stage_id: Option<String>,
-    ) {
-        self.register_agent_task_with_token(
-            task_id, session_id, agent_name, parent_id, stage_id, None,
-        )
-        .await;
-    }
-
-    pub async fn register_agent_task_with_token(
-        &self,
-        task_id: &str,
-        session_id: &str,
-        agent_name: &str,
-        parent_id: Option<String>,
-        stage_id: Option<String>,
-        token: Option<CancellationToken>,
-    ) {
-        let execution_id = Self::agent_task_execution_id(task_id);
-        if let Some(token) = token {
-            self.execution_tokens
-                .lock()
-                .await
-                .insert(execution_id.clone(), token);
-        }
-        self.upsert_execution(ExecutionRecord {
-            id: execution_id,
-            session_id: session_id.to_string(),
-            kind: ExecutionKind::AgentTask,
-            status: ExecutionStatus::Running,
-            label: Some(format!("Agent: {agent_name}")),
-            parent_id,
-            stage_id,
-            waiting_on: Some("model".to_string()),
-            recent_event: Some(format!("{agent_name} started")),
-            started_at: now_millis(),
-            updated_at: now_millis(),
-            metadata: Some(serde_json::json!({
-                "task_id": task_id,
-                "agent_name": agent_name,
-            })),
-        })
-        .await;
-    }
-
-    pub async fn finish_agent_task(&self, task_id: &str) {
-        let execution_id = Self::agent_task_execution_id(task_id);
-        self.execution_tokens.lock().await.remove(&execution_id);
-        self.finish_execution(&execution_id).await;
-    }
-
     // ── Unified cancel dispatch ──
 
     /// Cancel any registered execution by ID. Returns the kind that was
@@ -723,14 +596,13 @@ impl RuntimeControlRegistry {
             ExecutionKind::SchedulerRun => {
                 self.request_scheduler_cancel(&session_id).await;
             }
-            ExecutionKind::SchedulerStage => {
-                self.mark_scheduler_stage_cancelling(execution_id).await;
+            ExecutionKind::SchedulerNode => {
                 self.request_scheduler_cancel(&session_id).await;
             }
             ExecutionKind::Question => {
                 self.reject_question(execution_id).await;
             }
-            ExecutionKind::ToolCall | ExecutionKind::AgentTask => {
+            ExecutionKind::ToolCall => {
                 // Cancel via stored token if available, then mark as cancelling.
                 let token = {
                     let tokens = self.execution_tokens.lock().await;
@@ -765,8 +637,6 @@ impl RuntimeControlRegistry {
         let info = QuestionInfo {
             id: request_id.clone(),
             session_id: session_id.clone(),
-            questions: questions.iter().map(|q| q.question.clone()).collect(),
-            options: normalize_question_options(&questions),
             items: questions
                 .iter()
                 .map(|q| QuestionItemInfo {
@@ -798,7 +668,7 @@ impl RuntimeControlRegistry {
             session_id,
             kind: ExecutionKind::Question,
             status: ExecutionStatus::Waiting,
-            label: Some(format!("Question ({})", info.questions.len())),
+            label: Some(format!("Question ({})", info.items.len())),
             parent_id,
             stage_id,
             waiting_on: Some("user".to_string()),
@@ -1131,10 +1001,9 @@ fn kind_rank(kind: &ExecutionKind) -> u8 {
     match kind {
         ExecutionKind::PromptRun => 0,
         ExecutionKind::SchedulerRun => 1,
-        ExecutionKind::SchedulerStage => 2,
+        ExecutionKind::SchedulerNode => 2,
         ExecutionKind::ToolCall => 3,
-        ExecutionKind::AgentTask => 4,
-        ExecutionKind::Question => 5,
+        ExecutionKind::Question => 4,
     }
 }
 
@@ -1163,31 +1032,13 @@ fn scheduler_execution_id(session_id: &str) -> String {
     format!("scheduler:{session_id}")
 }
 
+fn scheduler_node_execution_id(session_id: &str, path: &str) -> String {
+    format!("scheduler_node:{session_id}:{path}")
+}
+
 impl RuntimeControlRegistry {
     pub fn tool_call_execution_id(tool_call_id: &str) -> String {
         format!("tool_call:{tool_call_id}")
-    }
-
-    pub fn agent_task_execution_id(task_id: &str) -> String {
-        format!("agent_task:{task_id}")
-    }
-
-    /// Count agent tasks under a given stage, returning `(done_count, total_count)`.
-    pub async fn count_stage_agents(&self, stage_id: &str) -> (u32, u32) {
-        let executions = self.executions.read().await;
-        let mut done: u32 = 0;
-        let mut total: u32 = 0;
-        for record in executions.values() {
-            if record.kind == ExecutionKind::AgentTask
-                && record.stage_id.as_deref() == Some(stage_id)
-            {
-                total += 1;
-                if record.status == ExecutionStatus::Done {
-                    done += 1;
-                }
-            }
-        }
-        (done, total)
     }
 
     pub async fn count_active_stage_tools(&self, stage_id: &str) -> u32 {
@@ -1213,23 +1064,6 @@ fn apply_field_update<T>(target: &mut Option<T>, update: FieldUpdate<T>) {
 
 fn now_millis() -> i64 {
     Utc::now().timestamp_millis()
-}
-
-fn normalize_question_options(questions: &[agendao_tool::QuestionDef]) -> Option<Vec<Vec<String>>> {
-    let options: Vec<Vec<String>> = questions
-        .iter()
-        .map(|q| {
-            q.options
-                .iter()
-                .map(|o| o.label.clone())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    if options.iter().all(|entry| entry.is_empty()) {
-        None
-    } else {
-        Some(options)
-    }
 }
 
 fn question_record_to_info(record: &ExecutionRecord) -> Option<QuestionInfo> {
@@ -1318,16 +1152,7 @@ mod tests {
             .register_scheduler_run("ses_1", CancellationToken::new(), Some("Atlas".to_string()))
             .await;
         registry
-            .register_scheduler_stage(
-                "ses_1",
-                "msg_stage_1".to_string(),
-                "Coordination Gate".to_string(),
-                serde_json::json!({
-                    "scheduler_profile": "atlas",
-                    "stage_name": "coordination-gate",
-                    "stage_index": 2
-                }),
-            )
+            .register_scheduler_node("ses_1", "root/coordination-gate")
             .await;
 
         let (question, _) = registry
@@ -1355,12 +1180,12 @@ mod tests {
             .iter()
             .find(|node| matches!(node.kind, ExecutionKind::SchedulerRun))
             .expect("scheduler child");
-        let stage = scheduler
+        let node = scheduler
             .children
             .iter()
-            .find(|node| matches!(node.kind, ExecutionKind::SchedulerStage))
-            .expect("stage child");
-        let question_node = stage
+            .find(|node| matches!(node.kind, ExecutionKind::SchedulerNode))
+            .expect("scheduler node child");
+        let question_node = node
             .children
             .iter()
             .find(|node| node.id == question.id)
@@ -1422,43 +1247,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_task_lifecycle_register_and_finish() {
-        let registry = RuntimeControlRegistry::new();
-        registry
-            .set_session_run_status("ses_1", SessionRunStatus::Busy)
-            .await;
-        registry
-            .register_agent_task(
-                "a1",
-                "ses_1",
-                "planner",
-                Some(prompt_execution_id("ses_1")),
-                None,
-            )
-            .await;
-
-        let records = registry.list_session_execution_records("ses_1").await;
-        let task_record = records
-            .iter()
-            .find(|r| matches!(r.kind, ExecutionKind::AgentTask))
-            .expect("agent task should be registered");
-        assert_eq!(task_record.id, "agent_task:a1");
-        assert!(matches!(task_record.status, ExecutionStatus::Running));
-        assert_eq!(task_record.label.as_deref(), Some("Agent: planner"));
-
-        registry.finish_agent_task("a1").await;
-        let records = registry.list_session_execution_records("ses_1").await;
-        let agent_after = records
-            .iter()
-            .find(|r| matches!(r.kind, ExecutionKind::AgentTask))
-            .expect("agent task should still exist with Done status");
-        assert!(
-            matches!(agent_after.status, ExecutionStatus::Done),
-            "agent task should be Done after finish"
-        );
-    }
-
-    #[tokio::test]
     async fn cancel_execution_dispatches_to_correct_kind() {
         let registry = RuntimeControlRegistry::new();
         let token = CancellationToken::new();
@@ -1495,7 +1283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_call_appears_under_scheduler_stage_in_topology() {
+    async fn tool_call_appears_under_scheduler_node_in_topology() {
         let registry = RuntimeControlRegistry::new();
         registry
             .set_session_run_status("ses_1", SessionRunStatus::Busy)
@@ -1503,155 +1291,24 @@ mod tests {
         registry
             .register_scheduler_run("ses_1", CancellationToken::new(), None)
             .await;
-        let stage_id = "msg_stage_plan".to_string();
+        let node_path = "root/plan";
+        registry.register_scheduler_node("ses_1", node_path).await;
+        let node_id = scheduler_node_execution_id("ses_1", node_path);
         registry
-            .register_scheduler_stage(
-                "ses_1",
-                stage_id.clone(),
-                "Plan".to_string(),
-                serde_json::json!({}),
-            )
-            .await;
-        registry
-            .register_tool_call(
-                "tc_read",
-                "ses_1",
-                "read_file",
-                Some(stage_id.clone()),
-                Some(stage_id.clone()),
-            )
+            .register_tool_call("tc_read", "ses_1", "read_file", Some(node_id), None)
             .await;
 
         let topology = registry.list_session_execution_topology("ses_1").await;
-        assert_eq!(topology.active_count, 4); // prompt + scheduler + stage + tool
+        assert_eq!(topology.active_count, 4); // prompt + scheduler + node + tool
         let prompt = &topology.roots[0];
         let scheduler = &prompt.children[0];
-        let stage = &scheduler.children[0];
-        let tool = stage
+        let node = &scheduler.children[0];
+        let tool = node
             .children
             .iter()
             .find(|n| matches!(n.kind, ExecutionKind::ToolCall))
-            .expect("tool call under stage");
+            .expect("tool call under scheduler node");
         assert_eq!(tool.id, "tool_call:tc_read");
-    }
-
-    #[tokio::test]
-    async fn stage_id_propagates_through_tool_and_agent_registration() {
-        let registry = RuntimeControlRegistry::new();
-        registry
-            .set_session_run_status("ses_1", SessionRunStatus::Busy)
-            .await;
-        registry
-            .register_scheduler_run("ses_1", CancellationToken::new(), None)
-            .await;
-        let stage_id = "stage_verify".to_string();
-        registry
-            .register_scheduler_stage(
-                "ses_1",
-                stage_id.clone(),
-                "Verify".to_string(),
-                serde_json::json!({}),
-            )
-            .await;
-
-        // Register tool and agent with stage_id.
-        registry
-            .register_tool_call(
-                "tc_1",
-                "ses_1",
-                "read_file",
-                Some(stage_id.clone()),
-                Some(stage_id.clone()),
-            )
-            .await;
-        registry
-            .register_agent_task(
-                "at_1",
-                "ses_1",
-                "planner",
-                Some(stage_id.clone()),
-                Some(stage_id.clone()),
-            )
-            .await;
-
-        let records = registry.list_session_execution_records("ses_1").await;
-
-        // Stage itself has stage_id = its own id.
-        let stage_record = records
-            .iter()
-            .find(|r| r.id == "stage_verify")
-            .expect("stage record");
-        assert_eq!(stage_record.stage_id.as_deref(), Some("stage_verify"));
-
-        // Tool call carries stage_id.
-        let tool_record = records
-            .iter()
-            .find(|r| matches!(r.kind, ExecutionKind::ToolCall))
-            .expect("tool record");
-        assert_eq!(tool_record.stage_id.as_deref(), Some("stage_verify"));
-
-        // Agent task carries stage_id.
-        let agent_record = records
-            .iter()
-            .find(|r| matches!(r.kind, ExecutionKind::AgentTask))
-            .expect("agent record");
-        assert_eq!(agent_record.stage_id.as_deref(), Some("stage_verify"));
-
-        // Topology nodes carry stage_id.
-        let topology = registry.list_session_execution_topology("ses_1").await;
-        let prompt = &topology.roots[0];
-        let scheduler = &prompt.children[0];
-        let stage_node = &scheduler.children[0];
-        assert_eq!(stage_node.stage_id.as_deref(), Some("stage_verify"));
-        let tool_node = stage_node
-            .children
-            .iter()
-            .find(|n| matches!(n.kind, ExecutionKind::ToolCall))
-            .expect("tool node");
-        assert_eq!(tool_node.stage_id.as_deref(), Some("stage_verify"));
-    }
-
-    #[tokio::test]
-    async fn question_inherits_stage_id_from_parent() {
-        let registry = RuntimeControlRegistry::new();
-        registry
-            .set_session_run_status("ses_1", SessionRunStatus::Busy)
-            .await;
-        registry
-            .register_scheduler_run("ses_1", CancellationToken::new(), None)
-            .await;
-        let stage_id = "stage_gate".to_string();
-        registry
-            .register_scheduler_stage(
-                "ses_1",
-                stage_id.clone(),
-                "Gate".to_string(),
-                serde_json::json!({}),
-            )
-            .await;
-
-        let (question, _rx) = registry
-            .register_question(
-                "ses_1".to_string(),
-                vec![agendao_tool::QuestionDef {
-                    question: "Approve?".to_string(),
-                    header: None,
-                    options: vec![],
-                    multiple: false,
-                }],
-            )
-            .await;
-
-        let records = registry.list_session_execution_records("ses_1").await;
-        let q_record = records
-            .iter()
-            .find(|r| r.id == question.id)
-            .expect("question record");
-        assert_eq!(
-            q_record.stage_id.as_deref(),
-            Some("stage_gate"),
-            "question should inherit stage_id from its parent stage"
-        );
     }
 
     #[tokio::test]
@@ -1677,22 +1334,10 @@ mod tests {
         registry
             .set_session_run_status("ses_1", SessionRunStatus::Busy)
             .await;
+        registry.register_scheduler_node("ses_1", "root/test").await;
+        let node_id = scheduler_node_execution_id("ses_1", "root/test");
         registry
-            .register_scheduler_stage(
-                "ses_1",
-                "stage_x".to_string(),
-                "Test".to_string(),
-                serde_json::json!({}),
-            )
-            .await;
-        registry
-            .register_tool_call(
-                "tc_1",
-                "ses_1",
-                "bash",
-                Some("stage_x".to_string()),
-                Some("stage_x".to_string()),
-            )
+            .register_tool_call("tc_1", "ses_1", "bash", Some(node_id.clone()), None)
             .await;
 
         let captured = events.lock().unwrap();
@@ -1702,14 +1347,14 @@ mod tests {
             .find(|(_, eid, _)| eid == "tool_call:tc_1")
             .expect("should have captured tool call event");
         assert_eq!(tool_event.0, "ses_1");
-        assert_eq!(tool_event.2, Some("stage_x".to_string()));
+        assert_eq!(tool_event.2, None);
 
-        // Find the stage event.
-        let stage_event = captured
+        // Find the scheduler node event.
+        let node_event = captured
             .iter()
-            .find(|(_, eid, _)| eid == "stage_x")
-            .expect("should have captured stage event");
-        assert_eq!(stage_event.2, Some("stage_x".to_string()));
+            .find(|(_, eid, _)| eid == &node_id)
+            .expect("should have captured scheduler node event");
+        assert_eq!(node_event.2, None);
     }
 
     #[tokio::test]
@@ -1739,35 +1384,6 @@ mod tests {
         // finish cleans up token
         registry.finish_tool_call("tc_1").await;
         assert!(!registry.has_cancellation_token("tool_call:tc_1").await);
-    }
-
-    #[tokio::test]
-    async fn cancel_agent_task_triggers_cancellation_token() {
-        let registry = RuntimeControlRegistry::new();
-        let token = CancellationToken::new();
-        registry
-            .set_session_run_status("ses_1", SessionRunStatus::Busy)
-            .await;
-        registry
-            .register_agent_task_with_token(
-                "at_1",
-                "ses_1",
-                "planner",
-                None,
-                None,
-                Some(token.clone()),
-            )
-            .await;
-        assert!(!token.is_cancelled());
-        assert!(registry.has_cancellation_token("agent_task:at_1").await);
-
-        let kind = registry.cancel_execution("agent_task:at_1").await;
-        assert_eq!(kind, Some(ExecutionKind::AgentTask));
-        assert!(token.is_cancelled(), "token should be cancelled");
-
-        // finish cleans up token
-        registry.finish_agent_task("at_1").await;
-        assert!(!registry.has_cancellation_token("agent_task:at_1").await);
     }
 
     #[tokio::test]
@@ -1807,108 +1423,5 @@ mod tests {
 
         let ids = registry.list_active_session_ids().await;
         assert_eq!(ids, vec!["ses_1".to_string(), "ses_2".to_string()]);
-    }
-
-    #[test]
-    fn execution_record_to_node_projects_correctly() {
-        let record = ExecutionRecord {
-            id: "exec_123".to_string(),
-            session_id: "sess_abc".to_string(),
-            kind: ExecutionKind::AgentTask,
-            status: ExecutionStatus::Running,
-            label: Some("planner".to_string()),
-            parent_id: Some("exec_000".to_string()),
-            stage_id: Some("stage_xyz".to_string()),
-            waiting_on: None,
-            recent_event: Some("tool_call".to_string()),
-            started_at: 1710000000000,
-            updated_at: 1710000001000,
-            metadata: Some(serde_json::json!({
-                "scheduler_stage_id": "stage_xyz",
-                "attached_session_id": "child_001"
-            })),
-        };
-
-        let node = record.to_node();
-        assert_eq!(node.execution_id, "exec_123");
-        assert_eq!(node.parent_execution_id, Some("exec_000".to_string()));
-        assert_eq!(node.stage_id, Some("stage_xyz".to_string()));
-        assert_eq!(node.kind, ExecutionNodeKind::Agent);
-        assert_eq!(node.status, ExecutionNodeStatus::Running);
-        assert_eq!(node.label, Some("planner".to_string()));
-        assert_eq!(node.session_id, "sess_abc");
-        assert_eq!(node.attached_session_id, Some("child_001".to_string()));
-        assert_eq!(node.started_at, 1710000000000);
-        assert_eq!(node.updated_at, 1710000001000);
-    }
-
-    #[test]
-    fn execution_record_to_node_handles_missing_metadata() {
-        let record = ExecutionRecord {
-            id: "exec_456".to_string(),
-            session_id: "sess_def".to_string(),
-            kind: ExecutionKind::ToolCall,
-            status: ExecutionStatus::Waiting,
-            label: None,
-            parent_id: None,
-            stage_id: None,
-            waiting_on: Some("user_approval".to_string()),
-            recent_event: None,
-            started_at: 1710000000000,
-            updated_at: 1710000000500,
-            metadata: None,
-        };
-
-        let node = record.to_node();
-        assert_eq!(node.execution_id, "exec_456");
-        assert_eq!(node.parent_execution_id, None);
-        assert_eq!(node.stage_id, None);
-        assert_eq!(node.kind, ExecutionNodeKind::Tool);
-        assert_eq!(node.status, ExecutionNodeStatus::Waiting);
-        assert_eq!(node.waiting_on, Some("user_approval".to_string()));
-        assert_eq!(node.attached_session_id, None);
-    }
-
-    #[test]
-    fn execution_record_to_node_maps_all_kinds() {
-        let make_record = |kind: ExecutionKind| ExecutionRecord {
-            id: "e".to_string(),
-            session_id: "s".to_string(),
-            kind,
-            status: ExecutionStatus::Running,
-            label: None,
-            parent_id: None,
-            stage_id: None,
-            waiting_on: None,
-            recent_event: None,
-            started_at: 0,
-            updated_at: 0,
-            metadata: None,
-        };
-
-        assert_eq!(
-            make_record(ExecutionKind::PromptRun).to_node().kind,
-            ExecutionNodeKind::Stage
-        );
-        assert_eq!(
-            make_record(ExecutionKind::SchedulerRun).to_node().kind,
-            ExecutionNodeKind::Stage
-        );
-        assert_eq!(
-            make_record(ExecutionKind::SchedulerStage).to_node().kind,
-            ExecutionNodeKind::Stage
-        );
-        assert_eq!(
-            make_record(ExecutionKind::AgentTask).to_node().kind,
-            ExecutionNodeKind::Agent
-        );
-        assert_eq!(
-            make_record(ExecutionKind::ToolCall).to_node().kind,
-            ExecutionNodeKind::Tool
-        );
-        assert_eq!(
-            make_record(ExecutionKind::Question).to_node().kind,
-            ExecutionNodeKind::Question
-        );
     }
 }

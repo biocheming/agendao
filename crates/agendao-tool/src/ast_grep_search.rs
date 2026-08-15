@@ -28,7 +28,7 @@ Phase 1 supports Rust syntax only. Use this tool when plain text grep is not pre
 This tool is read-only. It does not modify files."#;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AstGrepSearchInput {
     pattern: String,
     language: AstGrepLanguage,
@@ -36,9 +36,9 @@ struct AstGrepSearchInput {
     path: Option<String>,
     #[serde(default)]
     glob: Option<String>,
-    #[serde(default = "default_max_results", alias = "max_results")]
+    #[serde(default = "default_max_results")]
     max_results: usize,
-    #[serde(default, alias = "context_lines")]
+    #[serde(default)]
     context_lines: usize,
 }
 
@@ -123,13 +123,6 @@ impl Tool for AstGrepSearchTool {
                     "default": 100,
                     "description": "Maximum number of matches to return"
                 },
-                "max_results": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500,
-                    "default": 100,
-                    "description": "Maximum number of matches to return (snake_case alias)"
-                },
                 "contextLines": {
                     "type": "integer",
                     "minimum": 0,
@@ -137,13 +130,6 @@ impl Tool for AstGrepSearchTool {
                     "default": 0,
                     "description": "Surrounding context lines to include per match"
                 },
-                "context_lines": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 20,
-                    "default": 0,
-                    "description": "Surrounding context lines to include per match (snake_case alias)"
-                }
             },
             "required": ["pattern", "language"]
         })
@@ -402,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_exposes_rust_only_phase_one_language_and_aliases() {
+    fn schema_exposes_rust_only_phase_one_language() {
         let tool = AstGrepSearchTool::new();
         let schema = tool.parameters();
         let language_enum = schema["properties"]["language"]["enum"]
@@ -412,9 +398,7 @@ mod tests {
         assert_eq!(language_enum.len(), 1);
         assert!(language_enum.iter().any(|v| v == "rust"));
         assert!(schema["properties"].get("maxResults").is_some());
-        assert!(schema["properties"].get("max_results").is_some());
         assert!(schema["properties"].get("contextLines").is_some());
-        assert!(schema["properties"].get("context_lines").is_some());
     }
 
     #[test]

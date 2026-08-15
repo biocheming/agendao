@@ -22,9 +22,7 @@ import {
   ASSISTANT_REASONING_MAIN_PART_KEY,
   ASSISTANT_TEXT_MAIN_PART_KEY,
 } from "../src/lib/liveIdentity";
-import { sanitizeAssistantDisplayText } from "../src/lib/blockPresentation";
 import { buildRunTailSummary } from "../src/lib/runTailSummary";
-import { stageSummaryText } from "../src/lib/stagePresentation";
 import { toolActivityLabel, toolKindLabel } from "../src/lib/toolLabels";
 import { registerObservationSink, type ObservationEvent, type ObservationSink } from "../src/lib/observationEvents";
 
@@ -60,14 +58,6 @@ type LiveFixture = {
       tool_detail: string;
     };
   };
-  scheduler_stage_exclusion: {
-    message_id: string;
-    stage_id: string;
-    stage: string;
-    title: string;
-    text: string;
-    status: string;
-  };
   run_tail_contract: {
     completed_status: string;
     completed_usage: {
@@ -99,7 +89,6 @@ function toolBlock(overrides: Partial<OutputBlock> = {}): OutputBlock {
       part_key: `tool_result/tool-call-1`,
       part_kind: "tool_result",
       phase: "snapshot",
-      legacy_block_id: "tool-call-1",
     },
     title: "SkillsList",
     text: '{"category":"literature-research/skills"}',
@@ -117,7 +106,6 @@ function toolBlockWithoutStableToolId(overrides: Partial<OutputBlock> = {}): Out
       part_key: "tool_result",
       part_kind: "tool_result",
       phase: "snapshot",
-      legacy_block_id: null,
     },
     title: "SkillsList",
     text: '{"category":"literature-research/skills"}',
@@ -137,7 +125,6 @@ function assistantMessageBlock(messageId: string, text: string, overrides: Parti
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
-      legacy_block_id: messageId,
     },
     ...overrides,
   };
@@ -156,7 +143,6 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
       part_key: `tool_result/${toolId}`,
       part_kind: "tool_result",
       phase: "end",
-      legacy_block_id: toolId,
     },
     ...overrides,
   };
@@ -175,7 +161,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: `tool_call/${toolId}`,
       part_kind: "tool_call",
       phase: "append",
-      legacy_block_id: toolId,
     },
     ...overrides,
   };
@@ -386,7 +371,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/tool-call-0`,
         part_kind: "tool_result",
         phase: "end",
-        legacy_block_id: "tool-call-0",
       },
     },
     true,
@@ -403,7 +387,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/tool-call-0`,
         part_kind: "tool_result",
         phase: "end",
-        legacy_block_id: "tool-call-0",
       },
     },
     true,
@@ -424,8 +407,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     toolBlock({
       id: undefined,
       text: '{"category":"raw-json"}',
-      detail: "compatibility detail",
-      preview: "compatibility preview",
+      detail: "secondary detail",
+      preview: "secondary preview",
       display: {
         summary: "11 skills in literature-research/skills",
         fields: [
@@ -444,7 +427,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   assert.equal(
     contractText,
     "11 skills in literature-research/skills",
-    "tool transcript text should prefer shared display summary over raw compatibility payloads",
+    "tool transcript text should prefer the display summary over secondary payloads",
   );
 }
 
@@ -470,17 +453,17 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 }
 
 {
-  const compatibilityText = primaryDisplayText({
+  const secondaryText = primaryDisplayText({
     kind: "tool",
     phase: "full",
     role: "assistant",
-    detail: "compatibility detail fallback",
+    detail: "secondary detail",
   });
 
   assert.equal(
-    compatibilityText,
-    "compatibility detail fallback",
-    "compatibility tool detail should remain available when no display contract exists",
+    secondaryText,
+    "secondary detail",
+    "tool detail should remain available when no display contract exists",
   );
 }
 
@@ -511,7 +494,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
-      legacy_block_id: "assistant-1",
     },
   };
 
@@ -559,190 +541,52 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
 {
   resetLiveTranscriptFeedSequence();
-  const compatibilityWeirdMessagePhase: OutputBlock = {
+  const identitylessMessage: OutputBlock = {
     kind: "message",
-    phase: "weird_phase",
-    role: "assistant",
-    text: "should not insert",
-  };
-
-  const visible = applyOutputBlock([], compatibilityWeirdMessagePhase, true);
-  assert.equal(
-    visible.length,
-    0,
-    "compatibility message with unknown phase must not fall back to presentation insert",
-  );
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  let visible = applyOutputBlock(
-    [],
-    {
-      kind: "message",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-msg-1",
-      text: "这",
-    },
-    true,
-  );
-  visible = applyOutputBlock(
-    visible,
-    {
-      kind: "message",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-msg-1",
-      text: "是一段",
-    },
-    true,
-  );
-  visible = applyOutputBlock(
-    visible,
-    {
-      kind: "message",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-msg-1",
-      text: "完整回复",
-    },
-    true,
-  );
-
-  assert.equal(visible.length, 1, "compatibility message deltas must accumulate into one visible block");
-  assert.equal(visible[0]?.id, "compat-msg-1");
-  assert.equal(visible[0]?.text, "这是一段完整回复");
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  let visible = applyOutputBlock(
-    [],
-    {
-      kind: "reasoning",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-think-1",
-      text: "先",
-    },
-    true,
-  );
-  visible = applyOutputBlock(
-    visible,
-    {
-      kind: "reasoning",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-think-1",
-      text: "检索",
-    },
-    true,
-  );
-  visible = applyOutputBlock(
-    visible,
-    {
-      kind: "reasoning",
-      phase: "delta",
-      role: "assistant",
-      id: "compat-think-1",
-      text: "再归纳",
-    },
-    true,
-  );
-
-  assert.equal(visible.length, 1, "compatibility reasoning deltas must accumulate into one visible block");
-  assert.equal(visible[0]?.kind, "reasoning");
-  assert.equal(visible[0]?.id, "compat-think-1");
-  assert.equal(visible[0]?.text, "先检索再归纳");
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  const unknownBlock: OutputBlock = {
-    kind: "mystery_block",
     phase: "full",
-    text: "should not insert",
+    role: "assistant",
+    id: "raw-message-id",
+    text: "must not enter the transcript",
   };
 
-  const visible = applyOutputBlock([], unknownBlock, true);
+  const visible = applyOutputBlock([], identitylessMessage, true);
   assert.equal(
     visible.length,
     0,
-    "unknown block kinds must not enter authoritative transcript feed through generic compatibility presentation fallback",
+    "typed live messages without canonical identity must fail closed",
+  );
+  assert.equal(
+    appendLiveBlock([], identitylessMessage).length,
+    0,
+    "identityless messages must not enter the retained live cache",
   );
 }
 
 {
   resetLiveTranscriptFeedSequence();
-  let visible = applyOutputBlock(
-    [],
-    {
-      kind: "tool",
-      phase: "running",
-      role: "assistant",
-      id: "compat-tool-a",
-      title: "Bash",
-      detail: '{"command":"echo a"}',
-    },
-    true,
-  );
-  visible = applyOutputBlock(
-    visible,
+  const identitylessBlocks: OutputBlock[] = [
+    { kind: "reasoning", phase: "full", id: "raw-reasoning-id", text: "hidden" },
     {
       kind: "tool",
       phase: "done",
-      role: "assistant",
-      id: "compat-tool-a",
-      title: "Bash",
-      detail: "result a",
+      id: "raw-tool-id",
+      tool_call_id: "raw-tool-call-id",
+      detail: "hidden",
     },
-    true,
-  );
-
-  assert.equal(visible.length, 2, "compatibility tool running/result must be separate visible blocks");
-  assert.deepEqual(
-    visible.map((message) => `${message.phase}:${message.id}:${message.text}`),
-    [
-      'running:compat-tool-a:{"command":"echo a"}',
-      "done:compat-tool-a:result a",
-    ],
-  );
-}
-
-{
-  let liveBlocks: OutputBlock[] = [];
-  liveBlocks = appendLiveBlock(
-    liveBlocks,
-    {
-      kind: "tool",
-      phase: "running",
-      role: "assistant",
-      id: "compat-tool-a",
-      title: "Bash",
-      detail: '{"command":"echo a"}',
-    },
-  );
-  liveBlocks = appendLiveBlock(
-    liveBlocks,
-    {
-      kind: "tool",
-      phase: "running",
-      role: "assistant",
-      id: "compat-tool-b",
-      title: "Bash",
-      detail: '{"command":"echo b"}',
-    },
-  );
-
-  assert.equal(liveBlocks.length, 2, "different compatibility tool ids must retain distinct live cache slots");
-  assert.deepEqual(
-    liveBlocks.map((block) => `${block.id}:${primaryDisplayText(block)}`),
-    [
-      'compat-tool-a:{"command":"echo a"}',
-      'compat-tool-b:{"command":"echo b"}',
-    ],
-  );
+    { kind: "mystery_block", phase: "full", id: "raw-unknown-id", text: "hidden" },
+  ];
+  for (const block of identitylessBlocks) {
+    assert.equal(
+      applyOutputBlock([], block, true).length,
+      0,
+      `${block.kind} without canonical identity must remain outside the transcript`,
+    );
+    assert.equal(
+      appendLiveBlock([], block).length,
+      0,
+      `${block.kind} without canonical identity must remain outside the live cache`,
+    );
+  }
 }
 
 // Phase W1: session_event must not enter the conversation feed.
@@ -753,8 +597,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     {
       kind: "session_event",
       id: "evt-1",
-      event: "subtask",
-      title: "Subtask · inspect scheduler",
+      event: "scheduler_node",
+      title: "Scheduler node: inspect",
       status: "pending",
       body: "delegated",
     },
@@ -796,7 +640,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     shouldQueueLiveTranscriptBlock({
       kind: "session_event",
       id: "evt-2",
-      event: "subtask",
+      event: "scheduler_node",
       title: "Queued event",
     }),
     false,
@@ -825,7 +669,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "start",
-      legacy_block_id: "assistant-1",
     },
   };
   const emptyFull: OutputBlock = {
@@ -838,7 +681,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
-      legacy_block_id: "assistant-1",
     },
   };
 
@@ -885,7 +727,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
       part_kind: "assistant_reasoning",
       phase: "start",
-      legacy_block_id: "assistant-1",
     },
   };
   const emptyReasoningFull: OutputBlock = {
@@ -898,7 +739,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
       part_kind: "assistant_reasoning",
       phase: "snapshot",
-      legacy_block_id: "assistant-1",
     },
   };
 
@@ -986,7 +826,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/tool-call-9`,
         part_kind: "tool_result",
         phase: "snapshot",
-        legacy_block_id: "tool-call-9",
       },
     },
   );
@@ -1002,7 +841,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/tool-call-9`,
         part_kind: "tool_result",
         phase: "snapshot",
-        legacy_block_id: "tool-call-9",
       },
     },
   );
@@ -1031,6 +869,12 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
             id: "tool-call-0",
             tool_call_id: "tool-call-0",
             detail: "result a",
+            live_identity: {
+              message_id: "tool-message-1",
+              part_key: "tool_result/tool-call-0",
+              part_kind: "tool_result",
+              phase: "end",
+            },
           },
         },
       ],
@@ -1048,18 +892,24 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
             id: "tool-call-0",
             tool_call_id: "tool-call-0",
             detail: "result b",
+            live_identity: {
+              message_id: "tool-message-2",
+              part_key: "tool_result/tool-call-0",
+              part_kind: "tool_result",
+              phase: "end",
+            },
           },
         },
       ],
     },
   ] as MessageRecord[], true);
 
-  assert.equal(history.length, 2, "history tool results with reused raw call_id must stay distinct");
+  assert.equal(history.length, 2, "canonical history tool slots must remain distinct");
   assert.deepEqual(
     history.map((message) => `${message.id}:${message.tool_call_id}:${message.text}`),
     [
-      "tool-message-1:part-1:tool:tool-call-0:result a",
-      "tool-message-2:part-2:tool:tool-call-0:result b",
+      "tool-call-0:tool-call-0:result a",
+      "tool-call-0:tool-call-0:result b",
     ],
   );
 }
@@ -1075,7 +925,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "start",
-      legacy_block_id: "assistant-1",
     },
   };
   const emptyAssistantDelta: OutputBlock = {
@@ -1088,7 +937,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "append",
-      legacy_block_id: "assistant-1",
     },
   };
 
@@ -1314,7 +1162,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
         part_kind: "assistant_text",
         phase: "snapshot",
-        legacy_block_id: "assistant-1",
       },
       id: "assistant-1",
     },
@@ -1346,7 +1193,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
             part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
             part_kind: "assistant_reasoning",
             phase: "snapshot",
-            legacy_block_id: "assistant-1",
           },
           id: "assistant-1",
         },
@@ -1365,7 +1211,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
-        legacy_block_id: "assistant-1",
       },
       id: "assistant-1",
     },
@@ -1379,7 +1224,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `reasoning/branch-a`,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
-        legacy_block_id: "assistant-1",
       },
       id: "assistant-1",
     },
@@ -1397,133 +1241,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   );
 }
 
-{
-  const schedulerProgress: OutputBlock = {
-    kind: "scheduler_stage",
-    role: "assistant",
-    phase: "full",
-    id: fixture.scheduler_stage_exclusion.stage_id,
-    stage_id: fixture.scheduler_stage_exclusion.stage_id,
-    stage: fixture.scheduler_stage_exclusion.stage,
-    status: fixture.scheduler_stage_exclusion.status,
-    text: fixture.scheduler_stage_exclusion.text,
-  };
-
-  assert.equal(
-    shouldQueueLiveTranscriptBlock(schedulerProgress),
-    false,
-    "scheduler progress without transcript identity should stay out of visible transcript feed",
-  );
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  const schedulerProgressWithIdentity: OutputBlock = {
-    kind: "scheduler_stage",
-    role: "assistant",
-    phase: "full",
-    stage_id: fixture.scheduler_stage_exclusion.stage_id,
-    stage: fixture.scheduler_stage_exclusion.stage,
-    status: fixture.scheduler_stage_exclusion.status,
-    text: fixture.scheduler_stage_exclusion.text,
-    live_identity: {
-      message_id: fixture.scheduler_stage_exclusion.message_id,
-      part_key: `scheduler/${fixture.scheduler_stage_exclusion.stage_id}`,
-      part_kind: "scheduler_stage",
-      phase: "snapshot",
-      legacy_block_id: null,
-    },
-  };
-
-  const visible = applyOutputBlock([], schedulerProgressWithIdentity, true);
-  assert.equal(
-    visible.length,
-    0,
-    "scheduler stage with live identity must still stay out of transcript feed",
-  );
-}
-
-{
-  const schedulerProgressWithIdentity: OutputBlock = {
-    kind: "scheduler_stage",
-    role: "assistant",
-    phase: "full",
-    stage_id: fixture.scheduler_stage_exclusion.stage_id,
-    stage: fixture.scheduler_stage_exclusion.stage,
-    status: fixture.scheduler_stage_exclusion.status,
-    text: fixture.scheduler_stage_exclusion.text,
-    live_identity: {
-      message_id: fixture.scheduler_stage_exclusion.message_id,
-      part_key: `scheduler/${fixture.scheduler_stage_exclusion.stage_id}`,
-      part_kind: "scheduler_stage",
-      phase: "snapshot",
-      legacy_block_id: null,
-    },
-  };
-
-  const retained = appendLiveBlock([], schedulerProgressWithIdentity);
-  assert.equal(
-    retained.length,
-    0,
-    "scheduler stage with live identity must not enter retained live transcript cache",
-  );
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  const schedulerProgressWithIdentity: OutputBlock = {
-    kind: "scheduler_stage",
-    role: "assistant",
-    phase: "full",
-    stage_id: fixture.scheduler_stage_exclusion.stage_id,
-    stage: fixture.scheduler_stage_exclusion.stage,
-    status: fixture.scheduler_stage_exclusion.status,
-    text: fixture.scheduler_stage_exclusion.text,
-    live_identity: {
-      message_id: fixture.scheduler_stage_exclusion.message_id,
-      part_key: `scheduler/${fixture.scheduler_stage_exclusion.stage_id}`,
-      part_kind: "scheduler_stage",
-      phase: "snapshot",
-      legacy_block_id: null,
-    },
-  };
-
-  let visible = applyOutputBlock([], schedulerProgressWithIdentity, true);
-  visible = applyOutputBlock(visible, toolBlock({ id: undefined, text: '{"category":"mixed"}' }), true);
-
-  assert.equal(
-    visible.length,
-    1,
-    "non-transcript scheduler progress must not occupy transcript feed slots in mixed turns",
-  );
-  assert.equal(visible[0]?.kind, "tool");
-  assert.equal(visible[0]?.text, '{"category":"mixed"}');
-}
-
-{
-  resetLiveTranscriptFeedSequence();
-  const history: MessageRecord[] = [
-    {
-      id: fixture.scheduler_stage_exclusion.message_id,
-      role: "assistant",
-      metadata: {
-        scheduler_stage: fixture.scheduler_stage_exclusion.stage,
-        scheduler_stage_id: fixture.scheduler_stage_exclusion.stage_id,
-        scheduler_stage_status: fixture.scheduler_stage_exclusion.status,
-        scheduler_stage_index: 1,
-        scheduler_stage_total: 3,
-      },
-      parts: [{ id: "part-1", type: "text", text: fixture.scheduler_stage_exclusion.text }],
-    },
-  ];
-
-  const rebuilt = mergeHistoryWithLiveBlocks(history, [], true);
-  assert.equal(
-    rebuilt.filter((message) => message.kind === "scheduler_stage").length,
-    0,
-    "history rebuild must not materialize scheduler stage into authoritative transcript feed",
-  );
-}
 
 // ── Web Phase 1 regression: End finalize + streaming text contracts ─────
 
@@ -1582,7 +1299,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
-        legacy_block_id: messageId,
       },
       ...overrides,
     };
@@ -1660,7 +1376,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
       part_kind: "assistant_reasoning",
       phase: phase === "start" ? "start" : phase === "end" ? "end" : "snapshot",
-      legacy_block_id: "msg-snapshot-1",
     },
   });
 
@@ -1720,7 +1435,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: partKey,
         part_kind: "assistant_reasoning" as const,
         phase: "snapshot" as const,
-        legacy_block_id: messageId,
       },
     };
   }
@@ -1776,7 +1490,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: partKey,
         part_kind: "assistant_reasoning" as const,
         phase: "snapshot" as const,
-        legacy_block_id: messageId,
       },
     };
   }
@@ -1823,7 +1536,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: partKey,
         part_kind: "assistant_reasoning" as const,
         phase: "snapshot" as const,
-        legacy_block_id: messageId,
       },
     };
   }
@@ -1994,7 +1706,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
-        legacy_block_id: "msg-order-1",
       },
     },
     true,
@@ -2008,7 +1719,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_call/tool-order-1`,
         part_kind: "tool_call",
         phase: "append",
-        legacy_block_id: "tool-order-1",
       },
     }),
     true,
@@ -2099,7 +1809,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/${toolId}`,
         part_kind: "tool_result" as const,
         phase: "snapshot" as const,
-        legacy_block_id: toolId,
       },
     };
   }
@@ -2133,7 +1842,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_call/${toolId}`,
         part_kind: "tool_call" as const,
         phase: "snapshot" as const,
-        legacy_block_id: toolId,
       },
     };
   }
@@ -2149,7 +1857,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/${toolId}`,
         part_kind: "tool_result" as const,
         phase: "end" as const,
-        legacy_block_id: toolId,
       },
     };
   }
@@ -2189,7 +1896,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
             part_key: "tool_result/call-a",
             part_kind: "tool_result" as const,
             phase: "end" as const,
-            legacy_block_id: "call-a",
           },
         },
       },
@@ -2207,7 +1913,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/call-b`,
         part_kind: "tool_result" as const,
         phase: "snapshot" as const,
-        legacy_block_id: "call-b",
       },
     },
   ];
@@ -2236,6 +1941,12 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
           phase: "running",
           text: "history-running",
           tool_call_id: "call-a",
+          live_identity: {
+            message_id: "msg-1",
+            part_key: "tool_call/call-a",
+            part_kind: "tool_call",
+            phase: "append",
+          },
         },
       },
       {
@@ -2246,6 +1957,12 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
           phase: "done",
           text: "history-result",
           tool_call_id: "call-a",
+          live_identity: {
+            message_id: "msg-1",
+            part_key: "tool_result/call-a",
+            part_kind: "tool_result",
+            phase: "end",
+          },
         },
       },
     ],
@@ -2253,9 +1970,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   const rebuilt = buildFeedFromHistory(history, true);
   const toolMsgs = rebuilt.filter((message) => message.kind === "tool");
-  assert.equal(toolMsgs.length, 2, "history rebuild should keep both tool entries");
-  assert.equal(toolMsgs[0]?.metadata?.agendao_web_history_part_kind, "tool_call");
-  assert.equal(toolMsgs[1]?.metadata?.agendao_web_history_part_kind, "tool_result");
+  assert.equal(toolMsgs.length, 1, "history rebuild should keep the transcript-bearing tool result");
+  assert.equal(toolMsgs[0]?.live_identity?.part_kind, "tool_result");
 }
 
 // W4-T4: prune at tool level — history covering one tool call must
@@ -2276,7 +1992,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
           part_key: "tool_result/call-a",
           part_kind: "tool_result" as const,
           phase: "end" as const,
-          legacy_block_id: "call-a",
         },
       },
     }],
@@ -2292,7 +2007,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: "tool_call/call-b",
         part_kind: "tool_call" as const,
         phase: "snapshot" as const,
-        legacy_block_id: "call-b",
       },
     },
   ];
@@ -2304,43 +2018,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     "history covering call-a must not prune call-b's live block",
   );
   assert.equal(pruned[0]?.text, "running-b");
-}
-
-// ── P2-3: Fixture tests for centralized block display contracts ──────
-
-// P2-3-Fixture-1: assistant text with trailing JSON that is NOT an envelope
-// (e.g. in markdown code block). sanitizeAssistantDisplayText must preserve it.
-{
-  const text = "这是回复文本\n```json\n{\"key\":\"value\"}\n```";
-  const cleaned = sanitizeAssistantDisplayText(text, "message", "assistant");
-  assert.equal(
-    cleaned,
-    text,
-    "assistant text with markdown-fenced JSON must not be stripped (not an envelope)",
-  );
-}
-
-// P2-3-Fixture-2: assistant text ending with a real compatibility structured
-// envelope. sanitizeAssistantDisplayText must strip the trailing JSON.
-{
-  const prefix = "这是回复文本";
-  // keys chosen from ENVELOPE_GUESS_KEYS to trigger isCompatibilityStructuredEnvelope
-  const envelope = JSON.stringify({
-    kind: "choices",
-    choices: [{ text: "candidate" }],
-    usage: { input: 100, output: 50 },
-  }, null, 2);
-  const text = `${prefix}\n\n${envelope}`;
-  const cleaned = sanitizeAssistantDisplayText(text, "message", "assistant");
-  assert.equal(
-    cleaned,
-    prefix,
-    "assistant text with trailing structured envelope must be stripped of trailing JSON",
-  );
-  assert.ok(
-    !cleaned.includes("choices"),
-    "cleaned text must not contain envelope keys",
-  );
 }
 
 // P2-3-Fixture-3: tool block with new display contract (display.summary present).
@@ -2383,23 +2060,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   );
 }
 
-// P2-3-Fixture-5: scheduler_stage with focus, last_event, and text all present.
-// stageSummaryText must prefer focus over lastEventLabel over raw text.
-{
-  const block = {
-    kind: "scheduler_stage" as const,
-    focus: "Researching protein structures",
-    last_event: "scheduler.stage.waiting",
-    text: "Stage is waiting for tool result",
-    status: "running",
-  };
-  const summary = stageSummaryText(block as SchedulerStageOutputBlock);
-  assert.equal(
-    summary,
-    "Researching protein structures",
-    "stageSummaryText must prefer focus field over last_event and raw text",
-  );
-}
 
 // P2-3-Fixture-6: status block with title, text, and summary all present.
 // primaryDisplayText must use STATUS_CHAIN priority.
@@ -2417,43 +2077,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     text,
     "Status text content",
     "status block must prefer text over title/summary per STATUS_CHAIN",
-  );
-}
-
-// P2-3-Fixture-7: reasoning text must NOT go through assistant cleaning,
-// even when role="assistant". The kind parameter is the primary boundary
-// guard — only kind="message" triggers envelope stripping.
-{
-  const prefix = "推理过程分析";
-  const envelope = JSON.stringify({
-    choices: [{ kind: "candidate", text: "output" }],
-    usage: { input: 50, output: 20 },
-  });
-  const text = `${prefix}\n\n${envelope}`;
-
-  // reasoning kind with role="assistant" — the real scenario.
-  // kind guard must prevent stripping.
-  const cleanedReasoning = sanitizeAssistantDisplayText(text, "reasoning", "assistant");
-  assert.equal(
-    cleanedReasoning,
-    text,
-    "reasoning text with trailing JSON must NOT be stripped even when role=assistant — kind guard must block",
-  );
-
-  // message kind with role="assistant" — envelope stripping IS expected.
-  const cleanedMessage = sanitizeAssistantDisplayText(text, "message", "assistant");
-  assert.equal(
-    cleanedMessage,
-    prefix,
-    "message kind with role=assistant must still strip trailing envelope (regression check)",
-  );
-
-  // non-assistant role as additional guard.
-  const cleanedSystem = sanitizeAssistantDisplayText(text, "message", "system");
-  assert.equal(
-    cleanedSystem,
-    text,
-    "message kind with non-assistant role must NOT strip (role guard defense-in-depth)",
   );
 }
 
@@ -2539,7 +2162,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/call-1`,
         part_kind: "tool_result",
         phase: "end",
-        legacy_block_id: "call-1",
       },
     },
     true,
@@ -2567,7 +2189,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/call-1`,
         part_kind: "tool_result",
         phase: "snapshot",
-        legacy_block_id: "call-1",
       },
     },
   );
@@ -2594,7 +2215,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_call/call-b`,
         part_kind: "tool_call" as const,
         phase: "snapshot" as const,
-        legacy_block_id: "call-b",
       },
     },
     {
@@ -2606,7 +2226,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
         part_key: `tool_result/call-b`,
         part_kind: "tool_result" as const,
         phase: "end" as const,
-        legacy_block_id: "call-b",
       },
     },
   ];
@@ -2626,7 +2245,6 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
           part_key: `tool_result/call-b`,
           part_kind: "tool_result" as const,
           phase: "end" as const,
-          legacy_block_id: "call-b",
         },
       },
     }],
@@ -2695,28 +2313,29 @@ function observationCollector(): { events: ObservationEvent[]; sink: Observation
   );
 }
 
-// P2-4-T2: Compatibility route triggers legacy_fallback_used with legacyPath="route".
+// P2-4-T2: identityless live output is observable but fails closed.
 {
   const collector = observationCollector();
   registerObservationSink(collector.sink);
 
-  const compatibilityBlock: OutputBlock = {
+  const identitylessBlock: OutputBlock = {
     kind: "message",
     phase: "full",
     role: "assistant",
     text: "No identity",
-    // No live_identity — routes to compatibility
   };
 
-  applyOutputBlock([], compatibilityBlock, true);
+  const messages = applyOutputBlock([], identitylessBlock, true);
   registerObservationSink(null);
 
-  const routeFallback = collector.events.find(
-    (e) => e.kind === "legacy_fallback_used" && e.legacyPath === "route",
+  const routeEvent = collector.events.find(
+    (event) => event.kind === "block_routed",
   );
-  assert.ok(
-    routeFallback,
-    "P2-4-T2: compatibility-routed block must emit legacy_fallback_used with legacyPath=route",
+  assert.equal(messages.length, 0, "P2-4-T2: identityless output must not be committed");
+  assert.equal(
+    routeEvent?.route,
+    "non_transcript_live",
+    "P2-4-T2: identityless output must be routed outside the transcript",
   );
 }
 
@@ -2739,40 +2358,6 @@ function observationCollector(): { events: ObservationEvent[]; sink: Observation
     rebuilt?.historyMessageCount,
     2,
     "P2-4-T3: historyMessageCount must match history.length",
-  );
-}
-
-// P2-4-T4: Compatibility delta triggers both route and streaming_delta legacy events.
-{
-  const collector = observationCollector();
-  registerObservationSink(collector.sink);
-
-  const compatibilityDelta: OutputBlock = {
-    kind: "message",
-    phase: "delta",
-    role: "assistant",
-    text: "streaming",
-    id: "old-block-1",
-    // No live_identity
-  };
-
-  applyOutputBlock([], compatibilityDelta, true);
-  registerObservationSink(null);
-
-  const fallbackEvents = collector.events.filter(
-    (e) => e.kind === "legacy_fallback_used",
-  );
-  const hasRoute = fallbackEvents.some((e) => e.legacyPath === "route");
-  const hasStreamingDelta = fallbackEvents.some(
-    (e) => e.legacyPath === "streaming_delta",
-  );
-  assert.ok(
-    hasRoute,
-    "P2-4-T4: compatibility delta must emit legacy fallback for route",
-  );
-  assert.ok(
-    hasStreamingDelta,
-    "P2-4-T4: compatibility delta must emit legacy fallback for streaming_delta",
   );
 }
 

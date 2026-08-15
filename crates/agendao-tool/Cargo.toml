@@ -15,24 +15,18 @@ web-tools = ["dep:agendao-tool-web"]
 
 [dependencies]
 agendao-tool-core = { path = "../agendao-tool-core" }
-agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
+agendao-core = { path = "../agendao-core", features = ["process-registry"] }
 agendao-config = { path = "../agendao-config" }
 agendao-skill = { path = "../agendao-skill" }
 agendao-types = { path = "../agendao-types" }
-agendao-util = { path = "../agendao-util" }
-agendao-grep = { path = "../agendao-grep" }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-permission = { path = "../agendao-permission" }
-agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-tool-web = { path = "../agendao-tool-web", optional = true }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
 lsp-types = { version = "0.97", optional = true }
 tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -44,14 +38,11 @@ walkdir = "2"
 dirs = { workspace = true }
 chrono = { workspace = true }
 which = "7"
-content_inspector = "0.2"
 reqwest = { workspace = true, features = ["blocking", "system-proxy"], optional = true }
-url = { workspace = true }
 uuid = { workspace = true }
 ast-grep-core = { version = "0.41.0", optional = true }
 ast-grep-language = { version = "0.41.0", optional = true }
 ast-grep-config = { version = "0.41.0", optional = true }
-urlencoding = "2.1"
 base64 = "0.22"
 portable-pty = { version = "0.8", optional = true }
 

@@ -110,7 +110,6 @@ fn external_adapter_missing_secret_ref_item(
         message: format!(
             "External adapter `{label}` is configured for generic-webhook but does not declare secret_ref."
         ),
-        fallback: None,
     })
 }
 
@@ -157,7 +156,6 @@ fn external_adapter_missing_default_workspace_item(
         message: format!(
             "External adapter `{label}` allows session runs but does not declare default_workspace for owner-local session provisioning."
         ),
-        fallback: None,
     })
 }
 
@@ -819,7 +817,7 @@ async fn provision_generic_webhook_session(
     let session = create_session_from_spec(
         &state,
         CreateSessionSpec {
-            scheduler_profile: request.scheduler_profile.clone(),
+            scheduler: request.scheduler.clone(),
             directory: request.directory.clone(),
             project_id: request.project_id.clone(),
             title: request.title.clone(),
@@ -1006,7 +1004,7 @@ mod tests {
                 actor_id: "actor_1".to_string(),
                 workspace_id: None,
                 route_policy_id: Some("default".to_string()),
-                scheduler_profile: None,
+                scheduler: None,
                 directory: None,
                 project_id: None,
                 title: None,
@@ -1142,7 +1140,7 @@ mod tests {
         );
         assert!(prompt_request.parts.is_none());
         assert!(prompt_request.ingress_source.is_none());
-        assert!(prompt_request.scheduler_profile.is_none());
+        assert!(prompt_request.scheduler.is_none());
         assert!(prompt_request.agent.is_none());
     }
 
@@ -1278,7 +1276,7 @@ mod tests {
                 actor_id: "actor_1".to_string(),
                 workspace_id: None,
                 route_policy_id: Some("default".to_string()),
-                scheduler_profile: None,
+                scheduler: None,
                 directory: None,
                 project_id: None,
                 title: Some("Webhook Session".to_string()),

@@ -6,7 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-storage-core = { path = "../agendao-storage-core" }
 agendao-types = { path = "../agendao-types" }
 agendao-util = { path = "../agendao-util" }
 serde = { workspace = true }
@@ -18,9 +17,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
-dirs = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
-tokio-test = "0.4"

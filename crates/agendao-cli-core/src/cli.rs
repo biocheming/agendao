@@ -139,10 +139,10 @@ pub struct RunCommandArgs {
     pub share: bool,
     #[arg(short = 'm', long)]
     pub model: Option<String>,
-    #[arg(long, conflicts_with = "scheduler_profile")]
+    #[arg(long, conflicts_with = "scheduler")]
     pub agent: Option<String>,
     #[arg(long, conflicts_with = "agent")]
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<String>,
     #[arg(short = 'f', long)]
     pub file: Vec<PathBuf>,
     #[arg(long, default_value = "default")]
@@ -200,6 +200,11 @@ pub enum DbCommands {
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
+    #[command(about = "Inspect, save, edit, or reject a session Blueprint")]
+    Blueprint {
+        #[command(subcommand)]
+        action: SessionBlueprintCommands,
+    },
     #[command(about = "List sessions")]
     List {
         #[arg(long = "max-count", short = 'n')]
@@ -230,7 +235,7 @@ pub enum SessionCommands {
         #[arg(long)]
         route_policy_id: Option<String>,
         #[arg(long)]
-        scheduler_profile: Option<String>,
+        scheduler: Option<String>,
         #[arg(long)]
         directory: Option<PathBuf>,
         #[arg(long)]
@@ -239,6 +244,36 @@ pub enum SessionCommands {
         title: Option<String>,
         #[arg(long, default_value = "text")]
         format: SessionProvisionFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionBlueprintCommands {
+    #[command(about = "Print the effective typed Blueprint")]
+    Inspect {
+        #[arg(required = true)]
+        session_id: String,
+    },
+    #[command(about = "Save the effective Blueprint as JSONC")]
+    Save {
+        #[arg(required = true)]
+        session_id: String,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    #[command(about = "Validate and set a Blueprint from a JSONC file")]
+    Edit {
+        #[arg(required = true)]
+        session_id: String,
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    #[command(about = "Reject the current AI-planned Blueprint")]
+    Reject {
+        #[arg(required = true)]
+        session_id: String,
     },
 }
 
@@ -657,16 +692,11 @@ pub enum DebugCommands {
 #[derive(Subcommand)]
 pub enum DebugSkillsCommands {
     #[command(about = "List the resolved skill catalog")]
-    List {
-        #[arg(long)]
-        session_id: Option<String>,
-    },
+    List,
     #[command(about = "Show raw detail for one resolved skill")]
     View {
         #[arg(value_name = "NAME")]
         name: String,
-        #[arg(long)]
-        session_id: Option<String>,
     },
     #[command(about = "Show managed skill provenance records")]
     Managed,
@@ -1075,6 +1105,30 @@ mod tests {
                 assert_eq!(output.format, ConfigOutputFormat::Json);
             }
             _ => panic!("expected config validation command"),
+        }
+    }
+
+    #[test]
+    fn session_blueprint_edit_command_parses_typed_arguments() {
+        let cli = Cli::parse_from([
+            "agendao",
+            "session",
+            "blueprint",
+            "edit",
+            "session-1",
+            "plan.jsonc",
+        ]);
+        match cli.command {
+            Commands::Session {
+                action:
+                    SessionCommands::Blueprint {
+                        action: SessionBlueprintCommands::Edit { session_id, file },
+                    },
+            } => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(file, PathBuf::from("plan.jsonc"));
+            }
+            _ => panic!("expected session Blueprint edit command"),
         }
     }
 

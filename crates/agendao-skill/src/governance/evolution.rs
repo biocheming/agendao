@@ -13,7 +13,8 @@ use agendao_types::{
     SkillCapabilityMemberRole, SkillEvolutionEvidenceSummary, SkillGovernanceDiagnosticSeverity,
     SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
     SkillOperationalSourceScope, SkillRetirementReason, SkillRetirementReasonKind,
-    SkillSemanticConflictDiagnostic, SkillVitalityRecord, SkillVitalityState, SkillWriteLedgerEntry,
+    SkillSemanticConflictDiagnostic, SkillVitalityRecord, SkillVitalityState,
+    SkillWriteLedgerEntry,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -165,7 +166,7 @@ impl SkillGovernanceAuthority {
         let vitality = SkillVitalityRecord {
             state,
             updated_at: reason.noted_at,
-            reason: reason.clone(),
+            reason,
         };
         snapshot.vitality = Some(vitality.clone());
         self.hub_store

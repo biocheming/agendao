@@ -12,16 +12,9 @@ import type {
   LspStatus,
   McpStatusInfo,
   PluginAuthProviderInfo,
-  SchedulerConfigResponse,
 } from "../types";
 
 export interface ConfigTabSettingsState {
-  schedulerConfig: SchedulerConfigResponse | null;
-  setSchedulerConfig: Dispatch<SetStateAction<SchedulerConfigResponse | null>>;
-  schedulerPathDraft: string;
-  setSchedulerPathDraft: Dispatch<SetStateAction<string>>;
-  schedulerContentDraft: string;
-  setSchedulerContentDraft: Dispatch<SetStateAction<string>>;
   configValidation: ConfigPolicyValidationSnapshotRecord | null;
   setConfigValidation: Dispatch<SetStateAction<ConfigPolicyValidationSnapshotRecord | null>>;
   validationReports: ConfigPolicyValidationItemRecord[];
@@ -54,9 +47,6 @@ export interface ConfigTabSettingsState {
 }
 
 export function useConfigTabSettingsState(): ConfigTabSettingsState {
-  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigResponse | null>(null);
-  const [schedulerPathDraft, setSchedulerPathDraft] = useState("");
-  const [schedulerContentDraft, setSchedulerContentDraft] = useState("");
   const [configValidation, setConfigValidation] =
     useState<ConfigPolicyValidationSnapshotRecord | null>(null);
   const [mcpStatus, setMcpStatus] = useState<Record<string, McpStatusInfo>>({});
@@ -99,12 +89,6 @@ export function useConfigTabSettingsState(): ConfigTabSettingsState {
   );
 
   return {
-    schedulerConfig,
-    setSchedulerConfig,
-    schedulerPathDraft,
-    setSchedulerPathDraft,
-    schedulerContentDraft,
-    setSchedulerContentDraft,
     configValidation,
     setConfigValidation,
     validationReports,
@@ -136,21 +120,14 @@ export function useConfigTabSettingsState(): ConfigTabSettingsState {
 
 export interface ConfigTabSettingsMutationsDeps {
   api: (path: string, options?: RequestInit) => Promise<Response>;
-  apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   runMutation: (
     key: string,
     action: () => Promise<string | void>,
     success: string,
   ) => Promise<void>;
-  schedulerPathDraft: string;
-  schedulerContentDraft: string;
-  setSchedulerConfig: Dispatch<SetStateAction<SchedulerConfigResponse | null>>;
-  setSchedulerPathDraft: Dispatch<SetStateAction<string>>;
-  setSchedulerContentDraft: Dispatch<SetStateAction<string>>;
 }
 
 export interface ConfigTabSettingsMutations {
-  saveScheduler: () => Promise<void>;
   saveMcpConfig: (key: string, raw: string) => Promise<void>;
   deleteMcpConfig: (key: string) => Promise<void>;
   savePluginConfig: (key: string, raw: string) => Promise<void>;
@@ -160,33 +137,9 @@ export interface ConfigTabSettingsMutations {
 
 export function useConfigTabSettingsMutations({
   api,
-  apiJson,
   runMutation,
-  schedulerPathDraft,
-  schedulerContentDraft,
-  setSchedulerConfig,
-  setSchedulerPathDraft,
-  setSchedulerContentDraft,
 }: ConfigTabSettingsMutationsDeps): ConfigTabSettingsMutations {
   const { t } = useI18n();
-  const saveScheduler = async () => {
-    await runMutation(
-      "scheduler:save",
-      async () => {
-        const response = await apiJson<SchedulerConfigResponse>("/config/scheduler", {
-          method: "PUT",
-          body: JSON.stringify({
-            path: schedulerPathDraft.trim() || undefined,
-            content: schedulerContentDraft,
-          }),
-        });
-        setSchedulerConfig(response);
-        setSchedulerPathDraft(response.raw_path ?? "");
-        setSchedulerContentDraft(response.content ?? "");
-      },
-      t("settings.feedback.schedulerSaved"),
-    );
-  };
 
   const saveMcpConfig = async (key: string, raw: string) => {
     await runMutation(
@@ -245,7 +198,6 @@ export function useConfigTabSettingsMutations({
   };
 
   return {
-    saveScheduler,
     saveMcpConfig,
     deleteMcpConfig,
     savePluginConfig,

@@ -124,37 +124,16 @@ fn creates_openai_provider_from_state_key() {
 }
 
 #[test]
-fn creates_bedrock_provider_from_options() {
-    let mut state = provider_state("amazon-bedrock");
-    state.options.insert(
-        "accessKeyId".to_string(),
-        serde_json::Value::String("akid".to_string()),
-    );
-    state.options.insert(
-        "secretAccessKey".to_string(),
-        serde_json::Value::String("secret".to_string()),
-    );
-    state.options.insert(
-        "region".to_string(),
-        serde_json::Value::String("us-east-1".to_string()),
-    );
-
-    let provider =
-        create_concrete_provider("amazon-bedrock", &state).expect("provider should exist");
-    assert_eq!(provider.id(), "amazon-bedrock");
-}
-
-#[test]
-fn creates_custom_provider_from_declared_closeai_profile() {
+fn creates_custom_provider_from_declared_openai_profile() {
     let mut state = provider_state("my-custom");
     state.key = Some("test-key".to_string());
     state.options.insert(
-        "providerProfile".to_string(),
+        "provider_profile".to_string(),
         serde_json::json!({
-            "api_style": "closeai-compatible",
+            "api_style": "openai-compatible",
             "api_shape": "chat-completions",
             "transport": "bearer",
-            "usage_shape": "closeai-cached-tokens"
+            "usage_shape": "openai-cached-tokens"
         }),
     );
 
@@ -167,12 +146,12 @@ fn rejects_custom_provider_with_invalid_profile() {
     let mut state = provider_state("my-custom");
     state.key = Some("test-key".to_string());
     state.options.insert(
-        "providerProfile".to_string(),
+        "provider_profile".to_string(),
         serde_json::json!({
-            "api_style": "ethnopic-compatible",
+            "api_style": "anthropic-compatible",
             "api_shape": "chat-completions",
             "transport": "bearer",
-            "usage_shape": "ethnopic-read-write"
+            "usage_shape": "anthropic-read-write"
         }),
     );
 
@@ -187,66 +166,6 @@ fn sort_models_prioritizes_big_pickle_over_non_priority_models() {
     ];
     ProviderBootstrapState::sort_models(&mut models);
     assert_eq!(models[0].id, "big-pickle-v2");
-}
-
-#[test]
-fn apply_custom_loaders_applies_zenmux_headers() {
-    let model = model_info("zenmux-model");
-    let mut data = HashMap::new();
-    data.insert("zenmux".to_string(), provider_info("zenmux", model));
-
-    apply_custom_loaders(&mut data);
-
-    let provider = data.get("zenmux").expect("zenmux provider should exist");
-    let model = provider
-        .models
-        .get("zenmux-model")
-        .expect("zenmux model should exist");
-    let headers = model.headers.as_ref().expect("headers should be set");
-    assert_eq!(
-        headers.get("HTTP-Referer").map(String::as_str),
-        Some("https://opencode.ai/")
-    );
-    assert_eq!(headers.get("X-Title").map(String::as_str), Some("opencode"));
-}
-
-#[test]
-fn bedrock_loader_reads_provider_state_options() {
-    let loader = AmazonBedrockLoader;
-    let mut state = provider_state("amazon-bedrock");
-    state.options.insert(
-        "region".to_string(),
-        serde_json::Value::String("us-west-2".to_string()),
-    );
-    state.options.insert(
-        "profile".to_string(),
-        serde_json::Value::String("dev-profile".to_string()),
-    );
-    state.options.insert(
-        "endpoint".to_string(),
-        serde_json::Value::String("https://bedrock.internal".to_string()),
-    );
-
-    let result = loader.load(
-        &provider_info("amazon-bedrock", model_info("test-vendor.test-model-large")),
-        Some(&state),
-    );
-    assert!(result.autoload);
-    assert_eq!(
-        result.options.get("region"),
-        Some(&serde_json::Value::String("us-west-2".to_string()))
-    );
-    assert_eq!(
-        result.options.get("profile"),
-        Some(&serde_json::Value::String("dev-profile".to_string()))
-    );
-    assert_eq!(
-        result.options.get("endpoint"),
-        Some(&serde_json::Value::String(
-            "https://bedrock.internal".to_string()
-        ))
-    );
-    assert!(result.has_custom_get_model);
 }
 
 #[test]

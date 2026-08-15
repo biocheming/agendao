@@ -1,17 +1,14 @@
 //! Shared lifecycle mediation for side-effect operations.
 //!
-//! Adapters (CLI, TUI, Server, tools) route task/process mutations through
+//! Adapters (CLI, TUI, Server, tools) route process mutations through
 //! [`global_lifecycle()`] instead of talking to domain registries directly.
 
 use std::sync::{Arc, OnceLock};
 
-use agendao_core::agent_task_registry::global_task_registry;
 use agendao_core::process_registry::global_registry;
 
 /// Side-effect operations that adapters may request.
 pub trait LifecycleCommands: Send + Sync {
-    /// Cancel a running agent task.
-    fn cancel_task(&self, task_id: &str) -> Result<(), String>;
     /// Kill a subprocess (layered: on_shutdown callback, then SIGTERM/SIGKILL).
     fn kill_process(&self, pid: u32) -> Result<(), std::io::Error>;
 }
@@ -19,11 +16,6 @@ pub trait LifecycleCommands: Send + Sync {
 struct DefaultLifecycleCommands;
 
 impl LifecycleCommands for DefaultLifecycleCommands {
-    fn cancel_task(&self, task_id: &str) -> Result<(), String> {
-        tracing::info!(task_id, "cancel_task requested via execution lifecycle");
-        global_task_registry().cancel(task_id)
-    }
-
     fn kill_process(&self, pid: u32) -> Result<(), std::io::Error> {
         tracing::info!(pid, "kill_process requested via execution lifecycle");
         global_registry().kill(pid)
@@ -46,13 +38,6 @@ mod tests {
         let a = global_lifecycle();
         let b = global_lifecycle();
         assert!(Arc::ptr_eq(a, b));
-    }
-
-    #[test]
-    fn cancel_nonexistent_task_returns_error() {
-        let lc = global_lifecycle();
-        let result = lc.cancel_task("nonexistent_task_xyz");
-        assert!(result.is_err());
     }
 
     #[test]

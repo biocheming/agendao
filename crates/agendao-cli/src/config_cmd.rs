@@ -9,7 +9,7 @@ use crate::api_client::{
     ConfigPolicyValidationSnapshot,
 };
 use crate::cli::{ConfigCommands, ConfigOutputArgs, ConfigOutputFormat};
-use crate::server_lifecycle::CliRuntimeContext;
+use crate::CliRuntimeContext;
 
 pub(super) async fn handle_config_command(
     action: Option<ConfigCommands>,
@@ -160,9 +160,6 @@ fn config_validation_lines(snapshot: &ConfigPolicyValidationSnapshot) -> Vec<Str
             ));
             lines.push(format!("    Effect: {}", effect_label(item.effect)));
             lines.push(format!("    Message: {}", item.message));
-            if let Some(fallback) = item.fallback.as_deref() {
-                lines.push(format!("    Fallback: {}", fallback));
-            }
         }
     }
 
@@ -171,8 +168,6 @@ fn config_validation_lines(snapshot: &ConfigPolicyValidationSnapshot) -> Vec<Str
 
 fn owner_label(owner: ConfigPolicyValidationOwner) -> &'static str {
     match owner {
-        ConfigPolicyValidationOwner::Scheduler => "Scheduler",
-        ConfigPolicyValidationOwner::SkillTree => "Skill Tree",
         ConfigPolicyValidationOwner::ProviderProfile => "Provider Profile",
         ConfigPolicyValidationOwner::ExternalAdapter => "External Adapter",
     }
@@ -187,7 +182,6 @@ fn severity_label(severity: ConfigPolicyValidationSeverity) -> &'static str {
 
 fn effect_label(effect: ConfigPolicyValidationEffect) -> &'static str {
     match effect {
-        ConfigPolicyValidationEffect::SoftFallback => "soft fallback",
         ConfigPolicyValidationEffect::FailClosedBootstrap => "fail-closed bootstrap",
         ConfigPolicyValidationEffect::FailClosedRequestGate => "fail-closed request gate",
     }
@@ -195,8 +189,6 @@ fn effect_label(effect: ConfigPolicyValidationEffect) -> &'static str {
 
 fn scope_label(kind: ConfigPolicyValidationScopeKind, subject_id: Option<&str>) -> String {
     let base = match kind {
-        ConfigPolicyValidationScopeKind::SchedulerPath => "scheduler path",
-        ConfigPolicyValidationScopeKind::SkillTree => "skill tree",
         ConfigPolicyValidationScopeKind::Provider => "provider",
         ConfigPolicyValidationScopeKind::ExternalAdapter => "external adapter",
     };

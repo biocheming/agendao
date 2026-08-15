@@ -30,7 +30,6 @@ export type CommandExecutionMode = "scheduler" | "agent";
 
 export interface CommandInvocationRecord {
   mode: CommandExecutionMode;
-  default_scheduler_profile?: string;
   allow_inline_arguments: boolean;
   argument_schema?: CommandArgumentFieldRecord[];
 }
@@ -61,7 +60,6 @@ export type CommandSourceRecord =
 export interface CommandApiSpec {
   name: string;
   description: string;
-  scheduler_profile?: string;
   aliases?: string[];
   invocation?: CommandInvocationRecord;
   interactive?: CommandInteractiveRecord;

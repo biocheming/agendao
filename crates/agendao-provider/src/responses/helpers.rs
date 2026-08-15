@@ -196,8 +196,8 @@ pub(super) fn process_stream_chunk(
                     id: call_id.clone(),
                 });
                 events.push(StreamEvent::ToolCallEnd {
-                    id: call_id.clone(),
-                    name: name.clone(),
+                    id: call_id,
+                    name,
                     input: parse_json_or_string(arguments),
                 });
                 *has_function_call = true;
@@ -309,7 +309,7 @@ pub(super) fn process_stream_chunk(
                     id: call_id.clone(),
                 });
                 events.push(StreamEvent::ToolCallEnd {
-                    id: call_id.clone(),
+                    id: call_id,
                     name: "local_shell".to_string(),
                     input: json!({ "action": action }),
                 });

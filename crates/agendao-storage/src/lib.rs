@@ -1,7 +1,3 @@
-pub mod core {
-    pub use agendao_storage_core::*;
-}
-
 pub mod database;
 pub mod repository;
 pub mod schema;

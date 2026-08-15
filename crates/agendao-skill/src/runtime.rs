@@ -684,12 +684,6 @@ fn append_runtime_conditions(lines: &mut Vec<String>, conditions: &SkillConditio
             conditions.requires_toolsets.join(", ")
         ));
     }
-    if !conditions.stage_filter.is_empty() {
-        items.push(format!(
-            "stage filters: {}",
-            conditions.stage_filter.join(", ")
-        ));
-    }
     if !conditions.fallback_for_tools.is_empty() {
         items.push(format!(
             "fallback when tools are absent: {}",

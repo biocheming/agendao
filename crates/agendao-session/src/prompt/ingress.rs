@@ -101,9 +101,6 @@ pub struct IngressTurnEnvelope {
     /// must not become prompt authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_key: Option<String>,
-    /// Live runtime metadata field for scheduler-originated turns.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduler_stage_id: Option<String>,
     /// Live runtime metadata field for scoped dedupe across repeated ingress
     /// submissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,7 +139,6 @@ impl IngressTurnEnvelope {
             quoted_context_refs: Vec::new(),
             command: None,
             context_key: None,
-            scheduler_stage_id: None,
             idempotency_key: None,
             external_adapter: None,
             source_origin: None,
@@ -258,7 +254,6 @@ fn can_merge_ingress_turns(left: &IngressTurnEnvelope, right: &IngressTurnEnvelo
     left.session_id == right.session_id
         && left.source == right.source
         && left.context_key == right.context_key
-        && left.scheduler_stage_id == right.scheduler_stage_id
         && matches!(left.source, IngressSource::Web)
         && right.received_at_ms.saturating_sub(left.stabilized_at_ms) <= DEFAULT_WEB_BATCH_WINDOW_MS
         && !is_control_or_reply_turn(left)
@@ -392,30 +387,6 @@ mod tests {
         let mut second =
             IngressTurnEnvelope::new_text("ses_b", IngressSource::Api, "turn_2", 101, "same");
         second.idempotency_key = Some("idem_1".to_string());
-
-        let stabilized = stabilize_ingress_turns(vec![first, second]);
-
-        assert_eq!(stabilized.len(), 2);
-    }
-
-    #[test]
-    fn scheduler_turns_do_not_batch_across_stage_boundary() {
-        let mut first = IngressTurnEnvelope::new_text(
-            "ses_a",
-            IngressSource::Scheduler,
-            "turn_1",
-            100,
-            "stage a",
-        );
-        first.scheduler_stage_id = Some("stage_a".to_string());
-        let mut second = IngressTurnEnvelope::new_text(
-            "ses_a",
-            IngressSource::Scheduler,
-            "turn_2",
-            101,
-            "stage b",
-        );
-        second.scheduler_stage_id = Some("stage_b".to_string());
 
         let stabilized = stabilize_ingress_turns(vec![first, second]);
 

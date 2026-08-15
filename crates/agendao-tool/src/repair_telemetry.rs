@@ -1,64 +1,29 @@
-//! Repair telemetry — the single authority for recording tool-call repairs.
-//!
-//! ## Three-Layer Argument Contract (P1.1)
-//!
-//! Every tool-call repair event distinguishes three layers of arguments:
-//!
-//! | Layer | Name | Source | Stored In | Used For |
-//! |-------|------|--------|-----------|----------|
-//! | 1 | **Raw** | Model output (unmodified) | `PartType::ToolCall.raw`, `RepairEvent.raw_shape` | API replay, cache stability, model evaluation |
-//! | 2 | **Normalized** | After system repair/correction | `RepairEvent.normalized_shape`, execution `effective_input` | Tool execution, history replay |
-//! | 3 | **Observable** | Derived from normalized + repair events | UI/transcript/debug views | Human readability, debugging |
-//!
-//! Rules:
-//! - Raw args MUST be preserved byte-for-byte for replay fidelity.
-//! - Normalized args are what the tool actually executes with.
-//! - Observable args are for display only; they MUST NOT be used for replay.
-//! - `RepairEvent.raw_shape` records layer 1, `normalized_shape` records layer 2.
-//! - When a repair does not change the shape, both fields may be absent.
+//! Typed repair telemetry storage for tool-call normalization and recovery.
 
 use crate::Metadata;
-use agendao_types::{RepairEvent, RepairEventBuilder};
-use serde_json::{Map, Value};
+pub use agendao_types::{RepairEvent, RepairEventBuilder};
+use serde::{Deserialize, Serialize};
 
 pub const TOOL_REPAIR_TELEMETRY_KEY: &str = "toolRepairTelemetry";
 const TOOL_REPAIR_TELEMETRY_VERSION: u64 = 1;
+const MAX_TOOL_REPAIR_EVENTS: usize = 50;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ToolArgumentNormalizationTelemetry {
-    pub modes: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepairTelemetryEnvelope {
+    version: u64,
+    events: Vec<RepairEvent>,
 }
 
-impl ToolArgumentNormalizationTelemetry {
-    pub fn record(&mut self, mode: &str) {
-        if !self.modes.iter().any(|existing| existing == mode) {
-            self.modes.push(mode.to_string());
+impl Default for RepairTelemetryEnvelope {
+    fn default() -> Self {
+        Self {
+            version: TOOL_REPAIR_TELEMETRY_VERSION,
+            events: Vec::new(),
         }
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.modes.is_empty()
-    }
 }
 
-// ── Legacy loose-map API (backward-compatible) ──────────────────────────
-
-/// Create a loose repair event map. Prefer `structured_repair_event` for new code.
-pub fn tool_repair_event(kind: &str, layer: &str, tool: &str) -> Map<String, Value> {
-    let event = RepairEvent::new(kind, layer, tool);
-    event.to_loose_map()
-}
-
-/// Create a structured `RepairEvent`. This is the preferred API for new code.
-pub fn structured_repair_event(
-    kind: impl Into<String>,
-    layer: impl Into<String>,
-    tool: impl Into<String>,
-) -> RepairEvent {
-    RepairEvent::new(kind, layer, tool)
-}
-
-/// Create a `RepairEventBuilder` for fluent construction with optional fields.
 pub fn repair_event_builder(
     kind: impl Into<String>,
     layer: impl Into<String>,
@@ -67,126 +32,34 @@ pub fn repair_event_builder(
     RepairEventBuilder::new(kind, layer, tool)
 }
 
-/// 修复事件在 session metadata 中的保留上限（环形，超出丢弃最旧）。
-/// 50 条 × ~1KB ≈ 50KB/会话，足以覆盖最近修复轨迹而不致无界膨胀。
-const MAX_TOOL_REPAIR_EVENTS: usize = 50;
-
-// ── Append helpers ──────────────────────────────────────────────────────
-
-/// Append a loose event map to metadata. Still works; delegates to
-/// the structured path internally.
-pub fn append_tool_repair_event_map(metadata: &mut Metadata, event: Map<String, Value>) {
-    append_tool_repair_event(metadata, Value::Object(event));
-}
-
-/// Append a loose Value event to metadata.
-pub fn append_tool_repair_event(metadata: &mut Metadata, event: Value) {
-    if !event.is_object() {
-        return;
+pub fn append_repair_event(metadata: &mut Metadata, event: RepairEvent) {
+    let mut envelope: RepairTelemetryEnvelope = metadata
+        .get(TOOL_REPAIR_TELEMETRY_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    envelope.events.push(event);
+    let overflow = envelope.events.len().saturating_sub(MAX_TOOL_REPAIR_EVENTS);
+    if overflow > 0 {
+        envelope.events.drain(..overflow);
     }
-
-    let telemetry = metadata
-        .entry(TOOL_REPAIR_TELEMETRY_KEY.to_string())
-        .or_insert_with(|| {
-            serde_json::json!({
-                "version": TOOL_REPAIR_TELEMETRY_VERSION,
-                "events": [],
-            })
-        });
-
-    if let Some(obj) = telemetry.as_object_mut() {
-        obj.entry("version".to_string())
-            .or_insert_with(|| Value::from(TOOL_REPAIR_TELEMETRY_VERSION));
-        let events = obj
-            .entry("events".to_string())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        if let Some(items) = events.as_array_mut() {
-            items.push(event);
-            // 环形上限：修复事件只保留最近 N 条——长会话高频 orphan/repair
-            // 场景下此前无界追加，驻留在规范 Session 里被每次深拷贝/持久化
-            // 反复放大（内存膨胀因素之一）。
-            let overflow = items.len().saturating_sub(MAX_TOOL_REPAIR_EVENTS);
-            if overflow > 0 {
-                items.drain(..overflow);
-            }
-        }
-    }
+    metadata.insert(
+        TOOL_REPAIR_TELEMETRY_KEY.to_string(),
+        serde_json::to_value(envelope).expect("repair telemetry envelope is serializable"),
+    );
 }
 
-/// Append a structured `RepairEvent` to metadata.
-/// Converts to the loose format for storage compatibility, then delegates.
-pub fn append_structured_repair_event(metadata: &mut Metadata, event: &RepairEvent) {
-    append_tool_repair_event_map(metadata, event.to_loose_map());
-}
-
-// ── Read helpers ────────────────────────────────────────────────────────
-
-/// Read repair events as loose `Value` objects (backward-compatible).
-pub fn tool_repair_events(metadata: &Metadata) -> Vec<Value> {
+pub fn repair_events(metadata: &Metadata) -> Vec<RepairEvent> {
     metadata
         .get(TOOL_REPAIR_TELEMETRY_KEY)
-        .and_then(|value| value.get("events"))
-        .and_then(Value::as_array)
         .cloned()
+        .and_then(|value| serde_json::from_value::<RepairTelemetryEnvelope>(value).ok())
+        .map(|envelope| envelope.events)
         .unwrap_or_default()
 }
 
-/// Read repair events as structured `RepairEvent` values.
-/// Falls back gracefully on malformed events.
-pub fn structured_repair_events(metadata: &Metadata) -> Vec<RepairEvent> {
-    tool_repair_events(metadata)
-        .into_iter()
-        .filter_map(|value| value.as_object().and_then(RepairEvent::from_loose_map))
-        .collect()
-}
-
-// ── Merge ───────────────────────────────────────────────────────────────
-
-/// Merge repair telemetry from source into target metadata.
-pub fn merge_tool_repair_telemetry(target: &mut Metadata, source: &Metadata) {
-    for event in tool_repair_events(source) {
-        append_tool_repair_event(target, event);
+pub fn merge_repair_telemetry(target: &mut Metadata, source: &Metadata) {
+    for event in repair_events(source) {
+        append_repair_event(target, event);
     }
-}
-
-/// Merge structured repair events directly.
-pub fn merge_structured_repair_telemetry(target: &mut Metadata, events: &[RepairEvent]) {
-    for event in events {
-        append_structured_repair_event(target, event);
-    }
-}
-
-// ── Convenience: one-shot record ────────────────────────────────────────
-
-/// Record a single structured repair event in one call.
-/// This is the recommended pattern for new tool implementations.
-pub fn record_repair_event(
-    metadata: &mut Metadata,
-    kind: impl Into<String>,
-    layer: impl Into<String>,
-    tool: impl Into<String>,
-    extra: impl FnOnce(&mut RepairEventBuilder) -> &mut RepairEventBuilder,
-) {
-    let mut builder = repair_event_builder(kind, layer, tool);
-    extra(&mut builder);
-    append_structured_repair_event(metadata, &builder.build());
-}
-
-// ── Stable RepairKind helpers (P1.3) ─────────────────────────────────────
-
-/// Record a repair event using the canonical `RepairKind` enum instead of a
-/// raw string literal. This is the preferred API for all new code.
-pub fn record_repair_kind(
-    metadata: &mut Metadata,
-    kind: agendao_types::RepairKind,
-    layer: impl Into<String>,
-    tool: impl Into<String>,
-    extra: impl FnOnce(&mut RepairEventBuilder) -> &mut RepairEventBuilder,
-) {
-    record_repair_event(metadata, kind.as_str(), layer, tool, extra)
-}
-
-/// Return the canonical string for a `RepairKind`.
-pub fn canonical_repair_kind_str(kind: agendao_types::RepairKind) -> &'static str {
-    kind.as_str()
 }

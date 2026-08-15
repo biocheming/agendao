@@ -25,7 +25,6 @@ pub enum BuiltinAgent {
     Metis,
     Momus,
     Oracle,
-    SisyphusJunior,
     Compaction,
     Title,
 }
@@ -45,13 +44,12 @@ impl BuiltinAgent {
             Self::Metis => "metis",
             Self::Momus => "momus",
             Self::Oracle => "oracle",
-            Self::SisyphusJunior => "sisyphus-junior",
             Self::Compaction => "compaction",
             Self::Title => "title",
         }
     }
 
-    pub const fn all() -> [BuiltinAgent; 15] {
+    pub const fn all() -> [BuiltinAgent; 14] {
         [
             BuiltinAgent::Build,
             BuiltinAgent::Plan,
@@ -65,7 +63,6 @@ impl BuiltinAgent {
             BuiltinAgent::Metis,
             BuiltinAgent::Momus,
             BuiltinAgent::Oracle,
-            BuiltinAgent::SisyphusJunior,
             BuiltinAgent::Compaction,
             BuiltinAgent::Title,
         ]
@@ -88,7 +85,7 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
     pub options: HashMap<String, serde_json::Value>,
-    #[serde(default, alias = "permission_ruleset")]
+    #[serde(default)]
     pub permission: PermissionRuleset,
     #[serde(default)]
     pub hidden: bool,

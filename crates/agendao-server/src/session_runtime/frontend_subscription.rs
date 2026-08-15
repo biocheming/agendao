@@ -36,8 +36,7 @@ pub(crate) fn frontend_event_passes_subscription_caps(
             let phase = block.get("phase").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
                 "reasoning" => !caps.final_only && (phase != "delta" || caps.reasoning_delta),
-                "message" => !caps.final_only && caps.message_text_delta,
-                "scheduler_stage" => !caps.final_only && caps.tool_progress,
+                "message" => phase == "full" || (!caps.final_only && caps.message_text_delta),
                 "tool" => {
                     matches!(phase, "done" | "error") || (!caps.final_only && caps.tool_progress)
                 }
@@ -55,5 +54,40 @@ pub(crate) fn frontend_event_passes_subscription_caps(
         | FrontendEvent::TodoReplaced { .. }
         | FrontendEvent::SessionError { .. } => true,
         FrontendEvent::ConfigUpdated => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frontend_event_passes_subscription_caps;
+    use agendao_server_core::frontend_events::FrontendEvent;
+
+    #[test]
+    fn cli_tier_keeps_full_message_but_rejects_delta_and_end() {
+        let caps = agendao_api::FrontendSubscriptionTier::CliLowFrequency.default_capabilities();
+        let event = |phase: &str, text: &str| FrontendEvent::OutputBlockAppended {
+            session_id: "ses_1".to_string(),
+            block: serde_json::json!({
+                "kind": "message",
+                "phase": phase,
+                "role": "assistant",
+                "text": text
+            }),
+            id: Some("msg_1".to_string()),
+            live_identity: None,
+        };
+
+        assert!(!frontend_event_passes_subscription_caps(
+            &event("delta", "hel"),
+            &caps
+        ));
+        assert!(frontend_event_passes_subscription_caps(
+            &event("full", "hello"),
+            &caps
+        ));
+        assert!(!frontend_event_passes_subscription_caps(
+            &event("end", ""),
+            &caps
+        ));
     }
 }

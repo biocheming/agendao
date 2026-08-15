@@ -299,7 +299,6 @@ pub fn prune_worktrees(repo_path: &Path) -> Result<(), WorktreeError> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,7 +407,12 @@ mod tests {
         let resolved = resolve_loosely(&tmp.path().join("a").join("b").join("c"));
         assert_eq!(
             resolved,
-            tmp.path().canonicalize().unwrap().join("a").join("b").join("c")
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join("a")
+                .join("b")
+                .join("c")
         );
     }
 

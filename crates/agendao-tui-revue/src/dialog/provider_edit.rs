@@ -28,6 +28,8 @@ use crate::dialog::backdrop;
 use crate::input::readline::InputReadlineExt;
 use crate::theme::colors;
 
+const DEFAULT_PROTOCOL_IDX: usize = 1;
+
 /// 眼睛符号（与 status_icon 的 ◌◐● 同一套终端安全字形，显示宽 1）：
 /// 掩码态 = 闭眼 ◌，明文态 = 睁眼 ◉。
 const EYE_MASKED: &str = "◌";
@@ -90,8 +92,7 @@ impl ProviderEditDialog {
             origin_id: String::new(),
             name_input: revue::widget::Input::new().placeholder("e.g. My OpenAI"),
             protocol_idx: 0,
-            base_url_input: revue::widget::Input::new()
-                .placeholder("https://api.openai.com/v1"),
+            base_url_input: revue::widget::Input::new().placeholder("https://api.openai.com/v1"),
             api_key_input: revue::widget::Input::new()
                 .password(true)
                 .placeholder("sk-..."),
@@ -104,9 +105,8 @@ impl ProviderEditDialog {
         self.mode = ProviderEditMode::Add;
         self.origin_id.clear();
         self.name_input = revue::widget::Input::new().placeholder("e.g. My OpenAI");
-        self.protocol_idx = 0; // 默认 openai（最常见）
-        self.base_url_input = revue::widget::Input::new()
-            .placeholder("https://api.openai.com/v1");
+        self.protocol_idx = DEFAULT_PROTOCOL_IDX;
+        self.base_url_input = revue::widget::Input::new().placeholder("https://api.openai.com/v1");
         self.api_key_input = revue::widget::Input::new()
             .password(true)
             .placeholder("sk-...");
@@ -127,7 +127,7 @@ impl ProviderEditDialog {
             .protocol
             .as_deref()
             .and_then(|p| PROTOCOL_OPTIONS.iter().position(|(k, _)| *k == p))
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_PROTOCOL_IDX);
         self.base_url_input = revue::widget::Input::new()
             .placeholder("https://api.openai.com/v1")
             .value(info.base_url.clone().unwrap_or_default());
@@ -159,14 +159,14 @@ impl ProviderEditDialog {
         PROTOCOL_OPTIONS
             .get(self.protocol_idx)
             .map(|(k, _)| *k)
-            .unwrap_or("openai")
+            .unwrap_or("openai-chat")
     }
 
     fn protocol_label(&self) -> &'static str {
         PROTOCOL_OPTIONS
             .get(self.protocol_idx)
             .map(|(_, l)| *l)
-            .unwrap_or("OpenAI")
+            .unwrap_or("OpenAI Chat Completions")
     }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<ProviderEditAction> {
@@ -368,7 +368,10 @@ impl ProviderEditDialog {
 
         // U5：校验错误红字行（footer 上方），高度随行 +1。
         let (content, err_h) = if let Some(e) = &self.validation_error {
-            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+            (
+                content.child_sized(backdrop::validation_error_line(e), 1),
+                1,
+            )
         } else {
             (content, 0)
         };
@@ -452,7 +455,9 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
+    input = input
+        .focused(focused && !readonly)
+        .cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {
@@ -510,7 +515,7 @@ mod tests {
             name: "OpenAI".into(),
             models: vec![],
             base_url: Some("https://api.openai.com/v1".into()),
-            protocol: Some("openai".into()),
+            protocol: Some("openai-chat".into()),
             disabled: false,
         }
     }
@@ -522,7 +527,7 @@ mod tests {
         assert!(d.is_open());
         assert_eq!(d.mode, ProviderEditMode::Add);
         assert_eq!(d.focus, ProviderEditField::Name);
-        assert_eq!(d.protocol_idx, 0);
+        assert_eq!(d.protocol_idx, DEFAULT_PROTOCOL_IDX);
     }
 
     #[test]
@@ -532,8 +537,11 @@ mod tests {
         assert_eq!(d.mode, ProviderEditMode::Edit);
         assert_eq!(d.name_input.text(), "OpenAI");
         assert_eq!(d.base_url_input.text(), "https://api.openai.com/v1");
-        assert_eq!(d.protocol_key(), "openai");
-        assert!(d.api_key_input.text().is_empty(), "api_key Edit 预填必须留空");
+        assert_eq!(d.protocol_key(), "openai-chat");
+        assert!(
+            d.api_key_input.text().is_empty(),
+            "api_key Edit 预填必须留空"
+        );
         assert_eq!(d.focus, ProviderEditField::Protocol);
     }
 
@@ -552,10 +560,15 @@ mod tests {
         d.open_add();
         d.focus = ProviderEditField::Protocol;
         d.handle_key(&Key::Right);
-        assert_eq!(d.protocol_idx, 1);
+        assert_eq!(
+            d.protocol_idx,
+            (DEFAULT_PROTOCOL_IDX + 1) % PROTOCOL_OPTIONS.len()
+        );
+        d.handle_key(&Key::Left);
+        assert_eq!(d.protocol_idx, DEFAULT_PROTOCOL_IDX);
+        // 左越界回绕到末项。
         d.handle_key(&Key::Left);
         assert_eq!(d.protocol_idx, 0);
-        // 左越界回绕到末项。
         d.handle_key(&Key::Left);
         assert_eq!(d.protocol_idx, PROTOCOL_OPTIONS.len() - 1);
     }
@@ -599,7 +612,7 @@ mod tests {
         assert_eq!(s.id, "my-openai");
         assert_eq!(s.name, "My OpenAI");
         assert_eq!(s.base_url, "https://api.example.com/v1");
-        assert_eq!(s.protocol, "openai");
+        assert_eq!(s.protocol, "openai-chat");
         assert_eq!(s.api_key, "sk-secret");
         assert!(!d.is_open());
     }
@@ -628,7 +641,10 @@ mod tests {
         let action = d.handle_key(&Key::Escape);
         assert!(matches!(action, Some(ProviderEditAction::Cancel)));
         assert!(!d.is_open());
-        assert!(d.api_key_input.text().is_empty(), "close 必须抹除 api_key 明文");
+        assert!(
+            d.api_key_input.text().is_empty(),
+            "close 必须抹除 api_key 明文"
+        );
     }
 
     #[test]
@@ -688,7 +704,8 @@ mod tests {
         // 在 rect.x+width-2，外框 '│' 在 rect.x+width-1），
         // y = API key 块（idx 3，4 行一块）输入行 = rect.y + 1 + 3*4 + 2。
         // keymap.rs 的眼睛命中区与此同式（几何同源，土律）。
-        let eye_pos = |rect: revue::prelude::Rect| (rect.x + rect.width - 4, rect.y + 1 + 3 * 4 + 2);
+        let eye_pos =
+            |rect: revue::prelude::Rect| (rect.x + rect.width - 4, rect.y + 1 + 3 * 4 + 2);
 
         let mut buf = Buffer::new(90, 30);
         let rect = {

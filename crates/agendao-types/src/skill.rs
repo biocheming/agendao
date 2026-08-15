@@ -54,7 +54,6 @@ pub enum SkillTrustLevel {
     Unknown,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillSourceIndexSnapshot {
     pub source: SkillSourceRef,

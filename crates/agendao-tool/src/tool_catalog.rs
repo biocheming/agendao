@@ -11,33 +11,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::timeout;
 
 use crate::{
-    ExternalDirectoryKind, ExternalDirectoryOptions, Metadata, Tool, ToolContext, ToolError,
-    ToolResult, ToolSchemaSourceKind, assert_external_directory, bash::authorize_bash_command,
+    assert_external_directory, bash::authorize_bash_command, ExternalDirectoryKind,
+    ExternalDirectoryOptions, Metadata, Tool, ToolContext, ToolError, ToolResult,
+    ToolSchemaSourceKind,
 };
 
 pub const TOOL_CATALOG_SEARCH_TOOL_ID: &str = "tool_catalog_search";
 pub const TOOL_CATALOG_DESCRIBE_TOOL_ID: &str = "tool_catalog_describe";
 pub const TOOL_CATALOG_CALL_TOOL_ID: &str = "tool_catalog_call";
-pub const LEGACY_MCP_SEARCH_TOOL_ID: &str = "mcp_search";
-pub const LEGACY_MCP_DESCRIBE_TOOL_ID: &str = "mcp_describe";
-pub const LEGACY_MCP_CALL_TOOL_ID: &str = "mcp_call";
 pub const TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] = &[
     TOOL_CATALOG_SEARCH_TOOL_ID,
     TOOL_CATALOG_DESCRIBE_TOOL_ID,
     TOOL_CATALOG_CALL_TOOL_ID,
-    LEGACY_MCP_SEARCH_TOOL_ID,
-    LEGACY_MCP_DESCRIBE_TOOL_ID,
-    LEGACY_MCP_CALL_TOOL_ID,
-];
-pub const MODEL_VISIBLE_TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] = &[
-    TOOL_CATALOG_SEARCH_TOOL_ID,
-    TOOL_CATALOG_DESCRIBE_TOOL_ID,
-    TOOL_CATALOG_CALL_TOOL_ID,
-];
-pub const LEGACY_TOOL_CATALOG_FACADE_ALIAS_IDS: &[&str] = &[
-    LEGACY_MCP_SEARCH_TOOL_ID,
-    LEGACY_MCP_DESCRIBE_TOOL_ID,
-    LEGACY_MCP_CALL_TOOL_ID,
 ];
 
 #[derive(Debug, Clone)]
@@ -66,24 +51,14 @@ pub fn is_tool_catalog_facade_tool(name: &str) -> bool {
 }
 
 pub fn is_model_visible_tool_catalog_facade_tool(name: &str) -> bool {
-    MODEL_VISIBLE_TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
+    TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
 }
 
-pub fn is_legacy_tool_catalog_facade_alias_tool(name: &str) -> bool {
-    LEGACY_TOOL_CATALOG_FACADE_ALIAS_IDS.contains(&name)
-}
+pub struct ToolCatalogSearchTool;
 
-pub struct ToolCatalogSearchTool {
-    tool_id: &'static str,
-}
+pub struct ToolCatalogDescribeTool;
 
-pub struct ToolCatalogDescribeTool {
-    tool_id: &'static str,
-}
-
-pub struct ToolCatalogCallTool {
-    tool_id: &'static str,
-}
+pub struct ToolCatalogCallTool;
 
 #[derive(Debug, Deserialize)]
 struct ToolCatalogSearchInput {
@@ -131,67 +106,19 @@ fn looks_like_skill_file_or_catalog_path(name: &str) -> bool {
 
 impl ToolCatalogSearchTool {
     pub const fn primary() -> Self {
-        Self {
-            tool_id: TOOL_CATALOG_SEARCH_TOOL_ID,
-        }
-    }
-
-    pub const fn legacy_mcp_alias() -> Self {
-        Self {
-            tool_id: LEGACY_MCP_SEARCH_TOOL_ID,
-        }
+        Self
     }
 }
 
 impl ToolCatalogDescribeTool {
     pub const fn primary() -> Self {
-        Self {
-            tool_id: TOOL_CATALOG_DESCRIBE_TOOL_ID,
-        }
-    }
-
-    pub const fn legacy_mcp_alias() -> Self {
-        Self {
-            tool_id: LEGACY_MCP_DESCRIBE_TOOL_ID,
-        }
+        Self
     }
 }
 
 impl ToolCatalogCallTool {
     pub const fn primary() -> Self {
-        Self {
-            tool_id: TOOL_CATALOG_CALL_TOOL_ID,
-        }
-    }
-
-    pub const fn legacy_mcp_alias() -> Self {
-        Self {
-            tool_id: LEGACY_MCP_CALL_TOOL_ID,
-        }
-    }
-}
-
-fn tool_catalog_search_description(tool_id: &str) -> &'static str {
-    if tool_id == LEGACY_MCP_SEARCH_TOOL_ID {
-        "Compatibility alias for tool_catalog_search. Search the execution resource catalog by name, description, domain, family, or tag."
-    } else {
-        "Search the execution resource catalog by name, description, domain, family, or tag. Use this first when the tool catalog is large."
-    }
-}
-
-fn tool_catalog_describe_description(tool_id: &str) -> &'static str {
-    if tool_id == LEGACY_MCP_DESCRIBE_TOOL_ID {
-        "Compatibility alias for tool_catalog_describe. Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
-    } else {
-        "Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
-    }
-}
-
-fn tool_catalog_call_description(tool_id: &str) -> &'static str {
-    if tool_id == LEGACY_MCP_CALL_TOOL_ID {
-        "Compatibility alias for tool_catalog_call. Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
-    } else {
-        "Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
+        Self
     }
 }
 
@@ -314,12 +241,7 @@ async fn execute_tool_catalog_search(
     Ok(ToolResult::simple("Catalog search results", output)
         .with_metadata(
             "results",
-            serde_json::json!(
-                results
-                    .iter()
-                    .map(entry_json)
-                    .collect::<Vec<_>>()
-            ),
+            serde_json::json!(results.iter().map(entry_json).collect::<Vec<_>>()),
         )
         .with_metadata("count", serde_json::json!(results.len()))
         .with_metadata("offset", serde_json::json!(offset))
@@ -411,11 +333,11 @@ async fn execute_tool_catalog_call(
 #[async_trait]
 impl Tool for ToolCatalogSearchTool {
     fn id(&self) -> &str {
-        self.tool_id
+        TOOL_CATALOG_SEARCH_TOOL_ID
     }
 
     fn description(&self) -> &str {
-        tool_catalog_search_description(self.tool_id)
+        "Search the execution resource catalog by name, description, domain, family, or tag. Use this first when the tool catalog is large."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -434,11 +356,11 @@ impl Tool for ToolCatalogSearchTool {
 #[async_trait]
 impl Tool for ToolCatalogDescribeTool {
     fn id(&self) -> &str {
-        self.tool_id
+        TOOL_CATALOG_DESCRIBE_TOOL_ID
     }
 
     fn description(&self) -> &str {
-        tool_catalog_describe_description(self.tool_id)
+        "Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -457,11 +379,11 @@ impl Tool for ToolCatalogDescribeTool {
 #[async_trait]
 impl Tool for ToolCatalogCallTool {
     fn id(&self) -> &str {
-        self.tool_id
+        TOOL_CATALOG_CALL_TOOL_ID
     }
 
     fn description(&self) -> &str {
-        tool_catalog_call_description(self.tool_id)
+        "Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -522,12 +444,15 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
 fn load_external_catalogs(
     ctx: &ToolContext,
 ) -> Result<Vec<ResolvedExternalToolCatalog>, ToolError> {
-    let project_root = if !ctx.project_root.trim().is_empty() {
-        PathBuf::from(ctx.project_root.trim())
-    } else if let Some(config_store) = ctx.config_store.as_ref() {
+    let project_root = if let Some(config_store) = ctx.config_store.as_ref() {
+        if config_store.config().tool_imports.is_empty() {
+            return Ok(Vec::new());
+        }
         config_store
             .project_dir()
             .unwrap_or_else(|| PathBuf::from(ctx.directory.clone()))
+    } else if !ctx.project_root.trim().is_empty() {
+        PathBuf::from(ctx.project_root.trim())
     } else {
         PathBuf::from(ctx.directory.clone())
     };
@@ -1071,12 +996,16 @@ mod tests {
         for tool in tools {
             registry.register(tool).await;
         }
+        let config_store = Arc::new(agendao_config::ConfigStore::new(
+            agendao_config::Config::default(),
+        ));
         ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),
             ".".to_string(),
         )
         .with_registry(registry)
+        .with_config_store(config_store)
     }
 
     struct TestDir {
@@ -1263,31 +1192,6 @@ mod tests {
             )
             .await
             .expect("registry tool should execute");
-
-        assert_eq!(result.output, "dock_pose");
-    }
-
-    #[tokio::test]
-    async fn legacy_mcp_call_alias_executes_registry_tool_when_present() {
-        let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
-            id: "dock_pose",
-            description: "Protein-ligand docking",
-            catalog: Some(catalog_metadata(
-                "cadd",
-                "molecular_docking",
-                "protein_ligand",
-                &["pose"],
-            )),
-        }])
-        .await;
-
-        let result = ToolCatalogCallTool::legacy_mcp_alias()
-            .execute(
-                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
-                ctx,
-            )
-            .await
-            .expect("legacy alias should execute registry tool");
 
         assert_eq!(result.output, "dock_pose");
     }

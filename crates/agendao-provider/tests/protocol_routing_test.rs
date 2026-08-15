@@ -2,15 +2,15 @@ use agendao_provider::{ProviderConfig, ProviderProfileResolver, ProviderRuntimeA
 use std::collections::HashMap;
 
 #[test]
-fn test_deepseek_uses_closeai_compatible_adapter() {
-    let adapter = adapter_from_resolved_profile("deepseek", "@ai-sdk/openai-compatible");
-    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
+fn test_explicit_custom_chat_profile_uses_openai_compatible_adapter() {
+    let adapter = custom_chat_adapter("custom-chat");
+    assert_eq!(adapter, ProviderRuntimeAdapter::OpenAiCompatible);
 }
 
 #[test]
 fn test_custom_messages_endpoint() {
-    let adapter = adapter_from_resolved_profile("ethnopic", "@ai-sdk/anthropic");
-    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
+    let adapter = adapter_from_resolved_profile("anthropic", "@ai-sdk/anthropic");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Anthropic);
 
     let config = ProviderConfig::new(
         "bailian",
@@ -24,41 +24,26 @@ fn test_custom_messages_endpoint() {
     );
 }
 
-#[test]
-fn test_custom_ethnopic_endpoint_alias() {
-    let adapter = adapter_from_resolved_profile("ethnopic", "ethnopic-compatible");
-    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
-
-    let config = ProviderConfig::new(
-        "compatible-messages",
-        "https://example.com/provider/messages",
-        "sk-test",
-    );
-
-    assert_eq!(config.base_url, "https://example.com/provider/messages");
-}
-
-#[test]
-fn test_openrouter_custom_headers() {
-    let adapter = adapter_from_resolved_profile("openrouter", "@openrouter/ai-sdk-provider");
-    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
-
-    let config = ProviderConfig::new(
-        "openrouter",
-        "https://openrouter.ai/api/v1/chat/completions",
-        "sk-or-xxx",
-    )
-    .with_header("HTTP-Referer", "https://opencode.ai/")
-    .with_header("X-Title", "opencode");
-
-    assert_eq!(
-        config.headers.get("HTTP-Referer").expect("referer header"),
-        "https://opencode.ai/"
-    );
-}
-
 fn adapter_from_resolved_profile(provider_id: &str, npm: &str) -> ProviderRuntimeAdapter {
     let options = HashMap::new();
     let profile = ProviderProfileResolver::resolve_with_npm(provider_id, npm, &options);
+    ProviderRuntimeAdapter::from_profile(&profile)
+}
+
+fn custom_chat_adapter(provider_id: &str) -> ProviderRuntimeAdapter {
+    let options = HashMap::from([(
+        "provider_profile".to_string(),
+        serde_json::json!({
+            "api_style": "openai-compatible",
+            "api_shape": "chat-completions",
+            "transport": "bearer",
+            "usage_shape": "openai-cached-tokens"
+        }),
+    )]);
+    let profile = ProviderProfileResolver::resolve_with_npm(
+        provider_id,
+        "@ai-sdk/openai-compatible",
+        &options,
+    );
     ProviderRuntimeAdapter::from_profile(&profile)
 }

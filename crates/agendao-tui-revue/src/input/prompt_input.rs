@@ -19,10 +19,18 @@ use revue::event::Key;
 use crate::widget::wrap_editor::{EditorView, VisualMove, WrapEditor, PROMPT_INDENT};
 
 #[derive(Clone, Debug)]
-pub enum PromptAction { None, Consumed, Submit(String), SubmitShell(String) }
+pub enum PromptAction {
+    None,
+    Consumed,
+    Submit(String),
+    SubmitShell(String),
+}
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum InputMode { Normal, Shell }
+pub enum InputMode {
+    Normal,
+    Shell,
+}
 
 pub struct PromptInput {
     /// 编辑控件（编辑权威 + 渲染 + 命中几何回流）。聚焦闸门由自有
@@ -55,7 +63,8 @@ fn default_history_path() -> std::path::PathBuf {
 }
 
 fn load_history(path: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(path).ok()
+    std::fs::read_to_string(path)
+        .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
@@ -67,10 +76,12 @@ fn save_history(path: &std::path::Path, history: &[String]) {
     if let Ok(json) = serde_json::to_string(history) {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
             use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
             if let Ok(mut f) = std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
                 .mode(0o600)
                 .open(path)
             {
@@ -147,25 +158,35 @@ impl PromptInput {
     }
 
     fn undo(&mut self) -> bool {
-        let Some(snap) = self.undo_stack.pop() else { return false; };
+        let Some(snap) = self.undo_stack.pop() else {
+            return false;
+        };
         self.redo_stack.push(self.editor.snapshot());
         self.editor.restore(&snap);
         true
     }
 
     fn redo(&mut self) -> bool {
-        let Some(snap) = self.redo_stack.pop() else { return false; };
+        let Some(snap) = self.redo_stack.pop() else {
+            return false;
+        };
         self.undo_stack.push(self.editor.snapshot());
         self.editor.restore(&snap);
         true
     }
 
     fn normal_placeholder(&self) -> &str {
-        self.normal_placeholders.first().map(|s| s.as_str()).unwrap_or("Ask anything...")
+        self.normal_placeholders
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("Ask anything...")
     }
 
     fn shell_placeholder(&self) -> &str {
-        self.shell_placeholders.first().map(|s| s.as_str()).unwrap_or("Run a command...")
+        self.shell_placeholders
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("Run a command...")
     }
 
     pub fn handle_key(&mut self, key: &Key) -> PromptAction {
@@ -252,7 +273,11 @@ impl PromptInput {
                     self.snapshot_undo();
                 }
                 let changed = self.editor.handle_key(key);
-                if changed { PromptAction::Consumed } else { PromptAction::None }
+                if changed {
+                    PromptAction::Consumed
+                } else {
+                    PromptAction::None
+                }
             }
         }
     }
@@ -273,8 +298,12 @@ impl PromptInput {
         use revue::event::Key as K;
         self.focused = true;
         match event.key {
-            K::Char('z') => { self.undo(); }
-            K::Char('y') => { self.redo(); }
+            K::Char('z') => {
+                self.undo();
+            }
+            K::Char('y') => {
+                self.redo();
+            }
             _ => {
                 let undo_stack = &mut self.undo_stack;
                 let redo_stack = &mut self.redo_stack;
@@ -299,12 +328,16 @@ impl PromptInput {
     }
 
     fn history_up(&mut self) -> PromptAction {
-        if self.history.is_empty() { return PromptAction::None; }
+        if self.history.is_empty() {
+            return PromptAction::None;
+        }
         if self.history_idx.is_none() {
             self.draft = Some(self.editor.text());
             self.history_idx = Some(self.history.len().saturating_sub(1));
         } else if let Some(idx) = self.history_idx {
-            if idx > 0 { self.history_idx = Some(idx - 1); }
+            if idx > 0 {
+                self.history_idx = Some(idx - 1);
+            }
         }
         if let Some(idx) = self.history_idx {
             if let Some(entry) = self.history.get(idx).cloned() {
@@ -317,7 +350,9 @@ impl PromptInput {
     }
 
     fn history_down(&mut self) -> PromptAction {
-        if self.history_idx.is_none() { return PromptAction::None; }
+        if self.history_idx.is_none() {
+            return PromptAction::None;
+        }
         if let Some(idx) = self.history_idx {
             if idx + 1 < self.history.len() {
                 self.history_idx = Some(idx + 1);
@@ -337,7 +372,9 @@ impl PromptInput {
         PromptAction::None
     }
 
-    pub fn text(&self) -> String { self.editor.text() }
+    pub fn text(&self) -> String {
+        self.editor.text()
+    }
 
     /// Replace the input text wholesale (e.g. restoring a stashed draft).
     /// 喂回输入框权威 —— 水生木闭环（stash 恢复项回灌下一轮输入）。
@@ -353,18 +390,23 @@ impl PromptInput {
         self.undo_stack.clear();
         self.redo_stack.clear();
     }
-    pub fn is_focused(&self) -> bool { self.focused }
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
 
     /// Focus the input — shows the block cursor. Used when entering a route
     /// that is "ready to type" (e.g. Home), so the cursor is visible on entry
     /// rather than only after the first keystroke/click.
-    pub fn focus(&mut self) { self.focused = true; }
+    pub fn focus(&mut self) {
+        self.focused = true;
+    }
 
     /// 布局期高度：内容按 `content_w`（含 ❯ 缩进的整宽）soft-wrap
     /// 折行后的可见行数（封顶 MAX_VISIBLE_LINES，超出出滚动条）。
     /// 宽度权威在 app 层 prompt_geometry（Home 居中宽 / Session 主区-PAD）。
     pub fn visible_height_for(&self, content_w: u16) -> u16 {
-        self.editor.wrapped_height(content_w.saturating_sub(PROMPT_INDENT))
+        self.editor
+            .wrapped_height(content_w.saturating_sub(PROMPT_INDENT))
     }
 
     /// Handle a mouse click at (x, y) — absolute screen coords.
@@ -375,7 +417,9 @@ impl PromptInput {
         self.focused = hit;
         hit
     }
-    pub fn mode(&self) -> &InputMode { &self.mode }
+    pub fn mode(&self) -> &InputMode {
+        &self.mode
+    }
 
     /// Show status hint above the prompt bar.
     /// U20：只宣传真实可用的键（与 keymap/handle_ctrl_key 双向核对）——
@@ -383,7 +427,9 @@ impl PromptInput {
     /// ↑/↓ 到顶/底行才进历史（多行内是行间移动，不宣传为纯历史键）；
     /// ^Z/^Y undo/redo（U2 readline 集）；^P 命令面板（keymap 全局）。
     pub fn status_hint(&self, is_running: bool) -> String {
-        if is_running { return "Running... Esc: stop".into(); }
+        if is_running {
+            return "Running... Esc: stop".into();
+        }
         // U26①：shell 模式有自己的宣传口径（Esc 退出 / !! 字面转义）——
         // 不宣传则用户不知道为何 Enter 变成"运行命令"。
         if self.mode == InputMode::Shell {
@@ -393,7 +439,10 @@ impl PromptInput {
         if self.focused && len > 0 {
             // 宣传 Alt 放首位：Shift/Ctrl+Enter 在无 kitty 键盘协议的终端
             // 是死键（与 keymap 三修饰同闸不矛盾——只宣传最可靠的一个）。
-            format!("{} chars | Enter:send Alt+Enter:newline | ^Z/^Y:undo ^P:commands", len)
+            format!(
+                "{} chars | Enter:send Alt+Enter:newline | ^Z/^Y:undo ^P:commands",
+                len
+            )
         } else if self.focused {
             "Type or /command | Enter:send | ↑/↓:history ^P:commands ?:help".into()
         } else {
@@ -404,7 +453,11 @@ impl PromptInput {
     /// Snapshot a renderable view of the composer.
     /// `cursor_on` = 闪烁相（app 层 blink tick 推导）&& 希望画光标。
     pub fn view(&self, cursor_on: bool) -> EditorView {
-        self.editor.view(self.focused && cursor_on, self.focused, self.placeholder.clone())
+        self.editor.view(
+            self.focused && cursor_on,
+            self.focused,
+            self.placeholder.clone(),
+        )
     }
 }
 
@@ -443,7 +496,10 @@ mod tests {
         assert!(hint.contains("Esc:normal mode"), "{hint}");
         assert!(hint.contains("!!: literal !"), "{hint}");
         // 第二个 `!`：退回 Normal + 字面 `!`。
-        assert!(matches!(p.handle_key(&Key::Char('!')), PromptAction::Consumed));
+        assert!(matches!(
+            p.handle_key(&Key::Char('!')),
+            PromptAction::Consumed
+        ));
         assert!(matches!(p.mode(), InputMode::Normal), "!! 退回 Normal");
         assert_eq!(p.text(), "!", "留下字面 ! 作首字符");
         // 继续输入成普通消息，Enter 走 Submit 而非 SubmitShell。
@@ -484,8 +540,15 @@ mod tests {
         assert_eq!(p.visible_height_for(80), 3);
         // 长逻辑行按宽折行也撑高：24 列内容、文本宽 10 → 3 视觉行。
         p.set_text(&"a".repeat(24));
-        assert_eq!(p.visible_height_for(12), 3, "整宽 12 - ❯ 缩进 2 = 文本宽 10");
-        let long = (0..20).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            p.visible_height_for(12),
+            3,
+            "整宽 12 - ❯ 缩进 2 = 文本宽 10"
+        );
+        let long = (0..20)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         p.set_text(&long);
         assert_eq!(p.visible_height_for(80), MAX_VISIBLE_LINES);
     }
@@ -586,7 +649,10 @@ mod tests {
     fn ctrl_z_snapshot_undo_redo_roundtrip_cjk() {
         let mut p = PromptInput::new();
         let ctrl = |key: Key| revue::event::KeyEvent {
-            key, ctrl: true, alt: false, shift: false,
+            key,
+            ctrl: true,
+            alt: false,
+            shift: false,
         };
         // CJK 逐字键入：自有快照 undo（绕开 revue TextArea undo 的 CJK 缺陷）。
         p.handle_key(&Key::Char('你'));
@@ -605,7 +671,10 @@ mod tests {
     fn kills_on_multiline_only_touch_current_line() {
         let mut p = PromptInput::new();
         let ctrl = |key: Key| revue::event::KeyEvent {
-            key, ctrl: true, alt: false, shift: false,
+            key,
+            ctrl: true,
+            alt: false,
+            shift: false,
         };
         p.set_text("hello world\nfoo bar");
         // set_text → 光标在末行行尾 (1, 7)

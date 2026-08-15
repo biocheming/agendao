@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 pub struct RepairEvent {
     /// The classification of this repair (e.g. "alias_normalization",
     /// "basename_auto_repair", "tool_name_repair").
+    #[serde(rename = "kind")]
     pub repair_kind: String,
 
     /// Which architectural layer recorded the repair.
@@ -24,6 +25,7 @@ pub struct RepairEvent {
     pub layer: String,
 
     /// The tool whose call triggered this repair.
+    #[serde(rename = "tool")]
     pub tool_name: String,
 
     /// The specific argument field that was repaired, if applicable.
@@ -81,91 +83,6 @@ impl RepairEvent {
             original_error_kind: None,
         }
     }
-
-    /// Convert to a loose JSON object for backward-compatible storage
-    /// in the existing `toolRepairTelemetry` metadata slot.
-    pub fn to_loose_map(&self) -> serde_json::Map<String, serde_json::Value> {
-        let mut map = serde_json::Map::new();
-        map.insert(
-            "kind".to_string(),
-            serde_json::Value::String(self.repair_kind.clone()),
-        );
-        map.insert(
-            "layer".to_string(),
-            serde_json::Value::String(self.layer.clone()),
-        );
-        map.insert(
-            "tool".to_string(),
-            serde_json::Value::String(self.tool_name.clone()),
-        );
-        if let Some(ref field) = self.field {
-            map.insert(
-                "field".to_string(),
-                serde_json::Value::String(field.clone()),
-            );
-        }
-        if let Some(ref reason) = self.reason {
-            map.insert(
-                "reason".to_string(),
-                serde_json::Value::String(reason.clone()),
-            );
-        }
-        if let Some(ref raw_shape) = self.raw_shape {
-            map.insert("raw_shape".to_string(), raw_shape.clone());
-        }
-        if let Some(ref normalized_shape) = self.normalized_shape {
-            map.insert("normalized_shape".to_string(), normalized_shape.clone());
-        }
-        map.insert(
-            "injected_into_model_context".to_string(),
-            serde_json::Value::Bool(self.injected_into_model_context),
-        );
-        map.insert(
-            "strict_mode_would_fail".to_string(),
-            serde_json::Value::Bool(self.strict_mode_would_fail),
-        );
-        if let Some(ref original_error_kind) = self.original_error_kind {
-            map.insert(
-                "original_error_kind".to_string(),
-                serde_json::Value::String(original_error_kind.clone()),
-            );
-        }
-        map
-    }
-
-    /// Reconstruct from a loose JSON object (backward-compatible read).
-    pub fn from_loose_map(map: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
-        let repair_kind = map.get("kind")?.as_str()?.to_string();
-        let layer = map.get("layer")?.as_str()?.to_string();
-        let tool_name = map.get("tool")?.as_str()?.to_string();
-        Some(Self {
-            repair_kind,
-            layer,
-            tool_name,
-            field: map
-                .get("field")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            reason: map
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-            raw_shape: map.get("raw_shape").cloned(),
-            normalized_shape: map.get("normalized_shape").cloned(),
-            injected_into_model_context: map
-                .get("injected_into_model_context")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            strict_mode_would_fail: map
-                .get("strict_mode_would_fail")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            original_error_kind: map
-                .get("original_error_kind")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned),
-        })
-    }
 }
 
 /// Builder for `RepairEvent` — provides a fluent, type-safe way to construct
@@ -213,6 +130,11 @@ impl RepairEventBuilder {
 
     pub fn strict_mode_would_fail(mut self, value: bool) -> Self {
         self.event.strict_mode_would_fail = value;
+        self
+    }
+
+    pub fn original_error_kind(mut self, value: impl Into<String>) -> Self {
+        self.event.original_error_kind = Some(value.into());
         self
     }
 
@@ -603,9 +525,8 @@ impl RepairKind {
         }
     }
 
-    /// Parse a legacy string literal back into a stable `RepairKind`.
-    /// Accepts both the canonical snake_case and legacy forms.
-    pub fn from_legacy_str(value: &str) -> Option<Self> {
+    /// Parse the canonical wire value into a stable `RepairKind`.
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "tool_name_repair" => Some(Self::ToolNameRepair),
             "argument_normalization" => Some(Self::ArgumentNormalization),
@@ -625,11 +546,6 @@ impl RepairKind {
             "provider_fallback_retry" => Some(Self::ProviderFallbackRetry),
             "provider_request_rejected" => Some(Self::ProviderRequestRejected),
             "thinking_replay_boundary_reset" => Some(Self::ThinkingReplayBoundaryReset),
-            // Legacy aliases
-            "alias_normalization" | "field_alias_normalization" => {
-                Some(Self::ArgumentNormalization)
-            }
-            "fallback_normalization" => Some(Self::ArgumentPrevalidationFallback),
             _ => None,
         }
     }
@@ -812,7 +728,7 @@ impl RepairEvent {
     /// Attempt to normalize this event's `repair_kind` string into a stable
     /// `RepairKind` enum value.
     pub fn normalized_kind(&self) -> Option<RepairKind> {
-        RepairKind::from_legacy_str(&self.repair_kind)
+        RepairKind::parse(&self.repair_kind)
     }
 }
 
@@ -880,19 +796,19 @@ mod repair_kind_tests {
             RepairKind::ProviderFallbackRetry,
         ] {
             let s = kind.as_str();
-            let parsed = RepairKind::from_legacy_str(s);
+            let parsed = RepairKind::parse(s);
             assert_eq!(parsed, Some(*kind), "round-trip failed for {s}");
         }
     }
 
     #[test]
-    fn repair_event_original_error_kind_survives_loose_map_roundtrip() {
+    fn repair_event_original_error_kind_survives_json_roundtrip() {
         let mut event = RepairEvent::new("invalid_tool_reroute", "session_prompt", "test_tool");
         event.original_error_kind = Some("invalid_arguments".to_string());
         event.reason = Some("Error: Invalid arguments: missing field".to_string());
 
-        let map = event.to_loose_map();
-        let restored = RepairEvent::from_loose_map(&map).expect("should round-trip");
+        let value = serde_json::to_value(&event).expect("serialize");
+        let restored: RepairEvent = serde_json::from_value(value).expect("deserialize");
 
         assert_eq!(
             restored.original_error_kind.as_deref(),
@@ -908,8 +824,8 @@ mod repair_kind_tests {
     #[test]
     fn repair_event_original_error_kind_is_none_when_not_set() {
         let event = RepairEvent::new("tool_name_repair", "tool", "read");
-        let map = event.to_loose_map();
-        let restored = RepairEvent::from_loose_map(&map).expect("should round-trip");
+        let value = serde_json::to_value(&event).expect("serialize");
+        let restored: RepairEvent = serde_json::from_value(value).expect("deserialize");
 
         assert_eq!(restored.original_error_kind, None);
     }
@@ -937,27 +853,22 @@ mod repair_kind_tests {
     }
 
     #[test]
-    fn legacy_repair_kind_strings_parse_to_enum() {
+    fn canonical_repair_kind_strings_parse_to_enum() {
         assert_eq!(
-            RepairKind::from_legacy_str("tool_name_repair"),
+            RepairKind::parse("tool_name_repair"),
             Some(RepairKind::ToolNameRepair)
         );
         assert_eq!(
-            RepairKind::from_legacy_str("orphaned_tool_result"),
+            RepairKind::parse("orphaned_tool_result"),
             Some(RepairKind::SanitizerOrphanedToolResult)
         );
-        // Legacy alias
-        assert_eq!(
-            RepairKind::from_legacy_str("alias_normalization"),
-            Some(RepairKind::ArgumentNormalization)
-        );
-        // Unknown
-        assert_eq!(RepairKind::from_legacy_str("nonexistent_kind"), None);
+        assert_eq!(RepairKind::parse("alias_normalization"), None);
+        assert_eq!(RepairKind::parse("nonexistent_kind"), None);
     }
 
     #[test]
-    fn repair_event_normalized_kind_resolves_legacy_strings() {
-        let event = RepairEvent::new("alias_normalization", "tool", "skill_manage");
+    fn repair_event_normalized_kind_resolves_canonical_strings() {
+        let event = RepairEvent::new("argument_normalization", "tool", "skill_manage");
         assert_eq!(
             event.normalized_kind(),
             Some(RepairKind::ArgumentNormalization)

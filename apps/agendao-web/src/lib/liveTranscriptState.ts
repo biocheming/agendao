@@ -77,42 +77,28 @@ function stableToolCallIdFromIdentity(block: OutputBlock): string | undefined {
   // conversation jump, highlighting). Internal live-cache dedup uses
   // toolSlotKey() which adds part_kind prefix so running and result
   // for the same tool do not collide.
-  const wireLegacyBlockId = block.live_identity?.legacy_block_id?.trim();
-  if (wireLegacyBlockId) return wireLegacyBlockId;
   return toolIdFromPartKey(block.live_identity?.part_key) ?? undefined;
 }
 
-function compatibilityToolCallId(block: OutputBlock): string | undefined {
-  const explicit = isToolOutputBlock(block) ? block.tool_call_id?.trim() : undefined;
-  if (explicit) return explicit;
-  const raw = block.id?.trim();
-  return raw || undefined;
-}
-
 function toolTranscriptEntryId(block: OutputBlock): string | undefined {
-  return outputBlockLiveSlotKey(block) ?? (block.id?.trim() || undefined);
+  return outputBlockLiveSlotKey(block);
 }
 
 // Phase W2: internal dedup key for tool live cache slots.
 // Prefixes with part_kind so tool_call and tool_result for the same tool
 // get distinct slots, while the visible transcript id remains the raw
-// call_id for activity-panel / conversation-jump compatibility.
+// call_id for activity-panel linking and conversation jumps.
 function toolSlotKey(block: OutputBlock): string | undefined {
-  const entryId = toolTranscriptEntryId(block) ?? stableToolCallIdFromIdentity(block) ?? compatibilityToolCallId(block);
+  const entryId = toolTranscriptEntryId(block);
   if (!entryId) return undefined;
-  if (!toolTranscriptEntryId(block) && !stableToolCallIdFromIdentity(block)) {
-    emitObservationEvent(() => ({ ts: Date.now(), kind: "legacy_fallback_used", blockKind: block.kind, phase: block.phase ?? undefined, blockId: undefined, route: undefined, legacyPath: "tool_call_id", historyMessageCount: undefined }));
-  }
   const partKind = block.live_identity?.part_kind;
   const prefix =
     partKind === "tool_call"
       ? "running"
       : partKind === "tool_result"
         ? "done"
-        : block.phase === "start" || block.phase === "running"
-          ? "running"
-          : "done";
-  return prefix ? `${prefix}/${entryId}` : entryId;
+        : undefined;
+  return prefix ? `${prefix}/${entryId}` : undefined;
 }
 
 function hasLiveIdentity(block: OutputBlock): boolean {
@@ -135,7 +121,6 @@ function isTranscriptBearingIdentity(block: OutputBlock): boolean {
 }
 
 type LiveTranscriptRoute =
-  | "compatibility"
   | "transcript"
   | "non_transcript_live";
 
@@ -143,22 +128,9 @@ function isAuxiliaryTranscriptExcludedBlock(block: OutputBlock): boolean {
   return block.kind === "status" || block.kind === "queue_item";
 }
 
-// Phase W1: only "tool" remains on the compatibility insertion path.
-// "session_event" and "inspect" must go to their dedicated surfaces (activity
-// panel, debug panel), not the conversation feed. "status" is handled
-// separately in applyOutputBlock.
-function shouldInsertByCompatibilityPresentation(block: OutputBlock): boolean {
-  if (block.kind === "tool") {
-    emitObservationEvent(() => ({ ts: Date.now(), kind: "legacy_fallback_used", blockKind: block.kind, phase: block.phase ?? undefined, blockId: undefined, route: undefined, legacyPath: "presentation", historyMessageCount: undefined }));
-    return true;
-  }
-  return false;
-}
-
 function liveTranscriptRoute(block: OutputBlock): LiveTranscriptRoute {
   if (!hasLiveIdentity(block)) {
-    emitObservationEvent(() => ({ ts: Date.now(), kind: "legacy_fallback_used", blockKind: block.kind, phase: block.phase ?? undefined, blockId: undefined, route: undefined, legacyPath: "route", historyMessageCount: undefined }));
-    return "compatibility";
+    return "non_transcript_live";
   }
   return isTranscriptBearingIdentity(block) ? "transcript" : "non_transcript_live";
 }
@@ -171,16 +143,9 @@ export function shouldQueueLiveTranscriptBlock(block: OutputBlock): boolean {
     return false;
   }
   const queueRoute = liveTranscriptRoute(block);
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined, route: queueRoute, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined, route: queueRoute }));
   if (queueRoute === "non_transcript_live") {
     return false;
-  }
-  if (block.kind === "scheduler_stage") {
-    // Real attached-session / provenance navigation still originates from
-    // scheduler stage cards in the transcript. Keep explicit live-identity
-    // scheduler updates on the activity surface only, but allow
-    // compatibility-routed scheduler blocks into the visible feed.
-    return queueRoute === "compatibility";
   }
   // Tool progress without a stable tool-call identity belongs to the
   // execution/progress surface, not the durable transcript feed.
@@ -248,16 +213,6 @@ function historyTextBlockId(messageId: string, kind: "message" | "reasoning"): s
   return `${messageId}:${kind}`;
 }
 
-function historyToolBlockId(messageId: string, partId: string): string {
-  return `${messageId}:${partId}:tool`;
-}
-
-function historyToolPartKind(partType: string): "tool_call" | "tool_result" | undefined {
-  if (partType === "tool_call") return "tool_call";
-  if (partType === "tool_result") return "tool_result";
-  return undefined;
-}
-
 function historyMainStreamingBlockId(block: OutputBlock): string | undefined {
   const messageId = block.live_identity?.message_id?.trim();
   const partKey = block.live_identity?.part_key?.trim();
@@ -281,12 +236,12 @@ function slotKey(block: OutputBlock): string | undefined {
 }
 
 function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
-  if (liveTranscriptRoute(block) === "non_transcript_live") {
+  if (liveTranscriptRoute(block) !== "transcript") {
     return undefined;
   }
 
   // Web Phase 2: visible feed identity stays at message_id level for
-  // history rebuild compatibility (persisted history anchors use
+  // persisted history anchors use
   // {messageId}:message / {messageId}:reasoning). Live cache dedup
   // uses slotKey() for per-part-key isolation — see appendLiveBlock.
   const identityId = block.live_identity?.message_id?.trim();
@@ -295,43 +250,25 @@ function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
   }
 
   if (block.kind === "tool") {
-    const toolId = stableToolCallIdFromIdentity(block);
-    if (toolId) return toolId;
-    // Identity-bearing tool blocks must not fall back to raw event IDs.
-    // Without a canonical tool_call/tool_result identity, Web would create
-    // visible transcript entries that cannot be reconciled safely.
-    if (hasLiveIdentity(block)) return undefined;
+    return stableToolCallIdFromIdentity(block);
   }
-
-  const raw = typeof block.id === "string" ? block.id.trim() : "";
-  if (!raw) return undefined;
-  if (
-    liveTranscriptRoute(block) === "compatibility"
-    && (block.kind === "message" || block.kind === "reasoning")
-  ) {
-    emitObservationEvent(() => ({ ts: Date.now(), kind: "legacy_fallback_used", blockKind: block.kind, phase: block.phase ?? undefined, blockId: raw, route: "compatibility", legacyPath: "normalize_id", historyMessageCount: undefined }));
-    return raw;
-  }
-  if (block.kind === "message" || block.kind === "reasoning") {
-    return undefined;
-  }
-  return raw;
+  return undefined;
 }
 
 function normalizeOutputBlock(block: OutputBlock): OutputBlock {
   const id = normalizeStreamingBlockId(block);
   const toolCallId =
     block.kind === "tool"
-      ? (block.tool_call_id?.trim() || stableToolCallIdFromIdentity(block) || id)
+      ? stableToolCallIdFromIdentity(block)
       : undefined;
   const sameId = id === block.id;
   const sameToolCallId =
     block.kind !== "tool" || toolCallId === undefined || toolCallId === block.tool_call_id;
   if (sameId && sameToolCallId) {
-    emitObservationEvent(() => ({ ts: Date.now(), kind: "block_normalized", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined, route: undefined, legacyPath: undefined, historyMessageCount: undefined }));
+    emitObservationEvent(() => ({ ts: Date.now(), kind: "block_normalized", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined }));
     return block;
   }
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_normalized", blockKind: block.kind, phase: block.phase ?? undefined, blockId: id?.trim() || undefined, route: undefined, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_normalized", blockKind: block.kind, phase: block.phase ?? undefined, blockId: id?.trim() || undefined }));
   return {
     ...block,
     id,
@@ -460,19 +397,11 @@ function upsertFeedMessage(
 ): FeedMessage[] {
   const normalizedBlock = normalizeOutputBlock(block);
   const route = liveTranscriptRoute(normalizedBlock);
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route }));
   if (route === "non_transcript_live") {
     return messages;
   }
-  if (!normalizedBlock.id) {
-    if (route === "transcript") {
-      return messages;
-    }
-    return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage(normalizedBlock),
-      ...overrides,
-    });
-  }
+  if (!normalizedBlock.id) return messages;
 
   // Web Phase 2: streaming text blocks match by slotKey(). Tool blocks
   // match by toolSlotKey() so running and result for the same call_id
@@ -539,44 +468,8 @@ function upsertFeedMessage(
   return next;
 }
 
-function appendStreamingDelta(
-  messages: FeedMessage[],
-  block: OutputBlock,
-): FeedMessage[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "legacy_fallback_used", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route: "compatibility", legacyPath: "streaming_delta", historyMessageCount: undefined }));
-  if (liveTranscriptRoute(normalizedBlock) === "non_transcript_live") {
-    return messages;
-  }
-  const incomingText = normalizedBlock.text ?? "";
-  if (normalizedBlock.id) {
-    const index = messages.findIndex(
-      (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
-    );
-    if (index >= 0) {
-      const next = [...messages];
-      const candidate = next[index];
-      next[index] = {
-        ...candidate,
-        ...normalizedBlock,
-        text: `${candidate.text}${incomingText}`,
-        feedId: candidate.feedId,
-        anchorId: candidate.anchorId ?? normalizedBlock.id,
-      };
-      return emitCommitted(next, normalizedBlock);
-    }
-
-    return emitCommitted(insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage({ ...normalizedBlock, text: incomingText }),
-      text: incomingText,
-    }), normalizedBlock);
-  }
-
-  return messages;
-}
-
 function emitCommitted(result: FeedMessage[], normalizedBlock: OutputBlock): FeedMessage[] {
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_committed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route: liveTranscriptRoute(normalizedBlock), legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_committed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route: liveTranscriptRoute(normalizedBlock) }));
   return result;
 }
 
@@ -585,13 +478,13 @@ export function applyOutputBlock(
   block: OutputBlock,
   showThinking: boolean,
 ): FeedMessage[] {
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_received", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined, route: undefined, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_received", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined }));
   const normalizedBlock = normalizeOutputBlock(block);
   if (isAuxiliaryTranscriptExcludedBlock(normalizedBlock)) {
     return messages;
   }
   const route = liveTranscriptRoute(normalizedBlock);
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_routed", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route }));
   if (route === "non_transcript_live") {
     return messages;
   }
@@ -606,9 +499,6 @@ export function applyOutputBlock(
   if (normalizedBlock.kind === "message") {
     if (phase === "start") {
       return messages;
-    }
-    if (phase === "delta" && route === "compatibility") {
-      return appendStreamingDelta(messages, normalizedBlock);
     }
     // Web Phase 2: Deltas no longer rewrite the visible feed per-token.
     // The coalescer ensures every streaming text sequence ends with a
@@ -639,9 +529,6 @@ export function applyOutputBlock(
   if (normalizedBlock.kind === "reasoning") {
     if (phase === "start") {
       return messages;
-    }
-    if (phase === "delta" && route === "compatibility") {
-      return appendStreamingDelta(messages, normalizedBlock);
     }
     if (phase === "delta") {
       return messages;
@@ -684,28 +571,12 @@ export function applyOutputBlock(
     if (!hasVisibleTextPayload(normalizedBlock)) {
       return messages;
     }
-    if (normalizedBlock.id) {
-      return emitCommitted(upsertFeedMessage(messages, normalizedBlock, {
-        text: primaryDisplayText(normalizedBlock),
-      }), normalizedBlock);
-    }
-    if (!shouldInsertByCompatibilityPresentation(normalizedBlock)) {
-      return messages;
-    }
-    return emitCommitted(insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock)), normalizedBlock);
-  }
-
-  if (normalizedBlock.id) {
+    if (!normalizedBlock.id) return messages;
     return emitCommitted(upsertFeedMessage(messages, normalizedBlock, {
       text: primaryDisplayText(normalizedBlock),
     }), normalizedBlock);
   }
-
-  if (!shouldInsertByCompatibilityPresentation(normalizedBlock)) {
-    return messages;
-  }
-
-  return emitCommitted(insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock)), normalizedBlock);
+  return messages;
 }
 
 export function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): FeedMessage[] {
@@ -721,89 +592,38 @@ export function buildFeedFromHistory(history: MessageRecord[], showThinking: boo
         continue;
       }
       if (part.output_block) {
-        const partKind = historyToolPartKind(part.type);
-        const historyOutputBlock =
-          part.output_block.kind === "tool"
-            ? {
-                ...part.output_block,
-                id: historyToolBlockId(message.id, part.id),
-                metadata: partKind
-                  ? {
-                      ...(part.output_block.metadata ?? {}),
-                      agendao_web_history_part_kind: partKind,
-                    }
-                  : part.output_block.metadata,
-                tool_call_id:
-                  part.output_block.tool_call_id?.trim()
-                  || part.output_block.id?.trim()
-                  || undefined,
-              }
-            : part.output_block;
-        messages = applyOutputBlock(messages, historyOutputBlock, showThinking);
+        messages = applyOutputBlock(messages, part.output_block, showThinking);
         continue;
       }
 
       if (part.type === "reasoning" && part.text) {
         const blockId = historyTextBlockId(message.id, "reasoning");
-        if (!startedReasoning) {
-          messages = applyOutputBlock(
-            messages,
-            {
-              id: blockId,
-              kind: "reasoning",
-              phase: "start",
-              role: message.role,
-              metadata: message.metadata,
-              text: "",
-            },
-            showThinking,
-          );
-          startedReasoning = true;
-        }
-        messages = applyOutputBlock(
-          messages,
-          {
-            id: blockId,
-            kind: "reasoning",
-            // Phase 2: synthetic "full" so history rebuild produces visible
-            // blocks (delta is a silent no-op in the visible feed).
-            phase: "full",
-            role: message.role,
-            text: part.text,
-          },
-          showThinking,
-        );
+        if (!showThinking) continue;
+        const block: OutputBlock = {
+          id: blockId,
+          kind: "reasoning",
+          phase: "full",
+          role: message.role,
+          metadata: startedReasoning ? undefined : message.metadata,
+          text: part.text,
+        };
+        messages = upsertHistoryTextMessage(messages, block);
+        startedReasoning = true;
         continue;
       }
 
       if (part.type === "text" && part.text) {
         const blockId = historyTextBlockId(message.id, "message");
-        if (!startedText) {
-          messages = applyOutputBlock(
-            messages,
-            {
-              id: blockId,
-              kind: "message",
-              phase: "start",
-              role: message.role,
-              metadata: message.metadata,
-              text: "",
-            },
-            showThinking,
-          );
-          startedText = true;
-        }
-        messages = applyOutputBlock(
-          messages,
-          {
-            id: blockId,
-            kind: "message",
-            phase: "full",
-            role: message.role,
-            text: part.text,
-          },
-          showThinking,
-        );
+        const block: OutputBlock = {
+          id: blockId,
+          kind: "message",
+          phase: "full",
+          role: message.role,
+          metadata: startedText ? undefined : message.metadata,
+          text: part.text,
+        };
+        messages = upsertHistoryTextMessage(messages, block);
+        startedText = true;
       }
     }
 
@@ -811,43 +631,42 @@ export function buildFeedFromHistory(history: MessageRecord[], showThinking: boo
       if (block.kind === "message" && startedText) {
         continue;
       }
-      messages = applyOutputBlock(messages, block, showThinking);
+      if (block.kind === "message") {
+        messages = upsertHistoryTextMessage(messages, { ...block, phase: "full" });
+      } else if (block.kind === "multimodal_info") {
+        messages = insertFeedMessageByPresentation(
+          messages,
+          toFeedMessage({ ...block, phase: "full" }),
+        );
+      }
       if (block.kind === "message") {
         startedText = true;
       }
     }
-
-    if (startedReasoning) {
-      messages = applyOutputBlock(
-        messages,
-        {
-          id: historyTextBlockId(message.id, "reasoning"),
-          kind: "reasoning",
-          phase: "end",
-          role: message.role,
-          text: "",
-        },
-        showThinking,
-      );
-    }
-
-    if (startedText) {
-      messages = applyOutputBlock(
-        messages,
-        {
-          id: historyTextBlockId(message.id, "message"),
-          kind: "message",
-          phase: "end",
-          role: message.role,
-          text: "",
-        },
-        showThinking,
-      );
-    }
   }
 
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "history_rebuilt", blockKind: "history", phase: undefined, blockId: undefined, route: undefined, legacyPath: undefined, historyMessageCount: history.length }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "history_rebuilt", blockKind: "history", historyMessageCount: history.length }));
   return messages;
+}
+
+function upsertHistoryTextMessage(
+  messages: FeedMessage[],
+  block: OutputBlock,
+): FeedMessage[] {
+  const index = messages.findIndex(
+    (message) => message.kind === block.kind && message.id === block.id,
+  );
+  if (index < 0) return insertFeedMessageByPresentation(messages, toFeedMessage(block));
+
+  const next = [...messages];
+  next[index] = {
+    ...next[index],
+    ...block,
+    text: reconcileStreamingText(next[index].text ?? "", primaryDisplayText(block)),
+    feedId: next[index].feedId,
+    anchorId: next[index].anchorId ?? block.id,
+  };
+  return next;
 }
 
 export function estimateContextTokensFromHistory(history: MessageRecord[]): number | null {
@@ -929,7 +748,7 @@ function liveTextSnapshot(block: OutputBlock, previous?: OutputBlock): OutputBlo
 }
 
 export function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock[] {
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_received", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined, route: undefined, legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_received", blockKind: block.kind, phase: block.phase ?? undefined, blockId: block.id?.trim() || undefined }));
   const normalizedBlock = normalizeOutputBlock(block);
   if (!shouldQueueLiveTranscriptBlock(normalizedBlock)) {
     return blocks;
@@ -937,7 +756,7 @@ export function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): Outp
   if (!shouldRetainLiveBlock(normalizedBlock)) {
     return blocks;
   }
-  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_accumulated", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route: liveTranscriptRoute(normalizedBlock), legacyPath: undefined, historyMessageCount: undefined }));
+  emitObservationEvent(() => ({ ts: Date.now(), kind: "block_accumulated", blockKind: normalizedBlock.kind, phase: normalizedBlock.phase ?? undefined, blockId: normalizedBlock.id?.trim() || undefined, route: liveTranscriptRoute(normalizedBlock) }));
 
   const next = blocks.slice();
   const existingIndex = findRetainedLiveBlockIndex(next, normalizedBlock);

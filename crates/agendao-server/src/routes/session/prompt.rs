@@ -1,5 +1,4 @@
 use std::path::{Path as FsPath, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +7,7 @@ use agendao_memory::{
     load_last_prefetch_packet, load_persisted_memory_snapshot, render_frozen_snapshot_block,
     render_prefetch_packet_block, PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
+use agendao_storage::{MessageRepository, SessionRepository};
 use agendao_types::{
     message_latest_compaction_summary, ExternalAdapterResolvedBinding, MemoryRetrievalPacket,
     MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
@@ -16,31 +16,24 @@ use agendao_types::{
     SessionContinuityTurn, SessionMessage,
 };
 use agendao_util::util::format::truncate_chars;
-use agendao_storage::{MessageRepository, SessionRepository};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
     Json,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::recovery::RecoveryExecutionContext;
 use crate::routes::multimodal::resolve_provider_model;
 use crate::routes::permission::request_permission;
 use crate::routes::provider_diagnostics::attach_provider_diagnostic_from_error;
-use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::session_runtime::events::{
     broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
 };
-use crate::session_runtime::{
-    assistant_visible_text, ensure_default_session_title,
-    finalize_active_scheduler_stage_cancelled, first_user_message_text,
-    visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
-};
+use crate::session_runtime::{assistant_visible_text, ensure_default_session_title, ModelPricing};
 use crate::{ApiError, Result, ServerState};
-use agendao_agent::{AgentMode, AgentRegistry};
 use agendao_command::{
     Command, CommandArgumentField, CommandArgumentKind, CommandContext, CommandRegistry,
     InteractivePolicy,
@@ -49,19 +42,6 @@ use agendao_command_render::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock,
 };
 use agendao_multimodal::{MultimodalAuthority, RuntimeMultimodalExplain, SessionPartAdapter};
-use agendao_orchestrator::output_metadata::output_usage;
-use agendao_orchestrator::output_projection::{
-    SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY, SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY,
-    SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
-};
-use agendao_orchestrator::{
-    scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
-    scheduler_preset_extension_from_plan, AvailableAgentMeta, AvailableCategoryMeta,
-    CommandDefinition as WorkflowCommandDefinition, DebugConfig,
-    ExecutionContext as OrchestratorExecutionContext, IterationPolicyDefinition, MetricDefinition,
-    ModelResolver, ObjectiveDefinition, Orchestrator, OrchestratorContext, ScopeDefinition,
-    ToolExecutor as OrchestratorToolExecutor, ToolRunner,
-};
 use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 use agendao_session::prompt::assistant_text_live_identity;
@@ -73,21 +53,10 @@ use super::super::{
     apply_plugin_config_hooks, get_plugin_loader, plugin_auth::ensure_plugin_loader_active,
     should_apply_plugin_config_hooks,
 };
-use super::autoresearch_target::{
-    resolve_autoresearch_command, AutoresearchProfileOverrideRecord,
-    AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
-};
-use super::cancel::is_scheduler_cancellation_error;
 use super::messages::{
     prompt_display_text, prompt_parts_from_session_parts, prompt_text_from_parts,
 };
-use super::scheduler::{
-    apply_scheduler_selection_session_metadata, apply_skill_tree_telemetry_metadata,
-    resolve_prompt_request_config, resolve_scheduler_profile_config, scheduler_mode_kind,
-    scheduler_system_prompt_preview, to_task_agent_info, PromptRequestSchedulerProfileSource,
-    SchedulerAgentResolver, SchedulerRunCancelToken, SessionSchedulerModelResolver,
-    SessionSchedulerToolExecutor,
-};
+use super::scheduler::{apply_scheduler_selection_session_metadata, resolve_prompt_request_config};
 use super::session_crud::{
     compaction_lifecycle_status_hook, persist_session_if_enabled, resolved_session_directory,
     set_session_run_status, IdleGuard,
@@ -99,9 +68,7 @@ struct ResolvedPromptPayload {
     display_text: String,
     execution_text: String,
     agent: Option<String>,
-    scheduler_profile: Option<String>,
-    scheduler_profile_override: Option<(String, agendao_orchestrator::SchedulerProfileConfig)>,
-    autoresearch_profile_override_record: Option<AutoresearchProfileOverrideRecord>,
+    scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     command: Option<Command>,
     pending_raw_arguments: Option<String>,
 }
@@ -236,22 +203,6 @@ async fn clear_followup_pending(state: &Arc<ServerState>, session_id: &str) {
             chrono::Utc::now().timestamp_millis(),
         )
         .await;
-}
-
-fn set_autoresearch_override_metadata(
-    session: &mut agendao_session::Session,
-    record: Option<&AutoresearchProfileOverrideRecord>,
-) {
-    if let Some(record) = record {
-        if let Ok(value) = serde_json::to_value(record) {
-            session.insert_metadata(
-                AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY.to_string(),
-                value,
-            );
-            return;
-        }
-    }
-    session.remove_metadata(AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY);
 }
 
 pub(crate) fn load_verified_external_adapter_binding(
@@ -424,7 +375,7 @@ async fn resolve_prompt_payload(
     display_text: &str,
     session_id: &str,
     session_directory: &str,
-    config: &AppConfig,
+    _config: &AppConfig,
 ) -> Result<ResolvedPromptPayload> {
     let mut registry = CommandRegistry::new();
     registry
@@ -436,41 +387,33 @@ async fn resolve_prompt_payload(
             display_text: display_text.to_string(),
             execution_text: display_text.to_string(),
             agent: None,
-            scheduler_profile: None,
-            scheduler_profile_override: None,
-            autoresearch_profile_override_record: None,
+            scheduler: None,
             command: None,
             pending_raw_arguments: None,
         });
     };
 
     let command = parsed.command.clone();
-    let mut scheduler_profile = command.scheduler_profile.clone();
-    let mut scheduler_profile_override = None;
-    let mut autoresearch_profile_override_record = None;
-    let mut raw_arguments_for_hydration = parsed.raw_arguments.clone();
-    let mut raw_arguments_for_pending = parsed.raw_arguments.clone();
-    if command.name == "autoresearch" {
-        let resolved =
-            resolve_autoresearch_command(config, session_directory, &parsed.raw_arguments)
-                .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-        scheduler_profile = Some(resolved.scheduler_profile_name.clone());
-        raw_arguments_for_hydration = resolved.raw_arguments_for_execution;
-        raw_arguments_for_pending = resolved.raw_arguments_for_pending;
-        autoresearch_profile_override_record = resolved.profile_override.clone();
-        scheduler_profile_override = resolved
-            .profile_override
-            .map(|record| (record.profile_name.clone(), record.profile));
-    }
+    let scheduler = command.invocation.as_ref().and_then(|invocation| {
+        matches!(
+            invocation.mode,
+            agendao_command::CommandExecutionMode::Scheduler
+        )
+        .then(|| {
+            let template = if command.name.starts_with("autoresearch") {
+                agendao_orchestrator::templates::TemplateId::Autoresearch
+            } else {
+                agendao_orchestrator::templates::TemplateId::Direct
+            };
+            agendao_orchestrator::selector::SchedulerChoice::Template { template }
+        })
+    });
+    let raw_arguments_for_hydration = parsed.raw_arguments.clone();
+    let raw_arguments_for_pending = parsed.raw_arguments.clone();
     let invocation = command.invocation.as_ref();
     let scheduler_defaults = invocation
         .map(|invocation| {
             hydrate_scheduler_command_arguments(
-                config,
-                &command,
-                scheduler_profile_override
-                    .as_ref()
-                    .map(|(_, profile)| profile),
                 &raw_arguments_for_hydration,
                 &invocation.argument_schema,
             )
@@ -517,9 +460,7 @@ async fn resolve_prompt_payload(
         display_text: display_text.to_string(),
         execution_text,
         agent: None,
-        scheduler_profile,
-        scheduler_profile_override,
-        autoresearch_profile_override_record,
+        scheduler,
         command: Some(command.clone()),
         pending_raw_arguments,
     })
@@ -700,21 +641,6 @@ pub(super) fn build_scheduler_session_context_block(
     build_scheduler_session_context_packet(session).map(|packet| packet.render())
 }
 
-pub(super) fn propagate_output_projection_metadata(
-    target: &mut std::collections::HashMap<String, serde_json::Value>,
-    source: &std::collections::HashMap<String, serde_json::Value>,
-) {
-    for key in [
-        SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
-        SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY,
-        SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY,
-    ] {
-        if let Some(value) = source.get(key) {
-            target.insert(key.to_string(), value.clone());
-        }
-    }
-}
-
 pub(super) fn merge_system_prompt_with_memory_snapshot(
     base: Option<String>,
     frozen_snapshot_block: Option<&str>,
@@ -823,9 +749,6 @@ fn scheduler_context_text_for_message(message: &SessionMessage) -> (String, bool
 }
 
 fn is_scheduler_context_message(message: &SessionMessage) -> bool {
-    if message.metadata.contains_key("scheduler_stage") {
-        return false;
-    }
     matches!(message.role, MessageRole::User | MessageRole::Assistant)
 }
 
@@ -1094,141 +1017,11 @@ fn build_raw_arguments_from_map(
     parts.join(" ")
 }
 
-fn workflow_command_value(def: &WorkflowCommandDefinition) -> String {
-    def.command.trim().to_string()
-}
-
-fn workflow_scope_values(scope: &ScopeDefinition) -> Vec<String> {
-    scope
-        .include
-        .iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect()
-}
-
-fn workflow_metric_value(metric: &MetricDefinition) -> String {
-    serde_json::to_string(metric).unwrap_or_else(|_| "metric".to_string())
-}
-
-fn workflow_debug_symptom(debug: &DebugConfig) -> String {
-    debug.symptom.trim().to_string()
-}
-
-fn workflow_iteration_value(iteration_policy: &IterationPolicyDefinition) -> Option<String> {
-    iteration_policy
-        .max_iterations
-        .map(|value| value.to_string())
-}
-
-fn populate_objective_defaults(
-    defaults: &mut std::collections::HashMap<String, Vec<String>>,
-    objective: &ObjectiveDefinition,
-) {
-    let goal = objective.goal.trim();
-    if !goal.is_empty() {
-        defaults.insert("goal".to_string(), vec![goal.to_string()]);
-    }
-
-    let scope = workflow_scope_values(&objective.scope);
-    if !scope.is_empty() {
-        defaults.insert("scope".to_string(), scope);
-    }
-
-    let metric = workflow_metric_value(&objective.metric);
-    if !metric.trim().is_empty() {
-        defaults.insert("metric".to_string(), vec![metric]);
-    }
-
-    let verify = workflow_command_value(&objective.verify);
-    if !verify.is_empty() {
-        defaults.insert("verify".to_string(), vec![verify]);
-    }
-
-    if let Some(guard) = objective.guard.as_ref() {
-        let guard = workflow_command_value(guard);
-        if !guard.is_empty() {
-            defaults.insert("guard".to_string(), vec![guard]);
-        }
-    }
-}
-
-fn workflow_command_defaults(
-    config: &AppConfig,
-    command: &Command,
-    scheduler_profile_override: Option<&agendao_orchestrator::SchedulerProfileConfig>,
-) -> Result<std::collections::HashMap<String, Vec<String>>> {
-    let profile = if let Some(profile) = scheduler_profile_override {
-        profile.clone()
-    } else {
-        let Some(profile_name) = command.scheduler_profile.as_deref() else {
-            return Ok(std::collections::HashMap::new());
-        };
-        let Some((_, profile)) = resolve_scheduler_profile_config(config, Some(profile_name))
-        else {
-            return Ok(std::collections::HashMap::new());
-        };
-        profile
-    };
-    let Some(workflow) = profile.workflow() else {
-        return Ok(std::collections::HashMap::new());
-    };
-
-    let mut defaults = std::collections::HashMap::new();
-
-    if let Some(objective) = workflow.objective.as_ref() {
-        populate_objective_defaults(&mut defaults, objective);
-    }
-    if let Some(iteration_policy) = workflow.iteration_policy.as_ref() {
-        if let Some(iterations) = workflow_iteration_value(iteration_policy) {
-            defaults.insert("iterations".to_string(), vec![iterations]);
-        }
-    }
-    if let Some(debug) = workflow.debug.as_ref() {
-        let symptom = workflow_debug_symptom(debug);
-        if !symptom.is_empty() {
-            defaults.insert("symptom".to_string(), vec![symptom]);
-        }
-    }
-    if let Some(ship) = workflow.ship.as_ref() {
-        defaults.entry("target".to_string()).or_insert_with(|| {
-            vec![format!(
-                "ship {}",
-                serde_json::to_string(&ship.ship_type).unwrap_or_else(|_| "target".to_string())
-            )]
-        });
-    }
-
-    Ok(defaults)
-}
-
 fn hydrate_scheduler_command_arguments(
-    config: &AppConfig,
-    command: &Command,
-    scheduler_profile_override: Option<&agendao_orchestrator::SchedulerProfileConfig>,
     raw_arguments: &str,
     fields: &[CommandArgumentField],
 ) -> Result<(std::collections::HashMap<String, Vec<String>>, String)> {
-    let mut parsed_arguments = parse_command_argument_map(Some(raw_arguments), fields);
-    let defaults = workflow_command_defaults(config, command, scheduler_profile_override)?;
-
-    for field in fields {
-        let key = normalize_command_field_key(&field.key);
-        let has_value = parsed_arguments
-            .get(&key)
-            .is_some_and(|values| values.iter().any(|value| !value.trim().is_empty()));
-        if has_value {
-            continue;
-        }
-        let Some(default_values) = defaults.get(&key) else {
-            continue;
-        };
-        if default_values.is_empty() {
-            continue;
-        }
-        parsed_arguments.insert(key, default_values.clone());
-    }
-
+    let parsed_arguments = parse_command_argument_map(Some(raw_arguments), fields);
     let hydrated_raw = build_raw_arguments_from_map(fields, &parsed_arguments);
     Ok((parsed_arguments, hydrated_raw))
 }
@@ -1299,7 +1092,6 @@ async fn create_pending_command_question(
     command: &Command,
     raw_arguments: Option<&str>,
     missing_fields: &[CommandArgumentField],
-    autoresearch_override_record: Option<&AutoresearchProfileOverrideRecord>,
 ) -> Result<String> {
     let questions = missing_fields
         .iter()
@@ -1319,11 +1111,9 @@ async fn create_pending_command_question(
             "command": command.name,
             "rawArguments": raw_arguments.unwrap_or_default(),
             "missingFields": missing_fields.iter().map(|field| field.key.clone()).collect::<Vec<_>>(),
-            "schedulerProfile": command.scheduler_profile.clone(),
             "questionId": question_info.id.clone(),
         }),
     );
-    set_autoresearch_override_metadata(&mut session, autoresearch_override_record);
     sessions.update(session);
 
     Ok(question_info.id)
@@ -1361,7 +1151,7 @@ pub(crate) struct SessionPromptRequest {
     pub model: Option<String>,
     pub variant: Option<String>,
     pub agent: Option<String>,
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub command: Option<String>,
     pub arguments: Option<String>,
     #[serde(default)]
@@ -1382,7 +1172,7 @@ impl SessionPromptRequest {
             model: None,
             variant: None,
             agent: None,
-            scheduler_profile: None,
+            scheduler: None,
             command: None,
             arguments: None,
             recovery: None,
@@ -1396,7 +1186,6 @@ fn build_ingress_envelope(
     text: &str,
     idempotency_key: Option<String>,
     context_key: Option<String>,
-    scheduler_stage_id: Option<String>,
 ) -> agendao_session::prompt::IngressTurnEnvelope {
     let now = chrono::Utc::now().timestamp_millis();
     let turn_id = idempotency_key
@@ -1412,7 +1201,6 @@ fn build_ingress_envelope(
         text.to_string(),
     );
     envelope.context_key = context_key;
-    envelope.scheduler_stage_id = scheduler_stage_id;
     envelope.idempotency_key = idempotency_key.filter(|value| !value.trim().is_empty());
     envelope.stabilization.policy =
         agendao_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY.to_string();
@@ -1441,7 +1229,6 @@ fn task_ingress_for_prompt(
             display_prompt_text,
             req.idempotency_key.clone(),
             Some("session_prompt".to_string()),
-            None,
         )
     };
 
@@ -1472,7 +1259,6 @@ fn ingress_source_from_request(value: Option<&str>) -> agendao_session::prompt::
 fn supports_live_web_ingress_batch(ingress: &agendao_session::prompt::IngressTurnEnvelope) -> bool {
     matches!(ingress.source, agendao_session::prompt::IngressSource::Web)
         && ingress.context_key.as_deref() == Some("session_prompt")
-        && ingress.scheduler_stage_id.is_none()
         && ingress.command.is_none()
 }
 
@@ -1519,7 +1305,6 @@ fn matching_live_web_ingress_batch(
             first.ingress.session_id == ingress.session_id
                 && first.ingress.source == ingress.source
                 && first.ingress.context_key == ingress.context_key
-                && first.ingress.scheduler_stage_id == ingress.scheduler_stage_id
                 && first.ingress.command == ingress.command
         })
         .unwrap_or(false)
@@ -1742,9 +1527,7 @@ async fn stage_live_web_ingress_batch(
 pub(super) struct SchedulerUserMessageContext<'a> {
     pub(super) display_prompt_text: &'a str,
     pub(super) resolved_user_prompt: &'a str,
-    pub(super) profile_name: &'a str,
-    pub(super) mode_kind: &'a str,
-    pub(super) resolved_system_prompt: &'a str,
+    pub(super) choice: &'a agendao_orchestrator::selector::SchedulerChoice,
     pub(super) recovery: Option<&'a RecoveryExecutionContext>,
 }
 
@@ -1790,24 +1573,10 @@ pub(super) async fn create_scheduler_user_message(
     }
 
     user_message.metadata.insert(
-        "scheduler_profile".to_string(),
-        serde_json::json!(ctx.profile_name),
-    );
-    user_message.metadata.insert(
-        "resolved_execution_mode_kind".to_string(),
-        serde_json::json!(ctx.mode_kind),
-    );
-    user_message.metadata.insert(
-        "resolved_system_prompt".to_string(),
-        serde_json::json!(ctx.resolved_system_prompt),
-    );
-    user_message.metadata.insert(
-        "resolved_system_prompt_preview".to_string(),
-        serde_json::json!(ctx.resolved_system_prompt),
-    );
-    user_message.metadata.insert(
-        "resolved_system_prompt_applied".to_string(),
-        serde_json::json!(true),
+        "scheduler".to_string(),
+        serde_json::to_value(ctx.choice).map_err(|error| {
+            ApiError::InternalError(format!("Failed to serialize scheduler choice: {error}"))
+        })?,
     );
     user_message.metadata.insert(
         "resolved_user_prompt".to_string(),
@@ -1820,56 +1589,9 @@ pub(super) async fn create_scheduler_user_message(
                 .metadata
                 .insert("recovery_action".to_string(), serde_json::json!(action));
         }
-        if let Some(target_id) = recovery.target_id.as_deref() {
-            user_message.metadata.insert(
-                "recovery_target_id".to_string(),
-                serde_json::json!(target_id),
-            );
-        }
-        if let Some(target_kind) = recovery.target_kind.as_deref() {
-            user_message.metadata.insert(
-                "recovery_target_kind".to_string(),
-                serde_json::json!(target_kind),
-            );
-        }
-        if let Some(target_label) = recovery.target_label.as_deref() {
-            user_message.metadata.insert(
-                "recovery_target_label".to_string(),
-                serde_json::json!(target_label),
-            );
-        }
     }
 
     Ok(user_message.id.clone())
-}
-
-pub(super) fn move_scheduler_final_answer_after_stage_messages(
-    session: &mut agendao_session::Session,
-    assistant_message_id: &str,
-) {
-    let Some(assistant_index) = session
-        .messages
-        .iter()
-        .position(|message| message.id == assistant_message_id)
-    else {
-        return;
-    };
-
-    let Some(last_stage_index) = session
-        .messages
-        .iter()
-        .enumerate()
-        .skip(assistant_index + 1)
-        .filter(|(_, message)| message.metadata.contains_key("scheduler_stage"))
-        .map(|(index, _)| index)
-        .next_back()
-    else {
-        return;
-    };
-
-    let message = session.messages_mut().remove(assistant_index);
-    session.messages_mut().insert(last_stage_index, message);
-    session.touch();
 }
 
 fn annotate_last_user_message_multimodal_metadata(
@@ -1914,15 +1636,18 @@ async fn session_prompt_inner(
     verified_ingress: Option<VerifiedSessionIngress>,
 ) -> Result<Json<serde_json::Value>> {
     // 懒加载水合闸门：prompt 需要完整消息上下文，进入执行前先回填。
-    state.ensure_session_messages_hydrated(&id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state
+        .ensure_session_messages_hydrated(&id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
     super::super::permission::PERMISSION_ENGINE
         .lock()
         .await
         .clear_turn(&id);
 
-    if req.agent.is_some() && req.scheduler_profile.is_some() {
+    if req.agent.is_some() && req.scheduler.is_some() {
         return Err(ApiError::BadRequest(
-            "`agent` and `scheduler_profile` are mutually exclusive".to_string(),
+            "`agent` and `scheduler` are mutually exclusive".to_string(),
         ));
     }
     if req.command.is_some() && req.parts.is_some() {
@@ -1973,20 +1698,13 @@ async fn session_prompt_inner(
     } else {
         state.config_store.config()
     };
-    let known_agents = AgentRegistry::from_config(&config)
-        .list_all()
-        .into_iter()
-        .map(|agent| agent.name.clone())
-        .collect::<Vec<_>>();
 
     let resolved_prompt = if let Some(parts) = request_parts.as_ref() {
         ResolvedPromptPayload {
             display_text: prompt_display_text(parts),
             execution_text: prompt_text_from_parts(parts),
             agent: None,
-            scheduler_profile: None,
-            scheduler_profile_override: None,
-            autoresearch_profile_override_record: None,
+            scheduler: None,
             command: None,
             pending_raw_arguments: None,
         }
@@ -2014,9 +1732,6 @@ async fn session_prompt_inner(
                         command,
                         resolved_prompt.pending_raw_arguments.as_deref(),
                         &missing_fields,
-                        resolved_prompt
-                            .autoresearch_profile_override_record
-                            .as_ref(),
                     )
                     .await?;
                     broadcast_session_reconcile(
@@ -2054,9 +1769,11 @@ async fn session_prompt_inner(
             }
         }
         if pending_command_cleared {
-            broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
+            broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange)
+                .await;
         }
-        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange)
+            .await;
         persist_session_if_enabled(&state, &id).await;
         return Ok(Json(serde_json::json!({
             "status": "accepted",
@@ -2070,49 +1787,27 @@ async fn session_prompt_inner(
     let prompt_parts = if let Some(parts) = request_parts.clone() {
         parts
     } else {
-        agendao_session::resolve_prompt_parts(
-            &prompt_text,
-            FsPath::new(&session_directory),
-            &known_agents,
-        )
-        .await
+        agendao_session::resolve_prompt_parts(&prompt_text, FsPath::new(&session_directory)).await
     };
     let effective_agent = resolved_prompt.agent.clone().or(req.agent.clone());
-    let effective_scheduler_profile = resolved_prompt
-        .scheduler_profile
-        .clone()
-        .or(req.scheduler_profile.clone());
-    let effective_scheduler_profile_source = if resolved_prompt
-        .scheduler_profile_override
-        .is_some()
-        || resolved_prompt.scheduler_profile.is_some()
-    {
-        Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
-    } else if req.scheduler_profile.is_some() {
-        Some(PromptRequestSchedulerProfileSource::ExplicitRequest)
-    } else {
-        None
-    };
-
+    let effective_scheduler = super::scheduler::resolve_effective_scheduler_choice(
+        resolved_prompt.scheduler.clone(),
+        req.scheduler.clone(),
+        effective_agent.is_some(),
+    );
     let request_config =
         resolve_prompt_request_config(super::scheduler::PromptRequestConfigInput {
             state: &state,
             config: &config,
             session_id: &id,
             requested_agent: effective_agent.as_deref(),
-            requested_scheduler_profile: effective_scheduler_profile.as_deref(),
-            requested_scheduler_profile_source: effective_scheduler_profile_source,
-            scheduler_profile_override: resolved_prompt.scheduler_profile_override.clone(),
+            requested_scheduler: effective_scheduler.as_ref(),
             request_model: req.model.as_deref(),
             request_variant: req.variant.as_deref(),
             route: "session",
         })
         .await?;
     let scheduler_applied = request_config.scheduler_applied;
-    let scheduler_profile_name = request_config.scheduler_profile_name.clone();
-    let scheduler_root_agent = request_config.scheduler_root_agent.clone();
-    let scheduler_skill_tree_applied = request_config.scheduler_skill_tree_applied;
-    let request_skill_tree_plan = request_config.request_skill_tree_plan.clone();
     let resolved_agent = request_config.resolved_agent.clone();
     let provider = request_config.provider.clone();
     let provider_id = request_config.provider_id.clone();
@@ -2170,11 +1865,7 @@ async fn session_prompt_inner(
     let task_provider = provider_id.clone();
     let task_system_prompt = agent_system_prompt.clone();
     let task_scheduler_applied = scheduler_applied;
-    let task_scheduler_profile_name = scheduler_profile_name.clone();
-    let task_scheduler_root_agent = scheduler_root_agent.clone();
-    let task_scheduler_skill_tree_applied = scheduler_skill_tree_applied;
-    let task_request_skill_tree_plan = request_skill_tree_plan.clone();
-    let task_config = config.clone();
+    let task_scheduler_choice = request_config.scheduler_choice.clone();
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
     let task_multimodal_explain = multimodal_explain.clone();
@@ -2193,9 +1884,6 @@ async fn session_prompt_inner(
     let live_web_ingress_stage =
         stage_live_web_ingress_batch(&state, &session_id, &task_ingress, &task_prompt_parts)
             .await?;
-    let task_scheduler_profile_config = request_config.scheduler_profile_config.clone();
-    let task_autoresearch_override_record =
-        resolved_prompt.autoresearch_profile_override_record.clone();
     if matches!(live_web_ingress_stage, LiveWebIngressBatchStage::Follower) {
         return Ok(Json(serde_json::json!({
             "status": "accepted",
@@ -2237,10 +1925,6 @@ async fn session_prompt_inner(
             pending_command_cleared = session
                 .remove_metadata("pending_command_invocation")
                 .is_some();
-            set_autoresearch_override_metadata(
-                &mut session,
-                task_autoresearch_override_record.as_ref(),
-            );
             if let Some(binding) = task_verified_external_adapter_binding.as_ref() {
                 persist_verified_external_adapter_binding(&mut session, binding);
                 persisted_external_adapter_binding = true;
@@ -2249,7 +1933,8 @@ async fn session_prompt_inner(
         }
     }
     if pending_command_cleared {
-        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange).await;
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange)
+            .await;
         persist_session_if_enabled(&state, &id).await;
     }
     if persisted_external_adapter_binding {
@@ -2338,43 +2023,19 @@ async fn session_prompt_inner(
             "scheduler_applied",
             serde_json::json!(task_scheduler_applied),
         );
-        session.insert_metadata(
-            "scheduler_skill_tree_applied",
-            serde_json::json!(task_scheduler_skill_tree_applied),
-        );
-        if let Some(profile) = task_scheduler_profile_name.as_deref() {
-            session.insert_metadata("scheduler_profile", serde_json::json!(profile));
+        if let Some(choice) = task_scheduler_choice.as_ref() {
+            session.insert_metadata(
+                "scheduler",
+                serde_json::to_value(choice).unwrap_or(serde_json::Value::Null),
+            );
         } else {
-            session.remove_metadata("scheduler_profile");
+            session.remove_metadata("scheduler");
         }
-        if let Some(root_agent) = task_scheduler_root_agent.as_deref() {
-            session.insert_metadata("scheduler_root_agent", serde_json::json!(root_agent));
-        } else {
-            session.remove_metadata("scheduler_root_agent");
-        }
+        session.remove_metadata("scheduler_root_agent");
         apply_scheduler_selection_session_metadata(&mut session, &request_config);
         if let Some(recovery) = task_recovery.as_ref() {
             if let Some(action) = recovery.action.as_ref() {
                 session.insert_metadata("last_recovery_action", serde_json::json!(action));
-            }
-            if let Some(target_id) = recovery.target_id.as_deref() {
-                session.insert_metadata("last_recovery_target_id", serde_json::json!(target_id));
-            } else {
-                session.remove_metadata("last_recovery_target_id");
-            }
-            if let Some(target_kind) = recovery.target_kind.as_deref() {
-                session
-                    .insert_metadata("last_recovery_target_kind", serde_json::json!(target_kind));
-            } else {
-                session.remove_metadata("last_recovery_target_kind");
-            }
-            if let Some(target_label) = recovery.target_label.as_deref() {
-                session.insert_metadata(
-                    "last_recovery_target_label",
-                    serde_json::json!(target_label),
-                );
-            } else {
-                session.remove_metadata("last_recovery_target_label");
             }
         }
 
@@ -2396,13 +2057,7 @@ async fn session_prompt_inner(
             memory_prefetch_block.as_deref(),
         );
 
-        if let (Some(profile_name), Some(profile_config)) = (
-            task_scheduler_profile_name.clone(),
-            task_scheduler_profile_config.clone(),
-        ) {
-            let mode_kind = scheduler_mode_kind(&profile_name);
-            let resolved_system_prompt =
-                scheduler_system_prompt_preview(&profile_name, &profile_config);
+        if let Some(choice) = task_scheduler_choice.clone() {
             let scheduler_input = agendao_session::PromptInput {
                 session_id: session_id.clone(),
                 message_id: None,
@@ -2411,9 +2066,9 @@ async fn session_prompt_inner(
                 no_reply: false,
                 system: None,
                 variant: task_variant.clone(),
-                parts: task_prompt_parts.clone(),
+                parts: effective_parts,
                 tools: None,
-                ingress: Some(task_ingress.clone()),
+                ingress: Some(effective_ingress),
             };
             let user_message_id = match create_scheduler_user_message(
                 task_state.prompt_runner.as_ref(),
@@ -2422,9 +2077,7 @@ async fn session_prompt_inner(
                 SchedulerUserMessageContext {
                     display_prompt_text: &display_prompt_text,
                     resolved_user_prompt: &prompt_text,
-                    profile_name: &profile_name,
-                    mode_kind,
-                    resolved_system_prompt: &resolved_system_prompt,
+                    choice: &choice,
                     recovery: task_recovery.as_ref(),
                 },
             )
@@ -2432,51 +2085,39 @@ async fn session_prompt_inner(
             {
                 Ok(message_id) => message_id,
                 Err(error) => {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        scheduler_profile = %profile_name,
-                        %error,
-                        "failed to create scheduler user message"
-                    );
                     let assistant = session.add_assistant_message();
                     assistant.finish = Some("error".to_string());
-                    assistant
-                        .metadata
-                        .insert("error".to_string(), serde_json::json!(error.to_string()));
-                    assistant.add_text(format!("Scheduler input error: {}", error));
-                    session.touch();
-                    {
-                        let mut sessions = task_state.sessions.lock().await;
-                        sessions.update(session.clone());
+                    assistant.add_text(format!("Scheduler input error: {error}"));
+                    task_state.sessions.lock().await.update(session);
+                    if task_reserved_run.is_some() {
+                        task_state
+                            .prompt_runner
+                            .release_reserved_session_run(&session_id)
+                            .await;
                     }
-                    broadcast_session_reconcile(
-                        task_state.as_ref(),
-                        session_id.clone(),
-                        ReconcileReason::StatusChange,
-                    )
-                    .await;
-                    persist_session_if_enabled(&task_state, &session_id).await;
                     return;
                 }
             };
-            let assistant_message_id = session.add_assistant_message().id.clone();
-
-            // Set an immediate title from the user message when the title is
-            // still the auto-generated default, so frontends see a meaningful
-            // label right away.  The LLM-generated title replaces it later.
-            if session.is_default_title() {
-                if let Some(first_text) = first_user_message_text(&session) {
-                    let immediate = agendao_session::generate_session_title(&first_text);
-                    if !immediate.is_empty() && immediate != "New Session" {
-                        session.set_auto_title(immediate);
+            let conversation_seed =
+                match agendao_session::prompt::replay_provider_messages(&session.messages) {
+                    Ok(messages) => messages,
+                    Err(error) => {
+                        let assistant = session.add_assistant_message();
+                        assistant.finish = Some("error".to_string());
+                        assistant.add_text(format!("Scheduler history error: {error}"));
+                        task_state.sessions.lock().await.update(session);
+                        if task_reserved_run.is_some() {
+                            task_state
+                                .prompt_runner
+                                .release_reserved_session_run(&session_id)
+                                .await;
+                        }
+                        return;
                     }
-                }
-            }
-
-            {
-                let mut sessions = task_state.sessions.lock().await;
-                sessions.update(session.clone());
-            }
+                };
+            let assistant_message_id = session.add_assistant_message().id.clone();
+            let directory = session.record().directory.clone();
+            task_state.sessions.lock().await.update(session.clone());
             broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),
@@ -2484,173 +2125,67 @@ async fn session_prompt_inner(
             )
             .await;
 
-            let agent_registry = Arc::new(AgentRegistry::from_config(&task_config));
-
-            // Inject runtime metadata into profile_config for dynamic prompt building
-            let mut profile_config = profile_config;
-            if profile_config.available_agents.is_empty() {
-                profile_config.available_agents = agent_registry
-                    .list()
-                    .iter()
-                    .filter(|a| !a.hidden && matches!(a.mode, AgentMode::Subagent | AgentMode::All))
-                    .map(|a| AvailableAgentMeta {
-                        name: a.name.clone(),
-                        description: a.description.clone().unwrap_or_default(),
-                        mode: match a.mode {
-                            AgentMode::Primary => "primary".to_string(),
-                            AgentMode::Subagent => "subagent".to_string(),
-                            AgentMode::All => "all".to_string(),
-                        },
-                        cost: if a.name == "oracle" {
-                            "EXPENSIVE".to_string()
-                        } else {
-                            "CHEAP".to_string()
-                        },
-                    })
-                    .collect();
-            }
-            if profile_config.available_categories.is_empty() {
-                profile_config.available_categories = task_state
-                    .category_registry
-                    .category_descriptions()
-                    .into_iter()
-                    .map(|(name, description)| AvailableCategoryMeta { name, description })
-                    .collect();
-            }
-
-            let current_model = Some(format!("{}:{}", task_provider, task_model));
-            let scheduler_abort_token = CancellationToken::new();
+            let cancellation = CancellationToken::new();
             task_state
                 .runtime_telemetry
-                .register_scheduler_run(
-                    &session_id,
-                    scheduler_abort_token.clone(),
-                    Some(profile_name.clone()),
-                )
+                .register_scheduler_run(&session_id, cancellation.clone(), None)
                 .await;
-            let tool_executor: Arc<dyn OrchestratorToolExecutor> =
-                Arc::new(SessionSchedulerToolExecutor {
-                    state: task_state.clone(),
-                    session_id: session_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    directory: session.record().directory.clone(),
-                    abort_token: scheduler_abort_token.clone(),
-                    current_model,
-                    tool_runtime_config: agendao_tool::ToolRuntimeConfig::from_config(&task_config),
-                    agent_registry: agent_registry.clone(),
-                });
-            let tool_runner = ToolRunner::new(tool_executor.clone());
-            let model_resolver: Arc<dyn ModelResolver> = Arc::new(SessionSchedulerModelResolver {
-                state: task_state.clone(),
-                fallback_provider_id: task_provider.clone(),
-                fallback_model_id: task_model.clone(),
-                fallback_request: task_compiled_request.clone(),
-            });
-            let mut exec_metadata = std::collections::HashMap::from([
+            let mut execution_metadata = std::collections::HashMap::from([
                 (
                     "message_id".to_string(),
-                    serde_json::json!(assistant_message_id.clone()),
+                    serde_json::json!(&assistant_message_id),
                 ),
                 (
                     "user_message_id".to_string(),
-                    serde_json::json!(user_message_id.clone()),
-                ),
-                (
-                    "scheduler_profile".to_string(),
-                    serde_json::json!(profile_name.clone()),
+                    serde_json::json!(&user_message_id),
                 ),
             ]);
-            if let Some(session_context_packet) = scheduler_session_context_packet.as_ref() {
-                exec_metadata.insert(
+            if let Some(packet) = scheduler_session_context_packet.as_ref() {
+                execution_metadata.insert(
                     SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
-                    session_context_packet.metadata_value(),
+                    packet.metadata_value(),
                 );
             }
-            apply_skill_tree_telemetry_metadata(
-                &mut exec_metadata,
-                task_request_skill_tree_plan.as_ref(),
-            );
-            let exec_ctx = OrchestratorExecutionContext {
-                session_id: session_id.clone(),
-                workdir: session.record().directory.clone(),
-                agent_name: profile_name.clone(),
-                metadata: exec_metadata,
-            };
-            let task_model_pricing = {
+            let scheduler_result = crate::scheduler_runner::run_scheduler(
+                crate::scheduler_runner::SchedulerRunInput {
+                    state: task_state.clone(),
+                    session_id: session_id.clone(),
+                    assistant_message_id: assistant_message_id.clone(),
+                    directory,
+                    goal: scheduler_execution_prompt,
+                    choice,
+                    provider: task_provider_client.clone(),
+                    request: task_compiled_request.clone(),
+                    conversation_seed,
+                    execution_metadata,
+                    cancellation: cancellation.clone(),
+                },
+            )
+            .await;
+            task_state
+                .runtime_telemetry
+                .finish_scheduler_run(&session_id)
+                .await;
+            if task_reserved_run.is_some() {
+                task_state
+                    .prompt_runner
+                    .release_reserved_session_run(&session_id)
+                    .await;
+            }
+
+            session = task_state
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .cloned()
+                .unwrap_or(session);
+            let model_pricing = {
                 let providers = task_state.providers.read().await;
                 providers
                     .find_model(&task_model)
                     .map(|(_, info)| ModelPricing::from_model_info(&info))
             };
-            let lifecycle_hook = Arc::new(
-                SessionSchedulerLifecycleHook::new(
-                    task_state.clone(),
-                    session_id.clone(),
-                    profile_name.clone(),
-                )
-                .with_model_pricing(task_model_pricing)
-                .with_output_hook(output_block_hook.clone()),
-            );
-            let ctx = OrchestratorContext {
-                agent_resolver: Arc::new(SchedulerAgentResolver {
-                    registry: agent_registry.clone(),
-                }),
-                model_resolver,
-                tool_executor,
-                lifecycle_hook,
-                cancel_token: Arc::new(SchedulerRunCancelToken {
-                    token: scheduler_abort_token.clone(),
-                }),
-                exec_ctx,
-            };
-            let orchestrator_result =
-                match scheduler_plan_from_profile(Some(profile_name.clone()), &profile_config) {
-                    Ok(mut plan) => {
-                        match enrich_scheduler_plan_skills(&task_state, &mut plan).await {
-                            Ok(()) => {
-                                scheduler_orchestrator_from_plan(plan, tool_runner)
-                                    .execute(&scheduler_execution_prompt, &ctx)
-                                    .await
-                            }
-                            Err(error) => Err(agendao_orchestrator::OrchestratorError::Other(
-                                error.to_string(),
-                            )),
-                        }
-                    }
-                    Err(error) => Err(agendao_orchestrator::OrchestratorError::Other(
-                        error.to_string(),
-                    )),
-                };
-            task_state
-                .runtime_telemetry
-                .finish_scheduler_run(&session_id)
-                .await;
-
-            session = {
-                let sessions = task_state.sessions.lock().await;
-                sessions.get(&session_id).cloned().unwrap_or(session)
-            };
-
-            // Extract handoff metadata before borrowing session mutably.
-            let handoff_entries: Vec<(String, serde_json::Value)> =
-                if let Ok(ref output) = orchestrator_result {
-                    [
-                        "scheduler_handoff_mode",
-                        "scheduler_handoff_plan_path",
-                        "scheduler_handoff_command",
-                    ]
-                    .iter()
-                    .filter_map(|key| {
-                        output
-                            .metadata
-                            .get(*key)
-                            .map(|v| (key.to_string(), v.clone()))
-                    })
-                    .collect()
-                } else {
-                    Vec::new()
-                };
-
             if let Some(assistant) = session.get_message_mut(&assistant_message_id) {
                 assistant.metadata.insert(
                     "model_provider".to_string(),
@@ -2659,155 +2194,121 @@ async fn session_prompt_inner(
                 assistant
                     .metadata
                     .insert("model_id".to_string(), serde_json::json!(&task_model));
-                assistant.metadata.insert(
-                    "scheduler_profile".to_string(),
-                    serde_json::json!(profile_name.clone()),
-                );
-                assistant.metadata.insert(
-                    "resolved_execution_mode_kind".to_string(),
-                    serde_json::json!(mode_kind),
-                );
                 assistant
                     .metadata
-                    .insert("mode".to_string(), serde_json::json!(profile_name.clone()));
-                assistant.metadata.insert(
-                    "scheduler_applied".to_string(),
-                    serde_json::json!(task_scheduler_applied),
-                );
-                match orchestrator_result {
+                    .insert("scheduler_applied".to_string(), serde_json::json!(true));
+                match scheduler_result {
                     Ok(output) => {
-                        if output.is_cancelled() {
-                            let _ =
-                                finalize_active_scheduler_stage_cancelled(&task_state, &session_id)
-                                    .await;
-                            assistant.finish = Some("cancelled".to_string());
-                            assistant.metadata.insert(
-                                "finish_reason".to_string(),
-                                serde_json::json!("cancelled"),
-                            );
-                        } else {
-                            assistant.finish = Some("stop".to_string());
-                        }
+                        assistant.finish = Some("stop".to_string());
                         assistant.metadata.insert(
-                            "scheduler_steps".to_string(),
-                            serde_json::json!(output.steps),
+                            "scheduler_blueprint_fingerprint".to_string(),
+                            serde_json::json!(output.fingerprint),
+                        );
+                        assistant.metadata.insert(
+                            "scheduler_blueprint".to_string(),
+                            serde_json::to_value(output.blueprint)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                        assistant.metadata.insert(
+                            "scheduler_selection_source".to_string(),
+                            serde_json::json!(crate::scheduler_runner::selection_source_name(
+                                output.source
+                            )),
+                        );
+                        assistant.metadata.insert(
+                            "scheduler_model_calls".to_string(),
+                            serde_json::json!(output.usage.model_calls),
                         );
                         assistant.metadata.insert(
                             "scheduler_tool_calls".to_string(),
-                            serde_json::json!(output.tool_calls_count),
+                            serde_json::json!(output.usage.tool_calls),
                         );
-                        propagate_output_projection_metadata(
-                            &mut assistant.metadata,
-                            &output.metadata,
-                        );
-                        if let Some(usage) = output_usage(&output.metadata) {
-                            let cost = task_model_pricing
-                                .map(|p| {
-                                    p.compute(
-                                        usage.prompt_tokens,
-                                        usage.completion_tokens,
-                                        usage.cache_read_tokens,
-                                        usage.cache_miss_tokens,
-                                        usage.cache_write_tokens,
-                                    )
-                                })
-                                .unwrap_or(0.0);
-                            assistant.usage = Some(agendao_session::MessageUsage {
-                                input_tokens: usage.prompt_tokens,
-                                output_tokens: usage.completion_tokens,
-                                reasoning_tokens: usage.reasoning_tokens,
-                                cache_read_tokens: usage.cache_read_tokens,
-                                cache_miss_tokens: usage.cache_miss_tokens,
-                                cache_write_tokens: usage.cache_write_tokens,
-                                context_tokens: usage.context_tokens.max(usage.prompt_tokens),
-                                total_cost: cost,
-                            });
-                        }
-                        assistant.add_text(visible_assistant_text_from_orchestrator_output(
-                            &output.content,
-                        ));
+                        let cost = model_pricing
+                            .map(|pricing| {
+                                pricing.compute(
+                                    output.usage.input_tokens,
+                                    output.usage.output_tokens,
+                                    output.usage.cache_read_tokens,
+                                    output.usage.cache_miss_tokens,
+                                    output.usage.cache_write_tokens,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        assistant.usage = Some(agendao_session::MessageUsage {
+                            input_tokens: output.usage.input_tokens,
+                            output_tokens: output.usage.output_tokens,
+                            reasoning_tokens: output.usage.reasoning_tokens,
+                            cache_read_tokens: output.usage.cache_read_tokens,
+                            cache_miss_tokens: output.usage.cache_miss_tokens,
+                            cache_write_tokens: output.usage.cache_write_tokens,
+                            context_tokens: output.usage.input_tokens,
+                            total_cost: cost,
+                        });
+                        let text = output
+                            .result
+                            .output
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or(output.result.summary);
+                        assistant.add_text(text);
+                    }
+                    Err(error) if cancellation.is_cancelled() => {
+                        assistant.finish = Some("cancelled".to_string());
+                        assistant
+                            .metadata
+                            .insert("finish_reason".to_string(), serde_json::json!("cancelled"));
+                        assistant.add_text("Scheduler cancelled.");
                     }
                     Err(error) => {
-                        if is_scheduler_cancellation_error(&error) {
-                            let _ =
-                                finalize_active_scheduler_stage_cancelled(&task_state, &session_id)
-                                    .await;
-                            assistant.finish = Some("cancelled".to_string());
-                            assistant.metadata.insert(
-                                "finish_reason".to_string(),
-                                serde_json::json!("cancelled"),
-                            );
-                            assistant.add_text("Scheduler cancelled.");
-                        } else {
-                            tracing::error!(
-                                session_id = %session_id,
-                                scheduler_profile = %profile_name,
-                                %error,
-                                "scheduler prompt failed"
-                            );
-                            assistant.finish = Some("error".to_string());
-                            assistant
-                                .metadata
-                                .insert("error".to_string(), serde_json::json!(error.to_string()));
-                            assistant.add_text(format!("Scheduler error: {}", error));
-                        }
+                        assistant.finish = Some("error".to_string());
+                        assistant
+                            .metadata
+                            .insert("error".to_string(), serde_json::json!(&error));
+                        assistant.add_text(format!("Scheduler error: {error}"));
                     }
                 }
             }
-            move_scheduler_final_answer_after_stage_messages(&mut session, &assistant_message_id);
             ensure_default_session_title(&mut session, task_provider_client.clone(), &task_model)
-                .await;
-            // Propagate handoff metadata to session (outside message borrow).
-            for (key, value) in handoff_entries {
-                session.insert_metadata(key, value);
-            }
-            let session_usage = session.get_usage();
-            session.touch();
-            {
-                let mut sessions = task_state.sessions.lock().await;
-                sessions.update(session.clone());
-            }
-            let _ = task_state
-                .runtime_telemetry
-                .record_session_usage(&session_id, Some(&assistant_message_id), session_usage)
                 .await;
             let assistant_text = session
                 .get_message(&assistant_message_id)
                 .map(assistant_visible_text)
                 .unwrap_or_default();
+            let session_usage = session.get_usage();
+            task_state.sessions.lock().await.update(session);
+            let _ = task_state
+                .runtime_telemetry
+                .record_session_usage(&session_id, Some(&assistant_message_id), session_usage)
+                .await;
             broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),
                 ReconcileReason::StatusChange,
             )
             .await;
-            if let Some(output_hook) = output_block_hook.clone() {
-                if !assistant_text.trim().is_empty() {
-                    emit_output_block_via_hook(
-                        Some(&output_hook),
-                        agendao_session::prompt::OutputBlockEvent {
-                            session_id: session_id.clone(),
-                            block: OutputBlock::Message(MessageBlock::full(
-                                OutputMessageRole::Assistant,
-                                assistant_text,
-                            )),
-                            id: Some(assistant_message_id.clone()),
-                            live_identity: Some(assistant_text_live_identity(
-                                &assistant_message_id,
-                                Some(assistant_message_id.clone()),
-                                LivePartPhase::Snapshot,
-                            )),
-                        },
-                    )
-                    .await;
-                }
+            if !assistant_text.trim().is_empty() {
+                emit_output_block_via_hook(
+                    output_block_hook.as_ref(),
+                    agendao_session::prompt::OutputBlockEvent {
+                        session_id: session_id.clone(),
+                        block: OutputBlock::Message(MessageBlock::full(
+                            OutputMessageRole::Assistant,
+                            assistant_text,
+                        )),
+                        id: Some(assistant_message_id.clone()),
+                        live_identity: Some(assistant_text_live_identity(
+                            &assistant_message_id,
+                            LivePartPhase::Snapshot,
+                        )),
+                    },
+                )
+                .await;
             }
             persist_session_if_enabled(&task_state, &session_id).await;
             return;
         }
 
         let (update_tx, mut update_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Arc<agendao_session::Session>>();
+            watch::channel::<Option<Arc<agendao_session::Session>>>(None);
         let update_state = task_state.clone();
         let update_session_repo = task_state.session_repo.clone();
         let update_message_repo = task_state.message_repo.clone();
@@ -2830,12 +2331,14 @@ async fn session_prompt_inner(
             let persist_latest = persist_latest.clone();
             let persist_notify = persist_notify.clone();
             async move {
-                while let Some(snapshot) = update_rx.recv().await {
+                while update_rx.changed().await.is_ok() {
+                    let Some(snapshot) = update_rx.borrow_and_update().clone() else {
+                        continue;
+                    };
                     {
                         let mut sessions = update_state.sessions.lock().await;
-                        // Arc 共享：manager 与持久化 worker 持有同一份会话本体，
-                        // 每个 tick 只在 hook 处深拷贝一次。
-                        sessions.update_shared(snapshot.clone());
+                        // Arc 共享；watch 在消费者落后时只保留最新快照。
+                        sessions.update(snapshot.clone());
                     }
 
                     *persist_latest.lock().await = Some(PersistJob::Incremental(snapshot));
@@ -2851,7 +2354,7 @@ async fn session_prompt_inner(
         let mut persist_worker_handle = persist_worker;
         let update_hook: agendao_session::SessionUpdateHook = Arc::new(move |snapshot| {
             // 每个流式 tick 唯一的一次深拷贝；下游 manager / persist 全部共享此 Arc。
-            let _ = update_tx.send(Arc::new(snapshot.clone()));
+            let _ = update_tx.send(Some(Arc::new(snapshot.clone())));
         });
         let compaction_lifecycle_hook = Some(compaction_lifecycle_status_hook(
             task_state.clone(),
@@ -2879,13 +2382,6 @@ async fn session_prompt_inner(
             parts: effective_parts.clone(),
             tools: None,
             ingress: Some(effective_ingress.clone()),
-        };
-
-        let agent_registry = AgentRegistry::from_config(&config);
-        let agent_lookup: Option<agendao_session::prompt::AgentLookup> = {
-            Some(Arc::new(move |name: &str| {
-                agent_registry.get(name).map(to_task_agent_info)
-            }))
         };
 
         let ask_question_hook: Option<agendao_session::prompt::AskQuestionHook> = {
@@ -2916,71 +2412,7 @@ async fn session_prompt_inner(
                 }
             }))
         };
-        let publish_bus_hook: Option<agendao_session::prompt::PublishBusHook> = {
-            let state = task_state.clone();
-            let session_id = session_id.clone();
-            Some(Arc::new(
-                move |event_type: String, properties: serde_json::Value| {
-                    let state = state.clone();
-                    let session_id = session_id.clone();
-                    Box::pin(async move {
-                        match event_type.as_str() {
-                            "agent_task.registered" => {
-                                let task_id = properties["task_id"].as_str().unwrap_or_default();
-                                let agent_name =
-                                    properties["agent_name"].as_str().unwrap_or_default();
-                                let parent_tool_call_id = properties["parent_tool_call_id"]
-                                .as_str()
-                                .map(
-                                    agendao_server_core::runtime_control::RuntimeControlRegistry::tool_call_execution_id,
-                                );
-                                let stage_id = if let Some(ref pid) = parent_tool_call_id {
-                                    state.runtime_telemetry.resolve_stage_id(pid).await
-                                } else {
-                                    None
-                                };
-                                state
-                                    .runtime_telemetry
-                                    .register_agent_task(
-                                        task_id,
-                                        &session_id,
-                                        agent_name,
-                                        parent_tool_call_id,
-                                        stage_id,
-                                    )
-                                    .await;
-                            }
-                            "agent_task.completed" => {
-                                let task_id = properties["task_id"].as_str().unwrap_or_default();
-                                state.runtime_telemetry.finish_agent_task(task_id).await;
-                            }
-                            _ => {}
-                        }
-                    }) as Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                },
-            ))
-        };
-
-        let prompt_preset_extension = if let (Some(profile_name), Some(profile_config)) = (
-            task_scheduler_profile_name.clone(),
-            task_scheduler_profile_config.clone(),
-        ) {
-            match scheduler_plan_from_profile(Some(profile_name), &profile_config) {
-                Ok(mut plan) => match enrich_scheduler_plan_skills(&task_state, &mut plan).await {
-                    Ok(()) => scheduler_preset_extension_from_plan(&plan),
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to enrich scheduler plan for prompt surface");
-                        None
-                    }
-                },
-                Err(error) => {
-                    tracing::warn!(%error, "failed to resolve scheduler plan for prompt surface");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let publish_bus_hook: Option<agendao_session::prompt::PublishBusHook> = None;
 
         let prompt_surface_inputs =
             agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
@@ -2989,7 +2421,6 @@ async fn session_prompt_inner(
             )
             .set_base_system_prompt(task_system_prompt.clone())
             .set_environment_identity(Some(prompt_env_context))
-            .set_preset_extension(prompt_preset_extension)
             .set_memory_prefetch(memory_prefetch_packet.clone())
             .set_tool_surface(
                 tool_defs,
@@ -3007,7 +2438,6 @@ async fn session_prompt_inner(
                 event_broadcast,
                 compaction_lifecycle_hook,
                 output_block_hook,
-                agent_lookup,
                 ask_question_hook,
                 ask_permission_hook,
                 publish_bus_hook,
@@ -3125,7 +2555,6 @@ async fn session_prompt_inner(
                     id: Some(assistant.id.clone()),
                     live_identity: Some(assistant_text_live_identity(
                         &assistant.id,
-                        Some(assistant.id.clone()),
                         LivePartPhase::Snapshot,
                     )),
                 },
@@ -3183,7 +2612,8 @@ async fn session_prompt_inner(
             sessions.update(session.clone());
         }
         let reconcile_reason = reconcile_reason_for_stream_termination(&session);
-        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason).await;
+        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason)
+            .await;
         // Normal path reached — defuse the guard so we handle cleanup explicitly.
         _idle_guard.defuse();
         set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;
@@ -3251,10 +2681,13 @@ async fn session_prompt_inner(
 mod tests {
     use super::*;
     use agendao_command::{CommandArgumentOption, CommandRegistry};
-    use agendao_config::Config as AppConfig;
     use agendao_multimodal::{
         ModalityPreflightResult, ModalitySupportView, ModalityTransportResult,
         MultimodalDisplaySummary, PreflightCapabilityView, RuntimeMultimodalExplain,
+    };
+    use agendao_orchestrator::output_projection::{
+        SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY, SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY,
+        SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
     };
     use agendao_session::{IngressSource, PartType, Session, SessionStateManager};
     use std::sync::Arc;
@@ -3273,6 +2706,34 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn scheduler_choice_defaults_to_auto_without_an_explicit_agent() {
+        assert_eq!(
+            super::super::scheduler::resolve_effective_scheduler_choice(None, None, false),
+            Some(agendao_orchestrator::selector::SchedulerChoice::Auto)
+        );
+    }
+
+    #[test]
+    fn explicit_agent_skips_auto_but_explicit_scheduler_is_preserved() {
+        assert_eq!(
+            super::super::scheduler::resolve_effective_scheduler_choice(None, None, true),
+            None
+        );
+
+        let explicit = agendao_orchestrator::selector::SchedulerChoice::Template {
+            template: agendao_orchestrator::templates::TemplateId::Verify,
+        };
+        assert_eq!(
+            super::super::scheduler::resolve_effective_scheduler_choice(
+                None,
+                Some(explicit.clone()),
+                false,
+            ),
+            Some(explicit)
+        );
     }
 
     // ------------------------------------------------------------------
@@ -3346,7 +2807,10 @@ mod tests {
 
         // Prefix rewritten in place (compaction/revert): full re-plan.
         let rewritten = vec![persist_test_message("a"), persist_test_message("x")];
-        assert_eq!(planned_ids(watermark.plan_upserts(&rewritten)), vec!["a", "x"]);
+        assert_eq!(
+            planned_ids(watermark.plan_upserts(&rewritten)),
+            vec!["a", "x"]
+        );
 
         // History shrank (prune): full re-plan of what remains.
         let shrunk = vec![persist_test_message("a")];
@@ -3395,7 +2859,11 @@ mod tests {
         }
     }
 
-    async fn wait_for_persisted_messages(message_repo: &MessageRepository, session_id: &str, len: usize) {
+    async fn wait_for_persisted_messages(
+        message_repo: &MessageRepository,
+        session_id: &str,
+        len: usize,
+    ) {
         for _ in 0..200 {
             let messages = message_repo
                 .list_for_session(session_id)
@@ -3469,7 +2937,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(tail_text.contains("partial"), "tail text persisted: {tail_text}");
+        assert!(
+            tail_text.contains("partial"),
+            "tail text persisted: {tail_text}"
+        );
 
         // Terminal: history rewritten (compaction-like) — final job must flush
         // everything and delete stale rows the incremental path never touched.
@@ -3568,7 +3039,6 @@ mod tests {
             "hello",
             Some("idem_1".to_string()),
             Some("session_prompt".to_string()),
-            None,
         );
 
         assert_eq!(ingress.source, agendao_session::prompt::IngressSource::Api);
@@ -3585,9 +3055,7 @@ mod tests {
             display_text: text.to_string(),
             execution_text: text.to_string(),
             agent: None,
-            scheduler_profile: None,
-            scheduler_profile_override: None,
-            autoresearch_profile_override_record: None,
+            scheduler: None,
             command: None,
             pending_raw_arguments: None,
         }
@@ -3602,7 +3070,7 @@ mod tests {
             model: None,
             variant: None,
             agent: None,
-            scheduler_profile: None,
+            scheduler: None,
             command: None,
             arguments: None,
             recovery: None,
@@ -3750,7 +3218,6 @@ mod tests {
             "first",
             Some("web_1".to_string()),
             Some("session_prompt".to_string()),
-            None,
         );
         first.received_at_ms = now_ms;
         first.stabilized_at_ms = now_ms;
@@ -3761,7 +3228,6 @@ mod tests {
             "second",
             Some("web_2".to_string()),
             Some("session_prompt".to_string()),
-            None,
         );
         second.received_at_ms = now_ms + 10;
         second.stabilized_at_ms = now_ms + 10;
@@ -3812,7 +3278,6 @@ mod tests {
             "/new",
             Some("web_cmd".to_string()),
             Some("session_prompt".to_string()),
-            None,
         );
         ingress.command = Some("new".to_string());
 
@@ -3836,7 +3301,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_session_context_carries_recent_non_stage_turns() {
+    fn scheduler_session_context_carries_recent_turns() {
         let mut session = Session::new("project", "/tmp");
         session.set_title("Martini3 antibody formulation research");
         session.add_user_message("检索近年来 martini3 在抗体制剂开发中的研究");
@@ -3844,14 +3309,6 @@ mod tests {
             let assistant = session.add_assistant_message();
             assistant.add_text("Found papers A, B, and C with notes about antibody formulation.");
         }
-        {
-            let stage = session.add_assistant_message();
-            stage
-                .metadata
-                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
-            stage.add_text("internal route decision");
-        }
-
         let block = build_scheduler_session_context_block(&session)
             .expect("same-session scheduler context should render");
 
@@ -3862,7 +3319,6 @@ mod tests {
         assert!(block.contains("Martini3 antibody formulation research"));
         assert!(block.contains("Found papers A, B, and C"));
         assert!(block.contains("exact_tail_message_ids"));
-        assert!(!block.contains("internal route decision"));
     }
 
     #[test]
@@ -4109,77 +3565,6 @@ mod tests {
         assert!(merged.ends_with("把你前面检索的结果写到 markdown 文档中"));
     }
 
-    #[test]
-    fn scheduler_final_answer_moves_after_stage_messages() {
-        let mut session = Session::new("project", "/tmp");
-        let user_id = session.add_user_message("Run sisyphus").id.clone();
-        let final_id = session.add_assistant_message().id.clone();
-        let route_id = {
-            let message = session.add_assistant_message();
-            message
-                .metadata
-                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
-            message.id.clone()
-        };
-        let execution_id = {
-            let message = session.add_assistant_message();
-            message.metadata.insert(
-                "scheduler_stage".to_string(),
-                serde_json::json!("execution-orchestration"),
-            );
-            message.id.clone()
-        };
-
-        move_scheduler_final_answer_after_stage_messages(&mut session, &final_id);
-
-        let ids = session
-            .messages
-            .iter()
-            .map(|message| message.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec![
-                user_id.as_str(),
-                route_id.as_str(),
-                execution_id.as_str(),
-                final_id.as_str()
-            ]
-        );
-    }
-
-    #[test]
-    fn scheduler_final_answer_does_not_cross_later_non_stage_messages() {
-        let mut session = Session::new("project", "/tmp");
-        let user_id = session.add_user_message("Run sisyphus").id.clone();
-        let final_id = session.add_assistant_message().id.clone();
-        let route_id = {
-            let message = session.add_assistant_message();
-            message
-                .metadata
-                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
-            message.id.clone()
-        };
-        let other_id = session.add_assistant_message().id.clone();
-
-        move_scheduler_final_answer_after_stage_messages(&mut session, &final_id);
-
-        let ids = session
-            .messages
-            .iter()
-            .map(|message| message.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec![
-                user_id.as_str(),
-                route_id.as_str(),
-                final_id.as_str(),
-                other_id.as_str()
-            ]
-        );
-    }
-
     #[tokio::test]
     async fn scheduler_user_message_preserves_attachment_only_parts() {
         let prompt_runner = test_prompt_runner();
@@ -4208,9 +3593,7 @@ mod tests {
             SchedulerUserMessageContext {
                 display_prompt_text: "[1 attachment]",
                 resolved_user_prompt: "",
-                profile_name: "atlas",
-                mode_kind: "preset",
-                resolved_system_prompt: "You are Atlas.",
+                choice: &agendao_orchestrator::selector::SchedulerChoice::Auto,
                 recovery: None,
             },
         )
@@ -4232,8 +3615,8 @@ mod tests {
             if filename == "note.txt" && mime == "text/plain"
         )));
         assert_eq!(
-            message.metadata.get("scheduler_profile"),
-            Some(&serde_json::json!("atlas"))
+            message.metadata.get("scheduler"),
+            Some(&serde_json::json!({ "kind": "auto" }))
         );
     }
 
@@ -4270,9 +3653,7 @@ mod tests {
             SchedulerUserMessageContext {
                 display_prompt_text: "Inspect @note.txt",
                 resolved_user_prompt: "Inspect @note.txt",
-                profile_name: "atlas",
-                mode_kind: "preset",
-                resolved_system_prompt: "You are Atlas.",
+                choice: &agendao_orchestrator::selector::SchedulerChoice::Auto,
                 recovery: None,
             },
         )
@@ -4467,7 +3848,7 @@ mod tests {
     }
 
     #[test]
-    fn hydrate_scheduler_command_arguments_uses_workflow_defaults_for_autoresearch() {
+    fn hydrate_scheduler_command_arguments_does_not_inject_hidden_defaults() {
         let registry = CommandRegistry::new();
         let command = registry.get("autoresearch").expect("autoresearch command");
         let invocation = command
@@ -4475,45 +3856,12 @@ mod tests {
             .as_ref()
             .expect("autoresearch invocation");
 
-        let (arguments, raw_arguments) = hydrate_scheduler_command_arguments(
-            &AppConfig::default(),
-            command,
-            None,
-            "",
-            &invocation.argument_schema,
-        )
-        .expect("workflow defaults should hydrate autoresearch command");
+        let (arguments, raw_arguments) =
+            hydrate_scheduler_command_arguments("", &invocation.argument_schema)
+                .expect("empty arguments should parse");
 
-        assert_eq!(
-            arguments.get("verify"),
-            Some(&vec!["bash ./scripts/verify-autoresearch.sh".to_string()])
-        );
-        assert_eq!(arguments.get("iterations"), Some(&vec!["6".to_string()]));
-        assert_eq!(
-            arguments.get("scope"),
-            Some(&vec![
-                "crates/**".to_string(),
-                "scripts/**".to_string(),
-                "Cargo.toml".to_string(),
-                "Cargo.lock".to_string(),
-            ])
-        );
-        assert!(
-            arguments
-                .get("goal")
-                .and_then(|values| values.first())
-                .is_some_and(|value| value.contains("Increase the curated regression score")),
-            "workflow goal should hydrate command defaults"
-        );
-        assert!(
-            arguments
-                .get("metric")
-                .and_then(|values| values.first())
-                .is_some_and(|value| value.contains("\"kind\":\"numeric-extract\"")),
-            "workflow metric should hydrate command defaults"
-        );
-        assert!(raw_arguments.contains("--verify \"bash ./scripts/verify-autoresearch.sh\""));
-        assert!(raw_arguments.contains("--iterations 6"));
+        assert!(arguments.is_empty());
+        assert!(raw_arguments.is_empty());
     }
 
     #[test]
@@ -4526,13 +3874,10 @@ mod tests {
             .expect("autoresearch invocation");
 
         let (arguments, raw_arguments) = hydrate_scheduler_command_arguments(
-            &AppConfig::default(),
-            command,
-            None,
             "--goal \"teacher demo goal\" --verify ./custom-verify.sh",
             &invocation.argument_schema,
         )
-        .expect("workflow defaults should merge with explicit arguments");
+        .expect("explicit arguments should parse");
 
         assert_eq!(
             arguments.get("goal"),
@@ -4544,7 +3889,7 @@ mod tests {
         );
         assert!(raw_arguments.contains("--goal \"teacher demo goal\""));
         assert!(raw_arguments.contains("--verify ./custom-verify.sh"));
-        assert!(raw_arguments.contains("--guard"));
-        assert!(raw_arguments.contains("--iterations 6"));
+        assert!(!raw_arguments.contains("--guard"));
+        assert!(!raw_arguments.contains("--iterations"));
     }
 }

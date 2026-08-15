@@ -15,36 +15,35 @@ use crate::{
     AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
     ConfigPolicyValidationSnapshot, CreateSessionRequest, DisabledConfigUpdate,
     ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse,
-    KnownProvidersResponse,
-    McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest,
-    MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
-    MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
-    MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
-    MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
+    KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse,
+    MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
+    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
+    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
+    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
     MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
-    MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
-    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
-    ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
-    PluginListEntry,
-    RecoveryActionKind, RefreshProviderCatalogResponse, RepairQuery, RepairQueryResponse,
-    ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest, RevertResponse,
-    SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
-    SessionListItem, SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
-    SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
-    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
-    SkillEvolutionProposal, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
-    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
-    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
-    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
-    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
-    SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
-    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
-    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
-    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
-    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
-    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
-    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
-    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, TaskSummaryInfo,
+    MultimodalPreflightResponse, PermissionRequestInfo, PluginListEntry, PromptRequest,
+    PromptResponse, ProviderConnectSchemaResponse, ProviderDescriptorResponse,
+    ProviderListResponse, ProvisionExternalAdapterSessionRequest,
+    ProvisionExternalAdapterSessionResponse, QuestionInfo, RecoveryActionKind,
+    RefreshProviderCatalogResponse, RejectSessionBlueprintResponse, RepairQuery,
+    RepairQueryResponse, ResolveProviderConnectRequest, ResolveProviderConnectResponse,
+    RevertRequest, RevertResponse, SessionBlueprintView, SessionExecutionTopology, SessionInfo,
+    SessionInsightsResponse, SessionListItem, SessionListResponse, SessionRecoveryProtocol,
+    SessionRepairSummaryResponse, SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot,
+    SetSessionBlueprintRequest, ShareResponse, SkillCatalogEntry, SkillCatalogQuery,
+    SkillDetailQuery, SkillDetailResponse, SkillEvolutionProposal, SkillHubArtifactCacheResponse,
+    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
+    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
+    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
+    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
+    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicyResponse,
+    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
+    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
+    SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
     ToolListEntry, UpdateSessionRequest,
 };
 
@@ -86,12 +85,12 @@ impl AsyncApiClient {
 
     pub async fn create_session(
         &self,
-        scheduler_profile: Option<String>,
+        scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
         directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let url = server_url(&self.base_url, "/session");
         let req = CreateSessionRequest {
-            scheduler_profile,
+            scheduler,
             directory,
             project_id: None,
             title: None,
@@ -116,6 +115,41 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, &format!("/session/{}", session_id));
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get session").await
+    }
+
+    pub async fn get_session_blueprint(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionBlueprintView> {
+        self.get_json(
+            &format!("/session/{session_id}/blueprint"),
+            "get session Blueprint",
+        )
+        .await
+    }
+
+    pub async fn set_session_blueprint(
+        &self,
+        session_id: &str,
+        request: &SetSessionBlueprintRequest,
+    ) -> anyhow::Result<SessionBlueprintView> {
+        self.put_json(
+            &format!("/session/{session_id}/blueprint"),
+            "set session Blueprint",
+            request,
+        )
+        .await
+    }
+
+    pub async fn reject_session_blueprint(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<RejectSessionBlueprintResponse> {
+        self.delete_json(
+            &format!("/session/{session_id}/blueprint"),
+            "reject session Blueprint",
+        )
+        .await
     }
 
     pub async fn list_sessions(
@@ -210,65 +244,11 @@ impl AsyncApiClient {
     pub async fn send_prompt(
         &self,
         session_id: &str,
-        content: String,
-        parts: Option<Vec<PromptPart>>,
-        agent: Option<String>,
-        scheduler_profile: Option<String>,
-        model: Option<String>,
-        variant: Option<String>,
-        ingress_source: Option<String>,
-        idempotency_key: Option<String>,
-        source_origin: Option<agendao_types::MessageSourceOrigin>,
-        source_surface: Option<agendao_types::MessageSourceSurface>,
-        command: Option<String>,
+        request: PromptRequest,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
-        let req = build_prompt_request(
-            content,
-            parts,
-            agent,
-            scheduler_profile,
-            model,
-            variant,
-            ingress_source,
-            idempotency_key,
-            source_origin,
-            source_surface,
-            command,
-        );
-        let resp = self.client.post(&url).json(&req).send().await?;
+        let resp = self.client.post(&url).json(&request).send().await?;
         Self::json_ok(resp, "send prompt").await
-    }
-
-    pub async fn send_command_prompt(
-        &self,
-        session_id: &str,
-        command: String,
-        arguments: Option<String>,
-        model: Option<String>,
-        variant: Option<String>,
-        ingress_source: Option<String>,
-        idempotency_key: Option<String>,
-        source_origin: Option<agendao_types::MessageSourceOrigin>,
-        source_surface: Option<agendao_types::MessageSourceSurface>,
-    ) -> anyhow::Result<PromptResponse> {
-        let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
-        let req = PromptRequest {
-            message: None,
-            parts: None,
-            idempotency_key,
-            ingress_source,
-            agent: None,
-            scheduler_profile: None,
-            model,
-            variant,
-            command: Some(command),
-            arguments,
-            source_origin,
-            source_surface,
-        };
-        let resp = self.client.post(&url).json(&req).send().await?;
-        Self::json_ok(resp, "send command prompt").await
     }
 
     pub async fn execute_shell(
@@ -374,16 +354,6 @@ impl AsyncApiClient {
         Self::json_ok(resp, "get session insights").await
     }
 
-    pub async fn get_session_events(
-        &self,
-        session_id: &str,
-        query: &SessionEventsQuery,
-    ) -> anyhow::Result<Vec<agendao_stage_protocol::StageEvent>> {
-        let url = server_url(&self.base_url, &format!("/session/{}/events", session_id));
-        let resp = self.client.get(&url).query(query).send().await?;
-        Self::json_ok(resp, "get session events").await
-    }
-
     pub async fn get_session_todos(&self, session_id: &str) -> anyhow::Result<Vec<ApiTodoItem>> {
         let url = server_url(&self.base_url, &format!("/session/{}/todo", session_id));
         let resp = self.client.get(&url).send().await?;
@@ -449,9 +419,8 @@ impl AsyncApiClient {
         &self,
         session_id: &str,
         action: RecoveryActionKind,
-        target_id: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
-        let request = ExecuteRecoveryRequest { action, target_id };
+        let request = ExecuteRecoveryRequest { action };
         self.post_json(
             &format!("/session/{}/recovery/execute", session_id),
             &format!("execute session recovery `{}`", session_id),
@@ -907,7 +876,11 @@ impl AsyncApiClient {
         );
         let body = serde_json::json!({ "disabled": disabled });
         let resp = self.client.put(&url).json(&body).send().await?;
-        Self::json_ok(resp, &format!("set provider `{}` disabled={}", provider_id, disabled)).await
+        Self::json_ok(
+            resp,
+            &format!("set provider `{}` disabled={}", provider_id, disabled),
+        )
+        .await
     }
 
     /// POST `/provider/{id}/test`:测试连接（只读探测，返回 ok/status/延迟/错误）。
@@ -943,23 +916,6 @@ impl AsyncApiClient {
             None => self.client.get(&url).send().await?,
         };
         Self::json_ok(resp, "list skills").await
-    }
-
-    /// `/task`：全局 agent 任务注册表（非 per-session）。读视图。
-    pub async fn list_tasks(&self) -> anyhow::Result<Vec<TaskSummaryInfo>> {
-        let url = server_url(&self.base_url, "/task/");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "list tasks").await
-    }
-
-    /// `/task/{id}` DELETE：取消运行中 task。返回 `{"cancelled": id}`。
-    /// confirm 类写操作——经 PendingConfirm::CancelTask 路由（panel_dispatch）。
-    pub async fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
-        self.delete_json(
-            &format!("/task/{}", task_id),
-            &format!("cancel task `{}`", task_id),
-        )
-        .await
     }
 
     pub async fn get_skill_detail(
@@ -1486,63 +1442,5 @@ impl AsyncApiClient {
     ) -> anyhow::Result<T> {
         let bytes = Self::expect_success(resp, action).await?;
         Ok(serde_json::from_slice(&bytes)?)
-    }
-}
-
-// 参数与 PromptRequest 线格式字段一一对应；聚合结构体即 PromptRequest 本身。
-#[allow(clippy::too_many_arguments)]
-fn build_prompt_request(
-    content: String,
-    parts: Option<Vec<PromptPart>>,
-    agent: Option<String>,
-    scheduler_profile: Option<String>,
-    model: Option<String>,
-    variant: Option<String>,
-    ingress_source: Option<String>,
-    idempotency_key: Option<String>,
-    source_origin: Option<agendao_types::MessageSourceOrigin>,
-    source_surface: Option<agendao_types::MessageSourceSurface>,
-    command: Option<String>,
-) -> PromptRequest {
-    PromptRequest {
-        message: (!content.trim().is_empty()).then_some(content),
-        parts,
-        idempotency_key,
-        ingress_source,
-        agent,
-        scheduler_profile,
-        model,
-        variant,
-        command,
-        arguments: None,
-        source_origin,
-        source_surface,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::build_prompt_request;
-
-    #[test]
-    fn send_prompt_request_preserves_structured_command_hint() {
-        let request = build_prompt_request(
-            "/run cargo test".to_string(),
-            None,
-            Some("build".to_string()),
-            Some("default".to_string()),
-            Some("openai/gpt-5".to_string()),
-            Some("fast".to_string()),
-            Some("cli".to_string()),
-            Some("idem-1".to_string()),
-            Some(agendao_types::MessageSourceOrigin::Operator),
-            Some(agendao_types::MessageSourceSurface::Cli),
-            Some("run".to_string()),
-        );
-
-        assert_eq!(request.command.as_deref(), Some("run"));
-        assert_eq!(request.message.as_deref(), Some("/run cargo test"));
-        assert_eq!(request.scheduler_profile.as_deref(), Some("default"));
-        assert_eq!(request.variant.as_deref(), Some("fast"));
     }
 }

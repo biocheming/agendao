@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::openai_tool_recovery::parse_tool_call_input;
+use super::openai_tool_arguments::parse_tool_call_input;
 use super::openai_usage::{raw_usage_to_usage, RawUsage};
 use crate::{ChatResponse, Choice, Message, ProviderError, Role};
 
@@ -100,7 +100,7 @@ impl RawChatResponse {
                         let func = tc.function.as_ref();
                         let name = func.and_then(|f| f.name.as_deref()).unwrap_or("");
                         let args_str = func.and_then(|f| f.arguments.as_deref()).unwrap_or("{}");
-                        let input = parse_tool_call_input(name, args_str);
+                        let input = parse_tool_call_input(args_str);
                         let id = tc
                             .id
                             .clone()
@@ -156,7 +156,7 @@ impl RawChatResponse {
 }
 
 /// Reassemble SSE `data:` chunks into a single `RawChatResponse`.
-/// Some closeai-compatible providers return SSE even for non-streaming requests.
+/// Some openai-compatible providers return SSE even for non-streaming requests.
 pub(super) fn reassemble_sse_chunks(body: &str) -> Result<RawChatResponse, ProviderError> {
     let mut content = String::new();
     let mut reasoning = String::new();

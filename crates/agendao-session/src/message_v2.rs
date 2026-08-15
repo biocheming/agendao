@@ -7,9 +7,9 @@ use agendao_provider::{
     ProviderError, Role, ToolResult as ProviderToolResult, ToolUse,
 };
 pub use agendao_types::{
-    AgentPart, AgentSource, CacheTokens, CompactionPart, CompletedTime, ErrorTime, FilePart,
-    FilePartSource, FileSourceText, LspPosition, LspRange, ModelRef, RetryPart, RetryTime,
-    RunningTime, StepFinishPart, StepStartPart, StepTokens, SubtaskPart, ToolPart, ToolState,
+    CacheTokens, CompactionPart, CompletedTime, ErrorTime, FilePart, FilePartSource,
+    FileSourceText, LspPosition, LspRange, ModelRef, RetryPart, RetryTime, RunningTime,
+    StepFinishPart, StepStartPart, StepTokens, ToolPart, ToolState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,8 +182,6 @@ pub enum Part {
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<HashMap<String, serde_json::Value>>,
     },
-    #[serde(rename = "subtask")]
-    Subtask(SubtaskPart),
     #[serde(rename = "reasoning")]
     Reasoning {
         id: String,
@@ -217,8 +215,6 @@ pub enum Part {
         hash: String,
         files: Vec<String>,
     },
-    #[serde(rename = "agent")]
-    Agent(AgentPart),
     #[serde(rename = "retry")]
     Retry(RetryPart),
     #[serde(rename = "compaction")]
@@ -230,7 +226,6 @@ impl Part {
     pub fn id(&self) -> Option<&str> {
         match self {
             Part::Text { id, .. } => Some(id),
-            Part::Subtask(p) => Some(&p.id),
             Part::Reasoning { id, .. } => Some(id),
             Part::File(p) => Some(&p.id),
             Part::Tool(p) => Some(&p.id),
@@ -238,7 +233,6 @@ impl Part {
             Part::StepFinish(p) => Some(&p.id),
             Part::Snapshot { id, .. } => Some(id),
             Part::Patch { id, .. } => Some(id),
-            Part::Agent(p) => Some(&p.id),
             Part::Retry(p) => Some(&p.id),
             Part::Compaction(p) => Some(&p.id),
         }
@@ -317,7 +311,7 @@ pub enum MessageEvent {
 /// Callers construct this from whatever provider/model representation they have.
 #[derive(Debug, Clone)]
 pub struct ModelContext {
-    /// The provider identifier, e.g. `"ethnopic"`.
+    /// The provider identifier, e.g. `"anthropic"`.
     pub provider_id: String,
     /// The model identifier, e.g. `"test-model-large"`.
     pub model_id: String,
@@ -656,15 +650,6 @@ pub fn to_model_messages(input: &[MessageWithParts], model: &ModelContext) -> Ve
                             parts.push(ContentPart {
                                 content_type: "text".to_string(),
                                 text: Some("What did we do so far?".to_string()),
-                                ..Default::default()
-                            });
-                        }
-                        Part::Subtask(_) => {
-                            parts.push(ContentPart {
-                                content_type: "text".to_string(),
-                                text: Some(
-                                    "The following tool was executed by the user".to_string(),
-                                ),
                                 ..Default::default()
                             });
                         }

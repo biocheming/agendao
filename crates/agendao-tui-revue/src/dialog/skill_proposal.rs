@@ -9,10 +9,10 @@
 //! 打开支持批量。Enter=View 关闭。approve/reject 走 "accepted"/"rejected"
 //! （ProposalStatus 枚举值，server `/skill/proposal/{id}/status` 接受）。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 #[derive(Clone)]
 pub struct SkillProposalEntry {
@@ -46,7 +46,12 @@ impl Default for SkillProposalDialog {
 
 impl SkillProposalDialog {
     pub fn new() -> Self {
-        Self { visible: false, proposals: Vec::new(), selected: 0, remembered: 0 }
+        Self {
+            visible: false,
+            proposals: Vec::new(),
+            selected: 0,
+            remembered: 0,
+        }
     }
 
     pub fn set_proposals(&mut self, proposals: Vec<SkillProposalEntry>) {
@@ -56,13 +61,17 @@ impl SkillProposalDialog {
         self.selected = self.remembered.min(n.saturating_sub(1));
     }
 
-    pub fn open(&mut self) { self.visible = true; }
+    pub fn open(&mut self) {
+        self.visible = true;
+    }
     pub fn close(&mut self) {
         // U17②：关框记住光标位置（下次重开恢复）。
         self.remembered = self.selected;
         self.visible = false;
     }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// approve/reject 后移除已处理条目（列表 pending-filtered，状态变更后
     /// 条目离开 pending 列表——悲观移除，与 API Ok 同步）。entries 私有，
@@ -78,18 +87,34 @@ impl SkillProposalDialog {
 
     /// a=approve / r=reject（保持 dialog 打开，支持批量）/ Enter=view（关闭）。
     pub fn handle_key(&mut self, key: &Key) -> Option<SkillProposalAction> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         if self.proposals.is_empty() {
-            if matches!(key, Key::Escape) { self.close(); }
+            if matches!(key, Key::Escape) {
+                self.close();
+            }
             return None;
         }
         let len = self.proposals.len();
         let pick = || self.proposals.get(self.selected).cloned();
         match key {
-            Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
-            Key::Down  => { self.selected = (self.selected + 1) % len; None }
-            Key::Home  => { self.selected = 0; None }
-            Key::End   => { self.selected = len - 1; None }
+            Key::Up => {
+                self.selected = (self.selected + len - 1) % len;
+                None
+            }
+            Key::Down => {
+                self.selected = (self.selected + 1) % len;
+                None
+            }
+            Key::Home => {
+                self.selected = 0;
+                None
+            }
+            Key::End => {
+                self.selected = len - 1;
+                None
+            }
             Key::Enter => {
                 let pick = pick();
                 self.close();
@@ -97,43 +122,61 @@ impl SkillProposalDialog {
             }
             Key::Char('a') => pick().map(SkillProposalAction::Approve),
             Key::Char('r') => pick().map(SkillProposalAction::Reject),
-            Key::Escape => { self.close(); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
             _ => None,
         }
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         if self.proposals.is_empty() {
             let items = vec![ListItem::Row {
                 display: "  (No pending proposals)".to_string(),
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
-                "Proposals",
-                colors::ACCENT_PURPLE(),
+                backdrop::ListDialogHeading {
+                    title: "Proposals",
+                    border_color: colors::ACCENT_PURPLE(),
+                },
                 &items,
                 0,
                 "Esc: close",
-                ctx, geom, 3,
+                ctx,
+                geom,
+                3,
             );
             return;
         }
         // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
-        let items: Vec<ListItem> = self.proposals.iter().enumerate().map(|(i, p)| {
-            let marker = if i == self.selected { "▶ " } else { "  " };
-            ListItem::Row {
-                display: format!("{}[{}] {} — {}", marker, p.status, p.title, p.kind),
-                muted: false,
-            }
-        }).collect();
+        let items: Vec<ListItem> = self
+            .proposals
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let marker = if i == self.selected { "▶ " } else { "  " };
+                ListItem::Row {
+                    display: format!("{}[{}] {} — {}", marker, p.status, p.title, p.kind),
+                    muted: false,
+                }
+            })
+            .collect();
         backdrop::render_list_dialog_bottom(
-            "Proposals",
-            colors::ACCENT_PURPLE(),
+            backdrop::ListDialogHeading {
+                title: "Proposals",
+                border_color: colors::ACCENT_PURPLE(),
+            },
             &items,
             self.selected,
             "↑↓ navigate  Home/End: jump  a: approve  r: reject  Enter: view  Esc: close",
-            ctx, geom, 12,
+            ctx,
+            geom,
+            12,
         );
     }
 }

@@ -20,33 +20,6 @@ pub enum BootstrapError {
     },
 }
 
-/// Map of bundled SDK package names to their provider identifiers.
-/// Mirrors the TS `BUNDLED_PROVIDERS` record.
-pub static BUNDLED_PROVIDERS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    map.insert("@ai-sdk/amazon-bedrock", "amazon-bedrock");
-    map.insert("@ai-sdk/anthropic", "ethnopic");
-    map.insert("@ai-sdk/google", "google");
-    map.insert("@ai-sdk/google-vertex", "google-vertex");
-    map.insert("@ai-sdk/google-vertex/anthropic", "google-vertex-ethnopic");
-    map.insert("@ai-sdk/openai", "openai");
-    map.insert("@ai-sdk/openai-compatible", "openai-compatible");
-    map.insert("@openrouter/ai-sdk-provider", "openrouter");
-    map.insert("@ai-sdk/xai", "xai");
-    map.insert("@ai-sdk/mistral", "mistral");
-    map.insert("@ai-sdk/groq", "groq");
-    map.insert("@ai-sdk/deepinfra", "deepinfra");
-    map.insert("@ai-sdk/cerebras", "cerebras");
-    map.insert("@ai-sdk/cohere", "cohere");
-    map.insert("@ai-sdk/gateway", "gateway");
-    map.insert("@ai-sdk/togetherai", "togetherai");
-    map.insert("@ai-sdk/perplexity", "perplexity");
-    map.insert("@ai-sdk/vercel", "vercel");
-    map.insert("@gitlab/gitlab-ai-provider", "gitlab");
-    map.insert("@ai-sdk/github-copilot", "github-copilot");
-    map
-});
-
 /// Check if a model ID represents GPT-5 or later.
 pub fn is_gpt5_or_later(model_id: &str) -> bool {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^gpt-(\d+)").unwrap());
@@ -58,11 +31,6 @@ pub fn is_gpt5_or_later(model_id: &str) -> bool {
         }
     }
     false
-}
-
-/// Determine whether to use the Copilot responses API for a given model.
-pub fn should_use_copilot_responses_api(model_id: &str) -> bool {
-    is_gpt5_or_later(model_id) && !model_id.starts_with("gpt-5-mini")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,16 +219,18 @@ pub struct ConfigProvider {
     #[serde(default)]
     pub env: Option<Vec<String>>,
     #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
     pub api: Option<String>,
     #[serde(default)]
     pub npm: Option<String>,
-    #[serde(default, alias = "apiStyle", alias = "api_family", alias = "apiFamily")]
+    #[serde(default)]
     pub api_style: Option<String>,
-    #[serde(default, alias = "apiShape")]
+    #[serde(default)]
     pub api_shape: Option<String>,
     #[serde(default)]
     pub transport: Option<String>,
-    #[serde(default, alias = "usageShape")]
+    #[serde(default)]
     pub usage_shape: Option<String>,
     #[serde(default)]
     pub quirks: Option<Vec<String>>,

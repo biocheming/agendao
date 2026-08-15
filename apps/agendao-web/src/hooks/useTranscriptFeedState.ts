@@ -9,6 +9,7 @@ import type {
   MessageRecord,
   OutputBlock,
 } from "../lib/history";
+import { outputBlockLiveSlotKey } from "../lib/liveIdentity";
 import {
   appendLiveBlock,
   applyOutputBlock,
@@ -100,17 +101,11 @@ export function useTranscriptFeedState({
     }
   }, []);
 
-  const pendingVisibleSnapshotKey = useCallback((block: OutputBlock): string => {
-    const messageId = block.live_identity?.message_id?.trim() || "";
-    const partKey = block.live_identity?.part_key?.trim() || "";
-    if (block.kind === "message" || block.kind === "reasoning") {
-      return `${block.kind}:${messageId}:${partKey || block.id || ""}`;
-    }
-    if (block.kind === "tool") {
-      const toolId = block.tool_call_id?.trim() || block.id?.trim() || "";
-      return `${block.kind}:${messageId}:${partKey || toolId}:${block.live_identity?.part_kind || block.phase || ""}`;
-    }
-    return `${block.kind}:${block.id?.trim() || messageId || block.phase || ""}`;
+  const pendingVisibleSnapshotKey = useCallback((block: OutputBlock): string | undefined => {
+    const slotKey = outputBlockLiveSlotKey(block);
+    const partKind = block.live_identity?.part_kind;
+    if (!slotKey || !partKind) return undefined;
+    return `${block.kind}:${partKind}:${slotKey}`;
   }, []);
 
   const flushPendingOutputBlocks = useCallback(() => {
@@ -176,6 +171,9 @@ export function useTranscriptFeedState({
     }
     const queue = pendingOutputBlocksRef.current[sessionId] ?? [];
     const queueKey = pendingVisibleSnapshotKey(visible);
+    if (!queueKey) {
+      return;
+    }
     const existingIndex = queue.findIndex((candidate) => pendingVisibleSnapshotKey(candidate) === queueKey);
     if (existingIndex >= 0) {
       queue[existingIndex] = visible;

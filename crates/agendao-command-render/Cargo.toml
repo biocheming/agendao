@@ -6,10 +6,10 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["terminal-ui", "agent-presenter"]
+default = ["terminal-ui", "block-projection"]
 terminal-ui = ["agendao-command/terminal-ui", "dep:crossterm"]
 runtime-hooks = ["terminal-ui", "agendao-command/runtime-hooks"]
-agent-presenter = ["terminal-ui", "agendao-command/agent-presenter"]
+block-projection = ["terminal-ui", "agendao-command/block-projection"]
 
 [dependencies]
 agendao-command = { path = "../agendao-command", default-features = false }

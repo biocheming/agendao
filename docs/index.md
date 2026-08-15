@@ -75,44 +75,35 @@ AgenDao 读取你的代码库，跨多个文件实现变更，运行测试，并
 
 ### 编排内核
 
-AgenDao 由唯一的执行内核驱动所有 LLM 循环。调度器以 preset 形式提供不同的编排策略：
+AgenDao 由一个 `SchedulerEngine` 和一个 leaf `AgentLoop` 驱动所有 LLM 编排。所有来源最终都
+生成同一种 `SchedulerBlueprint`：
 
-| Preset | 定位 | 默认阶段 |
-|--------|------|---------|
-| `sisyphus` | 委托优先、单循环执行 | request-analysis, execution-orchestration |
-| `prometheus` | 规划优先、分步交付 | request-analysis, interview, plan, review, handoff |
-| `atlas` | 协调/委派/验证 | request-analysis, execution-orchestration, synthesis |
-| `hephaestus` | 自主深度执行 | request-analysis, execution-orchestration |
-| `verifier` | 多候选比较选优 | request-analysis, execution-orchestration |
+| 模板 | 结构 |
+|------|------|
+| `direct` | 单 agent node |
+| `plan` | 规划 agent 后执行 agent |
+| `coordinate` | parallel branches 后统一 synthesis |
+| `verify` | agent 后接 evaluator gate |
+| `autoresearch` | 有界 loop、evaluator 与可选 checkpoint |
 
-Scheduler continuity 是调度器的一等输入，而不是简单把历史消息拼回 prompt。当前运行时会为每个 scheduler turn 构建 `Session Continuity Context`：
+默认 `auto` 会按任务形状、catalog 和 policy 选择模板或让 AI planner 生成 Blueprint。用户显式
+选择优先，所有结果经过同一个 validator；失败不会回退到其他执行器。
 
-- `Context Coverage` 说明 exact recent tail、omitted turns、memory anchors 和 recall policy
-- `Source Anchors` 授权 `scheduler_context_hydrate` 回查同会话消息与 compaction summary
-- `Memory Anchors` 授权 `scheduler_memory_hydrate` 回查持久化 memory detail
-- 每次 hydration 都会写入 stage metadata，记录 hydrated / rejected / missing ids，供前端和 telemetry 审计
+Scheduler continuity 是一等输入，不是简单拼接完整历史。分支只传有界 handoff；compaction、
+memory anchors 和 continuation boundary 由 session authority 管理并进入 cache diagnostic。
 
 ### 上下文缓存优化
 
-AgenDao 将缓存优化收敛到稳定提示面，而不是按厂商分叉 prompt 结构。closeai-compatible 协议族侧重稳定 prefix 与可选 prompt cache affinity；Ethnopic-compatible 协议族侧重统一 cache breakpoint 规划。scheduler continuity、artifact summary、memory anchors 与当前动态输入会被分区放置，避免本轮 tail 正文或临时 tool output 破坏可复用前缀。
+AgenDao 将缓存优化收敛到稳定提示面，而不是按厂商分叉 prompt 结构。openai-compatible 协议族侧重稳定 prefix 与可选 prompt cache affinity；Anthropic-compatible 协议族侧重统一 cache breakpoint 规划。scheduler continuity、artifact summary、memory anchors 与当前动态输入会被分区放置，避免本轮 tail 正文或临时 tool output 破坏可复用前缀。
 
 命令面、TUI 和 Web 会显示 cache read/write、hit/miss 以及 cache evidence / context closure diagnostics。详见 [上下文缓存优化](context-caching)。
 
-如果你要看可直接拿来用的 scheduler 示例，当前目录已经按类型拆开：
+当前 inline Blueprint 示例见 [examples/scheduler/README](examples/scheduler/README)。
 
-- `examples/scheduler/presets/`：公开内置 preset 示例
-- `examples/scheduler/verifier/`：verifier 配置与外置 workflow
-- `examples/scheduler/pso/`：PSO 自定义 topology
-- `examples/scheduler/autoresearch/`：workflow 级 autoresearch 示例
+### 统一节点模型
 
-### 四个正交维度
-
-同一任务可以组合多个维度，而非"四选一"：
-
-- **Skill List** -- 能力选择：加载什么工具/技能
-- **Agent Tree** -- 执行者组织：由谁执行（可嵌套、可引用外部文件）
-- **Skill Graph** -- 流程控制：什么顺序和条件
-- **Skill Tree** -- 知识继承：携带什么上下文（层级 Markdown 知识树）
+Agent 是叶节点，Skill 是其能力引用；并行、验证和迭代分别由 `parallel`、`gate`、`loop` 节点
+表达。Verifier 是 evaluator，Autoresearch 是模板，两者都不拥有独立 runtime。
 
 ### Skill Hub
 
@@ -147,9 +138,10 @@ AgenDao 的 memory 更接近经过筛选的长期材料，而不是临时对话�
 - memory 检索只面向经过 validation / consolidation 的正式记录，并提供 retrieval preview 来解释注入原因，而不是把未经裁决的草稿直接塞回 prompt。
 - TUI、Web 与 HTTP Server 都提供 memory 的 list、detail、validation、conflicts、rule hits、consolidation runs 等可观测面。
 
-### 多 Provider 支持
+### Provider
 
-通过 `models.dev` 获取完整模型目录，支持阿里云百炼、智谱 BigModel、Moonshot Kimi、DeepSeek、OpenRouter、Google、AWS Bedrock、Ollama 等多种 Provider 与认证插件。参见 [认证](auth)。
+运行时支持 OpenAI Responses、OpenAI Chat Completions 和 Anthropic Messages。兼容 endpoint 可用
+自定义 base URL，但不保留其他专用协议实现。参见 [认证](auth)。
 
 provider 的当前生效配置不再需要前端各自猜测。AgenDao 现在提供只读 provider descriptor 与 config validation 解释面，用来说明 typed provider profile、transport、认证与模型覆盖到底如何落地。
 
@@ -331,13 +323,11 @@ AgenDao 遵循严格的分层架构，每层有明确的职责边界：
 | `/model <id>` | 切换模型 |
 | `/agents` | 列出可用 Agent |
 | `/agent <name>` | 切换 Agent |
-| `/presets` | 列出调度器预设 |
-| `/preset <name>` | 切换调度器预设 |
 | `/compact` | 压缩对话历史 |
 | `/status` | 显示会话状态 |
 | `/copy` | 复制最近一条助手回复 |
 
-`/abort` 通过独立控制请求命中 server 的取消路由，不会作为普通用户消息插入当前 prompt。若目标是某个已登记的 agent task，应使用 `/tasks kill <ID>` 或 `task_flow cancel`。
+`/abort` 通过独立控制请求命中 server 的取消路由，不会作为普通用户消息插入当前 prompt。
 
 ---
 
@@ -346,7 +336,7 @@ AgenDao 遵循严格的分层架构，每层有明确的职责边界：
 - [安装指南](installation) -- 系统要求、构建安装、环境配置
 - [认证](auth) -- API 密钥、OAuth、Provider 注册表、模型目录
 - [配置参考](configuration) -- `agendao.jsonc` 完整配置参考
-- [Scheduler 指南](examples/scheduler/SCHEDULER_GUIDE) -- Scheduler 完整使用教程
-- [Scheduler 示例](examples/scheduler/README) -- 按 presets / verifier / pso / autoresearch 分组的调度示例入口
+- [Scheduler](scheduler) -- 唯一 Blueprint、selector、validator、engine 与 AgentLoop
+- [Scheduler 示例](examples/scheduler/README) -- 当前 inline Blueprint 示例
 - [上下文文档](examples/context_docs/README) -- `context_docs` schema 和示例
 - [插件示例](examples/plugins_example/README) -- Skill / 插件扩展示例

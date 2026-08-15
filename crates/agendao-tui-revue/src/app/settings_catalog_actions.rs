@@ -72,7 +72,8 @@ impl AppHandler {
             return None;
         }
         let Some(api) = self.api.clone() else {
-            self.store.push_toast("No API bridge", ToastMsgVariant::Error);
+            self.store
+                .push_toast("No API bridge", ToastMsgVariant::Error);
             return None;
         };
         self.store
@@ -209,8 +210,7 @@ impl AppHandler {
                     .collect();
                 let prev = self.store.settings_tools_selected.get();
                 let collapsed = self.store.settings_tools_collapsed.get();
-                let n =
-                    crate::store::types::flatten_settings_tool_rows(&rows, &collapsed).len();
+                let n = crate::store::types::flatten_settings_tool_rows(&rows, &collapsed).len();
                 self.store.settings_tools.set(rows);
                 if n == 0 {
                     self.store.settings_tools_selected.set(0);
@@ -231,11 +231,13 @@ impl AppHandler {
         let idx = self.store.settings_mcp_selected.get();
         let Some(row) = rows.get(idx) else { return };
         if connect && row.is_connected() {
-            self.store.push_toast("Already connected", ToastMsgVariant::Warning);
+            self.store
+                .push_toast("Already connected", ToastMsgVariant::Warning);
             return;
         }
         if !connect && !row.is_connected() {
-            self.store.push_toast("Not connected", ToastMsgVariant::Warning);
+            self.store
+                .push_toast("Not connected", ToastMsgVariant::Warning);
             return;
         }
         let name = row.name.clone();
@@ -440,8 +442,7 @@ impl AppHandler {
                     .iter()
                     .filter(|r| r.group_name() == name.as_str())
                     .collect();
-                let all_disabled =
-                    !members.is_empty() && members.iter().all(|r| r.is_disabled());
+                let all_disabled = !members.is_empty() && members.iter().all(|r| r.is_disabled());
                 let disable = !all_disabled;
                 (
                     DisabledTogglePlan::Group {
@@ -640,9 +641,7 @@ impl AppHandler {
                 };
                 let next = match entry {
                     agendao_config::McpServerConfig::Enabled { enabled } => {
-                        agendao_config::McpServerConfig::Enabled {
-                            enabled: !enabled,
-                        }
+                        agendao_config::McpServerConfig::Enabled { enabled: !enabled }
                     }
                     agendao_config::McpServerConfig::Full(server) => {
                         let mut server = server.clone();
@@ -973,12 +972,7 @@ fn toggle_exact_pattern(
 ///   （单一通配承载整组，无残留精确项）。
 /// - disable=false：移除任何覆盖该类目的 pattern（含父级前缀通配）及组内
 ///   成员精确名——整组回到启用态。
-fn toggle_group_pattern(
-    patterns: &mut Vec<String>,
-    name: &str,
-    members: &[String],
-    disable: bool,
-) {
+fn toggle_group_pattern(patterns: &mut Vec<String>, name: &str, members: &[String], disable: bool) {
     patterns.retain(|p| {
         let single = [p.clone()];
         p.trim() != name
@@ -1059,15 +1053,12 @@ mod tests {
 
     #[test]
     fn mcp_fields_full_local_infers_transport() {
-        let cfg = agendao_config::McpServerConfig::Full(Box::new(
-            agendao_config::McpServer {
-                command: vec!["npx".into(), "srv".into()],
-                enabled: Some(false),
-                ..Default::default()
-            },
-        ));
-        let (transport, command, url, enabled) =
-            super::mcp_config_fields(Some(&cfg));
+        let cfg = agendao_config::McpServerConfig::Full(Box::new(agendao_config::McpServer {
+            command: vec!["npx".into(), "srv".into()],
+            enabled: Some(false),
+            ..Default::default()
+        }));
+        let (transport, command, url, enabled) = super::mcp_config_fields(Some(&cfg));
         assert_eq!(transport, "local");
         assert_eq!(command.as_deref(), Some("npx srv"));
         assert!(url.is_none());
@@ -1076,14 +1067,11 @@ mod tests {
 
     #[test]
     fn mcp_fields_full_remote_wins_by_url() {
-        let cfg = agendao_config::McpServerConfig::Full(Box::new(
-            agendao_config::McpServer {
-                url: Some("https://mcp.example.com".into()),
-                ..Default::default()
-            },
-        ));
-        let (transport, command, url, enabled) =
-            super::mcp_config_fields(Some(&cfg));
+        let cfg = agendao_config::McpServerConfig::Full(Box::new(agendao_config::McpServer {
+            url: Some("https://mcp.example.com".into()),
+            ..Default::default()
+        }));
+        let (transport, command, url, enabled) = super::mcp_config_fields(Some(&cfg));
         assert_eq!(transport, "remote");
         assert!(command.is_none());
         assert_eq!(url.as_deref(), Some("https://mcp.example.com"));
@@ -1093,8 +1081,7 @@ mod tests {
     #[test]
     fn mcp_fields_enabled_variant_is_unknown_transport() {
         let cfg = agendao_config::McpServerConfig::Enabled { enabled: false };
-        let (transport, command, url, enabled) =
-            super::mcp_config_fields(Some(&cfg));
+        let (transport, command, url, enabled) = super::mcp_config_fields(Some(&cfg));
         assert_eq!(transport, "unknown");
         assert!(command.is_none() && url.is_none());
         assert!(!enabled);

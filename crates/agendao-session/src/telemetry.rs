@@ -46,7 +46,7 @@ impl ToolRepairAccumulator {
         &mut self,
         metadata: &std::collections::HashMap<String, serde_json::Value>,
     ) -> bool {
-        let events = agendao_tool::structured_repair_events(metadata);
+        let events = agendao_tool::repair_events(metadata);
         if events.is_empty() {
             return false;
         }
@@ -99,7 +99,7 @@ impl ToolRepairAccumulator {
         }
 
         self.repaired_tool_call_count += 1;
-        let events = agendao_tool::structured_repair_events(metadata);
+        let events = agendao_tool::repair_events(metadata);
         {
             let tool_entry = self.tools.entry(tool_name.to_string()).or_default();
             tool_entry.repaired_call_count += 1;
@@ -567,7 +567,7 @@ pub fn build_session_tool_trajectory_quality(
 
     // Also count session-level sanitizer repair events recorded via
     // sanitize_with_contract into session.metadata (not tool-call metadata).
-    let session_level_events = agendao_tool::structured_repair_events(&session.record().metadata);
+    let session_level_events = agendao_tool::repair_events(&session.record().metadata);
     let session_sanitizer_count = session_level_events
         .iter()
         .filter(|e| e.layer == "sanitizer")
@@ -691,9 +691,7 @@ fn count_kind(rows: &[agendao_types::RepairAggregateRow], kind: RepairKind) -> u
 mod tests {
     use super::*;
     use crate::SessionMessage;
-    use agendao_types::{
-        PersistedStageTelemetrySummary, SessionTelemetrySnapshotVersion, SessionUsage,
-    };
+    use agendao_types::{SessionTelemetrySnapshotVersion, SessionUsage};
 
     fn sample_snapshot() -> SessionTelemetrySnapshot {
         SessionTelemetrySnapshot {
@@ -708,33 +706,6 @@ mod tests {
                 context_tokens: 10,
                 total_cost: 0.25,
             },
-            stage_summaries: vec![PersistedStageTelemetrySummary {
-                stage_id: "stage-1".to_string(),
-                stage_name: "Plan".to_string(),
-                index: Some(1),
-                total: Some(2),
-                step: Some(1),
-                step_total: Some(3),
-                status: agendao_stage_protocol::StageStatus::Running,
-                prompt_tokens: Some(11),
-                completion_tokens: Some(7),
-                reasoning_tokens: Some(5),
-                cache_read_tokens: Some(2),
-                cache_write_tokens: Some(1),
-                focus: Some("inspect".to_string()),
-                last_event: Some("scheduler.stage.started".to_string()),
-                waiting_on: None,
-                activity: Some("Inspecting scheduler state".to_string()),
-                estimated_context_tokens: Some(99),
-                skill_tree_budget: Some(512),
-                skill_tree_truncation_strategy: Some("head".to_string()),
-                skill_tree_truncated: Some(false),
-                retry_attempt: None,
-                active_agent_count: 1,
-                active_tool_count: 2,
-                attached_session_count: 0,
-                primary_attached_session_id: None,
-            }],
             tool_repair_summary: Some(SessionToolRepairTelemetrySummary {
                 total_tool_calls: 3,
                 repaired_tool_call_count: 2,
@@ -758,7 +729,7 @@ mod tests {
                     count: 4,
                 }],
                 tools: vec![ToolRepairToolSummary {
-                    tool_name: "task_flow".to_string(),
+                    tool_name: "bash".to_string(),
                     call_count: 2,
                     repaired_call_count: 2,
                     error_call_count: 1,
@@ -843,7 +814,7 @@ mod tests {
         let mut session = Session::new("proj", ".");
 
         let mut assistant = SessionMessage::assistant(session.id.clone());
-        assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+        assistant.add_tool_call("call-1", "bash", serde_json::json!({}));
         if let Some(crate::MessagePart {
             part_type: PartType::ToolCall { status, state, .. },
             ..
@@ -851,15 +822,12 @@ mod tests {
         {
             *status = crate::ToolCallStatus::Completed;
             let mut metadata = agendao_tool::Metadata::new();
-            agendao_tool::append_tool_repair_event_map(&mut metadata, {
-                let mut event =
-                    agendao_tool::tool_repair_event("alias_normalization", "tool", "task_flow");
-                event.insert(
-                    "aliases".to_string(),
-                    serde_json::json!(["action->operation"]),
-                );
-                event
-            });
+            agendao_tool::append_repair_event(
+                &mut metadata,
+                agendao_tool::repair_event_builder("alias_normalization", "tool", "bash")
+                    .reason("action -> operation")
+                    .build(),
+            );
             *state = Some(ToolState::Completed {
                 input: serde_json::json!({}),
                 output: "ok".to_string(),
@@ -882,16 +850,13 @@ mod tests {
         {
             *status = crate::ToolCallStatus::Error;
             let mut metadata = agendao_tool::Metadata::new();
-            agendao_tool::append_tool_repair_event_map(&mut metadata, {
-                let mut event =
-                    agendao_tool::tool_repair_event("basename_auto_repair", "tool", "read");
-                event.insert("from".to_string(), serde_json::json!("Game.ts"));
-                event.insert(
-                    "to".to_string(),
-                    serde_json::json!("/tmp/project/src/Game.ts"),
-                );
-                event
-            });
+            agendao_tool::append_repair_event(
+                &mut metadata,
+                agendao_tool::repair_event_builder("basename_auto_repair", "tool", "read")
+                    .raw_shape(serde_json::json!("Game.ts"))
+                    .normalized_shape(serde_json::json!("/tmp/project/src/Game.ts"))
+                    .build(),
+            );
             *state = Some(ToolState::Error {
                 input: serde_json::json!({}),
                 error: "boom".to_string(),
@@ -952,7 +917,7 @@ mod tests {
         let event = agendao_tool::repair_event_builder("thinking_only_assistant", "sanitizer", "")
             .reason("dropped assistant message with only thinking blocks")
             .build();
-        agendao_tool::append_structured_repair_event(&mut metadata, &event);
+        agendao_tool::append_repair_event(&mut metadata, event);
         session.record_mut().metadata.extend(metadata);
 
         let summary = build_session_tool_repair_telemetry(&session).expect("summary");
@@ -974,7 +939,7 @@ mod tests {
         first.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
         first.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
         let mut assistant = SessionMessage::assistant(first.id.clone());
-        assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+        assistant.add_tool_call("call-1", "bash", serde_json::json!({}));
         if let Some(crate::MessagePart {
             part_type: PartType::ToolCall { status, state, .. },
             ..
@@ -982,9 +947,9 @@ mod tests {
         {
             *status = crate::ToolCallStatus::Completed;
             let mut metadata = agendao_tool::Metadata::new();
-            agendao_tool::append_tool_repair_event_map(
+            agendao_tool::append_repair_event(
                 &mut metadata,
-                agendao_tool::tool_repair_event("alias_normalization", "tool", "task_flow"),
+                agendao_types::RepairEvent::new("alias_normalization", "tool", "bash"),
             );
             *state = Some(ToolState::Completed {
                 input: serde_json::json!({}),
@@ -1063,7 +1028,7 @@ mod tests {
         assert!(summary
             .tools
             .iter()
-            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+            .any(|tool| tool.tool_name == "bash" && tool.repaired_call_count == 1));
     }
 
     #[test]
@@ -1072,9 +1037,9 @@ mod tests {
         session.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
         session.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
         let mut metadata = agendao_tool::Metadata::new();
-        agendao_tool::append_structured_repair_event(
+        agendao_tool::append_repair_event(
             &mut metadata,
-            &agendao_tool::repair_event_builder("orphaned_tool_result", "sanitizer", "")
+            agendao_tool::repair_event_builder("orphaned_tool_result", "sanitizer", "")
                 .reason("orphaned tool_result without pending tool_use")
                 .build(),
         );
@@ -1102,7 +1067,7 @@ mod tests {
                 "skill_manage",
                 "Invalid arguments: create requires either `body` or `methodology`",
             ),
-            ("5", "task_flow", "Cancelled"),
+            ("5", "bash", "Cancelled"),
         ] {
             assistant.add_tool_call(format!("call-{idx}"), tool_name, serde_json::json!({}));
             if let Some(crate::MessagePart {
@@ -1226,9 +1191,9 @@ mod tests {
         let mut assistant = SessionMessage::assistant(session.id.clone());
         assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
         let mut metadata = agendao_tool::Metadata::new();
-        agendao_tool::append_tool_repair_event_map(
+        agendao_tool::append_repair_event(
             &mut metadata,
-            agendao_tool::tool_repair_event("alias_normalization", "tool", "read"),
+            agendao_types::RepairEvent::new("alias_normalization", "tool", "read"),
         );
         if let Some(crate::MessagePart {
             part_type: PartType::ToolCall { status, state, .. },
@@ -1270,9 +1235,9 @@ mod tests {
             let call_id = format!("call-{}", i);
             assistant.add_tool_call(&call_id, "fail_tool", serde_json::json!({}));
             let mut metadata = agendao_tool::Metadata::new();
-            agendao_tool::append_tool_repair_event_map(
+            agendao_tool::append_repair_event(
                 &mut metadata,
-                agendao_tool::tool_repair_event("fallback", "tool", "fail_tool"),
+                agendao_types::RepairEvent::new("fallback", "tool", "fail_tool"),
             );
             if let Some(crate::MessagePart {
                 part_type: PartType::ToolCall { status, state, .. },
@@ -1325,9 +1290,9 @@ mod tests {
             let call_id = format!("call-{}", i);
             assistant.add_tool_call(&call_id, "read", serde_json::json!({}));
             let mut metadata = agendao_tool::Metadata::new();
-            agendao_tool::append_tool_repair_event_map(
+            agendao_tool::append_repair_event(
                 &mut metadata,
-                agendao_tool::tool_repair_event(
+                agendao_types::RepairEvent::new(
                     RepairKind::SanitizerAssistantMalformedPlaceholder.as_str(),
                     "sanitizer",
                     "read",
@@ -1400,7 +1365,6 @@ mod tests {
                 context_tokens: 0,
                 total_cost: 0.0,
             },
-            stage_summaries: vec![],
             tool_repair_summary: Some(build_session_tool_repair_telemetry(&session).unwrap()),
             memory: None,
             compaction_continuity: None,
@@ -1416,7 +1380,7 @@ mod tests {
                 ("structured_family".to_string(), 1),
             ]),
             last_permission_matcher_kind: Some("scope_only".to_string()),
-            last_permission_grant_target: Some("Task flow: create task".to_string()),
+            last_permission_grant_target: Some("Bash: cargo check".to_string()),
             last_permission_miss_count: 5,
             pending_steering_count: 0,
             consumed_steering_count: 0,
@@ -1444,7 +1408,7 @@ mod tests {
         );
         assert_eq!(
             loaded.last_permission_grant_target.as_deref(),
-            Some("Task flow: create task")
+            Some("Bash: cargo check")
         );
         let q = loaded
             .tool_trajectory_quality

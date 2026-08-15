@@ -6,13 +6,13 @@
 //! tab 6 符号（⏣Token ♺Cache ☪Context ⚒Tools ⚔MCP ✎Price）；Sessions 独立成底部常驻区
 //!（会话树是导航，不参与 tab 切换）。下划线轨道：整行暗 -，active 处亮 ━（轨道感）。
 
-use revue::prelude::*;
 use crate::store::types::{
-    ActiveTool, CacheStats, McpLspInfo, Pricing, SidebarTrees, ToolPhase, TokenUsage,
-    TreeNode as SidebarNode, TreeIntent,
+    ActiveTool, CacheStats, McpLspInfo, Pricing, SidebarTrees, TokenUsage, ToolPhase, TreeIntent,
+    TreeNode as SidebarNode,
 };
 use crate::theme::colors;
 use crate::theme::fmt_tokens;
+use revue::prelude::*;
 
 /// Sidebar 构建器（unit struct——渲染走 build 关联函数，无实例状态）。
 pub struct SessionSidebar;
@@ -72,8 +72,11 @@ impl SessionSidebar {
     ) -> (revue::widget::Stack, u16, Vec<SidebarNavHit>) {
         let (logo_view, logo_h) = Self::logo();
         let (tab_view, tab_h) = Self::tab_bar(active_tab);
-        let (detail_view, detail_h) = Self::detail(active_tab, token, cache, price, ctx_pct, mcp, tools);
-        let session_header = Text::new("▣ Session Tree").fg(colors::FG_SECONDARY()).bold();
+        let (detail_view, detail_h) =
+            Self::detail(active_tab, token, cache, price, ctx_pct, mcp, tools);
+        let session_header = Text::new("▣ Session Tree")
+            .fg(colors::FG_SECONDARY())
+            .bold();
 
         // Session graph 起始绝对 y(固定高度累加):
         //   顶空(2) + logo(logo_h) + 空(1) + 分隔(1) + 空(1) + tab(tab_h) + detail(detail_h)
@@ -84,27 +87,29 @@ impl SessionSidebar {
         // 命中区必须同口径裁剪——否则屏幕外的「幽灵」session 行会盖住 user_bar
         // （⚙ 点击被 open_session 拦截）乃至整列底部区域（金律：渲染/命中同一份展平）。
         let graph_visible = viewport_height.saturating_sub(graph_start_y + 1) as usize;
-        let (graph, nav_hits) = Self::session_graph(trees, graph_start_y, active_session_id, graph_visible);
+        let (graph, nav_hits) =
+            Self::session_graph(trees, graph_start_y, active_session_id, graph_visible);
 
         // gap(0) + 显式空行 child：每处间距独立可控（土律：编排单点）。
         // 紧贴（0 行）：轨道↔详情、Session Tree↔分隔、分隔↔graph；其余 1 行。
-        let sidebar = vstack().gap(0)
-            .element_id("sidebar")          // 区域失效定位（token/tree 变只重画此列）
-            .child_sized(Text::new(""), 2)              // 顶端 2 行空白（呼吸感）
+        let sidebar = vstack()
+            .gap(0)
+            .element_id("sidebar") // 区域失效定位（token/tree 变只重画此列）
+            .child_sized(Text::new(""), 2) // 顶端 2 行空白（呼吸感）
             .child_sized(logo_view, logo_h)
-            .child_sized(Text::new(""), 1)              // logo↔分隔 1 行
-            .child_sized(Self::divider(), 1)            // logo 下分隔
-            .child_sized(Text::new(""), 1)              // 分隔↔tab 1 行
-            .child_sized(tab_view, tab_h)               // 符号行 + 下划线轨道
-            .child_sized(detail_view, detail_h)         // 详情（紧贴轨道，0 行）
-            .child_sized(Text::new(""), 1)              // 详情↔分隔 1 行
-            .child_sized(Self::divider(), 1)            // 详情下分隔
-            .child_sized(Text::new(""), 1)              // 分隔↔Session Tree 1 行
-            .child_sized(session_header, 1)             // ▣ Session Tree
-            .child_sized(Self::divider(), 1)            // 标题下分隔（紧贴标题，0 行）
-            .child_flex(graph, 1.0)                     // session graph（紧贴分隔，0 行）
-            .child_sized(Self::user_bar(), 1);          // 底部用户栏（将来功能占位）
-        // tab 符号行 y = 顶端(2) + logo(4) + 空(1) + divider(1) + 空(1) = 9。
+            .child_sized(Text::new(""), 1) // logo↔分隔 1 行
+            .child_sized(Self::divider(), 1) // logo 下分隔
+            .child_sized(Text::new(""), 1) // 分隔↔tab 1 行
+            .child_sized(tab_view, tab_h) // 符号行 + 下划线轨道
+            .child_sized(detail_view, detail_h) // 详情（紧贴轨道，0 行）
+            .child_sized(Text::new(""), 1) // 详情↔分隔 1 行
+            .child_sized(Self::divider(), 1) // 详情下分隔
+            .child_sized(Text::new(""), 1) // 分隔↔Session Tree 1 行
+            .child_sized(session_header, 1) // ▣ Session Tree
+            .child_sized(Self::divider(), 1) // 标题下分隔（紧贴标题，0 行）
+            .child_flex(graph, 1.0) // session graph（紧贴分隔，0 行）
+            .child_sized(Self::user_bar(), 1); // 底部用户栏（将来功能占位）
+                                               // tab 符号行 y = 顶端(2) + logo(4) + 空(1) + divider(1) + 空(1) = 9。
         let tab_y = 2 + logo_h + 1 + 1 + 1;
         (sidebar, tab_y, nav_hits)
     }
@@ -112,7 +117,8 @@ impl SessionSidebar {
     /// 水平分隔线：⎻ × (SIDEBAR_WIDTH-1) FG_TRACE + 右留 1 列（呼吸感，不顶右边）。
     fn divider() -> revue::widget::Stack {
         let w = crate::app::SIDEBAR_WIDTH.saturating_sub(1);
-        hstack().gap(0)
+        hstack()
+            .gap(0)
             .child_sized(Text::new("⎻".repeat(w as usize)).fg(colors::FG_TRACE()), w)
             .child_flex(Text::new(""), 1.0)
     }
@@ -132,7 +138,8 @@ impl SessionSidebar {
         row = row.child_sized(Text::new("|").fg(colors::FG_MUTED()), 1);
         row = row.child_flex(Text::new(""), 1.0);
 
-        let bar = vstack().gap(0)
+        let bar = vstack()
+            .gap(0)
             .child_sized(row, 1)
             .child_sized(Self::underline_track(active), 1);
         (bar, 2)
@@ -145,10 +152,17 @@ impl SessionSidebar {
         let ux = (2 + (active.min(SIDEBAR_TAB_COUNT - 1) * 4)) as u16;
         let before = ux;
         let after = total.saturating_sub(ux.saturating_add(1));
-        hstack().gap(0)
-            .child_sized(Text::new("-".repeat(before as usize)).fg(colors::FG_TRACE()), before)
+        hstack()
+            .gap(0)
+            .child_sized(
+                Text::new("-".repeat(before as usize)).fg(colors::FG_TRACE()),
+                before,
+            )
             .child_sized(Text::new("━").fg(colors::E_TEAL()), 1)
-            .child_sized(Text::new("-".repeat(after as usize)).fg(colors::FG_TRACE()), after)
+            .child_sized(
+                Text::new("-".repeat(after as usize)).fg(colors::FG_TRACE()),
+                after,
+            )
     }
 
     // ── 选中 tab 详情（标题 + -字段: 值，紧凑）──
@@ -167,7 +181,8 @@ impl SessionSidebar {
         let title = |t: &str| Text::new(t).fg(colors::FG_SECONDARY()).bold();
         match active {
             0 => {
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("Token Usage"), 1)
                     .child_sized(Self::field("Input", &fmt_tokens(token.input)), 1)
                     .child_sized(Self::field("Output", &fmt_tokens(token.output)), 1)
@@ -175,7 +190,8 @@ impl SessionSidebar {
                 (s, 4)
             }
             1 => {
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("Cache"), 1)
                     .child_sized(Self::field("Hits", &cache.hits.to_string()), 1)
                     .child_sized(Self::field("Misses", &cache.misses.to_string()), 1)
@@ -183,17 +199,22 @@ impl SessionSidebar {
                 (s, 4)
             }
             2 => {
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("Context"), 1)
                     .child_sized(Self::field("Used", &format!("{}%", ctx_pct)), 1)
                     .child_sized(Self::meter_bar(ctx_pct), 1);
                 (s, 3)
             }
             3 => {
-                let running = tools.iter().filter(|t| t.phase == ToolPhase::Running).count();
+                let running = tools
+                    .iter()
+                    .filter(|t| t.phase == ToolPhase::Running)
+                    .count();
                 let done = tools.iter().filter(|t| t.phase == ToolPhase::Done).count();
                 let idle = tools.is_empty();
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("Tools"), 1)
                     .child_sized(Self::field("Running", &running.to_string()), 1)
                     .child_sized(Self::field("Done", &done.to_string()), 1)
@@ -209,17 +230,28 @@ impl SessionSidebar {
                 } else {
                     mcp.lsp_active.join(",")
                 };
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("MCP/LSP"), 1)
-                    .child_sized(Self::field("MCP", &format!("{}/{}", mcp.mcp_connected, mcp.mcp_total)), 1)
+                    .child_sized(
+                        Self::field("MCP", &format!("{}/{}", mcp.mcp_connected, mcp.mcp_total)),
+                        1,
+                    )
                     .child_sized(Self::field("LSP", &lsp), 1);
                 (s, 3)
             }
             _ => {
-                let s = vstack().gap(0)
+                let s = vstack()
+                    .gap(0)
                     .child_sized(title("Price"), 1)
-                    .child_sized(Self::field("In", &format!("${:.4}/1k", price.input_per_1k)), 1)
-                    .child_sized(Self::field("Out", &format!("${:.4}/1k", price.output_per_1k)), 1);
+                    .child_sized(
+                        Self::field("In", &format!("${:.4}/1k", price.input_per_1k)),
+                        1,
+                    )
+                    .child_sized(
+                        Self::field("Out", &format!("${:.4}/1k", price.output_per_1k)),
+                        1,
+                    );
                 (s, 3)
             }
         }
@@ -229,16 +261,21 @@ impl SessionSidebar {
     fn field(name: &str, value: &str) -> revue::widget::Stack {
         let line = format!(" -{:<6}: {}", name, value);
         let w = line.chars().count() as u16;
-        hstack().gap(0)
+        hstack()
+            .gap(0)
             .child_sized(Text::new(line).fg(colors::FG_MUTED()), w)
             .child_flex(Text::new(""), 1.0)
     }
 
     /// 进度条（Context 用）：颜色随 pct 变（绿/黄/红）。
     fn meter_bar(pct: u8) -> revue::widget::Progress {
-        let color = if pct > 80 { colors::ACCENT_RED() }
-                   else if pct > 50 { colors::ACCENT_YELLOW() }
-                   else { colors::ACCENT_GREEN() };
+        let color = if pct > 80 {
+            colors::ACCENT_RED()
+        } else if pct > 50 {
+            colors::ACCENT_YELLOW()
+        } else {
+            colors::ACCENT_GREEN()
+        };
         revue::widget::progress(pct as f32 / 100.0)
             .filled_color(color)
             .show_percentage(false)
@@ -263,7 +300,8 @@ impl SessionSidebar {
         flat.truncate(30.min(visible_rows));
 
         if flat.is_empty() {
-            let s = vstack().gap(0)
+            let s = vstack()
+                .gap(0)
                 .child_sized(Text::new(" (no sessions)").fg(colors::FG_TRACE()), 1);
             return (s, Vec::new());
         }
@@ -293,7 +331,8 @@ impl SessionSidebar {
     fn user_bar() -> revue::widget::Stack {
         let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
         let user_w = user.chars().count() as u16;
-        hstack().gap(0)
+        hstack()
+            .gap(0)
             .child_sized(Text::new(" ☺ ").fg(colors::FG_SECONDARY()), 3)
             .child_sized(Text::new(user).fg(colors::FG_MUTED()), user_w)
             .child_flex(Text::new(""), 1.0)
@@ -311,11 +350,19 @@ impl SessionSidebar {
         active_session_id: Option<&str>,
     ) {
         for n in nodes {
-            if rows.len() >= 30 { break; }
+            if rows.len() >= 30 {
+                break;
+            }
             let indent = "  ".repeat((n.depth as usize).min(6));
             let icon = if !n.children.is_empty() {
-                if n.expanded { "▼ " } else { "▶ " }
-            } else { "  " };
+                if n.expanded {
+                    "▼ "
+                } else {
+                    "▶ "
+                }
+            } else {
+                "  "
+            };
             let label = format!("{}{}{}", indent, icon, n.label);
             let color = match &n.intent {
                 Some(TreeIntent::NavigateSession(id)) if active_session_id == Some(id.as_str()) => {
@@ -345,25 +392,36 @@ impl SessionSidebar {
     fn logo() -> (revue::widget::Stack, u16) {
         use colors::*;
         let r1 = Self::art_row(&[
-            (FG_TRACE(), "░░░", false), (FG_MUTED(), "▒▒▒▒", false),
-            (E_TEAL(), "████", false), (FG_TRACE(), "░░░", false),
+            (FG_TRACE(), "░░░", false),
+            (FG_MUTED(), "▒▒▒▒", false),
+            (E_TEAL(), "████", false),
+            (FG_TRACE(), "░░░", false),
         ]);
         let r2 = Self::art_row(&[
-            (FG_MUTED(), "▒▒▒▒▒▒▒", false), (E_TEAL(), "███████", false),
-            (FG_MUTED(), "     ", false), (E_TEAL(), "AGENDAO", true),
+            (FG_MUTED(), "▒▒▒▒▒▒▒", false),
+            (E_TEAL(), "███████", false),
+            (FG_MUTED(), "     ", false),
+            (E_TEAL(), "AGENDAO", true),
         ]);
         let r3 = Self::art_row(&[
-            (FG_TRACE(), "░░░", false), (FG_MUTED(), "▒", false),
-            (E_TEAL(), "●", false), (FG_MUTED(), "▒▒", false),
-            (E_TEAL(), "██", false), (E_TEAL(), "○", false),
-            (E_TEAL(), "█", false), (FG_TRACE(), "░░░", false),
+            (FG_TRACE(), "░░░", false),
+            (FG_MUTED(), "▒", false),
+            (E_TEAL(), "●", false),
+            (FG_MUTED(), "▒▒", false),
+            (E_TEAL(), "██", false),
+            (E_TEAL(), "○", false),
+            (E_TEAL(), "█", false),
+            (FG_TRACE(), "░░░", false),
             (FG_MUTED(), "The Dao of Agent", false),
         ]);
         let r4 = Self::art_row(&[
-            (FG_TRACE(), "░░░░", false), (FG_MUTED(), "▒▒▒", false),
-            (E_TEAL(), "███", false), (FG_TRACE(), "░░░░", false),
+            (FG_TRACE(), "░░░░", false),
+            (FG_MUTED(), "▒▒▒", false),
+            (E_TEAL(), "███", false),
+            (FG_TRACE(), "░░░░", false),
         ]);
-        let logo = vstack().gap(0)
+        let logo = vstack()
+            .gap(0)
             .child_sized(r1, 1)
             .child_sized(r2, 1)
             .child_sized(r3, 1)
@@ -377,7 +435,9 @@ impl SessionSidebar {
         for (c, t, bold) in parts {
             let w = t.chars().count() as u16;
             let mut txt = Text::new(*t).fg(*c);
-            if *bold { txt = txt.bold(); }
+            if *bold {
+                txt = txt.bold();
+            }
             h = h.child_sized(txt, w);
         }
         h.child_flex(Text::new(""), 1.0)
@@ -424,7 +484,9 @@ mod tests {
         assert!(
             gx + SIDEBAR_GEAR_X_FROM_END >= crate::app::SIDEBAR_WIDTH,
             "⚙ col {} outside hit zone (x+{} >= {})",
-            gx, SIDEBAR_GEAR_X_FROM_END, crate::app::SIDEBAR_WIDTH
+            gx,
+            SIDEBAR_GEAR_X_FROM_END,
+            crate::app::SIDEBAR_WIDTH
         );
     }
 
@@ -446,7 +508,8 @@ mod tests {
             24,
         );
         let h: u16 = 24;
-        let page = hstack().gap(0)
+        let page = hstack()
+            .gap(0)
             .child_sized(sidebar, crate::app::SIDEBAR_WIDTH)
             .child_sized(crate::widget::VLine::new(colors::SIDEBAR_DIVIDER()), 1)
             .child_flex(vstack().child_sized(Text::new("main"), 1), 1.0);
@@ -465,7 +528,13 @@ mod tests {
             }
         }
         let (gx, gy) = gear_pos.expect("⚙ glyph should render inside page hstack");
-        assert_eq!(gy, h - 1, "⚙ row {} != page last row {} — 命中公式将落空", gy, h - 1);
+        assert_eq!(
+            gy,
+            h - 1,
+            "⚙ row {} != page last row {} — 命中公式将落空",
+            gy,
+            h - 1
+        );
         let _ = gx;
     }
 
@@ -475,21 +544,19 @@ mod tests {
     #[test]
     fn session_tree_nav_hits_map_rows_to_session_ids() {
         let trees = SidebarTrees {
-            session_nodes: vec![
-                SidebarNode {
-                    label: "root".into(),
-                    depth: 0,
-                    expanded: true,
-                    children: vec![SidebarNode {
-                        label: "child".into(),
-                        depth: 1,
-                        expanded: false,
-                        children: vec![],
-                        intent: Some(TreeIntent::NavigateSession("sess-child".into())),
-                    }],
-                    intent: Some(TreeIntent::NavigateSession("sess-root".into())),
-                },
-            ],
+            session_nodes: vec![SidebarNode {
+                label: "root".into(),
+                depth: 0,
+                expanded: true,
+                children: vec![SidebarNode {
+                    label: "child".into(),
+                    depth: 1,
+                    expanded: false,
+                    children: vec![],
+                    intent: Some(TreeIntent::NavigateSession("sess-child".into())),
+                }],
+                intent: Some(TreeIntent::NavigateSession("sess-root".into())),
+            }],
             workspace_nodes: vec![],
         };
         let token = TokenUsage::default();
@@ -563,7 +630,8 @@ mod tests {
         let mut buf = Buffer::new(8, 8);
         let area = Rect::new(0, 0, 8, 8);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let s = vstack().gap(1)
+        let s = vstack()
+            .gap(1)
             .child_sized(Text::new("A"), 1)
             .child_sized(Text::new("B"), 1);
         s.render(&mut ctx);
@@ -579,7 +647,8 @@ mod tests {
         let mut buf = Buffer::new(8, 8);
         let area = Rect::new(0, 0, 8, 8);
         let mut ctx = RenderContext::new(&mut buf, area);
-        let s = vstack().gap(1)
+        let s = vstack()
+            .gap(1)
             .child_sized(Text::new("A"), 1)
             .child_sized(Text::new(""), 1)
             .child_sized(Text::new("B"), 1);

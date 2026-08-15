@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -10,6 +11,13 @@ const MAX_DIAGNOSTICS_PER_FILE: usize = 20;
 
 pub struct WriteTool {
     directory: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WriteInput {
+    file_path: String,
+    content: String,
 }
 
 impl WriteTool {
@@ -24,17 +32,6 @@ impl Default for WriteTool {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn extract_write_file_path(args: &serde_json::Value) -> Result<String, ToolError> {
-    args.get("file_path")
-        .or_else(|| args.get("filePath"))
-        .or_else(|| args.get("filepath"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ToolError::InvalidArguments("file_path (or filePath/filepath) is required".into())
-        })
-        .map(|value| value.trim().to_string())
 }
 
 #[async_trait]
@@ -69,12 +66,10 @@ impl Tool for WriteTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let file_path = extract_write_file_path(&args)?;
-
-        let content: String = args["content"]
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidArguments("content is required".into()))?
-            .to_string();
+        let input: WriteInput = serde_json::from_value(args)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let file_path = input.file_path.trim().to_string();
+        let content = input.content;
 
         let base_dir = if ctx.directory.is_empty() {
             &self.directory
@@ -257,8 +252,6 @@ fn create_diff(filepath: &str, old_content: &str, new_content: &str) -> String {
 async fn get_lsp_diagnostics(path: &Path, ctx: &ToolContext) -> String {
     #[cfg(feature = "lsp")]
     {
-        use agendao_lsp::detect_language;
-
         if let Some(lsp_registry) = &ctx.lsp_registry {
             return get_lsp_diagnostics_impl(path, lsp_registry.clone()).await;
         }
@@ -275,7 +268,7 @@ async fn get_lsp_diagnostics(path: &Path, ctx: &ToolContext) -> String {
 #[cfg(feature = "lsp")]
 async fn get_lsp_diagnostics_impl(
     path: &Path,
-    lsp_registry: Arc<agendao_lsp::LspClientRegistry>,
+    lsp_registry: std::sync::Arc<agendao_lsp::LspClientRegistry>,
 ) -> String {
     use agendao_lsp::detect_language;
 
@@ -344,15 +337,14 @@ async fn get_lsp_diagnostics_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::extract_write_file_path;
+    use super::WriteInput;
 
     #[test]
-    fn extract_write_file_path_accepts_filepath_alias() {
+    fn write_input_rejects_filepath_alias() {
         let args = serde_json::json!({
             "filepath": "src/main.ts",
             "content": "hello"
         });
-        let path = extract_write_file_path(&args).expect("filepath alias should be accepted");
-        assert_eq!(path, "src/main.ts");
+        assert!(serde_json::from_value::<WriteInput>(args).is_err());
     }
 }

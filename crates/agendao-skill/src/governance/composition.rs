@@ -13,15 +13,15 @@ use super::relationships::{
 };
 use super::semantic::collect_skill_semantic_conflicts;
 use super::{
-    dedupe_string_reasons, normalize_name, required_nonempty_text, SkillCompositionConsumptionContext,
-    SkillGovernanceAuthority,
+    dedupe_string_reasons, normalize_name, required_nonempty_text,
+    SkillCompositionConsumptionContext, SkillGovernanceAuthority,
 };
 use crate::util::now_unix_timestamp;
 use crate::SkillError;
 use agendao_types::{
-    SkillCapabilityGroup, SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
-    SkillRelationshipEdge, SkillRelationshipKind, SkillRelationshipState,
-    SkillRuntimeCompositionHint, SkillRuntimeCompositionHintKind,
+    SkillCapabilityGroup, SkillCapabilityGroupKind, SkillCapabilityMember,
+    SkillCapabilityMemberRole, SkillRelationshipEdge, SkillRelationshipKind,
+    SkillRelationshipState, SkillRuntimeCompositionHint, SkillRuntimeCompositionHintKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1142,14 +1142,18 @@ fn validate_capability_group_member_role_update(
     Ok(())
 }
 
-pub(super) fn format_capability_group_kind(kind: agendao_types::SkillCapabilityGroupKind) -> &'static str {
+pub(super) fn format_capability_group_kind(
+    kind: agendao_types::SkillCapabilityGroupKind,
+) -> &'static str {
     match kind {
         agendao_types::SkillCapabilityGroupKind::CanonicalFamily => "canonical_family",
         agendao_types::SkillCapabilityGroupKind::ComplementaryBundle => "complementary_bundle",
     }
 }
 
-pub(super) fn format_capability_group_state(state: agendao_types::SkillCapabilityGroupState) -> &'static str {
+pub(super) fn format_capability_group_state(
+    state: agendao_types::SkillCapabilityGroupState,
+) -> &'static str {
     match state {
         agendao_types::SkillCapabilityGroupState::Candidate => "candidate",
         agendao_types::SkillCapabilityGroupState::Active => "active",
@@ -1157,7 +1161,9 @@ pub(super) fn format_capability_group_state(state: agendao_types::SkillCapabilit
     }
 }
 
-pub(super) fn format_capability_member_role(role: agendao_types::SkillCapabilityMemberRole) -> &'static str {
+pub(super) fn format_capability_member_role(
+    role: agendao_types::SkillCapabilityMemberRole,
+) -> &'static str {
     match role {
         agendao_types::SkillCapabilityMemberRole::Canonical => "canonical",
         agendao_types::SkillCapabilityMemberRole::Specialization => "specialization",

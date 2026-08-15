@@ -79,10 +79,7 @@ impl SkillGovernanceAuthority {
             sync_planner: Arc::new(SkillSyncPlanner::new()),
             guard_engine: Arc::new(SkillGuardEngine::new()),
             distribution_resolver: Arc::new(SkillDistributionResolver::new()),
-            artifact_store: Arc::new(SkillArtifactStore::new(
-                base_dir.clone(),
-                config_store.clone(),
-            )),
+            artifact_store: Arc::new(SkillArtifactStore::new(base_dir, config_store.clone())),
             lifecycle: Arc::new(SkillLifecycleCoordinator::new()),
             config_store,
         }

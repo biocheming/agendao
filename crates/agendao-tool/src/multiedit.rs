@@ -9,24 +9,24 @@ use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResul
 pub struct MultiEditTool;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MultiEditInput {
     edits: Vec<FileEdit>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileEdit {
-    #[serde(alias = "filePath", alias = "filepath")]
     file_path: String,
     edits: Vec<EditOperation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EditOperation {
-    #[serde(alias = "oldString")]
     old_string: String,
-    #[serde(alias = "newString")]
     new_string: String,
-    #[serde(default, alias = "replaceAll")]
+    #[serde(default)]
     replace_all: bool,
 }
 
@@ -296,8 +296,8 @@ mod tests {
     use super::MultiEditInput;
 
     #[test]
-    fn multiedit_accepts_filepath_alias() {
-        let input: MultiEditInput = serde_json::from_value(serde_json::json!({
+    fn multiedit_rejects_filepath_alias() {
+        let error = serde_json::from_value::<MultiEditInput>(serde_json::json!({
             "edits": [
                 {
                     "filepath": "src/main.rs",
@@ -310,8 +310,7 @@ mod tests {
                 }
             ]
         }))
-        .expect("filepath alias should deserialize");
-
-        assert_eq!(input.edits[0].file_path, "src/main.rs");
+        .expect_err("filepath alias should be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 }

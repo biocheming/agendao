@@ -1,10 +1,6 @@
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::attachment_metadata::{
-    collect_attachments_from_metadata, strip_attachments_from_metadata,
-};
-use crate::{Metadata, ToolContext, ToolError, ToolRegistryAccess, ToolResult};
+use crate::Metadata;
 
 pub const EXECUTION_PREFLIGHT_METADATA_KEY: &str = "preflight";
 
@@ -71,22 +67,6 @@ impl ExecutionPreflightReport {
         }
     }
 
-    pub fn from_tool_result(
-        runner: impl Into<String>,
-        subject: impl Into<String>,
-        result: ToolResult,
-    ) -> Self {
-        let attachments = collect_attachments_from_metadata(&result.metadata);
-        Self {
-            runner: runner.into(),
-            subject: subject.into(),
-            output: result.output,
-            metadata: strip_attachments_from_metadata(&result.metadata),
-            attachments,
-            issues: Vec::new(),
-        }
-    }
-
     pub fn add_issue(
         &mut self,
         severity: ExecutionPreflightSeverity,
@@ -98,11 +78,6 @@ impl ExecutionPreflightReport {
             code: code.into(),
             message: message.into(),
         });
-    }
-
-    pub fn advisory(mut self, code: impl Into<String>, message: impl Into<String>) -> Self {
-        self.add_issue(ExecutionPreflightSeverity::Advisory, code, message);
-        self
     }
 
     pub fn soft_warn(mut self, code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -134,10 +109,6 @@ impl ExecutionPreflightReport {
         }
     }
 
-    pub fn has_guidance(&self) -> bool {
-        !self.output.trim().is_empty() || !self.metadata.is_empty() || !self.attachments.is_empty()
-    }
-
     pub fn metadata_projection(&self) -> ExecutionPreflightMetadata {
         ExecutionPreflightMetadata {
             runner: self.runner.clone(),
@@ -164,32 +135,6 @@ impl ExecutionPreflightReport {
     }
 }
 
-#[async_trait]
-pub trait ExecutionPreflightRunner {
-    async fn run(&self, ctx: &ToolContext) -> Result<ExecutionPreflightReport, ToolError>;
-}
-
-pub async fn execute_registry_tool_execution_preflight(
-    registry: &dyn ToolRegistryAccess,
-    tool_id: &str,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-    runner: impl Into<String>,
-    subject: impl Into<String>,
-) -> Result<ExecutionPreflightReport, ToolError> {
-    if registry.get(tool_id).await.is_none() {
-        return Err(ToolError::ExecutionError(format!(
-            "execution preflight requires `{}` tool but it is not registered",
-            tool_id
-        )));
-    }
-
-    let result = registry.execute(tool_id, args, ctx.clone()).await?;
-    Ok(ExecutionPreflightReport::from_tool_result(
-        runner, subject, result,
-    ))
-}
-
 pub fn execution_preflight_from_value(
     value: &serde_json::Value,
 ) -> Option<ExecutionPreflightMetadata> {
@@ -209,7 +154,6 @@ mod tests {
     #[test]
     fn status_uses_highest_severity_issue() {
         let mut report = ExecutionPreflightReport::new("read", "/tmp/a")
-            .advisory("registry_unavailable", "registry unavailable")
             .soft_warn("attachment_missing", "attachment missing");
         assert_eq!(report.status(), ExecutionPreflightStatus::SoftWarn);
 

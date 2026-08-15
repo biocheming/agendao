@@ -45,7 +45,6 @@ import { useDiagnosticsFromTelemetry } from "./hooks/useDiagnosticsFromTelemetry
 import { useProjectCreation } from "./hooks/useProjectCreation";
 import {
   currentContextTokensFromSources,
-  isLiveStageStatus,
 } from "./lib/contextPressure";
 import {
   attachmentContainsWorkspacePath,
@@ -309,7 +308,6 @@ export default function App() {
     return rightResize.width;
   }, [rightResize.width, workspacePanelTab]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
-  const applySchedulerStageOutputBlock = executionActivity.applySchedulerStageOutputBlock;
   const applyLiveExecutionOutputBlock = executionActivity.applyLiveExecutionOutputBlock;
   const terminalSessions = useTerminalSessions({
     api,
@@ -375,7 +373,6 @@ export default function App() {
   } = useTranscriptCoordinator({
     apiJson,
     applyLiveExecutionOutputBlock,
-    applySchedulerStageOutputBlock,
     clearPendingSessionRefresh,
     feedRef,
     forkSessionFromMessage,
@@ -387,13 +384,9 @@ export default function App() {
     scheduleSessionRefresh,
   });
   const composerContextTokens = useMemo(() => {
-    const activeEstimate =
-      executionActivity.activeStageSummary && isLiveStageStatus(executionActivity.activeStageSummary.status)
-        ? executionActivity.activeStageSummary.estimated_context_tokens
-        : undefined;
-    return currentContextTokensFromSources(sessionUsage?.context_tokens, activeEstimate)
+    return currentContextTokensFromSources(sessionUsage?.context_tokens)
       ?? estimateContextTokensFromHistory(messageHistory);
-  }, [executionActivity.activeStageSummary, messageHistory, sessionUsage?.context_tokens]);
+  }, [messageHistory, sessionUsage?.context_tokens]);
   const lastAssistantTurnTokens = useMemo(() => {
     for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
       const message = messageHistory[index];
@@ -445,7 +438,6 @@ export default function App() {
     reloadWorkspaceWithSelection,
   });
   const schedulerNavigation = useSchedulerNavigation({
-    apiJson,
     executionActivity,
     jumpToConversationTarget: conversationJump.jumpOrQueueConversationTarget,
     queueConversationJumpTarget: conversationJump.queueConversationJumpTarget,
@@ -478,13 +470,6 @@ export default function App() {
   });
   // Stable callbacks for ConversationFeedPanel/MessageCard — memo(MessageCard)
   // only pays off if these props keep reference identity across App re-renders.
-  const abortSchedulerStage = executionActivity.abortSchedulerStage;
-  const handleAbortStage = useCallback(
-    (stageId: string) => {
-      void abortSchedulerStage(stageId);
-    },
-    [abortSchedulerStage],
-  );
   const handleClearSelectedMessages = useCallback(() => {
     setSelectedMessageIds(new Set());
   }, [setSelectedMessageIds]);
@@ -766,9 +751,6 @@ export default function App() {
             onClearSelectedMessages={handleClearSelectedMessages}
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
-            onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
-            onAbortStage={handleAbortStage}
-            stageAbortingId={executionActivity.stageAbortingId}
           />
 
           <div className="shrink-0 px-4 pb-5 pt-2 md:px-5">

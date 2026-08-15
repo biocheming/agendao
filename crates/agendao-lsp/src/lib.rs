@@ -477,7 +477,9 @@ impl LspClient {
         tokio::time::timeout(timeout, async {
             loop {
                 match rx.recv().await {
-                    Ok(LspEvent::Diagnostics { path: event_path, .. }) => {
+                    Ok(LspEvent::Diagnostics {
+                        path: event_path, ..
+                    }) => {
                         let event_path = event_path
                             .canonicalize()
                             .unwrap_or_else(|_| event_path.clone());

@@ -27,8 +27,6 @@ pub struct SkillConditions {
     pub requires_toolsets: Vec<String>,
     #[serde(default)]
     pub fallback_for_toolsets: Vec<String>,
-    #[serde(default)]
-    pub stage_filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,8 +90,6 @@ pub struct SkillAgendaoMetadata {
     pub requires_toolsets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_for_toolsets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stage_filter: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -121,7 +117,6 @@ pub enum SkillReadinessStatus {
     SetupNeeded,
     Unsupported,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRequiredEnvironmentVariable {

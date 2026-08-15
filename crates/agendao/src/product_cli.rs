@@ -270,17 +270,25 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
         Some(ProductCommand::Tui(args)) => {
             let unix_socket_path = resolve_socket_path(args.socket)?;
             run_tui(TuiCommandRequest {
-                project: args.project, model: args.model,
-                session: args.session, fork: args.fork,
-                prompt: args.prompt, agent: args.agent,
-                attach_url: args.attach_url, unix_socket_path,
-            }).await?;
+                project: args.project,
+                model: args.model,
+                session: args.session,
+                fork: args.fork,
+                prompt: args.prompt,
+                agent: args.agent,
+                attach_url: args.attach_url,
+                unix_socket_path,
+            })
+            .await?;
         }
         Some(ProductCommand::Attach(args)) => {
             run_tui(TuiCommandRequest {
-                project: args.dir, model: None,
-                session: args.session, fork: false,
-                prompt: None, agent: None,
+                project: args.dir,
+                model: None,
+                session: args.session,
+                fork: false,
+                prompt: None,
+                agent: None,
                 attach_url: Some(args.url),
                 unix_socket_path: resolve_socket_path(args.socket)?,
             })
@@ -347,8 +355,14 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
 
 fn default_tui_request() -> TuiCommandRequest {
     TuiCommandRequest {
-        project: None, model: None, session: None, fork: false,
-        prompt: None, agent: None, attach_url: None, unix_socket_path: None,
+        project: None,
+        model: None,
+        session: None,
+        fork: false,
+        prompt: None,
+        agent: None,
+        attach_url: None,
+        unix_socket_path: None,
     }
 }
 
@@ -659,26 +673,6 @@ async fn handle_uninstall_command(
         path: agendao_util::agendao_home(),
     });
 
-    // 旧版 XDG 遗留目录（可能残留未迁移文件，如 models.json），一并清理。
-    let data_dir = dirs::data_local_dir().map(|p| p.join("agendao"));
-    let cache_dir = dirs::cache_dir().map(|p| p.join("agendao"));
-    let config_dir = dirs::config_dir().map(|p| p.join("agendao"));
-    let state_dir = dirs::state_dir().map(|p| p.join("agendao"));
-
-    for (label, path) in [
-        ("data", data_dir),
-        ("cache", cache_dir),
-        ("config", config_dir),
-        ("state", state_dir),
-    ] {
-        if let Some(path) = path {
-            targets.push(RemovalTarget {
-                label: label.to_string(),
-                path,
-            });
-        }
-    }
-
     println!("Uninstall targets:");
     for target in &targets {
         println!("  {:<10} {}", target.label, target.path.display());
@@ -695,9 +689,7 @@ async fn handle_uninstall_command(
     }
 
     for target in targets.drain(..) {
-        let skip = (target.label == "home" && (keep_config || keep_data))
-            || (target.label == "config" && keep_config)
-            || (target.label == "data" && keep_data);
+        let skip = target.label == "home" && (keep_config || keep_data);
         if skip {
             println!("Skipping {} ({})", target.label, target.path.display());
             continue;

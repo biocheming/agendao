@@ -16,18 +16,15 @@ import {
   CornerUpLeftIcon,
   CopyIcon,
   InfoIcon,
-  SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { MessageResponse } from "../ai-elements/message";
 import {
-  feedAttachedSessionId,
   feedStageId,
   feedToolCallId,
   isMultimodalInfoOutputBlock,
   isReasoningOutputBlock,
-  isSchedulerStageOutputBlock,
   isStatusOutputBlock,
   isToolOutputBlock,
   type FeedBlock,
@@ -37,13 +34,10 @@ import {
   type StatusOutputBlock,
   type ToolOutputBlock,
 } from "../../lib/history";
-import { SchedulerStageCard } from "./SchedulerStageCard";
 import { DiffView } from "./DiffView";
 import { toolActivityLabel } from "../../lib/toolLabels";
-import { sanitizeAssistantDisplayText } from "../../lib/blockPresentation";
-import { compactText, excerptText, normalizeValue } from "../../lib/stagePresentation";
 import {
-  toolCompatDetail,
+  toolPlainDetail,
   toolDisplayFields,
   toolDisplayPreview,
   toolDisplayRawLabelKey,
@@ -73,12 +67,32 @@ interface MessageCardProps {
   onEditAndResend?: (message: FeedMessage) => Promise<void> | void;
   onToggleSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
-  onNavigateAttachedSession: (
-    sessionId: string,
-    context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
-  ) => void;
-  onAbortStage?: (stageId: string) => void;
-  stageAborting?: boolean;
+}
+
+function compactText(value: unknown): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeValue(value: unknown): { structured: boolean; text: string } {
+  const text = String(value ?? "").trim();
+  if (!text) return { structured: false, text: "" };
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      return { structured: true, text: JSON.stringify(JSON.parse(text), null, 2) };
+    } catch {
+      // Render malformed structured-looking values as plain text.
+    }
+  }
+  return {
+    structured: text.includes("\n") || text.length > 140 || text.includes("{") || text.includes("["),
+    text,
+  };
+}
+
+function excerptText(value: unknown, maxLength = 120): string | null {
+  const text = compactText(value);
+  if (!text) return null;
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
 
 function formatClock(ts?: number) {
@@ -100,16 +114,6 @@ function readableSummary(message: FeedMessage) {
   if (text && text.includes(summary)) return null;
 
   return summary;
-}
-
-function attachedSessionLabel(message: FeedMessage): string {
-  if (typeof message.title === "string" && message.title.trim()) {
-    return message.title;
-  }
-  if (isSchedulerStageOutputBlock(message) && typeof message.stage === "string" && message.stage.trim()) {
-    return message.stage;
-  }
-  return feedAttachedSessionId(message) ?? "";
 }
 
 function joinSummaryParts(parts: Array<string | null | undefined>) {
@@ -420,16 +424,9 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
     previewText,
     previewKind,
     previewTruncated,
-    compatDetail,
+    plainDetail,
   } = useMemo(() => {
-    // Phase W2/W5: prefer live_identity for live tool cards, then fall back to
-    // the persisted history marker injected by buildFeedFromHistory() so history
-    // rebuild preserves TOOL RUNNING / TOOL RESULT semantics.
-    const metadataPartKind =
-      typeof message.metadata?.agendao_web_history_part_kind === "string"
-        ? message.metadata.agendao_web_history_part_kind
-        : null;
-    const partKind = message.live_identity?.part_kind ?? metadataPartKind;
+    const partKind = message.live_identity?.part_kind;
     const isRunning = partKind === "tool_call";
     const isResult = partKind === "tool_result";
     const { previewText, previewKind, previewTruncated } = toolDisplayPreview(message);
@@ -442,7 +439,7 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
       previewText,
       previewKind,
       previewTruncated,
-      compatDetail: toolCompatDetail(message),
+      plainDetail: toolPlainDetail(message),
     };
   }, [message]);
 
@@ -481,8 +478,8 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
           </p>
         ) : null}
         {fields?.length ? <FieldList fields={fields} /> : null}
-        {compatDetail ? (
-          <StructuredText value={compatDetail} className="text-muted-foreground" />
+        {plainDetail ? (
+          <StructuredText value={plainDetail} className="text-muted-foreground" />
         ) : null}
         {previewText ? (
           <div className="grid gap-1.5">
@@ -522,14 +519,11 @@ export const MessageCard = memo(function MessageCard({
   onEditAndResend,
   onToggleSelected,
   onNavigateStage,
-  onNavigateAttachedSession,
-  onAbortStage,
-  stageAborting = false,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
   const displayText = useMemo(
-    () => sanitizeAssistantDisplayText(message.text ?? "", message.kind, message.role),
-    [message.text, message.kind, message.role],
+    () => (message.text ?? "").trimEnd(),
+    [message.text],
   );
 
   const handleCopy = useCallback(async () => {
@@ -537,19 +531,6 @@ export const MessageCard = memo(function MessageCard({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [displayText]);
-
-  if (isSchedulerStageOutputBlock(message)) {
-    return (
-      <SchedulerStageCard
-        message={message}
-        highlighted={highlighted || activeStage}
-        onNavigateStage={onNavigateStage}
-        onNavigateAttachedSession={onNavigateAttachedSession}
-        onAbortStage={onAbortStage}
-        stageAborting={stageAborting}
-      />
-    );
-  }
 
   if (isReasoningOutputBlock(message)) {
     if (!message.text.trim()) return null;
@@ -582,7 +563,6 @@ export const MessageCard = memo(function MessageCard({
   const summary = readableSummary(message);
   const stageId = feedStageId(message);
   const toolCallId = feedToolCallId(message);
-  const attachedSessionId = feedAttachedSessionId(message);
   const cacheSummary = cacheBustSummaryFromMetadata(message.metadata);
   const cacheDiagnosticLabel = cacheBustSummaryStatusLabel(cacheSummary);
   const cacheDiagnosticDetail = cacheBustSummaryLabel(cacheSummary);
@@ -748,23 +728,6 @@ export const MessageCard = memo(function MessageCard({
           ) : null}
         </section>
       </div>
-      {!isUser && attachedSessionId ? (
-        <div className="pl-1">
-          <MetaActionButton
-            className="roc-action roc-action-pill justify-center px-3.5 py-1.5 text-xs text-foreground no-underline"
-            onClick={() =>
-              onNavigateAttachedSession(attachedSessionId, {
-                stageId: stageId ?? null,
-                toolCallId: toolCallId ?? null,
-                label: attachedSessionLabel(message),
-              })
-            }
-          >
-            <SparklesIcon className="mr-1 size-3.5" />
-            Open attached session {attachedSessionLabel(message)}
-          </MetaActionButton>
-        </div>
-      ) : null}
     </article>
   );
 });

@@ -6,11 +6,8 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::session_runtime::{
-    assistant_visible_text, decision_from_stage_text, scheduler_stage_block_from_message,
-};
 use crate::{ApiError, Result, ServerState};
-use agendao_command_render::agent_presenter::{
+use agendao_command_render::block_projection::{
     history_session_event_to_web, history_tool_call_to_web, history_tool_result_to_web,
     output_block_to_web,
 };
@@ -28,18 +25,7 @@ const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
 #[derive(Debug, Deserialize)]
 pub(crate) struct SendMessageRequest {
     pub content: String,
-    #[serde(default)]
-    pub parts: Option<Vec<agendao_session::prompt::PartInput>>,
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
-    #[serde(default)]
-    pub ingress_source: Option<String>,
-    pub model: Option<String>,
-    pub agent: Option<String>,
-    pub scheduler_profile: Option<String>,
     pub variant: Option<String>,
-    #[serde(rename = "stream")]
-    pub _stream: Option<bool>,
 }
 
 pub(crate) fn prompt_text_from_parts(parts: &[agendao_session::prompt::PartInput]) -> String {
@@ -70,18 +56,6 @@ pub(crate) fn prompt_parts_from_session_parts(
                 url: url.clone(),
                 filename: filename.clone(),
                 mime: mime.clone(),
-            },
-            agendao_session::prompt::PartInput::Agent { name } => {
-                agendao_types::PromptPart::Agent { name: name.clone() }
-            }
-            agendao_session::prompt::PartInput::Subtask {
-                prompt,
-                description,
-                agent,
-            } => agendao_types::PromptPart::Subtask {
-                prompt: prompt.clone(),
-                description: description.clone(),
-                agent: agent.clone(),
             },
         })
         .collect()
@@ -213,8 +187,6 @@ fn part_type_name(part_type: &agendao_session::PartType) -> &'static str {
         agendao_session::PartType::StepFinish { .. } => "step_finish",
         agendao_session::PartType::Snapshot { .. } => "snapshot",
         agendao_session::PartType::Patch { .. } => "patch",
-        agendao_session::PartType::Agent { .. } => "agent",
-        agendao_session::PartType::Subtask { .. } => "subtask",
         agendao_session::PartType::Retry { .. } => "retry",
         agendao_session::PartType::Compaction { .. } => "compaction",
     }
@@ -302,7 +274,6 @@ fn part_to_info(
                         serde_json::to_value(
                             agendao_session::prompt::assistant_text_live_identity(
                                 message_id,
-                                Some(part.id.clone()),
                                 agendao_types::LivePartPhase::Snapshot,
                             ),
                         )
@@ -322,7 +293,6 @@ fn part_to_info(
                         serde_json::to_value(
                             agendao_session::prompt::assistant_reasoning_live_identity(
                                 message_id,
-                                Some(part.id.clone()),
                                 agendao_types::LivePartPhase::Snapshot,
                             ),
                         )
@@ -359,44 +329,6 @@ fn part_to_info(
                 &tool_result.content,
                 tool_result.is_error,
                 tool_result.metadata.as_ref().unwrap_or(&empty_meta),
-            ))
-        } else if let agendao_session::PartType::Agent { name, status } = &part.part_type {
-            Some(history_session_event_to_web(
-                "agent",
-                format!("Agent · {name}"),
-                Some(status.as_str()),
-                Some(format!("Agent `{name}` entered `{status}` state.")),
-                vec![("Agent".to_string(), name.clone(), None)],
-                None,
-            ))
-        } else if let agendao_session::PartType::Subtask {
-            id,
-            description,
-            status,
-        } = &part.part_type
-        {
-            Some(history_session_event_to_web(
-                "subtask",
-                if description.trim().is_empty() {
-                    "Subtask".to_string()
-                } else {
-                    format!("Subtask · {description}")
-                },
-                Some(status.as_str()),
-                Some(format!("Subtask `{id}` is `{status}`.")),
-                vec![
-                    ("ID".to_string(), id.clone(), None),
-                    (
-                        "Description".to_string(),
-                        if description.trim().is_empty() {
-                            "—".to_string()
-                        } else {
-                            description.clone()
-                        },
-                        None,
-                    ),
-                ],
-                None,
             ))
         } else if let agendao_session::PartType::Retry { count, reason } = &part.part_type {
             Some(history_session_event_to_web(
@@ -521,13 +453,7 @@ fn message_to_info(
     tool_names: &HashMap<String, String>,
     pending_questions: &mut Vec<super::super::tui::QuestionInfo>,
 ) -> MessageInfo {
-    let mut metadata = message.metadata.clone();
-    augment_scheduler_decision_metadata_for_response(&mut metadata, message);
-    let scheduler_stage_block = {
-        let mut message_with_augmented_metadata = message.clone();
-        message_with_augmented_metadata.metadata = metadata.clone();
-        scheduler_stage_block_from_message(&message_with_augmented_metadata)
-    };
+    let metadata = message.metadata.clone();
     let usage = message.usage.clone().unwrap_or_default();
     let model_id = message
         .metadata
@@ -554,7 +480,7 @@ fn message_to_info(
             .unwrap_or(0.0)
     };
 
-    let mut parts: Vec<PartInfo> = message
+    let parts: Vec<PartInfo> = message
         .parts
         .iter()
         .map(|part| {
@@ -567,34 +493,6 @@ fn message_to_info(
             )
         })
         .collect();
-    if let Some(block) = scheduler_stage_block {
-        for part in &mut parts {
-            if part.part_type == "text" {
-                part.ignored = Some(true);
-            }
-        }
-
-        let mut output_block = output_block_to_web(&OutputBlock::SchedulerStage(Box::new(block)));
-        if let Some(map) = output_block.as_object_mut() {
-            map.insert(
-                "ts".to_string(),
-                serde_json::Value::Number(message.created_at.timestamp_millis().into()),
-            );
-            map.insert("id".to_string(), serde_json::json!(message.id.clone()));
-        }
-        parts.push(PartInfo {
-            id: format!("{}:scheduler_stage", message.id),
-            part_type: "output_block".to_string(),
-            text: None,
-            file: None,
-            tool_call: None,
-            tool_result: None,
-            output_block: Some(output_block),
-            synthetic: Some(true),
-            ignored: None,
-        });
-    }
-
     MessageInfo {
         id: message.id.clone(),
         session_id: session_id.to_string(),
@@ -657,77 +555,6 @@ fn collect_tool_names(session: &agendao_session::Session) -> HashMap<String, Str
     tool_names
 }
 
-fn augment_scheduler_decision_metadata_for_response(
-    metadata: &mut HashMap<String, serde_json::Value>,
-    message: &agendao_session::SessionMessage,
-) {
-    if metadata.contains_key("scheduler_decision_title") {
-        return;
-    }
-    let Some(stage) = metadata
-        .get("scheduler_stage")
-        .and_then(|value| value.as_str())
-    else {
-        return;
-    };
-    let text = assistant_visible_text(message);
-    let Some(decision) = decision_from_stage_text(stage, &text) else {
-        return;
-    };
-
-    metadata.insert(
-        "scheduler_decision_kind".to_string(),
-        serde_json::json!(decision.kind),
-    );
-    metadata.insert(
-        "scheduler_decision_title".to_string(),
-        serde_json::json!(decision.title),
-    );
-    metadata.insert(
-        "scheduler_decision_spec".to_string(),
-        serde_json::json!({
-            "version": decision.spec.version,
-            "show_header_divider": decision.spec.show_header_divider,
-            "field_order": decision.spec.field_order,
-            "field_label_emphasis": decision.spec.field_label_emphasis,
-            "status_palette": decision.spec.status_palette,
-            "section_spacing": decision.spec.section_spacing,
-            "update_policy": decision.spec.update_policy,
-        }),
-    );
-    metadata.insert(
-        "scheduler_decision_fields".to_string(),
-        serde_json::Value::Array(
-            decision
-                .fields
-                .iter()
-                .map(|field| {
-                    serde_json::json!({
-                        "label": field.label,
-                        "value": field.value,
-                        "tone": field.tone,
-                    })
-                })
-                .collect(),
-        ),
-    );
-    metadata.insert(
-        "scheduler_decision_sections".to_string(),
-        serde_json::Value::Array(
-            decision
-                .sections
-                .iter()
-                .map(|section| {
-                    serde_json::json!({
-                        "title": section.title,
-                        "body": section.body,
-                    })
-                })
-                .collect(),
-        ),
-    );
-}
-
 pub(super) async fn resolve_provider_and_model(
     state: &ServerState,
     request_model: Option<&str>,
@@ -778,7 +605,10 @@ pub(super) async fn send_message(
 ) -> Result<Json<MessageInfo>> {
     // 懒加载水合闸门：append 前先回填——否则随后的全量 flush 会因
     // dehydrated 守卫跳过消息写入，丢掉这条新消息。
-    state.ensure_session_messages_hydrated(&session_id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state
+        .ensure_session_messages_hydrated(&session_id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
     let mut sessions = state.sessions.lock().await;
     let session = sessions
         .get_mut(&session_id)
@@ -829,7 +659,10 @@ pub(super) async fn list_messages(
     let mut pending_questions =
         super::super::tui::list_questions_for_session(&state, &session_id).await;
     // 懒加载水合闸门：打开会话读消息前，确保消息体已从 storage 回填。
-    state.ensure_session_messages_hydrated(&session_id).await.map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state
+        .ensure_session_messages_hydrated(&session_id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
     let sessions = state.sessions.lock().await;
     let session = sessions
         .get(&session_id)
@@ -898,9 +731,9 @@ fn match_pending_question_request(
     }
     let index = pending_questions.iter().position(|pending| {
         let normalized_pending = pending
-            .questions
+            .items
             .iter()
-            .map(|question| normalize_question_text(question))
+            .map(|item| normalize_question_text(&item.question))
             .collect::<Vec<_>>();
         normalized_pending == normalized_input
     })?;
@@ -942,10 +775,12 @@ fn question_pending_interaction_json(
                         .collect::<Vec<_>>()
                 })
                 .or_else(|| {
-                    question_info
-                        .options
-                        .as_ref()
-                        .and_then(|options| options.get(index).cloned())
+                    question_info.items.get(index).map(|item| {
+                        item.options
+                            .iter()
+                            .map(|option| option.label.clone())
+                            .collect()
+                    })
                 })
                 .unwrap_or_default();
             serde_json::json!({
@@ -1333,52 +1168,6 @@ mod tests {
         assert!(
             info.parts[0].output_block.is_none(),
             "user text history must not be rewritten as assistant transcript output_block"
-        );
-    }
-
-    #[test]
-    fn message_to_info_synthesizes_scheduler_stage_output_block_for_history() {
-        let mut message = SessionMessage::assistant("ses_test");
-        message
-            .metadata
-            .insert("scheduler_stage".to_string(), serde_json::json!("route"));
-        message.metadata.insert(
-            "scheduler_profile".to_string(),
-            serde_json::json!("prometheus"),
-        );
-        message.parts.push(MessagePart {
-            id: "prt_text".to_string(),
-            part_type: PartType::Text {
-                text: r###"{"mode":"direct","direct_kind":"reply","direct_response":"## Answer\n\n- item","rationale_summary":"concept reply"}"###.to_string(),
-                synthetic: None,
-                ignored: None,
-            },
-            created_at: chrono::Utc::now(),
-            message_id: Some(message.id.clone()),
-        });
-
-        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
-
-        assert_eq!(info.parts[0].ignored, Some(true));
-        let block = info
-            .parts
-            .iter()
-            .find(|part| part.part_type == "output_block")
-            .and_then(|part| part.output_block.as_ref())
-            .expect("synthetic scheduler stage block");
-        assert_eq!(
-            block.get("kind").and_then(|value| value.as_str()),
-            Some("scheduler_stage")
-        );
-        assert_eq!(
-            block
-                .get("decision")
-                .and_then(|value| value.get("sections"))
-                .and_then(|value| value.as_array())
-                .and_then(|value| value.first())
-                .and_then(|value| value.get("title"))
-                .and_then(|value| value.as_str()),
-            Some("Response")
         );
     }
 

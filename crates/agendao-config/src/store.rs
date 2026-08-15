@@ -117,24 +117,6 @@ impl ConfigStore {
         self.plugin_applied.store(None);
     }
 
-    /// Reload base config from disk (if project_dir is known).
-    pub async fn resolved_scheduler_path(&self) -> Option<PathBuf> {
-        let config = self.config();
-        let raw = config
-            .scheduler_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-
-        let path = PathBuf::from(raw);
-        if path.is_absolute() {
-            return Some(path);
-        }
-
-        let project_dir = self.read_project_dir().ok()?.clone();
-        project_dir.map(|dir| resolve_configured_path(&dir, raw))
-    }
-
     pub async fn resolved_task_category_path(&self) -> Option<PathBuf> {
         let config = self.config();
         let raw = config
@@ -330,24 +312,6 @@ mod tests {
         assert!(store.plugin_applied().await.is_none());
     }
 
-    #[tokio::test]
-    async fn resolved_scheduler_path_uses_project_dir_for_relative_paths() {
-        let store = ConfigStore::new(Config {
-            scheduler_path: Some(".agendao/scheduler/sisyphus.jsonc".to_string()),
-            ..Default::default()
-        });
-
-        *store.project_dir.write().expect("project_dir poisoned") =
-            Some(PathBuf::from("/tmp/agendao-project"));
-
-        assert_eq!(
-            store.resolved_scheduler_path().await,
-            Some(PathBuf::from(
-                "/tmp/agendao-project/.agendao/scheduler/sisyphus.jsonc"
-            ))
-        );
-    }
-
     #[test]
     fn poisoned_project_dir_lock_is_recovered() {
         let store = Arc::new(ConfigStore::new(Config::default()));
@@ -377,7 +341,12 @@ mod tests {
     #[tokio::test]
     async fn patch_persists_to_disk_when_project_dir_is_known() {
         let temp = TestDir::new("agendao_config_store_patch");
-        fs::write(temp.path.join("agendao.json"), r#"{ "model": "before" }"#).expect("seed config");
+        fs::create_dir_all(temp.path.join(".agendao")).expect("create config dir");
+        fs::write(
+            temp.path.join(".agendao/agendao.json"),
+            r#"{ "model": "before" }"#,
+        )
+        .expect("seed config");
 
         let store = ConfigStore::from_project_dir(&temp.path).expect("store");
         store
@@ -395,7 +364,12 @@ mod tests {
     #[test]
     fn patch_waits_for_project_dir_lock_instead_of_skipping_disk_persist() {
         let temp = TestDir::new("agendao_config_store_patch_lock");
-        fs::write(temp.path.join("agendao.json"), r#"{ "model": "before" }"#).expect("seed config");
+        fs::create_dir_all(temp.path.join(".agendao")).expect("create config dir");
+        fs::write(
+            temp.path.join(".agendao/agendao.json"),
+            r#"{ "model": "before" }"#,
+        )
+        .expect("seed config");
 
         let store = Arc::new(ConfigStore::from_project_dir(&temp.path).expect("store"));
         let write_guard = store.project_dir.write().expect("project_dir poisoned");
@@ -422,8 +396,9 @@ mod tests {
     #[tokio::test]
     async fn replace_with_persists_full_config_when_project_dir_is_known() {
         let temp = TestDir::new("agendao_config_store_replace");
+        fs::create_dir_all(temp.path.join(".agendao")).expect("create config dir");
         fs::write(
-            temp.path.join("agendao.json"),
+            temp.path.join(".agendao/agendao.json"),
             r#"{ "provider": { "old": { "name": "Old" } } }"#,
         )
         .expect("seed config");

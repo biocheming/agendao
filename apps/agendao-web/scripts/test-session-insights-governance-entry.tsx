@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionInsightsPanel } from "../src/components/SessionInsightsPanel";
+import { SessionInsightsPanel } from "../src/components/session/SessionInsightsPanel";
 
 const activity = {
   telemetry: {
@@ -9,7 +9,6 @@ const activity = {
       session_id: "sess-runtime",
       run_status: "running",
     },
-    stages: [],
     topology: {
       active_count: 0,
       running_count: 0,
@@ -51,7 +50,6 @@ const activity = {
         cache_miss_tokens: 0,
         total_cost: 0,
       },
-      stage_summaries: [],
       tool_result_governance: {
         single_result_governed_count: 0,
         batch_governed_count: 0,
@@ -65,13 +63,6 @@ const activity = {
     },
   },
   sessionUsage: null,
-  activeStageSummary: null,
-  activityFilters: {
-    stageId: "",
-    executionId: "",
-    eventType: "",
-  },
-  activityPage: 1,
   activityLoading: false,
   refreshExecutionActivity: async () => {},
 };

@@ -1,4 +1,4 @@
-use crate::schema::{AgentConfig, AgentMode, CommandConfig};
+use crate::schema::{AgentConfig, CommandConfig};
 use agendao_util::agendao_home;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -157,29 +157,6 @@ pub(super) fn load_agents_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
     result
 }
 
-/// Load mode definitions from markdown files in {mode,modes}/*.md
-pub(super) fn load_modes_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
-    let mut result = HashMap::new();
-
-    for subdir_name in &["mode", "modes"] {
-        let subdir = dir.join(subdir_name);
-        if !subdir.is_dir() {
-            continue;
-        }
-        if let Ok(entries) = glob_md_files(&subdir) {
-            for entry in entries {
-                if let Some((name, mut config)) = parse_markdown_agent(&entry, dir) {
-                    // Modes are always primary agents
-                    config.mode = Some(AgentMode::Primary);
-                    result.insert(name, config);
-                }
-            }
-        }
-    }
-
-    result
-}
-
 pub fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {
     // 展开用户配置里手写的 `~/`，要的是真实用户主目录，不经 agendao_home。
     if let Some(stripped) = raw.strip_prefix("~/") {
@@ -202,23 +179,15 @@ pub fn collect_plugin_roots(
 ) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    // 旧版 XDG 遗留目录（低优先级，先到先得）
-    if let Some(config_dir) = dirs::config_dir() {
-        roots.push(config_dir.join("agendao/plugins"));
-        roots.push(config_dir.join("agendao/plugin"));
-    }
-
-    // 权威位置 ~/.agendao（尊重 AGENDAO_HOME 覆盖；后列优先）
+    // Canonical global plugin directory (respects AGENDAO_HOME).
     let home = agendao_home();
     roots.push(home.join("plugins"));
-    roots.push(home.join("plugin"));
 
     let start_dir = normalize_existing_path(project_dir);
     let stop_dir = detect_worktree_stop(&start_dir);
     let found = find_up(".agendao", &start_dir, &stop_dir);
     for path in found.into_iter().rev() {
         roots.push(path.join("plugins"));
-        roots.push(path.join("plugin"));
     }
 
     let mut names: Vec<&String> = plugin_paths.keys().collect();
@@ -267,17 +236,10 @@ fn collect_plugins_in_dir(dir: &Path, plugins: &mut Vec<String>) {
     }
 }
 
-/// Load plugin paths from a directory.
-/// - Direct files in `path`
-/// - Compatibility subdirectories `path/plugin` and `path/plugins`
-///
-/// `pub`：server 的插件列表读面（Settings→Plugins）复用同一扫描口径，
-/// 不再复制「文件 / index.ts|js|mjs」规则。
+/// Load plugin entry points directly from one configured plugin directory.
 pub fn load_plugins_from_path(path: &Path) -> Vec<String> {
     let mut plugins = Vec::new();
     collect_plugins_in_dir(path, &mut plugins);
-    collect_plugins_in_dir(&path.join("plugin"), &mut plugins);
-    collect_plugins_in_dir(&path.join("plugins"), &mut plugins);
     plugins
 }
 

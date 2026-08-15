@@ -19,7 +19,6 @@ import { useTranscriptFeedState } from "./useTranscriptFeedState";
 interface UseTranscriptCoordinatorOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   applyLiveExecutionOutputBlock: (block: OutputBlock, sessionId: string) => void;
-  applySchedulerStageOutputBlock: (block: OutputBlock, sessionId: string) => void;
   clearPendingSessionRefresh: () => void;
   feedRef: RefObject<HTMLDivElement | null>;
   forkSessionFromMessage: (messageId: string) => Promise<{ id: string }>;
@@ -34,7 +33,6 @@ interface UseTranscriptCoordinatorOptions {
 export function useTranscriptCoordinator({
   apiJson,
   applyLiveExecutionOutputBlock,
-  applySchedulerStageOutputBlock,
   clearPendingSessionRefresh,
   feedRef,
   forkSessionFromMessage,
@@ -399,7 +397,6 @@ export function useTranscriptCoordinator({
 
   useServerEventStream({
     applyLiveExecutionOutputBlock,
-    applySchedulerStageOutputBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,

@@ -6,7 +6,6 @@ mod media_reader;
 mod metis;
 mod momus;
 mod oracle;
-mod sisyphus_junior;
 
 use super::*;
 use std::collections::HashMap;
@@ -23,7 +22,6 @@ pub use media_reader::media_reader;
 pub use metis::metis;
 pub use momus::momus;
 pub use oracle::oracle;
-pub use sisyphus_junior::sisyphus_junior;
 
 fn base_agent(name: &str, mode: AgentMode) -> AgentInfo {
     AgentInfo {
@@ -67,8 +65,6 @@ const PRIMARY_BUILTIN_TOOLS: &[&str] = &[
     "glob",
     "grep",
     "ls",
-    "task",
-    "task_flow",
     "question",
     "webfetch",
     "websearch",
@@ -76,14 +72,12 @@ const PRIMARY_BUILTIN_TOOLS: &[&str] = &[
     "todowrite",
     "multiedit",
     "apply_patch",
-    "skill",
+    "skill_view",
     "lsp",
     "batch",
     "codesearch",
     "ast_grep_search",
     "ast_grep_replace",
-    "plan_enter",
-    "plan_exit",
 ];
 
 fn base_read_only_agent(name: &str, mode: AgentMode) -> AgentInfo {
@@ -105,7 +99,6 @@ impl AgentInfo {
             BuiltinAgent::Metis => Self::metis(),
             BuiltinAgent::Momus => Self::momus(),
             BuiltinAgent::Oracle => Self::oracle(),
-            BuiltinAgent::SisyphusJunior => Self::sisyphus_junior(),
             BuiltinAgent::Compaction => Self::compaction(),
             BuiltinAgent::Title => Self::title(),
         }
@@ -246,10 +239,6 @@ impl AgentInfo {
 
     pub fn oracle() -> Self {
         oracle()
-    }
-
-    pub fn sisyphus_junior() -> Self {
-        sisyphus_junior()
     }
 
     pub fn title() -> Self {

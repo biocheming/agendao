@@ -1,4 +1,6 @@
-use super::{normalize_name, set_intersection_count, skill_diagnostic_sort_key, SkillGovernanceAuthority};
+use super::{
+    normalize_name, set_intersection_count, skill_diagnostic_sort_key, SkillGovernanceAuthority,
+};
 use crate::{SkillConditions, SkillDetailView, SkillError};
 use agendao_types::{
     SkillGovernanceDiagnosticSeverity, SkillGuardSeverity, SkillGuardViolation,
@@ -62,7 +64,6 @@ pub(super) struct SkillSemanticDescriptor {
     pub(super) related_skills: BTreeSet<String>,
     pub(super) requires_tools: BTreeSet<String>,
     pub(super) requires_toolsets: BTreeSet<String>,
-    pub(super) stage_filter: BTreeSet<String>,
 }
 
 pub(super) fn build_skill_semantic_descriptor_from_parts(
@@ -97,7 +98,6 @@ pub(super) fn build_skill_semantic_descriptor_from_parts(
         .requires_tools
         .iter()
         .chain(conditions.requires_toolsets.iter())
-        .chain(conditions.stage_filter.iter())
         .chain(conditions.fallback_for_tools.iter())
         .chain(conditions.fallback_for_toolsets.iter())
     {
@@ -125,13 +125,6 @@ pub(super) fn build_skill_semantic_descriptor_from_parts(
         .map(|value| normalize_name(value))
         .filter(|value| !value.is_empty())
         .collect::<BTreeSet<_>>();
-    let stage_filter = conditions
-        .stage_filter
-        .iter()
-        .map(|value| normalize_name(value))
-        .filter(|value| !value.is_empty())
-        .collect::<BTreeSet<_>>();
-
     SkillSemanticDescriptor {
         skill_name: skill_name.to_string(),
         normalized_name,
@@ -141,7 +134,6 @@ pub(super) fn build_skill_semantic_descriptor_from_parts(
         related_skills,
         requires_tools,
         requires_toolsets,
-        stage_filter,
     }
 }
 
@@ -443,7 +435,9 @@ fn preferred_skill_name(
     }
 }
 
-pub(super) fn semantic_conflict_is_review_candidate(conflict: &SkillSemanticConflictDiagnostic) -> bool {
+pub(super) fn semantic_conflict_is_review_candidate(
+    conflict: &SkillSemanticConflictDiagnostic,
+) -> bool {
     conflict.severity == SkillGovernanceDiagnosticSeverity::Warn
         && conflict.kind == SkillSemanticConflictKind::ReplacementHint
         && conflict.preferred_skill_name.is_some()

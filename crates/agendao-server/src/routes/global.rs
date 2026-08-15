@@ -1,12 +1,11 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     response::sse::{Event, Sse},
     routing::{get, post},
     Json, Router,
 };
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -29,17 +28,6 @@ pub(crate) fn global_routes() -> Router<Arc<ServerState>> {
 
 pub(crate) fn experimental_routes() -> Router<Arc<ServerState>> {
     Router::new()
-        .route("/", get(list_experimental))
-        .route("/analyze", post(experimental_analyze))
-        .route("/generate", post(experimental_generate))
-        .route("/refactor", post(experimental_refactor))
-        .route("/test", post(experimental_test))
-        .route(
-            "/{feature}",
-            post(enable_experimental).delete(disable_experimental),
-        )
-        .route("/tool/ids", get(list_tool_ids))
-        .route("/tool", get(list_tools))
         .route(
             "/worktree",
             get(list_worktrees)
@@ -76,19 +64,12 @@ pub struct GlobalDiagnosticsResponse {}
 async fn global_event_stream(
     State(state): State<Arc<ServerState>>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
-    // P2 compat: the global event stream (`/events` without a session query
-    // parameter) has no session context and therefore no frontend to derive a
-    // subscription tier from.  It uses legacy_default() intentionally — this
-    // is the one remaining justified call site.
-    //
-    // The per-session SSE endpoint (`/event?session=X&tier=Y`) goes through
-    // from_wire_tier() in routes/mod.rs.  The session-specific response stream
-    // (`POST /session/:id/stream`) does not yet use the subscription model —
-    // see routes/stream.rs for the P2-2 plan.
     super::stream_server_events(
         state.event_bus.subscribe(),
         None,
-        agendao_api::ResolvedFrontendSubscription::legacy_default(),
+        agendao_api::ResolvedFrontendSubscription::from_tier(
+            agendao_api::FrontendSubscriptionTier::TuiHighFrequency,
+        ),
         state.event_bus_telemetry.clone(),
     )
 }
@@ -136,10 +117,7 @@ impl GlobalRepairQueryParams {
             provider_id: self.provider_id.clone(),
             model_id: self.model_id.clone(),
             tool_name: self.tool_name.clone(),
-            repair_kind: self
-                .repair_kind
-                .as_deref()
-                .and_then(RepairKind::from_legacy_str),
+            repair_kind: self.repair_kind.as_deref().and_then(RepairKind::parse),
             layer: self.layer.clone(),
             strict_only: Some(self.strict_only),
             include_samples: Some(self.include_samples),
@@ -156,157 +134,6 @@ async fn query_global_repair(
     let query = params.to_query();
     let sessions = state.sessions.lock().await;
     Ok(Json(query_model_repair_summary(sessions.list(), &query)))
-}
-
-#[derive(Debug, Serialize)]
-pub struct ExperimentalFeature {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub enabled: bool,
-}
-
-async fn list_experimental() -> Json<Vec<ExperimentalFeature>> {
-    Json(Vec::new())
-}
-
-async fn enable_experimental(Path(_feature): Path<String>) -> Result<Json<bool>> {
-    Ok(Json(true))
-}
-
-async fn disable_experimental(Path(_feature): Path<String>) -> Result<Json<bool>> {
-    Ok(Json(true))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExperimentalTaskRequest {
-    pub prompt: Option<String>,
-    pub context: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ExperimentalTaskResponse {
-    pub operation: String,
-    pub status: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Value>,
-}
-
-fn make_experimental_response(
-    operation: &str,
-    payload: ExperimentalTaskRequest,
-) -> ExperimentalTaskResponse {
-    ExperimentalTaskResponse {
-        operation: operation.to_string(),
-        status: "accepted".to_string(),
-        message: format!(
-            "Experimental endpoint `{}` is available but currently returns a placeholder response in Rust.",
-            operation
-        ),
-        prompt: payload.prompt,
-        context: payload.context,
-    }
-}
-
-async fn experimental_analyze(
-    Json(payload): Json<ExperimentalTaskRequest>,
-) -> Json<ExperimentalTaskResponse> {
-    Json(make_experimental_response("analyze", payload))
-}
-
-async fn experimental_generate(
-    Json(payload): Json<ExperimentalTaskRequest>,
-) -> Json<ExperimentalTaskResponse> {
-    Json(make_experimental_response("generate", payload))
-}
-
-async fn experimental_refactor(
-    Json(payload): Json<ExperimentalTaskRequest>,
-) -> Json<ExperimentalTaskResponse> {
-    Json(make_experimental_response("refactor", payload))
-}
-
-async fn experimental_test(
-    Json(payload): Json<ExperimentalTaskRequest>,
-) -> Json<ExperimentalTaskResponse> {
-    Json(make_experimental_response("test", payload))
-}
-
-#[derive(Debug, Serialize)]
-pub struct ToolInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-}
-
-async fn list_tool_ids() -> Json<Vec<String>> {
-    Json(vec![
-        "read".to_string(),
-        "write".to_string(),
-        "edit".to_string(),
-        "bash".to_string(),
-        "glob".to_string(),
-        "grep".to_string(),
-        "ls".to_string(),
-        "webfetch".to_string(),
-        "websearch".to_string(),
-        "task".to_string(),
-        "lsp".to_string(),
-        "batch".to_string(),
-        "plan_enter".to_string(),
-        "plan_exit".to_string(),
-        "todoread".to_string(),
-        "todowrite".to_string(),
-        "codesearch".to_string(),
-        "apply_patch".to_string(),
-        "skills_list".to_string(),
-        "skill_view".to_string(),
-        "skill".to_string(),
-        "multiedit".to_string(),
-    ])
-}
-
-async fn list_tools(Query(_params): Query<HashMap<String, String>>) -> Json<Vec<ToolInfo>> {
-    Json(vec![
-        ToolInfo {
-            id: "read".to_string(),
-            name: "Read".to_string(),
-            description: "Read files".to_string(),
-        },
-        ToolInfo {
-            id: "write".to_string(),
-            name: "Write".to_string(),
-            description: "Write files".to_string(),
-        },
-        ToolInfo {
-            id: "edit".to_string(),
-            name: "Edit".to_string(),
-            description: "Edit files".to_string(),
-        },
-        ToolInfo {
-            id: "bash".to_string(),
-            name: "Bash".to_string(),
-            description: "Execute commands".to_string(),
-        },
-        ToolInfo {
-            id: "skills_list".to_string(),
-            name: "Skills List".to_string(),
-            description: "List available skills".to_string(),
-        },
-        ToolInfo {
-            id: "skill_view".to_string(),
-            name: "Skill View".to_string(),
-            description: "Load a skill or one of its supporting files".to_string(),
-        },
-        ToolInfo {
-            id: "skill".to_string(),
-            name: "Skill".to_string(),
-            description: "Deprecated compatibility wrapper around skill_view".to_string(),
-        },
-    ])
 }
 
 #[derive(Debug, Serialize, Deserialize)]

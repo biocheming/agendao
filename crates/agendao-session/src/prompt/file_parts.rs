@@ -253,7 +253,8 @@ impl SessionPrompt {
         let mut loaded = Self::loaded_instruction_paths(msg);
         let mut prompt_chunks = Vec::new();
 
-        for instruction in crate::instruction::resolve_agents_for_file(file_path, project_root).await
+        for instruction in
+            crate::instruction::resolve_agents_for_file(file_path, project_root).await
         {
             if loaded.insert(instruction.path.clone()) {
                 prompt_chunks.push(format!(

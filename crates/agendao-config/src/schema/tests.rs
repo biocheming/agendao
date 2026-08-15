@@ -5,7 +5,7 @@ use std::collections::HashMap;
 fn merges_nested_structs_without_losing_existing_fields() {
     let mut base = Config {
         keybinds: Some(KeybindsConfig {
-            submit: Some("enter".to_string()),
+            input_submit: Some("enter".to_string()),
             ..Default::default()
         }),
         ..Default::default()
@@ -13,7 +13,7 @@ fn merges_nested_structs_without_losing_existing_fields() {
 
     let overlay = Config {
         keybinds: Some(KeybindsConfig {
-            interrupt: Some("esc".to_string()),
+            session_interrupt: Some("esc".to_string()),
             ..Default::default()
         }),
         ..Default::default()
@@ -22,8 +22,48 @@ fn merges_nested_structs_without_losing_existing_fields() {
     base.merge(overlay);
 
     let merged = base.keybinds.unwrap();
-    assert_eq!(merged.submit, Some("enter".to_string()));
-    assert_eq!(merged.interrupt, Some("esc".to_string()));
+    assert_eq!(merged.input_submit, Some("enter".to_string()));
+    assert_eq!(merged.session_interrupt, Some("esc".to_string()));
+}
+
+#[test]
+fn mcp_oauth_rejects_true_and_snake_case_fields() {
+    let true_value = serde_json::from_value::<McpOAuthConfig>(serde_json::json!(true));
+    assert!(true_value.is_err());
+
+    let snake_case = serde_json::from_value::<McpOAuthConfig>(serde_json::json!({
+        "client_id": "legacy"
+    }));
+    assert!(snake_case.is_err());
+}
+
+#[test]
+fn mcp_oauth_accepts_false_and_canonical_object() {
+    let disabled = serde_json::from_value::<McpOAuthConfig>(serde_json::json!(false));
+    assert!(matches!(disabled, Ok(McpOAuthConfig::Disabled)));
+
+    let configured = serde_json::from_value::<McpOAuthConfig>(serde_json::json!({
+        "clientId": "client",
+        "authorizationUrl": "https://auth.example"
+    }));
+    assert!(matches!(configured, Ok(McpOAuthConfig::Config(_))));
+}
+
+#[test]
+fn plugin_type_accepts_only_runtime_supported_variants() {
+    for plugin_type in ["npm", "file", "dylib"] {
+        let parsed = serde_json::from_value::<PluginConfig>(serde_json::json!({
+            "type": plugin_type
+        }));
+        assert!(parsed.is_ok(), "{plugin_type} should be supported");
+    }
+
+    for plugin_type in ["pip", "cargo", "bun", "unknown"] {
+        let parsed = serde_json::from_value::<PluginConfig>(serde_json::json!({
+            "type": plugin_type
+        }));
+        assert!(parsed.is_err(), "{plugin_type} must be rejected");
+    }
 }
 
 #[test]
@@ -35,10 +75,7 @@ fn merges_maps_recursively_for_same_keys() {
                 base_url: Some("https://old".to_string()),
                 models: Some(HashMap::from([(
                     "gpt-4o".to_string(),
-                    ModelConfig {
-                        api_key: Some("old-key".to_string()),
-                        ..Default::default()
-                    },
+                    ModelConfig::default(),
                 )])),
                 ..Default::default()
             },
@@ -71,7 +108,6 @@ fn merges_maps_recursively_for_same_keys() {
     assert_eq!(provider.api_key, Some("new-provider-key".to_string()));
 
     let model = provider.models.unwrap().remove("gpt-4o").unwrap();
-    assert_eq!(model.api_key, Some("old-key".to_string()));
     assert_eq!(model.model, Some("gpt-4o-2026".to_string()));
 }
 
@@ -394,8 +430,8 @@ fn docs_config_merge_replaces_registry_path() {
 }
 
 #[test]
-fn skills_hub_config_deserializes_from_camel_and_snake_case() {
-    let camel: Config = serde_json::from_value(serde_json::json!({
+fn skills_hub_config_uses_canonical_camel_case_names() {
+    let config: Config = serde_json::from_value(serde_json::json!({
         "skills": {
             "hub": {
                 "artifactCacheRetentionSeconds": 86400,
@@ -405,17 +441,20 @@ fn skills_hub_config_deserializes_from_camel_and_snake_case() {
             }
         }
     }))
-    .expect("camelCase skills hub config should deserialize");
-    let camel_hub = camel
+    .expect("skills hub config should deserialize");
+    let hub = config
         .skills
         .and_then(|skills| skills.hub)
-        .expect("camelCase skills hub config should exist");
-    assert_eq!(camel_hub.artifact_cache_retention_seconds, Some(86400));
-    assert_eq!(camel_hub.fetch_timeout_ms, Some(15000));
-    assert_eq!(camel_hub.max_download_bytes, Some(1048576));
-    assert_eq!(camel_hub.max_extract_bytes, Some(2097152));
+        .expect("skills hub config should exist");
+    assert_eq!(hub.artifact_cache_retention_seconds, Some(86400));
+    assert_eq!(hub.fetch_timeout_ms, Some(15000));
+    assert_eq!(hub.max_download_bytes, Some(1048576));
+    assert_eq!(hub.max_extract_bytes, Some(2097152));
+}
 
-    let snake: Config = serde_json::from_value(serde_json::json!({
+#[test]
+fn skills_hub_config_rejects_noncanonical_snake_case_names() {
+    let error = serde_json::from_value::<Config>(serde_json::json!({
         "skills": {
             "hub": {
                 "artifact_cache_retention_seconds": 3600,
@@ -425,15 +464,8 @@ fn skills_hub_config_deserializes_from_camel_and_snake_case() {
             }
         }
     }))
-    .expect("snake_case skills hub config should deserialize");
-    let snake_hub = snake
-        .skills
-        .and_then(|skills| skills.hub)
-        .expect("snake_case skills hub config should exist");
-    assert_eq!(snake_hub.artifact_cache_retention_seconds, Some(3600));
-    assert_eq!(snake_hub.fetch_timeout_ms, Some(5000));
-    assert_eq!(snake_hub.max_download_bytes, Some(2048));
-    assert_eq!(snake_hub.max_extract_bytes, Some(4096));
+    .unwrap_err();
+    assert!(error.to_string().contains("unknown field"), "{error}");
 }
 
 #[test]
@@ -540,7 +572,7 @@ fn plugin_map_merge_and_instruction_arrays_append_unique() {
 #[test]
 fn provider_lists_follow_replace_semantics_instead_of_union() {
     let mut base = Config {
-        disabled_providers: vec!["ethnopic".to_string()],
+        disabled_providers: vec!["anthropic".to_string()],
         enabled_providers: vec!["openai".to_string()],
         ..Default::default()
     };
@@ -609,10 +641,7 @@ fn disabled_tool_and_plugin_lists_follow_replace_semantics() {
 
     assert_eq!(base.disabled_tools, vec!["grep".to_string()]);
     assert_eq!(base.disabled_plugins, vec!["metrics".to_string()]);
-    assert_eq!(
-        base.skills.unwrap().disabled,
-        vec!["web/*".to_string()]
-    );
+    assert_eq!(base.skills.unwrap().disabled, vec!["web/*".to_string()]);
 }
 
 #[test]
@@ -635,7 +664,10 @@ fn disabled_plugins_filter_applies_to_plugin_map_keys() {
         .filter(|name| !crate::matching::is_disabled(&config.disabled_plugins, name))
         .collect();
     assert!(enabled.is_empty());
-    assert!(crate::matching::is_disabled(&config.disabled_plugins, "metrics"));
+    assert!(crate::matching::is_disabled(
+        &config.disabled_plugins,
+        "metrics"
+    ));
     assert!(crate::matching::is_disabled(
         &config.disabled_plugins,
         "auth/github"
@@ -691,14 +723,19 @@ fn mcp_full_server_merge_overwrites_maps_and_preserves_unspecified_fields() {
             "repo".to_string(),
             McpServerConfig::Full(Box::new(McpServer {
                 server_type: Some("local".to_string()),
-                command: vec!["node".to_string(), "server.js".to_string()],
+                command: vec![
+                    "node".to_string(),
+                    "server.js".to_string(),
+                    "--stdio".to_string(),
+                ],
                 environment: Some(HashMap::from([("A".to_string(), "1".to_string())])),
                 enabled: Some(true),
                 timeout: Some(3000),
                 headers: Some(HashMap::from([("x-base".to_string(), "keep".to_string())])),
-                args: vec!["--stdio".to_string()],
-                env: Some(HashMap::from([("LEGACY".to_string(), "base".to_string())])),
-                client_id: Some("base-client".to_string()),
+                oauth: Some(McpOAuthConfig::Config(McpOAuth {
+                    client_id: Some("base-client".to_string()),
+                    ..Default::default()
+                })),
                 ..Default::default()
             })),
         )])),
@@ -719,11 +756,10 @@ fn mcp_full_server_merge_overwrites_maps_and_preserves_unspecified_fields() {
                     ("x-base".to_string(), "override".to_string()),
                     ("x-extra".to_string(), "set".to_string()),
                 ])),
-                env: Some(HashMap::from([(
-                    "LEGACY_2".to_string(),
-                    "overlay".to_string(),
-                )])),
-                authorization_url: Some("https://auth.example".to_string()),
+                oauth: Some(McpOAuthConfig::Config(McpOAuth {
+                    authorization_url: Some("https://auth.example".to_string()),
+                    ..Default::default()
+                })),
                 ..Default::default()
             })),
         )])),
@@ -736,13 +772,15 @@ fn mcp_full_server_merge_overwrites_maps_and_preserves_unspecified_fields() {
             assert_eq!(server.server_type.as_deref(), Some("local"));
             assert_eq!(
                 server.command,
-                vec!["node".to_string(), "server.js".to_string()]
+                vec![
+                    "node".to_string(),
+                    "server.js".to_string(),
+                    "--stdio".to_string()
+                ]
             );
             assert_eq!(server.url.as_deref(), Some("https://mcp.example"));
             assert_eq!(server.timeout, Some(5000));
             assert_eq!(server.enabled, Some(true));
-            assert_eq!(server.args, vec!["--stdio".to_string()]);
-            assert_eq!(server.client_id.as_deref(), Some("base-client"));
             assert_eq!(
                 server
                     .environment
@@ -775,26 +813,16 @@ fn mcp_full_server_merge_overwrites_maps_and_preserves_unspecified_fields() {
                     .map(String::as_str),
                 Some("set")
             );
-            assert_eq!(
-                server
-                    .env
-                    .as_ref()
-                    .and_then(|env| env.get("LEGACY"))
-                    .map(String::as_str),
-                Some("base")
-            );
-            assert_eq!(
-                server
-                    .env
-                    .as_ref()
-                    .and_then(|env| env.get("LEGACY_2"))
-                    .map(String::as_str),
-                Some("overlay")
-            );
-            assert_eq!(
-                server.authorization_url.as_deref(),
-                Some("https://auth.example")
-            );
+            match server.oauth.as_ref() {
+                Some(McpOAuthConfig::Config(oauth)) => {
+                    assert_eq!(oauth.client_id, None);
+                    assert_eq!(
+                        oauth.authorization_url.as_deref(),
+                        Some("https://auth.example")
+                    );
+                }
+                _ => panic!("expected OAuth object"),
+            }
         }
         McpServerConfig::Enabled { .. } => panic!("expected full MCP server config"),
     }
@@ -848,126 +876,6 @@ fn agent_configs_support_dynamic_keys_and_deep_merge() {
     assert_eq!(options.get("a"), Some(&serde_json::json!(1)));
     assert_eq!(options.get("b"), Some(&serde_json::json!(2)));
     assert!(agents.contains_key("research"));
-}
-
-#[test]
-fn composition_skill_tree_deserializes_from_camel_case() {
-    let config: Config = serde_json::from_value(serde_json::json!({
-        "composition": {
-            "skillTree": {
-                "enabled": true,
-                "separator": "\n--\n",
-                "tokenBudget": 512,
-                "truncationStrategy": "tail",
-                "root": {
-                    "node_id": "root",
-                    "markdown_path": "docs/root.md",
-                    "children": []
-                }
-            }
-        }
-    }))
-    .expect("config should deserialize");
-
-    let skill_tree = config
-        .composition
-        .as_ref()
-        .and_then(|c| c.skill_tree.as_ref())
-        .expect("composition skill tree should exist");
-    assert_eq!(skill_tree.enabled, Some(true));
-    assert_eq!(skill_tree.separator.as_deref(), Some("\n--\n"));
-    assert_eq!(skill_tree.token_budget, Some(512));
-    assert_eq!(skill_tree.truncation_strategy.as_deref(), Some("tail"));
-    assert_eq!(
-        skill_tree.root.as_ref().map(|root| root.node_id.as_str()),
-        Some("root")
-    );
-}
-
-#[test]
-fn composition_skill_tree_merge_replaces_root_and_separator() {
-    let mut base = Config {
-        composition: Some(CompositionConfig {
-            skill_tree: Some(SkillTreeConfig {
-                enabled: Some(true),
-                separator: Some("old".to_string()),
-                token_budget: Some(128),
-                truncation_strategy: Some("head".to_string()),
-                root: Some(SkillTreeNodeConfig {
-                    node_id: "old".to_string(),
-                    markdown_path: "docs/old.md".to_string(),
-                    children: Vec::new(),
-                }),
-            }),
-        }),
-        ..Default::default()
-    };
-
-    let overlay = Config {
-        composition: Some(CompositionConfig {
-            skill_tree: Some(SkillTreeConfig {
-                enabled: Some(false),
-                separator: Some("new".to_string()),
-                token_budget: Some(256),
-                truncation_strategy: Some("head-tail".to_string()),
-                root: Some(SkillTreeNodeConfig {
-                    node_id: "new".to_string(),
-                    markdown_path: "docs/new.md".to_string(),
-                    children: Vec::new(),
-                }),
-            }),
-        }),
-        ..Default::default()
-    };
-
-    base.merge(overlay);
-
-    let merged = base
-        .composition
-        .as_ref()
-        .and_then(|c| c.skill_tree.as_ref())
-        .expect("merged skill tree should exist");
-    assert_eq!(merged.enabled, Some(false));
-    assert_eq!(merged.separator.as_deref(), Some("new"));
-    assert_eq!(merged.token_budget, Some(256));
-    assert_eq!(merged.truncation_strategy.as_deref(), Some("head-tail"));
-    assert_eq!(
-        merged.root.as_ref().map(|root| root.markdown_path.as_str()),
-        Some("docs/new.md")
-    );
-}
-
-#[test]
-fn scheduler_path_deserializes_from_camel_case() {
-    let config: Config = serde_json::from_value(serde_json::json!({
-        "schedulerPath": "./.agendao/scheduler/sisyphus.jsonc"
-    }))
-    .expect("config should deserialize");
-
-    assert_eq!(
-        config.scheduler_path.as_deref(),
-        Some("./.agendao/scheduler/sisyphus.jsonc")
-    );
-}
-
-#[test]
-fn scheduler_path_merge_replaces_previous_value() {
-    let mut base = Config {
-        scheduler_path: Some("/base/scheduler.jsonc".to_string()),
-        ..Default::default()
-    };
-
-    let overlay = Config {
-        scheduler_path: Some("/override/scheduler.jsonc".to_string()),
-        ..Default::default()
-    };
-
-    base.merge(overlay);
-
-    assert_eq!(
-        base.scheduler_path.as_deref(),
-        Some("/override/scheduler.jsonc")
-    );
 }
 
 #[test]
@@ -1204,66 +1112,16 @@ fn lsp_config_merge_deep_merges_server_fields_and_initialization_json() {
 }
 
 #[test]
-fn voice_config_deserializes_from_camel_and_snake_case() {
-    let camel: Config = serde_json::from_value(serde_json::json!({
-        "voice": {
-            "durationSeconds": 20,
-            "attachAudio": true,
-            "mime": "audio/wav",
-            "language": "zh",
-            "record": {
-                "command": ["ffmpeg", "{file}"]
-            }
-        }
-    }))
-    .expect("camelCase voice config should deserialize");
-    let camel_voice = camel.voice.expect("camelCase voice config should exist");
-    assert_eq!(camel_voice.duration_seconds, Some(20));
-    assert_eq!(camel_voice.attach_audio, Some(true));
-    assert_eq!(camel_voice.language.as_deref(), Some("zh"));
-    assert_eq!(
-        camel_voice
-            .record
-            .as_ref()
-            .map(|record| record.command.clone()),
-        Some(vec!["ffmpeg".to_string(), "{file}".to_string()])
-    );
-
-    let snake: Config = serde_json::from_value(serde_json::json!({
-        "voice": {
-            "duration_seconds": 8,
-            "attach_audio": false,
-            "transcribe": {
-                "command": ["whisper-cli", "{file}"],
-                "env": { "MODEL": "base" }
-            }
-        }
-    }))
-    .expect("snake_case voice config should deserialize");
-    let snake_voice = snake.voice.expect("snake_case voice config should exist");
-    assert_eq!(snake_voice.duration_seconds, Some(8));
-    assert_eq!(snake_voice.attach_audio, Some(false));
-    assert_eq!(
-        snake_voice
-            .transcribe
-            .as_ref()
-            .and_then(|command| command.env.get("MODEL"))
-            .map(String::as_str),
-        Some("base")
-    );
-}
-
-#[test]
 fn multimodal_config_deserializes_and_nests_voice() {
     let config: Config = serde_json::from_value(serde_json::json!({
         "multimodal": {
             "limits": {
                 "maxInputBytes": 4096,
-                "max_attachments_per_prompt": 3
+                "maxAttachmentsPerPrompt": 3
             },
             "policy": {
                 "allowAudioInput": true,
-                "allow_image_input": false,
+                "allowImageInput": false,
                 "allowFileInput": true
             },
             "voice": {
@@ -1287,63 +1145,6 @@ fn multimodal_config_deserializes_and_nests_voice() {
     let voice = multimodal.voice.expect("voice should exist");
     assert_eq!(voice.duration_seconds, Some(18));
     assert_eq!(voice.attach_audio, Some(false));
-}
-
-#[test]
-fn voice_config_merge_deep_merges_record_and_transcribe() {
-    let mut base = Config {
-        voice: Some(VoiceConfig {
-            duration_seconds: Some(15),
-            attach_audio: Some(true),
-            mime: Some("audio/wav".to_string()),
-            language: Some("zh".to_string()),
-            record: Some(VoiceCommandConfig {
-                command: vec!["ffmpeg".to_string(), "{file}".to_string()],
-                env: HashMap::from([("A".to_string(), "1".to_string())]),
-            }),
-            transcribe: None,
-        }),
-        ..Default::default()
-    };
-
-    let overlay = Config {
-        voice: Some(VoiceConfig {
-            duration_seconds: Some(30),
-            attach_audio: None,
-            mime: None,
-            language: Some("en".to_string()),
-            record: Some(VoiceCommandConfig {
-                command: Vec::new(),
-                env: HashMap::from([("B".to_string(), "2".to_string())]),
-            }),
-            transcribe: Some(VoiceCommandConfig {
-                command: vec!["whisper-cli".to_string(), "{file}".to_string()],
-                env: HashMap::new(),
-            }),
-        }),
-        ..Default::default()
-    };
-
-    base.merge(overlay);
-
-    let voice = base.voice.expect("merged voice config should exist");
-    assert_eq!(voice.duration_seconds, Some(30));
-    assert_eq!(voice.attach_audio, Some(true));
-    assert_eq!(voice.language.as_deref(), Some("en"));
-    let record = voice.record.expect("record config should exist");
-    assert_eq!(
-        record.command,
-        vec!["ffmpeg".to_string(), "{file}".to_string()]
-    );
-    assert_eq!(record.env.get("A").map(String::as_str), Some("1"));
-    assert_eq!(record.env.get("B").map(String::as_str), Some("2"));
-    assert_eq!(
-        voice
-            .transcribe
-            .as_ref()
-            .map(|command| command.command.clone()),
-        Some(vec!["whisper-cli".to_string(), "{file}".to_string()])
-    );
 }
 
 #[test]
@@ -1519,12 +1320,12 @@ fn model_level_tuning_fields_deserialize_and_skip_none() {
 }
 
 #[test]
-fn model_level_tuning_fields_support_camel_case_aliases() {
+fn model_level_tuning_fields_use_canonical_snake_case_names() {
     let model: ModelConfig = serde_json::from_str(
         r#"{
-            "reasoningEffort": "low",
-            "timeoutSecs": 120,
-            "streamStallTimeoutSecs": 10
+            "reasoning_effort": "low",
+            "timeout_secs": 120,
+            "stream_stall_timeout_secs": 10
         }"#,
     )
     .unwrap();
@@ -1532,6 +1333,33 @@ fn model_level_tuning_fields_support_camel_case_aliases() {
     assert_eq!(model.reasoning_effort.as_deref(), Some("low"));
     assert_eq!(model.timeout_secs, Some(120));
     assert_eq!(model.stream_stall_timeout_secs, Some(10));
+}
+
+#[test]
+fn model_level_tuning_fields_reject_legacy_camel_case_names() {
+    for field in [
+        r#"{"reasoningEffort":"low"}"#,
+        r#"{"timeoutSecs":120}"#,
+        r#"{"streamStallTimeoutSecs":10}"#,
+    ] {
+        let error = serde_json::from_str::<ModelConfig>(field).unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+}
+
+#[test]
+fn nested_config_objects_reject_removed_aliases() {
+    for config in [
+        r#"{"provider":{"openai":{"apiKey":"secret"}}}"#,
+        r#"{"provider":{"openai":{"baseURL":"https://example.com"}}}"#,
+        r#"{"provider":{"openai":{"models":{"gpt-5":{"toolCall":true}}}}}"#,
+        r#"{"provider":{"openai":{"models":{"gpt-5":{"api_key":"secret"}}}}}"#,
+        r#"{"agent":{"worker":{"maxSteps":10}}}"#,
+        r#"{"uiPreferences":{"recentModels":[]}}"#,
+    ] {
+        let error = serde_json::from_str::<Config>(config).unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
 }
 
 #[test]

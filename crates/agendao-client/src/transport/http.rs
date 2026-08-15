@@ -1,5 +1,7 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
-use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
+use agendao_api::{
+    AgentInfo, ExecutionModeInfo, FullProviderListResponse, PromptRequest, SessionListItem,
+};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
 use anyhow::Result;
@@ -29,17 +31,20 @@ impl HttpTransport {
             .client
             .send_prompt(
                 session_id,
-                text.to_string(),
-                None, // parts
-                options.agent_id,
-                options.scheduler_profile,
-                options.model,
-                options.variant,
-                options.ingress_source,
-                options.idempotency_key,
-                options.source_origin,
-                options.source_surface,
-                options.command,
+                PromptRequest {
+                    message: Some(text.to_string()),
+                    parts: None,
+                    agent: options.agent_id,
+                    scheduler: options.scheduler,
+                    model: options.model,
+                    variant: options.variant,
+                    ingress_source: options.ingress_source,
+                    idempotency_key: options.idempotency_key,
+                    source_origin: options.source_origin,
+                    source_surface: options.source_surface,
+                    command: options.command,
+                    arguments: None,
+                },
             )
             .await?;
 

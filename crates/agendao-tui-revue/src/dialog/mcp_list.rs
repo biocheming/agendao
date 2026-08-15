@@ -7,10 +7,10 @@
 //! OAuth（F7 接线）：a=发起（展示授权 URL，浏览器完成授权）/ A=完成（服务端
 //! 已授权则 connect）/ x=清除凭据。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 #[derive(Clone)]
 pub struct McpEntry {
@@ -53,7 +53,12 @@ impl Default for McpListDialog {
 
 impl McpListDialog {
     pub fn new() -> Self {
-        Self { visible: false, entries: Vec::new(), selected: 0, remembered: 0 }
+        Self {
+            visible: false,
+            entries: Vec::new(),
+            selected: 0,
+            remembered: 0,
+        }
     }
 
     pub fn set_entries(&mut self, entries: Vec<McpEntry>) {
@@ -63,20 +68,28 @@ impl McpListDialog {
         self.selected = self.remembered.min(n.saturating_sub(1));
     }
 
-    pub fn open(&mut self) { self.visible = true; }
+    pub fn open(&mut self) {
+        self.visible = true;
+    }
     pub fn close(&mut self) {
         // U17②：关框记住光标位置（下次重开恢复）。
         self.remembered = self.selected;
         self.visible = false;
     }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// c=connect / d=disconnect（保持 dialog 打开，支持批量）/ Enter=view（关闭）。
     pub fn handle_key(&mut self, key: &Key) -> Option<McpAction> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         if self.entries.is_empty() {
             match key {
-                Key::Escape => { self.close(); }
+                Key::Escape => {
+                    self.close();
+                }
                 // 空列表也要能新增（否则 0 server 时 /mcp 是死端）。
                 Key::Char('n') => return Some(McpAction::Add),
                 _ => {}
@@ -86,10 +99,22 @@ impl McpListDialog {
         let len = self.entries.len();
         let pick = || self.entries.get(self.selected).cloned();
         match key {
-            Key::Up    => { self.selected = (self.selected + len - 1) % len; None }
-            Key::Down  => { self.selected = (self.selected + 1) % len; None }
-            Key::Home  => { self.selected = 0; None }
-            Key::End   => { self.selected = len - 1; None }
+            Key::Up => {
+                self.selected = (self.selected + len - 1) % len;
+                None
+            }
+            Key::Down => {
+                self.selected = (self.selected + 1) % len;
+                None
+            }
+            Key::Home => {
+                self.selected = 0;
+                None
+            }
+            Key::End => {
+                self.selected = len - 1;
+                None
+            }
             Key::Enter => {
                 let pick = pick();
                 self.close();
@@ -102,39 +127,58 @@ impl McpListDialog {
             Key::Char('x') => pick().map(McpAction::AuthRemove),
             Key::Char('n') => Some(McpAction::Add),
             Key::Char('e') => pick().map(McpAction::Edit),
-            Key::Escape => { self.close(); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
             _ => None,
         }
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         if self.entries.is_empty() {
             let items = vec![ListItem::Row {
                 display: "  (No MCP servers configured)".to_string(),
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
-                "MCP Servers",
-                colors::ACCENT_CYAN(),
+                backdrop::ListDialogHeading {
+                    title: "MCP Servers",
+                    border_color: colors::ACCENT_CYAN(),
+                },
                 &items,
                 0,
                 "n: add server  Esc: close",
-                ctx, geom, 3,
+                ctx,
+                geom,
+                3,
             );
             return;
         }
         // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
-        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, m)| {
-            let marker = if i == self.selected { "▶ " } else { "  " };
-            ListItem::Row {
-                display: format!("{}[{}] {} · tools:{} res:{}", marker, m.status, m.name, m.tools, m.resources),
-                muted: false,
-            }
-        }).collect();
+        let items: Vec<ListItem> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let marker = if i == self.selected { "▶ " } else { "  " };
+                ListItem::Row {
+                    display: format!(
+                        "{}[{}] {} · tools:{} res:{}",
+                        marker, m.status, m.name, m.tools, m.resources
+                    ),
+                    muted: false,
+                }
+            })
+            .collect();
         backdrop::render_list_dialog_bottom(
-            "MCP Servers",
-            colors::ACCENT_CYAN(),
+            backdrop::ListDialogHeading {
+                title: "MCP Servers",
+                border_color: colors::ACCENT_CYAN(),
+            },
             &items,
             self.selected,
             "↑↓ navigate  Home/End: jump  c: connect  d: disconnect  a/A: oauth start/finish  x: clear auth  n: add  e: edit  Enter: view  Esc: close",
@@ -148,7 +192,12 @@ mod tests {
     use super::*;
 
     fn entry(name: &str) -> McpEntry {
-        McpEntry { name: name.into(), status: "connected".into(), tools: 1, resources: 0 }
+        McpEntry {
+            name: name.into(),
+            status: "connected".into(),
+            tools: 1,
+            resources: 0,
+        }
     }
 
     /// U17②：关框记住光标，重开（新一轮 set_entries）恢复并 clamp 到新长度。

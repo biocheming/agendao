@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use agendao_config::WorkspaceMode;
 use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
-use agendao_stage_protocol::StageSummary;
 use agendao_state::UserStateAuthority;
 use agendao_storage::{
     memory_record_signature, MemoryRepository, MemoryRepositoryFilter, MemoryRetrievalLogEntry,
@@ -657,106 +656,6 @@ impl MemoryAuthority {
         Ok(Some(self.persist_candidate_record(record, &context).await?))
     }
 
-    pub async fn ingest_stage_summary_observation(
-        &self,
-        session_id: &str,
-        stage: &StageSummary,
-    ) -> Result<Option<MemoryRecord>> {
-        if self.repository.is_none() {
-            return Ok(None);
-        }
-
-        let context = self.resolve_context().await?;
-        let focus = stage
-            .focus
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let waiting_on = stage
-            .waiting_on
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let last_event = stage
-            .last_event
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-
-        if focus.is_none() && waiting_on.is_none() && last_event.is_none() {
-            return Ok(None);
-        }
-
-        let now = chrono::Utc::now().timestamp_millis();
-        let status_label = stage_status_label(&stage.status);
-        let mut facts = vec![
-            format!("stage_id={}", stage.stage_id),
-            format!("stage_name={}", stage.stage_name),
-            format!("stage_status={}", status_label),
-        ];
-        if let Some(waiting_on) = waiting_on {
-            facts.push(format!("waiting_on={}", waiting_on));
-        }
-        if let Some(last_event) = last_event {
-            facts.push(format!("last_event={}", last_event));
-        }
-
-        let summary = [
-            focus.map(|value| format!("focus: {}", value)),
-            waiting_on.map(|value| format!("waiting_on: {}", value)),
-            last_event.map(|value| format!("last_event: {}", value)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
-
-        let record = MemoryRecord {
-            id: hashed_record_id("mem_stage", &[session_id, &stage.stage_id, status_label]),
-            kind: if matches!(
-                stage.status,
-                agendao_stage_protocol::StageStatus::Blocked
-                    | agendao_stage_protocol::StageStatus::Retrying
-            ) {
-                MemoryKind::Lesson
-            } else {
-                MemoryKind::Pattern
-            },
-            scope: candidate_scope_for_mode(context.workspace_mode),
-            status: MemoryStatus::Candidate,
-            title: format!("Stage observation: {} / {}", stage.stage_name, status_label),
-            summary: truncate(&summary, 240),
-            trigger_conditions: vec![
-                format!("stage:{}", stage.stage_name),
-                format!("stage_status:{}", status_label),
-            ],
-            normalized_facts: facts,
-            boundaries: vec![
-                "Derived from scheduler stage summary telemetry.".to_string(),
-                "Validate against repeated runs before promotion.".to_string(),
-            ],
-            confidence: Some(0.25),
-            evidence_refs: vec![MemoryEvidenceRef {
-                session_id: Some(session_id.to_string()),
-                message_id: None,
-                tool_call_id: None,
-                stage_id: Some(stage.stage_id.clone()),
-                note: Some("runtime.stage_summary".to_string()),
-            }],
-            source_session_id: Some(session_id.to_string()),
-            workspace_identity: Some(context.workspace_key.clone()),
-            created_at: now,
-            updated_at: now,
-            last_validated_at: None,
-            expires_at: None,
-            derived_skill_name: None,
-            linked_skill_name: None,
-            validation_status: MemoryValidationStatus::Pending,
-        };
-
-        Ok(Some(self.persist_candidate_record(record, &context).await?))
-    }
-
     pub async fn ingest_skill_write_observation(
         &self,
         observation: &SkillWriteObservation<'_>,
@@ -1175,18 +1074,6 @@ fn scope_label(scope: &MemoryScope) -> &'static str {
         MemoryScope::WorkspaceShared => "workspace_shared",
         MemoryScope::WorkspaceSandbox => "workspace_sandbox",
         MemoryScope::SessionEphemeral => "session_ephemeral",
-    }
-}
-
-fn stage_status_label(status: &agendao_stage_protocol::StageStatus) -> &'static str {
-    match status {
-        agendao_stage_protocol::StageStatus::Running => "running",
-        agendao_stage_protocol::StageStatus::Waiting => "waiting",
-        agendao_stage_protocol::StageStatus::Done => "done",
-        agendao_stage_protocol::StageStatus::Cancelled => "cancelled",
-        agendao_stage_protocol::StageStatus::Cancelling => "cancelling",
-        agendao_stage_protocol::StageStatus::Blocked => "blocked",
-        agendao_stage_protocol::StageStatus::Retrying => "retrying",
     }
 }
 
@@ -1905,6 +1792,7 @@ mod tests {
     use agendao_types::SkillGuardViolation;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDir {
@@ -1934,7 +1822,17 @@ mod tests {
         }
     }
 
+    fn isolate_global_config() {
+        static CONFIG_HOME: OnceLock<TestDir> = OnceLock::new();
+        CONFIG_HOME.get_or_init(|| {
+            let config_home = TestDir::new("agendao_memory_config_home");
+            std::env::set_var("AGENDAO_HOME", &config_home.path);
+            config_home
+        });
+    }
+
     fn authority_for(root: &Path, isolated: bool) -> MemoryAuthority {
+        isolate_global_config();
         if isolated {
             fs::create_dir_all(root.join(".agendao")).expect("failed to create .agendao");
         }
@@ -2611,11 +2509,11 @@ mod tests {
             .ingest_skill_usage_observation(&SkillUsageObservation {
                 session_id: "ses_usage",
                 tool_call_id: "call_usage",
-                tool_name: "task",
+                tool_name: "bash",
                 stage_id: Some("stage_usage"),
                 skill_name: "frontend-ui-ux",
                 category: Some("frontend"),
-                output: "Subtask completed after applying the frontend skill.",
+                output: "Scheduled work completed after applying the frontend skill.",
                 is_error: false,
             })
             .await

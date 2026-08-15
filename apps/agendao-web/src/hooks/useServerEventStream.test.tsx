@@ -84,7 +84,6 @@ describe("useServerEventStream", () => {
     const { unmount } = renderHook(() =>
       useServerEventStream({
         applyLiveExecutionOutputBlock,
-        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
         clearPendingOutputBlockFlush: vi.fn<() => void>(),
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),
@@ -120,8 +119,13 @@ describe("useServerEventStream", () => {
           question: {
             id: "q-1",
             session_id: "session-1",
-            questions: ["Proceed with the refactor?"],
-            options: [["Yes", "No"]],
+            items: [
+              {
+                question: "Proceed with the refactor?",
+                options: [{ label: "Yes" }, { label: "No" }],
+                multiple: false,
+              },
+            ],
           },
         });
       } else {
@@ -146,7 +150,6 @@ describe("useServerEventStream", () => {
     const { unmount } = renderHook(() =>
       useServerEventStream({
         applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
-        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
         clearPendingOutputBlockFlush: vi.fn<() => void>(),
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks,
@@ -223,7 +226,6 @@ describe("useServerEventStream", () => {
     const { unmount } = renderHook(() =>
       useServerEventStream({
         applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
-        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
         clearPendingOutputBlockFlush: vi.fn<() => void>(),
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),
@@ -286,7 +288,6 @@ describe("useServerEventStream", () => {
     const { unmount } = renderHook(() =>
       useServerEventStream({
         applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
-        applySchedulerStageOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
         clearPendingOutputBlockFlush: vi.fn<() => void>(),
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),

@@ -15,9 +15,9 @@
 //!     `selected`. Once OptionList grows a public `set_highlighted(usize)`
 //!     setter we can switch back.
 
+use crate::theme::colors;
 use revue::prelude::*;
 use revue::runtime::render::Cell;
-use crate::theme::colors;
 
 /// 表单校验错误行（红 ⚠ 前缀）——所有编辑弹窗共用（土律·单点权威，U5）。
 /// 用法：校验失败的弹窗 `content.child_sized(validation_error_line(e), 1)`
@@ -73,7 +73,10 @@ pub fn list_viewport_window(total: usize, selected: usize, rows: usize) -> (usiz
 fn paint_modal_backdrop(ctx: &mut RenderContext, x: u16, y: u16, w: u16, h: u16, bg: Color) {
     let area = ctx.area;
     ctx.buffer.fill(
-        area.x.saturating_add(x), area.y.saturating_add(y), w, h,
+        area.x.saturating_add(x),
+        area.y.saturating_add(y),
+        w,
+        h,
         Cell::new(' ').bg(bg),
     );
 }
@@ -133,7 +136,6 @@ pub(crate) fn fit_hint_tail(hint: &str, width: u16) -> String {
     format!("…{}", tail)
 }
 
-
 /// Where a dialog/list anchors on screen.
 ///
 /// Two strategies share one rendering core (唯一成形语法 — 金律):
@@ -150,6 +152,13 @@ enum DialogAnchor {
     Bottom,
 }
 
+struct DialogPlacement {
+    anchor: DialogAnchor,
+    max_w: u16,
+    max_h: u16,
+    geom: Option<PromptGeom>,
+}
+
 /// Render a centered modal dialog with a custom content stack.
 pub fn render_dialog(
     title: &str,
@@ -161,8 +170,17 @@ pub fn render_dialog(
     max_h: u16,
 ) -> revue::prelude::Rect {
     render_positioned_dialog(
-        DialogAnchor::Centered, title, border_color, content, footer_hint,
-        ctx, max_w, max_h, None,
+        title,
+        border_color,
+        content,
+        footer_hint,
+        ctx,
+        DialogPlacement {
+            anchor: DialogAnchor::Centered,
+            max_w,
+            max_h,
+            geom: None,
+        },
     )
 }
 
@@ -182,8 +200,17 @@ pub fn render_dialog_bottom(
 ) -> revue::prelude::Rect {
     // Bottom 几何由 geom 决定；max_w 在 Bottom 路径忽略，传 geom.w 占位。
     render_positioned_dialog(
-        DialogAnchor::Bottom, title, border_color, content, footer_hint,
-        ctx, geom.w, max_h, Some(geom),
+        title,
+        border_color,
+        content,
+        footer_hint,
+        ctx,
+        DialogPlacement {
+            anchor: DialogAnchor::Bottom,
+            max_w: geom.w,
+            max_h,
+            geom: Some(geom),
+        },
     )
 }
 
@@ -194,16 +221,19 @@ pub fn render_dialog_bottom(
 /// 返回对话框外框的**绝对屏幕坐标** Rect（含边框），供调用方发布为鼠标
 /// 命中区（土律：几何唯一权威——命中不再各自重算居中公式）。
 fn render_positioned_dialog(
-    anchor: DialogAnchor,
     title: &str,
     border_color: Color,
     content: Stack,
     footer_hint: &str,
     ctx: &mut RenderContext,
-    max_w: u16,
-    max_h: u16,
-    geom: Option<PromptGeom>,
+    placement: DialogPlacement,
 ) -> revue::prelude::Rect {
+    let DialogPlacement {
+        anchor,
+        max_w,
+        max_h,
+        geom,
+    } = placement;
     let area = ctx.area;
     let (w, h, x, y) = match anchor {
         DialogAnchor::Centered => {
@@ -241,7 +271,8 @@ fn render_positioned_dialog(
     // (render_dialog_bottom) 与加载完 (render_list_dialog_bottom) 框型不一致。
     match anchor {
         DialogAnchor::Bottom => {
-            let view = vstack().gap(0)
+            let view = vstack()
+                .gap(0)
                 .child_sized(
                     Text::new(format!(" {} ", title))
                         .fg(border_color)
@@ -271,14 +302,12 @@ fn render_positioned_dialog(
                 .child(
                     // flex 内容 + 固定 footer：此前两个等权 child 均分高度,
                     // 内容超半即被截尾(如 provider_edit 四字段丢最后一个)。
-                    vstack().gap(1)
-                        .child_flex(content, 1.0)
-                        .child_sized(
-                            Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
-                                .fg(colors::FG_MUTED())
-                                .align(Alignment::Center),
-                            1,
-                        )
+                    vstack().gap(1).child_flex(content, 1.0).child_sized(
+                        Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
+                            .fg(colors::FG_MUTED())
+                            .align(Alignment::Center),
+                        1,
+                    ),
                 );
             revue::widget::positioned(dialog)
                 .x(x as i16)
@@ -357,53 +386,19 @@ pub struct ListDialogScrollbarArea {
     pub max_offset: u16,
 }
 
-/// Render a list-style dialog (centred) with selection highlighting and
-/// scrolling. Used by non-picker lists (provider manager, prompt stash) that
-/// still want the centred modal. Picker panels (/models, /sessions, /agents)
-/// use [`render_list_dialog_bottom`] instead.
-///
-/// Key visual contract (mirrors `revue::OptionList` rendering):
-///   - selected row gets a `▸ ` prefix, others get `  `
-///   - selected row right-pads with spaces to inner width so the bg
-///     color fills the row instead of just the text cells
-///   - selected row uses bold + FG_PRIMARY + BG_HIGHLIGHT
-///   - muted rows render in disabled fg (FG_MUTED) regardless of selection
-///   - group headers render in ACCENT_BLUE bold
-pub fn render_list_dialog(
-    title: &str,
-    border_color: Color,
-    items: &[ListItem],
-    selected: usize,
-    footer_hint: &str,
-    ctx: &mut RenderContext,
-    max_w: u16,
-    visible_rows: usize,
-) {
-    let _ = render_positioned_list(
-        title,
-        border_color,
-        items,
-        selected,
-        footer_hint,
-        ctx,
-        ListPlacement {
-            anchor: DialogAnchor::Centered,
-            max_w,
-            visible_rows,
-            geom: None,
-        },
-    );
+pub struct ListDialogHeading<'a> {
+    pub title: &'a str,
+    pub border_color: Color,
 }
 
-/// Same as [`render_list_dialog`] but following the input box geometry —
+/// Render a list dialog following the input box geometry —
 /// width = input box width, x aligned to the input box, pinned just above it
 /// (the command-picker anchor: /models, /sessions, /agents). Reads as "sitting
 /// on the input box" rather than "floating in the middle". The list, sliding
 /// viewport, scrollbar and selection contract are identical to the centred
 /// variant — only the geometry source differs (PromptGeom, 土律).
 pub fn render_list_dialog_bottom(
-    title: &str,
-    border_color: Color,
+    heading: ListDialogHeading<'_>,
     items: &[ListItem],
     selected: usize,
     footer_hint: &str,
@@ -411,6 +406,10 @@ pub fn render_list_dialog_bottom(
     geom: PromptGeom,
     visible_rows: usize,
 ) {
+    let ListDialogHeading {
+        title,
+        border_color,
+    } = heading;
     let _ = render_positioned_list(
         title,
         border_color,
@@ -432,8 +431,7 @@ pub fn render_list_dialog_bottom(
 /// to the selected row, or publish the scrollbar geometry for mouse handling,
 /// use this variant (/sessions).
 pub fn render_list_dialog_bottom_with_layout(
-    title: &str,
-    border_color: Color,
+    heading: ListDialogHeading<'_>,
     items: &[ListItem],
     selected: usize,
     footer_hint: &str,
@@ -441,6 +439,10 @@ pub fn render_list_dialog_bottom_with_layout(
     geom: PromptGeom,
     visible_rows: usize,
 ) -> ListDialogLayout {
+    let ListDialogHeading {
+        title,
+        border_color,
+    } = heading;
     render_positioned_list(
         title,
         border_color,
@@ -548,7 +550,9 @@ fn render_positioned_list(
                 // distinct from the selected-row marker `▌` (left bar).
                 let stripped = label.strip_prefix("▸ ").unwrap_or(label.as_str());
                 let upper = stripped.to_uppercase();
-                let mut hdr = Text::new(format!(" ▸ {}", upper)).bold().fg(colors::E_AMBER());
+                let mut hdr = Text::new(format!(" ▸ {}", upper))
+                    .bold()
+                    .fg(colors::E_AMBER());
                 // 无框贴底时补终端色 bg,否则文字格发黑/透字。
                 if matches!(anchor, DialogAnchor::Bottom) {
                     hdr = hdr.bg(colors::BG_PRIMARY());
@@ -563,11 +567,7 @@ fn render_positioned_list(
                 // 2-space prefix to keep the column aligned with ❯.
                 // (Previously this row used ▌ + ✓, and muted used ○ —
                 // three different marks; now one across the whole app.)
-                let (prefix, suffix) = if is_sel {
-                    ("❯ ", "")
-                } else {
-                    ("  ", "")
-                };
+                let (prefix, suffix) = if is_sel { ("❯ ", "") } else { ("  ", "") };
 
                 // Build the unstyled row text (prefix + display) so we
                 // can size the bg fill correctly. 按 inner_w 截断(留 …),
@@ -583,8 +583,8 @@ fn render_positioned_list(
                 // the selection signal).
                 let padded = {
                     use unicode_width::UnicodeWidthStr;
-                    let used = UnicodeWidthStr::width(line.as_str())
-                        + UnicodeWidthStr::width(suffix);
+                    let used =
+                        UnicodeWidthStr::width(line.as_str()) + UnicodeWidthStr::width(suffix);
                     if is_sel && used < inner_w {
                         format!("{}{}{}", line, " ".repeat(inner_w - used), suffix)
                     } else {
@@ -626,7 +626,8 @@ fn render_positioned_list(
         // 仅选中行 SURFACE_SELECTED 高亮，对齐轻量命令面板风格。
         // 标题行(1)替代了原 top border,故滚动条 sb_y=y+1、tooltip y+1+row_offset
         // 偏移与 Centered 一致,无需调整。
-        let view = vstack().gap(0)
+        let view = vstack()
+            .gap(0)
             .child_sized(
                 Text::new(title_with_pos)
                     .fg(border_color)
@@ -657,14 +658,12 @@ fn render_positioned_list(
                 // footer hint pinned to its single row. Without explicit
                 // sizing the dialog vstack defaults to Auto and splits the
                 // height EQUALLY between list and hint.
-                vstack().gap(0)
-                    .child_flex(list_content, 1.0)
-                    .child_sized(
-                        Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
-                            .fg(colors::FG_MUTED())
-                            .align(Alignment::Center),
-                        1,
-                    )
+                vstack().gap(0).child_flex(list_content, 1.0).child_sized(
+                    Text::new(fit_hint_tail(footer_hint, w.saturating_sub(2)))
+                        .fg(colors::FG_MUTED())
+                        .align(Alignment::Center),
+                    1,
+                ),
             );
 
         revue::widget::positioned(dialog)
@@ -683,7 +682,11 @@ fn render_positioned_list(
     // on the same column; mouse events route through the published
     // layout below.
     let list_overlay = if total > rows {
-        let sb_x = ctx.area.x.saturating_add(x).saturating_add(w.saturating_sub(2));
+        let sb_x = ctx
+            .area
+            .x
+            .saturating_add(x)
+            .saturating_add(w.saturating_sub(2));
         let sb_y = ctx.area.y.saturating_add(y).saturating_add(1); // skip top border
         let sb_h = rows as u16;
         let sb_area = Rect::new(sb_x, sb_y, 1, sb_h);
@@ -713,7 +716,8 @@ fn render_positioned_list(
     // Compute selected row's absolute Y on the screen so a caller can
     // anchor a popover next to it. Only Row items get a meaningful y;
     // headers don't.
-    let selected_row_y = if selected >= start && selected < end
+    let selected_row_y = if selected >= start
+        && selected < end
         && matches!(items.get(selected), Some(ListItem::Row { .. }))
     {
         let row_offset = (selected - start) as u16;
@@ -748,8 +752,20 @@ mod tests {
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
         let content = vstack().child(Text::new("body line").fg(colors::FG_SECONDARY()));
         // 输入框几何(模拟底部 prompt):宽 40、x=2、上沿 y_top=15。
-        let geom = PromptGeom { x: 2, y_top: 15, w: 40 };
-        render_dialog_bottom("Title", colors::ACCENT_CYAN(), content, "hint", &mut ctx, geom, 6);
+        let geom = PromptGeom {
+            x: 2,
+            y_top: 15,
+            w: 40,
+        };
+        render_dialog_bottom(
+            "Title",
+            colors::ACCENT_CYAN(),
+            content,
+            "hint",
+            &mut ctx,
+            geom,
+            6,
+        );
 
         // Bottom 几何跟随 geom:w=40, h=min(6, 15-0-1)=6, x=2, y=15-0-6=9
         // → 框区 [2,41]×[9,14],四角必须无 ╭╮╰╯(无框成形,金律)。
@@ -784,7 +800,15 @@ mod tests {
         let mut buf = Buffer::new(60, 20);
         let mut ctx = RenderContext::new(&mut buf, Rect::new(0, 0, 60, 20));
         let content = vstack().child(Text::new("body").fg(colors::FG_SECONDARY()));
-        render_dialog("Title", colors::ACCENT_CYAN(), content, "hint", &mut ctx, 40, 6);
+        render_dialog(
+            "Title",
+            colors::ACCENT_CYAN(),
+            content,
+            "hint",
+            &mut ctx,
+            40,
+            6,
+        );
 
         // Centered 几何：w=40, h=6, x=10, y=7 → 左上角 (10,7) 必须是边框字符
         let corner = buf.get(10, 7).map(|c| c.symbol).unwrap_or(' ');
@@ -832,7 +856,9 @@ mod tests {
             assert!(
                 start <= selected && selected < end,
                 "selected={} 不在 window [{},{}) 内",
-                selected, start, end
+                selected,
+                start,
+                end
             );
             assert!(end - start == 8, "窗口宽必须恒为 rows=8");
         }
@@ -882,8 +908,13 @@ mod tests {
         };
         // Home/End 跳转处理器必须写进 hint。
         for f in [
-            "agent_select.rs", "mode_select.rs", "mcp_list.rs", "skill_proposal.rs",
-            "recovery_list.rs", "task_list.rs", "session_fork.rs", "notifications.rs",
+            "agent_select.rs",
+            "mode_select.rs",
+            "mcp_list.rs",
+            "skill_proposal.rs",
+            "recovery_list.rs",
+            "session_fork.rs",
+            "notifications.rs",
             "skill_list.rs",
         ] {
             let s = read(f);
@@ -893,7 +924,10 @@ mod tests {
         // 过滤弹窗的 Backspace 擦除键必须写进 hint。
         for f in ["model_select.rs", "session_list.rs"] {
             let s = read(f);
-            assert!(s.contains("Key::Backspace"), "{f}: 前置——应有 Backspace 处理");
+            assert!(
+                s.contains("Key::Backspace"),
+                "{f}: 前置——应有 Backspace 处理"
+            );
             assert!(s.contains('⌫'), "{f}: hint 未写 ⌫");
         }
         // confirm 的 'q' 取消键、permission 的 'a'/'d' 快捷键必须写进 hint。

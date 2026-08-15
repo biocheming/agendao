@@ -1,6 +1,5 @@
 import type {
   SessionCacheExplainabilityContractRecord,
-  SessionChildHistoryIsolationContractRecord,
   SessionCompactionContinuityInspectionRecord,
   SessionCompactionBoundaryContractRecord,
   SessionContextClosureContractRecord,
@@ -13,7 +12,6 @@ import {
   contextClosureCoarseDiagnosticLabel as generatedContextClosureCoarseDiagnosticLabel,
   contextClosureExplainabilitySourceLabel as generatedContextClosureExplainabilitySourceLabel,
   contextClosureGovernanceStatusLabel as generatedContextClosureGovernanceStatusLabel,
-  contextClosureIsolationStatusLabel as generatedContextClosureIsolationStatusLabel,
   contextClosurePrefixStatusLabel as generatedContextClosurePrefixStatusLabel,
   contextClosureSeverityLabel as generatedContextClosureSeverityLabel,
 } from "../generated/contextClosure.generated";
@@ -107,42 +105,6 @@ function cacheExplainabilityRecord(
   };
 }
 
-function childHistoryIsolationRecord(
-  value: unknown,
-): SessionChildHistoryIsolationContractRecord | null {
-  if (!isRecord(value)) return null;
-  const attachedSubtreeSessionCount = readNumber(value.attached_subtree_session_count);
-  const ownerSessionCumulativeTokens = readNumber(value.owner_session_cumulative_tokens);
-  const workflowCumulativeTokens = readNumber(value.workflow_cumulative_tokens);
-  const attachedSubtreeCumulativeTokens = readNumber(value.attached_subtree_cumulative_tokens);
-  const ownerLocalLivePrefix = readBoolean(value.owner_local_live_prefix);
-  const childHistoryInLivePrefixDetected = readBoolean(
-    value.child_history_in_live_prefix_detected,
-  );
-  const explanation = readString(value.explanation);
-  if (
-    attachedSubtreeSessionCount == null ||
-    ownerSessionCumulativeTokens == null ||
-    workflowCumulativeTokens == null ||
-    attachedSubtreeCumulativeTokens == null ||
-    ownerLocalLivePrefix == null ||
-    childHistoryInLivePrefixDetected == null ||
-    !explanation
-  ) {
-    return null;
-  }
-  return {
-    attached_subtree_session_count: attachedSubtreeSessionCount,
-    owner_session_cumulative_tokens: ownerSessionCumulativeTokens,
-    workflow_cumulative_tokens: workflowCumulativeTokens,
-    attached_subtree_cumulative_tokens: attachedSubtreeCumulativeTokens,
-    owner_live_context_tokens: readNumber(value.owner_live_context_tokens),
-    owner_local_live_prefix: ownerLocalLivePrefix,
-    child_history_in_live_prefix_detected: childHistoryInLivePrefixDetected,
-    explanation,
-  };
-}
-
 function compactionContinuityRecord(
   value: unknown,
 ): SessionCompactionContinuityInspectionRecord | null {
@@ -175,22 +137,13 @@ export function contextClosureContractFromTelemetry(
   const prefixStability = prefixStabilityRecord(contract.prefix_stability);
   const compactionBoundary = compactionBoundaryRecord(contract.compaction_boundary);
   const cacheExplainability = cacheExplainabilityRecord(contract.cache_explainability);
-  const childHistoryIsolation = childHistoryIsolationRecord(
-    contract.child_history_isolation,
-  );
-  if (
-    !prefixStability ||
-    !compactionBoundary ||
-    !cacheExplainability ||
-    !childHistoryIsolation
-  ) {
+  if (!prefixStability || !compactionBoundary || !cacheExplainability) {
     return null;
   }
   return {
     prefix_stability: prefixStability,
     compaction_boundary: compactionBoundary,
     cache_explainability: cacheExplainability,
-    child_history_isolation: childHistoryIsolation,
   };
 }
 
@@ -231,12 +184,6 @@ export function contextClosureCacheStatusLabel(
   cache: SessionCacheExplainabilityContractRecord,
 ) {
   return generatedContextClosureCacheStatusLabel(cache);
-}
-
-export function contextClosureIsolationStatusLabel(
-  isolation: SessionChildHistoryIsolationContractRecord,
-) {
-  return generatedContextClosureIsolationStatusLabel(isolation);
 }
 
 export function compactionContinuitySourceLabel(

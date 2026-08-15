@@ -1,9 +1,9 @@
 //! 金 — Session export dialog: copy/share transcript as text.
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop;
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 pub struct SessionExportDialog {
     pub visible: bool,
@@ -20,7 +20,12 @@ impl Default for SessionExportDialog {
 
 impl SessionExportDialog {
     pub fn new() -> Self {
-        Self { visible: false, session_id: String::new(), messages_text: String::new(), copied: false }
+        Self {
+            visible: false,
+            session_id: String::new(),
+            messages_text: String::new(),
+            copied: false,
+        }
     }
 
     pub fn open(&mut self, session_id: &str, messages: &str) {
@@ -30,30 +35,40 @@ impl SessionExportDialog {
         self.visible = true;
     }
 
-    pub fn close(&mut self) { self.visible = false; self.copied = false; }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.copied = false;
+    }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<ExportAction> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         match key {
-            Key::Escape => { self.close(); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
             Key::Char('c') => {
                 self.copied = true;
                 Some(ExportAction::Copy(self.messages_text.clone()))
             }
-            Key::Char('s') => {
-                Some(ExportAction::Share(self.session_id.clone()))
-            }
+            Key::Char('s') => Some(ExportAction::Share(self.session_id.clone())),
             _ => None,
         }
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         let msg_count = self.messages_text.lines().count();
-        let mut content = vstack().gap(1)
-            .child(Text::new(format!("{} messages in this session", msg_count))
-                .fg(colors::FG_MUTED()));
+        let mut content = vstack().gap(1).child(
+            Text::new(format!("{} messages in this session", msg_count)).fg(colors::FG_MUTED()),
+        );
 
         if self.copied {
             content = content.child(Text::new("✓ Copied to clipboard!").fg(colors::ACCENT_GREEN()));
@@ -68,7 +83,9 @@ impl SessionExportDialog {
             colors::ACCENT_CYAN(),
             content,
             "Esc: close",
-            ctx, geom, 8,
+            ctx,
+            geom,
+            8,
         );
     }
 }

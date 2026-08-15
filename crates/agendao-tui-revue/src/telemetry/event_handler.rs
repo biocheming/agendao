@@ -1,13 +1,16 @@
 //! 水 — FrontendEvent → SessionStore Signal mapping.
 
-use agendao_server_core::frontend_events::FrontendEvent;
-use agendao_client::SessionRunStatusKind;
 use crate::store::session_store::SessionStore;
 use crate::store::types::*;
+use agendao_client::SessionRunStatusKind;
+use agendao_server_core::frontend_events::FrontendEvent;
 
 pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Option<String> {
     match event {
-        FrontendEvent::SessionRuntimeReplaced { session_id, runtime } => {
+        FrontendEvent::SessionRuntimeReplaced {
+            session_id,
+            runtime,
+        } => {
             let status = match runtime.run_status {
                 SessionRunStatusKind::Idle => RunStatus::Idle,
                 SessionRunStatusKind::Running => RunStatus::Running,
@@ -21,8 +24,9 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 // U9：Compacting 拆出独立态（展示层可辨"压缩中"），行为口径
                 // 仍与 Running 一致。
                 SessionRunStatusKind::Compacting => RunStatus::Compacting,
-                SessionRunStatusKind::WaitingOnTool
-                | SessionRunStatusKind::Cancelling => RunStatus::Running,
+                SessionRunStatusKind::WaitingOnTool | SessionRunStatusKind::Cancelling => {
+                    RunStatus::Running
+                }
                 // Blocked/Sleeping 是 session 级静置，不算运行。
                 _ => RunStatus::Idle,
             };
@@ -30,7 +34,12 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             Some(session_id.clone())
         }
 
-        FrontendEvent::OutputBlockAppended { session_id, block, id, .. } => {
+        FrontendEvent::OutputBlockAppended {
+            session_id,
+            block,
+            id,
+            ..
+        } => {
             let kind = block.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let phase = block.get("phase").and_then(|v| v.as_str());
             let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -38,7 +47,9 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             // Tool blocks carry `name` (web schema), not `tool_name`. Older
             // event-handler matches read `tool_name` and got an empty
             // string, which made every tool render as "?".
-            let tool_name = block.get("name").and_then(|v| v.as_str())
+            let tool_name = block
+                .get("name")
+                .and_then(|v| v.as_str())
                 .or_else(|| block.get("tool_name").and_then(|v| v.as_str()));
             // Tool detail (e.g. result text) lives under `detail` per the
             // web schema; previously we only read `text` and missed
@@ -46,13 +57,13 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             let detail = block.get("detail").and_then(|v| v.as_str()).unwrap_or("");
             // Unified diff preview (edit/write/apply_patch) rides in
             // `display.preview = {kind:"diff", text, truncated}`
-            // (agent_presenter.rs:807-811). Parse once here; only the tool
+            // The server block projection serializes this field as JSON. Parse once here; only the tool
             // `done` branch consumes it. Missing/non-diff preview → None,
             // the block falls back to plain `detail` text as before.
             let diff_preview = parse_diff_preview(block);
             let bid = id.as_deref().unwrap_or("");
 
-            // Server emits phases per agendao_command::agent_presenter::phase_to_web:
+            // Server emits canonical block phases:
             //   message:   start | delta | end | full
             //   reasoning: start | delta | end | full
             //   tool:      start | running | done | error
@@ -99,11 +110,15 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 "reasoning" => {
                     match phase {
                         Some("delta") => {
-                            if !text.is_empty() { session.push_thinking(bid, text); }
+                            if !text.is_empty() {
+                                session.push_thinking(bid, text);
+                            }
                         }
                         // full — 同 message 分支：start 后追加新段，否则 merge。
                         Some("full") => {
-                            if !text.is_empty() { session.apply_thinking_snapshot(bid, text); }
+                            if !text.is_empty() {
+                                session.apply_thinking_snapshot(bid, text);
+                            }
                         }
                         Some("start") => {
                             session.mark_stream_segment_start("r", bid);
@@ -142,30 +157,6 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         _ => {}
                     }
                 }
-                "scheduler_stage" => {
-                    // SchedulerStage block carries: stage_id, stage, status,
-                    // focus, last_event, waiting_on, activity, plus token
-                    // counts. Use `stage` (or `title`) as the display name
-                    // and `status` as the state label.
-                    let name = block.get("stage").and_then(|v| v.as_str())
-                        .or_else(|| block.get("title").and_then(|v| v.as_str()))
-                        .unwrap_or("stage");
-                    let status = block.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                    // Build a one-line metadata summary out of the most
-                    // useful surface fields without overwhelming the row.
-                    let mut bits: Vec<String> = Vec::new();
-                    if let Some(focus) = block.get("focus").and_then(|v| v.as_str()) {
-                        if !focus.is_empty() { bits.push(format!("focus: {focus}")); }
-                    }
-                    if let Some(activity) = block.get("activity").and_then(|v| v.as_str()) {
-                        if !activity.is_empty() { bits.push(format!("activity: {activity}")); }
-                    }
-                    if let Some(waiting) = block.get("waiting_on").and_then(|v| v.as_str()) {
-                        if !waiting.is_empty() { bits.push(format!("waiting on: {waiting}")); }
-                    }
-                    let metadata = (!bits.is_empty()).then(|| bits.join("\n"));
-                    session.push_stage(bid, name, status, metadata);
-                }
                 "status" => {
                     // Plain notice line — matches web's StatusBlock.
                     if !text.is_empty() {
@@ -175,7 +166,11 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 "session_event" => {
                     let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
                     let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-                    let line = if summary.is_empty() { title.to_string() } else { format!("{title}: {summary}") };
+                    let line = if summary.is_empty() {
+                        title.to_string()
+                    } else {
+                        format!("{title}: {summary}")
+                    };
                     if !line.is_empty() {
                         session.push_notice(bid, &line);
                     }
@@ -193,7 +188,12 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             Some(session_id.clone())
         }
 
-        FrontendEvent::ToolCallUpsert { session_id, tool_call_id, tool_name, phase } => {
+        FrontendEvent::ToolCallUpsert {
+            session_id,
+            tool_call_id,
+            tool_name,
+            phase,
+        } => {
             let tp = match phase {
                 agendao_server_core::runtime_events::ToolCallPhase::Start => ToolPhase::Starting,
                 agendao_server_core::runtime_events::ToolCallPhase::Complete => ToolPhase::Done,
@@ -219,13 +219,25 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             Some(session_id.clone())
         }
 
-        FrontendEvent::SessionProjectionReplaced { session_id, usage, topology, stages, context_compaction_summary, .. } => {
+        FrontendEvent::SessionProjectionReplaced {
+            session_id,
+            usage,
+            topology,
+            context_compaction_summary,
+            ..
+        } => {
             if let Some(ref u) = usage {
-                session.set_token_usage(
-                    u.input_tokens, u.output_tokens, u.reasoning_tokens,
-                    u.cache_read_tokens, u.cache_miss_tokens, u.cache_write_tokens,
-                    u.context_tokens, u.total_cost,
-                );
+                session.set_token_usage(TokenUsage {
+                    input: u.input_tokens,
+                    output: u.output_tokens,
+                    reasoning: u.reasoning_tokens,
+                    total: u.input_tokens + u.output_tokens + u.reasoning_tokens,
+                    cache_read: u.cache_read_tokens,
+                    cache_miss: u.cache_miss_tokens,
+                    cache_write: u.cache_write_tokens,
+                    context_tokens: u.context_tokens,
+                    total_cost: u.total_cost,
+                });
             }
             // Build execution topology for future telemetry display.
             // **Do not** write into `session_nodes` — that field is the
@@ -241,83 +253,6 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         let pct = ((live as f64 / limit as f64) * 100.0) as u8;
                         session.set_context_pct(pct);
                     }
-                }
-            }
-            // Process stage summaries (bulk update)
-            for stage in stages {
-                let status = format!("{:?}", stage.status);
-                let stage_id = &stage.stage_id;
-                // Build a formatted detail block for the stage card
-                let mut detail_lines: Vec<String> = Vec::new();
-
-                // Step progress (if stage has sub-steps)
-                if let (Some(s), Some(st)) = (stage.step, stage.step_total) {
-                    detail_lines.push(format!(" step {}/{}", s, st));
-                }
-
-                // Activity + focus
-                if let Some(ref act) = stage.activity {
-                    detail_lines.push(format!(" ▶ {}", act));
-                }
-                if let Some(ref f) = stage.focus {
-                    detail_lines.push(format!(" ▸ focus: {}", f));
-                }
-
-                // Retry info
-                if let Some(r) = stage.retry_attempt {
-                    if r > 0 { detail_lines.push(format!(" ↻ retry #{}", r)); }
-                }
-
-                // Token usage
-                let mut token_parts = Vec::new();
-                if let Some(t) = stage.prompt_tokens { token_parts.push(format!("prompt:{}", t)); }
-                if let Some(t) = stage.completion_tokens { token_parts.push(format!("comp:{}", t)); }
-                if let Some(t) = stage.reasoning_tokens { token_parts.push(format!("reason:{}", t)); }
-                if !token_parts.is_empty() {
-                    detail_lines.push(format!("📊 tokens: {}", token_parts.join(" ")));
-                }
-
-                // Cache efficiency
-                let mut cache_parts = Vec::new();
-                if let Some(t) = stage.cache_read_tokens { cache_parts.push(format!("read:{}", t)); }
-                if let Some(t) = stage.cache_miss_tokens { cache_parts.push(format!("miss:{}", t)); }
-                if !cache_parts.is_empty() {
-                    detail_lines.push(format!("💾 cache: {}", cache_parts.join(" ")));
-                }
-
-                // Context pressure
-                if let Some(t) = stage.estimated_context_tokens {
-                    detail_lines.push(format!("📐 ctx: {}K", t / 1000));
-                }
-
-                // Agent/tool/attached count
-                let mut counts = Vec::new();
-                if stage.active_agent_count > 0 { counts.push(format!("agents:{}", stage.active_agent_count)); }
-                if stage.active_tool_count > 0 { counts.push(format!("tools:{}", stage.active_tool_count)); }
-                if stage.attached_session_count > 0 { counts.push(format!("subs:{}", stage.attached_session_count)); }
-                if !counts.is_empty() {
-                    detail_lines.push(format!("👤 {}", counts.join(" ")));
-                }
-
-                // Waiting on
-                if let Some(ref w) = stage.waiting_on {
-                    detail_lines.push(format!("⏳ waiting: {}", w));
-                }
-
-                let meta_str = if detail_lines.is_empty() { None } else { Some(detail_lines.join("\n")) };
-                // Only push if status indicates progress
-                if stage.step.is_some() || stage.prompt_tokens.is_some() {
-                    let label = format!("{} [{}/{}] {}",
-                        stage.stage_name,
-                        stage.step.unwrap_or(0),
-                        stage.step_total.unwrap_or(0),
-                        if !stage.focus.as_deref().unwrap_or("").is_empty() {
-                            format!("({})", stage.focus.as_deref().unwrap_or(""))
-                        } else { String::new() },
-                    );
-                    session.push_stage(stage_id, &label, &status, meta_str);
-                } else {
-                    session.push_stage(stage_id, &stage.stage_name, &status, meta_str);
                 }
             }
             Some(session_id.clone())
@@ -356,11 +291,10 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
         }
         // F6：运行期错误（如中途 provider 失败）即时上屏——此前 ServerEvent::Error
         // 在投影层被投影为空，错误要到下一次 runtime 快照才以 RunStatus 出现。
-        FrontendEvent::SessionError { session_id, error, .. } => {
-            session.push_notice(
-                &format!("err-{}", session_id),
-                &format!("⚠ {error}"),
-            );
+        FrontendEvent::SessionError {
+            session_id, error, ..
+        } => {
+            session.push_notice(&format!("err-{}", session_id), &format!("⚠ {error}"));
             Some(session_id.clone())
         }
         // Global config change: the TUI reads config through its own
@@ -428,7 +362,10 @@ mod tests {
         assert_eq!(msgs.len(), 1, "同一 id 的快照应合并为一个块");
         match &msgs[0] {
             TranscriptBlock::AssistantMsg { content, .. } => {
-                assert_eq!(content, "The answer to 1+1 is 2", "累积快照必须替换而非拼接");
+                assert_eq!(
+                    content, "The answer to 1+1 is 2",
+                    "累积快照必须替换而非拼接"
+                );
             }
             _ => panic!("expected AssistantMsg"),
         }
@@ -482,7 +419,10 @@ mod tests {
         let msgs2 = session2.messages.get();
         match &msgs2[0] {
             TranscriptBlock::Thinking { content, .. } => {
-                assert_eq!(content, "thinking longer", "累积快照不得拼接成 thinkthinking longer");
+                assert_eq!(
+                    content, "thinking longer",
+                    "累积快照不得拼接成 thinkthinking longer"
+                );
             }
             _ => panic!("expected Thinking"),
         }
@@ -521,7 +461,12 @@ mod tests {
         }
     }
 
-    fn tool_done_block(id: &str, name: &str, detail: &str, preview: serde_json::Value) -> FrontendEvent {
+    fn tool_done_block(
+        id: &str,
+        name: &str,
+        detail: &str,
+        preview: serde_json::Value,
+    ) -> FrontendEvent {
         FrontendEvent::OutputBlockAppended {
             session_id: "s1".into(),
             block: serde_json::json!({
@@ -540,13 +485,20 @@ mod tests {
         let session = SessionStore::new();
         let diff_text = "@@ -1,2 +1,2 @@\n-old\n+new\n ctx";
         apply_frontend_event(
-            &tool_done_block("t1", "edit", "", serde_json::json!({
-                "kind": "diff", "text": diff_text, "truncated": true,
-            })),
+            &tool_done_block(
+                "t1",
+                "edit",
+                "",
+                serde_json::json!({
+                    "kind": "diff", "text": diff_text, "truncated": true,
+                }),
+            ),
             &session,
         );
         let msgs = session.messages.get();
-        let result = msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. }))
+        let result = msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::ToolResult { .. }))
             .expect("detail 为空但 diff 存在，必须出 ToolResult");
         match result {
             TranscriptBlock::ToolResult { diff, fold, .. } => {
@@ -564,14 +516,24 @@ mod tests {
     fn tool_done_non_diff_preview_falls_back_to_detail() {
         let session = SessionStore::new();
         apply_frontend_event(
-            &tool_done_block("t1", "read", "file body", serde_json::json!({
-                "kind": "text", "text": "whatever", "truncated": false,
-            })),
+            &tool_done_block(
+                "t1",
+                "read",
+                "file body",
+                serde_json::json!({
+                    "kind": "text", "text": "whatever", "truncated": false,
+                }),
+            ),
             &session,
         );
         let msgs = session.messages.get();
-        match msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. })) {
-            Some(TranscriptBlock::ToolResult { result, diff, fold, .. }) => {
+        match msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::ToolResult { .. }))
+        {
+            Some(TranscriptBlock::ToolResult {
+                result, diff, fold, ..
+            }) => {
                 assert_eq!(result, "file body");
                 assert!(diff.is_none(), "非 diff preview 不得落地");
                 assert_eq!(*fold, FoldState::Folded, "无 diff 保持默认 Folded");
@@ -596,7 +558,10 @@ mod tests {
             &session,
         );
         let msgs = session.messages.get();
-        match msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolResult { .. })) {
+        match msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::ToolResult { .. }))
+        {
             Some(TranscriptBlock::ToolResult { result, diff, .. }) => {
                 assert_eq!(result, "ok");
                 assert!(diff.is_none());
@@ -616,9 +581,14 @@ mod tests {
             diffs,
         };
         let entry = |path: &str, a: u64, d: u64| DiffEntry {
-            path: path.into(), additions: a, deletions: d,
+            path: path.into(),
+            additions: a,
+            deletions: d,
         };
-        apply_frontend_event(&ev(vec![entry("a.rs", 3, 1), entry("b.rs", 2, 0)]), &session);
+        apply_frontend_event(
+            &ev(vec![entry("a.rs", 3, 1), entry("b.rs", 2, 0)]),
+            &session,
+        );
         assert_eq!(session.diff_summary.get().len(), 2);
         // replace：新一轮只剩 1 个文件，不得残留 a/b。
         apply_frontend_event(&ev(vec![entry("c.rs", 5, 2)]), &session);
@@ -694,7 +664,6 @@ mod tests {
                 pending_question: None,
                 pending_permission: None,
                 pending_followup_count: 0,
-                attached_sessions: vec![],
             },
         }
     }
@@ -703,7 +672,11 @@ mod tests {
     fn compacting_maps_to_distinct_run_status() {
         let session = SessionStore::new();
         apply_frontend_event(&runtime_evt(SessionRunStatusKind::Compacting), &session);
-        assert_eq!(session.run_status.get(), RunStatus::Compacting, "压缩相位独立成态");
+        assert_eq!(
+            session.run_status.get(),
+            RunStatus::Compacting,
+            "压缩相位独立成态"
+        );
     }
 
     #[test]

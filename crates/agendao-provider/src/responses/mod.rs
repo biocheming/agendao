@@ -11,13 +11,9 @@
 mod helpers;
 #[cfg(feature = "streaming")]
 mod runtime;
-mod types;
-mod validation;
+pub mod types;
+pub mod validation;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod runtime_tests;
-
-// Re-export all public items for backward compatibility
-pub use types::*;
-pub use validation::*;

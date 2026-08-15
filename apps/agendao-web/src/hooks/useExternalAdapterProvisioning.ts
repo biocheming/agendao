@@ -27,7 +27,7 @@ export function useExternalAdapterProvisioning(
         actor_id: route.actorId,
         workspace_id: route.workspaceId,
         route_policy_id: route.routePolicyId,
-        scheduler_profile: route.schedulerProfile,
+        scheduler: route.scheduler,
         directory: route.directory,
         project_id: route.projectId,
         title: route.title,

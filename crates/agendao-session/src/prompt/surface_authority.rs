@@ -5,7 +5,7 @@
 //!
 //! This module is the **single authority data contract** for prompt surface
 //! construction (AgenDao 土律: 承载之土，贵在归一).  Every path that touches
-//! the model-visible prompt surface — session prompt, scheduler preset,
+//! the model-visible prompt surface — session prompt, scheduler policy,
 //! memory reflow, provider cache hints — should consume these structures
 //! rather than assembling the surface from independent raw inputs.
 //!
@@ -17,17 +17,12 @@
 //! | `SessionPrompt`          | Session prompt surface authority (orchestrator)|
 //! | `PromptSurfaceInputs`    | **New**: aggregate inputs consumed by authority |
 //! | `PromptSurfaceSections`  | **New**: canonical output sections             |
-//! | `PresetPromptExtension`  | **New**: preset contribution, not full surface |
 //!
 //! ## Migration contract
 //!
 //! - Structures are the single prompt-surface input/output contract.
 //! - Session prompt and loop lifecycle consume `PromptSurfaceInputs` /
 //!   `PromptSurfaceSections` on the hot path.
-//! - Preset call sites should return `PresetPromptExtension` rather than
-//!   a raw full-prompt string.
-//! - Legacy full-prompt assembly paths should be deleted once all
-//!   consumers read from these views.
 //!
 //! ## Cache boundary
 //!
@@ -37,7 +32,7 @@
 //!
 //! Provider-family cache semantics remain outside this module. In particular,
 //! `cache_request_fingerprint(...)` and
-//! `closeai_prompt_cache_key_for_fingerprint(...)` stay in
+//! `openai_prompt_cache_key_for_fingerprint(...)` stay in
 //! `loop_lifecycle.rs` until their provider-specific behavior can be migrated
 //! without changing cache guardrail tests.
 //!
@@ -63,9 +58,9 @@ use agendao_types::{
 };
 
 use super::surface_contract::{
-    collect_prompt_surface_provider_options, is_dynamic_catalog_header,
-    is_volatile_system_section, looks_like_clock_line, normalize_stable_system_line,
-    sanctioned_model_context_projection_for_message, PromptSurfaceProviderOptionGroup,
+    collect_prompt_surface_provider_options, is_volatile_system_section, looks_like_clock_line,
+    normalize_stable_system_line, sanctioned_model_context_projection_for_message,
+    PromptSurfaceProviderOptionGroup,
 };
 use super::tools_and_output::ToolCatalogMode;
 use crate::SessionMessage;
@@ -81,7 +76,6 @@ use crate::SessionMessage;
 /// |--------------------|-------|------------------------------------------|
 /// | `system_prompt`    | 土    | Product header + compatibility overlay   |
 /// | `env_context`      | 土    | Working directory, git, platform, date   |
-/// | `preset_extension` | 火    | Preset-specific instructions / tone      |
 /// | `tools`            | 金    | Tool schema surface (names + schemas)    |
 /// | `memory_prefetch`  | 水→木 | Memory recall injected into user message |
 /// | `compiled_request` | 火    | Execution request parameters              |
@@ -89,9 +83,8 @@ use crate::SessionMessage;
 ///
 /// # Authority
 ///
-/// `SessionPrompt` is the single assembler.  Presets contribute a
-/// `PresetPromptExtension`; providers declare capabilities per profile.
-/// Neither constructs the full surface independently.
+/// `SessionPrompt` is the single assembler. Providers declare capabilities
+/// per profile and schedulers contribute through the typed Blueprint surface.
 #[derive(Debug, Clone)]
 pub struct PromptSurfaceInputs {
     /// Session identity (used for cache key derivation).
@@ -99,16 +92,12 @@ pub struct PromptSurfaceInputs {
 
     /// Static system prompt text produced by `SystemPrompt`.
     /// This is the product header + compatibility overlay, before
-    /// environment context, preset instructions, or tool surface.
+    /// environment context, configured instructions, or tool surface.
     pub(crate) system_prompt: Option<String>,
 
     /// Environment context block (working directory, git status,
     /// platform, date).  Produced by `SystemPrompt::environment()`.
     pub(crate) env_context: Option<String>,
-
-    /// Preset contribution to the prompt surface.
-    /// `None` means no preset is active (e.g. direct / untuned run).
-    pub(crate) preset_extension: Option<PresetPromptExtension>,
 
     /// Memory retrieval packet to be injected into the latest user
     /// message as a `<system-reminder>` block.
@@ -138,11 +127,11 @@ pub struct PromptSurfaceInputs {
     /// Stable fingerprint of the structured tool catalog metadata.
     pub(crate) tool_catalog_hash: String,
 
-    /// Compiled execution request (model, agent, scheduler profile, etc.).
+    /// Compiled execution request (model, agent, and runtime limits).
     pub(crate) compiled_request: CompiledExecutionRequest,
 
     /// Provider-level options that influence the prompt surface:
-    /// cache stage/preset/repo, reasoning mode, tool policy, etc.
+    /// cache stage/repo, reasoning mode, tool policy, etc.
     /// These are collected by `collect_prompt_surface_provider_options`.
     pub(crate) provider_options: HashMap<String, serde_json::Value>,
 }
@@ -160,7 +149,7 @@ pub struct PromptSurfaceInputs {
 /// "this section was not produced for this turn."
 #[derive(Debug, Clone)]
 pub(crate) struct PromptSurfaceSections {
-    /// Full system prompt text (product header + env + preset + tools).
+    /// Full system prompt text (product header + env + tools).
     /// This is the model-visible system message.
     pub(crate) system_text: String,
 
@@ -199,12 +188,9 @@ pub(crate) struct PromptSurfaceSections {
     /// Tool-choice / allowed-tools policy projection hash.
     pub(crate) tool_policy_hash: Option<String>,
 
-    /// Preset identity label (e.g. "sisyphus", "atlas").
-    pub(crate) preset_identity: Option<String>,
-
-    /// CloseAI-compatible prompt cache key, when the provider family
+    /// OpenAI-compatible prompt cache key, when the provider family
     /// supports it.
-    pub(crate) closeai_prompt_cache_key: Option<String>,
+    pub(crate) openai_prompt_cache_key: Option<String>,
 
     /// Ingress policy hash for this turn.
     pub(crate) ingress_policy_hash: Option<String>,
@@ -216,8 +202,6 @@ pub(crate) struct PromptSurfaceSections {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptSurfaceVolatilityKind {
     VolatileEnvField,
-    DynamicCatalogBeforeStableGovernance,
-    OversizedCapabilityProjection,
     ProviderOptionsAffectSurface,
 }
 
@@ -243,7 +227,7 @@ pub(crate) enum PromptSurfaceDriftCategory {
     ToolPolicy,
     OutputProjection,
     IngressPolicy,
-    CloseAiPromptCacheKey,
+    OpenAiPromptCacheKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,14 +237,6 @@ pub(crate) struct PromptSurfaceDriftExplanation {
     pub(crate) detail: String,
     pub(crate) severity: SessionCacheSeverity,
 }
-
-// ── Preset contribution (re-export from agendao-types) ─────────────────
-//
-// The canonical PresetPromptExtension lives in agendao-types to avoid
-// a circular dependency between agendao-session and agendao-orchestrator.
-// This re-export keeps the surface_authority module as the single
-// namespace for prompt surface types within the session crate.
-pub use agendao_types::PresetPromptExtension;
 
 #[derive(Debug, Clone, Default)]
 struct PromptSurfaceSystemLayers {
@@ -294,49 +270,6 @@ impl PromptSurfaceSystemLayers {
 // ── Construction helpers (skeleton, no callers yet) ─────────────────────
 
 impl PromptSurfaceInputs {
-    /// Construct inputs from the pieces that `SessionPrompt` already
-    /// holds internally.
-    ///
-    /// Test-only compatibility constructor retained for authority equivalence
-    /// checks. Production code must use `builder(...).set_*()`.
-    // 测试兼容构造器：参数与 PromptSurfaceInputs 字段一一对应，聚合结构体即
-    // 结构体本身，无收益。
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_session_prompt_parts(
-        session_id: impl Into<String>,
-        system_prompt: Option<String>,
-        env_context: Option<String>,
-        preset_extension: Option<PresetPromptExtension>,
-        memory_prefetch: Option<MemoryRetrievalPacket>,
-        pinned_constraints: Vec<PinnedConstraint>,
-        few_shots: Vec<FewShotSurfaceItem>,
-        tools: Vec<ToolDefinition>,
-        tool_source_digests: Vec<ToolSurfaceSourceDigest>,
-        tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
-        tool_catalog_mode: ToolCatalogMode,
-        tool_catalog_hash: String,
-        compiled_request: CompiledExecutionRequest,
-        provider_options: HashMap<String, serde_json::Value>,
-    ) -> Self {
-        Self::builder(session_id, compiled_request)
-            .set_base_system_prompt(system_prompt)
-            .set_environment_identity(env_context)
-            .set_preset_extension(preset_extension)
-            .set_memory_prefetch(memory_prefetch)
-            .set_pinned_constraints(pinned_constraints)
-            .set_few_shots(few_shots)
-            .set_tool_surface(
-                tools,
-                tool_source_digests,
-                tool_catalog_by_name,
-                tool_catalog_mode,
-                tool_catalog_hash,
-            )
-            .set_external_tool_execution_by_name(BTreeMap::new())
-            .set_provider_options(provider_options)
-    }
-
     pub fn builder(
         session_id: impl Into<String>,
         compiled_request: CompiledExecutionRequest,
@@ -349,7 +282,6 @@ impl PromptSurfaceInputs {
             session_id: session_id.into(),
             system_prompt: None,
             env_context: None,
-            preset_extension: None,
             memory_prefetch: None,
             pinned_constraints: Vec::new(),
             few_shots: Vec::new(),
@@ -371,11 +303,6 @@ impl PromptSurfaceInputs {
 
     pub fn set_environment_identity(mut self, env_context: Option<String>) -> Self {
         self.env_context = env_context;
-        self
-    }
-
-    pub fn set_preset_extension(mut self, preset_extension: Option<PresetPromptExtension>) -> Self {
-        self.preset_extension = preset_extension;
         self
     }
 
@@ -430,7 +357,7 @@ impl PromptSurfaceInputs {
         &self,
         output_projection_policy_hash: String,
         ingress_policy_hash: Option<String>,
-        closeai_prompt_cache_key: Option<String>,
+        openai_prompt_cache_key: Option<String>,
     ) -> PromptSurfaceSections {
         let tool_surface_hash = agendao_provider::cache::tool_surface_fingerprint(&self.tools);
         let tool_source_surface_hash =
@@ -481,11 +408,7 @@ impl PromptSurfaceInputs {
             provider_params_hash,
             reasoning_mode_hash,
             tool_policy_hash,
-            preset_identity: self
-                .preset_extension
-                .as_ref()
-                .map(|preset| preset.preset_name.clone()),
-            closeai_prompt_cache_key,
+            openai_prompt_cache_key,
             ingress_policy_hash,
             output_projection_policy_hash,
         }
@@ -503,31 +426,6 @@ impl PromptSurfaceInputs {
                         detail: line.trim().to_string(),
                     });
                 }
-            }
-        }
-
-        if let Some(extension) = self.preset_extension.as_ref() {
-            if let Some(capability_projection) = extension.capability_projection.as_deref() {
-                let trimmed = capability_projection.trim();
-                if trimmed.len() > 2_000 {
-                    findings.push(PromptSurfaceVolatilityFinding {
-                        kind: PromptSurfaceVolatilityKind::OversizedCapabilityProjection,
-                        field: "capability_projection".to_string(),
-                        detail: format!("{} chars", trimmed.len()),
-                    });
-                }
-            }
-
-            let layers = render_preset_extension_layers(extension);
-            if !layers.dynamic_overlay_sections.is_empty()
-                && layers.stable_prefix_sections.is_empty()
-            {
-                findings.push(PromptSurfaceVolatilityFinding {
-                    kind: PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance,
-                    field: "preset_extension".to_string(),
-                    detail: "dynamic catalog has no stable governance prefix ahead of it"
-                        .to_string(),
-                });
             }
         }
 
@@ -577,16 +475,6 @@ impl PromptSurfaceInputs {
             layers
                 .dynamic_overlay_sections
                 .push(format!("## Environment Context\n{env_context}"));
-        }
-
-        if let Some(preset_extension) = self.preset_extension.as_ref() {
-            let preset_layers = render_preset_extension_layers(preset_extension);
-            layers
-                .stable_prefix_sections
-                .extend(preset_layers.stable_prefix_sections);
-            layers
-                .dynamic_overlay_sections
-                .extend(preset_layers.dynamic_overlay_sections);
         }
 
         let pinned_constraints = self
@@ -739,7 +627,6 @@ impl PromptSurfaceInputs {
                 serde_json::json!({
                     "path": projection.path.as_str(),
                     "policy": projection.policy,
-                    "legacy_without_policy": projection.legacy_without_policy,
                 })
             })
             .collect::<Vec<_>>();
@@ -755,14 +642,13 @@ impl PromptSurfaceSections {
     /// Diagnostics-facing layer split for the assembled system surface.
     ///
     /// Production cache fingerprints use the hashes; this summary keeps the
-    /// stable/dynamic split and preset identity on a real read path so the
-    /// section authority is not write-only.
+    /// stable/dynamic split on a real read path so the section authority is
+    /// not write-only.
     pub(crate) fn system_layer_summary(&self) -> String {
         format!(
-            "stable_prefix_chars={} dynamic_overlay_chars={} preset={}",
+            "stable_prefix_chars={} dynamic_overlay_chars={}",
             self.stable_system_prefix_text.chars().count(),
             self.dynamic_system_overlay_text.chars().count(),
-            self.preset_identity.as_deref().unwrap_or("-"),
         )
     }
 
@@ -838,11 +724,11 @@ impl PromptSurfaceSections {
         );
         push_drift(
             &mut changes,
-            PromptSurfaceDriftCategory::CloseAiPromptCacheKey,
-            "closeaiPromptCacheKey",
-            previous.closeai_prompt_cache_key != self.closeai_prompt_cache_key,
+            PromptSurfaceDriftCategory::OpenAiPromptCacheKey,
+            "openaiPromptCacheKey",
+            previous.openai_prompt_cache_key != self.openai_prompt_cache_key,
             SessionCacheSeverity::MediumChange,
-            "closeai prompt cache key changed",
+            "openai prompt cache key changed",
         );
 
         changes
@@ -883,12 +769,6 @@ impl PromptSurfaceSections {
                 PublicPromptSurfaceVolatilityKind::VolatileEnvField => {
                     format!("dynamic env field · {}", finding.detail)
                 }
-                PublicPromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
-                    finding.detail.clone()
-                }
-                PublicPromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
-                    format!("oversized capability projection · {}", finding.detail)
-                }
                 PublicPromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
                     format!("provider options affect surface · {}", finding.detail)
                 }
@@ -928,7 +808,7 @@ impl From<PromptSurfaceDriftCategory> for PublicPromptSurfaceDriftCategory {
             PromptSurfaceDriftCategory::ToolPolicy => Self::ToolPolicy,
             PromptSurfaceDriftCategory::OutputProjection => Self::OutputProjection,
             PromptSurfaceDriftCategory::IngressPolicy => Self::IngressPolicy,
-            PromptSurfaceDriftCategory::CloseAiPromptCacheKey => Self::CloseAiPromptCacheKey,
+            PromptSurfaceDriftCategory::OpenAiPromptCacheKey => Self::OpenAiPromptCacheKey,
         }
     }
 }
@@ -948,12 +828,6 @@ impl From<PromptSurfaceVolatilityKind> for PublicPromptSurfaceVolatilityKind {
     fn from(value: PromptSurfaceVolatilityKind) -> Self {
         match value {
             PromptSurfaceVolatilityKind::VolatileEnvField => Self::VolatileEnvField,
-            PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
-                Self::DynamicCatalogBeforeStableGovernance
-            }
-            PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
-                Self::OversizedCapabilityProjection
-            }
             PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
                 Self::ProviderOptionsAffectSurface
             }
@@ -994,55 +868,6 @@ fn stable_system_surface_projection(system_prompt: &str) -> String {
     lines.join("\n")
 }
 
-fn render_preset_extension_layers(extension: &PresetPromptExtension) -> PromptSurfaceSystemLayers {
-    let mut layers = PromptSurfaceSystemLayers::default();
-
-    let role_summary = extension.role_summary.trim();
-    if !role_summary.is_empty() {
-        layers
-            .stable_prefix_sections
-            .push(format!("## Preset Role Summary\n{role_summary}"));
-    }
-
-    for (title, body) in &extension.extra_sections {
-        let body = body.trim();
-        if body.is_empty() {
-            continue;
-        }
-        if is_dynamic_catalog_header(title) {
-            layers.dynamic_overlay_sections.push(body.to_string());
-        } else {
-            layers.stable_prefix_sections.push(body.to_string());
-        }
-    }
-
-    if let Some(tone_augment) = extension
-        .tone_augment
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        layers
-            .stable_prefix_sections
-            .push(format!("## Tone Augment\n{tone_augment}"));
-    }
-
-    // Keep large runtime capability catalogs late so the prompt prefix
-    // stays anchored by higher-stability preset governance text.
-    if let Some(capability_projection) = extension
-        .capability_projection
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        layers
-            .dynamic_overlay_sections
-            .push(format!("## Capability Projection\n{capability_projection}"));
-    }
-
-    layers
-}
-
 fn provider_option_hash(
     provider_options: &HashMap<String, serde_json::Value>,
     group: PromptSurfaceProviderOptionGroup,
@@ -1073,18 +898,47 @@ fn push_drift(
 mod tests {
     use super::*;
 
+    #[allow(clippy::too_many_arguments)]
+    fn test_surface_inputs(
+        session_id: impl Into<String>,
+        system_prompt: Option<String>,
+        env_context: Option<String>,
+        memory_prefetch: Option<MemoryRetrievalPacket>,
+        pinned_constraints: Vec<PinnedConstraint>,
+        few_shots: Vec<FewShotSurfaceItem>,
+        tools: Vec<ToolDefinition>,
+        tool_source_digests: Vec<ToolSurfaceSourceDigest>,
+        tool_catalog_by_name: BTreeMap<String, ToolCatalogMetadata>,
+        tool_catalog_mode: ToolCatalogMode,
+        tool_catalog_hash: String,
+        compiled_request: CompiledExecutionRequest,
+        provider_options: HashMap<String, serde_json::Value>,
+    ) -> PromptSurfaceInputs {
+        PromptSurfaceInputs::builder(session_id, compiled_request)
+            .set_base_system_prompt(system_prompt)
+            .set_environment_identity(env_context)
+            .set_memory_prefetch(memory_prefetch)
+            .set_pinned_constraints(pinned_constraints)
+            .set_few_shots(few_shots)
+            .set_tool_surface(
+                tools,
+                tool_source_digests,
+                tool_catalog_by_name,
+                tool_catalog_mode,
+                tool_catalog_hash,
+            )
+            .set_external_tool_execution_by_name(BTreeMap::new())
+            .set_provider_options(provider_options)
+    }
+
     // ── Smoke tests: verify structures construct and hold data ──────────
 
     #[test]
     fn surface_inputs_constructor_populates_all_fields() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+        let inputs = test_surface_inputs(
             "ses-1",
             Some("system header".to_string()),
             Some("env: linux".to_string()),
-            Some(PresetPromptExtension::new(
-                "sisyphus",
-                "delegation-first orchestrator",
-            )),
             None,
             vec![],
             vec![],
@@ -1100,69 +954,8 @@ mod tests {
         assert_eq!(inputs.session_id, "ses-1");
         assert_eq!(inputs.system_prompt.as_deref(), Some("system header"));
         assert_eq!(inputs.env_context.as_deref(), Some("env: linux"));
-        assert!(inputs.preset_extension.is_some());
-        assert_eq!(
-            inputs.preset_extension.as_ref().unwrap().preset_name,
-            "sisyphus"
-        );
         assert!(inputs.memory_prefetch.is_none());
         assert!(inputs.tools.is_empty());
-    }
-
-    #[test]
-    fn builder_setters_match_compat_constructor_shape() {
-        let via_compat = PromptSurfaceInputs::from_session_prompt_parts(
-            "ses-1",
-            Some("system header".to_string()),
-            Some("env: linux".to_string()),
-            Some(PresetPromptExtension::new(
-                "sisyphus",
-                "delegation-first orchestrator",
-            )),
-            None,
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            BTreeMap::new(),
-            ToolCatalogMode::FullSchema,
-            json_fingerprint(&serde_json::json!({})),
-            CompiledExecutionRequest::default(),
-            HashMap::from([("thinking".to_string(), serde_json::json!(true))]),
-        );
-
-        let via_builder =
-            PromptSurfaceInputs::builder("ses-1", CompiledExecutionRequest::default())
-                .set_base_system_prompt(Some("system header".to_string()))
-                .set_environment_identity(Some("env: linux".to_string()))
-                .set_preset_extension(Some(PresetPromptExtension::new(
-                    "sisyphus",
-                    "delegation-first orchestrator",
-                )))
-                .set_memory_prefetch(None)
-                .set_tool_surface(
-                    vec![],
-                    vec![],
-                    BTreeMap::new(),
-                    ToolCatalogMode::FullSchema,
-                    json_fingerprint(&serde_json::json!({})),
-                )
-                .set_provider_options(HashMap::from([(
-                    "thinking".to_string(),
-                    serde_json::json!(true),
-                )]));
-
-        assert_eq!(via_builder.session_id, via_compat.session_id);
-        assert_eq!(via_builder.system_prompt, via_compat.system_prompt);
-        assert_eq!(via_builder.env_context, via_compat.env_context);
-        assert_eq!(via_builder.preset_extension, via_compat.preset_extension);
-        assert_eq!(via_builder.memory_prefetch, via_compat.memory_prefetch);
-        assert_eq!(via_builder.tools.len(), via_compat.tools.len());
-        assert_eq!(
-            via_builder.tool_source_digests,
-            via_compat.tool_source_digests
-        );
-        assert_eq!(via_builder.provider_options, via_compat.provider_options);
     }
 
     #[test]
@@ -1198,38 +991,10 @@ mod tests {
     }
 
     #[test]
-    fn preset_extension_builds_with_sections_and_augments() {
-        let ext = PresetPromptExtension::new("atlas", "coordination orchestrator")
-            .with_section("Execution Charter", "Atlas Mode: delegate and verify.")
-            .with_section("Guardrails", "Never pretend delegated work was completed.")
-            .with_capability("Agents: explore, code-review, librarian, oracle.")
-            .with_tone_augment("Be concise. No flattery.");
-
-        assert_eq!(ext.preset_name, "atlas");
-        assert_eq!(ext.role_summary, "coordination orchestrator");
-        assert_eq!(ext.extra_sections.len(), 2);
-        assert_eq!(ext.extra_sections[0].0, "Execution Charter");
-        assert_eq!(ext.extra_sections[1].0, "Guardrails");
-        assert!(ext.capability_projection.is_some());
-        assert!(ext.tone_augment.is_some());
-    }
-
-    #[test]
-    fn preset_extension_supports_minimal_identity_only() {
-        let ext = PresetPromptExtension::new("hephaestus", "autonomous deep executor");
-
-        assert_eq!(ext.preset_name, "hephaestus");
-        assert!(ext.extra_sections.is_empty());
-        assert!(ext.capability_projection.is_none());
-        assert!(ext.tone_augment.is_none());
-    }
-
-    #[test]
     fn assemble_sections_projects_provider_policy_hashes() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+        let inputs = test_surface_inputs(
             "ses-1",
             Some("system".to_string()),
-            None,
             None,
             None,
             vec![],
@@ -1259,76 +1024,14 @@ mod tests {
     }
 
     #[test]
-    fn assemble_sections_merges_system_env_and_preset_extension() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
-            "ses-1",
-            Some("base header".to_string()),
-            Some("<env>\n  Working directory: /repo\n</env>".to_string()),
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_section("Identity", "<identity>Atlas</identity>")
-                    .with_capability("Agents: explore, review.")
-                    .with_tone_augment("Be concise. No flattery."),
-            ),
-            None,
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            BTreeMap::new(),
-            ToolCatalogMode::FullSchema,
-            json_fingerprint(&serde_json::json!({})),
-            CompiledExecutionRequest::default(),
-            HashMap::new(),
-        );
-
-        let sections = inputs.assemble_sections("projection".to_string(), None, None);
-
-        assert!(sections.system_text.contains("base header"));
-        assert!(sections.stable_system_prefix_text.contains("base header"));
-        assert!(sections.system_text.contains("## Environment Context"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("## Environment Context"));
-        assert!(sections.system_text.contains("Working directory: /repo"));
-        assert!(sections.system_text.contains("## Preset Role Summary"));
-        assert!(sections
-            .stable_system_prefix_text
-            .contains("## Preset Role Summary"));
-        assert!(sections.system_text.contains("coordination orchestrator"));
-        assert!(sections.system_text.contains("<identity>Atlas</identity>"));
-        assert!(sections.system_text.contains("## Capability Projection"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("## Capability Projection"));
-        assert!(sections.system_text.contains("Agents: explore, review."));
-        assert!(sections.system_text.contains("## Tone Augment"));
-        assert!(sections.system_text.contains("Be concise. No flattery."));
-        assert!(
-            sections.system_text.find("## Tone Augment").unwrap()
-                < sections
-                    .system_text
-                    .find("## Capability Projection")
-                    .unwrap()
-        );
-        assert!(!sections
-            .stable_system_prefix_text
-            .contains("## Capability Projection"));
-        assert!(!sections
-            .dynamic_system_overlay_text
-            .contains("## Tone Augment"));
-    }
-
-    #[test]
     fn environment_context_surface_stays_cache_friendly() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+        let inputs = test_surface_inputs(
             "ses-cache",
             Some("base header".to_string()),
             Some(
                 "You are powered by the model named gpt-5. The exact model ID is openai/gpt-5\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: /repo\n  Is directory a git repo: yes\n  Platform: linux\n</env>"
                     .to_string(),
             ),
-            None,
             None,
             vec![],
             vec![],
@@ -1355,17 +1058,12 @@ mod tests {
 
     #[test]
     fn stable_hash_depends_on_stable_prefix_not_dynamic_overlay_order() {
-        let first = PromptSurfaceInputs::from_session_prompt_parts(
+        let first = test_surface_inputs(
             "ses-a",
             Some("base header".to_string()),
             Some(
                 "<env>\n  Working directory: /repo\n  Current local time: 10:10:10 UTC\n</env>"
                     .to_string(),
-            ),
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_section("Execution Charter", "Always verify delegated work.")
-                    .with_capability("Agents: explore, review."),
             ),
             None,
             vec![],
@@ -1380,17 +1078,12 @@ mod tests {
         )
         .assemble_sections("projection".to_string(), None, None);
 
-        let second = PromptSurfaceInputs::from_session_prompt_parts(
+        let second = test_surface_inputs(
             "ses-a",
             Some("base header".to_string()),
             Some(
                 "<env>\n  Working directory: /repo\n  Current local time: 22:22:22 UTC\n</env>"
                     .to_string(),
-            ),
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_capability("Agents: explore, review, build.")
-                    .with_section("Execution Charter", "Always verify delegated work."),
             ),
             None,
             vec![],
@@ -1421,14 +1114,13 @@ mod tests {
 
     #[test]
     fn volatility_report_flags_dynamic_clock_lines() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+        let inputs = test_surface_inputs(
             "ses-clock",
             Some("base header".to_string()),
             Some(
                 "<env>\n  Working directory: /repo\n  Today's date: Tue Jun 10 2026\n  Current local time: 10:10:10 UTC\n</env>"
                     .to_string(),
             ),
-            None,
             None,
             vec![],
             vec![],
@@ -1449,44 +1141,11 @@ mod tests {
     }
 
     #[test]
-    fn volatility_report_flags_oversized_capability_projection() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
-            "ses-caps",
-            Some("base header".to_string()),
-            None,
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_capability("A".repeat(2_100)),
-            ),
-            None,
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            BTreeMap::new(),
-            ToolCatalogMode::FullSchema,
-            json_fingerprint(&serde_json::json!({})),
-            CompiledExecutionRequest::default(),
-            HashMap::new(),
-        );
-
-        let report = inputs.detect_volatility();
-        assert!(report.findings.iter().any(|finding| matches!(
-            finding.kind,
-            PromptSurfaceVolatilityKind::OversizedCapabilityProjection
-        )));
-    }
-
-    #[test]
     fn drift_explain_keeps_dynamic_overlay_out_of_stable_hash() {
-        let first = PromptSurfaceInputs::from_session_prompt_parts(
+        let first = test_surface_inputs(
             "ses-1",
             Some("base header".to_string()),
             Some("<env>\n  Working directory: /repo-a\n</env>".to_string()),
-            Some(PresetPromptExtension::new(
-                "atlas",
-                "coordination orchestrator",
-            )),
             None,
             vec![],
             vec![],
@@ -1500,14 +1159,10 @@ mod tests {
         )
         .assemble_sections("projection".to_string(), None, None);
 
-        let second = PromptSurfaceInputs::from_session_prompt_parts(
+        let second = test_surface_inputs(
             "ses-1",
             Some("base header".to_string()),
             Some("<env>\n  Working directory: /repo-b\n</env>".to_string()),
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_capability("Agents: explore, review."),
-            ),
             None,
             vec![],
             vec![],
@@ -1534,16 +1189,12 @@ mod tests {
             "dynamic overlay should still expose the changed env/catalog surface"
         );
 
-        let volatility = PromptSurfaceInputs::from_session_prompt_parts(
+        let volatility = test_surface_inputs(
             "ses-1",
             Some("base header".to_string()),
             Some(
                 "<env>\n  Working directory: /repo-b\n  Current local time: 10:10:10 UTC\n</env>"
                     .to_string(),
-            ),
-            Some(
-                PresetPromptExtension::new("atlas", "coordination orchestrator")
-                    .with_capability("Agents: explore, review."),
             ),
             None,
             vec![],
@@ -1569,14 +1220,13 @@ mod tests {
 
     #[test]
     fn evidence_summary_can_surface_volatility_without_hash_drift() {
-        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+        let inputs = test_surface_inputs(
             "ses-1",
             Some("base header".to_string()),
             Some(
                 "<env>\n  Working directory: /repo\n  Current local time: 10:10:10 UTC\n</env>"
                     .to_string(),
             ),
-            None,
             None,
             vec![],
             vec![],

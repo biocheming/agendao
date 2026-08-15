@@ -66,7 +66,7 @@ impl PermissionMatcherKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionGrantDescriptor {
     pub permission_class: Option<PermissionClass>,
     #[serde(default)]
@@ -106,6 +106,19 @@ pub struct PermissionInfo {
     pub message: String,
     pub metadata: HashMap<String, serde_json::Value>,
     pub time: TimeInfo,
+}
+
+impl From<&PermissionInfo> for PermissionGrantDescriptor {
+    fn from(info: &PermissionInfo) -> Self {
+        Self {
+            permission_class: info.permission_class,
+            scope_key: info.scope_key.clone(),
+            matcher_kind: info.matcher_kind,
+            matcher_key: info.matcher_key.clone(),
+            origin_tool: info.origin_tool.clone(),
+            risk_tags: info.risk_tags.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,32 +203,6 @@ impl PermissionEngine {
         permission_class
             .map(|class| class.as_str().to_string())
             .unwrap_or_else(|| permission_type.to_string())
-    }
-
-    fn descriptor_from_parts(
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
-    ) -> PermissionGrantDescriptor {
-        PermissionGrantDescriptor {
-            permission_class,
-            scope_key: scope_key
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string),
-            matcher_kind,
-            matcher_key: matcher_key
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string),
-            origin_tool: origin_tool
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string),
-            risk_tags: Vec::new(),
-        }
     }
 
     fn serialize_key(key: &PermissionGrantKey) -> String {
@@ -325,25 +312,6 @@ impl PermissionEngine {
         keys
     }
 
-    fn to_keys(
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
-        pattern: Option<&Pattern>,
-        permission_type: &str,
-    ) -> Vec<String> {
-        let descriptor = Self::descriptor_from_parts(
-            permission_class,
-            scope_key,
-            matcher_kind,
-            matcher_key,
-            origin_tool,
-        );
-        Self::descriptor_to_keys(&descriptor, pattern, permission_type)
-    }
-
     fn patterns(pattern: Option<&Pattern>) -> Vec<String> {
         match pattern {
             None => Vec::new(),
@@ -361,74 +329,38 @@ impl PermissionEngine {
     pub fn is_approved(
         &self,
         session_id: &str,
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
+        descriptor: &PermissionGrantDescriptor,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_session = self.approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(
-            permission_class,
-            scope_key,
-            matcher_kind,
-            matcher_key,
-            origin_tool,
-            pattern,
-            permission_type,
-        );
+        let keys = Self::descriptor_to_keys(descriptor, pattern, permission_type);
         Self::covered(&keys, approved_for_session)
     }
 
     pub fn is_turn_approved(
         &self,
         session_id: &str,
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
+        descriptor: &PermissionGrantDescriptor,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_turn = self.turn_approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(
-            permission_class,
-            scope_key,
-            matcher_kind,
-            matcher_key,
-            origin_tool,
-            pattern,
-            permission_type,
-        );
+        let keys = Self::descriptor_to_keys(descriptor, pattern, permission_type);
         Self::covered(&keys, approved_for_turn)
     }
 
     pub fn grant(
         &mut self,
         session_id: &str,
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
+        descriptor: &PermissionGrantDescriptor,
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
         let approved_session = self.approved.entry(session_id.to_string()).or_default();
-        for key in Self::to_keys(
-            permission_class,
-            scope_key,
-            matcher_kind,
-            matcher_key,
-            origin_tool,
-            pattern,
-            permission_type,
-        ) {
+        for key in Self::descriptor_to_keys(descriptor, pattern, permission_type) {
             approved_session.insert(key, true);
         }
     }
@@ -436,11 +368,7 @@ impl PermissionEngine {
     pub fn grant_turn(
         &mut self,
         session_id: &str,
-        permission_class: Option<PermissionClass>,
-        scope_key: Option<&str>,
-        matcher_kind: Option<PermissionMatcherKind>,
-        matcher_key: Option<&str>,
-        origin_tool: Option<&str>,
+        descriptor: &PermissionGrantDescriptor,
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
@@ -448,15 +376,7 @@ impl PermissionEngine {
             .turn_approved
             .entry(session_id.to_string())
             .or_default();
-        for key in Self::to_keys(
-            permission_class,
-            scope_key,
-            matcher_kind,
-            matcher_key,
-            origin_tool,
-            pattern,
-            permission_type,
-        ) {
+        for key in Self::descriptor_to_keys(descriptor, pattern, permission_type) {
             approved_turn.insert(key, true);
         }
     }
@@ -469,11 +389,7 @@ impl PermissionEngine {
         };
         self.grant(
             session_id,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &PermissionGrantDescriptor::default(),
             permission_type,
             pattern.as_ref(),
         );
@@ -536,13 +452,11 @@ impl PermissionEngine {
             return Ok(Some(AskOutcome::Granted));
         }
 
+        let descriptor = PermissionGrantDescriptor::from(info);
+
         if self.is_approved(
             &info.session_id,
-            info.permission_class,
-            info.scope_key.as_deref(),
-            info.matcher_kind,
-            info.matcher_key.as_deref(),
-            info.origin_tool.as_deref(),
+            &descriptor,
             info.pattern.as_ref(),
             &info.permission_type,
         ) {
@@ -551,11 +465,7 @@ impl PermissionEngine {
 
         if self.is_turn_approved(
             &info.session_id,
-            info.permission_class,
-            info.scope_key.as_deref(),
-            info.matcher_kind,
-            info.matcher_key.as_deref(),
-            info.origin_tool.as_deref(),
+            &descriptor,
             info.pattern.as_ref(),
             &info.permission_type,
         ) {
@@ -584,23 +494,16 @@ impl PermissionEngine {
     ) -> Result<AskOutcome, PermissionError> {
         let session_id = info.session_id.clone();
         let permission_id = info.id.clone();
+        let descriptor = PermissionGrantDescriptor::from(&info);
 
         if self.is_approved(
             &session_id,
-            info.permission_class,
-            info.scope_key.as_deref(),
-            info.matcher_kind,
-            info.matcher_key.as_deref(),
-            info.origin_tool.as_deref(),
+            &descriptor,
             info.pattern.as_ref(),
             &info.permission_type,
         ) || self.is_turn_approved(
             &session_id,
-            info.permission_class,
-            info.scope_key.as_deref(),
-            info.matcher_kind,
-            info.matcher_key.as_deref(),
-            info.origin_tool.as_deref(),
+            &descriptor,
             info.pattern.as_ref(),
             &info.permission_type,
         ) {
@@ -611,16 +514,16 @@ impl PermissionEngine {
             "allow" => return Ok(AskOutcome::Granted),
             "deny" => {
                 return Err(PermissionError::Rejected {
-                    session_id: session_id.clone(),
-                    permission_id: permission_id.clone(),
-                    tool_call_id: info.call_id.clone(),
+                    session_id,
+                    permission_id,
+                    tool_call_id: info.call_id,
                 });
             }
             _ => {}
         }
 
         self.pending
-            .entry(session_id.clone())
+            .entry(session_id)
             .or_default()
             .insert(permission_id, PendingPermission { info });
 
@@ -651,25 +554,19 @@ impl PermissionEngine {
 
         match response {
             Response::Always => {
+                let descriptor = PermissionGrantDescriptor::from(&match_item.info);
                 self.grant(
                     session_id,
-                    match_item.info.permission_class,
-                    match_item.info.scope_key.as_deref(),
-                    match_item.info.matcher_kind,
-                    match_item.info.matcher_key.as_deref(),
-                    match_item.info.origin_tool.as_deref(),
+                    &descriptor,
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
             }
             Response::Turn => {
+                let descriptor = PermissionGrantDescriptor::from(&match_item.info);
                 self.grant_turn(
                     session_id,
-                    match_item.info.permission_class,
-                    match_item.info.scope_key.as_deref(),
-                    match_item.info.matcher_kind,
-                    match_item.info.matcher_key.as_deref(),
-                    match_item.info.origin_tool.as_deref(),
+                    &descriptor,
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
@@ -853,29 +750,21 @@ mod tests {
             .respond("ses_turn", "per_turn", Response::Turn)
             .unwrap();
 
-        assert!(engine.is_turn_approved(
-            "ses_turn",
-            Some(PermissionClass::DangerousExec),
-            Some("cmd:cargo *"),
-            Some(PermissionMatcherKind::StructuredFamily),
-            Some("cmd:cargo *"),
-            Some("bash"),
-            Some(&Pattern::Single("cargo test".to_string())),
-            "bash"
-        ));
+        let descriptor = PermissionGrantDescriptor {
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:cargo *".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:cargo *".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: Vec::new(),
+        };
+        let pattern = Pattern::Single("cargo test".to_string());
+
+        assert!(engine.is_turn_approved("ses_turn", &descriptor, Some(&pattern), "bash"));
 
         engine.clear_turn("ses_turn");
 
-        assert!(!engine.is_turn_approved(
-            "ses_turn",
-            Some(PermissionClass::DangerousExec),
-            Some("cmd:cargo *"),
-            Some(PermissionMatcherKind::StructuredFamily),
-            Some("cmd:cargo *"),
-            Some("bash"),
-            Some(&Pattern::Single("cargo test".to_string())),
-            "bash"
-        ));
+        assert!(!engine.is_turn_approved("ses_turn", &descriptor, Some(&pattern), "bash"));
     }
 
     #[tokio::test]
@@ -1119,16 +1008,8 @@ mod tests {
 
         // While the hook runs without the engine lock, a concurrent respond
         // grants the same permission scope.
-        engine.grant(
-            "ses_race",
-            Some(PermissionClass::DangerousExec),
-            Some("cmd:ls"),
-            Some(PermissionMatcherKind::StructuredFamily),
-            Some("cmd:ls"),
-            Some("bash"),
-            "bash",
-            info.pattern.as_ref(),
-        );
+        let descriptor = PermissionGrantDescriptor::from(&info);
+        engine.grant("ses_race", &descriptor, "bash", info.pattern.as_ref());
 
         // The commit phase must observe the grant instead of registering a
         // duplicate pending entry.

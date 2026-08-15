@@ -1,38 +1,4 @@
 use super::*;
-use serde::Deserialize;
-use std::collections::HashMap;
-
-pub fn deserialize_plugin_map<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<String, PluginConfig>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum PluginField {
-        Map(HashMap<String, PluginConfig>),
-        List(Vec<String>),
-    }
-
-    match PluginField::deserialize(deserializer)? {
-        PluginField::Map(map) => Ok(map),
-        PluginField::List(list) => {
-            let mut map = HashMap::new();
-            for spec in list {
-                let (key, config) = legacy_spec_to_plugin_config(&spec);
-                map.entry(key).or_insert(config);
-            }
-            Ok(map)
-        }
-    }
-}
-
-/// Convert a legacy string spec (e.g. "oh-my-opencode@latest") to a PluginConfig.
-fn legacy_spec_to_plugin_config(spec: &str) -> (String, PluginConfig) {
-    PluginConfig::from_legacy_spec(spec)
-}
-
 /// Parse "pkg@version" into (name, version). Handles scoped packages like "@scope/pkg@1.0".
 fn parse_npm_spec(spec: &str) -> (&str, &str) {
     if let Some(stripped) = spec.strip_prefix('@') {
@@ -85,15 +51,6 @@ impl PluginConfig {
         )
     }
 
-    /// Convert a legacy string spec to a PluginConfig entry.
-    pub fn from_legacy_spec(spec: &str) -> (String, Self) {
-        if spec.starts_with("file://") {
-            Self::from_file_spec(spec)
-        } else {
-            Self::from_npm_spec(spec)
-        }
-    }
-
     /// Create a dylib-type plugin from a shared library path.
     pub fn from_dylib_path(path: &str) -> (String, Self) {
         let name = std::path::Path::new(path)
@@ -116,9 +73,8 @@ impl PluginConfig {
 
     /// Convert this config back to a subprocess-loader-compatible spec string.
     ///
-    /// Only the current subprocess-backed runtime paths (`npm` and `file`) map to
-    /// loader specs. Types such as `pip`, `cargo`, and `dylib` are accepted by the
-    /// schema but do not flow through this loader path today.
+    /// Only the subprocess-backed runtime paths (`npm` and `file`) map to loader
+    /// specs. Native `dylib` plugins use `dylib_path` instead.
     pub fn to_loader_spec(&self, name: &str) -> Option<String> {
         match self.plugin_type.as_str() {
             "npm" => {
@@ -157,6 +113,7 @@ pub enum McpServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct McpServer {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub server_type: Option<String>,
@@ -186,40 +143,57 @@ pub struct McpServer {
     /// For remote: OAuth config (or false to disable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthConfig>,
-
-    // Legacy fields kept for backward compatibility
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authorization_url: Option<String>,
 }
 
 /// OAuth configuration for remote MCP servers.
 /// Can be a full config object or `false` to disable OAuth auto-detection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum McpOAuthConfig {
-    Disabled(bool),
+    Disabled,
     Config(McpOAuth),
 }
 
+impl Serialize for McpOAuthConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Disabled => serializer.serialize_bool(false),
+            Self::Config(config) => config.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for McpOAuthConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Bool(false) => Ok(Self::Disabled),
+            serde_json::Value::Bool(true) => Err(serde::de::Error::custom(
+                "MCP oauth accepts only false or a configuration object",
+            )),
+            serde_json::Value::Object(_) => serde_json::from_value(value)
+                .map(Self::Config)
+                .map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom(
+                "MCP oauth accepts only false or a configuration object",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct McpOAuth {
-    #[serde(
-        rename = "clientId",
-        alias = "client_id",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(
-        rename = "clientSecret",
-        alias = "client_secret",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "authorizationUrl", skip_serializing_if = "Option::is_none")]
+    pub authorization_url: Option<String>,
+    #[serde(rename = "clientSecret", skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -233,6 +207,7 @@ pub enum FormatterConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct FormatterEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
@@ -252,6 +227,7 @@ pub enum LspConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LspServerConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
@@ -300,6 +276,7 @@ pub enum PermissionAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EnterpriseConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -308,6 +285,7 @@ pub struct EnterpriseConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CompactionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto: Option<bool>,
@@ -318,12 +296,13 @@ pub struct CompactionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ExperimentalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disable_paste_summary: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_tool: Option<bool>,
-    #[serde(alias = "openTelemetry", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub open_telemetry: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub primary_tools: Vec<String>,

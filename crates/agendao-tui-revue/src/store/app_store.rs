@@ -5,13 +5,15 @@
 
 use std::collections::HashSet;
 
-use revue::prelude::*;
 use crate::store::types::*;
+use revue::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Route {
     Home,
-    Session { session_id: String },
+    Session {
+        session_id: String,
+    },
     /// Settings 全屏页面(三栏:分类 | Providers | Details)。
     /// 进入由 `UiActionId::OpenSettings`(⚙ click / `/settings`)唯一触发;
     /// Esc → `navigate_home()` 收口。
@@ -188,10 +190,18 @@ impl AppStore {
         }
     }
 
-    pub fn navigate(&self, route: Route) { self.route.set(route); }
-    pub fn navigate_home(&self) { self.navigate(Route::Home); }
-    pub fn navigate_settings(&self) { self.navigate(Route::Settings); }
-    pub fn request_exit(&self) { self.exiting.set(true); }
+    pub fn navigate(&self, route: Route) {
+        self.route.set(route);
+    }
+    pub fn navigate_home(&self) {
+        self.navigate(Route::Home);
+    }
+    pub fn navigate_settings(&self) {
+        self.navigate(Route::Settings);
+    }
+    pub fn request_exit(&self) {
+        self.exiting.set(true);
+    }
 
     pub fn push_toast(&self, text: &str, variant: ToastMsgVariant) {
         // Auto-expire toasts after 4 seconds of wall clock so the prompt
@@ -206,7 +216,13 @@ impl AppStore {
         let expires_at = now_ms.saturating_add(4_000);
         let id = self.toast_counter.get().saturating_add(1);
         self.toast_counter.set(id);
-        let msg = ToastMsg { id, text: text.into(), variant, expires_at, created_at: now_ms };
+        let msg = ToastMsg {
+            id,
+            text: text.into(),
+            variant,
+            expires_at,
+            created_at: now_ms,
+        };
         self.toasts.update(|t| t.push(msg.clone()));
         // 通知中心留档：cap 50 丢最旧（水律·写入即承诺回收）。
         self.toast_history.update(|h| {
@@ -290,7 +306,9 @@ mod tests {
     #[test]
     fn navigate_and_exit() {
         let s = AppStore::new();
-        s.navigate(Route::Session { session_id: "s1".into() });
+        s.navigate(Route::Session {
+            session_id: "s1".into(),
+        });
         assert!(matches!(s.route.get(), Route::Session { .. }));
         s.request_exit();
         assert!(s.exiting.get());

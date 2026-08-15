@@ -96,26 +96,18 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn resolved_voice_config_prefers_multimodal_over_legacy_voice() {
+    fn resolved_voice_config_uses_multimodal_voice() {
         let config = Config {
-            voice: Some(VoiceConfig {
-                duration_seconds: Some(12),
-                attach_audio: Some(true),
-                mime: Some("audio/wav".to_string()),
-                language: Some("zh".to_string()),
-                record: Some(VoiceCommandConfig {
-                    command: vec!["ffmpeg".to_string(), "{file}".to_string()],
-                    env: HashMap::new(),
-                }),
-                transcribe: None,
-            }),
             multimodal: Some(MultimodalConfig {
                 voice: Some(VoiceConfig {
                     duration_seconds: Some(30),
                     attach_audio: Some(false),
-                    mime: None,
+                    mime: Some("audio/ogg".to_string()),
                     language: Some("en".to_string()),
-                    record: None,
+                    record: Some(VoiceCommandConfig {
+                        command: vec!["ffmpeg".to_string(), "{file}".to_string()],
+                        env: HashMap::new(),
+                    }),
                     transcribe: Some(VoiceCommandConfig {
                         command: vec!["whisper".to_string(), "{file}".to_string()],
                         env: HashMap::new(),
@@ -129,6 +121,7 @@ mod tests {
         let resolved = ResolvedMultimodalConfig::from_config(&config);
         assert_eq!(resolved.voice.duration_seconds, 30);
         assert!(!resolved.voice.attach_audio);
+        assert_eq!(resolved.voice.mime, "audio/ogg");
         assert_eq!(resolved.voice.language.as_deref(), Some("en"));
         assert_eq!(
             resolved

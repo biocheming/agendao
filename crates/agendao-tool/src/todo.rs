@@ -8,19 +8,22 @@ pub struct TodoReadTool;
 pub struct TodoWriteTool;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TodoReadInput {
-    #[serde(default, alias = "sessionId")]
+    #[serde(default)]
     session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TodoWriteInput {
     todos: Vec<TodoWriteItem>,
-    #[serde(alias = "sessionId")]
+    #[serde(default)]
     session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TodoWriteItem {
     id: Option<String>,
     content: String,

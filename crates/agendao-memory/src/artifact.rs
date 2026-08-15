@@ -3,15 +3,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use agendao_storage::{MemoryRepository, MemoryRepositoryFilter};
-use agendao_types::{
-    MemoryArtifactBundle, MemoryArtifactImportEnvelope, MemoryArtifactLegacyPayload, MemoryRecord,
-};
-
-pub trait MemoryArtifactLegacyAdapter {
-    fn legacy_format(&self) -> &'static str;
-
-    fn import_records(&self, payload: &MemoryArtifactLegacyPayload) -> Result<Vec<MemoryRecord>>;
-}
+use agendao_types::{MemoryArtifactBundle, MemoryRecord};
 
 pub async fn export_memory_artifact_bundle(
     memory_repo: &MemoryRepository,
@@ -30,17 +22,9 @@ pub async fn export_memory_artifact_bundle(
 
 pub async fn import_memory_artifact_bundle(
     memory_repo: &MemoryRepository,
-    payload: MemoryArtifactImportEnvelope,
+    bundle: MemoryArtifactBundle,
 ) -> Result<usize> {
-    import_memory_artifact_bundle_with_legacy_adapter(memory_repo, payload, None).await
-}
-
-pub async fn import_memory_artifact_bundle_with_legacy_adapter(
-    memory_repo: &MemoryRepository,
-    payload: MemoryArtifactImportEnvelope,
-    legacy_adapter: Option<&dyn MemoryArtifactLegacyAdapter>,
-) -> Result<usize> {
-    let records = resolve_records_from_artifact(payload, legacy_adapter)?;
+    let records = bundle.records;
     validate_memory_records(&records)?;
 
     for record in &records {
@@ -48,28 +32,6 @@ pub async fn import_memory_artifact_bundle_with_legacy_adapter(
     }
 
     Ok(records.len())
-}
-
-fn resolve_records_from_artifact(
-    payload: MemoryArtifactImportEnvelope,
-    legacy_adapter: Option<&dyn MemoryArtifactLegacyAdapter>,
-) -> Result<Vec<MemoryRecord>> {
-    match payload {
-        MemoryArtifactImportEnvelope::Bundle(bundle) => Ok(bundle.records),
-        MemoryArtifactImportEnvelope::Legacy(legacy) => match legacy_adapter {
-            Some(adapter) if adapter.legacy_format() == legacy.legacy_format => {
-                adapter.import_records(&legacy)
-            }
-            _ => unsupported_legacy_format(&legacy.legacy_format),
-        },
-    }
-}
-
-fn unsupported_legacy_format(format: &str) -> Result<Vec<MemoryRecord>> {
-    anyhow::bail!(
-        "Unsupported legacy memory artifact format: {} (explicit legacy adapter required)",
-        format
-    );
 }
 
 fn validate_memory_records(records: &[MemoryRecord]) -> Result<()> {
@@ -84,52 +46,12 @@ fn validate_memory_records(records: &[MemoryRecord]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        export_memory_artifact_bundle, import_memory_artifact_bundle,
-        import_memory_artifact_bundle_with_legacy_adapter, MemoryArtifactLegacyAdapter,
-    };
+    use super::{export_memory_artifact_bundle, import_memory_artifact_bundle};
     use agendao_storage::{Database, MemoryRepository};
     use agendao_types::{
-        MemoryArtifactBundle, MemoryArtifactImportEnvelope, MemoryArtifactLegacyPayload,
-        MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus,
-        MemoryValidationStatus,
+        MemoryArtifactBundle, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
+        MemoryScope, MemoryStatus, MemoryValidationStatus,
     };
-    use anyhow::Result;
-
-    struct AlphaLegacyAdapter;
-
-    impl MemoryArtifactLegacyAdapter for AlphaLegacyAdapter {
-        fn legacy_format(&self) -> &'static str {
-            "memory-alpha"
-        }
-
-        fn import_records(
-            &self,
-            payload: &MemoryArtifactLegacyPayload,
-        ) -> Result<Vec<MemoryRecord>> {
-            #[derive(serde::Deserialize)]
-            struct LegacyAlphaRecord {
-                id: String,
-                updated_at: i64,
-            }
-
-            #[derive(serde::Deserialize)]
-            struct LegacyAlphaPayload {
-                records: Vec<LegacyAlphaRecord>,
-            }
-
-            let raw = payload
-                .payload
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("legacy payload body missing"))?;
-            let parsed: LegacyAlphaPayload = serde_json::from_value(raw)?;
-            Ok(parsed
-                .records
-                .into_iter()
-                .map(|record| sample_record(&record.id, record.updated_at))
-                .collect())
-        }
-    }
 
     fn sample_record(id: &str, updated_at: i64) -> MemoryRecord {
         MemoryRecord {
@@ -208,10 +130,7 @@ mod tests {
         let db = Database::in_memory().await.expect("db");
         let repo = MemoryRepository::new(db.pool().clone());
         let record = sample_record("mem_1", 123);
-        let envelope = MemoryArtifactImportEnvelope::Bundle(MemoryArtifactBundle::new(
-            999,
-            vec![record.clone()],
-        ));
+        let envelope = MemoryArtifactBundle::new(999, vec![record.clone()]);
 
         let imported = import_memory_artifact_bundle(&repo, envelope)
             .await
@@ -249,7 +168,7 @@ mod tests {
             .await
             .expect("export should succeed");
         let payload = serde_json::to_string(&exported).expect("serialize");
-        let parsed: MemoryArtifactImportEnvelope =
+        let parsed: MemoryArtifactBundle =
             serde_json::from_str(&payload).expect("parse should succeed");
 
         let target_db = Database::in_memory().await.expect("db");
@@ -271,62 +190,11 @@ mod tests {
         let repo = MemoryRepository::new(db.pool().clone());
         let first = sample_record("mem_dup", 100);
         let second = sample_record("mem_dup", 200);
-        let envelope = MemoryArtifactImportEnvelope::Bundle(MemoryArtifactBundle::new(
-            999,
-            vec![first, second],
-        ));
+        let envelope = MemoryArtifactBundle::new(999, vec![first, second]);
 
         let error = import_memory_artifact_bundle(&repo, envelope)
             .await
             .expect_err("duplicate ids should fail");
         assert!(error.to_string().contains("Duplicate memory record id"));
-    }
-
-    #[tokio::test]
-    async fn import_memory_bundle_rejects_legacy_payload_without_explicit_adapter() {
-        let db = Database::in_memory().await.expect("db");
-        let repo = MemoryRepository::new(db.pool().clone());
-        let envelope =
-            MemoryArtifactImportEnvelope::Legacy(agendao_types::MemoryArtifactLegacyPayload {
-                legacy_format: "memory-alpha".to_string(),
-                payload: Some(serde_json::json!({"records": []})),
-            });
-
-        let error = import_memory_artifact_bundle(&repo, envelope)
-            .await
-            .expect_err("legacy payload should fail closed");
-        assert!(error
-            .to_string()
-            .contains("Unsupported legacy memory artifact format: memory-alpha"));
-    }
-
-    #[tokio::test]
-    async fn import_memory_bundle_accepts_matching_explicit_legacy_adapter() {
-        let db = Database::in_memory().await.expect("db");
-        let repo = MemoryRepository::new(db.pool().clone());
-        let envelope =
-            MemoryArtifactImportEnvelope::Legacy(agendao_types::MemoryArtifactLegacyPayload {
-                legacy_format: "memory-alpha".to_string(),
-                payload: Some(serde_json::json!({
-                    "records": [{"id": "mem_legacy", "updated_at": 321}]
-                })),
-            });
-
-        let imported = import_memory_artifact_bundle_with_legacy_adapter(
-            &repo,
-            envelope,
-            Some(&AlphaLegacyAdapter),
-        )
-        .await
-        .expect("legacy adapter should import");
-        assert_eq!(imported, 1);
-
-        let stored = repo
-            .get_record("mem_legacy")
-            .await
-            .expect("query should succeed")
-            .expect("record should exist");
-        assert_eq!(stored.id.0, "mem_legacy");
-        assert_eq!(stored.updated_at, 321);
     }
 }

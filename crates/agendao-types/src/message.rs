@@ -56,42 +56,11 @@ pub struct FilePart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentPart {
-    pub id: String,
-    pub session_id: String,
-    pub message_id: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<AgentSource>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSource {
-    pub value: String,
-    pub start: i32,
-    pub end: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionPart {
     pub id: String,
     pub session_id: String,
     pub message_id: String,
     pub auto: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubtaskPart {
-    pub id: String,
-    pub session_id: String,
-    pub message_id: String,
-    pub prompt: String,
-    pub description: String,
-    pub agent: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,15 +254,6 @@ pub enum PromptPart {
         #[serde(skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
     },
-    Agent {
-        name: String,
-    },
-    Subtask {
-        prompt: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        agent: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -378,15 +338,6 @@ pub enum PartType {
         old_string: String,
         new_string: String,
         filepath: String,
-    },
-    Agent {
-        name: String,
-        status: String,
-    },
-    Subtask {
-        id: String,
-        description: String,
-        status: String,
     },
     Retry {
         count: u32,
@@ -566,31 +517,6 @@ impl SessionMessage {
         });
     }
 
-    pub fn add_agent(&mut self, name: impl Into<String>) {
-        self.parts.push(MessagePart {
-            id: format!("prt_{}", uuid::Uuid::new_v4()),
-            part_type: PartType::Agent {
-                name: name.into(),
-                status: "pending".to_string(),
-            },
-            created_at: Utc::now(),
-            message_id: None,
-        });
-    }
-
-    pub fn add_subtask(&mut self, id: impl Into<String>, description: impl Into<String>) {
-        self.parts.push(MessagePart {
-            id: format!("prt_{}", uuid::Uuid::new_v4()),
-            part_type: PartType::Subtask {
-                id: id.into(),
-                description: description.into(),
-                status: "pending".to_string(),
-            },
-            created_at: Utc::now(),
-            message_id: None,
-        });
-    }
-
     pub fn get_text(&self) -> String {
         self.parts
             .iter()
@@ -668,7 +594,6 @@ mod tests {
             ),
             (LiveMessagePartKind::ToolCall, "tool_call"),
             (LiveMessagePartKind::ToolResult, "tool_result"),
-            (LiveMessagePartKind::SchedulerStage, "scheduler_stage"),
         ];
         for (variant, wire) in variants {
             let json = serde_json::to_string(&variant).expect("serialize");
@@ -701,7 +626,6 @@ mod tests {
             part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantText,
             phase: LivePartPhase::Snapshot,
-            legacy_block_id: Some("block-1".to_string()),
         };
         let json = serde_json::to_string(&identity).expect("serialize");
         let back: LiveMessagePartIdentity = serde_json::from_str(&json).expect("deserialize");
@@ -709,19 +633,17 @@ mod tests {
     }
 
     #[test]
-    fn live_message_part_identity_without_legacy_block_id() {
+    fn live_message_part_identity_uses_canonical_tool_key() {
         let identity = LiveMessagePartIdentity {
             message_id: "msg-2".to_string(),
             part_key: tool_call_part_key("call-1"),
             part_kind: LiveMessagePartKind::ToolCall,
             phase: LivePartPhase::Start,
-            legacy_block_id: None,
         };
         let json = serde_json::to_string(&identity).expect("serialize");
-        assert!(!json.contains("legacy_block_id"));
         let back: LiveMessagePartIdentity = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, identity);
-        assert!(back.legacy_block_id.is_none());
+        assert_eq!(tool_id_from_part_key(&back.part_key), Some("call-1"));
     }
 
     #[test]
@@ -731,14 +653,12 @@ mod tests {
             part_key: ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantReasoning,
             phase: LivePartPhase::Append,
-            legacy_block_id: None,
         };
         let value = serde_json::to_value(&identity).expect("serialize");
         assert_eq!(value["message_id"], "msg-1");
         assert_eq!(value["part_key"], ASSISTANT_REASONING_MAIN_PART_KEY);
         assert_eq!(value["part_kind"], "assistant_reasoning");
         assert_eq!(value["phase"], "append");
-        assert!(value.get("legacy_block_id").is_none());
     }
 }
 
@@ -752,7 +672,6 @@ pub enum LiveMessagePartKind {
     AssistantReasoning,
     ToolCall,
     ToolResult,
-    SchedulerStage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -798,8 +717,6 @@ pub struct LiveMessagePartIdentity {
     pub part_key: String,
     pub part_kind: LiveMessagePartKind,
     pub phase: LivePartPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_block_id: Option<String>,
 }
 
 pub const ASSISTANT_TEXT_PART_KEY_PREFIX: &str = "text/";
@@ -808,7 +725,6 @@ pub const ASSISTANT_TEXT_MAIN_PART_KEY: &str = "text/main";
 pub const ASSISTANT_REASONING_MAIN_PART_KEY: &str = "reasoning/main";
 pub const TOOL_CALL_PART_KEY_PREFIX: &str = "tool_call/";
 pub const TOOL_RESULT_PART_KEY_PREFIX: &str = "tool_result/";
-pub const SCHEDULER_STAGE_PART_KEY_PREFIX: &str = "scheduler/";
 
 pub fn assistant_text_part_key(segment: &str) -> String {
     format!("{ASSISTANT_TEXT_PART_KEY_PREFIX}{segment}")
@@ -824,10 +740,6 @@ pub fn tool_call_part_key(tool_call_id: &str) -> String {
 
 pub fn tool_result_part_key(tool_call_id: &str) -> String {
     format!("{TOOL_RESULT_PART_KEY_PREFIX}{tool_call_id}")
-}
-
-pub fn scheduler_stage_part_key(stage_id: &str) -> String {
-    format!("{SCHEDULER_STAGE_PART_KEY_PREFIX}{stage_id}")
 }
 
 pub fn live_slot_key(message_id: &str, part_key: &str) -> String {

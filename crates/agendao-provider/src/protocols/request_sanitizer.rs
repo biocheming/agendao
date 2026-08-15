@@ -14,7 +14,7 @@ pub struct SanitizerOptions {
     pub skip_synthetic_repair: bool,
 }
 
-/// Sanitize messages for protocol transport (backward-compatible signature).
+/// Sanitize a borrowed message slice for protocol transport.
 pub fn sanitize_messages_for_protocol(
     messages: &[Message],
     options: SanitizerOptions,
@@ -55,12 +55,10 @@ pub fn sanitize_messages_for_protocol_owned_with_actions(
 ///
 /// Mirrors `sanitize_messages_for_protocol_with_actions` branch-for-branch;
 /// any doubt returns `false` and callers fall back to the cloning path, so a
-/// false negative is impossible and a false positive only costs the legacy
-/// clone.
+/// false negative is impossible and a false positive only costs a cloned pass.
 fn sanitize_is_noop(messages: &[Message], options: SanitizerOptions) -> bool {
     let mut pending: Vec<&str> = Vec::new();
-    let mut seen_tool_use_ids: std::collections::HashSet<&str> =
-        std::collections::HashSet::new();
+    let mut seen_tool_use_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     for message in messages {
         match message.role {
@@ -1173,7 +1171,7 @@ mod tests {
     }
 
     /// The owned fast path must produce byte-identical output and identical
-    /// actions to the legacy cloning path when repairs ARE needed.
+    /// actions to the borrowed cloning path when repairs ARE needed.
     #[test]
     fn sanitize_owned_matches_borrowed_path_on_dirty_input() {
         let messages = vec![
@@ -1219,8 +1217,7 @@ mod tests {
     /// short-circuit it.
     #[test]
     fn sanitize_noop_scan_rejects_tool_message_with_extra_fields() {
-        let mut message =
-            Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]);
+        let mut message = Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]);
         message.cache_control = Some(crate::CacheControl::ephemeral());
         let messages = vec![
             Message::assistant_parts(vec![ContentPart::tool_use("call-1", "read", json!({}))]),

@@ -5,25 +5,25 @@
 //! 此处返回 Rust Color 供那些无法走 CSS class 的场景（如动态生成的 Text）使用。
 //! **优先用 DsText 挂 class，resolve_color 仅作 fallback。**
 
-use revue::prelude::Color;
 use crate::theme::colors;
+use revue::prelude::Color;
 
 /// 五行 + 状态语义色。所有"这个块代表什么角色"的颜色都经此枚举。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Semantic {
     // 五行角色
-    Wood,    // 木：用户输入
-    Fire,    // 火：执行（工具调用）
-    Earth,   // 土：编排（系统通知）
-    Metal,   // 金：输出（助手/成形）
-    Water,   // 水：回流（遥测/think）
+    Wood,  // 木：用户输入
+    Fire,  // 火：执行（工具调用）
+    Earth, // 土：编排（系统通知）
+    Metal, // 金：输出（助手/成形）
+    Water, // 水：回流（遥测/think）
     // 状态
     Ok,
     Warn,
     Error,
     Info,
     Muted,
-    Accent,  // 签名青
+    Accent, // 签名青
 }
 
 /// 语义 → 颜色单点映射。**这是 agendao 唯一的语义色收口。**
@@ -32,16 +32,16 @@ pub enum Semantic {
 /// "角色→色"的语义判断只允许经过这里。
 pub fn resolve_color(s: Semantic) -> Color {
     match s {
-        Semantic::Wood   => colors::E_TEAL(),        // 用户（主强调）
-        Semantic::Fire   => colors::E_AMBER(),       // 工具（次强调）
-        Semantic::Earth  => colors::FG_MUTED(),      // 系统（次要角色，降级）
-        Semantic::Metal  => colors::FG_PRIMARY(),    // 助手（主文字色）
-        Semantic::Water  => colors::FG_MUTED(),      // think/遥测（次要角色，降级）
-        Semantic::Ok     => colors::STATUS_OK(),
-        Semantic::Warn   => colors::STATUS_WARN(),
-        Semantic::Error  => colors::STATUS_ERROR(),
-        Semantic::Info   => colors::STATUS_INFO(),
-        Semantic::Muted  => colors::FG_MUTED(),
+        Semantic::Wood => colors::E_TEAL(),      // 用户（主强调）
+        Semantic::Fire => colors::E_AMBER(),     // 工具（次强调）
+        Semantic::Earth => colors::FG_MUTED(),   // 系统（次要角色，降级）
+        Semantic::Metal => colors::FG_PRIMARY(), // 助手（主文字色）
+        Semantic::Water => colors::FG_MUTED(),   // think/遥测（次要角色，降级）
+        Semantic::Ok => colors::STATUS_OK(),
+        Semantic::Warn => colors::STATUS_WARN(),
+        Semantic::Error => colors::STATUS_ERROR(),
+        Semantic::Info => colors::STATUS_INFO(),
+        Semantic::Muted => colors::FG_MUTED(),
         Semantic::Accent => colors::ACCENT_CYAN(),
     }
 }
@@ -64,9 +64,19 @@ mod tests {
     #[test]
     fn all_variants_resolve() {
         // 确保每个语义都映射到一个具体颜色（不 panic）
-        for s in [Semantic::Wood, Semantic::Fire, Semantic::Earth, Semantic::Metal,
-                  Semantic::Water, Semantic::Ok, Semantic::Warn, Semantic::Error,
-                  Semantic::Info, Semantic::Muted, Semantic::Accent] {
+        for s in [
+            Semantic::Wood,
+            Semantic::Fire,
+            Semantic::Earth,
+            Semantic::Metal,
+            Semantic::Water,
+            Semantic::Ok,
+            Semantic::Warn,
+            Semantic::Error,
+            Semantic::Info,
+            Semantic::Muted,
+            Semantic::Accent,
+        ] {
             let _ = resolve_color(s);
         }
     }

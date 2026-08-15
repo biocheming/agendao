@@ -10,8 +10,6 @@ mod runtime_step;
 pub mod sanitizer_contract;
 pub mod shell;
 mod skill_reflection;
-pub mod subtask;
-mod subtask_runtime;
 pub mod surface_authority;
 mod surface_contract;
 #[cfg(test)]
@@ -30,7 +28,7 @@ pub mod tools_and_output;
 // prompt_surface_state_snapshot           | loop_lifecycle                | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no snapshot in sidecar
 // prompt_surface_evidence                | loop_lifecycle                | session_artifact, cache_semantics| TUI status panels, API       | missing → "surface changed"
 // context_compaction_record              | message_building (compaction) | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no compaction visible
-// context_compaction_continuity_packet   | message_building (compaction) | message_building (filter),       | TUI/Web diagnostics,         | missing → fallback to legacy filter
+// context_compaction_continuity_packet   | message_building (compaction) | message_building (filter),       | TUI/Web diagnostics,         | missing/invalid → reject compacted view
 //                                        |                               | session_artifact, scheduler      | scheduler hydrate            |
 // context_compaction_lifecycle_summary   | loop_lifecycle (compaction)   | session_artifact, telemetry,     | TUI status/input pipeline,   | missing → no lifecycle display
 //                                        |                               | TUI (input_pipeline, status)     | API                          |
@@ -60,6 +58,12 @@ pub const PENDING_SANITIZER_STAGE_METADATA_KEY: &str = "pending_sanitizer_stage"
 pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
     surface_contract::sanctioned_model_context_projection_for_message(message)
         .map(|projection| projection.summary)
+}
+
+pub fn replay_provider_messages(
+    messages: &[SessionMessage],
+) -> anyhow::Result<Vec<agendao_provider::Message>> {
+    SessionPrompt::build_chat_messages(messages, None, &[])
 }
 
 pub fn continuity_packet_allowed_message_ids(value: &serde_json::Value) -> Option<Vec<String>> {
@@ -160,16 +164,14 @@ use reflow_context::PromptReflowContext;
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;
 pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
-pub use subtask::{tool_definitions_from_schemas, SubtaskExecutor, ToolSchema};
 use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,
     generate_session_title, generate_session_title_for_session, generate_session_title_llm,
-    insert_reminders, max_steps_for_agent, merge_external_tool_catalogs, merge_tool_definitions,
-    prioritize_tool_definitions, resolve_tool_surface, resolve_tool_surface_with_mcp,
-    resolve_tools, resolve_tools_with_mcp, resolve_tools_with_mcp_registry,
-    sanitize_session_title_source, structured_output_system_prompt, was_plan_agent, ResolvedTool,
-    ResolvedToolSurface, StructuredOutputConfig,
+    merge_external_tool_catalogs, merge_tool_definitions, prioritize_tool_definitions,
+    resolve_tool_surface, resolve_tool_surface_with_mcp, resolve_tools, resolve_tools_with_mcp,
+    resolve_tools_with_mcp_registry, sanitize_session_title_source,
+    structured_output_system_prompt, ResolvedTool, ResolvedToolSurface, StructuredOutputConfig,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -196,15 +198,13 @@ use agendao_types::{
     MemoryRetrievalPacket, PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind,
     SessionCacheBoundarySummary, SessionCacheEvidenceExplain, SessionCacheSemanticsBasis,
     SessionCacheSemanticsSummary, SessionCacheSeverity, SessionCompactionContinuityInspection,
-    SessionContextExplain, SessionContextKind, SessionContinuityPacket, SubsessionHandoffPacket,
-    SubsessionResultEnvelope,
+    SessionContextExplain, SessionContinuityPacket,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
 use crate::system::SystemPrompt;
 use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager};
 
-const MAX_STEPS: u32 = 100;
 // 流式期 session 快照节流间隔。每次触发都会对完整会话做 clone 并驱动
 // 持久化 worker,1.1M token 会话下 120ms 意味着每秒 8 次数 MB 级深拷贝;
 // 提高到 1s 后上屏流式输出(走独立的 output_block 通道,不受此节流)不受影响,
@@ -253,15 +253,6 @@ pub enum PartInput {
         #[serde(skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
     },
-    Agent {
-        name: String,
-    },
-    Subtask {
-        prompt: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        agent: String,
-    },
 }
 
 impl TryFrom<serde_json::Value> for PartInput {
@@ -300,64 +291,69 @@ struct StreamToolState {
     emitted_output_detail: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-pub(super) struct PersistedSubsession {
-    #[serde(default = "default_persisted_subsession_kind")]
-    kind: SessionContextKind,
-    agent: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    directory: Option<String>,
-    #[serde(default)]
-    disabled_tools: Vec<String>,
-    #[serde(default)]
-    history: Vec<PersistedSubsessionTurn>,
-}
-
-fn default_persisted_subsession_kind() -> SessionContextKind {
-    SessionContextKind::DelegatedSubsession
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(super) struct PersistedSubsessionTurn {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    handoff: Option<SubsessionHandoffPacket>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    result: Option<SubsessionResultEnvelope>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    output: Option<String>,
-}
-
-/// LLM parameters derived from agent configuration.
-#[derive(Debug, Clone, Default)]
-pub struct AgentParams {
-    pub max_tokens: Option<u64>,
-    pub temperature: Option<f32>,
-    pub top_p: Option<f32>,
-}
-
 pub type SessionUpdateHook = Arc<dyn Fn(&Session) + Send + Sync + 'static>;
 pub type EventBroadcastHook = Arc<dyn Fn(serde_json::Value) + Send + Sync + 'static>;
 pub type CompactionLifecycleHook =
     Arc<dyn Fn(ContextCompactionLifecycleSummary) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextUsageSnapshot {
+    pub live_context_tokens: Option<u64>,
+    pub request_context_tokens: Option<u64>,
+    pub request_body_chars: Option<usize>,
+}
+
+impl ContextUsageSnapshot {
+    pub const fn new(
+        live_context_tokens: Option<u64>,
+        request_context_tokens: Option<u64>,
+        request_body_chars: Option<usize>,
+    ) -> Self {
+        Self {
+            live_context_tokens,
+            request_context_tokens,
+            request_body_chars,
+        }
+    }
+}
+
+pub struct AutoCompactionOptions<'a> {
+    pub focus: Option<&'a str>,
+    pub trigger: &'a str,
+    pub phase: Option<&'a str>,
+    pub usage: ContextUsageSnapshot,
+}
+
+pub struct ContextGovernanceAssessment<'a> {
+    pub trigger: &'a str,
+    pub phase: &'a str,
+    pub compaction_attempted: bool,
+    pub compaction_succeeded: bool,
+    pub usage: ContextUsageSnapshot,
+}
+
+pub struct PreDispatchContextGovernance<'a> {
+    pub focus: Option<&'a str>,
+    pub trigger: &'a str,
+    pub phase: &'a str,
+    pub usage: ContextUsageSnapshot,
+    pub update_hook: Option<&'a SessionUpdateHook>,
+    pub compaction_lifecycle_hook: Option<&'a CompactionLifecycleHook>,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputBlockEvent {
     pub session_id: String,
     pub block: OutputBlock,
-    /// Legacy block ID. Prefer `live_identity` for new code.
+    /// Optional transcript block ID used when no live identity is available.
     pub id: Option<String>,
     /// Canonical live-stream identity. When populated, consumers route stream
     /// fragments by identity instead of heuristic guessing.
-    /// Scheduler-stage summaries and legacy synthetic blocks may still omit it.
+    /// Non-streaming synthetic blocks may omit it.
     pub live_identity: Option<agendao_types::LiveMessagePartIdentity>,
 }
 
 pub fn assistant_text_live_identity(
     message_id: &str,
-    legacy_block_id: Option<String>,
     phase: agendao_types::LivePartPhase,
 ) -> agendao_types::LiveMessagePartIdentity {
     agendao_types::LiveMessagePartIdentity {
@@ -365,13 +361,11 @@ pub fn assistant_text_live_identity(
         part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
         part_kind: agendao_types::LiveMessagePartKind::AssistantText,
         phase,
-        legacy_block_id,
     }
 }
 
 pub fn assistant_reasoning_live_identity(
     message_id: &str,
-    legacy_block_id: Option<String>,
     phase: agendao_types::LivePartPhase,
 ) -> agendao_types::LiveMessagePartIdentity {
     agendao_types::LiveMessagePartIdentity {
@@ -379,7 +373,6 @@ pub fn assistant_reasoning_live_identity(
         part_key: agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
         part_kind: agendao_types::LiveMessagePartKind::AssistantReasoning,
         phase,
-        legacy_block_id,
     }
 }
 
@@ -393,7 +386,6 @@ pub fn tool_call_live_identity(
         part_key: agendao_types::tool_call_part_key(tool_call_id),
         part_kind: agendao_types::LiveMessagePartKind::ToolCall,
         phase,
-        legacy_block_id: Some(tool_call_id.to_string()),
     }
 }
 
@@ -407,14 +399,11 @@ pub fn tool_result_live_identity(
         part_key: agendao_types::tool_result_part_key(tool_call_id),
         part_kind: agendao_types::LiveMessagePartKind::ToolResult,
         phase,
-        legacy_block_id: Some(tool_call_id.to_string()),
     }
 }
 pub type OutputBlockHook = Arc<
     dyn Fn(OutputBlockEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
 >;
-pub type AgentLookup =
-    Arc<dyn Fn(&str) -> Option<agendao_tool::TaskAgentInfo> + Send + Sync + 'static>;
 pub type PublishBusHook = Arc<
     dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>
         + Send
@@ -447,7 +436,6 @@ pub struct PromptHooks {
     pub event_broadcast: Option<EventBroadcastHook>,
     pub compaction_lifecycle_hook: Option<CompactionLifecycleHook>,
     pub output_block_hook: Option<OutputBlockHook>,
-    pub agent_lookup: Option<AgentLookup>,
     pub ask_question_hook: Option<AskQuestionHook>,
     pub ask_permission_hook: Option<AskPermissionHook>,
     pub publish_bus_hook: Option<PublishBusHook>,
@@ -508,14 +496,12 @@ impl PromptRequestContext {
 /// ```text
 /// SystemPrompt                  ← product header + env (static layer)
 ///   → SessionPrompt             ← surface assembly authority
-///     ← PresetPromptExtension   ← preset contribution (NOT full surface)
 ///     ← PromptSurfaceInputs     ← aggregated inputs
 ///     → PromptSurfaceSections   ← canonical output sections
 ///       → ProviderOptions       ← cache hints, reasoning policy
 ///       → API request           ← final model call
 /// ```
 ///
-/// Presets contribute a `PresetPromptExtension`, not a full prompt.
 /// Providers declare capabilities per profile.
 /// `SessionPrompt` is the single assembler.
 pub struct SessionPrompt {
@@ -814,9 +800,7 @@ pub fn compact_session_now_with_focus_result(
             Some("session.manual_compact.no_prompt_continuity_owner"),
             ContextCompactionLifecycleStatus::Skipped,
             true,
-            None,
-            None,
-            None,
+            ContextUsageSnapshot::default(),
             None,
         );
         persist_context_compaction_lifecycle_summary(session, &lifecycle);
@@ -834,9 +818,7 @@ pub fn compact_session_now_with_focus_result(
             Some("session.manual_compact.insufficient_messages"),
             ContextCompactionLifecycleStatus::Skipped,
             true,
-            None,
-            None,
-            None,
+            ContextUsageSnapshot::default(),
             None,
         );
         persist_context_compaction_lifecycle_summary(session, &lifecycle);
@@ -852,9 +834,7 @@ pub fn compact_session_now_with_focus_result(
         None,
         ContextCompactionLifecycleStatus::Started,
         true,
-        None,
-        None,
-        None,
+        ContextUsageSnapshot::default(),
         None,
     );
     persist_context_compaction_lifecycle_summary(session, &lifecycle);
@@ -864,9 +844,7 @@ pub fn compact_session_now_with_focus_result(
         Some("session.manual_compact"),
         None,
         true,
-        None,
-        None,
-        None,
+        ContextUsageSnapshot::default(),
         None,
     );
     let summary = SessionPrompt::trigger_compaction_with_record(
@@ -905,12 +883,14 @@ pub fn auto_compact_session_with_focus_if_needed(
     model_id: &str,
     max_output_tokens: Option<u64>,
     config_store: Option<&agendao_config::ConfigStore>,
-    live_context_tokens: Option<u64>,
-    request_context_tokens: Option<u64>,
-    focus: Option<&str>,
-    trigger: &str,
-    phase: Option<&str>,
+    options: AutoCompactionOptions<'_>,
 ) -> Option<String> {
+    let AutoCompactionOptions {
+        focus,
+        trigger,
+        phase,
+        usage,
+    } = options;
     if !session.context_kind().owns_prompt_continuity() {
         return None;
     }
@@ -918,23 +898,20 @@ pub fn auto_compact_session_with_focus_if_needed(
     let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
     let assessment = SessionPrompt::assess_compaction(
         &filtered,
+        &session.messages,
         provider,
         model_id,
         max_output_tokens,
         &compaction_config,
-        live_context_tokens,
-        request_context_tokens,
-        None,
+        usage,
     )?;
     let record = SessionPrompt::build_compaction_record(
         trigger,
         phase,
         Some(assessment.reason),
         false,
-        request_context_tokens,
-        live_context_tokens,
+        usage,
         assessment.limit_tokens,
-        assessment.body_chars,
     );
     SessionPrompt::trigger_compaction_with_record(session, &filtered, focus, Some(record), false)
 }
@@ -1008,10 +985,8 @@ fn context_compaction_lifecycle_summary(
     reason: Option<&str>,
     status: ContextCompactionLifecycleStatus,
     forced: bool,
-    request_context_tokens: Option<u64>,
-    live_context_tokens: Option<u64>,
+    usage: ContextUsageSnapshot,
     limit_tokens: Option<u64>,
-    body_chars: Option<usize>,
 ) -> ContextCompactionLifecycleSummary {
     ContextCompactionLifecycleSummary {
         trigger: trigger.to_string(),
@@ -1019,10 +994,10 @@ fn context_compaction_lifecycle_summary(
         reason: reason.map(str::to_string),
         status,
         forced,
-        request_context_tokens,
-        live_context_tokens,
+        request_context_tokens: usage.request_context_tokens,
+        live_context_tokens: usage.live_context_tokens,
         limit_tokens,
-        body_chars,
+        body_chars: usage.request_body_chars,
         installed: None,
     }
 }
@@ -1191,24 +1166,29 @@ pub fn assess_request_view_context_governance(
     model_id: &str,
     max_output_tokens: Option<u64>,
     config_store: Option<&agendao_config::ConfigStore>,
-    live_context_tokens: Option<u64>,
-    request_context_tokens: Option<u64>,
-    request_body_chars: Option<usize>,
-    trigger: &str,
-    phase: &str,
-    compaction_attempted: bool,
-    compaction_succeeded: bool,
+    options: ContextGovernanceAssessment<'_>,
 ) -> ContextPressureGovernanceSummary {
+    let ContextGovernanceAssessment {
+        trigger,
+        phase,
+        compaction_attempted,
+        compaction_succeeded,
+        usage,
+    } = options;
+    let ContextUsageSnapshot {
+        live_context_tokens,
+        request_context_tokens,
+        request_body_chars,
+    } = usage;
     let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
     let assessment = SessionPrompt::assess_compaction(
+        &[],
         &[],
         provider,
         model_id,
         max_output_tokens,
         &compaction_config,
-        live_context_tokens,
-        request_context_tokens,
-        request_body_chars,
+        usage,
     );
 
     match assessment {
@@ -1280,15 +1260,21 @@ pub fn govern_pre_dispatch_session_context(
     model_id: &str,
     max_output_tokens: Option<u64>,
     config_store: Option<&agendao_config::ConfigStore>,
-    live_context_tokens: Option<u64>,
-    request_context_tokens: Option<u64>,
-    request_body_chars: Option<usize>,
-    focus: Option<&str>,
-    trigger: &str,
-    phase: &str,
-    update_hook: Option<&SessionUpdateHook>,
-    compaction_lifecycle_hook: Option<&CompactionLifecycleHook>,
+    options: PreDispatchContextGovernance<'_>,
 ) -> ContextPressureGovernanceOutcome {
+    let PreDispatchContextGovernance {
+        focus,
+        trigger,
+        phase,
+        usage,
+        update_hook,
+        compaction_lifecycle_hook,
+    } = options;
+    let ContextUsageSnapshot {
+        live_context_tokens,
+        request_context_tokens,
+        request_body_chars,
+    } = usage;
     let live_context_tokens =
         live_context_tokens.or_else(|| estimate_current_context_tokens(&session.record().messages));
     if !session.context_kind().owns_prompt_continuity() {
@@ -1346,15 +1332,18 @@ pub fn govern_pre_dispatch_session_context(
     persist_lightweight_trim_summary(session, None);
     let Some(assessment) = SessionPrompt::assess_compaction(
         &filtered,
+        &session.record().messages,
         provider,
         model_id,
         max_output_tokens,
         &compaction_config,
-        live_context_tokens,
-        request_context_tokens,
-        request_body_chars,
+        ContextUsageSnapshot::new(
+            live_context_tokens,
+            request_context_tokens,
+            request_body_chars,
+        ),
     ) else {
-        let backoff = SessionPrompt::auto_compaction_backoff_summary(&filtered);
+        let backoff = SessionPrompt::auto_compaction_backoff_summary(&session.record().messages);
         let summary = context_pressure_governance_summary(
             trigger,
             phase,
@@ -1394,10 +1383,12 @@ pub fn govern_pre_dispatch_session_context(
         Some(assessment.reason),
         ContextCompactionLifecycleStatus::Started,
         force_compaction,
-        request_context_tokens,
-        live_context_tokens,
+        ContextUsageSnapshot::new(
+            live_context_tokens,
+            request_context_tokens,
+            assessment.body_chars.or(request_body_chars),
+        ),
         assessment.limit_tokens,
-        assessment.body_chars.or(request_body_chars),
     );
     persist_context_compaction_lifecycle_summary(session, &started);
     session.start_compacting();
@@ -1408,10 +1399,12 @@ pub fn govern_pre_dispatch_session_context(
         Some(phase),
         Some(assessment.reason),
         force_compaction,
-        request_context_tokens,
-        live_context_tokens,
+        ContextUsageSnapshot::new(
+            live_context_tokens,
+            request_context_tokens,
+            assessment.body_chars.or(request_body_chars),
+        ),
         assessment.limit_tokens,
-        assessment.body_chars.or(request_body_chars),
     );
     let compacted = SessionPrompt::trigger_compaction_with_record(
         session,
@@ -1447,13 +1440,16 @@ pub fn govern_pre_dispatch_session_context(
             );
             let reassessment = SessionPrompt::assess_compaction(
                 &filtered,
+                &session.record().messages,
                 provider,
                 model_id,
                 max_output_tokens,
                 &compaction_config,
-                live_context_tokens,
-                request_context_tokens,
-                request_body_chars,
+                ContextUsageSnapshot::new(
+                    live_context_tokens,
+                    request_context_tokens,
+                    request_body_chars,
+                ),
             );
             (
                 request_context_tokens,
@@ -1920,30 +1916,6 @@ mod cache_semantics_tests {
     }
 
     #[test]
-    fn compact_session_now_skips_stage_output_sinks() {
-        let parent = Session::new("proj", ".");
-        let mut child = Session::attached_with_context_kind(
-            &parent,
-            agendao_types::SessionContextKind::SchedulerStageOutputSession,
-        );
-        child.add_user_message("hello");
-        child.add_assistant_message().add_text("world");
-
-        let result = compact_session_now_with_focus_result(&mut child, None);
-
-        assert!(result.summary.is_none());
-        assert_eq!(
-            result.lifecycle.status,
-            ContextCompactionLifecycleStatus::Skipped
-        );
-        assert_eq!(
-            result.lifecycle.reason.as_deref(),
-            Some("session.manual_compact.no_prompt_continuity_owner")
-        );
-        assert_eq!(child.record().messages.len(), 2);
-    }
-
-    #[test]
     fn compact_session_now_reports_skipped_when_history_is_too_small() {
         let mut session = Session::new("proj", ".");
         session.add_user_message("hello");
@@ -2005,12 +1977,6 @@ fn estimate_tail_content_tokens(messages: &[SessionMessage]) -> Option<u64> {
             PartType::Compaction { summary } => summary.len(),
             PartType::StepFinish { output, .. } => output.as_ref().map_or(0, |value| value.len()),
             PartType::StepStart { name, .. } => name.len(),
-            PartType::Agent { name, status } => name.len() + status.len(),
-            PartType::Subtask {
-                description,
-                status,
-                ..
-            } => description.len() + status.len(),
             PartType::Retry { reason, .. } => reason.len(),
         })
         .sum();
@@ -2042,11 +2008,6 @@ type StreamToolResultEntry = (
     Option<HashMap<String, serde_json::Value>>,
     Option<Vec<serde_json::Value>>,
 );
-
-#[derive(Default)]
-struct SessionStepShared {
-    assistant_message_id: Option<String>,
-}
 
 fn tool_progress_detail(
     input: &serde_json::Value,
@@ -2111,9 +2072,7 @@ impl SessionPrompt {
             .filter_map(|instruction| {
                 let path = std::path::PathBuf::from(&instruction.path);
                 match instruction.source {
-                    InstructionSource::AgentsMd
-                    | InstructionSource::ContextMd
-                    | InstructionSource::Custom(_) => {
+                    InstructionSource::AgentsMd => {
                         if path.starts_with(&project_dir) {
                             Some(RuntimeInstructionSource {
                                 path,
@@ -2849,39 +2808,6 @@ impl SessionPrompt {
                     )
                     .await;
                 }
-                PartInput::Agent { name } => {
-                    msg.add_agent(name.clone());
-                    // Add synthetic text instructing the LLM to invoke the agent
-                    msg.add_text(format!(
-                        "Use the above message and context to generate a delegated prompt and prefer the minimal task_flow create shape {{\"operation\":\"create\",\"agent\":\"{}\",\"prompt\":\"...\"}}. Use `description` only as a short label. Only fall back to the task tool if task_flow is unavailable in this session.",
-                        name
-                    ));
-                }
-                PartInput::Subtask {
-                    prompt,
-                    description,
-                    agent,
-                } => {
-                    let subtask_id = format!("sub_{}", uuid::Uuid::new_v4());
-                    let description = description.clone().unwrap_or_else(|| prompt.clone());
-                    msg.add_subtask(subtask_id.clone(), description.clone());
-                    let mut pending = msg
-                        .metadata
-                        .get("pending_subtasks")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    pending.push(serde_json::json!({
-                        "id": subtask_id,
-                        "agent": agent,
-                        "prompt": prompt,
-                        "description": description,
-                    }));
-                    msg.metadata.insert(
-                        "pending_subtasks".to_string(),
-                        serde_json::Value::Array(pending),
-                    );
-                }
             }
         }
 
@@ -3229,8 +3155,8 @@ pub enum PromptError {
     Busy(String),
     #[error("No user message found")]
     NoUserMessage,
-    #[error("{0}")]
-    ProviderFailure(agendao_orchestrator::runtime::events::ModelFailure),
+    #[error("{message}", message = .0.message)]
+    ProviderFailure(agendao_provider::ProviderErrorSummary),
     #[error("Provider error: {0}")]
     Provider(String),
     #[error("Cancelled")]
@@ -3246,15 +3172,10 @@ pub enum PromptProviderFailure {
 impl PromptError {
     pub fn provider_failure(&self) -> Option<PromptProviderFailure> {
         match self {
-            Self::ProviderFailure(
-                agendao_orchestrator::runtime::events::ModelFailure::Provider(summary),
-            ) => Some(PromptProviderFailure::TypedSummary(summary.clone())),
-            Self::ProviderFailure(
-                agendao_orchestrator::runtime::events::ModelFailure::Message(message),
-            )
-            | Self::Provider(message) => {
-                Some(PromptProviderFailure::UntypedMessage(message.clone()))
+            Self::ProviderFailure(summary) => {
+                Some(PromptProviderFailure::TypedSummary(summary.clone()))
             }
+            Self::Provider(message) => Some(PromptProviderFailure::UntypedMessage(message.clone())),
             Self::Busy(_) | Self::NoUserMessage | Self::Cancelled => None,
         }
     }
@@ -3293,21 +3214,18 @@ pub fn untyped_provider_error_text_from_anyhow(error: &anyhow::Error) -> Option<
 /// Regex that matches `@reference` patterns. We use a capturing group for the
 /// preceding character instead of a lookbehind (unsupported by the `regex` crate).
 /// Group 1 = preceding char (or empty at start of string), Group 2 = the reference name.
-const FILE_REFERENCE_REGEX: &str = r"(?:^|([^\w`]))@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)";
+static FILE_REFERENCE_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?:^|([^\w`]))@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)").unwrap()
+});
 
-pub async fn resolve_prompt_parts(
-    template: &str,
-    worktree: &std::path::Path,
-    known_agents: &[String],
-) -> Vec<PartInput> {
+pub async fn resolve_prompt_parts(template: &str, worktree: &std::path::Path) -> Vec<PartInput> {
     let mut parts = vec![PartInput::Text {
         text: template.to_string(),
     }];
 
-    let re = regex::Regex::new(FILE_REFERENCE_REGEX).unwrap();
     let mut seen = std::collections::HashSet::new();
 
-    for cap in re.captures_iter(template) {
+    for cap in FILE_REFERENCE_REGEX.captures_iter(template) {
         // Group 1 is the preceding char — if it matched a word char or backtick
         // the overall pattern wouldn't match (they're excluded by [^\w`]).
         // Group 2 is the actual reference name.
@@ -3345,11 +3263,6 @@ pub async fn resolve_prompt_parts(
                         mime: Some("text/plain".to_string()),
                     });
                 }
-            } else if known_agents.iter().any(|a| a == name) {
-                // Not a file — check if it's a known agent name
-                parts.push(PartInput::Agent {
-                    name: name.to_string(),
-                });
             }
         }
     }
@@ -3358,11 +3271,10 @@ pub async fn resolve_prompt_parts(
 }
 
 pub fn extract_file_references(template: &str) -> Vec<String> {
-    let re = regex::Regex::new(FILE_REFERENCE_REGEX).unwrap();
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
 
-    for cap in re.captures_iter(template) {
+    for cap in FILE_REFERENCE_REGEX.captures_iter(template) {
         if let Some(name) = cap.get(2) {
             let name = name.as_str().to_string();
             if !name.is_empty() && !seen.contains(&name) {

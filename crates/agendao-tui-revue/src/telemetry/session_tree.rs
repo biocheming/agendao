@@ -49,8 +49,7 @@ pub fn build_session_nav_tree(
         return Vec::new();
     }
 
-    let id_set: std::collections::HashSet<&str> =
-        workspace.iter().map(|s| s.id.as_str()).collect();
+    let id_set: std::collections::HashSet<&str> = workspace.iter().map(|s| s.id.as_str()).collect();
 
     // parent_id → children
     let mut child_map: std::collections::HashMap<&str, Vec<&SessionListItem>> =
@@ -89,8 +88,10 @@ fn visit(
     depth: u8,
     expanded_ids: &std::collections::HashSet<String>,
 ) -> TreeNode {
-    let mut children: Vec<&SessionListItem> =
-        child_map.get(session.id.as_str()).cloned().unwrap_or_default();
+    let mut children: Vec<&SessionListItem> = child_map
+        .get(session.id.as_str())
+        .cloned()
+        .unwrap_or_default();
     children.sort_by(|a, b| b.updated.cmp(&a.updated));
     TreeNode {
         label: session.title.clone(),
@@ -108,7 +109,13 @@ fn visit(
 mod tests {
     use super::*;
 
-    fn item(id: &str, title: &str, parent: Option<&str>, dir: &str, updated: i64) -> SessionListItem {
+    fn item(
+        id: &str,
+        title: &str,
+        parent: Option<&str>,
+        dir: &str,
+        updated: i64,
+    ) -> SessionListItem {
         SessionListItem {
             id: id.into(),
             title: title.into(),
@@ -173,7 +180,11 @@ mod tests {
         let collapsed = build_session_nav_tree(&sessions, dir, &Default::default());
         assert_eq!(collapsed.len(), 1);
         assert!(!collapsed[0].expanded, "default must be collapsed");
-        assert_eq!(collapsed[0].children.len(), 1, "children kept in tree structure");
+        assert_eq!(
+            collapsed[0].children.len(),
+            1,
+            "children kept in tree structure"
+        );
         // 命中展开集合：仅该节点展开。
         let ids: std::collections::HashSet<String> = ["root".to_string()].into_iter().collect();
         let expanded = build_session_nav_tree(&sessions, dir, &ids);

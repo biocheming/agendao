@@ -10,8 +10,8 @@ description = "AgenDao TUI frontend built with Revue — Vue-style reactive term
 agendao-util = { path = "../agendao-util" }
 revue = { path = "../../../revue", features = ["markdown"] }
 agendao-client = { path = "../agendao-client" }
+agendao-orchestrator = { path = "../agendao-orchestrator" }
 agendao-command = { path = "../agendao-command" }
-agendao-command-render = { path = "../agendao-command-render" }
 agendao-server-core = { path = "../agendao-server-core" }
 agendao-types = { path = "../agendao-types" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
@@ -28,7 +28,7 @@ reqwest-eventsource = "0.6"
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-agendao-server-local = { path = "../agendao-server-local" }
+agendao-server = { path = "../agendao-server", default-features = false, features = ["http", "mcp"] }
 agendao-state = { path = "../agendao-state" }
 agendao-config = { path = "../agendao-config" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }

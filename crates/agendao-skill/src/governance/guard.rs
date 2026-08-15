@@ -91,11 +91,11 @@ impl SkillGovernanceAuthority {
         )
     }
 
-    pub(super) fn evaluate_imported_skill_guard_report(
+    pub(super) fn evaluate_imported_skill_guard_report<'a>(
         &self,
         skill_name: &str,
         markdown_content: &str,
-        supporting_files: &[(String, String)],
+        supporting_files: impl IntoIterator<Item = (&'a str, &'a str)>,
         duplicate_conflict: bool,
         category: Option<&str>,
         current_skill_name: Option<&str>,
@@ -204,9 +204,6 @@ impl SkillGovernanceAuthority {
                 .unwrap_or_default(),
             fallback_for_toolsets: agendao
                 .map(|metadata| metadata.fallback_for_toolsets.clone())
-                .unwrap_or_default(),
-            stage_filter: agendao
-                .map(|metadata| metadata.stage_filter.clone())
                 .unwrap_or_default(),
         };
         Some(build_skill_semantic_descriptor_from_parts(

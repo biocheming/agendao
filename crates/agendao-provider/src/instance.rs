@@ -2,7 +2,7 @@ use crate::cache::ProviderProfileFingerprint;
 use crate::protocol::{ProviderAdapter, ProviderConfig};
 use crate::provider::{ModelInfo as RuntimeModelInfo, Provider, ProviderError};
 use crate::runtime::ProviderRuntime;
-use crate::{ChatRequest, ChatResponse, StreamResult};
+use crate::{ChatRequest, ChatResponse, ProviderApiShape, StreamResult};
 use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ pub struct ProviderInstance {
     models: HashMap<String, RuntimeModelInfo>,
     runtime: Option<ProviderRuntime>,
     provider_profile_fingerprint: Option<ProviderProfileFingerprint>,
+    api_shape: Option<ProviderApiShape>,
 }
 
 /// 流式 stall 看门狗兜底值（秒）：per-model `stream_stall_timeout_secs` 未配置时启用。
@@ -48,6 +49,7 @@ impl ProviderInstance {
             models,
             runtime: None,
             provider_profile_fingerprint: None,
+            api_shape: None,
         }
     }
 
@@ -59,13 +61,14 @@ impl ProviderInstance {
         self
     }
 
-    pub fn with_runtime(mut self, runtime: ProviderRuntime) -> Self {
-        self.runtime = Some(runtime);
+    pub fn with_api_shape(mut self, api_shape: ProviderApiShape) -> Self {
+        self.api_shape = Some(api_shape);
         self
     }
 
-    pub fn runtime(&self) -> Option<&ProviderRuntime> {
-        self.runtime.as_ref()
+    pub fn with_runtime(mut self, runtime: ProviderRuntime) -> Self {
+        self.runtime = Some(runtime);
+        self
     }
 
     pub fn get_model(&self, id: &str) -> Option<&RuntimeModelInfo> {
@@ -89,6 +92,10 @@ impl Provider for ProviderInstance {
 
     fn provider_profile_fingerprint(&self) -> Option<ProviderProfileFingerprint> {
         self.provider_profile_fingerprint.clone()
+    }
+
+    fn api_shape(&self) -> Option<ProviderApiShape> {
+        self.api_shape
     }
 
     fn models(&self) -> Vec<RuntimeModelInfo> {
@@ -169,10 +176,9 @@ impl Provider for ProviderInstance {
             .chat_stream(&self.client, &self.config, request)
             .await
             .map(|stream| match stall_timeout_secs {
-                Some(secs) => crate::stream::with_stall_watchdog(
-                    stream,
-                    std::time::Duration::from_secs(secs),
-                ),
+                Some(secs) => {
+                    crate::stream::with_stall_watchdog(stream, std::time::Duration::from_secs(secs))
+                }
                 None => stream,
             });
 

@@ -98,21 +98,7 @@
 
 - `plans/provider-profile-protocol-transport-refactor-plan.md`
 
-### 6. verifier mode
-
-状态：`主算法与主产品面已落地，剩余主要是 polish`
-
-结论：
-
-- verifier 不再只是概念设计，核心 pairwise / logprob-aware / score-job 路径已经实现。
-- 当前剩余项更多是 retry counters、router/frontend 文案、展示 polish，而不是主算法空白。
-
-对应文档：
-
-- `plans/verifier-mode-preset-design.md`
-- `plans/verifier-mode-implementation-checklist.md`
-
-### 7. 用户目录统一 / 全项目审计 / TUI Settings
+### 6. 用户目录统一 / 全项目审计 / TUI Settings
 
 状态：`已落地`
 
@@ -164,8 +150,6 @@
 | `plans/prompt-caching-implementation-plan.md` | 缓存实施路线 | `部分落地，仍是局部技术计划` |
 | `plans/prompt-surface-runtime-snapshot-and-ingress-stabilization.md` | prompt surface snapshot / ingress 稳定化 | `第一版已落地，后续仍可继续` |
 | `plans/provider-profile-protocol-transport-refactor-plan.md` | provider 清债路线 | `进行中` |
-| `plans/verifier-mode-preset-design.md` | verifier 设计与现状 | `主体完成，余下 polish` |
-| `plans/verifier-mode-implementation-checklist.md` | verifier 落地清单 | `主体完成，余下 polish` |
 | `plans/tui-session-graph-sidebar.md` | TUI sidebar 设计草图 | `已落地（2026-07），可归档` |
 | `plans/agendao-web-audit-2026-07.md` | Web 前端专项审计与修复追踪 | `进行中（主体已修）` |
 | `plans/agendao-project-audit-2026-07.md` | 全项目六专项审计 | `P0/P1/P2/P3 已全部核销` |
@@ -177,7 +161,6 @@
 - `examples/context_docs/*`
 - `examples/plugins_example/*`
 - `examples/scheduler/*`
-- `examples/tasks/*`
 - `agendao_config.schema.json`
 
 它们的职责是：

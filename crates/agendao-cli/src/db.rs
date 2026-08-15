@@ -64,8 +64,8 @@ pub(super) async fn handle_stats_command(
         report.total_cache_write
     );
     println!(
-        "Persisted telemetry: sessions={} stage_summaries={}",
-        report.persisted_telemetry_sessions, report.persisted_stage_summaries
+        "Persisted telemetry: sessions={}",
+        report.persisted_telemetry_sessions
     );
 
     if !report.last_run_status_usage.is_empty() {

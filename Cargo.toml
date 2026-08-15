@@ -8,7 +8,6 @@ members = [
     "crates/agendao-client",
     "crates/agendao-core",
     "crates/agendao-output-blocks",
-    "crates/agendao-stage-protocol",
     "crates/agendao-command-render",
     "crates/agendao-types",
     "crates/agendao-util",
@@ -26,20 +25,16 @@ members = [
     "crates/agendao-session-core",
     "crates/agendao-skill",
     "crates/agendao-storage",
-    "crates/agendao-storage-core",
     "crates/agendao-tool-core",
     "crates/agendao-tool",
     "crates/agendao-tool-web",
     "crates/agendao-agent",
     "crates/agendao-server-core",
-    "crates/agendao-server-local",
     "crates/agendao-server-pty",
     "crates/agendao-server",
-    "crates/agendao-watcher",
     "crates/agendao-lsp",
     "crates/agendao-mcp",
     "crates/agendao-cli-core",
-    "crates/agendao-cli-admin",
     "crates/agendao-cli",
     "crates/agendao-command",
     "crates/agendao-plugin",
@@ -63,7 +58,7 @@ codegen-units = 1
 debug = 0
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"

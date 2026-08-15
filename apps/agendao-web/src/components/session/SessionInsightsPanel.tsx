@@ -4,10 +4,6 @@ import {
   type MemoryDetailResponseRecord,
   memoryRecordIdValue,
 } from "../../lib/memory";
-import {
-  currentContextTokensFromSources,
-  isLiveStageStatus,
-} from "../../lib/contextPressure";
 import { multimodalCombinedWarnings, multimodalDisplayLabel } from "../../lib/multimodal";
 import { useI18n } from "@/i18n/I18nProvider";
 import { CompactionContinuityCard } from "../execution/CompactionContinuityCard";
@@ -54,29 +50,6 @@ function summarizeMetrics(items: Array<[string, string | number | null | undefin
     .join(" · ");
 }
 
-type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
-
-function schedulerTraceLabel(kind: string | null | undefined, t: TranslateFn) {
-  switch (kind) {
-    case "requested_profile":
-      return t("session.trace.requestedProfile");
-    case "command_workflow_override":
-      return t("session.trace.commandWorkflow");
-    case "session_pinned_profile":
-      return t("session.trace.sessionPinned");
-    case "legacy_session_pinned_profile":
-      return t("session.trace.legacySession");
-    case "config_default_profile":
-      return t("session.trace.configDefault");
-    case "auto_route":
-      return t("session.trace.autoRoute");
-    case "soft_fallback":
-      return t("session.trace.softFallback");
-    default:
-      return kind || t("session.trace.fallback");
-  }
-}
-
 function formatTrajectoryBand(band?: string | null) {
   if (!band) return "--";
   return band.replaceAll("_", " ");
@@ -113,7 +86,6 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
   const effectivePolicy = insights?.effective_policy ?? null;
   const schedulerPolicy = effectivePolicy?.scheduler ?? null;
   const telemetryUsage = telemetry?.usage ?? null;
-  const telemetryStages = telemetry?.stage_summaries ?? [];
   const trajectoryQuality =
     runtimeTelemetry?.tool_trajectory_quality ?? telemetry?.tool_trajectory_quality ?? null;
   const toolResultGovernance =
@@ -176,13 +148,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
       ),
     [memoryRecentSessionRecords],
   );
-  const currentContextTokens = useMemo(() => {
-    const activeStage = activity.activeStageSummary;
-    const activeStageContext = activeStage && isLiveStageStatus(activeStage.status)
-      ? activeStage.context_tokens ?? activeStage.estimated_context_tokens
-      : null;
-    return currentContextTokensFromSources(activity.sessionUsage?.context_tokens, activeStageContext);
-  }, [activity.activeStageSummary, activity.sessionUsage?.context_tokens]);
+  const currentContextTokens = activity.sessionUsage?.context_tokens ?? null;
   const panelActionClass = "roc-action roc-action-pill";
   const compactActionClass = "roc-action roc-action-compact justify-self-start";
   const detailTileClass = "roc-rail-item grid gap-1 bg-card/45";
@@ -198,13 +164,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
         <button
           className={panelActionClass}
           type="button"
-          onClick={() =>
-            void activity.refreshExecutionActivity(
-              undefined,
-              activity.activityFilters,
-              activity.activityPage,
-            )
-          }
+          onClick={() => void activity.refreshExecutionActivity()}
           disabled={activity.activityLoading}
         >
           {activity.activityLoading ? t("session.refreshing") : t("session.refresh")}
@@ -252,7 +212,6 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {summarizeMetrics([
                   [t("session.metric.version"), telemetry.version],
-                  [t("session.metric.stages"), telemetryStages.length],
                   trajectoryQuality
                     ? [t("session.metric.trajectory"), `${trajectoryQuality.score} ${formatTrajectoryBand(trajectoryQuality.band)}`]
                     : ["", null],
@@ -343,42 +302,14 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                     {summarizeMetrics([
                       [t("session.metric.source"), schedulerPolicy.source],
                       [t("session.metric.applied"), schedulerPolicy.applied ? t("session.yes") : t("session.no")],
-                      [t("session.metric.requested"), schedulerPolicy.requested_profile || "--"],
-                      [t("session.metric.effective"), schedulerPolicy.effective_profile || "--"],
+                      [t("session.metric.requested"), schedulerPolicy.requested_kind || "--"],
+                      [t("session.metric.effective"), schedulerPolicy.blueprint_name || "--"],
                     ])}
                   </p>
                   <div className="grid gap-1 text-sm text-muted-foreground">
-                    <p>{t("session.modeKind", { value: schedulerPolicy.mode_kind || "--" })}</p>
-                    <p>{t("session.rootAgent", { value: schedulerPolicy.root_agent || "--" })}</p>
+                    <p>{schedulerPolicy.blueprint_fingerprint || "--"}</p>
                     <p>{t("session.resolvedAgent", { value: schedulerPolicy.resolved_agent || "--" })}</p>
                   </div>
-                  {(schedulerPolicy.selection_trace ?? []).length ? (
-                    <div className="grid gap-2">
-                      <p className="roc-section-label">{t("session.selectionTrace")}</p>
-                      {(schedulerPolicy.selection_trace ?? []).map((step, index) => (
-                        <div
-                          key={`scheduler-trace:${index}:${step.kind}:${step.profile ?? "--"}`}
-                          className={detailTileClass}
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <strong>{schedulerTraceLabel(step.kind, t)}</strong>
-                            {step.profile ? <span className="text-xs text-muted-foreground">{step.profile}</span> : null}
-                            <span className="text-xs text-muted-foreground">
-                              {t("session.appliedValue", { applied: step.applied ? t("session.yes") : t("session.no") })}
-                            </span>
-                          </div>
-                          {step.detail ? (
-                            <p className="text-xs text-muted-foreground">{step.detail}</p>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {schedulerPolicy.warning ? (
-                    <div className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
-                      {schedulerPolicy.warning}
-                    </div>
-                  ) : null}
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">{t("session.noSchedulerPolicy")}</p>

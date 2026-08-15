@@ -10,8 +10,8 @@ AgenDao 只把缓存策略按内部协议族分派：
 
 | 协议族 | AgenDao 名称 | 缓存策略 |
 |--------|-------------|----------|
-| closeai-compatible | `closeai` | 自动前缀缓存；AgenDao 负责稳定 prefix，并在能力明确时附加 `prompt_cache_key` |
-| Ethnopic-compatible | `ethnopic` | 显式 cache breakpoint；AgenDao 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
+| openai-compatible | `openai` | 自动前缀缓存；AgenDao 负责稳定 prefix，并在能力明确时附加 `prompt_cache_key` |
+| Anthropic-compatible | `anthropic` | 显式 cache breakpoint；AgenDao 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
 
 Provider 具体是谁不是主轴。厂商差异只作为 typed capability / usage parser override 后置处理，不能反过来驱动核心 prompt 结构。
 
@@ -24,7 +24,7 @@ AgenDao 现在把上下文与用量拆成三本账，而不是继续把它们折
 - `live_context_tokens`
   - 当前 session 自己拥有的 live prefix / live pressure
 - `workflow_cumulative_tokens`
-  - 整个 workflow 累计消耗，包含 child session / subsession / attached subtree 的花费
+  - 整个 scheduler run 累计消耗，包含 parallel branch 和 loop iteration 的花费
 
 这三本账对应三个不同的问题：
 
@@ -77,7 +77,7 @@ AgenDao 会尽量把请求组织成三段：
 缓存命中不仅取决于本轮请求，也取决于上一轮输出如何进入下一轮上下文。AgenDao 对输出采用 cache-aware projection：
 
 - 用户原始指令、约束、偏好和验收标准保持保真。
-- 大型 assistant final、tool output、scheduler stage detail 优先压缩成摘要、metadata 和 artifact reference。
+- 大型 assistant final、tool output、scheduler node trace 优先压缩成摘要、metadata 和 artifact reference。
 - tool call / tool result 协议轮次不被破坏，避免模型下一轮无法恢复工具语义。
 - scheduler 的可见交付和模型上下文投影分离，避免“给用户看的长报告”直接污染下一轮 prompt prefix。
 
@@ -85,11 +85,11 @@ AgenDao 会尽量把请求组织成三段：
 
 ### Reasoning continuation
 
-模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，AgenDao 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 Ethnopic-compatible thinking block。
+模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，AgenDao 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 openai-compatible 的 `reasoning_content` 或 Anthropic-compatible thinking block。
 
 因此：
 
-- agent、scheduler、subtask、projection 层不得把 reasoning 拼进普通 assistant text。
+- agent、scheduler、projection 层不得把 reasoning 拼进普通 assistant text。
 - artifact / output projection 可以压缩可见报告和长 tool output，但不得压缩或丢弃协议必需的 reasoning continuation。
 - 如果跨 provider、跨协议族或切换 thinking 字段导致 continuation 不可兼容，应形成新的 continuation boundary，并记录 cache / prompt-surface 诊断，而不是伪装成同一条 hidden reasoning 链。
 
@@ -175,7 +175,7 @@ Cache medium change · prefix changed before the stable boundary
 - `cache_explainability`
   - 当前 cache 问题是否已经能用 cache evidence / surface evidence / boundary evidence 解释
 - `child_history_isolation`
-  - child/subsession 的累计成本是否只留在 workflow 账本，而没有泄漏进 owner-local live prefix
+  - branch/loop 的累计成本是否只留在 run 账本，而没有泄漏进 node-local live prefix
 
 这意味着：
 
@@ -200,8 +200,8 @@ Cache medium change · prefix changed before the stable boundary
 
 - 不能让 system builder、tool builder、scheduler、provider transform 多处独立修改最终 prompt surface。
 - tools 必须 canonicalize：built-in 在前，外部 / dynamic 工具后置，schema key 稳定排序。
-- closeai-compatible 只在 capability 明确支持时注入 `prompt_cache_key`。
-- ethnopic-compatible 的 `cache_control` 由 planner 统一决策，避免多个层各自贴 breakpoint。
+- openai-compatible 只在 capability 明确支持时注入 `prompt_cache_key`。
+- anthropic-compatible 的 `cache_control` 由 planner 统一决策，避免多个层各自贴 breakpoint。
 - 输出投影必须保留用户 intent 原文；大附件和长日志可以 reference 化，但决策性文本不能随意摘要替代。
 
 相关代码入口：

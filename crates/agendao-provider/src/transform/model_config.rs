@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::cache::plan_ethnopic_message_breakpoints;
+use crate::cache::plan_anthropic_message_breakpoints;
 use crate::models;
 use crate::{CacheControl, Content, ContentPart, Message};
 
-use super::normalize::{ProviderType, OPENAI_EFFORTS, OUTPUT_TOKEN_MAX, WIDELY_SUPPORTED_EFFORTS};
+use super::normalize::{ProviderType, OUTPUT_TOKEN_MAX, WIDELY_SUPPORTED_EFFORTS};
 
 macro_rules! hashmap {
     ($($key:expr => $value:expr),* $(,)?) => {{
@@ -96,8 +96,8 @@ pub fn normalize_interleaved_thinking(
 
 /// Apply cache control markers at the part level.
 pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &ProviderType) {
-    if let ProviderType::Ethnopic = provider_type {
-        let plan = plan_ethnopic_message_breakpoints(messages);
+    if let ProviderType::Anthropic = provider_type {
+        let plan = plan_anthropic_message_breakpoints(messages);
         for boundary_index in plan.message_indices() {
             let Some(boundary) = messages.get_mut(boundary_index) else {
                 continue;
@@ -109,44 +109,6 @@ pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &Provider
             }
             boundary.cache_control = Some(CacheControl::ephemeral());
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ensure_noop_tool (LiteLLM proxy compatibility)
-// ---------------------------------------------------------------------------
-
-/// When message history contains tool_use/tool_result blocks but the current
-/// request has no tools, some proxies (notably LiteLLM) reject the request.
-/// This function checks for that condition and injects a `_noop` placeholder
-/// tool, matching opencode's behavior.
-pub fn ensure_noop_tool_if_needed(
-    tools: &mut Option<Vec<crate::ToolDefinition>>,
-    messages: &[Message],
-) {
-    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
-    if has_tools {
-        return;
-    }
-
-    let has_tool_content = messages.iter().any(|msg| match &msg.content {
-        Content::Parts(parts) => parts
-            .iter()
-            .any(|p| p.tool_use.is_some() || p.tool_result.is_some()),
-        _ => false,
-    });
-
-    if has_tool_content {
-        let noop = crate::ToolDefinition {
-            name: "_noop".to_string(),
-            description: Some("Placeholder tool for proxy compatibility".to_string()),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false,
-            }),
-        };
-        *tools = Some(vec![noop]);
     }
 }
 
@@ -171,23 +133,10 @@ pub fn max_output_tokens(model: &models::ModelInfo) -> u64 {
 /// Map npm package name to SDK key.
 pub fn sdk_key(npm: &str) -> Option<&'static str> {
     match npm {
-        "@ai-sdk/github-copilot" => Some("copilot"),
-        "@ai-sdk/openai" | "closeai-compatible" | "openai-compatible" => Some("openai"),
-        "@ai-sdk/amazon-bedrock" => Some("bedrock"),
-        "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" | "ethnopic-compatible" => {
-            Some("ethnopic")
-        }
-        "@ai-sdk/google-vertex" | "@ai-sdk/google" => Some("google"),
-        "@ai-sdk/gateway" => Some("gateway"),
-        "@openrouter/ai-sdk-provider" => Some("openrouter"),
-        "@ai-sdk/perplexity" => Some("perplexity"),
+        "@ai-sdk/openai" | "@ai-sdk/openai-compatible" => Some("openai"),
+        "@ai-sdk/anthropic" => Some("anthropic"),
         _ => None,
     }
-}
-
-fn is_ethnopic_family_reference(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.contains("anthropic") || lower.contains("ethnopic")
 }
 
 // ---------------------------------------------------------------------------
@@ -205,45 +154,6 @@ pub fn variants(model: &models::ModelInfo) -> HashMap<String, HashMap<String, se
 
     let id = model.id.to_lowercase();
 
-    // Models that don't support configurable reasoning
-    if id.contains("deepseek")
-        || id.contains("minimax")
-        || id.contains("glm")
-        || id.contains("mistral")
-        || id.contains("kimi")
-        || id.contains("k2p5")
-    {
-        return HashMap::new();
-    }
-
-    // Grok special handling
-    if id.contains("grok") {
-        if id.contains("grok-3-mini") {
-            let npm = model.provider.as_ref().and_then(|p| p.npm.as_deref());
-            if npm == Some("@openrouter/ai-sdk-provider") {
-                return [
-                    (
-                        "low".into(),
-                        hashmap! {"reasoning" => json!({"effort": "low"})},
-                    ),
-                    (
-                        "high".into(),
-                        hashmap! {"reasoning" => json!({"effort": "high"})},
-                    ),
-                ]
-                .into_iter()
-                .collect();
-            }
-            return [
-                ("low".into(), hashmap! {"reasoningEffort" => json!("low")}),
-                ("high".into(), hashmap! {"reasoningEffort" => json!("high")}),
-            ]
-            .into_iter()
-            .collect();
-        }
-        return HashMap::new();
-    }
-
     let npm = model
         .provider
         .as_ref()
@@ -256,113 +166,7 @@ pub fn variants(model: &models::ModelInfo) -> HashMap<String, HashMap<String, se
         .unwrap_or("");
 
     match npm {
-        "@openrouter/ai-sdk-provider" => {
-            if !model.id.contains("gpt")
-                && !model.id.contains("gemini-3")
-                && !is_ethnopic_family_reference(&model.id)
-                && !is_ethnopic_family_reference(api_id)
-            {
-                return HashMap::new();
-            }
-            OPENAI_EFFORTS
-                .iter()
-                .map(|e: &&str| {
-                    (
-                        e.to_string(),
-                        hashmap! {"reasoning" => json!({"effort": *e})},
-                    )
-                })
-                .collect()
-        }
-
-        "@ai-sdk/gateway" => {
-            if is_ethnopic_family_reference(&model.id) {
-                return [
-                    (
-                        "high".into(),
-                        hashmap! {"thinking" => json!({"type": "enabled", "budgetTokens": 16000})},
-                    ),
-                    (
-                        "max".into(),
-                        hashmap! {"thinking" => json!({"type": "enabled", "budgetTokens": 31999})},
-                    ),
-                ]
-                .into_iter()
-                .collect();
-            }
-            if model.id.contains("google") {
-                if id.contains("2.5") {
-                    return [
-                        (
-                            "high".into(),
-                            hashmap! {"thinkingConfig" => json!({"includeThoughts": true, "thinkingBudget": 16000})},
-                        ),
-                        (
-                            "max".into(),
-                            hashmap! {"thinkingConfig" => json!({"includeThoughts": true, "thinkingBudget": 24576})},
-                        ),
-                    ]
-                    .into_iter()
-                    .collect();
-                }
-                return ["low", "high"]
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.to_string(),
-                            hashmap! {
-                                "includeThoughts" => json!(true),
-                                "thinkingLevel" => json!(*e)
-                            },
-                        )
-                    })
-                    .collect();
-            }
-            OPENAI_EFFORTS
-                .iter()
-                .map(|e: &&str| (e.to_string(), hashmap! {"reasoningEffort" => json!(*e)}))
-                .collect()
-        }
-
-        "@ai-sdk/github-copilot" => {
-            if model.id.contains("gemini") {
-                return HashMap::new();
-            }
-            if is_ethnopic_family_reference(&model.id) || is_ethnopic_family_reference(api_id) {
-                return [(
-                    "thinking".into(),
-                    hashmap! {"thinking_budget" => json!(4000)},
-                )]
-                .into_iter()
-                .collect();
-            }
-            let efforts: Vec<&str> =
-                if id.contains("5.1-codex-max") || id.contains("5.2") || id.contains("5.3") {
-                    vec!["low", "medium", "high", "xhigh"]
-                } else {
-                    vec!["low", "medium", "high"]
-                };
-            efforts
-                .iter()
-                .map(|e| {
-                    (
-                        e.to_string(),
-                        hashmap! {
-                            "reasoningEffort" => json!(*e),
-                            "reasoningSummary" => json!("auto"),
-                            "include" => json!(["reasoning.encrypted_content"])
-                        },
-                    )
-                })
-                .collect()
-        }
-
-        "@ai-sdk/cerebras"
-        | "@ai-sdk/togetherai"
-        | "@ai-sdk/xai"
-        | "@ai-sdk/deepinfra"
-        | "venice-ai-sdk-provider"
-        | "@ai-sdk/openai-compatible" => WIDELY_SUPPORTED_EFFORTS
+        "@ai-sdk/openai-compatible" => WIDELY_SUPPORTED_EFFORTS
             .iter()
             .map(|e| (e.to_string(), hashmap! {"reasoningEffort" => json!(*e)}))
             .collect(),
@@ -407,7 +211,7 @@ pub fn variants(model: &models::ModelInfo) -> HashMap<String, HashMap<String, se
                 .collect()
         }
 
-        "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" | "ethnopic-compatible" => {
+        "@ai-sdk/anthropic" => {
             if api_id.contains("opus-4-6") || api_id.contains("opus-4.6") {
                 return ["low", "medium", "high", "max"]
                     .iter()
@@ -436,113 +240,6 @@ pub fn variants(model: &models::ModelInfo) -> HashMap<String, HashMap<String, se
             ]
             .into_iter()
             .collect()
-        }
-
-        "@ai-sdk/amazon-bedrock" => {
-            if api_id.contains("opus-4-6") || api_id.contains("opus-4.6") {
-                return ["low", "medium", "high", "max"]
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.to_string(),
-                            hashmap! {
-                                "reasoningConfig" => json!({"type": "adaptive", "maxReasoningEffort": *e})
-                            },
-                        )
-                    })
-                    .collect();
-            }
-            if is_ethnopic_family_reference(api_id) {
-                return [
-                    (
-                        "high".into(),
-                        hashmap! {"reasoningConfig" => json!({"type": "enabled", "budgetTokens": 16000})},
-                    ),
-                    (
-                        "max".into(),
-                        hashmap! {"reasoningConfig" => json!({"type": "enabled", "budgetTokens": 31999})},
-                    ),
-                ]
-                .into_iter()
-                .collect();
-            }
-            // Amazon Nova models
-            WIDELY_SUPPORTED_EFFORTS
-                .iter()
-                .map(|e| {
-                    (
-                        e.to_string(),
-                        hashmap! {
-                            "reasoningConfig" => json!({"type": "enabled", "maxReasoningEffort": *e})
-                        },
-                    )
-                })
-                .collect()
-        }
-
-        "@ai-sdk/google-vertex" | "@ai-sdk/google" => {
-            if id.contains("2.5") {
-                return [
-                    (
-                        "high".into(),
-                        hashmap! {"thinkingConfig" => json!({"includeThoughts": true, "thinkingBudget": 16000})},
-                    ),
-                    (
-                        "max".into(),
-                        hashmap! {"thinkingConfig" => json!({"includeThoughts": true, "thinkingBudget": 24576})},
-                    ),
-                ]
-                .into_iter()
-                .collect();
-            }
-            ["low", "high"]
-                .iter()
-                .map(|e| {
-                    (
-                        e.to_string(),
-                        hashmap! {
-                            "includeThoughts" => json!(true),
-                            "thinkingLevel" => json!(*e)
-                        },
-                    )
-                })
-                .collect()
-        }
-
-        "@ai-sdk/groq" => ["none", "low", "medium", "high"]
-            .iter()
-            .map(|e| {
-                (
-                    e.to_string(),
-                    hashmap! {
-                        "includeThoughts" => json!(true),
-                        "thinkingLevel" => json!(*e)
-                    },
-                )
-            })
-            .collect(),
-
-        "@ai-sdk/mistral" | "@ai-sdk/cohere" | "@ai-sdk/perplexity" => HashMap::new(),
-
-        "@mymediset/sap-ai-provider" | "@jerome-benoit/sap-ai-provider-v2" => {
-            if is_ethnopic_family_reference(api_id) {
-                return [
-                    (
-                        "high".into(),
-                        hashmap! {"thinking" => json!({"type": "enabled", "budgetTokens": 16000})},
-                    ),
-                    (
-                        "max".into(),
-                        hashmap! {"thinking" => json!({"type": "enabled", "budgetTokens": 31999})},
-                    ),
-                ]
-                .into_iter()
-                .collect();
-            }
-            WIDELY_SUPPORTED_EFFORTS
-                .iter()
-                .map(|e: &&str| (e.to_string(), hashmap! {"reasoningEffort" => json!(*e)}))
-                .collect()
         }
 
         _ => HashMap::new(),

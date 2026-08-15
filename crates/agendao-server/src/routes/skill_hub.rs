@@ -884,6 +884,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn server_state_for_project(project_dir: &std::path::Path) -> Arc<ServerState> {
+        crate::isolate_test_config_home();
         let mut state = ServerState::new();
         state.workspace_root = project_dir.to_path_buf();
         state.config_store = Arc::new(
@@ -1105,7 +1106,7 @@ Use for frontend tasks.
         authority
             .record_runtime_skill_usage(
                 "frontend-ui-ux",
-                "task",
+                "bash",
                 Some("stage_exec"),
                 Some("frontend"),
                 false,
@@ -1173,7 +1174,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1188,7 +1188,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1219,7 +1218,6 @@ related_skills: [provider-refresh]
 metadata:
   agendao:
     requires_tools: [read, http]
-    stage_filter: [implementation]
 ---
 Refresh provider credentials and configuration safely across GitLab integrations.
 "#,
@@ -1235,7 +1233,6 @@ related_skills: [frontend-ui-a11y]
 metadata:
   agendao:
     requires_tools: [read]
-    stage_filter: [implementation]
 ---
 Shape interface flow maps and layout decisions for shipped product screens.
 "#,
@@ -1251,7 +1248,6 @@ related_skills: [frontend-ui-ux]
 metadata:
   agendao:
     requires_tools: [grep]
-    stage_filter: [implementation]
 ---
 Audit accessibility semantics and keyboard focus behavior for shipped product screens.
 "#,
@@ -1262,7 +1258,7 @@ Audit accessibility semantics and keyboard focus behavior for shipped product sc
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1271,7 +1267,7 @@ Audit accessibility semantics and keyboard focus behavior for shipped product sc
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1336,7 +1332,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1351,7 +1346,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1367,7 +1361,6 @@ related_skills: [frontend-ui-a11y]
 metadata:
   agendao:
     requires_tools: [read]
-    stage_filter: [implementation]
 ---
 Shape interface flow maps and layout decisions for shipped product screens.
 "#,
@@ -1383,7 +1376,6 @@ related_skills: [frontend-ui-ux]
 metadata:
   agendao:
     requires_tools: [grep]
-    stage_filter: [implementation]
 ---
 Audit accessibility semantics and keyboard focus behavior for shipped product screens.
 "#,
@@ -1394,7 +1386,7 @@ Audit accessibility semantics and keyboard focus behavior for shipped product sc
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1403,7 +1395,7 @@ Audit accessibility semantics and keyboard focus behavior for shipped product sc
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1460,7 +1452,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1475,7 +1466,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1486,7 +1476,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1495,7 +1485,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1567,7 +1557,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1582,7 +1571,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1597,7 +1585,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review security-sensitive code changes with evidence collection.
 "#,
@@ -1773,7 +1760,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1789,7 +1775,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1801,7 +1786,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1810,7 +1795,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1848,7 +1833,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review repository changes carefully and verify evidence before reporting.
 "#,
@@ -1864,7 +1848,6 @@ category: review
 metadata:
   agendao:
     requires_tools: [read, grep]
-    stage_filter: [implementation]
 ---
 Review code changes carefully and verify evidence before reporting.
 "#,
@@ -1876,7 +1859,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,
@@ -1885,7 +1868,7 @@ Review code changes carefully and verify evidence before reporting.
         authority
             .record_runtime_skill_usage(
                 "repo-review",
-                "task",
+                "bash",
                 Some("implementation"),
                 Some("review"),
                 false,

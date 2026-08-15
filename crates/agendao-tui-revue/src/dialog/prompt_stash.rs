@@ -2,11 +2,11 @@
 //! `<data_dir>/agendao/prompt-stash.json`，启动载入、push/delete 落盘
 //! （水律：回流落盘，下一轮启动可复用）。
 
-use revue::prelude::*;
-use revue::event::Key;
-use serde::{Serialize, Deserialize};
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StashEntry {
@@ -22,7 +22,8 @@ fn default_stash_path() -> std::path::PathBuf {
 
 /// 启动期载入 stash（文件缺失/损坏时返回空，不阻断启动）。
 pub fn load_stash() -> Vec<StashEntry> {
-    std::fs::read_to_string(default_stash_path()).ok()
+    std::fs::read_to_string(default_stash_path())
+        .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
@@ -36,10 +37,12 @@ pub fn save_stash(entries: &[StashEntry]) {
     if let Ok(json) = serde_json::to_string(entries) {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
             use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
             if let Ok(mut f) = std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
                 .mode(0o600)
                 .open(&path)
             {
@@ -67,12 +70,23 @@ impl Default for StashDialog {
 
 impl StashDialog {
     pub fn new() -> Self {
-        Self { visible: false, entries: vec![], selected: 0 }
+        Self {
+            visible: false,
+            entries: vec![],
+            selected: 0,
+        }
     }
 
-    pub fn open(&mut self) { self.visible = true; self.selected = 0; }
-    pub fn close(&mut self) { self.visible = false; }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.selected = 0;
+    }
+    pub fn close(&mut self) {
+        self.visible = false;
+    }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     pub fn set_entries(&mut self, entries: Vec<StashEntry>) {
         self.entries = entries;
@@ -80,13 +94,23 @@ impl StashDialog {
     }
 
     /// 当前条目（供 dispatcher 在 delete 后同步回权威 self.stash_entries）。
-    pub fn entries(&self) -> &[StashEntry] { &self.entries }
+    pub fn entries(&self) -> &[StashEntry] {
+        &self.entries
+    }
 
     pub fn handle_key(&mut self, key: &Key) -> Option<String> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         match key {
-            Key::Escape => { self.close(); None }
-            Key::Up => { self.selected = self.selected.saturating_sub(1); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
+            Key::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                None
+            }
             Key::Down => {
                 let max = self.entries.len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(max);
@@ -111,32 +135,50 @@ impl StashDialog {
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
 
         if self.entries.is_empty() {
             let content = vstack().child(Text::new("(empty stash)").fg(colors::FG_MUTED()));
-            backdrop::render_dialog_bottom("Prompt Stash", colors::ACCENT_PURPLE(), content,
-                "Esc: close", ctx, geom, 5);
+            backdrop::render_dialog_bottom(
+                "Prompt Stash",
+                colors::ACCENT_PURPLE(),
+                content,
+                "Esc: close",
+                ctx,
+                geom,
+                5,
+            );
             return;
         }
 
         // backdrop sliding viewport 自动接管;此处不再 .take(N)(否则选中超出 N 视野不跟随)。
-        let items: Vec<ListItem> = self.entries.iter().enumerate().map(|(i, entry)| {
-            let preview: String = entry.text.chars().take(60).collect();
-            let marker = if i == self.selected { "▶ " } else { "  " };
-            ListItem::Row {
-                display: format!("{}{}", marker, preview),
-                muted: false,
-            }
-        }).collect();
+        let items: Vec<ListItem> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let preview: String = entry.text.chars().take(60).collect();
+                let marker = if i == self.selected { "▶ " } else { "  " };
+                ListItem::Row {
+                    display: format!("{}{}", marker, preview),
+                    muted: false,
+                }
+            })
+            .collect();
 
         backdrop::render_list_dialog_bottom(
-            "Prompt Stash",
-            colors::ACCENT_PURPLE(),
+            backdrop::ListDialogHeading {
+                title: "Prompt Stash",
+                border_color: colors::ACCENT_PURPLE(),
+            },
             &items,
             self.selected,
             "↑↓ navigate  Enter: restore  d: delete  Esc: close",
-            ctx, geom, 10,
+            ctx,
+            geom,
+            10,
         );
     }
 }

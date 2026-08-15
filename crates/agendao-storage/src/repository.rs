@@ -5,11 +5,13 @@ use serde_json;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Row, SqliteConnection, SqlitePool};
 
+#[cfg(test)]
+use agendao_types::MessagePart;
 use agendao_types::{
     MemoryConflictView, MemoryConsolidationRun, MemoryEvidenceRef, MemoryKind, MemoryRecord,
     MemoryRecordId, MemoryRuleHit, MemoryRuleHitQuery, MemoryRulePack, MemoryRulePackKind,
-    MemoryScope, MemoryStatus, MemoryValidationReport, MemoryValidationStatus, MessagePart,
-    MessageRole, Session, SessionMessage, SessionShare, SessionStatus, SessionSummary, SessionTime,
+    MemoryScope, MemoryStatus, MemoryValidationReport, MemoryValidationStatus, MessageRole,
+    Session, SessionMessage, SessionShare, SessionStatus, SessionSummary, SessionTime,
     SessionUsage,
 };
 
@@ -1462,7 +1464,12 @@ fn message_model_id(message: &SessionMessage) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
-fn message_usage_from_row(
+#[derive(FromRow)]
+struct MessageRow {
+    id: String,
+    session_id: String,
+    role: String,
+    created_at: i64,
     tokens_input: Option<i64>,
     tokens_context: Option<i64>,
     tokens_output: Option<i64>,
@@ -1471,29 +1478,56 @@ fn message_usage_from_row(
     tokens_cache_miss: Option<i64>,
     tokens_cache_write: Option<i64>,
     cost: Option<f64>,
-) -> Option<agendao_types::MessageUsage> {
-    let has_usage = tokens_input.unwrap_or(0) > 0
-        || tokens_context.unwrap_or(0) > 0
-        || tokens_output.unwrap_or(0) > 0
-        || tokens_reasoning.unwrap_or(0) > 0
-        || tokens_cache_read.unwrap_or(0) > 0
-        || tokens_cache_miss.unwrap_or(0) > 0
-        || tokens_cache_write.unwrap_or(0) > 0
-        || cost.unwrap_or(0.0) > 0.0;
-    if !has_usage {
-        return None;
-    }
+    finish: Option<String>,
+    metadata: Option<String>,
+    data: Option<String>,
+}
 
-    Some(agendao_types::MessageUsage {
-        input_tokens: tokens_input.unwrap_or(0) as u64,
-        output_tokens: tokens_output.unwrap_or(0) as u64,
-        reasoning_tokens: tokens_reasoning.unwrap_or(0) as u64,
-        cache_read_tokens: tokens_cache_read.unwrap_or(0) as u64,
-        cache_miss_tokens: tokens_cache_miss.unwrap_or(0) as u64,
-        cache_write_tokens: tokens_cache_write.unwrap_or(0) as u64,
-        context_tokens: tokens_context.unwrap_or(0) as u64,
-        total_cost: cost.unwrap_or(0.0),
-    })
+impl MessageRow {
+    fn into_message(self) -> Option<SessionMessage> {
+        let role = match self.role.as_str() {
+            "user" => MessageRole::User,
+            "assistant" => MessageRole::Assistant,
+            "system" => MessageRole::System,
+            "tool" => MessageRole::Tool,
+            _ => return None,
+        };
+        let has_usage = self.tokens_input.unwrap_or(0) > 0
+            || self.tokens_context.unwrap_or(0) > 0
+            || self.tokens_output.unwrap_or(0) > 0
+            || self.tokens_reasoning.unwrap_or(0) > 0
+            || self.tokens_cache_read.unwrap_or(0) > 0
+            || self.tokens_cache_miss.unwrap_or(0) > 0
+            || self.tokens_cache_write.unwrap_or(0) > 0
+            || self.cost.unwrap_or(0.0) > 0.0;
+        let usage = has_usage.then_some(agendao_types::MessageUsage {
+            input_tokens: self.tokens_input.unwrap_or(0) as u64,
+            output_tokens: self.tokens_output.unwrap_or(0) as u64,
+            reasoning_tokens: self.tokens_reasoning.unwrap_or(0) as u64,
+            cache_read_tokens: self.tokens_cache_read.unwrap_or(0) as u64,
+            cache_miss_tokens: self.tokens_cache_miss.unwrap_or(0) as u64,
+            cache_write_tokens: self.tokens_cache_write.unwrap_or(0) as u64,
+            context_tokens: self.tokens_context.unwrap_or(0) as u64,
+            total_cost: self.cost.unwrap_or(0.0),
+        });
+
+        Some(SessionMessage {
+            id: self.id,
+            session_id: self.session_id,
+            role,
+            parts: self
+                .data
+                .and_then(|content| serde_json::from_str(&content).ok())
+                .unwrap_or_default(),
+            created_at: DateTime::from_timestamp_millis(self.created_at).unwrap_or_else(Utc::now),
+            metadata: self
+                .metadata
+                .and_then(|metadata| serde_json::from_str(&metadata).ok())
+                .unwrap_or_default(),
+            usage,
+            finish: self.finish,
+        })
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -2285,25 +2319,6 @@ impl MessageRepository {
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionMessage>, DatabaseError> {
-        #[derive(FromRow)]
-        struct MessageRow {
-            id: String,
-            session_id: String,
-            role: String,
-            created_at: i64,
-            tokens_input: Option<i64>,
-            tokens_context: Option<i64>,
-            tokens_output: Option<i64>,
-            tokens_reasoning: Option<i64>,
-            tokens_cache_read: Option<i64>,
-            tokens_cache_miss: Option<i64>,
-            tokens_cache_write: Option<i64>,
-            cost: Option<f64>,
-            finish: Option<String>,
-            metadata: Option<String>,
-            data: Option<String>,
-        }
-
         let rows = sqlx::query_as::<_, MessageRow>(
             r#"SELECT
                    id, session_id, role, created_at,
@@ -2316,73 +2331,15 @@ impl MessageRepository {
         .await
         .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
 
-        let messages: Vec<SessionMessage> = rows
+        let messages = rows
             .into_iter()
-            .filter_map(|row| {
-                let msg_role = match row.role.as_str() {
-                    "user" => MessageRole::User,
-                    "assistant" => MessageRole::Assistant,
-                    "system" => MessageRole::System,
-                    "tool" => MessageRole::Tool,
-                    _ => return None,
-                };
-
-                let parts: Vec<MessagePart> = row
-                    .data
-                    .and_then(|c| serde_json::from_str(&c).ok())
-                    .unwrap_or_default();
-
-                let created =
-                    DateTime::from_timestamp_millis(row.created_at).unwrap_or_else(Utc::now);
-
-                Some(SessionMessage {
-                    id: row.id,
-                    session_id: row.session_id,
-                    role: msg_role,
-                    parts,
-                    created_at: created,
-                    metadata: row
-                        .metadata
-                        .and_then(|m| serde_json::from_str(&m).ok())
-                        .unwrap_or_default(),
-                    usage: message_usage_from_row(
-                        row.tokens_input,
-                        row.tokens_context,
-                        row.tokens_output,
-                        row.tokens_reasoning,
-                        row.tokens_cache_read,
-                        row.tokens_cache_miss,
-                        row.tokens_cache_write,
-                        row.cost,
-                    ),
-                    finish: row.finish,
-                })
-            })
+            .filter_map(MessageRow::into_message)
             .collect();
 
         Ok(messages)
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<SessionMessage>, DatabaseError> {
-        #[derive(FromRow)]
-        struct MessageRow {
-            id: String,
-            session_id: String,
-            role: String,
-            created_at: i64,
-            tokens_input: Option<i64>,
-            tokens_context: Option<i64>,
-            tokens_output: Option<i64>,
-            tokens_reasoning: Option<i64>,
-            tokens_cache_read: Option<i64>,
-            tokens_cache_miss: Option<i64>,
-            tokens_cache_write: Option<i64>,
-            cost: Option<f64>,
-            finish: Option<String>,
-            metadata: Option<String>,
-            data: Option<String>,
-        }
-
         let row = sqlx::query_as::<_, MessageRow>(
             r#"SELECT
                    id, session_id, role, created_at,
@@ -2395,49 +2352,7 @@ impl MessageRepository {
         .await
         .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
 
-        match row {
-            Some(row) => {
-                let msg_role = match row.role.as_str() {
-                    "user" => MessageRole::User,
-                    "assistant" => MessageRole::Assistant,
-                    "system" => MessageRole::System,
-                    "tool" => MessageRole::Tool,
-                    _ => return Ok(None),
-                };
-
-                let parts: Vec<MessagePart> = row
-                    .data
-                    .and_then(|c| serde_json::from_str(&c).ok())
-                    .unwrap_or_default();
-
-                let created =
-                    DateTime::from_timestamp_millis(row.created_at).unwrap_or_else(Utc::now);
-
-                Ok(Some(SessionMessage {
-                    id: row.id,
-                    session_id: row.session_id,
-                    role: msg_role,
-                    parts,
-                    created_at: created,
-                    metadata: row
-                        .metadata
-                        .and_then(|m| serde_json::from_str(&m).ok())
-                        .unwrap_or_default(),
-                    usage: message_usage_from_row(
-                        row.tokens_input,
-                        row.tokens_context,
-                        row.tokens_output,
-                        row.tokens_reasoning,
-                        row.tokens_cache_read,
-                        row.tokens_cache_miss,
-                        row.tokens_cache_write,
-                        row.cost,
-                    ),
-                    finish: row.finish,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.and_then(MessageRow::into_message))
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), DatabaseError> {
@@ -2915,10 +2830,9 @@ mod tests {
         let session_repo = SessionRepository::new(db.pool().clone());
 
         let mut session = make_session("s_meta");
-        session.metadata.insert(
-            "scheduler_profile".to_string(),
-            serde_json::json!("sisyphus"),
-        );
+        session
+            .metadata
+            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
         session
             .metadata
             .insert("scheduler_applied".to_string(), serde_json::json!(true));
@@ -2927,7 +2841,7 @@ mod tests {
 
         let loaded = session_repo.get("s_meta").await.unwrap().unwrap();
         assert_eq!(
-            loaded.metadata.get("scheduler_profile"),
+            loaded.metadata.get("scheduler"),
             Some(&serde_json::json!("sisyphus"))
         );
         assert_eq!(
@@ -2949,10 +2863,9 @@ mod tests {
             "resolved_system_prompt".to_string(),
             serde_json::json!("You are Sisyphus"),
         );
-        message.metadata.insert(
-            "scheduler_profile".to_string(),
-            serde_json::json!("sisyphus"),
-        );
+        message
+            .metadata
+            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
         message
             .metadata
             .insert("mode".to_string(), serde_json::json!("sisyphus"));
@@ -2965,7 +2878,7 @@ mod tests {
             Some(&serde_json::json!("You are Sisyphus"))
         );
         assert_eq!(
-            loaded.metadata.get("scheduler_profile"),
+            loaded.metadata.get("scheduler"),
             Some(&serde_json::json!("sisyphus"))
         );
         assert_eq!(
@@ -3098,10 +3011,9 @@ mod tests {
             "model_id".to_string(),
             serde_json::json!("deepseek-v4-flash"),
         );
-        message.metadata.insert(
-            "scheduler_profile".to_string(),
-            serde_json::json!("sisyphus"),
-        );
+        message
+            .metadata
+            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
         message.finish = Some("stop".to_string());
         message.usage = Some(agendao_types::MessageUsage {
             input_tokens: 19_199,
@@ -3126,7 +3038,7 @@ mod tests {
             .expect("message should persist");
         assert_eq!(loaded.finish.as_deref(), Some("stop"));
         assert_eq!(
-            loaded.metadata.get("scheduler_profile"),
+            loaded.metadata.get("scheduler"),
             Some(&serde_json::json!("sisyphus"))
         );
         assert_eq!(loaded.parts.len(), 1);

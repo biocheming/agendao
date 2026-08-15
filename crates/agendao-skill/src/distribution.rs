@@ -80,27 +80,6 @@ impl SkillDistributionResolver {
             }
         };
 
-        self.resolve_manifest_distribution(
-            base_dir,
-            source,
-            source_index,
-            skill_name,
-            resolver_kind,
-            artifact_kind,
-            fetch_timeout_ms,
-        )
-    }
-
-    fn resolve_manifest_distribution(
-        &self,
-        base_dir: &Path,
-        source: &SkillSourceRef,
-        source_index: &SkillSourceIndexSnapshot,
-        skill_name: &str,
-        resolver_kind: SkillDistributionResolverKind,
-        artifact_kind: SkillArtifactKind,
-        fetch_timeout_ms: u64,
-    ) -> Result<ResolvedSkillDistribution, SkillError> {
         let entry = source_index
             .entries
             .iter()
@@ -156,7 +135,7 @@ impl SkillDistributionResolver {
                 .or_else(|| entry.revision.clone())
                 .or_else(|| source.revision.clone()),
             checksum: manifest.checksum.clone().or_else(|| entry.checksum.clone()),
-            manifest_path: Some(manifest_locator.clone()),
+            manifest_path: Some(manifest_locator),
             published_at: manifest.published_at,
         };
         let record = SkillDistributionRecord {

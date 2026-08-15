@@ -112,23 +112,6 @@ fn permission_scope_label(scope_key: Option<&str>) -> Option<String> {
         return Some(format!("Shell commands: {}", families.join(", ")));
     }
 
-    if let Some(rest) = scope_key.strip_prefix("task:agent:") {
-        return Some(format!("Task agent: {rest}"));
-    }
-    if let Some(rest) = scope_key.strip_prefix("task:category:") {
-        return Some(format!("Task category: {rest}"));
-    }
-    if let Some(rest) = scope_key.strip_prefix("task_flow:") {
-        let label = match rest {
-            "create" => "create task",
-            "resume" => "resume task",
-            "get" => "inspect task",
-            "list" => "list tasks",
-            "cancel" => "cancel task",
-            _ => rest,
-        };
-        return Some(format!("Task flow: {label}"));
-    }
     if let Some(rest) = scope_key.strip_prefix("shell_session:") {
         let label = match rest {
             "start" => "start session",
@@ -466,19 +449,21 @@ pub(crate) async fn request_permission(
     match wait_result {
         Ok(Ok(PermissionReply { reply, message })) => {
             // P3: Broadcast PermissionResolved to canonical event bus
-            let resolved_event = agendao_server_core::runtime_events::ServerEvent::PermissionResolved {
-                session_id: session_id.clone(),
-                permission_id: permission_id.clone(),
-                reply: reply.clone(),
-                message: message.clone(),
-            };
+            let resolved_event =
+                agendao_server_core::runtime_events::ServerEvent::PermissionResolved {
+                    session_id: session_id.clone(),
+                    permission_id: permission_id.clone(),
+                    reply: reply.clone(),
+                    message: message.clone(),
+                };
             crate::session_runtime::events::broadcast_server_event(&state, &resolved_event);
 
             match reply.as_str() {
                 "once" | "turn" | "session" | "always" => Ok(()),
                 "reject" => Err(agendao_tool::ToolError::PermissionDenied(
-                    message
-                        .unwrap_or_else(|| format!("Permission rejected for {}", request.permission)),
+                    message.unwrap_or_else(|| {
+                        format!("Permission rejected for {}", request.permission)
+                    }),
                 )),
                 other => Err(agendao_tool::ToolError::ExecutionError(format!(
                     "Invalid permission reply: {}",
@@ -1005,64 +990,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_permission_exposes_scope_only_authority_fields() {
-        let _guard = TEST_PERMISSION_LOCK.lock().await;
-        const SESSION_ID: &str = "session-scope-only-fields";
-        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
-
-        let state = Arc::new(ServerState::new());
-        let state_for_request = state.clone();
-        let request_task = tokio::spawn(async move {
-            request_permission(
-                state_for_request,
-                SESSION_ID.to_string(),
-                agendao_tool::PermissionRequest::new("task_flow")
-                    .with_scope_key("task_flow:create")
-                    .with_supported_lifetimes(agendao_tool::structured_dangerous_exec_lifetimes())
-                    .with_risk_tag("dangerous_exec")
-                    .with_metadata("operation", serde_json::json!("create")),
-            )
-            .await
-        });
-
-        let permission = loop {
-            let engine = PERMISSION_ENGINE.lock().await;
-            if let Some(info) = engine.list().first().cloned().cloned() {
-                break info;
-            }
-            drop(engine);
-            tokio::task::yield_now().await;
-        };
-
-        let rendered = permission_request_info(&permission);
-        assert_eq!(rendered.matcher_kind.as_deref(), Some("scope_only"));
-        assert_eq!(rendered.matcher_key.as_deref(), Some("task_flow:create"));
-        assert_eq!(rendered.matcher_label, None);
-        assert_eq!(
-            rendered.grant_target_summary.as_deref(),
-            Some("Task flow: create task")
-        );
-        assert_eq!(rendered.risk_tags, vec!["dangerous_exec".to_string()]);
-
-        let _ = reply_permission(
-            State(state),
-            Path(permission.id.clone()),
-            Json(ReplyPermissionRequest {
-                reply: "once".to_string(),
-                message: None,
-            }),
-        )
-        .await
-        .expect("reply should succeed");
-
-        request_task
-            .await
-            .expect("request task join")
-            .expect("permission allowed");
-        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
-    }
-
-    #[tokio::test]
     async fn reply_permission_records_permission_grant_telemetry_on_owner_session() {
         let _guard = TEST_PERMISSION_LOCK.lock().await;
         let state = Arc::new(ServerState::new());
@@ -1078,11 +1005,11 @@ mod tests {
             request_permission(
                 state_for_scope_only,
                 session_id_for_scope_only,
-                agendao_tool::PermissionRequest::new("task_flow")
-                    .with_scope_key("task_flow:create")
+                agendao_tool::PermissionRequest::new("shell_session")
+                    .with_scope_key("shell_session:start")
                     .with_supported_lifetimes(agendao_tool::structured_dangerous_exec_lifetimes())
                     .with_risk_tag("dangerous_exec")
-                    .with_metadata("operation", serde_json::json!("create")),
+                    .with_metadata("operation", serde_json::json!("start")),
             )
             .await
         });

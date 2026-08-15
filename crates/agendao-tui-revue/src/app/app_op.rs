@@ -57,7 +57,7 @@ pub enum AppOpOutcome {
         result: Result<String, String>,
     },
     /// 弹窗打开拉取完成（U6⑤：`/sessions` `/skills` `/proposals` `/mcps`
-    /// `/recovery` `/tasks` `/modes` 及 ModelSelect 的 recent 拉取，原全部
+    /// `/recovery` `/modes` 及 ModelSelect 的 recent 拉取，原全部
     /// UI 线程 block_on）。数据变体即弹窗判别器（金：事件语义不可漂移）；
     /// Err 携带 spawn 点拼好的完整失败 toast 文案（那里有弹窗上下文）。
     DialogFetchDone(Result<DialogFetchData, String>),
@@ -73,7 +73,6 @@ pub enum DialogFetchData {
     SkillProposals(Vec<agendao_client::SkillEvolutionProposal>),
     McpStatus(Vec<agendao_client::McpStatusInfo>),
     Recovery(Box<agendao_client::SessionRecoveryProtocol>),
-    Tasks(Vec<agendao_client::TaskSummaryInfo>),
     Modes(Vec<agendao_client::ExecutionModeInfo>),
     Sessions(Vec<agendao_client::SessionListItem>),
 }

@@ -207,7 +207,7 @@ fn structured_tool_timeout_hint(command: &str) -> Option<&'static str> {
             Some("If you were only discovering files, prefer `glob` or `ls` instead of `bash`.")
         }
         "python" | "python3" | "node" | "npm" | "pnpm" | "yarn" | "cargo" | "make" => Some(
-            "If this work is long-running or multi-step, prefer delegating it with `task_flow` instead of holding the main turn in `bash`.",
+            "If this work is long-running, split it into bounded commands and inspect each result before continuing.",
         ),
         _ => None,
     }
@@ -229,7 +229,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the specified working directory. Prefer structured tools such as read, glob, grep, edit, write, or task_flow when they can complete the job more directly. Use bash as a last resort for commands that genuinely require the shell, build tools, package managers, or external CLIs."
+        "Execute a shell command in the specified working directory. Prefer structured tools such as read, glob, grep, edit, or write when they can complete the job more directly. Use bash for commands that genuinely require the shell, build tools, package managers, or external CLIs."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -680,9 +680,9 @@ mod tests {
     }
 
     #[test]
-    fn structured_tool_timeout_hint_prefers_task_flow_for_long_running_builds() {
+    fn structured_tool_timeout_hint_bounds_long_running_builds() {
         let err = bash_timeout_error("cargo test", 5000);
         let message = err.to_string();
-        assert!(message.contains("prefer delegating it with `task_flow`"));
+        assert!(message.contains("split it into bounded commands"));
     }
 }

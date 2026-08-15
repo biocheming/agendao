@@ -146,7 +146,7 @@ impl AgentRegistry {
             agendao_provider::Message::user(&user_content),
         ];
 
-        let request = agendao_orchestrator::agent_generation_request(model_ref.model_id.clone())
+        let request = agendao_execution_types::agent_generation_request(model_ref.model_id.clone())
             .to_chat_request(messages, vec![], false);
 
         let response = provider.chat(request).await?;

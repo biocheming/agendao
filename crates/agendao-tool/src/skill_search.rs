@@ -140,7 +140,8 @@ impl Tool for SkillSearchTool {
             );
 
         if total_matches == 0 {
-            result = result.with_metadata("message", serde_json::json!("No matching skills found."));
+            result =
+                result.with_metadata("message", serde_json::json!("No matching skills found."));
         }
 
         Ok(result)

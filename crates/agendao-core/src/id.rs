@@ -97,10 +97,6 @@ pub fn timestamp(id: &str) -> Option<u64> {
     Some(encoded / 0x1000)
 }
 
-pub fn validate_prefix(id: &str, expected: Prefix) -> bool {
-    id.starts_with(expected.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,12 +113,5 @@ mod tests {
         let id = create(Prefix::Session, false, Some(1700000000000));
         let ts = timestamp(&id);
         assert!(ts.is_some());
-    }
-
-    #[test]
-    fn test_validate_prefix() {
-        let id = create(Prefix::Session, false, None);
-        assert!(validate_prefix(&id, Prefix::Session));
-        assert!(!validate_prefix(&id, Prefix::Message));
     }
 }

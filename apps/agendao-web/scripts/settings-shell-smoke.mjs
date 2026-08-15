@@ -16,7 +16,6 @@ const SETTINGS_TABS = [
   { id: "general", panel: "[data-testid='settings-panel-general']" },
   { id: "memory", panel: "[data-testid='settings-panel-memory'], [data-testid='settings-panel-memory-loading']" },
   { id: "providers", panel: "[data-testid='settings-panel-providers']" },
-  { id: "scheduler", panel: "[data-testid='settings-panel-scheduler']" },
   { id: "validation", panel: "[data-testid='settings-panel-validation']" },
   { id: "skills", panel: "[data-testid='settings-panel-skills'], [data-testid='settings-panel-skills-loading']" },
   { id: "mcp", panel: "[data-testid='settings-panel-mcp']" },

@@ -1,7 +1,4 @@
-use crate::schema::{
-    AgentConfig, AgentConfigs, AgentMode, PermissionAction, PermissionConfig, PermissionRule,
-    PluginConfig,
-};
+use crate::schema::{AgentConfig, PermissionConfig};
 use crate::Config;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -122,31 +119,8 @@ pub fn get_plugin_name(plugin: &str) -> String {
     plugin.to_string()
 }
 
-/// Deduplicate plugins by name, with later entries (higher priority) winning.
-/// Since plugins are added in low-to-high priority order,
-/// we reverse, deduplicate (keeping first occurrence), then restore order.
-pub fn deduplicate_plugins(
-    plugins: HashMap<String, PluginConfig>,
-) -> HashMap<String, PluginConfig> {
-    // HashMap is inherently deduplicated by key.
-    plugins
-}
-
-/// Apply post-load transforms: legacy migrations, flag overrides, plugin dedup.
+/// Apply environment overrides.
 pub(super) fn apply_post_load_transforms(config: &mut Config) {
-    // Migrate deprecated `mode` field to `agent` field
-    if let Some(mode_configs) = config.mode.take() {
-        let agent_configs = config.agent.get_or_insert_with(AgentConfigs::default);
-        for (name, mut mode_agent) in mode_configs.entries {
-            mode_agent.mode = Some(AgentMode::Primary);
-            if let Some(existing) = agent_configs.entries.get_mut(&name) {
-                merge_agent_config(existing, mode_agent);
-            } else {
-                agent_configs.entries.insert(name, mode_agent);
-            }
-        }
-    }
-
     // AGENDAO_PERMISSION env var override
     if let Ok(perm_json) = env::var("AGENDAO_PERMISSION") {
         if let Ok(perm) = serde_json::from_str::<PermissionConfig>(&perm_json) {
@@ -159,67 +133,9 @@ pub(super) fn apply_post_load_transforms(config: &mut Config) {
         }
     }
 
-    // Backwards compatibility: legacy top-level `tools` config -> permission
-    if let Some(tools) = config.tools.take() {
-        let mut perms = HashMap::new();
-        for (tool, enabled) in tools {
-            let action = if enabled {
-                PermissionAction::Allow
-            } else {
-                PermissionAction::Deny
-            };
-            // write, edit, patch, multiedit all map to "edit" permission
-            if tool == "write" || tool == "edit" || tool == "patch" || tool == "multiedit" {
-                perms.insert("edit".to_string(), PermissionRule::Action(action));
-            } else {
-                perms.insert(tool, PermissionRule::Action(action));
-            }
-        }
-        // Legacy tools have lower priority than explicit permission config
-        if let Some(existing) = &config.permission {
-            for (k, v) in existing.rules.clone() {
-                perms.insert(k, v);
-            }
-        }
-        config.permission = Some(PermissionConfig { rules: perms });
-    }
-
     // Set default username from system
     if config.username.is_none() {
         config.username = env::var("USER").or_else(|_| env::var("USERNAME")).ok();
-    }
-
-    // Handle migration from autoshare to share field
-    if config.autoshare == Some(true) && config.share.is_none() {
-        config.share = Some(crate::schema::ShareMode::Auto);
-    }
-
-    if let Some(legacy_voice) = config.voice.clone() {
-        let multimodal = config
-            .multimodal
-            .get_or_insert_with(crate::schema::MultimodalConfig::default);
-        if let Some(current_voice) = multimodal.voice.as_mut() {
-            if current_voice.duration_seconds.is_none() {
-                current_voice.duration_seconds = legacy_voice.duration_seconds;
-            }
-            if current_voice.attach_audio.is_none() {
-                current_voice.attach_audio = legacy_voice.attach_audio;
-            }
-            if current_voice.mime.is_none() {
-                current_voice.mime = legacy_voice.mime;
-            }
-            if current_voice.language.is_none() {
-                current_voice.language = legacy_voice.language;
-            }
-            if current_voice.record.is_none() {
-                current_voice.record = legacy_voice.record;
-            }
-            if current_voice.transcribe.is_none() {
-                current_voice.transcribe = legacy_voice.transcribe;
-            }
-        } else {
-            multimodal.voice = Some(legacy_voice);
-        }
     }
 
     // Apply flag overrides for compaction settings
@@ -231,10 +147,6 @@ pub(super) fn apply_post_load_transforms(config: &mut Config) {
         let compaction = config.compaction.get_or_insert_with(Default::default);
         compaction.prune = Some(false);
     }
-
-    // Deduplicate plugins
-    let plugins = std::mem::take(&mut config.plugin);
-    config.plugin = deduplicate_plugins(plugins);
 }
 
 /// Loads config synchronously (without remote wellknown fetching).

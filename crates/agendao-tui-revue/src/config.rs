@@ -19,7 +19,7 @@ pub struct AppConfig {
     pub base_url: Option<String>,
     /// Pre-created local server state (from outer async context).
     /// When provided, run_app_with_config skips internal server creation.
-    pub local_server: Option<Arc<agendao_server_local::LocalServerState>>,
+    pub local_server: Option<Arc<agendao_server::ServerState>>,
 
     // ── Session ──
     pub agent_name: Option<String>,
@@ -59,17 +59,20 @@ pub fn init_logging() {
     let log_dir = agendao_util::agendao_home().join("log");
     std::fs::create_dir_all(&log_dir).ok();
     let log_file = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(log_dir.join("agendao.log")).ok();
+        .create(true)
+        .append(true)
+        .open(log_dir.join("agendao.log"))
+        .ok();
     if let Some(file) = log_file {
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("warn"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false).init();
+            .with_ansi(false)
+            .init();
     } else {
         tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("warn")).init();
+            .with_env_filter(EnvFilter::new("warn"))
+            .init();
     }
 }

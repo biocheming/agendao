@@ -3,13 +3,13 @@
 //! Old TUI: tokio::spawn + watch::channel session filter + UiBridge.
 //! New: handle.spawn + watch::channel session filter + EventBus sender.
 
+use agendao_server_core::frontend_events::FrontendEvent;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use agendao_server_core::frontend_events::FrontendEvent;
 
 /// Helper: extract session_id from any FrontendEvent variant.
 fn event_session_id(event: &FrontendEvent) -> Option<&str> {
@@ -29,18 +29,31 @@ fn event_session_id(event: &FrontendEvent) -> Option<&str> {
     }
 }
 
-/// Spawn event source from a pre-created LocalServerState.
+pub async fn new_local_server_for_workspace(
+    workspace_root: PathBuf,
+) -> anyhow::Result<Arc<agendao_server::ServerState>> {
+    let state = Arc::new(
+        agendao_server::ServerState::new_with_storage_for_url_in_workspace(
+            "http://127.0.0.1:0".to_string(),
+            workspace_root,
+        )
+        .await?,
+    );
+    state.ensure_frontend_projector();
+    Ok(state)
+}
+
+/// Spawn event source from a pre-created server state.
 pub fn spawn_source_from_state(
     tx: UnboundedSender<FrontendEvent>,
-    state: Arc<agendao_server_local::LocalServerState>,
+    state: Arc<agendao_server::ServerState>,
     handle: &tokio::runtime::Handle,
     session_filter: watch::Receiver<Option<String>>,
 ) -> Option<JoinHandle<()>> {
     let jh = handle.spawn(async move {
         let cancel = CancellationToken::new();
-        let mut rx = agendao_server_local::spawn_direct_event_bus(
-            Arc::clone(&state), cancel.clone(),
-        );
+        let mut rx =
+            agendao_server::spawn_local_frontend_events(Arc::clone(&state), cancel.clone());
         let mut filter_rx = session_filter;
         loop {
             tokio::select! {
@@ -65,7 +78,7 @@ pub fn spawn_source_from_state(
 
 /// Spawn a background task that forwards local-direct events to `tx`.
 ///
-/// Mirrors old TUI's spawn_tui_direct_event_bridge():
+/// Connect the local TUI to the canonical frontend event receiver:
 /// - Creates LocalServerState for the workspace
 /// - Filters events by session_id via watch::channel
 /// - Forwards matching events to tx
@@ -76,9 +89,7 @@ pub fn spawn_event_source(
     session_filter: watch::Receiver<Option<String>>,
 ) -> Option<JoinHandle<()>> {
     let jh = handle.spawn(async move {
-        let state = match agendao_server_local::new_local_server_for_workspace(
-            workspace_root.clone(),
-        ).await {
+        let state = match new_local_server_for_workspace(workspace_root.clone()).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(?workspace_root, %e, "failed to init local server");
@@ -86,9 +97,8 @@ pub fn spawn_event_source(
             }
         };
         let cancel = CancellationToken::new();
-        let mut rx = agendao_server_local::spawn_direct_event_bus(
-            Arc::clone(&state), cancel.clone(),
-        );
+        let mut rx =
+            agendao_server::spawn_local_frontend_events(Arc::clone(&state), cancel.clone());
         let mut filter_rx = session_filter;
         loop {
             tokio::select! {

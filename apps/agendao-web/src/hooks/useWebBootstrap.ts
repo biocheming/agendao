@@ -55,9 +55,7 @@ function isSessionWithinWorkspace(session: SessionRecord, workspaceRoot: string)
 }
 
 function visibleModes(modeData: ExecutionMode[] | null | undefined): ExecutionMode[] {
-  return (modeData ?? [])
-    .filter((mode) => mode.hidden !== true)
-    .filter((mode) => mode.kind !== "agent" || mode.mode !== "subagent");
+  return (modeData ?? []).filter((mode) => mode.hidden !== true);
 }
 
 export function useWebBootstrap({

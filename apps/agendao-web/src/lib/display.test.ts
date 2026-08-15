@@ -263,9 +263,9 @@ describe("modeKey", () => {
     expect(modeKey(mode)).toBe("agent:coder");
   });
 
-  it("formats preset mode", () => {
-    const mode: ExecutionMode = { kind: "preset", id: "fast", name: "Fast" };
-    expect(modeKey(mode)).toBe("preset:fast");
+  it("formats scheduler mode", () => {
+    const mode: ExecutionMode = { kind: "scheduler", id: "direct", name: "Direct" };
+    expect(modeKey(mode)).toBe("scheduler:direct");
   });
 });
 

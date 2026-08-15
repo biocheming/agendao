@@ -1,4 +1,3 @@
-mod custom_loaders;
 mod provider_factory;
 mod state;
 #[cfg(test)]
@@ -10,22 +9,16 @@ use crate::models::{ModelInfo, ModelInterleaved, ModelsData, ProviderInfo as Mod
 use crate::provider::ProviderRegistry;
 use std::collections::HashMap;
 
-use self::custom_loaders::get_custom_loader;
-#[cfg(test)]
-use self::custom_loaders::AmazonBedrockLoader;
 use self::provider_factory::{
-    create_concrete_provider, load_models_dev_cache, register_fallback_env_providers,
-    wrap_provider_for_state,
+    create_concrete_provider, load_models_dev_cache, wrap_provider_for_state,
 };
 
-pub use self::custom_loaders::{CustomLoader, CustomLoaderResult};
 pub use self::state::{parse_model, ParsedModel, ProviderBootstrapState, ProviderPatch};
 pub use self::types::{
-    is_gpt5_or_later, should_use_copilot_responses_api, BootstrapConfig, BootstrapError,
-    ConfigModalities, ConfigModel, ConfigModelCost, ConfigModelLimit, ConfigModelProvider,
-    ConfigProvider, InterleavedConfig, ModalitySet, ModelCapabilities, ModelCostCache,
-    ModelCostOver200K, ProviderModel, ProviderModelApi, ProviderModelCost, ProviderModelLimit,
-    ProviderState, BUNDLED_PROVIDERS,
+    is_gpt5_or_later, BootstrapConfig, BootstrapError, ConfigModalities, ConfigModel,
+    ConfigModelCost, ConfigModelLimit, ConfigModelProvider, ConfigProvider, InterleavedConfig,
+    ModalitySet, ModelCapabilities, ModelCostCache, ModelCostOver200K, ProviderModel,
+    ProviderModelApi, ProviderModelCost, ProviderModelLimit, ProviderState,
 };
 
 /// Transform a models.dev model into a runtime ProviderModel.
@@ -209,13 +202,6 @@ fn bootstrap_registry(
         }
     }
 
-    if registry.list().is_empty() {
-        tracing::debug!(
-            "No providers registered from bootstrap state, falling back to direct env registration"
-        );
-        register_fallback_env_providers(&mut registry);
-    }
-
     registry
 }
 
@@ -243,46 +229,6 @@ pub fn bootstrap_config_from_raw(
         enable_experimental: false,
         model,
         small_model,
-    }
-}
-
-/// Apply custom loaders to models data, mutating it in place.
-/// This runs each provider's custom loader and applies blacklists, headers,
-/// and option overrides.
-pub fn apply_custom_loaders(data: &mut ModelsData) {
-    let provider_ids: Vec<String> = data.keys().cloned().collect();
-
-    for provider_id in &provider_ids {
-        if let Some(loader) = get_custom_loader(provider_id) {
-            let provider_info = match data.get(provider_id) {
-                Some(provider) => provider.clone(),
-                None => continue,
-            };
-            let result = loader.load(&provider_info, None);
-
-            if !result.blacklist.is_empty() {
-                if let Some(provider) = data.get_mut(provider_id) {
-                    provider.models.retain(|model_id, _| {
-                        let lower = model_id.to_lowercase();
-                        !result
-                            .blacklist
-                            .iter()
-                            .any(|pattern| lower.contains(pattern))
-                    });
-                }
-            }
-
-            if !result.headers.is_empty() {
-                if let Some(provider) = data.get_mut(provider_id) {
-                    for model in provider.models.values_mut() {
-                        let headers = model.headers.get_or_insert_with(HashMap::new);
-                        for (key, value) in &result.headers {
-                            headers.insert(key.clone(), value.clone());
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

@@ -1,17 +1,16 @@
 use crate::auth::AuthInfo;
-use crate::models::{ModelInfo, ModelInterleaved, ModelsData, ProviderInfo as ModelsProviderInfo};
-use std::collections::{HashMap, HashSet};
+use crate::models::{ModelsData, ProviderInfo as ModelsProviderInfo};
+use std::collections::HashMap;
 
-use super::{from_models_dev_provider, get_custom_loader, BootstrapConfig, BootstrapError};
+use super::{from_models_dev_provider, BootstrapConfig, BootstrapError};
 use super::{
-    ConfigModel, ConfigProvider, InterleavedConfig, ModalitySet, ModelCapabilities, ModelCostCache,
-    ProviderModel, ProviderModelApi, ProviderModelCost, ProviderModelLimit, ProviderState,
+    ConfigModel, ConfigProvider, ModalitySet, ModelCapabilities, ModelCostCache, ProviderModel,
+    ProviderModelApi, ProviderModelCost, ProviderModelLimit, ProviderState,
 };
 
 /// The initialized provider state, analogous to the TS `state()` return value.
 pub struct ProviderBootstrapState {
     pub providers: HashMap<String, ProviderState>,
-    pub model_loaders: HashSet<String>,
 }
 
 impl ProviderBootstrapState {
@@ -23,6 +22,7 @@ impl ProviderBootstrapState {
     ) -> Self {
         let mut database: HashMap<String, ProviderState> = models_dev
             .iter()
+            .filter(|(id, _)| matches!(id.as_str(), "openai" | "anthropic"))
             .map(|(id, provider)| (id.clone(), from_models_dev_provider(provider)))
             .collect();
 
@@ -30,18 +30,6 @@ impl ProviderBootstrapState {
         let enabled = &config.enabled_providers;
 
         let mut providers: HashMap<String, ProviderState> = HashMap::new();
-        let mut model_loaders: HashSet<String> = HashSet::new();
-
-        if let Some(github_copilot) = database.get("github-copilot").cloned() {
-            let mut enterprise = github_copilot.clone();
-            enterprise.id = "github-copilot-enterprise".to_string();
-            enterprise.name = "GitHub Copilot Enterprise".to_string();
-            for model in enterprise.models.values_mut() {
-                model.provider_id = "github-copilot-enterprise".to_string();
-            }
-            database.insert("github-copilot-enterprise".to_string(), enterprise);
-        }
-
         let merge_provider = |providers: &mut HashMap<String, ProviderState>,
                               database: &HashMap<String, ProviderState>,
                               provider_id: &str,
@@ -76,7 +64,7 @@ impl ProviderBootstrapState {
                     cfg_provider.options.as_ref().unwrap_or(&HashMap::new()),
                 ),
                 source: "config".to_string(),
-                key: None,
+                key: cfg_provider.api_key.clone(),
                 models: existing
                     .map(|provider| provider.models.clone())
                     .unwrap_or_default(),
@@ -153,59 +141,6 @@ impl ProviderBootstrapState {
             }
         }
 
-        for (provider_id, data) in &database {
-            if disabled.contains(provider_id) {
-                continue;
-            }
-            if let Some(loader) = get_custom_loader(provider_id) {
-                let models_provider = to_models_provider_info(data, models_dev.get(provider_id));
-                let result = loader.load(&models_provider, Some(data));
-
-                if result.autoload || providers.contains_key(provider_id) {
-                    if result.has_custom_get_model {
-                        model_loaders.insert(provider_id.clone());
-                    }
-
-                    let patch = ProviderPatch {
-                        source: if providers.contains_key(provider_id) {
-                            None
-                        } else {
-                            Some("custom".to_string())
-                        },
-                        options: if result.options.is_empty() {
-                            None
-                        } else {
-                            Some(result.options)
-                        },
-                        ..Default::default()
-                    };
-                    merge_provider(&mut providers, &database, provider_id, patch);
-
-                    if !result.headers.is_empty() {
-                        if let Some(provider) = providers.get_mut(provider_id) {
-                            for model in provider.models.values_mut() {
-                                for (key, value) in &result.headers {
-                                    model.headers.insert(key.clone(), value.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    if !result.blacklist.is_empty() {
-                        if let Some(provider) = providers.get_mut(provider_id) {
-                            provider.models.retain(|model_id, _| {
-                                let lower = model_id.to_lowercase();
-                                !result
-                                    .blacklist
-                                    .iter()
-                                    .any(|pattern| lower.contains(pattern))
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
         for (provider_id, cfg_provider) in &config.providers {
             let mut patch = ProviderPatch {
                 source: Some("config".to_string()),
@@ -216,6 +151,9 @@ impl ProviderBootstrapState {
             }
             if let Some(name) = &cfg_provider.name {
                 patch.name = Some(name.clone());
+            }
+            if let Some(api_key) = &cfg_provider.api_key {
+                patch.key = Some(api_key.clone());
             }
             if let Some(options) = &cfg_provider.options {
                 patch.options = Some(options.clone());
@@ -248,7 +186,6 @@ impl ProviderBootstrapState {
                         let model = &provider.models[&model_id];
 
                         let blocked_by_status = model_id == "gpt-5-chat-latest"
-                            || (provider_id == "openrouter" && model_id == "openai/gpt-5-chat")
                             || (model.status == "alpha" && !config.enable_experimental)
                             || model.status == "deprecated";
 
@@ -284,10 +221,7 @@ impl ProviderBootstrapState {
             }
         }
 
-        Self {
-            providers,
-            model_loaders,
-        }
+        Self { providers }
     }
 
     pub fn list(&self) -> &HashMap<String, ProviderState> {
@@ -350,67 +284,13 @@ impl ProviderBootstrapState {
         }
 
         if let Some(provider) = self.providers.get(provider_id) {
-            let mut priority: Vec<&str> = vec!["gemini-3-flash", "gemini-2.5-flash", "gpt-5-nano"];
-
-            if provider_id.starts_with("opencode") {
-                priority = vec!["gpt-5-nano"];
-            }
-            if provider_id.starts_with("github-copilot") {
-                priority = vec!["gpt-5-mini"];
-                priority.extend_from_slice(&["gemini-3-flash", "gemini-2.5-flash", "gpt-5-nano"]);
-            }
-
+            let priority = ["gpt-5-nano"];
             for item in &priority {
-                if provider_id == "amazon-bedrock" {
-                    let cross_region_prefixes = ["global.", "us.", "eu."];
-                    let candidates: Vec<&String> = provider
-                        .models
-                        .keys()
-                        .filter(|model_id| model_id.contains(item))
-                        .collect();
-
-                    if let Some(global_match) = candidates
-                        .iter()
-                        .find(|model_id| model_id.starts_with("global."))
-                    {
-                        return provider.models.get(*global_match).cloned();
-                    }
-
-                    let region = provider
-                        .options
-                        .get("region")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("");
-                    let region_prefix = region.split('-').next().unwrap_or("");
-                    if region_prefix == "us" || region_prefix == "eu" {
-                        if let Some(regional) = candidates
-                            .iter()
-                            .find(|model_id| model_id.starts_with(&format!("{}.", region_prefix)))
-                        {
-                            return provider.models.get(*regional).cloned();
-                        }
-                    }
-
-                    if let Some(unprefixed) = candidates.iter().find(|model_id| {
-                        !cross_region_prefixes
-                            .iter()
-                            .any(|prefix| model_id.starts_with(prefix))
-                    }) {
-                        return provider.models.get(*unprefixed).cloned();
-                    }
-                } else {
-                    for model_id in provider.models.keys() {
-                        if model_id.contains(item) {
-                            return provider.models.get(model_id).cloned();
-                        }
+                for model_id in provider.models.keys() {
+                    if model_id.contains(item) {
+                        return provider.models.get(model_id).cloned();
                     }
                 }
-            }
-        }
-
-        if let Some(provider) = self.providers.get("opencode") {
-            if let Some(model) = provider.models.get("gpt-5-nano") {
-                return Some(model.clone());
             }
         }
 
@@ -418,7 +298,7 @@ impl ProviderBootstrapState {
     }
 
     pub fn sort_models(models: &mut [ProviderModel]) {
-        let priority_list = ["gpt-5", "big-pickle", "gemini-3-pro"];
+        let priority_list = ["gpt-5", "big-pickle"];
 
         models.sort_by(|a, b| {
             let a_priority = priority_list
@@ -518,7 +398,7 @@ fn apply_config_provider_profile_options(
 
     if !profile.is_empty() {
         options.insert(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::Value::Object(profile),
         );
     }
@@ -795,74 +675,6 @@ fn merge_string_maps(
         result.insert(key.clone(), value.clone());
     }
     result
-}
-
-fn to_models_provider_info(
-    state: &ProviderState,
-    original: Option<&ModelsProviderInfo>,
-) -> ModelsProviderInfo {
-    if let Some(original) = original {
-        return original.clone();
-    }
-
-    let models = state
-        .models
-        .iter()
-        .map(|(id, provider_model)| {
-            let model_info = ModelInfo {
-                id: provider_model.id.clone(),
-                name: provider_model.name.clone(),
-                family: provider_model.family.clone(),
-                release_date: Some(provider_model.release_date.clone()),
-                attachment: provider_model.capabilities.attachment,
-                reasoning: provider_model.capabilities.reasoning,
-                temperature: provider_model.capabilities.temperature,
-                tool_call: provider_model.capabilities.toolcall,
-                interleaved: match &provider_model.capabilities.interleaved {
-                    InterleavedConfig::Bool(value) => Some(ModelInterleaved::Bool(*value)),
-                    InterleavedConfig::Field { field } => Some(ModelInterleaved::Field {
-                        field: field.clone(),
-                    }),
-                },
-                cost: Some(crate::models::ModelCost {
-                    input: provider_model.cost.input,
-                    output: provider_model.cost.output,
-                    cache_read: Some(provider_model.cost.cache.read),
-                    cache_write: Some(provider_model.cost.cache.write),
-                    context_over_200k: None,
-                }),
-                limit: crate::models::ModelLimit {
-                    context: provider_model.limit.context,
-                    input: provider_model.limit.input,
-                    output: provider_model.limit.output,
-                },
-                modalities: None,
-                experimental: None,
-                status: Some(provider_model.status.clone()),
-                options: provider_model.options.clone(),
-                headers: if provider_model.headers.is_empty() {
-                    None
-                } else {
-                    Some(provider_model.headers.clone())
-                },
-                provider: Some(crate::models::ModelProvider {
-                    npm: Some(provider_model.api.npm.clone()),
-                    api: Some(provider_model.api.url.clone()),
-                }),
-                variants: provider_model.variants.clone(),
-            };
-            (id.clone(), model_info)
-        })
-        .collect();
-
-    ModelsProviderInfo {
-        id: state.id.clone(),
-        name: state.name.clone(),
-        env: state.env.clone(),
-        api: None,
-        npm: None,
-        models,
-    }
 }
 
 fn fuzzy_match(query: &str, options: &[String], max: usize) -> Vec<String> {

@@ -103,9 +103,7 @@ export function modeKey(mode: ExecutionMode): string {
 
 export type PromptPart =
   | { type: "text"; text: string }
-  | { type: "file"; url: string; filename?: string; mime?: string }
-  | { type: "agent"; name: string }
-  | { type: "subtask"; prompt: string; description?: string; agent: string };
+  | { type: "file"; url: string; filename?: string; mime?: string };
 
 export function promptPreviewText(content: string, parts: PromptPart[]): string {
   const trimmed = content.trim();

@@ -226,13 +226,6 @@ pub fn session_runtime_request_defaults(variant: Option<String>) -> ExecutionReq
         .with_variant(variant)
 }
 
-pub fn inline_subtask_request_defaults(variant: Option<String>) -> ExecutionRequestDefaults {
-    ExecutionRequestDefaults::default()
-        .with_max_tokens(Some(2048))
-        .with_temperature(Some(0.2))
-        .with_variant(variant)
-}
-
 pub fn compaction_request(
     model_id: impl Into<String>,
     variant: Option<String>,
@@ -306,10 +299,7 @@ mod tests {
                 .with_temperature(Some(0.2))
                 .with_top_p(Some(0.9))
                 .with_variant(Some("fast".to_string()))
-                .with_provider_options(Some(HashMap::from([(
-                    "thinking".to_string(),
-                    json!(true),
-                )])))
+                .with_provider_options(Some(HashMap::from([("thinking".to_string(), json!(true))])))
                 .with_reasoning_effort(Some(ReasoningEffort::Low))
                 .with_timeout_secs(Some(120))
                 .with_stream_stall_timeout_secs(Some(30)),
@@ -346,7 +336,9 @@ mod tests {
 
         let compiled = context.compile_with_model_and_defaults(
             "override-model",
-            &inline_subtask_request_defaults(Some("fast".to_string())),
+            &ExecutionRequestDefaults::default()
+                .with_temperature(Some(0.2))
+                .with_variant(Some("fast".to_string())),
         );
 
         assert_eq!(compiled.model_id, "override-model");

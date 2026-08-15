@@ -7,7 +7,7 @@ use agendao_provider::{
     export_provider_artifact_bundle, import_provider_artifact_bundle,
     ConfigProvider as BootstrapConfigProvider,
 };
-use agendao_types::{ProviderArtifactBundle, ProviderArtifactImportEnvelope};
+use agendao_types::ProviderArtifactBundle;
 
 use crate::providers::convert_config_providers_for_artifact;
 
@@ -51,7 +51,7 @@ fn export_provider_data_from_dir(base_dir: &Path, output: Option<PathBuf>) -> an
 
 fn import_provider_data_into_dir(base_dir: &Path, file: &Path) -> anyhow::Result<usize> {
     let raw = fs::read_to_string(file)?;
-    let payload: ProviderArtifactImportEnvelope = serde_json::from_str(&raw)?;
+    let payload: ProviderArtifactBundle = serde_json::from_str(&raw)?;
     let imported = import_provider_artifact_into_project_config(base_dir, payload)?;
 
     println!("Imported {} provider(s) from {}", imported, file.display());
@@ -71,7 +71,7 @@ fn load_project_provider_config(base_dir: &Path) -> anyhow::Result<Config> {
 
 fn import_provider_artifact_into_project_config(
     base_dir: &Path,
-    payload: ProviderArtifactImportEnvelope,
+    payload: ProviderArtifactBundle,
 ) -> anyhow::Result<usize> {
     let imported = import_provider_artifact_bundle(payload)?;
     let imported_count = imported.len();
@@ -211,11 +211,11 @@ mod tests {
                 env: vec!["OPENAI_API_KEY".to_string()],
                 profile: ProviderArtifactProfile {
                     npm: "@ai-sdk/openai".to_string(),
-                    api_family: ProviderArtifactApiFamily::CloseAiCompatible,
+                    api_family: ProviderArtifactApiFamily::OpenAiCompatible,
                     api_shape: ProviderArtifactApiShape::Responses,
                     transport: ProviderArtifactTransport::Bearer,
-                    usage_shape: ProviderArtifactUsageShape::CloseAiCachedTokens,
-                    cache_family: ProviderArtifactCacheFamily::CloseAiCompatible,
+                    usage_shape: ProviderArtifactUsageShape::OpenAiCachedTokens,
+                    cache_family: ProviderArtifactCacheFamily::OpenAiCompatible,
                     quirks: vec![ProviderArtifactQuirk::NonStreamingSse],
                 },
             }],
@@ -260,10 +260,8 @@ mod tests {
             )])),
             ..Default::default()
         };
-        let imported = agendao_provider::import_provider_artifact_bundle(
-            agendao_types::ProviderArtifactImportEnvelope::Bundle(sample_bundle()),
-        )
-        .expect("artifact import");
+        let imported = agendao_provider::import_provider_artifact_bundle(sample_bundle())
+            .expect("artifact import");
 
         apply_imported_provider_configs(&mut config, imported).expect("config apply");
 
@@ -297,10 +295,8 @@ mod tests {
             )])),
             ..Default::default()
         };
-        let imported = agendao_provider::import_provider_artifact_bundle(
-            agendao_types::ProviderArtifactImportEnvelope::Bundle(sample_bundle()),
-        )
-        .expect("artifact import");
+        let imported = agendao_provider::import_provider_artifact_bundle(sample_bundle())
+            .expect("artifact import");
 
         let error =
             apply_imported_provider_configs(&mut config, imported).expect_err("should fail");
@@ -323,10 +319,10 @@ mod tests {
       "api_key": "secret-123",
       "base_url": "https://api.openai.com/v1",
       "npm": "@ai-sdk/openai",
-      "apiShape": "responses",
-      "apiStyle": "closeai-compatible",
+      "api_shape": "responses",
+      "api_style": "openai-compatible",
       "transport": "bearer",
-      "usageShape": "closeai-cached-tokens",
+      "usage_shape": "openai-cached-tokens",
       "quirks": ["non-streaming-sse"],
       "env": ["OPENAI_API_KEY"]
     }

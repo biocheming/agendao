@@ -235,9 +235,6 @@ impl DeepMerge for KeybindsConfig {
             terminal_title_toggle,
             tips_toggle,
             display_thinking,
-            submit,
-            cancel,
-            interrupt,
         );
     }
 }
@@ -264,16 +261,7 @@ impl DeepMerge for ServerConfig {
 
 impl CommandConfig {
     fn merge_replace_fields(&mut self, other: Self) {
-        merge_option_replace_fields!(
-            self,
-            other,
-            name,
-            description,
-            template,
-            model,
-            agent,
-            subtask,
-        );
+        merge_option_replace_fields!(self, other, name, description, template, model, agent,);
     }
 }
 
@@ -356,26 +344,6 @@ impl DeepMerge for AgentConfigs {
     }
 }
 
-impl DeepMerge for CompositionConfig {
-    fn deep_merge(&mut self, other: Self) {
-        merge_option_deep_fields!(self, other, skill_tree,);
-    }
-}
-
-impl DeepMerge for SkillTreeConfig {
-    fn deep_merge(&mut self, other: Self) {
-        merge_option_replace_fields!(
-            self,
-            other,
-            enabled,
-            root,
-            separator,
-            token_budget,
-            truncation_strategy,
-        );
-    }
-}
-
 impl DeepMerge for ModelModalities {
     fn deep_merge(&mut self, other: Self) {
         merge_option_replace_fields!(self, other, input, output,);
@@ -409,7 +377,6 @@ impl DeepMerge for ModelConfig {
             other,
             name,
             model,
-            api_key,
             base_url,
             tool_call,
             reasoning,
@@ -470,24 +437,12 @@ impl DeepMerge for ProviderConfig {
 impl DeepMerge for McpServer {
     fn deep_merge(&mut self, other: Self) {
         // Endpoint identity and switches overlay directly.
-        merge_option_replace_fields!(
-            self,
-            other,
-            server_type,
-            url,
-            enabled,
-            timeout,
-            oauth,
-            client_id,
-            authorization_url,
-        );
-        // Command/args vectors are replace-if-non-empty, matching existing launch semantics.
+        merge_option_replace_fields!(self, other, server_type, url, enabled, timeout, oauth,);
+        // Command vectors are replace-if-non-empty, matching launch semantics.
         merge_vec_replace_if_non_empty(&mut self.command, other.command);
-        merge_vec_replace_if_non_empty(&mut self.args, other.args);
         // Environment/header bags overwrite by key rather than deep-merging values.
         merge_option_map_overwrite_values(&mut self.environment, other.environment);
         merge_option_map_overwrite_values(&mut self.headers, other.headers);
-        merge_option_map_overwrite_values(&mut self.env, other.env);
     }
 }
 
@@ -832,7 +787,6 @@ impl DeepMerge for UiPreferencesConfig {
             message_density,
             semantic_highlight,
         );
-        merge_vec_replace_if_non_empty(&mut self.recent_models, other.recent_models);
     }
 }
 
@@ -845,11 +799,9 @@ impl Config {
             schema,
             theme,
             log_level,
-            scheduler_path,
             task_category_path,
             snapshot,
             share,
-            autoshare,
             autoupdate,
             model,
             small_model,
@@ -868,9 +820,7 @@ impl Config {
             skills,
             docs,
             watcher,
-            mode,
             agent,
-            composition,
             formatter,
             lsp,
             ui_preferences,
@@ -878,7 +828,6 @@ impl Config {
             web_search,
             multimodal,
             external_adapter,
-            voice,
             enterprise,
             compaction,
             experimental,
@@ -888,7 +837,6 @@ impl Config {
         merge_option_map_deep_values(&mut self.provider, other.provider);
         merge_option_map_deep_values(&mut self.mcp, other.mcp);
         merge_map_overwrite_values(&mut self.skill_paths, other.skill_paths);
-        merge_option_map_overwrite_values(&mut self.tools, other.tools);
         merge_option_map_overwrite_values(&mut self.env, other.env);
         merge_map_overwrite_values(&mut self.plugin_paths, other.plugin_paths);
         merge_map_overwrite_values(&mut self.plugin, other.plugin);
@@ -920,10 +868,6 @@ mod tests {
                 theme: Some("opencode@dark".to_string()),
                 web_theme: Some("midnight".to_string()),
                 show_header: Some(true),
-                recent_models: vec![UiRecentModelConfig {
-                    provider: "openai".to_string(),
-                    model: "gpt-5".to_string(),
-                }],
                 ..Default::default()
             }),
             ..Default::default()
@@ -945,46 +889,5 @@ mod tests {
         assert_eq!(ui.web_mode.as_deref(), Some("agent:atlas"));
         assert_eq!(ui.show_header, Some(false));
         assert_eq!(ui.show_thinking, Some(true));
-        assert_eq!(
-            ui.recent_models,
-            vec![UiRecentModelConfig {
-                provider: "openai".to_string(),
-                model: "gpt-5".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn config_merge_replaces_recent_models_when_supplied() {
-        let mut config = Config {
-            ui_preferences: Some(UiPreferencesConfig {
-                recent_models: vec![UiRecentModelConfig {
-                    provider: "openai".to_string(),
-                    model: "gpt-5".to_string(),
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        config.merge(Config {
-            ui_preferences: Some(UiPreferencesConfig {
-                recent_models: vec![UiRecentModelConfig {
-                    provider: "ethnopic".to_string(),
-                    model: "test-model-large".to_string(),
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        let ui = config.ui_preferences.expect("ui preferences");
-        assert_eq!(
-            ui.recent_models,
-            vec![UiRecentModelConfig {
-                provider: "ethnopic".to_string(),
-                model: "test-model-large".to_string(),
-            }]
-        );
     }
 }

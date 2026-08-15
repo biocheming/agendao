@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
 use crate::terminal_segment_display::{
-    extract_string_key, format_preview_line, normalize_tool_name, tool_argument_preview,
-    tool_glyph, TerminalSegmentDisplayLine, TerminalSegmentTone,
+    format_preview_line, normalize_tool_name, tool_argument_preview, tool_glyph,
+    TerminalSegmentDisplayLine, TerminalSegmentTone,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,22 +192,14 @@ pub fn summarize_block_items_inline(items: &[TerminalBlockItem]) -> String {
 pub fn build_tool_body_items(
     name: &str,
     arguments: &str,
-    state: TerminalToolState,
+    _state: TerminalToolState,
     result: Option<&TerminalToolResultInfo>,
     show_tool_details: bool,
 ) -> Vec<TerminalToolBlockItem> {
     let normalized = normalize_tool_name(name);
 
     let Some(info) = result else {
-        return if normalized == "task"
-            && matches!(
-                state,
-                TerminalToolState::Pending | TerminalToolState::Running
-            ) {
-            build_task_running_items(arguments)
-        } else {
-            Vec::new()
-        };
+        return Vec::new();
     };
 
     if info.is_error {
@@ -240,12 +232,6 @@ pub fn build_tool_body_items(
     }
 
     match normalized.as_str() {
-        "task" => build_task_result_items(
-            &info.output,
-            arguments,
-            info.metadata.as_ref(),
-            show_tool_details,
-        ),
         "todowrite" | "todo_write" => build_todowrite_result_items(&info.output, show_tool_details),
         "batch" => build_batch_result_items(&info.output, arguments, show_tool_details),
         "question" => build_question_result_items(&info.output, arguments),
@@ -272,7 +258,7 @@ pub fn build_tool_body_items(
 fn prefers_specialized_block_body(normalized_name: &str) -> bool {
     matches!(
         normalized_name,
-        "task" | "todowrite" | "todo_write" | "batch" | "question"
+        "todowrite" | "todo_write" | "batch" | "question"
     ) || is_write_tool(normalized_name)
         || is_edit_tool(normalized_name)
         || is_patch_tool(normalized_name)
@@ -485,243 +471,6 @@ pub fn build_question_result_items(
             TerminalSegmentTone::Primary,
         ),
     ));
-    items
-}
-
-pub fn build_task_running_items(arguments: &str) -> Vec<TerminalToolBlockItem> {
-    let summary = parse_task_argument_summary(arguments);
-    let mut items = vec![TerminalToolBlockItem::Line(
-        TerminalSegmentDisplayLine::new(
-            "Delegating task to subagent…",
-            TerminalSegmentTone::Warning,
-        ),
-    )];
-
-    let subagent = summary
-        .category
-        .as_deref()
-        .or(summary.subagent_type.as_deref());
-    if let Some(name) = subagent {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Subagent: {}", name),
-                TerminalSegmentTone::Info,
-            ),
-        ));
-    }
-
-    if let Some(prompt) = summary.prompt_preview.as_deref() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Task: {}", prompt),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    } else if let Some(description) = summary.description.as_deref() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Task: {}", format_preview_line(description, 88)),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-
-    if let Some(skill_count) = summary.skill_count {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "Skills: {}",
-                    if skill_count == 0 {
-                        "none".to_string()
-                    } else {
-                        skill_count.to_string()
-                    }
-                ),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-
-    if !summary.checklist.is_empty() {
-        let total = summary.checklist.len();
-        let preview_limit = total.min(4);
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Checklist ({} items):", total),
-                TerminalSegmentTone::Info,
-            ),
-        ));
-        for item in summary.checklist.iter().take(preview_limit) {
-            items.push(TerminalToolBlockItem::Line(
-                TerminalSegmentDisplayLine::new(
-                    format!("[ ] {}", format_preview_line(item, 88)),
-                    TerminalSegmentTone::Muted,
-                ),
-            ));
-        }
-        if total > preview_limit {
-            items.push(TerminalToolBlockItem::Line(
-                TerminalSegmentDisplayLine::new(
-                    format!("… ({} more items)", total - preview_limit),
-                    TerminalSegmentTone::Muted,
-                ),
-            ));
-        }
-    }
-
-    items
-}
-
-pub fn build_task_result_items(
-    result_text: &str,
-    arguments: &str,
-    metadata: Option<&HashMap<String, serde_json::Value>>,
-    show_tool_details: bool,
-) -> Vec<TerminalToolBlockItem> {
-    let arg_summary = parse_task_argument_summary(arguments);
-    let mut items = Vec::new();
-
-    let subagent = arg_summary
-        .category
-        .as_deref()
-        .or(arg_summary.subagent_type.as_deref());
-    if let Some(name) = subagent {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Subagent: {}", name),
-                TerminalSegmentTone::Info,
-            ),
-        ));
-    }
-    if let Some(prompt) = arg_summary.prompt_preview.as_deref() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Task: {}", prompt),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-
-    let summary = parse_task_result_summary(result_text);
-    if let Some(task_id) = summary.task_id.as_deref() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Task ID: {}", task_id),
-                TerminalSegmentTone::Info,
-            ),
-        ));
-    }
-    if let Some(task_status) = summary.task_status.as_deref() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("Status: {}", task_status),
-                if task_status.eq_ignore_ascii_case("completed") {
-                    TerminalSegmentTone::Success
-                } else {
-                    TerminalSegmentTone::Info
-                },
-            ),
-        ));
-    }
-    if let Some(meta) = metadata {
-        if let Some(has_text_output) = meta.get("hasTextOutput").and_then(|v| v.as_bool()) {
-            items.push(TerminalToolBlockItem::Line(
-                TerminalSegmentDisplayLine::new(
-                    format!(
-                        "Text Output: {}",
-                        if has_text_output { "yes" } else { "no" }
-                    ),
-                    TerminalSegmentTone::Muted,
-                ),
-            ));
-        }
-        if let Some(model) = extract_task_model_label(meta) {
-            items.push(TerminalToolBlockItem::Line(
-                TerminalSegmentDisplayLine::new(
-                    format!("Model: {}", model),
-                    TerminalSegmentTone::Muted,
-                ),
-            ));
-        }
-    }
-
-    if summary.body.trim().is_empty() {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                "Subagent finished with no textual output",
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-        if !arg_summary.checklist.is_empty() {
-            let completed = summary
-                .task_status
-                .as_deref()
-                .is_some_and(|status| status.eq_ignore_ascii_case("completed"));
-            append_checklist_items(
-                &mut items,
-                &arg_summary.checklist,
-                show_tool_details,
-                completed,
-            );
-        }
-        return items;
-    }
-
-    let mut checklist = parse_markdown_checklist(&summary.body);
-    if checklist.is_empty() && !arg_summary.checklist.is_empty() {
-        let completed = summary
-            .task_status
-            .as_deref()
-            .is_some_and(|status| status.eq_ignore_ascii_case("completed"));
-        checklist = arg_summary
-            .checklist
-            .iter()
-            .map(|item| ChecklistItem {
-                checked: completed,
-                text: item.clone(),
-            })
-            .collect();
-    }
-    if !checklist.is_empty() {
-        append_checklist_entries(&mut items, &checklist, show_tool_details);
-    }
-
-    let body_lines: Vec<&str> = summary.body.lines().collect();
-    let total = body_lines.len();
-    let preview_limit = if show_tool_details {
-        total
-    } else {
-        total.min(5)
-    };
-
-    if total > 1 {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!("({} lines)", total),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-    if preview_limit > 0 {
-        let preview_content = body_lines[..preview_limit].join("\n");
-        if !preview_content.trim().is_empty() {
-            items.push(TerminalToolBlockItem::Markdown {
-                content: preview_content,
-            });
-        }
-    }
-    if total > preview_limit {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "… ({} more lines, toggle Tool Details to expand)",
-                    total - preview_limit
-                ),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-
     items
 }
 
@@ -1169,260 +918,11 @@ fn build_generic_result_items(
     items
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TaskResultSummary {
-    task_id: Option<String>,
-    task_status: Option<String>,
-    body: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TaskArgumentSummary {
-    category: Option<String>,
-    subagent_type: Option<String>,
-    description: Option<String>,
-    prompt_preview: Option<String>,
-    skill_count: Option<usize>,
-    checklist: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChecklistItem {
-    checked: bool,
-    text: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TodoPreviewEntry {
     status: String,
     text: String,
     priority: Option<String>,
-}
-
-fn parse_task_result_summary(result_text: &str) -> TaskResultSummary {
-    let mut summary = TaskResultSummary::default();
-    for line in result_text.lines() {
-        let trimmed = line.trim();
-        if let Some(raw) = trimmed.strip_prefix("task_id:") {
-            let id = raw
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !id.is_empty() {
-                summary.task_id = Some(id);
-            }
-            continue;
-        }
-        if let Some(raw) = trimmed.strip_prefix("task_status:") {
-            let status = raw.trim().to_string();
-            if !status.is_empty() {
-                summary.task_status = Some(status);
-            }
-        }
-    }
-
-    if let (Some(start), Some(end)) = (
-        result_text.find("<task_result>"),
-        result_text.find("</task_result>"),
-    ) {
-        if end > start {
-            let body = &result_text[start + "<task_result>".len()..end];
-            summary.body = body.trim().to_string();
-            return summary;
-        }
-    }
-
-    summary.body = result_text.trim().to_string();
-    summary
-}
-
-fn parse_markdown_checklist(text: &str) -> Vec<ChecklistItem> {
-    fn parse_line(line: &str) -> Option<ChecklistItem> {
-        let trimmed = line.trim();
-        let (checked, rest) = if let Some(rest) = trimmed.strip_prefix("- [x]") {
-            (true, rest)
-        } else if let Some(rest) = trimmed.strip_prefix("- [X]") {
-            (true, rest)
-        } else if let Some(rest) = trimmed.strip_prefix("- [ ]") {
-            (false, rest)
-        } else {
-            return None;
-        };
-        let text = rest.trim();
-        if text.is_empty() {
-            return None;
-        }
-        Some(ChecklistItem {
-            checked,
-            text: text.to_string(),
-        })
-    }
-
-    text.lines().filter_map(parse_line).collect()
-}
-
-fn parse_task_argument_summary(arguments: &str) -> TaskArgumentSummary {
-    let mut summary = TaskArgumentSummary::default();
-    let raw = arguments.trim();
-    if raw.is_empty() {
-        return summary;
-    }
-
-    let parsed = parse_json_object_relaxed(raw);
-    let Some(value) = parsed.as_ref() else {
-        return summary;
-    };
-
-    summary.category = extract_string_key(value, &["category"]);
-    summary.subagent_type = extract_string_key(value, &["subagent_type", "subagentType"]);
-    summary.description = extract_string_key(value, &["description"]);
-    let prompt = extract_string_key(value, &["prompt"]);
-    if let Some(prompt_text) = prompt.as_deref() {
-        summary.checklist = parse_markdown_checklist(prompt_text)
-            .into_iter()
-            .map(|item| item.text)
-            .collect();
-    }
-    summary.prompt_preview = prompt.and_then(|prompt| {
-        prompt
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("- ["))
-            .or_else(|| prompt.lines().map(str::trim).find(|line| !line.is_empty()))
-            .map(|line| format_preview_line(line, 88))
-    });
-    summary.skill_count = value
-        .get("load_skills")
-        .or_else(|| value.get("loadSkills"))
-        .and_then(|v| v.as_array())
-        .map(Vec::len);
-
-    summary
-}
-
-fn parse_json_object_relaxed(raw: &str) -> Option<Value> {
-    serde_json::from_str::<Value>(raw).ok().or_else(|| {
-        let start = raw.find('{')?;
-        let end = raw.rfind('}')?;
-        (end > start)
-            .then(|| &raw[start..=end])
-            .and_then(|slice| serde_json::from_str::<Value>(slice).ok())
-    })
-}
-
-fn append_checklist_items(
-    items: &mut Vec<TerminalToolBlockItem>,
-    checklist: &[String],
-    show_tool_details: bool,
-    completed: bool,
-) {
-    items.push(TerminalToolBlockItem::Line(
-        TerminalSegmentDisplayLine::new(
-            format!("Checklist ({} items):", checklist.len()),
-            TerminalSegmentTone::Info,
-        ),
-    ));
-    let preview_limit = if show_tool_details {
-        checklist.len()
-    } else {
-        checklist.len().min(5)
-    };
-    for item in checklist.iter().take(preview_limit) {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "{} {}",
-                    if completed { "[x]" } else { "[ ]" },
-                    format_preview_line(item, 88)
-                ),
-                if completed {
-                    TerminalSegmentTone::Success
-                } else {
-                    TerminalSegmentTone::Muted
-                },
-            ),
-        ));
-    }
-    if checklist.len() > preview_limit {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "… ({} more items, toggle Tool Details to expand)",
-                    checklist.len() - preview_limit
-                ),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-}
-
-fn append_checklist_entries(
-    items: &mut Vec<TerminalToolBlockItem>,
-    checklist: &[ChecklistItem],
-    show_tool_details: bool,
-) {
-    let total = checklist.len();
-    let preview_limit = if show_tool_details {
-        total
-    } else {
-        total.min(5)
-    };
-    items.push(TerminalToolBlockItem::Line(
-        TerminalSegmentDisplayLine::new(
-            format!("Checklist ({} items):", total),
-            TerminalSegmentTone::Info,
-        ),
-    ));
-    for item in checklist.iter().take(preview_limit) {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "{} {}",
-                    if item.checked { "[x]" } else { "[ ]" },
-                    format_preview_line(&item.text, 88)
-                ),
-                if item.checked {
-                    TerminalSegmentTone::Success
-                } else {
-                    TerminalSegmentTone::Muted
-                },
-            ),
-        ));
-    }
-    if total > preview_limit {
-        items.push(TerminalToolBlockItem::Line(
-            TerminalSegmentDisplayLine::new(
-                format!(
-                    "… ({} more items, toggle Tool Details to expand)",
-                    total - preview_limit
-                ),
-                TerminalSegmentTone::Muted,
-            ),
-        ));
-    }
-}
-
-fn extract_task_model_label(metadata: &HashMap<String, serde_json::Value>) -> Option<String> {
-    let model = metadata.get("model")?.as_object()?;
-    let provider = model
-        .get("providerID")
-        .or_else(|| model.get("provider_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let model_id = model
-        .get("modelID")
-        .or_else(|| model.get("model_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if provider.is_empty() && model_id.is_empty() {
-        None
-    } else if !provider.is_empty() && !model_id.is_empty() {
-        Some(format!("{provider}:{model_id}"))
-    } else {
-        Some(format!("{provider}{model_id}"))
-    }
 }
 
 fn is_ascii_todo_marker_line(line: &str) -> bool {
@@ -1614,9 +1114,9 @@ fn format_bytes(bytes: usize) -> String {
 mod tests {
     use super::{
         build_display_hint_items, build_edit_result_items, build_file_items, build_image_items,
-        build_patch_result_items, build_task_result_items, build_task_running_items,
-        build_todowrite_result_items, build_tool_body_items, build_write_result_items,
-        parse_write_summary, summarize_block_items_inline, TerminalToolBlockItem,
+        build_patch_result_items, build_todowrite_result_items, build_tool_body_items,
+        build_write_result_items, parse_write_summary, summarize_block_items_inline,
+        TerminalToolBlockItem,
     };
     use crate::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
     use std::collections::HashMap;
@@ -1686,93 +1186,6 @@ mod tests {
             item,
             TerminalToolBlockItem::Diff { label: Some(label), .. }
                 if label.text.contains("Patched foo.rs")
-        )));
-    }
-
-    #[test]
-    fn task_running_items_include_summary_and_checklist() {
-        let items = build_task_running_items(
-            r###"{"category":"visual-engineering","load_skills":["frontend-ui-ux","theme-factory"],"prompt":"## 1. TASK\nRedesign page\n- [ ] 修改 t2.html\n- [ ] 增强视觉冲击力"}"###,
-        );
-
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text == "Subagent: visual-engineering"
-        )));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text == "Skills: 2"
-        )));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text.contains("[ ] 修改 t2.html")
-        )));
-    }
-
-    #[test]
-    fn task_result_items_include_checklist_and_markdown_preview() {
-        let mut metadata = HashMap::new();
-        metadata.insert("hasTextOutput".to_string(), serde_json::json!(true));
-        metadata.insert(
-            "model".to_string(),
-            serde_json::json!({
-                "providerID": "zhipuai",
-                "modelID": "glm-5",
-            }),
-        );
-        let items = build_task_result_items(
-            "task_id: abc123\ntask_status: completed\n<task_result>\n- [x] 修改 t2.html\n- [x] 增强视觉冲击力\n\n## Summary\nDone.\n</task_result>",
-            r###"{"category":"visual-engineering","prompt":"## 1. TASK\nRedesign page"}"###,
-            Some(&metadata),
-            false,
-        );
-
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text == "Task ID: abc123"
-        )));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text == "Model: zhipuai:glm-5"
-        )));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Markdown { content }
-                if content.contains("## Summary") && content.contains("Done.")
-        )));
-    }
-
-    #[test]
-    fn build_tool_body_items_prefers_task_renderer_over_display_hints() {
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "display.summary".to_string(),
-            serde_json::json!("Delegated inspect task via session child-1"),
-        );
-        metadata.insert("hasTextOutput".to_string(), serde_json::json!(true));
-        let result = TerminalToolResultInfo {
-            output: "task_id: child-1\ntask_status: completed\n<task_result>\n## Summary\nDone.\n</task_result>"
-                .to_string(),
-            is_error: false,
-            title: Some("Completed Task child-1".to_string()),
-            metadata: Some(metadata),
-        };
-
-        let items = build_tool_body_items(
-            "task",
-            r###"{"category":"analysis","description":"Inspect migration status"}"###,
-            TerminalToolState::Completed,
-            Some(&result),
-            false,
-        );
-
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Line(line) if line.text == "Task ID: child-1"
-        )));
-        assert!(items.iter().any(|item| matches!(
-            item,
-            TerminalToolBlockItem::Markdown { content } if content.contains("## Summary")
         )));
     }
 

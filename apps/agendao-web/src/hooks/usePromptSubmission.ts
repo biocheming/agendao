@@ -231,7 +231,7 @@ export function usePromptSubmission({
         if (selectedMode) {
           const [kind, id] = selectedMode.split(":", 2);
           if (kind === "agent") payload.agent = id;
-          if (kind === "preset" || kind === "profile") payload.scheduler_profile = id;
+          if (kind === "scheduler") payload.scheduler = id;
         }
 
         const response = await sendPromptRequest(sessionId, payload);

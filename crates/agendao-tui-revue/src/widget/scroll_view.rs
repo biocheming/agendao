@@ -194,7 +194,9 @@ impl ScrollbarOverlay {
         offset: u16,
     ) -> Self {
         // 滚动条列 = 内容区最后一列
-        let sb_x = content_area.x.saturating_add(content_area.width.saturating_sub(1));
+        let sb_x = content_area
+            .x
+            .saturating_add(content_area.width.saturating_sub(1));
         let sb_y = content_area.y;
         let sb_h = viewport_height.min(content_area.height);
         let (rx, ry) = ctx_root_xy;

@@ -67,8 +67,8 @@ impl PluginEditDialog {
 
     pub fn open_add(&mut self) {
         self.name_input = revue::widget::Input::new().placeholder("e.g. my-plugin");
-        self.path_input = revue::widget::Input::new()
-            .placeholder("e.g. /abs/path/to/plugin/index.ts");
+        self.path_input =
+            revue::widget::Input::new().placeholder("e.g. /abs/path/to/plugin/index.ts");
         self.focus = PluginEditField::Name;
         self.validation_error = None;
         self.visible = true;
@@ -187,7 +187,10 @@ impl PluginEditDialog {
 
         // U5：校验错误红字行（footer 上方），高度随行 +1。
         let (content, err_h) = if let Some(e) = &self.validation_error {
-            (content.child_sized(backdrop::validation_error_line(e), 1), 1)
+            (
+                content.child_sized(backdrop::validation_error_line(e), 1),
+                1,
+            )
         } else {
             (content, 0)
         };
@@ -212,8 +215,7 @@ impl PluginEditDialog {
     }
 
     /// 全部字段（渲染顺序）：鼠标按行块反查字段用。
-    pub(crate) const FIELDS: [PluginEditField; 2] =
-        [PluginEditField::Name, PluginEditField::Path];
+    pub(crate) const FIELDS: [PluginEditField; 2] = [PluginEditField::Name, PluginEditField::Path];
 
     /// 鼠标点击定位光标到字段内字符位置。
     pub(crate) fn set_cursor_at(&mut self, field: PluginEditField, char_idx: usize) {

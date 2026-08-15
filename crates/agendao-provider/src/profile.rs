@@ -32,21 +32,15 @@ impl std::error::Error for ProviderProfileError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderApiFamily {
-    CloseAiCompatible,
-    EthnopicMessages,
-    GeminiGenerate,
-    BedrockConverse,
-    Custom,
+    OpenAiCompatible,
+    AnthropicMessages,
 }
 
 impl ProviderApiFamily {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::CloseAiCompatible => "closeai-compatible",
-            Self::EthnopicMessages => "ethnopic-compatible",
-            Self::GeminiGenerate => "gemini-generate",
-            Self::BedrockConverse => "bedrock-converse",
-            Self::Custom => "custom",
+            Self::OpenAiCompatible => "openai-compatible",
+            Self::AnthropicMessages => "anthropic-compatible",
         }
     }
 }
@@ -55,10 +49,7 @@ impl ProviderApiFamily {
 pub enum ProviderApiShape {
     ChatCompletions,
     Responses,
-    EthnopicMessages,
-    GeminiGenerateContent,
-    BedrockConverse,
-    Custom,
+    AnthropicMessages,
 }
 
 impl ProviderApiShape {
@@ -66,10 +57,7 @@ impl ProviderApiShape {
         match self {
             Self::ChatCompletions => "chat-completions",
             Self::Responses => "responses",
-            Self::EthnopicMessages => "ethnopic-messages",
-            Self::GeminiGenerateContent => "gemini-generate-content",
-            Self::BedrockConverse => "bedrock-converse",
-            Self::Custom => "custom",
+            Self::AnthropicMessages => "anthropic-messages",
         }
     }
 }
@@ -77,44 +65,30 @@ impl ProviderApiShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderTransportKind {
     Bearer,
-    VertexBearer,
-    SigV4,
     OAuth,
-    PrivateToken,
-    HeaderSet,
-    Custom,
 }
 
 impl ProviderTransportKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bearer => "bearer",
-            Self::VertexBearer => "vertex-bearer",
-            Self::SigV4 => "sigv4",
             Self::OAuth => "oauth",
-            Self::PrivateToken => "private-token",
-            Self::HeaderSet => "header-set",
-            Self::Custom => "custom",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderUsageShape {
-    CloseAiCachedTokens,
-    EthnopicReadWrite,
-    Gemini,
-    Bedrock,
+    OpenAiCachedTokens,
+    AnthropicReadWrite,
     Unknown,
 }
 
 impl ProviderUsageShape {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::CloseAiCachedTokens => "closeai-cached-tokens",
-            Self::EthnopicReadWrite => "ethnopic-read-write",
-            Self::Gemini => "gemini",
-            Self::Bedrock => "bedrock",
+            Self::OpenAiCachedTokens => "openai-cached-tokens",
+            Self::AnthropicReadWrite => "anthropic-read-write",
             Self::Unknown => "unknown",
         }
     }
@@ -125,7 +99,6 @@ pub enum ProviderQuirk {
     NonStreamingSse,
     RawJsonLines,
     RequiresThinkingReplay,
-    ResponsesFallbackToChat,
     IgnoresUnknownFields,
 }
 
@@ -135,7 +108,6 @@ impl ProviderQuirk {
             Self::NonStreamingSse => "non-streaming-sse",
             Self::RawJsonLines => "raw-json-lines",
             Self::RequiresThinkingReplay => "requires-thinking-replay",
-            Self::ResponsesFallbackToChat => "responses-fallback-to-chat",
             Self::IgnoresUnknownFields => "ignores-unknown-fields",
         }
     }
@@ -225,7 +197,7 @@ impl ProviderProfileResolver {
         options: &HashMap<String, Value>,
     ) -> Result<ProviderProfile, ProviderProfileError> {
         let provider_key = provider_id.trim().to_ascii_lowercase();
-        let npm = option_string(options, &["npm"])
+        let npm = option_string(options, "npm")
             .unwrap_or_else(|| default_npm_for_provider_id(&provider_key).to_string());
         Self::try_resolve_with_npm(provider_id, &npm, options)
     }
@@ -245,54 +217,81 @@ impl ProviderProfileResolver {
         options: &HashMap<String, Value>,
     ) -> Result<ProviderProfile, ProviderProfileError> {
         if let Some(profile) = custom_profile_from_options(provider_id, npm, options)? {
+            validate_supported_npm(npm)?;
             return Ok(profile);
         }
 
         let provider_key = provider_id.trim().to_ascii_lowercase();
-        let npm_key = npm.trim().to_ascii_lowercase();
-
-        let (api_family, api_shape, transport, usage_shape, cache_family) =
-            classify_provider(&provider_key, &npm_key, options);
-
-        let mut quirks = ProviderQuirks::default();
-        if provider_key.contains("zhipu") || provider_key.contains("bigmodel") {
-            quirks.insert(ProviderQuirk::NonStreamingSse);
+        match provider_key.as_str() {
+            "openai" => builtin_profile(
+                provider_id,
+                npm,
+                "@ai-sdk/openai",
+                ProviderApiFamily::OpenAiCompatible,
+                ProviderApiShape::Responses,
+                ProviderUsageShape::OpenAiCachedTokens,
+                CacheProtocolFamily::OpenAiCompatible,
+            ),
+            "anthropic" => builtin_profile(
+                provider_id,
+                npm,
+                "@ai-sdk/anthropic",
+                ProviderApiFamily::AnthropicMessages,
+                ProviderApiShape::AnthropicMessages,
+                ProviderUsageShape::AnthropicReadWrite,
+                CacheProtocolFamily::AnthropicCompatible,
+            ),
+            _ => Err(ProviderProfileError::MissingField(
+                "provider_profile".to_string(),
+            )),
         }
-        if provider_key.contains("deepseek") {
-            quirks.insert(ProviderQuirk::RequiresThinkingReplay);
-        }
-        if provider_key.contains("github-copilot") {
-            quirks.insert(ProviderQuirk::ResponsesFallbackToChat);
-        }
-        if option_bool(options, &["nonStreamingSse", "non_streaming_sse"]).unwrap_or(false) {
-            quirks.insert(ProviderQuirk::NonStreamingSse);
-        }
-        if option_bool(options, &["rawJsonLines", "raw_json_lines"]).unwrap_or(false) {
-            quirks.insert(ProviderQuirk::RawJsonLines);
-        }
-
-        Ok(ProviderProfile {
-            provider_id: provider_id.to_string(),
-            npm: npm.to_string(),
-            api_family,
-            api_shape,
-            transport,
-            usage_shape,
-            cache_family,
-            quirks,
-        })
     }
+}
+
+fn validate_supported_npm(npm: &str) -> Result<(), ProviderProfileError> {
+    match npm.trim().to_ascii_lowercase().as_str() {
+        "@ai-sdk/openai" | "@ai-sdk/openai-compatible" | "@ai-sdk/anthropic" => Ok(()),
+        _ => Err(ProviderProfileError::UnsupportedValue {
+            field: "npm".to_string(),
+            value: npm.to_string(),
+        }),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn builtin_profile(
+    provider_id: &str,
+    npm: &str,
+    expected_npm: &str,
+    api_family: ProviderApiFamily,
+    api_shape: ProviderApiShape,
+    usage_shape: ProviderUsageShape,
+    cache_family: CacheProtocolFamily,
+) -> Result<ProviderProfile, ProviderProfileError> {
+    if !npm.trim().eq_ignore_ascii_case(expected_npm) {
+        return Err(ProviderProfileError::UnsupportedValue {
+            field: "npm".to_string(),
+            value: npm.to_string(),
+        });
+    }
+    Ok(ProviderProfile {
+        provider_id: provider_id.to_string(),
+        npm: expected_npm.to_string(),
+        api_family,
+        api_shape,
+        transport: ProviderTransportKind::Bearer,
+        usage_shape,
+        cache_family,
+        quirks: ProviderQuirks::default(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CustomProviderProfileConfig {
-    #[serde(alias = "apiStyle", alias = "api_family", alias = "apiFamily")]
     api_style: String,
-    #[serde(alias = "apiShape")]
     api_shape: String,
     transport: String,
-    #[serde(alias = "usageShape")]
     usage_shape: String,
     #[serde(default)]
     quirks: Vec<String>,
@@ -303,33 +302,12 @@ fn custom_profile_from_options(
     npm: &str,
     options: &HashMap<String, Value>,
 ) -> Result<Option<ProviderProfile>, ProviderProfileError> {
-    if let Some(value) =
-        options_get_insensitive_any(options, &["providerProfile", "provider_profile", "profile"])
-    {
-        let config: CustomProviderProfileConfig = serde_json::from_value(value.clone())
-            .map_err(|error| ProviderProfileError::InvalidConfig(error.to_string()))?;
-        return config.into_profile(provider_id, npm).map(Some);
-    }
-
-    if !custom_profile_flat_keys_present(options) {
+    let Some(value) = options.get("provider_profile") else {
         return Ok(None);
-    }
-
-    let config = CustomProviderProfileConfig {
-        api_style: required_option_string(
-            options,
-            "api_style",
-            &["api_style", "apiStyle", "api_family", "apiFamily"],
-        )?,
-        api_shape: required_option_string(options, "api_shape", &["api_shape", "apiShape"])?,
-        transport: required_option_string(options, "transport", &["transport"])?,
-        usage_shape: required_option_string(
-            options,
-            "usage_shape",
-            &["usage_shape", "usageShape"],
-        )?,
-        quirks: option_string_list(options, &["quirks"])?,
     };
+
+    let config: CustomProviderProfileConfig = serde_json::from_value(value.clone())
+        .map_err(|error| ProviderProfileError::InvalidConfig(error.to_string()))?;
     config.into_profile(provider_id, npm).map(Some)
 }
 
@@ -379,7 +357,7 @@ fn explicit_profile_options_from_config_provider(
 
     if !profile.is_empty() {
         options.insert(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::Value::Object(profile),
         );
     }
@@ -399,11 +377,8 @@ impl CustomProviderProfileConfig {
         let quirks = parse_quirks(&self.quirks)?;
         validate_profile_combination(api_family, api_shape, usage_shape)?;
         let cache_family = match api_family {
-            ProviderApiFamily::CloseAiCompatible => CacheProtocolFamily::CloseAiCompatible,
-            ProviderApiFamily::EthnopicMessages => CacheProtocolFamily::EthnopicCompatible,
-            ProviderApiFamily::GeminiGenerate
-            | ProviderApiFamily::BedrockConverse
-            | ProviderApiFamily::Custom => CacheProtocolFamily::Disabled,
+            ProviderApiFamily::OpenAiCompatible => CacheProtocolFamily::OpenAiCompatible,
+            ProviderApiFamily::AnthropicMessages => CacheProtocolFamily::AnthropicCompatible,
         };
 
         Ok(ProviderProfile {
@@ -422,19 +397,14 @@ impl CustomProviderProfileConfig {
 pub(crate) fn default_npm_for_provider_id(provider_id: &str) -> &'static str {
     let provider_id = provider_id.trim().to_ascii_lowercase();
     match provider_id.as_str() {
-        "ethnopic" => "@ai-sdk/anthropic",
-        "google" => "@ai-sdk/google",
-        "google-vertex" | "google-vertex-ethnopic" => "@ai-sdk/google-vertex",
-        "amazon-bedrock" => "@ai-sdk/amazon-bedrock",
-        "github-copilot" | "github-copilot-enterprise" => "@ai-sdk/github-copilot",
-        "gitlab" => "@gitlab/gitlab-ai-provider",
+        "anthropic" => "@ai-sdk/anthropic",
         "openai" => "@ai-sdk/openai",
         _ => "@ai-sdk/openai-compatible",
     }
 }
 
 pub(crate) fn resolve_npm_for_provider(provider_id: &str, provider: &ProviderState) -> String {
-    if let Some(npm) = provider_option_string(provider, &["npm"]) {
+    if let Some(npm) = option_string(&provider.options, "npm") {
         return npm;
     }
 
@@ -449,104 +419,10 @@ pub(crate) fn resolve_npm_for_provider(provider_id: &str, provider: &ProviderSta
     default_npm_for_provider_id(provider_id).to_string()
 }
 
-fn classify_provider(
-    provider_id: &str,
-    npm: &str,
-    options: &HashMap<String, Value>,
-) -> (
-    ProviderApiFamily,
-    ProviderApiShape,
-    ProviderTransportKind,
-    ProviderUsageShape,
-    CacheProtocolFamily,
-) {
-    if provider_id.contains("gitlab") || npm.contains("gitlab") {
-        return (
-            ProviderApiFamily::CloseAiCompatible,
-            ProviderApiShape::ChatCompletions,
-            ProviderTransportKind::PrivateToken,
-            ProviderUsageShape::CloseAiCachedTokens,
-            CacheProtocolFamily::CloseAiCompatible,
-        );
-    }
-
-    if provider_id.contains("github-copilot") || npm.contains("github-copilot") {
-        return (
-            ProviderApiFamily::CloseAiCompatible,
-            ProviderApiShape::ChatCompletions,
-            ProviderTransportKind::OAuth,
-            ProviderUsageShape::CloseAiCachedTokens,
-            CacheProtocolFamily::CloseAiCompatible,
-        );
-    }
-
-    if provider_id.contains("google-vertex") || npm.contains("google-vertex") {
-        return (
-            ProviderApiFamily::GeminiGenerate,
-            ProviderApiShape::GeminiGenerateContent,
-            ProviderTransportKind::VertexBearer,
-            ProviderUsageShape::Gemini,
-            CacheProtocolFamily::Disabled,
-        );
-    }
-
-    if provider_id.contains("google") || provider_id.contains("gemini") || npm.contains("google") {
-        return (
-            ProviderApiFamily::GeminiGenerate,
-            ProviderApiShape::GeminiGenerateContent,
-            ProviderTransportKind::Bearer,
-            ProviderUsageShape::Gemini,
-            CacheProtocolFamily::Disabled,
-        );
-    }
-
-    if provider_id.contains("bedrock") || npm.contains("bedrock") {
-        return (
-            ProviderApiFamily::BedrockConverse,
-            ProviderApiShape::BedrockConverse,
-            ProviderTransportKind::SigV4,
-            ProviderUsageShape::Bedrock,
-            CacheProtocolFamily::Disabled,
-        );
-    }
-
-    if ((provider_id.contains("anthropic") || provider_id.contains("ethnopic"))
-        && !provider_id.contains("vertex"))
-        || ((npm.contains("anthropic") || npm.contains("ethnopic")) && !npm.contains("vertex"))
-    {
-        return (
-            ProviderApiFamily::EthnopicMessages,
-            ProviderApiShape::EthnopicMessages,
-            ProviderTransportKind::Bearer,
-            ProviderUsageShape::EthnopicReadWrite,
-            CacheProtocolFamily::EthnopicCompatible,
-        );
-    }
-
-    let api_shape =
-        if option_bool(options, &["useResponsesApi", "use_responses_api"]).unwrap_or(false) {
-            ProviderApiShape::Responses
-        } else {
-            ProviderApiShape::ChatCompletions
-        };
-
-    (
-        ProviderApiFamily::CloseAiCompatible,
-        api_shape,
-        ProviderTransportKind::Bearer,
-        ProviderUsageShape::CloseAiCachedTokens,
-        CacheProtocolFamily::CloseAiCompatible,
-    )
-}
-
 fn parse_api_family(value: &str) -> Result<ProviderApiFamily, ProviderProfileError> {
     match normalize_profile_value(value).as_str() {
-        "closeai-compatible" | "openai-compatible" => Ok(ProviderApiFamily::CloseAiCompatible),
-        "ethnopic-messages" | "ethnopic-compatible" | "anthropic-messages" => {
-            Ok(ProviderApiFamily::EthnopicMessages)
-        }
-        "gemini-generate" | "gemini" => Ok(ProviderApiFamily::GeminiGenerate),
-        "bedrock-converse" | "bedrock" => Ok(ProviderApiFamily::BedrockConverse),
+        "openai-compatible" => Ok(ProviderApiFamily::OpenAiCompatible),
+        "anthropic-messages" | "anthropic-compatible" => Ok(ProviderApiFamily::AnthropicMessages),
         _ => Err(ProviderProfileError::UnsupportedValue {
             field: "api_style".to_string(),
             value: value.to_string(),
@@ -558,11 +434,7 @@ fn parse_api_shape(value: &str) -> Result<ProviderApiShape, ProviderProfileError
     match normalize_profile_value(value).as_str() {
         "chat-completions" => Ok(ProviderApiShape::ChatCompletions),
         "responses" => Ok(ProviderApiShape::Responses),
-        "messages" => Ok(ProviderApiShape::EthnopicMessages),
-        "gemini-generate-content" | "generate-content" => {
-            Ok(ProviderApiShape::GeminiGenerateContent)
-        }
-        "bedrock-converse" => Ok(ProviderApiShape::BedrockConverse),
+        "messages" => Ok(ProviderApiShape::AnthropicMessages),
         _ => Err(ProviderProfileError::UnsupportedValue {
             field: "api_shape".to_string(),
             value: value.to_string(),
@@ -573,11 +445,7 @@ fn parse_api_shape(value: &str) -> Result<ProviderApiShape, ProviderProfileError
 fn parse_transport(value: &str) -> Result<ProviderTransportKind, ProviderProfileError> {
     match normalize_profile_value(value).as_str() {
         "bearer" => Ok(ProviderTransportKind::Bearer),
-        "vertex-bearer" | "vertex" => Ok(ProviderTransportKind::VertexBearer),
-        "sigv4" => Ok(ProviderTransportKind::SigV4),
         "oauth" => Ok(ProviderTransportKind::OAuth),
-        "private-token" => Ok(ProviderTransportKind::PrivateToken),
-        "header-set" => Ok(ProviderTransportKind::HeaderSet),
         _ => Err(ProviderProfileError::UnsupportedValue {
             field: "transport".to_string(),
             value: value.to_string(),
@@ -587,12 +455,8 @@ fn parse_transport(value: &str) -> Result<ProviderTransportKind, ProviderProfile
 
 fn parse_usage_shape(value: &str) -> Result<ProviderUsageShape, ProviderProfileError> {
     match normalize_profile_value(value).as_str() {
-        "closeai-cached-tokens" | "openai-cached-tokens" => {
-            Ok(ProviderUsageShape::CloseAiCachedTokens)
-        }
-        "ethnopic-read-write" | "anthropic-read-write" => Ok(ProviderUsageShape::EthnopicReadWrite),
-        "gemini" => Ok(ProviderUsageShape::Gemini),
-        "bedrock" => Ok(ProviderUsageShape::Bedrock),
+        "openai-cached-tokens" => Ok(ProviderUsageShape::OpenAiCachedTokens),
+        "anthropic-read-write" => Ok(ProviderUsageShape::AnthropicReadWrite),
         _ => Err(ProviderProfileError::UnsupportedValue {
             field: "usage_shape".to_string(),
             value: value.to_string(),
@@ -607,7 +471,6 @@ fn parse_quirks(values: &[String]) -> Result<ProviderQuirks, ProviderProfileErro
             "non-streaming-sse" => ProviderQuirk::NonStreamingSse,
             "raw-json-lines" => ProviderQuirk::RawJsonLines,
             "requires-thinking-replay" => ProviderQuirk::RequiresThinkingReplay,
-            "responses-fallback-to-chat" => ProviderQuirk::ResponsesFallbackToChat,
             "ignores-unknown-fields" => ProviderQuirk::IgnoresUnknownFields,
             _ => {
                 return Err(ProviderProfileError::UnsupportedValue {
@@ -627,14 +490,11 @@ fn validate_profile_combination(
     usage_shape: ProviderUsageShape,
 ) -> Result<(), ProviderProfileError> {
     let shape_ok = match api_family {
-        ProviderApiFamily::CloseAiCompatible => matches!(
+        ProviderApiFamily::OpenAiCompatible => matches!(
             api_shape,
             ProviderApiShape::ChatCompletions | ProviderApiShape::Responses
         ),
-        ProviderApiFamily::EthnopicMessages => api_shape == ProviderApiShape::EthnopicMessages,
-        ProviderApiFamily::GeminiGenerate => api_shape == ProviderApiShape::GeminiGenerateContent,
-        ProviderApiFamily::BedrockConverse => api_shape == ProviderApiShape::BedrockConverse,
-        ProviderApiFamily::Custom => false,
+        ProviderApiFamily::AnthropicMessages => api_shape == ProviderApiShape::AnthropicMessages,
     };
     if !shape_ok {
         return Err(ProviderProfileError::InvalidCombination(format!(
@@ -643,13 +503,12 @@ fn validate_profile_combination(
     }
 
     let usage_ok = match api_family {
-        ProviderApiFamily::CloseAiCompatible => {
-            usage_shape == ProviderUsageShape::CloseAiCachedTokens
+        ProviderApiFamily::OpenAiCompatible => {
+            usage_shape == ProviderUsageShape::OpenAiCachedTokens
         }
-        ProviderApiFamily::EthnopicMessages => usage_shape == ProviderUsageShape::EthnopicReadWrite,
-        ProviderApiFamily::GeminiGenerate => usage_shape == ProviderUsageShape::Gemini,
-        ProviderApiFamily::BedrockConverse => usage_shape == ProviderUsageShape::Bedrock,
-        ProviderApiFamily::Custom => false,
+        ProviderApiFamily::AnthropicMessages => {
+            usage_shape == ProviderUsageShape::AnthropicReadWrite
+        }
     };
     if !usage_ok {
         return Err(ProviderProfileError::InvalidCombination(format!(
@@ -671,127 +530,13 @@ fn trimmed_option(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_option_string(provider: &ProviderState, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        let Some(value) = options_get_insensitive(&provider.options, key) else {
-            continue;
-        };
-        match value {
-            Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
-            Value::Number(n) => return Some(n.to_string()),
-            Value::Bool(b) => return Some(b.to_string()),
-            _ => {}
-        }
+fn option_string(options: &HashMap<String, Value>, key: &str) -> Option<String> {
+    match options.get(key)? {
+        Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
     }
-    None
-}
-
-fn options_get_insensitive<'a>(
-    options: &'a HashMap<String, Value>,
-    key: &str,
-) -> Option<&'a Value> {
-    if let Some(value) = options.get(key) {
-        return Some(value);
-    }
-    let key_lower = key.to_lowercase();
-    options
-        .iter()
-        .find_map(|(name, value)| (name.to_lowercase() == key_lower).then_some(value))
-}
-
-fn options_get_insensitive_any<'a>(
-    options: &'a HashMap<String, Value>,
-    keys: &[&str],
-) -> Option<&'a Value> {
-    keys.iter()
-        .find_map(|key| options_get_insensitive(options, key))
-}
-
-fn custom_profile_flat_keys_present(options: &HashMap<String, Value>) -> bool {
-    [
-        "api_style",
-        "apiStyle",
-        "api_family",
-        "apiFamily",
-        "api_shape",
-        "apiShape",
-        "transport",
-        "usage_shape",
-        "usageShape",
-        "quirks",
-    ]
-    .iter()
-    .any(|key| options_get_insensitive(options, key).is_some())
-}
-
-fn required_option_string(
-    options: &HashMap<String, Value>,
-    field: &str,
-    keys: &[&str],
-) -> Result<String, ProviderProfileError> {
-    option_string(options, keys)
-        .ok_or_else(|| ProviderProfileError::MissingField(field.to_string()))
-}
-
-fn option_string_list(
-    options: &HashMap<String, Value>,
-    keys: &[&str],
-) -> Result<Vec<String>, ProviderProfileError> {
-    let Some(value) = options_get_insensitive_any(options, keys) else {
-        return Ok(Vec::new());
-    };
-
-    match value {
-        Value::Array(items) => items
-            .iter()
-            .map(|item| {
-                item.as_str().map(ToString::to_string).ok_or_else(|| {
-                    ProviderProfileError::InvalidConfig("quirks must be string array".to_string())
-                })
-            })
-            .collect(),
-        _ => Err(ProviderProfileError::InvalidConfig(
-            "quirks must be string array".to_string(),
-        )),
-    }
-}
-
-fn option_bool(options: &HashMap<String, Value>, keys: &[&str]) -> Option<bool> {
-    for key in keys {
-        let Some(value) = options_get_insensitive(options, key) else {
-            continue;
-        };
-        match value {
-            Value::Bool(v) => return Some(*v),
-            Value::Number(n) => return Some(n.as_i64().unwrap_or(0) != 0),
-            Value::String(s) => {
-                let lower = s.trim().to_ascii_lowercase();
-                if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
-                    return Some(true);
-                }
-                if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
-                    return Some(false);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn option_string(options: &HashMap<String, Value>, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        let Some(value) = options_get_insensitive(options, key) else {
-            continue;
-        };
-        match value {
-            Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
-            Value::Number(n) => return Some(n.to_string()),
-            Value::Bool(b) => return Some(b.to_string()),
-            _ => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -803,129 +548,97 @@ mod tests {
     }
 
     #[test]
-    fn projects_closeai_compatible_profiles() {
-        let profile = ProviderProfileResolver::resolve_with_npm(
-            "deepseek",
-            "@ai-sdk/openai-compatible",
-            &empty_options(),
-        );
+    fn projects_builtin_openai_responses_profile() {
+        let profile =
+            ProviderProfileResolver::resolve_with_npm("openai", "@ai-sdk/openai", &empty_options());
 
-        assert_eq!(profile.api_family, ProviderApiFamily::CloseAiCompatible);
-        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
+        assert_eq!(profile.api_family, ProviderApiFamily::OpenAiCompatible);
+        assert_eq!(profile.api_shape, ProviderApiShape::Responses);
         assert_eq!(profile.transport, ProviderTransportKind::Bearer);
-        assert_eq!(profile.usage_shape, ProviderUsageShape::CloseAiCachedTokens);
-        assert_eq!(profile.cache_family, CacheProtocolFamily::CloseAiCompatible);
-        assert!(profile
-            .quirks
-            .contains(ProviderQuirk::RequiresThinkingReplay));
+        assert_eq!(profile.usage_shape, ProviderUsageShape::OpenAiCachedTokens);
+        assert_eq!(profile.cache_family, CacheProtocolFamily::OpenAiCompatible);
+        assert!(profile.quirks.as_slice().is_empty());
     }
 
     #[test]
-    fn projects_ethnopic_messages_profiles() {
+    fn projects_anthropic_messages_profiles() {
         let profile = ProviderProfileResolver::resolve_with_npm(
-            "ethnopic",
+            "anthropic",
             "@ai-sdk/anthropic",
             &empty_options(),
         );
 
-        assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
-        assert_eq!(profile.api_shape, ProviderApiShape::EthnopicMessages);
+        assert_eq!(profile.api_family, ProviderApiFamily::AnthropicMessages);
+        assert_eq!(profile.api_shape, ProviderApiShape::AnthropicMessages);
         assert_eq!(profile.transport, ProviderTransportKind::Bearer);
-        assert_eq!(profile.usage_shape, ProviderUsageShape::EthnopicReadWrite);
+        assert_eq!(profile.usage_shape, ProviderUsageShape::AnthropicReadWrite);
         assert_eq!(
             profile.cache_family,
-            CacheProtocolFamily::EthnopicCompatible
+            CacheProtocolFamily::AnthropicCompatible
         );
     }
 
     #[test]
-    fn projects_gitlab_as_private_token_closeai() {
-        let profile = ProviderProfileResolver::resolve_with_npm(
-            "gitlab",
-            "@gitlab/gitlab-ai-provider",
+    fn custom_provider_without_profile_fails_closed() {
+        let error = ProviderProfileResolver::try_resolve_with_npm(
+            "custom",
+            "@ai-sdk/openai-compatible",
             &empty_options(),
-        );
+        )
+        .expect_err("custom provider must declare a complete profile");
 
-        assert_eq!(profile.api_family, ProviderApiFamily::CloseAiCompatible);
-        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
-        assert_eq!(profile.transport, ProviderTransportKind::PrivateToken);
-        assert_eq!(profile.cache_family, CacheProtocolFamily::CloseAiCompatible);
+        assert_eq!(
+            error,
+            ProviderProfileError::MissingField("provider_profile".to_string())
+        );
     }
 
     #[test]
-    fn projects_copilot_as_oauth_closeai_with_route_quirk() {
-        let profile = ProviderProfileResolver::resolve_with_npm(
-            "github-copilot",
-            "@ai-sdk/github-copilot",
-            &empty_options(),
-        );
-
-        assert_eq!(profile.api_family, ProviderApiFamily::CloseAiCompatible);
-        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
-        assert_eq!(profile.transport, ProviderTransportKind::OAuth);
-        assert!(profile
-            .quirks
-            .contains(ProviderQuirk::ResponsesFallbackToChat));
-    }
-
-    #[test]
-    fn projects_vertex_and_bedrock_as_non_cache_families() {
-        let vertex = ProviderProfileResolver::resolve_with_npm(
-            "google-vertex",
-            "@ai-sdk/google-vertex",
-            &empty_options(),
-        );
-        let bedrock = ProviderProfileResolver::resolve_with_npm(
-            "amazon-bedrock",
-            "@ai-sdk/amazon-bedrock",
-            &empty_options(),
-        );
-
-        assert_eq!(vertex.api_family, ProviderApiFamily::GeminiGenerate);
-        assert_eq!(vertex.api_shape, ProviderApiShape::GeminiGenerateContent);
-        assert_eq!(vertex.transport, ProviderTransportKind::VertexBearer);
-        assert_eq!(vertex.cache_family, CacheProtocolFamily::Disabled);
-        assert_eq!(bedrock.api_family, ProviderApiFamily::BedrockConverse);
-        assert_eq!(bedrock.transport, ProviderTransportKind::SigV4);
-        assert_eq!(bedrock.cache_family, CacheProtocolFamily::Disabled);
-    }
-
-    #[test]
-    fn response_shape_is_explicit_capability_not_family_change() {
+    fn legacy_response_flag_does_not_select_protocol() {
         let mut options = empty_options();
         options.insert("useResponsesApi".to_string(), Value::Bool(true));
 
-        let profile =
-            ProviderProfileResolver::resolve_with_npm("openai", "@ai-sdk/openai", &options);
-
-        assert_eq!(profile.api_family, ProviderApiFamily::CloseAiCompatible);
-        assert_eq!(profile.api_shape, ProviderApiShape::Responses);
-        assert_eq!(profile.cache_family, CacheProtocolFamily::CloseAiCompatible);
+        let error = ProviderProfileResolver::try_resolve_with_npm(
+            "custom",
+            "@ai-sdk/openai-compatible",
+            &options,
+        )
+        .expect_err("legacy flag must not infer a custom profile");
+        assert!(matches!(error, ProviderProfileError::MissingField(_)));
     }
 
     #[test]
-    fn resolve_with_options_uses_npm_override_before_default() {
-        let mut options = empty_options();
-        options.insert(
-            "npm".to_string(),
-            Value::String("@ai-sdk/anthropic".to_string()),
-        );
-
-        let profile = ProviderProfileResolver::resolve_with_options("custom-provider", &options);
-
-        assert_eq!(profile.npm, "@ai-sdk/anthropic");
-        assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
-    }
-
-    #[test]
-    fn resolves_custom_closeai_profile_from_strict_object() {
+    fn profile_does_not_override_unsupported_sdk_shape() {
         let options = HashMap::from([(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::json!({
-                "api_style": "closeai-compatible",
+                "api_style": "openai-compatible",
                 "api_shape": "chat-completions",
                 "transport": "bearer",
-                "usage_shape": "closeai-cached-tokens",
+                "usage_shape": "openai-cached-tokens"
+            }),
+        )]);
+        let error = ProviderProfileResolver::try_resolve_with_npm(
+            "custom-provider",
+            "@custom/unknown-provider",
+            &options,
+        )
+        .expect_err("unsupported SDK shape must fail closed");
+        assert!(matches!(
+            error,
+            ProviderProfileError::UnsupportedValue { ref field, .. } if field == "npm"
+        ));
+    }
+
+    #[test]
+    fn resolves_custom_openai_profile_from_strict_object() {
+        let options = HashMap::from([(
+            "provider_profile".to_string(),
+            serde_json::json!({
+                "api_style": "openai-compatible",
+                "api_shape": "chat-completions",
+                "transport": "bearer",
+                "usage_shape": "openai-cached-tokens",
                 "quirks": ["non-streaming-sse"]
             }),
         )]);
@@ -933,20 +646,20 @@ mod tests {
         let profile =
             ProviderProfileResolver::try_resolve_with_options("my-custom", &options).unwrap();
 
-        assert_eq!(profile.api_family, ProviderApiFamily::CloseAiCompatible);
+        assert_eq!(profile.api_family, ProviderApiFamily::OpenAiCompatible);
         assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
         assert_eq!(profile.transport, ProviderTransportKind::Bearer);
-        assert_eq!(profile.usage_shape, ProviderUsageShape::CloseAiCachedTokens);
-        assert_eq!(profile.cache_family, CacheProtocolFamily::CloseAiCompatible);
+        assert_eq!(profile.usage_shape, ProviderUsageShape::OpenAiCachedTokens);
+        assert_eq!(profile.cache_family, CacheProtocolFamily::OpenAiCompatible);
         assert!(profile.quirks.contains(ProviderQuirk::NonStreamingSse));
     }
 
     #[test]
-    fn resolves_custom_messages_profile_from_flat_fields() {
+    fn custom_profile_rejects_flat_fields_and_legacy_object_key() {
         let options = HashMap::from([
             (
                 "api_style".to_string(),
-                Value::String("ethnopic-compatible".to_string()),
+                Value::String("anthropic-compatible".to_string()),
             ),
             (
                 "api_shape".to_string(),
@@ -955,30 +668,43 @@ mod tests {
             ("transport".to_string(), Value::String("bearer".to_string())),
             (
                 "usage_shape".to_string(),
-                Value::String("ethnopic-read-write".to_string()),
+                Value::String("anthropic-read-write".to_string()),
             ),
         ]);
 
-        let profile =
-            ProviderProfileResolver::try_resolve_with_options("my-messages", &options).unwrap();
-
-        assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
-        assert_eq!(profile.api_shape, ProviderApiShape::EthnopicMessages);
+        let error = ProviderProfileResolver::try_resolve_with_options("my-messages", &options)
+            .expect_err("flat profile fields must not be accepted");
         assert_eq!(
-            profile.cache_family,
-            CacheProtocolFamily::EthnopicCompatible
+            error,
+            ProviderProfileError::MissingField("provider_profile".to_string())
+        );
+
+        let legacy = HashMap::from([(
+            "providerProfile".to_string(),
+            serde_json::json!({
+                "api_style": "openai-compatible",
+                "api_shape": "responses",
+                "transport": "bearer",
+                "usage_shape": "openai-cached-tokens"
+            }),
+        )]);
+        let error = ProviderProfileResolver::try_resolve_with_options("legacy", &legacy)
+            .expect_err("legacy profile key must not be accepted");
+        assert_eq!(
+            error,
+            ProviderProfileError::MissingField("provider_profile".to_string())
         );
     }
 
     #[test]
     fn custom_profile_rejects_unknown_nested_fields() {
         let options = HashMap::from([(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::json!({
-                "api_style": "closeai-compatible",
+                "api_style": "openai-compatible",
                 "api_shape": "chat-completions",
                 "transport": "bearer",
-                "usage_shape": "closeai-cached-tokens",
+                "usage_shape": "openai-cached-tokens",
                 "prompt_cache_key": "must-not-be-accepted"
             }),
         )]);
@@ -992,12 +718,12 @@ mod tests {
     #[test]
     fn custom_profile_rejects_invalid_values_and_combinations() {
         let invalid_value = HashMap::from([(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::json!({
                 "api_style": "made-up",
                 "api_shape": "chat-completions",
                 "transport": "bearer",
-                "usage_shape": "closeai-cached-tokens"
+                "usage_shape": "openai-cached-tokens"
             }),
         )]);
 
@@ -1009,12 +735,12 @@ mod tests {
         ));
 
         let invalid_combination = HashMap::from([(
-            "providerProfile".to_string(),
+            "provider_profile".to_string(),
             serde_json::json!({
-                "api_style": "ethnopic-compatible",
+                "api_style": "anthropic-compatible",
                 "api_shape": "chat-completions",
                 "transport": "bearer",
-                "usage_shape": "ethnopic-read-write"
+                "usage_shape": "anthropic-read-write"
             }),
         )]);
 

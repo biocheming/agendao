@@ -58,9 +58,9 @@ pub struct ProviderInfo {
     /// 阴面记账(土律):server 唯一权威,TUI/web 只读消费。api_key 永不下发。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    /// Provider 协议族(`openai` / `anthropic` / `google` / `bedrock` / …)。
-    /// 从 config.provider[id].npm 优先,catalog info.npm 兜底,再过 `npm_to_protocol`
-    /// 反推。`None` = catalog/config 都没记录 npm(诚实标注,不伪假成"openai")。
+    /// Provider wire protocol（OpenAI Responses / Chat Completions / Anthropic Messages）。
+    /// 从完整 config profile 优先，catalog 的受支持 SDK shape 兜底。
+    /// `None` 表示协议未声明或不受支持。
     /// 与 base_url 配对决定 HTTP 实际打哪条契约;TUI Settings 展示给用户验证。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
@@ -584,50 +584,95 @@ pub(crate) fn upsert_config_model_info(
 }
 
 const CONNECT_PROTOCOL_OPTIONS: &[(&str, &str)] = &[
-    ("openai", "OpenAI"),
-    ("openrouter", "OpenRouter"),
-    ("perplexity", "Perplexity"),
-    ("anthropic", "Ethnopic"),
-    ("google", "Google"),
-    ("bedrock", "Bedrock"),
-    ("vertex", "Vertex"),
-    ("github-copilot", "GitHub Copilot"),
-    ("gitlab", "GitLab"),
+    ("openai-responses", "OpenAI Responses"),
+    ("openai-chat", "OpenAI Chat Completions"),
+    ("anthropic", "Anthropic Messages"),
 ];
 
-fn protocol_to_npm(protocol: &str) -> Option<&'static str> {
+#[derive(Clone, Copy)]
+struct ConnectProtocolProfile {
+    npm: &'static str,
+    api_style: &'static str,
+    api_shape: &'static str,
+    transport: &'static str,
+    usage_shape: &'static str,
+}
+
+fn connect_protocol_profile(protocol: &str) -> Option<ConnectProtocolProfile> {
     match protocol {
-        "openai" => Some("@ai-sdk/openai-compatible"),
-        "openrouter" => Some("@openrouter/ai-sdk-provider"),
-        "perplexity" => Some("@ai-sdk/perplexity"),
-        "anthropic" => Some("@ai-sdk/anthropic"),
-        "google" => Some("@ai-sdk/google"),
-        "bedrock" => Some("@ai-sdk/amazon-bedrock"),
-        "vertex" => Some("@ai-sdk/google-vertex"),
-        "github-copilot" => Some("@ai-sdk/github-copilot"),
-        "gitlab" => Some("@ai-sdk/gitlab"),
+        "openai-responses" => Some(ConnectProtocolProfile {
+            npm: "@ai-sdk/openai",
+            api_style: "openai-compatible",
+            api_shape: "responses",
+            transport: "bearer",
+            usage_shape: "openai-cached-tokens",
+        }),
+        "openai-chat" => Some(ConnectProtocolProfile {
+            npm: "@ai-sdk/openai-compatible",
+            api_style: "openai-compatible",
+            api_shape: "chat-completions",
+            transport: "bearer",
+            usage_shape: "openai-cached-tokens",
+        }),
+        "anthropic" => Some(ConnectProtocolProfile {
+            npm: "@ai-sdk/anthropic",
+            api_style: "anthropic-compatible",
+            api_shape: "messages",
+            transport: "bearer",
+            usage_shape: "anthropic-read-write",
+        }),
         _ => None,
     }
 }
 
 pub(crate) fn npm_to_protocol(npm: &str) -> Option<&'static str> {
-    match npm {
-        "@ai-sdk/openai-compatible" => Some("openai"),
-        "@openrouter/ai-sdk-provider" => Some("openrouter"),
-        "@ai-sdk/perplexity" => Some("perplexity"),
+    match npm.trim().to_ascii_lowercase().as_str() {
+        "@ai-sdk/openai" => Some("openai-responses"),
+        "@ai-sdk/openai-compatible" => Some("openai-chat"),
         "@ai-sdk/anthropic" => Some("anthropic"),
-        "@ai-sdk/google" => Some("google"),
-        "@ai-sdk/amazon-bedrock" => Some("bedrock"),
-        "@ai-sdk/google-vertex" => Some("vertex"),
-        "@ai-sdk/github-copilot" => Some("github-copilot"),
-        "@ai-sdk/gitlab" => Some("gitlab"),
         _ => None,
     }
 }
 
+fn profile_to_wire_protocol(profile: &agendao_provider::ProviderProfile) -> &'static str {
+    match profile.api_shape {
+        agendao_provider::ProviderApiShape::Responses => "openai-responses",
+        agendao_provider::ProviderApiShape::ChatCompletions => "openai-chat",
+        agendao_provider::ProviderApiShape::AnthropicMessages => "anthropic",
+    }
+}
+
+fn catalog_wire_protocol(npm: &str) -> Option<&'static str> {
+    npm_to_protocol(npm)
+}
+
+pub(crate) fn configured_wire_protocol(
+    provider_id: &str,
+    provider: &agendao_config::ProviderConfig,
+) -> Option<&'static str> {
+    let bootstrap_provider = configured_provider_to_bootstrap_provider(provider);
+    let profile = agendao_provider::ProviderProfileResolver::try_resolve_config_provider(
+        provider_id,
+        &bootstrap_provider,
+    )
+    .ok()?;
+    Some(profile_to_wire_protocol(&profile))
+}
+
+fn apply_connect_protocol_profile(
+    provider: &mut agendao_config::ProviderConfig,
+    profile: ConnectProtocolProfile,
+) {
+    provider.npm = Some(profile.npm.to_string());
+    provider.api_style = Some(profile.api_style.to_string());
+    provider.api_shape = Some(profile.api_shape.to_string());
+    provider.transport = Some(profile.transport.to_string());
+    provider.usage_shape = Some(profile.usage_shape.to_string());
+}
+
 fn provider_display_name(provider_id: &str, name: &str) -> String {
     if provider_id.eq_ignore_ascii_case("anthropic") || name.eq_ignore_ascii_case("anthropic") {
-        "Ethnopic".to_string()
+        "Anthropic".to_string()
     } else {
         name.to_string()
     }
@@ -748,7 +793,7 @@ fn connect_draft_from_custom_query(query: &str) -> ProviderConnectDraft {
         known_provider_id: None,
         name: None,
         base_url: None,
-        protocol: Some("openai".to_string()),
+        protocol: Some("openai-chat".to_string()),
         env: Vec::new(),
         connected: false,
         model_count: 0,
@@ -784,15 +829,15 @@ fn build_model_variant_lookup(data: ModelsData) -> HashMap<String, HashMap<Strin
         .collect()
 }
 
-/// Detect whether a provider+model pair uses the Ethnopic-compatible protocol family.
+/// Detect whether a provider+model pair uses the Anthropic-compatible protocol family.
 ///
 /// This is a **protocol compatibility check**, not a brand reference.  When users
-/// configure an Ethnopic-compatible provider (directly or via Bedrock/Vertex),
+/// configure an Anthropic-compatible provider (directly or via Bedrock/Vertex),
 /// the thinking variant surface is `["high", "max"]` rather than the OpenAI-style
 /// `["low", "medium", "high"]`.
-fn is_ethnopic_protocol_family(provider_id: &str) -> bool {
+fn is_anthropic_protocol_family(provider_id: &str) -> bool {
     let provider = provider_id.to_ascii_lowercase();
-    provider.contains("anthropic") || provider.contains("ethnopic")
+    provider.contains("anthropic")
 }
 
 fn synthetic_variant_names(provider_id: &str, model: &ModelsDevInfo) -> Vec<String> {
@@ -800,7 +845,7 @@ fn synthetic_variant_names(provider_id: &str, model: &ModelsDevInfo) -> Vec<Stri
         return Vec::new();
     }
 
-    if is_ethnopic_protocol_family(provider_id) {
+    if is_anthropic_protocol_family(provider_id) {
         return vec!["high".to_string(), "max".to_string()];
     }
 
@@ -855,23 +900,24 @@ pub(crate) async fn list_providers(
     // base_url 映射:从 config.provider[id].base_url 读取(由 step 2 的同一循环填)。
     // 阴面记账(土律):server 端唯一权威;Some=用户/catalog 显式配,None=SDK-managed。
     let mut provider_base_urls: HashMap<String, String> = HashMap::new();
-    // protocol 映射:从 config.provider[id].npm + catalog info.npm 反推(`npm_to_protocol`)。
+    // protocol 映射:从 config profile + catalog npm 解析为三种 wire protocol。
     // 阴面同 base_url;configured 优先,catalog 兜底(由 step 1/2 两端各自填,
     // `or_insert_with` 保证 config 先写后不被 catalog 覆盖)。
     let mut provider_protocols: HashMap<String, String> = HashMap::new();
 
     // 1) models.dev full provider catalogue.
     for (provider_id, provider) in &models_data {
+        let Some(protocol) = provider.npm.as_deref().and_then(catalog_wire_protocol) else {
+            continue;
+        };
         provider_names
             .entry(provider_id.clone())
             .or_insert_with(|| provider_display_name(provider_id, &provider.name));
         // protocol 从 catalog info.npm 反推填入(catalog 作为兜底,step 2 的
         // config 端再覆盖优先级更高的);`or_insert_with` 保证幂等。
-        if let Some(proto) = provider.npm.as_deref().and_then(npm_to_protocol) {
-            provider_protocols
-                .entry(provider_id.clone())
-                .or_insert_with(|| proto.to_string());
-        }
+        provider_protocols
+            .entry(provider_id.clone())
+            .or_insert_with(|| protocol.to_string());
         for model in provider.models.values() {
             let variants = variants_for_model(&variant_lookup, provider_id, &model.id);
             upsert_catalog_model_info(
@@ -908,7 +954,7 @@ pub(crate) async fn list_providers(
             // protocol 填入(土律单点·config override):用户/管理面显式配的 npm 优先,
             // 用 `insert` 直接覆盖 step 1 的 catalog 兜底值——与 KnownProviderEntry
             // 的 `configured.npm.or(info.npm)` 一致语义(provider.rs:1334)。
-            if let Some(proto) = provider.npm.as_deref().and_then(npm_to_protocol) {
+            if let Some(proto) = configured_wire_protocol(provider_id, provider) {
                 provider_protocols.insert(provider_id.clone(), proto.to_string());
             }
             if let Some(models) = &provider.models {
@@ -1022,6 +1068,7 @@ fn configured_provider_to_bootstrap_provider(
     ConfigProvider {
         name: provider.name.clone(),
         env: provider.env.clone(),
+        api_key: provider.api_key.clone(),
         api: provider.base_url.clone(),
         npm: provider.npm.clone(),
         api_style: provider.api_style.clone(),
@@ -1098,7 +1145,6 @@ fn provider_profile_validation_item(
         effect: ConfigPolicyValidationEffect::FailClosedBootstrap,
         code: "provider_profile_invalid".to_string(),
         message: error.to_string(),
-        fallback: None,
     }
 }
 
@@ -1322,8 +1368,7 @@ async fn list_managed_providers(
                 known_model_count: known.map(|provider| provider.models.len()).unwrap_or(0),
                 base_url: configured.and_then(|provider| provider.base_url.clone()),
                 protocol: configured
-                    .and_then(|provider| provider.npm.as_deref())
-                    .and_then(npm_to_protocol)
+                    .and_then(|provider| configured_wire_protocol(&id, provider))
                     .map(str::to_string),
                 descriptor_candidate,
                 descriptor_candidate_error,
@@ -1358,25 +1403,28 @@ async fn known_provider_entries(state: &ServerState) -> Vec<KnownProviderEntry> 
 
     let mut providers: Vec<KnownProviderEntry> = models_data
         .into_iter()
-        .map(|(id, info)| {
+        .filter_map(|(id, info)| {
             let configured = configured_providers.get(&id);
             let npm = configured
                 .and_then(|provider| provider.npm.clone())
                 .or(info.npm.clone());
+            let protocol = configured
+                .and_then(|provider| configured_wire_protocol(&id, provider))
+                .or_else(|| npm.as_deref().and_then(catalog_wire_protocol))?;
             let base_url = configured
                 .and_then(|provider| provider.base_url.clone())
                 .or(info.api.clone());
-            KnownProviderEntry {
+            Some(KnownProviderEntry {
                 connected: connected_ids.contains(&id),
                 model_count: info.models.len(),
                 env: info.env,
                 name: provider_display_name(&id, &info.name),
                 id,
                 base_url,
-                protocol: npm.as_deref().and_then(npm_to_protocol).map(str::to_string),
+                protocol: Some(protocol.to_string()),
                 npm,
                 supports_api_key_connect: true,
-            }
+            })
         })
         .collect();
     providers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -1664,7 +1712,7 @@ pub(crate) async fn connect_provider(
         if base_url.is_empty() {
             return Err(ApiError::BadRequest("base_url is required".to_string()));
         }
-        let npm = protocol_to_npm(protocol)
+        let protocol_profile = connect_protocol_profile(protocol)
             .ok_or_else(|| ApiError::BadRequest(format!("Invalid protocol: {}", protocol)))?;
 
         let updated = state
@@ -1685,7 +1733,7 @@ pub(crate) async fn connect_provider(
                 }
                 provider.id = Some(provider_id.to_string());
                 provider.base_url = Some(base_url.to_string());
-                provider.npm = Some(npm.to_string());
+                apply_connect_protocol_profile(provider, protocol_profile);
                 Ok(())
             })
             .map_err(|error| ApiError::BadRequest(error.to_string()))?;
@@ -1755,11 +1803,11 @@ pub(crate) async fn update_provider(
                 if base_url.is_empty() {
                     return Err(anyhow::anyhow!("base_url is required"));
                 }
-                let npm = protocol_to_npm(protocol)
+                let protocol_profile = connect_protocol_profile(protocol)
                     .ok_or_else(|| anyhow::anyhow!("Invalid protocol: {}", protocol))?;
                 provider.id = Some(provider_id.to_string());
                 provider.base_url = Some(base_url.to_string());
-                provider.npm = Some(npm.to_string());
+                apply_connect_protocol_profile(provider, protocol_profile);
             }
 
             Ok(())
@@ -1801,9 +1849,7 @@ pub(crate) async fn set_provider_disabled(
                     config.disabled_providers.push(provider_id.to_string());
                 }
             } else {
-                config
-                    .disabled_providers
-                    .retain(|p| p != provider_id);
+                config.disabled_providers.retain(|p| p != provider_id);
             }
             Ok(())
         })
@@ -1828,9 +1874,8 @@ pub struct TestProviderConnectionResponse {
 /// 测试连接（金律·可观测性）：用存储的 auth 对 provider 的 models 端点发一个
 /// 轻量 GET，回报 ok/status/延迟/错误。不产生任何副作用（只读探测）。
 ///
-/// 覆盖 openai 族（Bearer）、anthropic（x-api-key）、google（x-goog-api-key）；
-/// bedrock/vertex/github-copilot/gitlab（SigV4/OAuth 流）诚实回报 unsupported，
-/// 不假装测试通过（道纪·第十条）。
+/// 覆盖 OpenAI Responses / Chat Completions（Bearer）与 Anthropic Messages
+///（x-api-key）。
 pub(crate) async fn test_provider_connection(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
@@ -1850,50 +1895,41 @@ pub(crate) async fn test_provider_connection(
     }
 
     let config = state.config_store.config();
-    let configured = config
-        .provider
-        .as_ref()
-        .and_then(|m| m.get(provider_id));
+    let configured = config.provider.as_ref().and_then(|m| m.get(provider_id));
     // base_url：config 显式配置优先，catalog(models.dev)默认端点兜底——
     // 多数 connected provider 并不在 config 里写 base_url(土律·兜底不假装)。
+    let (catalog_api, catalog_npm) = state
+        .catalog_authority
+        .map_snapshot(|snapshot| {
+            snapshot
+                .data
+                .get(provider_id)
+                .map(|provider| (provider.api.clone(), provider.npm.clone()))
+                .unwrap_or_default()
+        })
+        .await;
     let base_url = configured
         .and_then(|p| p.base_url.clone())
-        .filter(|s| !s.trim().is_empty());
-    let base_url = match base_url {
-        Some(url) => Some(url),
-        None => {
-            let models_data = load_catalog_snapshot(state.as_ref()).await.data;
-            models_data
-                .get(provider_id)
-                .and_then(|info| info.api.clone())
-        }
-    };
+        .filter(|s| !s.trim().is_empty())
+        .or(catalog_api);
     let Some(base_url) = base_url else {
         return Ok(Json(fail_fast("no base_url configured for this provider")));
     };
     let protocol = configured
-        .and_then(|p| p.npm.as_deref())
-        .and_then(npm_to_protocol)
-        .unwrap_or("openai")
+        .and_then(|provider| configured_wire_protocol(provider_id, provider))
+        .or_else(|| catalog_npm.as_deref().and_then(catalog_wire_protocol))
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "provider protocol is missing or unsupported; choose openai-responses, openai-chat, or anthropic"
+                    .to_string(),
+            )
+        })?
         .to_string();
-    if matches!(
-        protocol.as_str(),
-        "bedrock" | "vertex" | "github-copilot" | "gitlab"
-    ) {
-        return Ok(Json(fail_fast(format!(
-            "connection test not supported for protocol `{}` yet",
-            protocol
-        ))));
-    }
-
     let api_key = state.auth_manager.get_api_key(provider_id).await;
 
-    let outcome = agendao_provider::transport::connection_test(
-        &base_url,
-        &protocol,
-        api_key.as_deref(),
-    )
-    .await;
+    let outcome =
+        agendao_provider::transport::connection_test(&base_url, &protocol, api_key.as_deref())
+            .await;
     Ok(Json(TestProviderConnectionResponse {
         ok: outcome.ok,
         status: outcome.status,
@@ -1939,7 +1975,7 @@ async fn register_custom_provider(
 mod tests {
     use super::{
         configured_provider_to_descriptor_candidate, connect_draft_from_custom_query,
-        connect_draft_from_known_provider, npm_to_protocol, protocol_to_npm,
+        connect_draft_from_known_provider, connect_protocol_profile, npm_to_protocol,
         provider_descriptor_response, resolve_known_provider_matches, KnownProviderEntry,
         ProviderConnectDraftMode, CONNECT_PROTOCOL_OPTIONS,
     };
@@ -1966,27 +2002,30 @@ mod tests {
     }
 
     #[test]
-    fn connect_schema_lists_openrouter_and_perplexity() {
-        assert!(CONNECT_PROTOCOL_OPTIONS
-            .iter()
-            .any(|(id, _)| *id == "openrouter"));
-        assert!(CONNECT_PROTOCOL_OPTIONS
-            .iter()
-            .any(|(id, _)| *id == "perplexity"));
+    fn connect_schema_lists_exactly_three_wire_protocols() {
+        assert_eq!(
+            CONNECT_PROTOCOL_OPTIONS
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec!["openai-responses", "openai-chat", "anthropic"]
+        );
     }
 
     #[test]
-    fn protocol_mapping_supports_openrouter_and_perplexity() {
+    fn protocol_mapping_accepts_only_supported_protocols_and_sdk_shapes() {
+        assert!(connect_protocol_profile("openrouter").is_none());
+        assert!(connect_protocol_profile("openai").is_none());
         assert_eq!(
-            protocol_to_npm("openrouter"),
-            Some("@openrouter/ai-sdk-provider")
+            connect_protocol_profile("openai-responses").map(|profile| profile.npm),
+            Some("@ai-sdk/openai")
         );
-        assert_eq!(protocol_to_npm("perplexity"), Some("@ai-sdk/perplexity"));
         assert_eq!(
-            npm_to_protocol("@openrouter/ai-sdk-provider"),
-            Some("openrouter")
+            npm_to_protocol("@ai-sdk/openai-compatible"),
+            Some("openai-chat")
         );
-        assert_eq!(npm_to_protocol("@ai-sdk/perplexity"), Some("perplexity"));
+        assert_eq!(npm_to_protocol("@openrouter/ai-sdk-provider"), None);
+        assert_eq!(npm_to_protocol("@ai-sdk/perplexity"), None);
     }
 
     #[tokio::test]
@@ -2047,7 +2086,7 @@ mod tests {
                 None,
                 None,
             ),
-            provider("anthropic", "Ethnopic", &["OPENROUTER_TOKEN"], None, None),
+            provider("anthropic", "Anthropic", &["OPENROUTER_TOKEN"], None, None),
         ];
 
         let matches = resolve_known_provider_matches(&providers, "openrouter");
@@ -2079,11 +2118,11 @@ mod tests {
     }
 
     #[test]
-    fn custom_query_draft_defaults_to_openai_protocol() {
+    fn custom_query_draft_defaults_to_openai_chat_protocol() {
         let draft = connect_draft_from_custom_query("  my-provider  ");
         assert_eq!(draft.mode, ProviderConnectDraftMode::Custom);
         assert_eq!(draft.provider_id, "my-provider");
-        assert_eq!(draft.protocol.as_deref(), Some("openai"));
+        assert_eq!(draft.protocol.as_deref(), Some("openai-chat"));
         assert!(draft.base_url.is_none());
         assert!(draft.known_provider_id.is_none());
     }
@@ -2095,7 +2134,7 @@ mod tests {
             "OpenRouter",
             &["OPENROUTER_API_KEY"],
             Some("https://openrouter.ai/api/v1"),
-            Some("openrouter"),
+            Some("openai-chat"),
         );
 
         let draft = connect_draft_from_known_provider(&provider);
@@ -2106,7 +2145,7 @@ mod tests {
             draft.base_url.as_deref(),
             Some("https://openrouter.ai/api/v1")
         );
-        assert_eq!(draft.protocol.as_deref(), Some("openrouter"));
+        assert_eq!(draft.protocol.as_deref(), Some("openai-chat"));
         assert_eq!(draft.env, vec!["OPENROUTER_API_KEY".to_string()]);
     }
 
@@ -2116,7 +2155,11 @@ mod tests {
             name: Some(" OpenRouter ".to_string()),
             api_key: Some("secret-123".to_string()),
             base_url: Some(" https://openrouter.ai/api/v1 ".to_string()),
-            npm: Some("@openrouter/ai-sdk-provider".to_string()),
+            npm: Some("@ai-sdk/openai-compatible".to_string()),
+            api_style: Some("openai-compatible".to_string()),
+            api_shape: Some("chat-completions".to_string()),
+            transport: Some("bearer".to_string()),
+            usage_shape: Some("openai-cached-tokens".to_string()),
             env: Some(vec![" OPENROUTER_API_KEY ".to_string()]),
             ..Default::default()
         };
@@ -2140,10 +2183,10 @@ mod tests {
     #[test]
     fn configured_provider_descriptor_candidate_reports_invalid_profile() {
         let configured = ProviderConfig {
-            api_style: Some("closeai-compatible".to_string()),
+            api_style: Some("openai-compatible".to_string()),
             api_shape: Some("messages".to_string()),
             transport: Some("bearer".to_string()),
-            usage_shape: Some("closeai-cached-tokens".to_string()),
+            usage_shape: Some("openai-cached-tokens".to_string()),
             ..Default::default()
         };
 
@@ -2176,10 +2219,10 @@ mod tests {
     #[test]
     fn provider_descriptor_response_preserves_projection_error_without_candidate() {
         let configured = ProviderConfig {
-            api_style: Some("closeai-compatible".to_string()),
+            api_style: Some("openai-compatible".to_string()),
             api_shape: Some("messages".to_string()),
             transport: Some("bearer".to_string()),
-            usage_shape: Some("closeai-cached-tokens".to_string()),
+            usage_shape: Some("openai-cached-tokens".to_string()),
             ..Default::default()
         };
 

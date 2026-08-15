@@ -10,10 +10,10 @@
 //! 权威仍是各 dialog 的 footer hint(U14 的 source-scan 测试守 hint↔键表
 //! 一致),本表是其汇总视图。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 pub struct HelpDialog {
     pub visible: bool,
@@ -43,7 +43,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("Tab", "Autocomplete / next foldable block"),
         Binding("Ctrl+B", "Toggle sidebar"),
         Binding("Ctrl+P", "Command palette"),
-
         Section("─ Transcript (cursor) ─"),
         Binding("j/k · Tab/S-Tab", "Cursor next/prev foldable block"),
         Binding("Space", "Toggle fold at cursor (prompt empty)"),
@@ -52,7 +51,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("C", "Copy visible screen (OSC52)"),
         Binding("g/G · Home/End", "Jump top/bottom"),
         Binding("PgUp/PgDn · wheel", "Scroll transcript"),
-
         Section("─ Sessions (/sessions) ─"),
         Binding("type · ⌫", "Filter sessions"),
         Binding("↑/↓ · Home/End", "Navigate"),
@@ -60,47 +58,40 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("x · D", "Mark row · delete all marked (Confirm)"),
         Binding("n", "New session (empty list)"),
         Binding("Esc", "Close"),
-
         Section("─ Pickers (/models · /mode · /agents) ─"),
         Binding("type · ⌫", "Filter (models)"),
         Binding("Tab", "Cycle variant (models)"),
         Binding("↑/↓ · Home/End", "Navigate"),
         Binding("Enter", "Select"),
         Binding("Esc", "Close"),
-
         Section("─ Skills (/skills · /proposals) ─"),
         Binding("type · ⌫", "Filter skills"),
         Binding("Enter", "Detail view (Esc: back)"),
         Binding("a/r", "Approve/reject (proposals)"),
         Binding("s", "Open settings (empty list)"),
         Binding("Esc", "Close"),
-
-        Section("─ MCP & tasks (/mcps · /tasks) ─"),
-        Binding("c/d", "Connect/disconnect (mcps) · cancel (tasks)"),
+        Section("─ MCP (/mcps) ─"),
+        Binding("c/d", "Connect/disconnect"),
         Binding("a/A", "OAuth start/finish (mcps)"),
-        Binding("x", "Clear auth (mcps) · execute (tasks)"),
+        Binding("x", "Clear auth"),
         Binding("n/e", "Add/edit server (mcps)"),
         Binding("Enter", "View"),
-
         Section("─ Upkeep (/stash · /fork · /recover · /notifications) ─"),
         Binding("Enter", "Restore (stash) · fork (fork) · view"),
         Binding("d", "Delete (stash)"),
         Binding("x", "Execute action (recover)"),
         Binding("Esc", "Close/cancel"),
-
         Section("─ Permission prompt ─"),
         Binding("↑/↓ · Enter", "Navigate · confirm option"),
         Binding("y/a · 1-3", "Quick allow"),
         Binding("n/d · 0", "Deny"),
         Binding("Esc", "Hide"),
-
         Section("─ Editors (provider · model · mcp · plugin · rename) ─"),
         Binding("Tab", "Next field"),
         Binding("←/→", "Cycle option (effort/transport/protocol)"),
         Binding("F2", "Show/hide API key (provider)"),
         Binding("Enter", "Save/install"),
         Binding("Esc", "Cancel"),
-
         Section("─ Settings (/settings) ─"),
         Binding("Tab", "Cycle panes / categories"),
         Binding("↑/↓", "Navigate rows"),
@@ -109,7 +100,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("m", "Add model to provider"),
         Binding("c/d", "Connect/Disconnect MCP server"),
         Binding("a/r", "Approve/Reject skill proposal"),
-
         // ── Slash commands:与 CommandRegistry 一一对应(测试双向守)。
         // server 端缺能力的条目诚实标注,不伪"已通"(道纪第十条)。
         Section("─ Slash commands ─"),
@@ -134,7 +124,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("/new", "New session"),
         Binding("/notifications", "Notification history"),
         Binding("/parent", "Parent session (not supported yet)"),
-        Binding("/preset", "Switch preset (opens /mode)"),
         Binding("/proposals", "Skill evolution proposals"),
         Binding("/recover", "Recovery actions"),
         Binding("/redo", "Redo (server stub; Ctrl+Y = text redo)"),
@@ -148,7 +137,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("/skills", "Browse skills"),
         Binding("/stash", "Stash draft / browse stash"),
         Binding("/status", "System status"),
-        Binding("/tasks", "Agent tasks"),
         Binding("/themes", "Cycle theme (dark/light via Ctrl+P)"),
         Binding("/thinking", "Toggle thinking blocks"),
         Binding("/timeline", "Timeline (not supported yet)"),
@@ -157,7 +145,6 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("/undo", "Undo (server stub; Ctrl+Z = text undo)"),
         Binding("/unshare", "Revoke share link"),
         Binding("/voice", "Voice input (not supported yet)"),
-
         Section("─ Global ─"),
         Binding("q", "Quit (empty prompt, press twice)"),
         Binding("Esc", "Close dialog / double-tap: interrupt run"),
@@ -177,48 +164,89 @@ impl Default for HelpDialog {
 }
 
 impl HelpDialog {
-    pub fn new() -> Self { Self { visible: false, scroll: 0 } }
-    pub fn toggle(&mut self) { self.visible = !self.visible; }
-    pub fn dismiss(&mut self) { self.visible = false; }
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            scroll: 0,
+        }
+    }
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+    pub fn dismiss(&mut self) {
+        self.visible = false;
+    }
 
     pub fn handle_key(&mut self, key: &Key) -> bool {
-        if !self.visible { return false; }
+        if !self.visible {
+            return false;
+        }
         let max_scroll = KEYBINDINGS.len().saturating_sub(HELP_VIEWPORT);
         match key {
-            Key::Escape | Key::Char('q') | Key::Char('h') | Key::Char('?') => { self.dismiss(); true }
+            Key::Escape | Key::Char('q') | Key::Char('h') | Key::Char('?') => {
+                self.dismiss();
+                true
+            }
             // U19:~100 行表必须可滚(原一次性全量渲染,超高被裁)。
-            Key::Up => { self.scroll = self.scroll.saturating_sub(1); true }
-            Key::Down => { self.scroll = (self.scroll + 1).min(max_scroll); true }
-            Key::PageUp => { self.scroll = self.scroll.saturating_sub(HELP_VIEWPORT); true }
-            Key::PageDown => { self.scroll = (self.scroll + HELP_VIEWPORT).min(max_scroll); true }
-            Key::Home => { self.scroll = 0; true }
-            Key::End => { self.scroll = max_scroll; true }
+            Key::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                true
+            }
+            Key::Down => {
+                self.scroll = (self.scroll + 1).min(max_scroll);
+                true
+            }
+            Key::PageUp => {
+                self.scroll = self.scroll.saturating_sub(HELP_VIEWPORT);
+                true
+            }
+            Key::PageDown => {
+                self.scroll = (self.scroll + HELP_VIEWPORT).min(max_scroll);
+                true
+            }
+            Key::Home => {
+                self.scroll = 0;
+                true
+            }
+            Key::End => {
+                self.scroll = max_scroll;
+                true
+            }
             _ => true,
         }
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
 
         // Section → muted 行;Binding → 键右对齐 + 描述(与渲染同口径成形)。
-        let items: Vec<ListItem> = KEYBINDINGS.iter().map(|entry| match entry {
-            HelpEntry::Section(title) => ListItem::Row {
-                display: (*title).to_string(),
-                muted: true,
-            },
-            HelpEntry::Binding(key, desc) => ListItem::Row {
-                display: format!("{:>16}  {}", key, desc),
-                muted: false,
-            },
-        }).collect();
+        let items: Vec<ListItem> = KEYBINDINGS
+            .iter()
+            .map(|entry| match entry {
+                HelpEntry::Section(title) => ListItem::Row {
+                    display: (*title).to_string(),
+                    muted: true,
+                },
+                HelpEntry::Binding(key, desc) => ListItem::Row {
+                    display: format!("{:>16}  {}", key, desc),
+                    muted: false,
+                },
+            })
+            .collect();
 
         backdrop::render_list_dialog_bottom(
-            "Help — Keybindings",
-            colors::ACCENT_BLUE(),
+            backdrop::ListDialogHeading {
+                title: "Help — Keybindings",
+                border_color: colors::ACCENT_BLUE(),
+            },
             &items,
             self.scroll,
             "↑↓/PgUp/PgDn scroll  Home/End: top/bottom  Esc/q/h/?: close",
-            ctx, geom, HELP_VIEWPORT,
+            ctx,
+            geom,
+            HELP_VIEWPORT,
         );
     }
 }
@@ -233,14 +261,20 @@ mod tests {
     #[test]
     fn help_covers_every_registry_slash_command() {
         let registry = agendao_command::CommandRegistry::new();
-        let table_keys: Vec<&str> = KEYBINDINGS.iter().filter_map(|e| match e {
-            HelpEntry::Binding(k, _) if k.starts_with('/') => Some(*k),
-            _ => None,
-        }).collect();
+        let table_keys: Vec<&str> = KEYBINDINGS
+            .iter()
+            .filter_map(|e| match e {
+                HelpEntry::Binding(k, _) if k.starts_with('/') => Some(*k),
+                _ => None,
+            })
+            .collect();
 
         // 正向:registry → 表。注意:registry 的 slash.name 已含前导 "/"。
         for cmd in registry.ui_all_slash_commands() {
-            let slash = cmd.slash.as_ref().expect("ui_all_slash_commands 只返回带 slash 的");
+            let slash = cmd
+                .slash
+                .as_ref()
+                .expect("ui_all_slash_commands 只返回带 slash 的");
             let key = slash.name;
             assert!(
                 table_keys.contains(&key),

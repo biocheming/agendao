@@ -10,8 +10,8 @@ use agendao_core::codec;
 use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
 
-use crate::protocol::{JsonRpcMessage, JsonRpcRequest};
 use crate::McpClientError;
+use agendao_core::jsonrpc::{JsonRpcMessage, JsonRpcRequest};
 
 /// Bound on the HTTP send/response-header phase of MCP POSTs.
 ///

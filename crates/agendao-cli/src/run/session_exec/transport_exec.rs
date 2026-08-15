@@ -6,6 +6,7 @@ pub(in crate::run) async fn run_cli_prompt_transport(
     command: Option<&str>,
     model: Option<&str>,
     agent: Option<&str>,
+    scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     variant: Option<&str>,
 ) -> anyhow::Result<()> {
     let session_id = agendao_core::id::create(agendao_core::id::Prefix::Session, false, None);
@@ -16,6 +17,7 @@ pub(in crate::run) async fn run_cli_prompt_transport(
             &message,
             agendao_client::transport::PromptOptions {
                 agent_id: agent.map(|s| s.to_string()),
+                scheduler,
                 model: model.map(|s| s.to_string()),
                 variant: variant.map(|s| s.to_string()),
                 source_origin: Some(agendao_types::MessageSourceOrigin::Operator),

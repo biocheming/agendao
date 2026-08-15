@@ -5,8 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::discovery::{
-    load_agents_from_dir, load_commands_from_dir, load_modes_from_dir, load_plugins_from_path,
-    normalize_existing_path,
+    load_agents_from_dir, load_commands_from_dir, load_plugins_from_path, normalize_existing_path,
 };
 use super::transforms::{apply_post_load_transforms, merge_agent_config};
 use super::{ConfigLoader, DIRECTORY_CONFIG_FILES};
@@ -165,26 +164,10 @@ impl ConfigLoader {
             }
             self.config.agent = Some(agent_configs);
         }
-
-        let modes = load_modes_from_dir(config_dir);
-        if !modes.is_empty() {
-            let mut agent_configs = self.config.agent.take().unwrap_or_default();
-            for (name, agent) in modes {
-                if let Some(existing) = agent_configs.entries.get_mut(&name) {
-                    merge_agent_config(existing, agent);
-                } else {
-                    agent_configs.entries.insert(name, agent);
-                }
-            }
-            self.config.agent = Some(agent_configs);
-        }
-
         let mut discovered_plugins = std::collections::HashMap::new();
         for plugin_dir in [
             config_dir.join("plugins"),
-            config_dir.join("plugin"),
             identity.workspace_root.join(".agendao/plugins"),
-            identity.workspace_root.join(".agendao/plugin"),
         ] {
             let plugins = load_plugins_from_path(&plugin_dir);
             for plugin_spec in plugins {

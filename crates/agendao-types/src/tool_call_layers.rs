@@ -60,7 +60,7 @@ fn tool_call_observable_arguments_len(input: &Value) -> Option<usize> {
         Value::Array(array) if array.is_empty() => None,
         Value::String(text) => {
             let trimmed = text.trim();
-            (!trimmed.is_empty()).then(|| trimmed.len())
+            (!trimmed.is_empty()).then_some(trimmed.len())
         }
         other => Some(json_serialized_byte_len(other)),
     }
@@ -148,7 +148,10 @@ mod tests {
     #[test]
     fn replay_text_len_matches_materialized_replay_text_len() {
         let cases: Vec<(Value, Option<&str>)> = vec![
-            (json!({"path":"normalized.txt"}), Some("{\"path\":\"raw.txt\"}")),
+            (
+                json!({"path":"normalized.txt"}),
+                Some("{\"path\":\"raw.txt\"}"),
+            ),
             (json!({"path":"normalized.txt"}), None),
             (json!({"path":"normalized.txt"}), Some("   ")),
             (json!(null), None),

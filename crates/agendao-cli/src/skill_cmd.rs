@@ -15,7 +15,7 @@ use agendao_types::{
     SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillOperationalSnapshot,
     SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReasonKind,
     SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
-    SkillSyncPlan, SkillVitalityState, WorkspaceSkillArtifactImportEnvelope,
+    SkillSyncPlan, SkillVitalityState, WorkspaceSkillArtifactBundle,
 };
 use chrono::{Local, TimeZone};
 use serde::Serialize;
@@ -30,8 +30,8 @@ use crate::cli::{
     SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillRetirementReasonKindArg,
     SkillSourceArgs, SkillSourceKindArg, SkillVitalityStateArg,
 };
-use crate::server_lifecycle::CliRuntimeContext;
 use crate::util::truncate_text;
+use crate::CliRuntimeContext;
 
 #[derive(Debug, Clone)]
 struct SkillReviewCandidateView {
@@ -83,7 +83,7 @@ fn export_workspace_skill_data_from_dir(
 
 fn import_workspace_skill_data_into_dir(base_dir: &Path, file: &Path) -> anyhow::Result<usize> {
     let raw = fs::read_to_string(file)?;
-    let payload: WorkspaceSkillArtifactImportEnvelope = serde_json::from_str(&raw)?;
+    let payload: WorkspaceSkillArtifactBundle = serde_json::from_str(&raw)?;
 
     let authority = workspace_skill_authority(base_dir);
     let imported = import_workspace_skill_artifact_bundle(&authority, payload)?;
@@ -152,17 +152,17 @@ async fn handle_skill_hub_command(
                     "semantic_conflicts": semantic_conflicts,
                 }))?;
             } else {
-                print_hub_status(
-                    managed.managed_skills,
+                print_hub_status(HubStatusReport {
+                    managed: managed.managed_skills,
                     usage,
-                    index.source_indices,
-                    distributions.distributions,
-                    artifact_cache.artifact_cache,
-                    policy.policy,
-                    lifecycle.lifecycle,
-                    negative_entropy.candidates,
-                    semantic_conflicts.conflicts,
-                );
+                    index: index.source_indices,
+                    distributions: distributions.distributions,
+                    artifact_cache: artifact_cache.artifact_cache,
+                    policy: policy.policy,
+                    lifecycle: lifecycle.lifecycle,
+                    negative_entropy: negative_entropy.candidates,
+                    semantic_conflicts: semantic_conflicts.conflicts,
+                });
             }
         }
         SkillHubCommands::Managed { output } => {
@@ -547,7 +547,7 @@ fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_hub_status(
+struct HubStatusReport {
     managed: Vec<ManagedSkillRecord>,
     usage: SkillHubUsageLedgerResponse,
     index: Vec<agendao_types::SkillSourceIndexSnapshot>,
@@ -557,7 +557,20 @@ fn print_hub_status(
     lifecycle: Vec<SkillManagedLifecycleRecord>,
     negative_entropy: Vec<SkillNegativeEntropyDiagnostic>,
     semantic_conflicts: Vec<SkillSemanticConflictDiagnostic>,
-) {
+}
+
+fn print_hub_status(report: HubStatusReport) {
+    let HubStatusReport {
+        managed,
+        usage,
+        index,
+        distributions,
+        artifact_cache,
+        policy,
+        lifecycle,
+        negative_entropy,
+        semantic_conflicts,
+    } = report;
     let review_candidate_views =
         build_review_candidate_views(&usage.entries, &negative_entropy, &semantic_conflicts);
     let index_entry_count = index

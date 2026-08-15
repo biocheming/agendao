@@ -9,15 +9,13 @@ use agendao_types::{SkillGuardReport, SkillGuardSeverity, SkillGuardStatus, Skil
 const MAX_SKILL_MARKDOWN_BYTES: usize = 256 * 1024;
 const MAX_SUPPORTING_FILE_BYTES: usize = 512 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkillGuardMode {
     Off,
     #[default]
     Warn,
     Enforce,
 }
-
 
 #[derive(Debug, Default)]
 pub struct SkillGuardEngine {
@@ -205,11 +203,11 @@ impl SkillGuardEngine {
         finalize_report(self.mode, skill_name, scanned_at, violations)
     }
 
-    pub fn evaluate_imported_skill(
+    pub fn evaluate_imported_skill<'a>(
         &self,
         skill_name: &str,
         markdown_content: &str,
-        supporting_files: &[(String, String)],
+        supporting_files: impl IntoIterator<Item = (&'a str, &'a str)>,
         duplicate_conflict: bool,
         scanned_at: i64,
     ) -> SkillGuardReport {
@@ -235,7 +233,7 @@ impl SkillGuardEngine {
                         "imported supporting file `{}` escapes the skill sandbox.",
                         file_path
                     ),
-                    Some(file_path.clone()),
+                    Some(file_path.to_string()),
                 ));
             }
             if content.len() > MAX_SUPPORTING_FILE_BYTES {
@@ -245,10 +243,10 @@ impl SkillGuardEngine {
                         "imported supporting file `{}` exceeds {} bytes.",
                         file_path, MAX_SUPPORTING_FILE_BYTES
                     ),
-                    Some(file_path.clone()),
+                    Some(file_path.to_string()),
                 ));
             }
-            evaluate_suspicious_content(&mut violations, content, Some(file_path.as_str()));
+            evaluate_suspicious_content(&mut violations, content, Some(file_path));
         }
         finalize_report(self.mode, skill_name, scanned_at, violations)
     }

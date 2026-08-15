@@ -10,11 +10,9 @@ agendao-core = { path = "../agendao-core", features = ["event-bus"] }
 agendao-output-blocks = { path = "../agendao-output-blocks" }
 agendao-util = { path = "../agendao-util" }
 agendao-types = { path = "../agendao-types" }
-agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-config = { path = "../agendao-config" }
 agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-storage = { path = "../agendao-storage" }
-agendao-storage-core = { path = "../agendao-storage-core" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-orchestrator = { path = "../agendao-orchestrator", optional = true }
 agendao-session-core = { path = "../agendao-session-core" }

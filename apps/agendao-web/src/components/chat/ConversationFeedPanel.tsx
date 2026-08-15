@@ -36,12 +36,6 @@ interface ConversationFeedPanelProps {
   onClearSelectedMessages?: () => void;
   onToggleMessageSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
-  onNavigateAttachedSession: (
-    sessionId: string,
-    context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
-  ) => void;
-  onAbortStage?: (stageId: string) => void;
-  stageAbortingId?: string | null;
 }
 
 // Bridges the StickToBottom scroll container into feedRef so conversation
@@ -155,9 +149,6 @@ export function ConversationFeedPanel({
   onClearSelectedMessages,
   onToggleMessageSelected,
   onNavigateStage,
-  onNavigateAttachedSession,
-  onAbortStage,
-  stageAbortingId = null,
 }: ConversationFeedPanelProps) {
   const { t } = useI18n();
   const historyLoading = useAgendaoStore((s) => s.historyLoading);
@@ -345,9 +336,6 @@ export function ConversationFeedPanel({
                   onEditAndResend={onEditAndResendMessage}
                   onToggleSelected={onToggleMessageSelected}
                   onNavigateStage={onNavigateStage}
-                  onNavigateAttachedSession={onNavigateAttachedSession}
-                  onAbortStage={onAbortStage}
-                  stageAborting={Boolean(stageId && stageAbortingId === stageId)}
                 />
               );
             })}

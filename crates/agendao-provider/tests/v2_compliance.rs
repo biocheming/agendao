@@ -1,6 +1,6 @@
 use agendao_provider::{
-    assemble_tool_calls, parse_ethnopic_value, parse_openai_value, pipeline_to_stream_result,
-    runtime::pipeline::Pipeline, ProviderError, StreamEvent, StreamResult,
+    assemble_tool_calls, parse_anthropic_value, parse_openai_value, ProviderError, StreamEvent,
+    StreamResult,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -28,18 +28,7 @@ async fn collect_stream(stream: StreamResult) -> Vec<StreamEvent> {
         .await
 }
 
-fn build_sse_payload(frames: &[serde_json::Value]) -> String {
-    let mut body = String::new();
-    for frame in frames {
-        body.push_str("data: ");
-        body.push_str(&frame.to_string());
-        body.push_str("\n\n");
-    }
-    body.push_str("data: [DONE]\n\n");
-    body
-}
-
-async fn legacy_openai_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
+async fn openai_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
     let raw_events: Vec<StreamEvent> = frames
         .iter()
         .flat_map(|frame| parse_openai_value(frame.clone()))
@@ -48,31 +37,13 @@ async fn legacy_openai_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> 
     collect_stream(assemble_tool_calls(Box::pin(stream))).await
 }
 
-async fn pipeline_openai_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
-    let payload = build_sse_payload(frames);
-    let bytes_stream =
-        futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
-    let pipeline = Pipeline::openai_default();
-    let driver_stream = pipeline.process_stream(Box::pin(bytes_stream));
-    collect_stream(pipeline_to_stream_result(driver_stream)).await
-}
-
-async fn legacy_ethnopic_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
+async fn anthropic_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
     let raw_events: Vec<StreamEvent> = frames
         .iter()
-        .filter_map(|frame| parse_ethnopic_value(frame.clone()))
+        .filter_map(|frame| parse_anthropic_value(frame.clone()))
         .collect();
     let stream = futures::stream::iter(raw_events.into_iter().map(Ok::<_, ProviderError>));
     collect_stream(assemble_tool_calls(Box::pin(stream))).await
-}
-
-async fn pipeline_ethnopic_events(frames: &[serde_json::Value]) -> Vec<StreamEvent> {
-    let payload = build_sse_payload(frames);
-    let bytes_stream =
-        futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
-    let pipeline = Pipeline::ethnopic_default();
-    let driver_stream = pipeline.process_stream(Box::pin(bytes_stream));
-    collect_stream(pipeline_to_stream_result(driver_stream)).await
 }
 
 #[tokio::test]
@@ -96,13 +67,12 @@ async fn openai_text_stream_compliance() {
         }),
     ];
 
-    let legacy = legacy_openai_events(&frames).await;
-    let pipeline = pipeline_openai_events(&frames).await;
-
-    assert_eq!(
-        json_events_signature(pipeline),
-        json_events_signature(legacy)
-    );
+    let events = openai_events(&frames).await;
+    let signature = json_events_signature(events);
+    assert!(signature.iter().any(|event| event.contains("Hello")));
+    assert!(signature
+        .iter()
+        .any(|event| event.contains("prompt_tokens")));
 }
 
 #[tokio::test]
@@ -135,17 +105,16 @@ async fn openai_tool_call_stream_compliance() {
         }),
     ];
 
-    let legacy = legacy_openai_events(&frames).await;
-    let pipeline = pipeline_openai_events(&frames).await;
-
-    assert_eq!(
-        json_events_signature(pipeline),
-        json_events_signature(legacy)
-    );
+    let events = openai_events(&frames).await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallEnd { id, input, .. }
+            if id == "tool-call-0" && input["path"] == "/tmp/file"
+    )));
 }
 
 #[tokio::test]
-async fn ethnopic_mixed_stream_compliance() {
+async fn anthropic_mixed_stream_compliance() {
     let frames = vec![
         serde_json::json!({
             "type": "content_block_start",
@@ -177,13 +146,14 @@ async fn ethnopic_mixed_stream_compliance() {
         }),
     ];
 
-    let legacy = legacy_ethnopic_events(&frames).await;
-    let pipeline = pipeline_ethnopic_events(&frames).await;
-
-    assert_eq!(
-        json_events_signature(pipeline),
-        json_events_signature(legacy)
-    );
+    let events = anthropic_events(&frames).await;
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, StreamEvent::TextDelta(text) if text == "done")));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallEnd { input, .. } if input["path"] == "/tmp/file"
+    )));
 }
 
 #[tokio::test]
@@ -214,46 +184,9 @@ async fn malformed_json_flush_recovery() {
     );
 }
 
-/// Regression: DashScope-style SSE with `event:xxx\ndata:{...}` multi-line frames
-/// and `data:` without trailing space.
+/// Regression: SSE decoder must handle multi-line frames.
 #[tokio::test]
-async fn dashscope_multiline_sse_frame_pipeline() {
-    // Simulate DashScope raw SSE: "event:content_block_delta\ndata:{...}\n\n"
-    let payload = concat!(
-        "event:message_start\n",
-        "data:{\"message\":{\"model\":\"qwen3.5-plus\",\"id\":\"msg_1\",\"role\":\"assistant\",\"type\":\"message\",\"content\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":0}},\"type\":\"message_start\"}\n",
-        "\n",
-        "event:content_block_start\n",
-        "data:{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"index\":0}\n",
-        "\n",
-        "event:content_block_delta\n",
-        "data:{\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"},\"type\":\"content_block_delta\",\"index\":0}\n",
-        "\n",
-        "event:message_stop\n",
-        "data:{\"type\":\"message_stop\"}\n",
-        "\n",
-    );
-
-    let bytes_stream =
-        futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
-    let pipeline = Pipeline::ethnopic_default();
-    let driver_stream = pipeline.process_stream(Box::pin(bytes_stream));
-    let events = collect_stream(pipeline_to_stream_result(driver_stream)).await;
-
-    // Must contain at least one TextDelta with "Hello"
-    let has_text = events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::TextDelta(t) if t == "Hello"));
-    assert!(
-        has_text,
-        "pipeline should parse multi-line SSE frames from DashScope; events: {:?}",
-        events
-    );
-}
-
-/// Regression: legacy SSE decoder must also handle multi-line frames.
-#[tokio::test]
-async fn dashscope_multiline_sse_frame_legacy() {
+async fn dashscope_multiline_sse_frame() {
     use agendao_provider::decode_sse_stream;
 
     let payload = concat!(

@@ -9,10 +9,10 @@
 //! 关 dialog。挂载（manage_skill + scoping）仍留待独立工程——读视图不假装
 //! "已挂载"（道纪第十条）。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 #[derive(Clone)]
 pub struct SkillEntry {
@@ -79,17 +79,26 @@ impl SkillListDialog {
 
     /// dispatch 拉到详情后回填：进入 detail mode。
     pub fn show_detail(&mut self, title: String, lines: Vec<String>) {
-        self.detail = Some(SkillDetailView { title, lines, scroll: 0 });
+        self.detail = Some(SkillDetailView {
+            title,
+            lines,
+            scroll: 0,
+        });
     }
 
-    pub fn open(&mut self) { self.visible = true; self.query.clear(); }
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.query.clear();
+    }
     pub fn close(&mut self) {
         // U17②：关框记住位置，下次 set_skills 恢复。
         self.remembered = self.selected;
         self.visible = false;
         self.detail = None;
     }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// U17⑤：过滤后的绝对索引视图（query 空 = 全量）。selected 索引的
     /// 是这个视图，Enter/渲染经它映射回 skills 绝对索引。
@@ -98,7 +107,9 @@ impl SkillListDialog {
         if q.is_empty() {
             return (0..self.skills.len()).collect();
         }
-        self.skills.iter().enumerate()
+        self.skills
+            .iter()
+            .enumerate()
             .filter(|(_, s)| {
                 s.name.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q)
             })
@@ -122,24 +133,42 @@ impl SkillListDialog {
 
     /// detail mode 下键全部内部消费（滚动/返回）；list mode Enter → View。
     pub fn handle_key(&mut self, key: &Key) -> Option<SkillListAction> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         if let Some(ref mut detail) = self.detail {
             let max_scroll = detail.lines.len().saturating_sub(DETAIL_VIEWPORT);
             match key {
-                Key::Up => { detail.scroll = detail.scroll.saturating_sub(1); }
-                Key::Down => { detail.scroll = (detail.scroll + 1).min(max_scroll); }
-                Key::PageUp => { detail.scroll = detail.scroll.saturating_sub(DETAIL_VIEWPORT); }
-                Key::PageDown => { detail.scroll = (detail.scroll + DETAIL_VIEWPORT).min(max_scroll); }
-                Key::Home => { detail.scroll = 0; }
-                Key::End => { detail.scroll = max_scroll; }
-                Key::Escape => { self.detail = None; }
+                Key::Up => {
+                    detail.scroll = detail.scroll.saturating_sub(1);
+                }
+                Key::Down => {
+                    detail.scroll = (detail.scroll + 1).min(max_scroll);
+                }
+                Key::PageUp => {
+                    detail.scroll = detail.scroll.saturating_sub(DETAIL_VIEWPORT);
+                }
+                Key::PageDown => {
+                    detail.scroll = (detail.scroll + DETAIL_VIEWPORT).min(max_scroll);
+                }
+                Key::Home => {
+                    detail.scroll = 0;
+                }
+                Key::End => {
+                    detail.scroll = max_scroll;
+                }
+                Key::Escape => {
+                    self.detail = None;
+                }
                 _ => {}
             }
             return None;
         }
         if self.skills.is_empty() {
             match key {
-                Key::Escape => { self.close(); }
+                Key::Escape => {
+                    self.close();
+                }
                 // U16：空态给真实下一步——'s' 跳 Settings 管理 skills。
                 Key::Char('s') => {
                     self.close();
@@ -153,21 +182,43 @@ impl SkillListDialog {
         let filtered = self.filtered_indices();
         let len = filtered.len();
         match key {
-            Key::Up    => { if len > 0 { self.selected = (self.selected + len - 1) % len; } None }
-            Key::Down  => { if len > 0 { self.selected = (self.selected + 1) % len; } None }
-            Key::Home  => { self.selected = 0; None }
-            Key::End   => { self.selected = len.saturating_sub(1); None }
+            Key::Up => {
+                if len > 0 {
+                    self.selected = (self.selected + len - 1) % len;
+                }
+                None
+            }
+            Key::Down => {
+                if len > 0 {
+                    self.selected = (self.selected + 1) % len;
+                }
+                None
+            }
+            Key::Home => {
+                self.selected = 0;
+                None
+            }
+            Key::End => {
+                self.selected = len.saturating_sub(1);
+                None
+            }
             Key::Enter => {
                 // U17④：无命中 Enter 不静默关框——保持打开等用户改 query；
                 // dialog 保持打开——dispatch 拉详情回填 show_detail。
-                filtered.get(self.selected)
+                filtered
+                    .get(self.selected)
                     .and_then(|&i| self.skills.get(i))
                     .cloned()
                     .map(SkillListAction::View)
             }
-            Key::Escape => { self.close(); None }
+            Key::Escape => {
+                self.close();
+                None
+            }
             Key::Backspace => {
-                if self.query.pop().is_some() { self.selected = 0; }
+                if self.query.pop().is_some() {
+                    self.selected = 0;
+                }
                 None
             }
             // U17⑤：type-ahead——graphic/空格进 query（本 dialog 列表模式
@@ -182,22 +233,31 @@ impl SkillListDialog {
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
         if let Some(ref detail) = self.detail {
-            let items: Vec<ListItem> = detail.lines.iter().enumerate().map(|(i, line)| {
-                ListItem::Row {
+            let items: Vec<ListItem> = detail
+                .lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| ListItem::Row {
                     display: format!("  {line}"),
                     muted: i == 0,
-                }
-            }).collect();
+                })
+                .collect();
             backdrop::render_list_dialog_bottom(
-                &detail.title,
-                colors::ACCENT_PURPLE(),
+                backdrop::ListDialogHeading {
+                    title: &detail.title,
+                    border_color: colors::ACCENT_PURPLE(),
+                },
                 &items,
                 // 用选中索引驱动 sliding viewport：scroll 即"选中行"。
                 detail.scroll,
                 "↑↓/PgUp/PgDn scroll  Home/End: top/bottom  Esc: back",
-                ctx, geom, DETAIL_VIEWPORT,
+                ctx,
+                geom,
+                DETAIL_VIEWPORT,
             );
             return;
         }
@@ -209,12 +269,16 @@ impl SkillListDialog {
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
-                "Skills",
-                colors::ACCENT_PURPLE(),
+                backdrop::ListDialogHeading {
+                    title: "Skills",
+                    border_color: colors::ACCENT_PURPLE(),
+                },
                 &items,
                 0,
                 "s: open settings  Esc: close",
-                ctx, geom, 3,
+                ctx,
+                geom,
+                3,
             );
             return;
         }
@@ -227,14 +291,18 @@ impl SkillListDialog {
                 muted: true,
             }]
         } else {
-            filtered.iter().enumerate().map(|(vi, &ai)| {
-                let s = &self.skills[ai];
-                let marker = if vi == self.selected { "▶ " } else { "  " };
-                ListItem::Row {
-                    display: format!("{}{} — {}", marker, s.name, s.description),
-                    muted: false,
-                }
-            }).collect()
+            filtered
+                .iter()
+                .enumerate()
+                .map(|(vi, &ai)| {
+                    let s = &self.skills[ai];
+                    let marker = if vi == self.selected { "▶ " } else { "  " };
+                    ListItem::Row {
+                        display: format!("{}{} — {}", marker, s.name, s.description),
+                        muted: false,
+                    }
+                })
+                .collect()
         };
         let title = if self.query.is_empty() {
             "Skills".to_string()
@@ -242,12 +310,16 @@ impl SkillListDialog {
             format!("Skills — filter: {}", self.query)
         };
         backdrop::render_list_dialog_bottom(
-            &title,
-            colors::ACCENT_PURPLE(),
+            backdrop::ListDialogHeading {
+                title: &title,
+                border_color: colors::ACCENT_PURPLE(),
+            },
             &items,
             self.selected,
             "type filter  ⌫ erase  ↑↓ navigate  Home/End: jump  Enter: detail  Esc: close",
-            ctx, geom, 12,
+            ctx,
+            geom,
+            12,
         );
     }
 }
@@ -257,7 +329,11 @@ mod tests {
     use super::*;
 
     fn entry(name: &str, desc: &str) -> SkillEntry {
-        SkillEntry { name: name.into(), description: desc.into(), location: String::new() }
+        SkillEntry {
+            name: name.into(),
+            description: desc.into(),
+            location: String::new(),
+        }
     }
 
     /// U17⑤：type-ahead 缩小过滤视图；导航/Enter 作用于过滤后顺序，

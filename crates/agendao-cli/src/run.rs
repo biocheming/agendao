@@ -10,8 +10,8 @@ use crate::api_client::CliApiClient;
 use crate::cli::RunCommandArgs;
 use crate::cli::RunOutputFormat;
 use crate::remote::{run_non_interactive_attach, RemoteAttachOptions};
-use crate::server_lifecycle::CliRuntimeContext;
 use crate::util::{append_cli_file_attachments, collect_run_input};
+use crate::CliRuntimeContext;
 use model_state::{cli_resolve_show_thinking, cli_save_recent_model_ref};
 use session_exec::{
     cli_session_directory, run_cli_prompt_local, run_cli_prompt_transport, LocalPromptRequest,
@@ -30,7 +30,7 @@ pub(super) async fn run_non_interactive(
         share,
         model,
         requested_agent,
-        requested_scheduler_profile,
+        requested_scheduler,
         files,
         format,
         title,
@@ -42,6 +42,8 @@ pub(super) async fn run_non_interactive(
         unix_socket,
     } = options;
     let use_http = attach.is_some();
+    let scheduler =
+        crate::scheduler_choice::parse_scheduler_choice(requested_scheduler.as_deref())?;
     let use_socket = !use_http && unix_socket.is_some();
     let direct_requested = !use_http && !use_socket;
     let use_direct = direct_requested && local_server_bridge::direct_mode_available();
@@ -134,6 +136,7 @@ pub(super) async fn run_non_interactive(
                 fork,
                 model: model.as_deref(),
                 agent: requested_agent.as_deref(),
+                scheduler: scheduler.clone(),
                 variant: variant.as_deref(),
                 title: title.as_deref(),
                 directory: &cli_session_directory(&working_dir),
@@ -154,6 +157,7 @@ pub(super) async fn run_non_interactive(
                 command.as_deref(),
                 model.as_deref(),
                 requested_agent.as_deref(),
+                scheduler.clone(),
                 variant.as_deref(),
             )
             .await?;
@@ -172,7 +176,7 @@ pub(super) async fn run_non_interactive(
         share,
         model,
         agent: requested_agent,
-        scheduler_profile: requested_scheduler_profile,
+        scheduler,
         variant,
         format,
         title,
@@ -194,7 +198,7 @@ pub(super) fn run_options_from_args(
         share: args.share,
         model: args.model,
         requested_agent: args.agent,
-        requested_scheduler_profile: args.scheduler_profile,
+        requested_scheduler: args.scheduler,
         files: args.file,
         format: args.format,
         title: args.title,
@@ -216,7 +220,7 @@ pub(super) struct RunNonInteractiveOptions {
     pub share: bool,
     pub model: Option<String>,
     pub requested_agent: Option<String>,
-    pub requested_scheduler_profile: Option<String>,
+    pub requested_scheduler: Option<String>,
     pub files: Vec<PathBuf>,
     pub format: RunOutputFormat,
     pub title: Option<String>,

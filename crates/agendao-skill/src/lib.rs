@@ -50,8 +50,6 @@ pub use types::{
 };
 pub use workspace_artifact::{
     export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle,
-    import_workspace_skill_artifact_bundle_with_legacy_adapter,
-    WorkspaceSkillArtifactLegacyAdapter,
 };
 pub use write::{
     CreateSkillRequest, DeleteSkillRequest, EditSkillRequest, PatchSkillRequest,

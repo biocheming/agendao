@@ -31,7 +31,7 @@ const DEFAULT_MAX_REPLACEMENTS: usize = 50;
 const MAX_REPLACEMENT_PREVIEW_CHARS: usize = 240;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AstGrepReplaceInput {
     pattern: String,
     replacement: String,
@@ -40,7 +40,7 @@ struct AstGrepReplaceInput {
     path: Option<String>,
     #[serde(default)]
     glob: Option<String>,
-    #[serde(default = "default_max_replacements", alias = "max_replacements")]
+    #[serde(default = "default_max_replacements")]
     max_replacements: usize,
     #[serde(default)]
     apply: bool,
@@ -141,13 +141,6 @@ impl Tool for AstGrepReplaceTool {
                     "maximum": 500,
                     "default": 50,
                     "description": "Maximum number of structural replacements to preview or apply"
-                },
-                "max_replacements": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500,
-                    "default": 50,
-                    "description": "Maximum number of structural replacements to preview or apply (snake_case alias)"
                 },
                 "apply": {
                     "type": "boolean",

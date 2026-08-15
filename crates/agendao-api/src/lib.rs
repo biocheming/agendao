@@ -1,7 +1,26 @@
-use agendao_stage_protocol::StageSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBlueprintView {
+    pub blueprint: agendao_orchestrator::blueprint::SchedulerBlueprint,
+    pub fingerprint: String,
+    pub selection_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSessionBlueprintRequest {
+    pub blueprint: agendao_orchestrator::blueprint::SchedulerBlueprint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectSessionBlueprintResponse {
+    pub rejected_fingerprint: String,
+}
 
 pub use agendao_multimodal::{
     ModalityKind, ModalityPreflightResult, MultimodalCapabilitiesResponse,
@@ -25,23 +44,21 @@ pub use agendao_types::{
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
     SessionContextKind, SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
-    SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
-    SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode, SessionInfo,
-    SessionInsightsResponse, SessionListContract, SessionListHints, SessionListItem,
-    SessionListResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
-    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionRevertInfo, SessionShareInfo,
-    SessionSummaryInfo, SessionTimeInfo, SessionToolRepairTelemetrySummary, SessionUsage,
-    SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord,
-    SkillEvolutionProposal, SkillEvolutionProposalKind, SkillGovernanceDiagnosticSeverity,
-    SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
-    SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
-    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
-    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
-    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
-    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
-    SkillHubNegativeEntropyResponse, SkillHubPolicy, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy, SessionForkExplain,
+    SessionForkHistoryMode, SessionInfo, SessionInsightsResponse, SessionListContract,
+    SessionListHints, SessionListItem, SessionListResponse, SessionMemoryTelemetrySummary,
+    SessionOwnershipSummary, SessionRepairQuerySnapshot, SessionRepairQuerySummary,
+    SessionRevertInfo, SessionShareInfo, SessionSummaryInfo, SessionTimeInfo,
+    SessionToolRepairTelemetrySummary, SessionUsage, SessionUsageBooks, SkillArtifactCacheEntry,
+    SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
+    SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
+    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
+    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
+    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
+    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
+    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
+    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicy,
+    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
     SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
     SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
@@ -242,13 +259,7 @@ pub struct SkillManageResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillCatalogQuery {
     #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
     pub category: Option<String>,
-    #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub tool_policy: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -264,13 +275,7 @@ pub struct SkillCatalogQuery {
 pub struct SkillDetailQuery {
     pub name: String,
     #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
     pub category: Option<String>,
-    #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub tool_policy: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -301,8 +306,8 @@ pub struct PendingCommandInvocation {
     pub raw_arguments: String,
     #[serde(rename = "missingFields", default)]
     pub missing_fields: Vec<String>,
-    #[serde(rename = "schedulerProfile", default)]
-    pub scheduler_profile: Option<String>,
+    #[serde(rename = "scheduler", default)]
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     #[serde(rename = "questionId", default)]
     pub question_id: Option<String>,
 }
@@ -312,9 +317,8 @@ pub struct PendingCommandInvocation {
 pub enum ExecutionKind {
     PromptRun,
     SchedulerRun,
-    SchedulerStage,
+    SchedulerNode,
     ToolCall,
-    AgentTask,
     Question,
 }
 
@@ -350,8 +354,8 @@ pub struct SessionExecutionNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionExecutionTopology {
-    #[serde(alias = "sessionID", alias = "sessionId")]
     pub session_id: String,
     pub active_count: usize,
     #[serde(default)]
@@ -386,8 +390,6 @@ pub struct SessionRuntimeState {
     pub pending_permission: Option<PendingPermissionSummary>,
     #[serde(default)]
     pub pending_followup_count: u64,
-    #[serde(default)]
-    pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,14 +424,6 @@ pub struct PendingPermissionSummary {
     pub requested_at: i64,
     #[serde(default)]
     pub tool: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachedSessionSummary {
-    pub attached_id: String,
-    pub parent_id: String,
-    #[serde(default)]
-    pub context_kind: Option<SessionContextKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -507,8 +501,6 @@ pub struct ProviderDiagnosticSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTelemetrySnapshot {
     pub runtime: SessionRuntimeState,
-    #[serde(default)]
-    pub stages: Vec<StageSummary>,
     pub topology: SessionExecutionTopology,
     pub usage: SessionUsage,
     pub usage_books: SessionUsageBooks,
@@ -654,22 +646,6 @@ pub struct SessionRepairSummaryResponse {
     pub snapshot: Option<SessionRepairQuerySnapshot>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionEventsQuery {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offset: Option<usize>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryProtocolStatus {
@@ -683,30 +659,8 @@ pub enum RecoveryProtocolStatus {
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryActionKind {
     AbortRun,
-    AbortStage,
     Retry,
     Resume,
-    PartialReplay,
-    RestartStage,
-    RestartSubtask,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecoveryCheckpointInfo {
-    pub id: String,
-    pub kind: String,
-    pub label: String,
-    pub status: String,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub scheduler_profile: Option<String>,
-    #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub stage_index: Option<u32>,
-    #[serde(default)]
-    pub stage_total: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -714,15 +668,11 @@ pub struct RecoveryActionInfo {
     pub kind: RecoveryActionKind,
     pub label: String,
     pub description: String,
-    #[serde(default)]
-    pub target_id: Option<String>,
-    #[serde(default)]
-    pub target_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionRecoveryProtocol {
-    #[serde(alias = "sessionID", alias = "sessionId")]
     pub session_id: String,
     pub status: RecoveryProtocolStatus,
     pub active_execution_count: usize,
@@ -733,18 +683,15 @@ pub struct SessionRecoveryProtocol {
     pub last_user_prompt: Option<String>,
     #[serde(default)]
     pub actions: Vec<RecoveryActionInfo>,
-    #[serde(default)]
-    pub checkpoints: Vec<RecoveryCheckpointInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteRecoveryRequest {
     pub action: RecoveryActionKind,
-    #[serde(default)]
-    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionOptionInfo {
     pub label: String,
     #[serde(default)]
@@ -752,6 +699,7 @@ pub struct QuestionOptionInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionItemInfo {
     pub question: String,
     #[serde(default)]
@@ -763,21 +711,17 @@ pub struct QuestionItemInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionInfo {
     pub id: String,
-    #[serde(alias = "sessionID", alias = "sessionId")]
     pub session_id: String,
-    pub questions: Vec<String>,
-    #[serde(default)]
-    pub options: Option<Vec<Vec<String>>>,
-    #[serde(default)]
     pub items: Vec<QuestionItemInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PermissionRequestInfo {
     pub id: String,
-    #[serde(alias = "sessionID", alias = "sessionId")]
     pub session_id: String,
     pub tool: String,
     #[serde(default)]
@@ -805,17 +749,16 @@ pub struct PermissionRequestInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessagePart {
     pub id: String,
     #[serde(rename = "type")]
     pub part_type: String,
     pub text: Option<String>,
     pub file: Option<FileInfo>,
-    #[serde(alias = "toolCall")]
     pub tool_call: Option<ToolCall>,
-    #[serde(alias = "toolResult")]
     pub tool_result: Option<ToolResult>,
-    #[serde(default, alias = "outputBlock")]
+    #[serde(default)]
     pub output_block: Option<serde_json::Value>,
     #[serde(default)]
     pub synthetic: Option<bool>,
@@ -844,11 +787,10 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolResult {
-    #[serde(alias = "toolCallId")]
     pub tool_call_id: String,
     pub content: String,
-    #[serde(alias = "isError")]
     pub is_error: bool,
     #[serde(default)]
     pub title: Option<String>,
@@ -859,13 +801,13 @@ pub struct ToolResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessageInfo {
     pub id: String,
-    #[serde(alias = "sessionId")]
     pub session_id: String,
     pub role: String,
     pub created_at: i64,
-    #[serde(default, alias = "completedAt")]
+    #[serde(default)]
     pub completed_at: Option<i64>,
     #[serde(default)]
     pub agent: Option<String>,
@@ -890,6 +832,7 @@ pub struct MessageInfo {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessageTokensInfo {
     #[serde(default)]
     pub input: u64,
@@ -897,11 +840,11 @@ pub struct MessageTokensInfo {
     pub output: u64,
     #[serde(default)]
     pub reasoning: u64,
-    #[serde(default, alias = "cacheRead")]
+    #[serde(default)]
     pub cache_read: u64,
-    #[serde(default, alias = "cacheMiss")]
+    #[serde(default)]
     pub cache_miss: u64,
-    #[serde(default, alias = "cacheWrite")]
+    #[serde(default)]
     pub cache_write: u64,
 }
 
@@ -938,7 +881,7 @@ pub struct PromptRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_surface: Option<agendao_types::MessageSourceSurface>,
     pub agent: Option<String>,
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub model: Option<String>,
     pub variant: Option<String>,
     /// Structured command hint (e.g. "run", "tui").  For diagnostics and
@@ -955,7 +898,7 @@ pub struct ExecuteShellRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub directory: Option<String>,
     pub project_id: Option<String>,
     pub title: Option<String>,
@@ -971,7 +914,7 @@ pub struct ProvisionExternalAdapterSessionRequest {
     #[serde(default)]
     pub route_policy_id: Option<String>,
     #[serde(default)]
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     #[serde(default)]
     pub directory: Option<String>,
     #[serde(default)]
@@ -1151,6 +1094,7 @@ pub struct ConnectProviderRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderInfo {
     pub id: String,
     pub name: String,
@@ -1158,19 +1102,15 @@ pub struct ProviderInfo {
     /// Provider HTTP endpoint(用户 .agendao/providers.toml 或全局 catalog 配置)。
     /// 阴面记账(土律):server 端唯一权威,TUI/web 只读消费;
     /// `None` = 该 provider 未配 base_url(rare,通常意味是 SDK-managed)。
-    /// `#[serde(default)]` 向后兼容老 server 响应缺该字段的情况。
-    #[serde(default, alias = "baseUrl")]
+    #[serde(default)]
     pub base_url: Option<String>,
-    /// Provider 协议族(`openai` / `anthropic` / `google` / `bedrock` / …)。
-    /// 阴面记账(土律):server 端从 config.provider[id].npm 或 models.dev catalog
-    /// 反推(`npm_to_protocol`),TUI/web 只读消费用于 Settings 展示。
-    /// 与 base_url 一同决定 HTTP 实际打到哪条契约(openai-compatible /v1/chat/completions
-    /// vs anthropic-compatible /v1/messages)——这是金律·第五条「输出成形契约」的可观测面。
-    /// `None` = catalog 无 npm 记录(rare),fallback 不假装(土律·第十条)。
+    /// Wire protocol: OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages.
+    /// The server resolves a complete configured profile first and accepts only the three
+    /// runtime-supported catalog SDK shapes as a display fallback.
+    /// `None` means the protocol is absent or unsupported.
     #[serde(default)]
     pub protocol: Option<String>,
-    /// 是否被用户禁用(`config.disabled_providers` 成员)。`#[serde(default)]`
-    /// 兼容老 server 响应缺该字段(视为未禁用)。
+    /// 是否被用户禁用(`config.disabled_providers` 成员)。
     #[serde(default)]
     pub disabled: bool,
 }
@@ -1188,32 +1128,20 @@ pub struct TestProviderConnectionResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderModelInfo {
     pub id: String,
     pub name: String,
     pub provider: String,
     #[serde(default)]
     pub variants: Vec<String>,
-    #[serde(
-        default,
-        alias = "context_window",
-        alias = "contextWindow",
-        alias = "contextLength"
-    )]
+    #[serde(default)]
     pub context_window: Option<u64>,
-    #[serde(default, alias = "max_output_tokens", alias = "maxOutputTokens")]
+    #[serde(default)]
     pub max_output_tokens: Option<u64>,
-    #[serde(
-        default,
-        alias = "cost_per_million_input",
-        alias = "costPerMillionInput"
-    )]
+    #[serde(default)]
     pub cost_per_million_input: Option<f64>,
-    #[serde(
-        default,
-        alias = "cost_per_million_output",
-        alias = "costPerMillionOutput"
-    )]
+    #[serde(default)]
     pub cost_per_million_output: Option<f64>,
 }
 
@@ -1307,21 +1235,6 @@ pub struct ApiTodoItem {
     pub priority: String,
 }
 
-/// 全局 agent 任务注册表摘要（`/task` 端点）。与 server `task.rs` 的
-/// `TaskSummary` 同形——提升为 public 让 client/server 共享，避免 client
-/// 自定义类型漂移（道纪土律：单一类型权威）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TaskSummaryInfo {
-    pub id: String,
-    pub agent_name: String,
-    pub status: String,
-    pub step: Option<u32>,
-    pub max_steps: Option<u32>,
-    pub prompt: String,
-    pub started_at: i64,
-    pub elapsed_seconds: i64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDiffEntry {
     pub path: String,
@@ -1388,7 +1301,7 @@ pub struct FrontendSubscriptionCapabilities {
     pub tool_progress: bool,
     /// Reasoning / chain-of-thought deltas.
     pub reasoning_delta: bool,
-    /// High-frequency runtime telemetry live view (stage summaries, counters).
+    /// High-frequency runtime telemetry live view (topology and counters).
     pub runtime_live_view: bool,
     /// Final-only mode: only non-droppable events (message completed,
     /// tool completed, permission resolved, runtime status, reconcile).
@@ -1398,18 +1311,11 @@ pub struct FrontendSubscriptionCapabilities {
 
 impl Default for FrontendSubscriptionCapabilities {
     fn default() -> Self {
-        // Compatible default: full capabilities, matching pre-P2-1 behavior.
-        Self {
-            message_text_delta: true,
-            tool_progress: true,
-            reasoning_delta: true,
-            runtime_live_view: true,
-            final_only: false,
-        }
+        FrontendSubscriptionTier::TuiHighFrequency.default_capabilities()
     }
 }
 
-/// Subscription tier — a named preset of capabilities.
+/// Subscription tier: a named capability bundle.
 ///
 /// Three tiers are defined. Each frontend picks the tier that matches its
 /// rendering model and user experience requirements.
@@ -1455,88 +1361,34 @@ impl FrontendSubscriptionTier {
     }
 }
 
-/// Resolved subscription: a tier + any explicit overrides.
-///
-/// This is what the server computes per-connection. It is the result of
-/// merging the client-requested tier (or explicit caps) with the server's
-/// compatible-default fallback.
+/// Resolved subscription for one explicit frontend tier.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFrontendSubscription {
     pub capabilities: FrontendSubscriptionCapabilities,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tier: Option<FrontendSubscriptionTier>,
-    /// True when the client sent no recognised `?tier=` value — the server
-    /// fell back to the legacy compatible default (full capabilities).
-    ///
-    /// P2 compat window: this field exists so observability can measure how
-    /// much traffic still arrives without a tier.  When all frontends send an
-    /// explicit tier, `legacy_default()` and this field can be retired.
-    #[serde(default)]
-    pub is_legacy_compat: bool,
+    pub tier: FrontendSubscriptionTier,
 }
 
 impl ResolvedFrontendSubscription {
-    /// Legacy compatible default — full capabilities, no explicit tier.
-    ///
-    /// This is what the server uses when the client does not supply a
-    /// recognised `?tier=` query parameter.  It exists for backward
-    /// compatibility with clients that predate the P2-1 subscription model.
-    ///
-    /// P2 compat window: new code should prefer `from_tier()` with an
-    /// explicit tier.  The only remaining justified call site is the global
-    /// event stream (`/events` without a session filter), which has no
-    /// frontend context to derive a tier from.
-    pub fn legacy_default() -> Self {
-        Self {
-            capabilities: FrontendSubscriptionCapabilities::default(),
-            tier: None,
-            is_legacy_compat: true,
-        }
-    }
-
-    /// Canonical constructor — use this for all new code that knows which
-    /// tier the frontend belongs to.  Sets `is_legacy_compat = false`.
+    /// Canonical constructor for internal callers that already own a typed tier.
     pub fn from_tier(tier: FrontendSubscriptionTier) -> Self {
         Self {
             capabilities: tier.default_capabilities(),
-            tier: Some(tier),
-            is_legacy_compat: false,
+            tier,
         }
     }
 
-    /// Single wire-format entry point. Every call site that parses a tier
-    /// query parameter MUST use this function. The mapping from wire string
-    /// to tier+capabilities is defined exactly once.
-    ///
-    /// A **missing** tier (`None`) is expected from clients that predate P2-1
-    /// and is logged at `tracing::debug!` level.  An **unknown** tier string
-    /// is always a bug and is logged at `tracing::warn!` level.  Both fall
-    /// back to the legacy compatible default (full capabilities).
-    ///
-    /// P2 removal conditions for the fallback:
-    /// 1. All three frontends (TUI, CLI, Web) send an explicit `?tier=` query
-    ///    parameter on every SSE connection.
-    /// 2. The global event stream (`/events` without a session) has a defined
-    ///    tier or is handled separately.
-    /// 3. `is_legacy_compat` metric shows 0 over a monitoring window.
-    pub fn from_wire_tier(wire: Option<&str>) -> Self {
+    /// Strict wire-format entry point. Missing and unknown tiers are invalid.
+    pub fn from_wire_tier(wire: Option<&str>) -> Result<Self, String> {
         match wire {
-            Some("tui") => Self::from_tier(FrontendSubscriptionTier::TuiHighFrequency),
-            Some("web") => Self::from_tier(FrontendSubscriptionTier::WebMediumFrequency),
-            Some("cli") => Self::from_tier(FrontendSubscriptionTier::CliLowFrequency),
-            Some(other) => {
-                tracing::warn!(
-                    tier = other,
-                    "unknown subscription tier — falling back to legacy compatible default"
-                );
-                Self::legacy_default()
-            }
-            None => {
-                tracing::debug!(
-                    "missing subscription tier — falling back to legacy compatible default"
-                );
-                Self::legacy_default()
-            }
+            Some("tui") => Ok(Self::from_tier(FrontendSubscriptionTier::TuiHighFrequency)),
+            Some("web") => Ok(Self::from_tier(
+                FrontendSubscriptionTier::WebMediumFrequency,
+            )),
+            Some("cli") => Ok(Self::from_tier(FrontendSubscriptionTier::CliLowFrequency)),
+            Some(other) => Err(format!(
+                "unknown subscription tier `{other}`; expected `tui`, `web`, or `cli`"
+            )),
+            None => Err("missing required subscription tier".to_string()),
         }
     }
 }
@@ -1546,7 +1398,7 @@ mod subscription_tests {
     use super::*;
 
     #[test]
-    fn default_caps_are_full_for_backward_compat() {
+    fn default_caps_match_tui_tier() {
         let caps = FrontendSubscriptionCapabilities::default();
         assert!(caps.message_text_delta);
         assert!(caps.tool_progress);
@@ -1583,36 +1435,22 @@ mod subscription_tests {
     fn resolved_from_tier_cli_is_final_only() {
         let sub =
             ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::CliLowFrequency);
-        assert!(!sub.is_legacy_compat);
         assert!(sub.capabilities.final_only);
     }
 
     #[test]
-    fn legacy_default_is_full_compat() {
-        let sub = ResolvedFrontendSubscription::legacy_default();
-        assert!(sub.is_legacy_compat);
-        assert!(!sub.capabilities.final_only);
-    }
-
-    #[test]
-    fn from_wire_tier_is_single_wire_parsing_authority() {
-        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("cli"));
-        assert!(!sub.is_legacy_compat);
+    fn from_wire_tier_is_strict_wire_parsing_authority() {
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("cli")).unwrap();
         assert!(sub.capabilities.final_only);
 
-        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("web"));
-        assert!(!sub.is_legacy_compat);
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("web")).unwrap();
         assert!(!sub.capabilities.reasoning_delta);
 
-        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("tui"));
-        assert!(!sub.is_legacy_compat);
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("tui")).unwrap();
         assert!(sub.capabilities.reasoning_delta);
 
-        let sub = ResolvedFrontendSubscription::from_wire_tier(None);
-        assert!(sub.is_legacy_compat);
-
-        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("unknown"));
-        assert!(sub.is_legacy_compat);
+        assert!(ResolvedFrontendSubscription::from_wire_tier(None).is_err());
+        assert!(ResolvedFrontendSubscription::from_wire_tier(Some("unknown")).is_err());
     }
 
     #[test]
@@ -1631,7 +1469,57 @@ mod subscription_tests {
         let json = serde_json::to_value(&sub).expect("serialize");
         let parsed: ResolvedFrontendSubscription =
             serde_json::from_value(json).expect("deserialize");
-        assert!(!parsed.is_legacy_compat);
         assert_eq!(parsed.capabilities, sub.capabilities);
+        assert_eq!(parsed.tier, sub.tier);
+    }
+}
+
+#[cfg(test)]
+mod canonical_wire_tests {
+    use super::*;
+
+    #[test]
+    fn session_and_message_types_reject_removed_camel_case_fields() {
+        let topology = serde_json::json!({
+            "session_id": "session-1",
+            "sessionID": "legacy",
+            "active_count": 0,
+            "running_count": 0,
+            "waiting_count": 0,
+            "cancelling_count": 0,
+            "retry_count": 0
+        });
+        assert!(serde_json::from_value::<SessionExecutionTopology>(topology).is_err());
+
+        let message = serde_json::json!({
+            "id": "message-1",
+            "session_id": "session-1",
+            "sessionId": "legacy",
+            "role": "assistant",
+            "created_at": 1
+        });
+        assert!(serde_json::from_value::<MessageInfo>(message).is_err());
+
+        let tokens = serde_json::json!({"cacheRead": 1});
+        assert!(serde_json::from_value::<MessageTokensInfo>(tokens).is_err());
+    }
+
+    #[test]
+    fn provider_types_reject_removed_camel_case_fields() {
+        let provider = serde_json::json!({
+            "id": "openai",
+            "name": "OpenAI",
+            "models": [],
+            "baseUrl": "https://example.com"
+        });
+        assert!(serde_json::from_value::<ProviderInfo>(provider).is_err());
+
+        let model = serde_json::json!({
+            "id": "gpt-5",
+            "name": "GPT-5",
+            "provider": "openai",
+            "contextWindow": 128000
+        });
+        assert!(serde_json::from_value::<ProviderModelInfo>(model).is_err());
     }
 }

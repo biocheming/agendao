@@ -10,9 +10,9 @@
 //! 其余功能；OSC52 写入本身失败时走 `copy_with_fallback` 的临时文件兜底
 //! （U18①：写临时文件 + toast 给路径，复制意图不无声丢失）。
 
+use base64::Engine;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use base64::Engine;
 
 /// 把 `text` 写入终端剪贴板（OSC52，剪贴板选区 `c`）。
 ///

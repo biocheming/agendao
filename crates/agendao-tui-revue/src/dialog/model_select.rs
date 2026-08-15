@@ -2,10 +2,10 @@
 //!
 //! Uses shared dialog backdrop for consistent visual identity.
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 #[derive(Clone)]
 pub struct ModelEntry {
@@ -60,7 +60,10 @@ pub struct ModelSelectDialog {
 }
 
 #[derive(Clone)]
-enum FlatRow { Header(String), Model(usize, usize) } // group_idx, model_idx
+enum FlatRow {
+    Header(String),
+    Model(usize, usize),
+} // group_idx, model_idx
 
 impl Default for ModelSelectDialog {
     fn default() -> Self {
@@ -69,7 +72,17 @@ impl Default for ModelSelectDialog {
 }
 
 impl ModelSelectDialog {
-    pub fn new() -> Self { Self { visible: false, groups: vec![], flat: vec![], selected: 0, variant_idx: 0, recent: vec![], query: String::new() } }
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            groups: vec![],
+            flat: vec![],
+            selected: 0,
+            variant_idx: 0,
+            recent: vec![],
+            query: String::new(),
+        }
+    }
 
     pub fn set_models(&mut self, models: Vec<ModelEntry>) {
         self.groups.clear();
@@ -77,25 +90,42 @@ impl ModelSelectDialog {
         // from the first ModelEntry we see. Without this, the group header
         // shows "aihubmix" instead of "AIHubMix" — visually it looked like
         // a regression after we switched provider field from name → id.
-        let mut providers: std::collections::BTreeMap<String, (String, Vec<ModelEntry>)> = std::collections::BTreeMap::new();
+        let mut providers: std::collections::BTreeMap<String, (String, Vec<ModelEntry>)> =
+            std::collections::BTreeMap::new();
         for m in models {
             let key = m.provider.clone();
-            let display = if m.provider_display.is_empty() { m.provider.clone() } else { m.provider_display.clone() };
-            providers.entry(key).or_insert_with(|| (display, Vec::new())).1.push(m);
+            let display = if m.provider_display.is_empty() {
+                m.provider.clone()
+            } else {
+                m.provider_display.clone()
+            };
+            providers
+                .entry(key)
+                .or_insert_with(|| (display, Vec::new()))
+                .1
+                .push(m);
         }
         for (id, (display, models)) in providers {
-            self.groups.push(ProviderGroup { provider_id: id, name: display, models });
+            self.groups.push(ProviderGroup {
+                provider_id: id,
+                name: display,
+                models,
+            });
         }
         self.rebuild_flat();
     }
 
-    pub fn set_recent(&mut self, recent: Vec<(String, String)>) { self.recent = recent; self.rebuild_flat(); }
+    pub fn set_recent(&mut self, recent: Vec<(String, String)>) {
+        self.recent = recent;
+        self.rebuild_flat();
+    }
 
     /// 记录一次模型选择：置顶、按 `(provider, model)` 去重、cap 到 8。
     /// 返回新列表供调用方 `put_recent_models` 持久化（选中即回写权威）。
     pub fn record_recent(&mut self, provider: &str, model: &str) -> Vec<(String, String)> {
         self.recent.retain(|(p, m)| p != provider || m != model);
-        self.recent.insert(0, (provider.to_string(), model.to_string()));
+        self.recent
+            .insert(0, (provider.to_string(), model.to_string()));
         self.recent.truncate(8);
         self.rebuild_flat();
         self.recent.clone()
@@ -105,7 +135,9 @@ impl ModelSelectDialog {
         self.flat.clear();
         let q = self.query.to_lowercase();
         let matches = |provider: &str, m: &ModelEntry| -> bool {
-            if q.is_empty() { return true; }
+            if q.is_empty() {
+                return true;
+            }
             // Case-insensitive substring match against provider, model id, and display name
             provider.to_lowercase().contains(&q)
                 || m.model_id.to_lowercase().contains(&q)
@@ -129,14 +161,20 @@ impl ModelSelectDialog {
                     matched.push(mi);
                 }
             }
-            if matched.is_empty() { continue; }
+            if matched.is_empty() {
+                continue;
+            }
             self.flat.push(FlatRow::Header(format!("▸ {}", group.name)));
             for mi in matched {
                 self.flat.push(FlatRow::Model(gi, mi));
             }
         }
         // Reset selection to first selectable row (skip headers)
-        self.selected = self.flat.iter().position(|r| matches!(r, FlatRow::Model(_, _))).unwrap_or(0);
+        self.selected = self
+            .flat
+            .iter()
+            .position(|r| matches!(r, FlatRow::Model(_, _)))
+            .unwrap_or(0);
     }
 
     fn find_model(&self, provider: &str, model_id: &str) -> Option<(usize, usize)> {
@@ -146,16 +184,28 @@ impl ModelSelectDialog {
             // 区块形同虚设。优先按 provider_id，兜底按 display 名（老数据）。
             if g.provider_id == provider || g.name == provider {
                 for (mi, m) in g.models.iter().enumerate() {
-                    if m.model_id == model_id { return Some((gi, mi)); }
+                    if m.model_id == model_id {
+                        return Some((gi, mi));
+                    }
                 }
             }
         }
         None
     }
 
-    pub fn open(&mut self) { self.visible = true; self.selected = 0; self.query.clear(); self.rebuild_flat(); }
-    pub fn close(&mut self) { self.visible = false; self.query.clear(); }
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.selected = 0;
+        self.query.clear();
+        self.rebuild_flat();
+    }
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.query.clear();
+    }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// Outcome of a key press on the model dialog.
     /// `Selected` carries the chosen model and closes the dialog.
@@ -163,7 +213,9 @@ impl ModelSelectDialog {
     /// (e.g. "provider is not connected") without abusing exception flow.
     /// `None` means the key was navigation/filter and the dialog stays open.
     pub fn handle_key(&mut self, key: &Key) -> ModelDialogOutcome {
-        if !self.visible { return ModelDialogOutcome::None; }
+        if !self.visible {
+            return ModelDialogOutcome::None;
+        }
         match key {
             Key::Up => {
                 // Skip headers when navigating up.
@@ -216,7 +268,10 @@ impl ModelSelectDialog {
                 self.close();
                 ModelDialogOutcome::Selected(m)
             }
-            Key::Escape => { self.close(); ModelDialogOutcome::None }
+            Key::Escape => {
+                self.close();
+                ModelDialogOutcome::None
+            }
             // Live filter — type characters to narrow, Backspace to delete.
             Key::Backspace => {
                 if self.query.pop().is_some() {
@@ -259,7 +314,9 @@ impl ModelSelectDialog {
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {
-        if !self.visible { return; }
+        if !self.visible {
+            return;
+        }
 
         // U16：无 provider/无模型 → 空态明示 + 下一步指引（原渲染零行
         // 空框 + 过滤 hint，用户无从下手的死端）。
@@ -269,12 +326,16 @@ impl ModelSelectDialog {
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
-                "Select Model",
-                colors::ACCENT_CYAN(),
+                backdrop::ListDialogHeading {
+                    title: "Select Model",
+                    border_color: colors::ACCENT_CYAN(),
+                },
                 &items,
                 0,
                 "Esc: close",
-                ctx, geom, 3,
+                ctx,
+                geom,
+                3,
             );
             return;
         }
@@ -282,21 +343,29 @@ impl ModelSelectDialog {
         // Build all items (no truncation — backdrop scrolls). Without query
         // filtering, 5,140 models exhaust the user's patience; once we add
         // a search box this becomes `flat.iter().filter(matches_query)`.
-        let mut items: Vec<ListItem> = self.flat.iter().enumerate().map(|(i, row)| {
-            match row {
+        let mut items: Vec<ListItem> = self
+            .flat
+            .iter()
+            .enumerate()
+            .map(|(i, row)| match row {
                 FlatRow::Header(label) => ListItem::Header(label.clone()),
                 FlatRow::Model(gi, mi) => {
                     let model = &self.groups[*gi].models[*mi];
                     let variant = if !model.variants.is_empty() && i == self.selected {
-                        format!(" [{}]", model.variants[self.variant_idx % model.variants.len()])
-                    } else { String::new() };
+                        format!(
+                            " [{}]",
+                            model.variants[self.variant_idx % model.variants.len()]
+                        )
+                    } else {
+                        String::new()
+                    };
                     ListItem::Row {
                         display: format!("{}{}", model.display, variant),
                         muted: !model.available,
                     }
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         // U17①：过滤无命中 → 明示行（原渲染零行空框 + 过滤 hint，用户
         // 分不清是没匹配还是没数据）。
@@ -314,8 +383,10 @@ impl ModelSelectDialog {
         };
 
         backdrop::render_list_dialog_bottom(
-            &title,
-            colors::ACCENT_CYAN(),
+            backdrop::ListDialogHeading {
+                title: &title,
+                border_color: colors::ACCENT_CYAN(),
+            },
             &items,
             self.selected,
             "type to filter  ⌫ erase  ↑↓ navigate  Tab: variant  Enter: select  Esc: close",

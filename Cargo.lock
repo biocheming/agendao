@@ -19,9 +19,7 @@ dependencies = [
  "agendao-tui-revue",
  "agendao-util",
  "anyhow",
- "async-trait",
  "clap",
- "dirs",
  "mimalloc",
  "reqwest",
  "serde_json",
@@ -37,22 +35,11 @@ version = "2026.6.10"
 dependencies = [
  "agendao-config",
  "agendao-execution-types",
- "agendao-orchestrator",
  "agendao-permission",
- "agendao-plugin",
  "agendao-provider",
- "agendao-tool",
- "agendao-types",
- "anyhow",
- "async-trait",
- "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -60,12 +47,11 @@ name = "agendao-api"
 version = "2026.6.10"
 dependencies = [
  "agendao-multimodal",
+ "agendao-orchestrator",
  "agendao-skill",
- "agendao-stage-protocol",
  "agendao-types",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -73,56 +59,41 @@ name = "agendao-cli"
 version = "2026.6.10"
 dependencies = [
  "agendao-agent",
- "agendao-cli-admin",
+ "agendao-api",
  "agendao-cli-core",
  "agendao-client",
  "agendao-command-render",
  "agendao-config",
  "agendao-core",
+ "agendao-execution-types",
  "agendao-grep",
- "agendao-launcher",
  "agendao-lsp",
  "agendao-memory",
- "agendao-multimodal",
  "agendao-orchestrator",
- "agendao-permission",
  "agendao-plugin",
  "agendao-provider",
  "agendao-runtime-context",
  "agendao-server",
+ "agendao-server-core",
  "agendao-session",
  "agendao-skill",
- "agendao-stage-protocol",
  "agendao-state",
  "agendao-storage",
  "agendao-tool",
  "agendao-types",
  "agendao-util",
- "agendao-voice",
  "anyhow",
  "async-trait",
- "base64",
  "chrono",
  "dirs",
  "futures",
+ "jsonc-parser",
  "reqwest",
  "serde",
  "serde_json",
- "sqlx",
  "tokio",
- "tokio-util",
  "tracing",
  "url",
- "which",
-]
-
-[[package]]
-name = "agendao-cli-admin"
-version = "2026.6.10"
-dependencies = [
- "agendao-cli-core",
- "anyhow",
- "async-trait",
 ]
 
 [[package]]
@@ -140,11 +111,9 @@ name = "agendao-client"
 version = "2026.6.10"
 dependencies = [
  "agendao-api",
- "agendao-command",
  "agendao-config",
  "agendao-orchestrator",
  "agendao-runtime-context",
- "agendao-stage-protocol",
  "agendao-state",
  "agendao-types",
  "anyhow",
@@ -159,16 +128,13 @@ dependencies = [
 name = "agendao-command"
 version = "2026.6.10"
 dependencies = [
- "agendao-agent",
  "agendao-output-blocks",
  "agendao-permission",
  "agendao-plugin",
- "agendao-stage-protocol",
  "agendao-tool",
  "agendao-types",
  "agendao-util",
  "anyhow",
- "chrono",
  "crossterm 0.29.0",
  "pulldown-cmark",
  "serde",
@@ -204,9 +170,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
- "toml",
  "tracing",
 ]
 
@@ -241,11 +205,8 @@ dependencies = [
 name = "agendao-grep"
 version = "2026.6.10"
 dependencies = [
- "anyhow",
  "regex",
  "serde",
- "serde_json",
- "thiserror 2.0.18",
  "walkdir",
 ]
 
@@ -260,7 +221,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "which",
 ]
 
 [[package]]
@@ -268,8 +228,6 @@ name = "agendao-lsp"
 version = "2026.6.10"
 dependencies = [
  "agendao-core",
- "async-trait",
- "futures",
  "lsp-types",
  "serde",
  "serde_json",
@@ -285,25 +243,17 @@ version = "2026.6.10"
 dependencies = [
  "agendao-core",
  "agendao-util",
- "anyhow",
  "async-trait",
- "axum",
- "base64",
  "chrono",
  "futures",
- "hex",
  "oauth2",
- "rand 0.8.5",
  "reqwest",
  "reqwest-eventsource",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "url",
- "uuid",
 ]
 
 [[package]]
@@ -312,7 +262,6 @@ version = "2026.6.10"
 dependencies = [
  "agendao-config",
  "agendao-runtime-context",
- "agendao-stage-protocol",
  "agendao-state",
  "agendao-storage",
  "agendao-types",
@@ -343,33 +292,21 @@ dependencies = [
  "agendao-config",
  "agendao-execution-types",
  "agendao-provider",
- "agendao-session-core",
- "agendao-tool",
- "agendao-types",
- "agendao-util",
  "async-trait",
- "chrono",
  "futures",
- "glob",
- "jsonc-parser",
- "petgraph",
- "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
- "walkdir",
 ]
 
 [[package]]
 name = "agendao-output-blocks"
 version = "2026.6.10"
 dependencies = [
- "agendao-stage-protocol",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -377,9 +314,7 @@ name = "agendao-permission"
 version = "2026.6.10"
 dependencies = [
  "agendao-plugin",
- "anyhow",
  "dirs",
- "glob",
  "lazy_static",
  "serde",
  "serde_json",
@@ -395,7 +330,6 @@ dependencies = [
  "agendao-core",
  "agendao-types",
  "anyhow",
- "async-trait",
  "chrono",
  "dirs",
  "libloading",
@@ -417,12 +351,9 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "dirs",
  "futures",
  "hex",
- "hmac",
  "once_cell",
- "pin-project-lite",
  "regex",
  "reqwest",
  "serde",
@@ -432,7 +363,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "urlencoding",
  "uuid",
 ]
 
@@ -466,7 +396,6 @@ dependencies = [
  "agendao-memory",
  "agendao-multimodal",
  "agendao-orchestrator",
- "agendao-output-blocks",
  "agendao-permission",
  "agendao-plugin",
  "agendao-provider",
@@ -474,9 +403,7 @@ dependencies = [
  "agendao-server-core",
  "agendao-server-pty",
  "agendao-session",
- "agendao-session-core",
  "agendao-skill",
- "agendao-stage-protocol",
  "agendao-state",
  "agendao-storage",
  "agendao-tool",
@@ -485,7 +412,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "axum-extra",
  "base64",
  "chrono",
  "clap",
@@ -497,15 +423,12 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
- "tokio-tungstenite",
  "tokio-util",
- "tower",
  "tower-http",
  "tracing",
  "url",
@@ -519,7 +442,6 @@ dependencies = [
  "agendao-api",
  "agendao-command-render",
  "agendao-session",
- "agendao-stage-protocol",
  "agendao-tool",
  "agendao-types",
  "chrono",
@@ -529,25 +451,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "agendao-server-local"
-version = "2026.6.10"
-dependencies = [
- "agendao-api",
- "agendao-client",
- "agendao-config",
- "agendao-provider",
- "agendao-runtime-context",
- "agendao-server",
- "agendao-server-core",
- "agendao-state",
- "agendao-types",
- "anyhow",
- "serde_json",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -579,9 +482,7 @@ dependencies = [
  "agendao-provider",
  "agendao-session-core",
  "agendao-skill",
- "agendao-stage-protocol",
  "agendao-storage",
- "agendao-storage-core",
  "agendao-tool",
  "agendao-types",
  "agendao-util",
@@ -640,23 +541,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "agendao-stage-protocol"
-version = "2026.6.10"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "agendao-state"
 version = "2026.6.10"
 dependencies = [
  "agendao-config",
  "agendao-util",
  "anyhow",
- "dirs",
  "serde",
  "serde_json",
  "tokio",
@@ -667,30 +557,18 @@ dependencies = [
 name = "agendao-storage"
 version = "2026.6.10"
 dependencies = [
- "agendao-storage-core",
  "agendao-types",
  "agendao-util",
  "anyhow",
  "chrono",
- "dirs",
  "serde",
  "serde_json",
  "sha2",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "agendao-storage-core"
-version = "2026.6.10"
-dependencies = [
- "async-trait",
- "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -699,8 +577,6 @@ version = "2026.6.10"
 dependencies = [
  "agendao-config",
  "agendao-core",
- "agendao-execution-types",
- "agendao-grep",
  "agendao-lsp",
  "agendao-permission",
  "agendao-plugin",
@@ -708,15 +584,12 @@ dependencies = [
  "agendao-tool-core",
  "agendao-tool-web",
  "agendao-types",
- "agendao-util",
- "anyhow",
  "ast-grep-config",
  "ast-grep-core",
  "ast-grep-language",
  "async-trait",
  "base64",
  "chrono",
- "content_inspector",
  "crossbeam-channel",
  "dirs",
  "futures",
@@ -729,12 +602,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
- "url",
- "urlencoding",
  "uuid",
  "walkdir",
  "which",
@@ -745,19 +614,16 @@ name = "agendao-tool-core"
 version = "2026.6.10"
 dependencies = [
  "agendao-config",
- "agendao-execution-types",
  "agendao-lsp",
  "agendao-permission",
  "agendao-types",
  "async-trait",
- "lsp-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -791,11 +657,11 @@ version = "2026.6.10"
 dependencies = [
  "agendao-client",
  "agendao-command",
- "agendao-command-render",
  "agendao-config",
+ "agendao-orchestrator",
  "agendao-runtime-context",
+ "agendao-server",
  "agendao-server-core",
- "agendao-server-local",
  "agendao-state",
  "agendao-types",
  "agendao-util",
@@ -823,9 +689,7 @@ dependencies = [
 name = "agendao-types"
 version = "2026.6.10"
 dependencies = [
- "agendao-stage-protocol",
  "agendao-util",
- "anyhow",
  "chrono",
  "serde",
  "serde_json",
@@ -838,17 +702,10 @@ dependencies = [
 name = "agendao-util"
 version = "2026.6.10"
 dependencies = [
- "anyhow",
  "chrono",
  "dirs",
  "glob",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
  "tokio",
- "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "walkdir",
@@ -864,22 +721,6 @@ dependencies = [
  "tracing",
  "uuid",
  "which",
-]
-
-[[package]]
-name = "agendao-watcher"
-version = "2026.6.10"
-dependencies = [
- "dashmap",
- "glob",
- "notify",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1124,29 +965,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-extra"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9963ff19f40c6102c76756ef0a46004c0d58957d87259fc9208ff8441c12ab96"
-dependencies = [
- "axum",
- "axum-core",
- "bytes",
- "futures-util",
- "headers",
- "http",
- "http-body",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "serde_core",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1368,15 +1186,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
-name = "content_inspector"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7bda66e858c683005a53a9a60c69a4aca7eeaa45d124526e389f7aec8e62f38"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1562,20 +1371,6 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "dashmap"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
 ]
 
 [[package]]
@@ -1788,27 +1583,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "filetime"
-version = "0.2.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f98844151eee8917efc50bd9e8318cb963ae8b297431495d3f758616ea5c57db"
-dependencies = [
- "cfg-if",
- "libc",
- "libredox",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
-
-[[package]]
-name = "fixedbitset"
-version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flate2"
@@ -1859,15 +1637,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fsevent-sys"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76ee7a02da4d231650c7cea31349b889be2f45ddb3ef3032d2ec8185f6313fd2"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -2084,12 +1853,6 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-
-[[package]]
-name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -2112,30 +1875,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
 dependencies = [
  "hashbrown 0.15.5",
-]
-
-[[package]]
-name = "headers"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3314d5adb5d94bcdf56771f2e50dbbc80bb4bdf88967526706205ac9eff24eb"
-dependencies = [
- "base64",
- "bytes",
- "headers-core",
- "http",
- "httpdate",
- "mime",
- "sha1",
-]
-
-[[package]]
-name = "headers-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
-dependencies = [
- "http",
 ]
 
 [[package]]
@@ -2497,26 +2236,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inotify"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd168d97690d0b8c412d6b6c10360277f4d7ee495c5d0d5d5fe0854923255cc"
-dependencies = [
- "bitflags 1.3.2",
- "inotify-sys",
- "libc",
-]
-
-[[package]]
-name = "inotify-sys"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "instability"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2527,15 +2246,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "instant"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -2621,26 +2331,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eb0774546269185d38da823d8583e94448ba0e158e3f50759d9c79aba946ca5"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "kqueue"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac30106d7dce88daf4a3fcb4879ea939476d5074a9b7ddd0fb97fa4bed5596a"
-dependencies = [
- "kqueue-sys",
- "libc",
-]
-
-[[package]]
-name = "kqueue-sys"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed9625ffda8729b85e45cf04090035ac368927b8cebc34898e7c120f52e4838b"
-dependencies = [
- "bitflags 1.3.2",
- "libc",
 ]
 
 [[package]]
@@ -2934,35 +2624,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notify"
-version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c533b4c39709f9ba5005d8002048266593c1cfaf3c5f0739d5b8ab0c6c504009"
-dependencies = [
- "bitflags 2.11.0",
- "filetime",
- "fsevent-sys",
- "inotify",
- "kqueue",
- "libc",
- "log",
- "mio",
- "notify-types",
- "walkdir",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "notify-types"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585d3cb5e12e01aed9e8a1f70d5c6b5e86fe2a6e48fc8cd0b3e0b8df6f6eb174"
-dependencies = [
- "instant",
- "serde",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3110,18 +2771,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "petgraph"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
-dependencies = [
- "fixedbitset",
- "hashbrown 0.15.5",
- "indexmap",
- "serde",
-]
 
 [[package]]
 name = "phf"
@@ -4652,17 +4301,6 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tokio-util",
-]
-
-[[package]]
-name = "tokio-test"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
-dependencies = [
- "futures-core",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]

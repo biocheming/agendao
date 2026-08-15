@@ -3,16 +3,17 @@
 //! Wraps `agendao_client::AsyncApiClient` using a background tokio runtime.
 //! Mirrors the full API surface of old TUI's RuntimeApiClient.
 
-use std::sync::Arc;
 use agendao_client::{AsyncApiClient, PromptResponse, SessionInfo};
-use agendao_server_local::LocalServerState;
+use agendao_orchestrator::selector::SchedulerChoice;
+use agendao_server::ServerState;
 use agendao_state::RecentModelEntry;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ApiBridge {
     client: Arc<AsyncApiClient>,
     /// In-process local server state for local-direct mode.
-    local: Option<Arc<LocalServerState>>,
+    local: Option<Arc<ServerState>>,
     handle: tokio::runtime::Handle,
 }
 
@@ -20,41 +21,49 @@ impl ApiBridge {
     /// Create an HTTP-based bridge (connects to external server).
     pub fn new(base_url: &str, handle: tokio::runtime::Handle) -> anyhow::Result<Self> {
         let client = Arc::new(AsyncApiClient::new(base_url.to_string()));
-        Ok(Self { client, local: None, handle })
+        Ok(Self {
+            client,
+            local: None,
+            handle,
+        })
     }
 
-    /// Create a local-direct bridge (in-process, no HTTP).
-    pub fn new_local(local: Arc<LocalServerState>, handle: tokio::runtime::Handle) -> Self {
+    /// Create an in-process local transport backed by the canonical server.
+    pub fn new_local(local: Arc<ServerState>, handle: tokio::runtime::Handle) -> Self {
         // AsyncApiClient still created for methods without local_* counterpart;
         // they will error at runtime but will never be called in normal flow.
         let client = Arc::new(AsyncApiClient::new("http://127.0.0.1:0".into()));
-        Self { client, local: Some(local), handle }
+        Self {
+            client,
+            local: Some(local),
+            handle,
+        }
     }
 
     fn block_on<R>(&self, fut: impl std::future::Future<Output = R>) -> R {
         self.handle.block_on(fut)
     }
 
-
     // ── Sessions ──
 
     pub fn create_session(
-        &self, profile: Option<String>, directory: Option<String>,
+        &self,
+        scheduler: Option<SchedulerChoice>,
+        directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         if let Some(ref ls) = self.local {
             use agendao_client::CreateSessionRequest;
             let req = CreateSessionRequest {
-                scheduler_profile: profile,
+                scheduler,
                 directory,
                 project_id: None,
                 title: None,
             };
-            let result = self.block_on(
-                agendao_server_local::local_create_session(Arc::clone(ls), req)
-            )?;
+            let result =
+                self.block_on(agendao_server::local_create_session(Arc::clone(ls), req))?;
             return Ok(result);
         }
-        self.block_on(self.client.create_session(profile, directory))
+        self.block_on(self.client.create_session(scheduler, directory))
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
@@ -73,18 +82,17 @@ impl ApiBridge {
         directory: Option<String>,
     ) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
         let mut items = if let Some(ref ls) = self.local {
-            self.block_on(agendao_server_local::local_list_sessions_in_directory(
+            self.block_on(agendao_server::local_list_sessions(
                 Arc::clone(ls),
                 directory.clone(),
                 None,
                 None,
             ))?
         } else {
-            self.block_on(self.client.list_sessions_in_directory(
-                directory.as_deref(),
-                None,
-                None,
-            ))?
+            self.block_on(
+                self.client
+                    .list_sessions_in_directory(directory.as_deref(), None, None),
+            )?
         };
         // Most recent first; ties keep insertion order via sort_by (stable).
         sort_sessions_recent_first(&mut items);
@@ -93,7 +101,10 @@ impl ApiBridge {
 
     pub fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_session(Arc::clone(ls), session_id));
+            return self.block_on(agendao_server::local_get_session(
+                Arc::clone(ls),
+                session_id,
+            ));
         }
         self.block_on(self.client.get_session(session_id))
     }
@@ -101,33 +112,54 @@ impl ApiBridge {
     /// 异步变体（U6③ open_session 后台拉取）。
     pub async fn get_session_async(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_get_session(Arc::clone(ls), session_id).await;
+            return agendao_server::local_get_session(Arc::clone(ls), session_id).await;
         }
         self.client.get_session(session_id).await
     }
 
-    pub fn get_messages(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
+    pub fn get_messages(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_messages(Arc::clone(ls), session_id, None, None));
+            return self.block_on(agendao_server::local_list_messages(
+                Arc::clone(ls),
+                session_id,
+                None,
+                None,
+            ));
         }
         self.block_on(self.client.get_messages(session_id))
     }
 
     /// 异步变体（U6③）。
-    pub async fn get_messages_async(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
+    pub async fn get_messages_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<agendao_client::MessageInfo>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_list_messages(Arc::clone(ls), session_id, None, None).await;
+            return agendao_server::local_list_messages(Arc::clone(ls), session_id, None, None)
+                .await;
         }
         self.client.get_messages(session_id).await
     }
 
     /// 异步变体（U6③）。
-    pub async fn get_session_todos_async(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::ApiTodoItem>> {
+    pub async fn get_session_todos_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<agendao_client::ApiTodoItem>> {
         if let Some(ref ls) = self.local {
-            let todos = agendao_server_local::local_get_session_todos(Arc::clone(ls), session_id).await?;
-            return Ok(todos.into_iter().map(|t| agendao_client::ApiTodoItem {
-                id: t.id, content: t.content, status: t.status, priority: t.priority,
-            }).collect());
+            let todos = agendao_server::local_get_session_todos(Arc::clone(ls), session_id).await?;
+            return Ok(todos
+                .into_iter()
+                .map(|t| agendao_client::ApiTodoItem {
+                    id: t.id,
+                    content: t.content,
+                    status: t.status,
+                    priority: t.priority,
+                })
+                .collect());
         }
         self.client.get_session_todos(session_id).await
     }
@@ -135,26 +167,26 @@ impl ApiBridge {
     /// 异步变体（U6③）。
     pub async fn list_questions_async(&self) -> anyhow::Result<Vec<agendao_client::QuestionInfo>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_list_questions(Arc::clone(ls)).await;
+            return agendao_server::local_list_questions(Arc::clone(ls)).await;
         }
         self.client.list_questions().await
     }
 
     /// 异步变体（U6③）。
-    pub async fn list_permissions_async(&self) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
+    pub async fn list_permissions_async(
+        &self,
+    ) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_list_permissions(Arc::clone(ls)).await;
+            return agendao_server::local_list_permissions(Arc::clone(ls)).await;
         }
         self.client.list_permissions().await
     }
 
-    pub fn send_prompt(
-        &self, session_id: &str, content: String,
-    ) -> anyhow::Result<PromptResponse> {
+    pub fn send_prompt(&self, session_id: &str, content: String) -> anyhow::Result<PromptResponse> {
         self.send_prompt_with(session_id, content, None, None, None, None)
     }
 
-    /// Send a prompt carrying explicit agent/model/variant/profile selections.
+    /// Send a prompt carrying explicit agent/scheduler/model/variant selections.
     ///
     /// `dispatch()` calls this with the user's current selections from the UI
     /// store. Without these, the server falls back to its default profile
@@ -166,33 +198,33 @@ impl ApiBridge {
         session_id: &str,
         content: String,
         agent: Option<String>,
-        scheduler_profile: Option<String>,
+        scheduler: Option<SchedulerChoice>,
         model: Option<String>,
         variant: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
+        let request = agendao_client::PromptRequest {
+            message: Some(content),
+            parts: None,
+            agent,
+            scheduler,
+            model,
+            variant,
+            ingress_source: None,
+            idempotency_key: None,
+            source_origin: None,
+            source_surface: None,
+            command: None,
+            arguments: None,
+        };
         if let Some(ref ls) = self.local {
-            use agendao_client::PromptRequest;
-            let req = PromptRequest {
-                message: Some(content),
-                parts: None,
-                agent,
-                scheduler_profile,
-                model,
-                variant,
-                ingress_source: None,
-                idempotency_key: None,
-                source_origin: None,
-                source_surface: None,
-                command: None,
-                arguments: None,
-            };
-            return self.block_on(agendao_server_local::local_prompt(Arc::clone(ls), session_id, req));
+            return self.block_on(agendao_server::local_prompt(
+                Arc::clone(ls),
+                session_id,
+                request,
+            ));
         }
         let c = Arc::clone(&self.client);
-        self.block_on(c.send_prompt(
-            session_id, content,
-            None, agent, scheduler_profile, model, variant, None, None, None, None, None,
-        ))
+        self.block_on(c.send_prompt(session_id, request))
     }
 
     /// Async 版 `send_prompt_with` —— dispatch 的后台 task 调用。
@@ -206,78 +238,94 @@ impl ApiBridge {
         session_id: &str,
         content: String,
         agent: Option<String>,
-        scheduler_profile: Option<String>,
+        scheduler: Option<SchedulerChoice>,
         model: Option<String>,
         variant: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
+        let request = agendao_client::PromptRequest {
+            message: Some(content),
+            parts: None,
+            agent,
+            scheduler,
+            model,
+            variant,
+            ingress_source: None,
+            idempotency_key: None,
+            source_origin: None,
+            source_surface: None,
+            command: None,
+            arguments: None,
+        };
         if let Some(ref ls) = self.local {
-            use agendao_client::PromptRequest;
-            let req = PromptRequest {
-                message: Some(content),
-                parts: None,
-                agent,
-                scheduler_profile,
-                model,
-                variant,
-                ingress_source: None,
-                idempotency_key: None,
-                source_origin: None,
-                source_surface: None,
-                command: None,
-                arguments: None,
-            };
-            return agendao_server_local::local_prompt(Arc::clone(ls), session_id, req).await;
+            return agendao_server::local_prompt(Arc::clone(ls), session_id, request).await;
         }
         let c = Arc::clone(&self.client);
-        c.send_prompt(
-            session_id, content,
-            None, agent, scheduler_profile, model, variant, None, None, None, None, None,
-        )
-        .await
+        c.send_prompt(session_id, request).await
     }
 
     // ── Models & Providers ──
 
     pub fn get_all_providers(&self) -> anyhow::Result<agendao_client::FullProviderListResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_all_providers(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_get_all_providers(Arc::clone(ls)));
         }
         self.block_on(self.client.get_all_providers())
     }
 
     pub fn get_recent_models(&self) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_recent_models(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_get_recent_models(Arc::clone(ls)));
         }
         self.block_on(self.client.get_recent_models())
     }
 
-    pub fn put_recent_models(&self, entries: Vec<RecentModelEntry>) -> anyhow::Result<Vec<RecentModelEntry>> {
+    pub fn put_recent_models(
+        &self,
+        entries: Vec<RecentModelEntry>,
+    ) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_put_recent_models(Arc::clone(ls), entries));
+            return self.block_on(agendao_server::local_put_recent_models(
+                Arc::clone(ls),
+                entries,
+            ));
         }
         self.block_on(self.client.put_recent_models(&entries))
     }
 
     /// Async 版 `put_recent_models` —— 模型选中后的持久化走后台 task
     /// （同步版 block_on 在 runtime worker 内会 panic）。
-    pub async fn put_recent_models_async(&self, entries: Vec<RecentModelEntry>) -> anyhow::Result<Vec<RecentModelEntry>> {
+    pub async fn put_recent_models_async(
+        &self,
+        entries: Vec<RecentModelEntry>,
+    ) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_put_recent_models(Arc::clone(ls), entries).await;
+            return agendao_server::local_put_recent_models(Arc::clone(ls), entries).await;
         }
         self.client.put_recent_models(&entries).await
     }
 
     // ── Provider 管理 ──
 
-    pub fn get_provider_descriptor(&self, provider_id: &str) -> anyhow::Result<agendao_client::ProviderDescriptorResponse> {
+    pub fn get_provider_descriptor(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<agendao_client::ProviderDescriptorResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_provider_descriptor(Arc::clone(ls), provider_id));
+            return self.block_on(agendao_server::local_get_provider_descriptor(
+                Arc::clone(ls),
+                provider_id,
+            ));
         }
         self.block_on(self.client.get_provider_descriptor(provider_id))
     }
 
-    pub fn connect_provider(&self, provider_id: &str, api_key: &str, base_url: Option<String>, protocol: Option<String>) -> anyhow::Result<()> {
+    pub fn connect_provider(
+        &self,
+        provider_id: &str,
+        api_key: &str,
+        base_url: Option<String>,
+        protocol: Option<String>,
+    ) -> anyhow::Result<()> {
         if let Some(ref ls) = self.local {
             use agendao_client::ConnectProviderRequest;
             let req = ConnectProviderRequest {
@@ -286,9 +334,12 @@ impl ApiBridge {
                 base_url,
                 protocol,
             };
-            return self.block_on(agendao_server_local::local_connect_provider(Arc::clone(ls), req));
+            return self.block_on(agendao_server::local_connect_provider(Arc::clone(ls), req));
         }
-        self.block_on(self.client.connect_provider(provider_id, api_key, base_url, protocol))
+        self.block_on(
+            self.client
+                .connect_provider(provider_id, api_key, base_url, protocol),
+        )
     }
 
     pub fn set_auth(&self, provider_id: &str, api_key: &str) -> anyhow::Result<()> {
@@ -297,7 +348,13 @@ impl ApiBridge {
 
     /// POST `/provider/register`(server 端与 connect_provider 同一 handler),
     /// local-direct 直接短路到 `local_connect_provider`。
-    pub fn register_custom_provider(&self, provider_id: &str, base_url: &str, protocol: &str, api_key: &str) -> anyhow::Result<()> {
+    pub fn register_custom_provider(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+        protocol: &str,
+        api_key: &str,
+    ) -> anyhow::Result<()> {
         if let Some(ref ls) = self.local {
             use agendao_client::ConnectProviderRequest;
             let req = ConnectProviderRequest {
@@ -306,9 +363,14 @@ impl ApiBridge {
                 base_url: Some(base_url.to_string()),
                 protocol: Some(protocol.to_string()),
             };
-            return self.block_on(agendao_server_local::local_connect_provider(Arc::clone(ls), req));
+            return self.block_on(agendao_server::local_connect_provider(Arc::clone(ls), req));
         }
-        self.block_on(self.client.register_custom_provider(provider_id, base_url, protocol, api_key))
+        self.block_on(self.client.register_custom_provider(
+            provider_id,
+            base_url,
+            protocol,
+            api_key,
+        ))
     }
 
     /// PUT `/provider/{id}`:改 ProviderConfig 的 name/base_url/protocol(不动 api_key)。
@@ -321,7 +383,7 @@ impl ApiBridge {
         protocol: Option<&str>,
     ) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_update_provider(
+            return self.block_on(agendao_server::local_update_provider(
                 Arc::clone(ls),
                 provider_id,
                 name.map(str::to_string),
@@ -329,13 +391,16 @@ impl ApiBridge {
                 protocol.map(str::to_string),
             ));
         }
-        self.block_on(self.client.update_provider(provider_id, name, base_url, protocol))
+        self.block_on(
+            self.client
+                .update_provider(provider_id, name, base_url, protocol),
+        )
     }
 
     /// DELETE `/provider/{id}`:删 ProviderConfig + AuthManager 条目(土律·第四条单点权威)。
     pub fn delete_provider(&self, provider_id: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_delete_provider(
+            return self.block_on(agendao_server::local_delete_provider(
                 Arc::clone(ls),
                 provider_id,
             ));
@@ -353,13 +418,16 @@ impl ApiBridge {
         model_key: &str,
     ) -> anyhow::Result<agendao_config::ModelConfig> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_provider_model_config(
+            return self.block_on(agendao_server::local_get_provider_model_config(
                 Arc::clone(ls),
                 provider_id,
                 model_key,
             ));
         }
-        self.block_on(self.client.get_provider_model_config(provider_id, model_key))
+        self.block_on(
+            self.client
+                .get_provider_model_config(provider_id, model_key),
+        )
     }
 
     /// PUT `/config/provider/{id}/models/{key}`:写 model config(整体覆写)。
@@ -371,14 +439,17 @@ impl ApiBridge {
         model: &agendao_config::ModelConfig,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_put_provider_model_config(
+            return self.block_on(agendao_server::local_put_provider_model_config(
                 Arc::clone(ls),
                 provider_id,
                 model_key,
                 model.clone(),
             ));
         }
-        self.block_on(self.client.put_provider_model_config(provider_id, model_key, model))
+        self.block_on(
+            self.client
+                .put_provider_model_config(provider_id, model_key, model),
+        )
     }
 
     /// DELETE `/config/provider/{id}/models/{key}`:删 model config 条目。
@@ -388,33 +459,41 @@ impl ApiBridge {
         model_key: &str,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_delete_provider_model_config(
+            return self.block_on(agendao_server::local_delete_provider_model_config(
                 Arc::clone(ls),
                 provider_id,
                 model_key,
             ));
         }
-        self.block_on(self.client.delete_provider_model_config(provider_id, model_key))
+        self.block_on(
+            self.client
+                .delete_provider_model_config(provider_id, model_key),
+        )
     }
 
-    pub fn get_workspace_context(&self) -> anyhow::Result<agendao_runtime_context::ResolvedWorkspaceContext> {
+    pub fn get_workspace_context(
+        &self,
+    ) -> anyhow::Result<agendao_runtime_context::ResolvedWorkspaceContext> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_workspace_context(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_get_workspace_context(Arc::clone(ls)));
         }
         self.block_on(self.client.get_workspace_context())
     }
 
     pub fn get_config(&self) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_config(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_get_config(Arc::clone(ls)));
         }
         self.block_on(self.client.get_config())
     }
 
     /// 异步 PATCH `/config`（fire-and-forget 持久化用，不阻塞事件循环）。
-    pub async fn patch_config_async(&self, patch: serde_json::Value) -> anyhow::Result<agendao_config::Config> {
+    pub async fn patch_config_async(
+        &self,
+        patch: serde_json::Value,
+    ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_patch_config(Arc::clone(ls), patch).await;
+            return agendao_server::local_patch_config(Arc::clone(ls), patch).await;
         }
         self.client.patch_config(&patch).await
     }
@@ -422,7 +501,7 @@ impl ApiBridge {
     /// PATCH `/config`（双模式）：UI 偏好（如 theme）落盘通道。
     pub fn patch_config(&self, patch: serde_json::Value) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_patch_config(Arc::clone(ls), patch));
+            return self.block_on(agendao_server::local_patch_config(Arc::clone(ls), patch));
         }
         self.block_on(self.client.patch_config(&patch))
     }
@@ -430,7 +509,7 @@ impl ApiBridge {
     /// PUT `/provider/{id}/disabled`（双模式）：enable/disable 切换。
     pub fn set_provider_disabled(&self, provider_id: &str, disabled: bool) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_set_provider_disabled(
+            return self.block_on(agendao_server::local_set_provider_disabled(
                 Arc::clone(ls),
                 provider_id,
                 disabled,
@@ -445,7 +524,7 @@ impl ApiBridge {
         provider_id: &str,
     ) -> anyhow::Result<agendao_client::TestProviderConnectionResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_test_provider_connection(
+            return self.block_on(agendao_server::local_test_provider_connection(
                 Arc::clone(ls),
                 provider_id,
             ));
@@ -461,11 +540,8 @@ impl ApiBridge {
         provider_id: &str,
     ) -> anyhow::Result<agendao_client::TestProviderConnectionResponse> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_test_provider_connection(
-                Arc::clone(ls),
-                provider_id,
-            )
-            .await;
+            return agendao_server::local_test_provider_connection(Arc::clone(ls), provider_id)
+                .await;
         }
         self.client.test_provider_connection(provider_id).await
     }
@@ -477,17 +553,22 @@ impl ApiBridge {
         session_id: &str,
     ) -> anyhow::Result<agendao_client::SessionRuntimeState> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_session_runtime(
+            let runtime = self.block_on(agendao_server::local_get_session_runtime(
                 Arc::clone(ls),
                 session_id,
-            ));
+            ))?;
+            return Ok(serde_json::from_value(serde_json::to_value(runtime)?)?);
         }
         self.block_on(self.client.get_session_runtime(session_id))
     }
 
-    pub fn refresh_provider_catalog(&self) -> anyhow::Result<agendao_client::RefreshProviderCatalogResponse> {
+    pub fn refresh_provider_catalog(
+        &self,
+    ) -> anyhow::Result<agendao_client::RefreshProviderCatalogResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_refresh_provider_catalog(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_refresh_provider_catalog(Arc::clone(
+                ls,
+            )));
         }
         self.block_on(self.client.refresh_provider_catalog())
     }
@@ -496,7 +577,7 @@ impl ApiBridge {
 
     pub fn list_agents(&self) -> anyhow::Result<Vec<agendao_client::AgentInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_agents(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_agents(Arc::clone(ls)));
         }
         self.block_on(self.client.list_agents())
     }
@@ -505,7 +586,7 @@ impl ApiBridge {
 
     pub fn abort_session(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_abort_session(
+            return self.block_on(agendao_server::local_abort_session(
                 Arc::clone(ls),
                 session_id,
             ));
@@ -513,9 +594,13 @@ impl ApiBridge {
         self.block_on(self.client.abort_session(session_id))
     }
 
-    pub fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> anyhow::Result<serde_json::Value> {
+    pub fn cancel_tool_call(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+    ) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_cancel_tool_call(
+            return self.block_on(agendao_server::local_cancel_tool_call(
                 Arc::clone(ls),
                 session_id,
                 tool_call_id,
@@ -524,9 +609,14 @@ impl ApiBridge {
         self.block_on(self.client.cancel_tool_call(session_id, tool_call_id))
     }
 
-    pub fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> anyhow::Result<serde_json::Value> {
+    pub fn execute_shell(
+        &self,
+        session_id: &str,
+        command: String,
+        workdir: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_execute_shell(
+            return self.block_on(agendao_server::local_execute_shell(
                 Arc::clone(ls),
                 session_id,
                 command,
@@ -545,17 +635,28 @@ impl ApiBridge {
         workdir: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_execute_shell(Arc::clone(ls), session_id, command, workdir)
-                .await;
+            return agendao_server::local_execute_shell(
+                Arc::clone(ls),
+                session_id,
+                command,
+                workdir,
+            )
+            .await;
         }
-        self.client.execute_shell(session_id, command, workdir).await
+        self.client
+            .execute_shell(session_id, command, workdir)
+            .await
     }
 
     // ── 会话管理 ──
 
-    pub fn fork_session(&self, session_id: &str, message_id: Option<&str>) -> anyhow::Result<agendao_client::SessionInfo> {
+    pub fn fork_session(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+    ) -> anyhow::Result<agendao_client::SessionInfo> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_fork_session(
+            return self.block_on(agendao_server::local_fork_session(
                 Arc::clone(ls),
                 session_id,
                 message_id.map(str::to_string),
@@ -581,7 +682,7 @@ impl ApiBridge {
         focus: Option<&str>,
     ) -> anyhow::Result<agendao_client::CompactResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_compact_session(
+            return self.block_on(agendao_server::local_compact_session(
                 Arc::clone(ls),
                 session_id,
                 focus.map(str::to_string),
@@ -598,7 +699,7 @@ impl ApiBridge {
         focus: Option<&str>,
     ) -> anyhow::Result<agendao_client::CompactResponse> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_compact_session(
+            return agendao_server::local_compact_session(
                 Arc::clone(ls),
                 session_id,
                 focus.map(str::to_string),
@@ -615,7 +716,7 @@ impl ApiBridge {
     ) -> anyhow::Result<Vec<agendao_client::SkillCatalogEntry>> {
         if let Some(ref ls) = self.local {
             let query = query.cloned().unwrap_or_default();
-            return self.block_on(agendao_server_local::local_list_skills(Arc::clone(ls), query));
+            return self.block_on(agendao_server::local_list_skills(Arc::clone(ls), query));
         }
         self.block_on(self.client.list_skills(query))
     }
@@ -631,7 +732,7 @@ impl ApiBridge {
                 name: name.to_string(),
                 ..Default::default()
             };
-            return self.block_on(agendao_server_local::local_get_skill_detail(
+            return self.block_on(agendao_server::local_get_skill_detail(
                 Arc::clone(ls),
                 query,
             ));
@@ -646,7 +747,7 @@ impl ApiBridge {
     /// /tool/catalog：列出全部 tool（含 disabled，打标）——Settings→Tools 读面。
     pub fn list_tools(&self) -> anyhow::Result<Vec<agendao_client::ToolListEntry>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_tools(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_tools(Arc::clone(ls)));
         }
         self.block_on(self.client.list_tools())
     }
@@ -659,7 +760,7 @@ impl ApiBridge {
         update: &agendao_client::DisabledConfigUpdate,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_put_disabled_config(
+            return self.block_on(agendao_server::local_put_disabled_config(
                 Arc::clone(ls),
                 update.clone(),
             ));
@@ -676,7 +777,7 @@ impl ApiBridge {
         req: &agendao_client::SkillManageRequest,
     ) -> anyhow::Result<agendao_client::SkillManageResponse> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_manage_skill(
+            return self.block_on(agendao_server::local_manage_skill(
                 Arc::clone(ls),
                 req.clone(),
             ));
@@ -693,7 +794,7 @@ impl ApiBridge {
         status: &str,
     ) -> anyhow::Result<Vec<agendao_client::SkillEvolutionProposal>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_skill_proposals(
+            return self.block_on(agendao_server::local_list_skill_proposals(
                 Arc::clone(ls),
                 status,
             ));
@@ -705,7 +806,7 @@ impl ApiBridge {
     /// 需独立 dialog + API，留后续。
     pub fn get_mcp_status(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_mcp_status(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_get_mcp_status(Arc::clone(ls)));
         }
         self.block_on(self.client.get_mcp_status())
     }
@@ -716,20 +817,12 @@ impl ApiBridge {
         session_id: &str,
     ) -> anyhow::Result<agendao_client::SessionRecoveryProtocol> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_get_session_recovery(
+            return self.block_on(agendao_server::local_get_session_recovery(
                 Arc::clone(ls),
                 session_id,
             ));
         }
         self.block_on(self.client.get_session_recovery(session_id))
-    }
-
-    /// /task：全局 agent 任务注册表（非 per-session）。
-    pub fn list_tasks(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
-        if self.local.is_some() {
-            return self.block_on(agendao_server_local::local_list_tasks());
-        }
-        self.block_on(self.client.list_tasks())
     }
 
     /// /skill/proposal/{id}/status POST：approve（"accepted"）/reject（"rejected"）。
@@ -740,7 +833,7 @@ impl ApiBridge {
         status: &str,
     ) -> anyhow::Result<agendao_client::SkillEvolutionProposal> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_update_skill_proposal_status(
+            return self.block_on(agendao_server::local_update_skill_proposal_status(
                 Arc::clone(ls),
                 id,
                 status,
@@ -753,7 +846,7 @@ impl ApiBridge {
     /// get_mcp_status 回流（status 字段变化非移除，重拉是唯一权威）。
     pub fn connect_mcp(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_connect_mcp(Arc::clone(ls), name));
+            return self.block_on(agendao_server::local_connect_mcp(Arc::clone(ls), name));
         }
         self.block_on(self.client.connect_mcp(name))
     }
@@ -761,7 +854,7 @@ impl ApiBridge {
     /// /mcp/{name}/disconnect POST：断开 MCP server。直接执行类——Ok 后重拉回流。
     pub fn disconnect_mcp(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_disconnect_mcp(Arc::clone(ls), name));
+            return self.block_on(agendao_server::local_disconnect_mcp(Arc::clone(ls), name));
         }
         self.block_on(self.client.disconnect_mcp(name))
     }
@@ -769,10 +862,7 @@ impl ApiBridge {
     /// /mcp/{name}/auth POST：发起 OAuth，返回授权 URL（双模式）。
     pub fn start_mcp_auth(&self, name: &str) -> anyhow::Result<agendao_client::McpAuthStartInfo> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_start_mcp_auth(
-                Arc::clone(ls),
-                name,
-            ));
+            return self.block_on(agendao_server::local_start_mcp_auth(Arc::clone(ls), name));
         }
         self.block_on(self.client.start_mcp_auth(name))
     }
@@ -781,10 +871,7 @@ impl ApiBridge {
     /// 用户浏览器授权完成后调用；Ok 后重拉 get_mcp_status 回流。
     pub fn authenticate_mcp(&self, name: &str) -> anyhow::Result<agendao_client::McpStatusInfo> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_authenticate_mcp(
-                Arc::clone(ls),
-                name,
-            ));
+            return self.block_on(agendao_server::local_authenticate_mcp(Arc::clone(ls), name));
         }
         self.block_on(self.client.authenticate_mcp(name))
     }
@@ -792,10 +879,7 @@ impl ApiBridge {
     /// /mcp/{name}/auth DELETE：清除已存 OAuth 凭据（双模式）。
     pub fn remove_mcp_auth(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_remove_mcp_auth(
-                Arc::clone(ls),
-                name,
-            ));
+            return self.block_on(agendao_server::local_remove_mcp_auth(Arc::clone(ls), name));
         }
         self.block_on(self.client.remove_mcp_auth(name))
     }
@@ -808,7 +892,7 @@ impl ApiBridge {
         mcp: &agendao_config::McpServerConfig,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_put_mcp_config(
+            return self.block_on(agendao_server::local_put_mcp_config(
                 Arc::clone(ls),
                 key,
                 mcp.clone(),
@@ -820,10 +904,7 @@ impl ApiBridge {
     /// DELETE `/config/mcp/{key}`（双模式）：删 MCP server 配置条目。
     pub fn delete_mcp_config(&self, key: &str) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_delete_mcp_config(
-                Arc::clone(ls),
-                key,
-            ));
+            return self.block_on(agendao_server::local_delete_mcp_config(Arc::clone(ls), key));
         }
         self.block_on(self.client.delete_mcp_config(key))
     }
@@ -831,7 +912,7 @@ impl ApiBridge {
     /// GET `/config/plugins`（双模式）：已安装插件列表（managed + discovered）。
     pub fn list_plugins(&self) -> anyhow::Result<Vec<agendao_client::PluginListEntry>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_plugins(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_plugins(Arc::clone(ls)));
         }
         self.block_on(self.client.list_plugins())
     }
@@ -843,7 +924,7 @@ impl ApiBridge {
         plugin: &agendao_config::PluginConfig,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_put_plugin_config(
+            return self.block_on(agendao_server::local_put_plugin_config(
                 Arc::clone(ls),
                 key,
                 plugin.clone(),
@@ -855,7 +936,7 @@ impl ApiBridge {
     /// DELETE `/config/plugin/{key}`（双模式）：删 managed plugin 配置条目。
     pub fn delete_plugin_config(&self, key: &str) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_delete_plugin_config(
+            return self.block_on(agendao_server::local_delete_plugin_config(
                 Arc::clone(ls),
                 key,
             ));
@@ -871,7 +952,7 @@ impl ApiBridge {
     /// 异步 GET `/config`。
     pub async fn get_config_async(&self) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_get_config(Arc::clone(ls)).await;
+            return agendao_server::local_get_config(Arc::clone(ls)).await;
         }
         self.client.get_config().await
     }
@@ -882,11 +963,7 @@ impl ApiBridge {
         update: &agendao_client::DisabledConfigUpdate,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_put_disabled_config(
-                Arc::clone(ls),
-                update.clone(),
-            )
-            .await;
+            return agendao_server::local_put_disabled_config(Arc::clone(ls), update.clone()).await;
         }
         self.client.put_disabled_config(update).await
     }
@@ -897,7 +974,7 @@ impl ApiBridge {
         req: &agendao_client::SkillManageRequest,
     ) -> anyhow::Result<agendao_client::SkillManageResponse> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_manage_skill(Arc::clone(ls), req.clone()).await;
+            return agendao_server::local_manage_skill(Arc::clone(ls), req.clone()).await;
         }
         self.client.manage_skill(req).await
     }
@@ -909,12 +986,8 @@ impl ApiBridge {
         status: &str,
     ) -> anyhow::Result<agendao_client::SkillEvolutionProposal> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_update_skill_proposal_status(
-                Arc::clone(ls),
-                id,
-                status,
-            )
-            .await;
+            return agendao_server::local_update_skill_proposal_status(Arc::clone(ls), id, status)
+                .await;
         }
         self.client.update_skill_proposal_status(id, status).await
     }
@@ -922,7 +995,7 @@ impl ApiBridge {
     /// 异步 POST `/mcp/{name}/connect`。
     pub async fn connect_mcp_async(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_connect_mcp(Arc::clone(ls), name).await;
+            return agendao_server::local_connect_mcp(Arc::clone(ls), name).await;
         }
         self.client.connect_mcp(name).await
     }
@@ -930,7 +1003,7 @@ impl ApiBridge {
     /// 异步 POST `/mcp/{name}/disconnect`。
     pub async fn disconnect_mcp_async(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_disconnect_mcp(Arc::clone(ls), name).await;
+            return agendao_server::local_disconnect_mcp(Arc::clone(ls), name).await;
         }
         self.client.disconnect_mcp(name).await
     }
@@ -942,8 +1015,7 @@ impl ApiBridge {
         mcp: &agendao_config::McpServerConfig,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_put_mcp_config(Arc::clone(ls), key, mcp.clone())
-                .await;
+            return agendao_server::local_put_mcp_config(Arc::clone(ls), key, mcp.clone()).await;
         }
         self.client.put_mcp_config(key, mcp).await
     }
@@ -954,7 +1026,7 @@ impl ApiBridge {
         key: &str,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_delete_mcp_config(Arc::clone(ls), key).await;
+            return agendao_server::local_delete_mcp_config(Arc::clone(ls), key).await;
         }
         self.client.delete_mcp_config(key).await
     }
@@ -966,12 +1038,8 @@ impl ApiBridge {
         plugin: &agendao_config::PluginConfig,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_put_plugin_config(
-                Arc::clone(ls),
-                key,
-                plugin.clone(),
-            )
-            .await;
+            return agendao_server::local_put_plugin_config(Arc::clone(ls), key, plugin.clone())
+                .await;
         }
         self.client.put_plugin_config(key, plugin).await
     }
@@ -982,14 +1050,14 @@ impl ApiBridge {
         key: &str,
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_delete_plugin_config(Arc::clone(ls), key).await;
+            return agendao_server::local_delete_plugin_config(Arc::clone(ls), key).await;
         }
         self.client.delete_plugin_config(key).await
     }
 
     // ── U6⑤ 弹窗打开拉取异步变体 ──
     // 同一权威、同一分支，仅改驱动方式（直接 await，不经 block_on）。
-    // 供 `/sessions` `/skills` `/mcps` `/tasks` 等弹窗打开的后台拉取
+    // 供 `/sessions` `/skills` `/mcps` 等弹窗打开的后台拉取
     // （火=spawn，水=Tick drain 回收 DialogFetchDone）。
 
     /// 异步列出目录下会话（保持 recent-first 排序口径）。
@@ -998,13 +1066,8 @@ impl ApiBridge {
         directory: Option<String>,
     ) -> anyhow::Result<Vec<agendao_client::SessionListItem>> {
         let mut items = if let Some(ref ls) = self.local {
-            agendao_server_local::local_list_sessions_in_directory(
-                Arc::clone(ls),
-                directory.clone(),
-                None,
-                None,
-            )
-            .await?
+            agendao_server::local_list_sessions(Arc::clone(ls), directory.clone(), None, None)
+                .await?
         } else {
             self.client
                 .list_sessions_in_directory(directory.as_deref(), None, None)
@@ -1017,7 +1080,7 @@ impl ApiBridge {
     /// 异步拉 recent models（ModelSelect "★ Recent" 区块）。
     pub async fn get_recent_models_async(&self) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_get_recent_models(Arc::clone(ls)).await;
+            return agendao_server::local_get_recent_models(Arc::clone(ls)).await;
         }
         self.client.get_recent_models().await
     }
@@ -1029,7 +1092,7 @@ impl ApiBridge {
     ) -> anyhow::Result<Vec<agendao_client::SkillCatalogEntry>> {
         if let Some(ref ls) = self.local {
             let query = query.cloned().unwrap_or_default();
-            return agendao_server_local::local_list_skills(Arc::clone(ls), query).await;
+            return agendao_server::local_list_skills(Arc::clone(ls), query).await;
         }
         self.client.list_skills(query).await
     }
@@ -1040,8 +1103,7 @@ impl ApiBridge {
         status: &str,
     ) -> anyhow::Result<Vec<agendao_client::SkillEvolutionProposal>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_list_skill_proposals(Arc::clone(ls), status)
-                .await;
+            return agendao_server::local_list_skill_proposals(Arc::clone(ls), status).await;
         }
         self.client.list_skill_proposals(status).await
     }
@@ -1049,7 +1111,7 @@ impl ApiBridge {
     /// 异步拉 MCP 状态列表。
     pub async fn get_mcp_status_async(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_get_mcp_status(Arc::clone(ls)).await;
+            return agendao_server::local_get_mcp_status(Arc::clone(ls)).await;
         }
         self.client.get_mcp_status().await
     }
@@ -1060,18 +1122,9 @@ impl ApiBridge {
         session_id: &str,
     ) -> anyhow::Result<agendao_client::SessionRecoveryProtocol> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_get_session_recovery(Arc::clone(ls), session_id)
-                .await;
+            return agendao_server::local_get_session_recovery(Arc::clone(ls), session_id).await;
         }
         self.client.get_session_recovery(session_id).await
-    }
-
-    /// 异步列全局 agent 任务。
-    pub async fn list_tasks_async(&self) -> anyhow::Result<Vec<agendao_client::TaskSummaryInfo>> {
-        if self.local.is_some() {
-            return agendao_server_local::local_list_tasks().await;
-        }
-        self.client.list_tasks().await
     }
 
     /// 异步列 execution modes。
@@ -1079,11 +1132,10 @@ impl ApiBridge {
         &self,
     ) -> anyhow::Result<Vec<agendao_client::ExecutionModeInfo>> {
         if let Some(ref ls) = self.local {
-            return agendao_server_local::local_list_execution_modes(Arc::clone(ls)).await;
+            return agendao_server::local_list_execution_modes(Arc::clone(ls)).await;
         }
         self.client.list_execution_modes().await
     }
-
 
     /// /session/{id}/recovery/execute POST：执行 recovery action。confirm 类——
     /// 经 PendingConfirm::ExecuteRecovery 路由（panel_dispatch），不在 list dialog 直接调。
@@ -1091,30 +1143,24 @@ impl ApiBridge {
         &self,
         session_id: &str,
         action: agendao_client::RecoveryActionKind,
-        target_id: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_execute_session_recovery(
+            return self.block_on(agendao_server::local_execute_session_recovery(
                 Arc::clone(ls),
                 session_id,
                 action,
-                target_id,
             ));
         }
-        self.block_on(self.client.execute_session_recovery(session_id, action, target_id))
+        self.block_on(self.client.execute_session_recovery(session_id, action))
     }
 
-    /// /task/{id} DELETE：取消运行中 task。confirm 类——经 PendingConfirm::CancelTask 路由。
-    pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
-        if self.local.is_some() {
-            return self.block_on(agendao_server_local::local_cancel_task(task_id));
-        }
-        self.block_on(self.client.cancel_task(task_id))
-    }
-
-    pub fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<agendao_client::SessionInfo> {
+    pub fn update_session_title(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> anyhow::Result<agendao_client::SessionInfo> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_update_session_title(
+            return self.block_on(agendao_server::local_update_session_title(
                 Arc::clone(ls),
                 session_id,
                 title,
@@ -1125,14 +1171,25 @@ impl ApiBridge {
 
     pub fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_delete_session(Arc::clone(ls), session_id));
+            return self.block_on(agendao_server::local_delete_session(
+                Arc::clone(ls),
+                session_id,
+            ));
         }
         self.block_on(self.client.delete_session(session_id))
     }
 
-    pub fn reply_question(&self, question_id: &str, answers: Vec<Vec<String>>) -> anyhow::Result<()> {
+    pub fn reply_question(
+        &self,
+        question_id: &str,
+        answers: Vec<Vec<String>>,
+    ) -> anyhow::Result<()> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_reply_question(Arc::clone(ls), question_id, answers));
+            return self.block_on(agendao_server::local_reply_question(
+                Arc::clone(ls),
+                question_id,
+                answers,
+            ));
         }
         self.block_on(self.client.reply_question(question_id, answers))
     }
@@ -1141,7 +1198,7 @@ impl ApiBridge {
     /// 订阅建立前已存在的提问，事件流不重放，打开会话时拉一次合并。
     pub fn list_questions(&self) -> anyhow::Result<Vec<agendao_client::QuestionInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_questions(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_questions(Arc::clone(ls)));
         }
         self.block_on(self.client.list_questions())
     }
@@ -1149,7 +1206,7 @@ impl ApiBridge {
     /// GET `/permission`（双模式）：pending 权限请求 catch-up（F4）。
     pub fn list_permissions(&self) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_permissions(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_permissions(Arc::clone(ls)));
         }
         self.block_on(self.client.list_permissions())
     }
@@ -1157,40 +1214,71 @@ impl ApiBridge {
     /// DELETE `/question/{id}`（双模式）：驳回一个提问（放弃等待）。
     pub fn reject_question(&self, question_id: &str) -> anyhow::Result<()> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_reject_question(Arc::clone(ls), question_id));
+            return self.block_on(agendao_server::local_reject_question(
+                Arc::clone(ls),
+                question_id,
+            ));
         }
         self.block_on(self.client.reject_question(question_id))
     }
 
-    pub fn reply_permission(&self, permission_id: &str, reply: &str, msg: Option<String>) -> anyhow::Result<()> {
+    pub fn reply_permission(
+        &self,
+        permission_id: &str,
+        reply: &str,
+        msg: Option<String>,
+    ) -> anyhow::Result<()> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_reply_permission(Arc::clone(ls), permission_id, reply.to_string(), msg));
+            return self.block_on(agendao_server::local_reply_permission(
+                Arc::clone(ls),
+                permission_id,
+                reply.to_string(),
+                msg,
+            ));
         }
         self.block_on(self.client.reply_permission(permission_id, reply, msg))
     }
 
-    pub fn get_session_todos(&self, session_id: &str) -> anyhow::Result<Vec<agendao_client::ApiTodoItem>> {
+    pub fn get_session_todos(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<agendao_client::ApiTodoItem>> {
         if let Some(ref ls) = self.local {
-            let todos = self.block_on(agendao_server_local::local_get_session_todos(Arc::clone(ls), session_id))?;
-            return Ok(todos.into_iter().map(|t| agendao_client::ApiTodoItem {
-                id: t.id, content: t.content, status: t.status, priority: t.priority,
-            }).collect());
+            let todos = self.block_on(agendao_server::local_get_session_todos(
+                Arc::clone(ls),
+                session_id,
+            ))?;
+            return Ok(todos
+                .into_iter()
+                .map(|t| agendao_client::ApiTodoItem {
+                    id: t.id,
+                    content: t.content,
+                    status: t.status,
+                    priority: t.priority,
+                })
+                .collect());
         }
         self.block_on(self.client.get_session_todos(session_id))
     }
 
     pub fn list_execution_modes(&self) -> anyhow::Result<Vec<agendao_client::ExecutionModeInfo>> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server_local::local_list_execution_modes(Arc::clone(ls)));
+            return self.block_on(agendao_server::local_list_execution_modes(Arc::clone(ls)));
         }
         self.block_on(self.client.list_execution_modes())
     }
 
     // ── Info ──
 
-    pub fn base_url(&self) -> &str { self.client.base_url() }
-    pub fn handle(&self) -> &tokio::runtime::Handle { &self.handle }
-    pub fn raw_client(&self) -> &AsyncApiClient { &self.client }
+    pub fn base_url(&self) -> &str {
+        self.client.base_url()
+    }
+    pub fn handle(&self) -> &tokio::runtime::Handle {
+        &self.handle
+    }
+    pub fn raw_client(&self) -> &AsyncApiClient {
+        &self.client
+    }
 }
 
 /// Sort sessions descending by `time.updated` (most recent first).
@@ -1215,7 +1303,12 @@ mod tests {
             parent_id: None,
             title: id.to_string(),
             version: "v".to_string(),
-            time: SessionTime { created: 0, updated, compacting: None, archived: None },
+            time: SessionTime {
+                created: 0,
+                updated,
+                compacting: None,
+                archived: None,
+            },
             summary: None,
             hints: None,
             pending_command_invocation: None,

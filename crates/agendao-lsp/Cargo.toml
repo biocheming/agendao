@@ -11,8 +11,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-async-trait = { workspace = true }
-futures = { workspace = true }
 url = "2.5"
 lsp-types = "0.97"
 

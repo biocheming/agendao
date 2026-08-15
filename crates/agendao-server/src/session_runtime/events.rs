@@ -1,14 +1,10 @@
-use std::convert::Infallible;
 use std::sync::Arc;
 
+use crate::ServerState;
 pub use agendao_server_core::runtime_events::{
-    DiffEntry, EventBusTelemetry, QuestionResolutionKind, ReconcileReason, ServerEvent,
+    EventBusTelemetry, QuestionResolutionKind, ReconcileReason, ServerEvent,
 };
 use agendao_session::prompt::{OutputBlockEvent, OutputBlockHook};
-use axum::response::sse::Event;
-use tokio::sync::mpsc;
-
-use crate::ServerState;
 
 pub(crate) fn server_output_block_event(event: &OutputBlockEvent) -> ServerEvent {
     ServerEvent::output_block(
@@ -17,24 +13,6 @@ pub(crate) fn server_output_block_event(event: &OutputBlockEvent) -> ServerEvent
         event.id.as_deref(),
         event.live_identity.clone(),
     )
-}
-
-pub(crate) async fn send_sse_server_event(
-    tx: &mpsc::Sender<std::result::Result<Event, Infallible>>,
-    event: &ServerEvent,
-) {
-    let sse_event = Event::default()
-        .event(event.event_name())
-        .json_data(event)
-        .ok();
-    if let Some(sse_event) = sse_event {
-        if let Err(error) = tx.send(Ok(sse_event)).await {
-            tracing::debug!(
-                error = %error,
-                "Failed to send SSE server event to runtime subscriber"
-            );
-        }
-    }
 }
 
 pub(crate) fn broadcast_server_event(state: &ServerState, event: &ServerEvent) {
@@ -65,18 +43,6 @@ pub(crate) async fn emit_output_block_via_hook(
     output_hook(event).await;
 }
 
-pub(crate) fn sse_output_block_hook(
-    tx: mpsc::Sender<std::result::Result<Event, Infallible>>,
-) -> OutputBlockHook {
-    Arc::new(move |event| {
-        let tx = tx.clone();
-        Box::pin(async move {
-            let server_event = server_output_block_event(&event);
-            send_sse_server_event(&tx, &server_event).await;
-        })
-    })
-}
-
 pub(crate) async fn broadcast_session_reconcile(
     state: &ServerState,
     session_id: impl Into<String>,
@@ -87,16 +53,10 @@ pub(crate) async fn broadcast_session_reconcile(
     broadcast_server_event(
         state,
         &ServerEvent::SessionUpdated {
-            session_id: session_id.clone(),
+            session_id,
             source: source.to_string(),
         },
     );
-    // In-memory stage-log write only; record inline instead of spawning a task
-    // per reconcile (this is a high-frequency path).
-    state
-        .runtime_telemetry
-        .record_session_updated(&session_id, source)
-        .await;
 }
 
 pub(crate) fn broadcast_config_updated(state: &ServerState) {

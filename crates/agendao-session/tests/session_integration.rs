@@ -1,6 +1,5 @@
 use agendao_session::{
-    MessageRole, Session, SessionContextKind, SessionForkHistoryMode, SessionForkSpec,
-    SessionManager,
+    MessageRole, Session, SessionForkHistoryMode, SessionForkSpec, SessionManager,
 };
 
 #[test]
@@ -33,26 +32,6 @@ fn test_session_add_assistant_message() {
     assert_eq!(session.messages.len(), 2);
     assert_eq!(session.messages[0].role, MessageRole::User);
     assert_eq!(session.messages[1].role, MessageRole::Assistant);
-}
-
-#[test]
-fn test_session_attached_creation() {
-    let parent = Session::new("test-project", "/test/directory");
-    let child =
-        Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
-
-    assert!(child.parent_id.is_some());
-    assert_eq!(child.parent_id.clone().unwrap(), parent.id);
-    assert_eq!(child.project_id, parent.project_id);
-    assert_eq!(child.directory, parent.directory);
-    assert_eq!(
-        parent.context_kind(),
-        SessionContextKind::RootSessionContinuity
-    );
-    assert_eq!(
-        child.context_kind(),
-        SessionContextKind::DelegatedSubsession
-    );
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -13,6 +14,16 @@ pub struct EditTool {
     directory: PathBuf,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditInput {
+    file_path: String,
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
+
 impl EditTool {
     pub fn new() -> Self {
         Self {
@@ -25,17 +36,6 @@ impl Default for EditTool {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn extract_edit_file_path(args: &serde_json::Value) -> Result<String, ToolError> {
-    args.get("file_path")
-        .or_else(|| args.get("filePath"))
-        .or_else(|| args.get("filepath"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ToolError::InvalidArguments("file_path (or filePath/filepath) is required".into())
-        })
-        .map(|value| value.trim().to_string())
 }
 
 #[async_trait]
@@ -78,31 +78,12 @@ impl Tool for EditTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let file_path = extract_edit_file_path(&args)?;
-
-        let old_string: String = args
-            .get("old_string")
-            .or_else(|| args.get("oldString"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("old_string (or oldString) is required".into())
-            })?
-            .to_string();
-
-        let new_string: String = args
-            .get("new_string")
-            .or_else(|| args.get("newString"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("new_string (or newString) is required".into())
-            })?
-            .to_string();
-
-        let replace_all = args
-            .get("replace_all")
-            .or_else(|| args.get("replaceAll"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let input: EditInput = serde_json::from_value(args)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let file_path = input.file_path.trim().to_string();
+        let old_string = input.old_string;
+        let new_string = input.new_string;
+        let replace_all = input.replace_all;
 
         let base_dir = if ctx.directory.is_empty() {
             &self.directory
@@ -346,8 +327,6 @@ async fn get_lsp_diagnostics_with_meta(
 ) -> (String, Vec<serde_json::Value>) {
     #[cfg(feature = "lsp")]
     {
-        use agendao_lsp::detect_language;
-
         if let Some(lsp_registry) = &ctx.lsp_registry {
             return get_lsp_diagnostics_impl_with_meta(path, lsp_registry.clone()).await;
         }
@@ -482,16 +461,15 @@ fn normalize_line_endings(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_edit_file_path;
+    use super::EditInput;
 
     #[test]
-    fn extract_edit_file_path_accepts_filepath_alias() {
+    fn edit_input_rejects_filepath_alias() {
         let args = serde_json::json!({
             "filepath": "src/main.ts",
             "old_string": "a",
             "new_string": "b"
         });
-        let path = extract_edit_file_path(&args).expect("filepath alias should be accepted");
-        assert_eq!(path, "src/main.ts");
+        assert!(serde_json::from_value::<EditInput>(args).is_err());
     }
 }

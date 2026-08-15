@@ -36,7 +36,7 @@
 - **工具轨迹可解释**
   - tool repair、trajectory quality、tool-result governance、permission/steering/runtime state 都已有正式读面，能被三端消费。
 - **方法沉淀与运行治理**
-  - skill hub、memory validation/consolidation、scheduler continuity、proposal/review/gate 已形成完整产品面。
+  - skill hub、memory validation/consolidation、统一 Blueprint、proposal/review/gate 已形成完整产品面。
 - **计划文档有边界**
   - `plans/` 里的文档默认是局部设计与实施参考；只有被总览文档吸收的内容，才算当前产品真相。
 
@@ -57,15 +57,13 @@
 - `skills.md`
   - Skill lifecycle、skill reflection、`skill_manage` 写入与 memory linkage，以及 skill hub search / trust / stale index 发现链路
 - `tools.md`
-  - 工具层参考，包括 `skill_manage`、`task` / `task_flow` 的 canonical-first 约束，以及 memory 可观测面入口
+  - 工具层参考，包括 `skill_manage`、结构化工具和 memory 可观测面入口
 - `configuration.md`
   - 配置分层、workspace 边界，以及 memory 受 workspace mode 约束的作用域说明
 - `context-caching.md`
-  - closeai-compatible / ethnopic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
+  - openai-compatible / anthropic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
 - `examples/scheduler/README.md`
-  - public scheduler presets、stage 默认值、当前行为说明
-- `examples/scheduler/SCHEDULER_GUIDE.md`
-  - Scheduler 完整使用指南（Tutorial & User Guide）
+  - 当前 inline `SchedulerBlueprint` 示例与请求入口
 - `examples/context_docs/README.md`
   - `context_docs` schema、registry、index 示例
 - `examples/plugins_example/README.md`
@@ -79,8 +77,7 @@
   - Includes `context-docs-registry` schema and example
   - Includes `context-docs-index` schema and example docs index
 - `examples/scheduler/`
-  - 按目录拆分的 scheduler 示例入口：公开 preset、verifier、PSO、autoresearch workflow、共享 trees
-  - Includes generic scheduler JSON Schema and current public example profiles / workflow examples
+  - 当前 `SchedulerChoice::Blueprint` 示例；不包含旧 profile 或转换输入
 - `plugins_example/`
   - Skill / TS plugin / Rust extension examples
 
@@ -94,10 +91,6 @@
   - 前端/后端解耦蓝图；当前主要作为边界守护参考
 - `docs/plans/tui-session-graph-sidebar.md`
   - TUI session graph sidebar 的设计 backlog
-- `docs/plans/verifier-mode-preset-design.md`
-  - Verifier preset 的算法与架构设计；主体已落地，文档现在偏复盘与边界说明
-- `docs/plans/verifier-mode-implementation-checklist.md`
-  - Verifier mode 已完成项与剩余 polish
 - `docs/plans/agendao-web-audit-2026-07.md`
   - agendao-web 框架/功能/审美三维审计报告（2026-07-17），含修复清单与状态追踪
 
@@ -132,22 +125,7 @@ agendao debug docs validate --index ./docs/examples/context_docs/react-router.do
 The canonical scheduler example entry is:
 
 - `docs/examples/scheduler/README.md`
-- `docs/examples/scheduler/scheduler-profile.schema.json`
-- `docs/examples/scheduler/presets/`
-  - `sisyphus.example.jsonc`
-  - `prometheus.example.jsonc`
-  - `atlas.example.jsonc`
-  - `hephaestus.example.jsonc`
-- `docs/examples/scheduler/verifier/README.md`
-  - Verifier preset 的完整上手指南：解决的问题、原算法、AgenDao 实现路线、artifacts、fallback、cache 和调优建议
-- `docs/examples/scheduler/verifier/minimal.example.jsonc`
-  - Verifier preset 的最小上手配置：保留通过验证的候选，并用一个 criterion 选优
-- `docs/examples/scheduler/verifier/profile.example.jsonc`
-- `docs/examples/scheduler/verifier/workflow.example.jsonc`
-- `docs/examples/scheduler/pso/README.md`
-- `docs/examples/scheduler/pso/example.jsonc`
-- `docs/examples/scheduler/autoresearch/README.md`
-- `docs/examples/scheduler/autoresearch/book-authoring.example.jsonc`
+- `docs/examples/scheduler/blueprint.example.json`
 
 ## Tool Config Entry
 
@@ -161,17 +139,13 @@ The canonical external tool config example entry is:
 - `docs/examples/tools/partial-backfill/`
 - `docs/examples/tools/catalog-only/`
 
-The public scheduler presets are:
+The built-in scheduler templates are:
 
-- `sisyphus`
-- `prometheus`
-- `atlas`
-- `hephaestus`
-- `verifier`
-
-The current schema IDs are:
-
-- `https://agendao.dev/schemas/scheduler-profile.schema.json`
+- `direct`
+- `plan`
+- `coordinate`
+- `verify`
+- `autoresearch`
 
 ## Web Frontend Entry
 

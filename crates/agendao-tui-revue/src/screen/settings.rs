@@ -17,9 +17,7 @@ use std::collections::HashSet;
 use revue::prelude::*;
 use revue::widget::{Border, Input};
 
-use crate::app::settings_edit_state::{
-    SettingsEditField, SettingsEditState,
-};
+use crate::app::settings_edit_state::{SettingsEditField, SettingsEditState};
 use crate::store::app_store::AppStore;
 use crate::store::types::{SettingsCategory, SettingsFocusPane};
 use crate::theme::colors;
@@ -73,8 +71,10 @@ impl SettingsScreen {
         //   - 其余占位分类:两栏,body = "coming soon"(诚实标注,土律·第十条)
         match category {
             SettingsCategory::ModelSettings => {
-                let body = build_model_settings_body(store, pane_height, edit_state, focus, cursor_on);
-                hstack().gap(0)
+                let body =
+                    build_model_settings_body(store, pane_height, edit_state, focus, cursor_on);
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
@@ -83,7 +83,8 @@ impl SettingsScreen {
                 let body_focused = focus != SettingsFocusPane::Categories;
                 let selected = store.settings_general_selected.get();
                 let body = build_general_pane(store, body_focused, selected);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
@@ -92,45 +93,49 @@ impl SettingsScreen {
                 let body_focused = focus != SettingsFocusPane::Categories;
                 let scroll = store.settings_keybindings_scroll.get();
                 let body = build_keybindings_pane(body_focused, scroll, pane_height);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
             SettingsCategory::McpServers => {
                 let body = build_mcp_body(store, pane_height, focus);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
             SettingsCategory::Skills => {
                 let body = build_skills_body(store, pane_height, focus);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
             SettingsCategory::Tools => {
                 let body = build_tools_body(store, pane_height, focus);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
             SettingsCategory::Plugins => {
                 let body = build_plugins_body(store, pane_height, focus);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(cat_pane, CATEGORIES_W)
                     .child_sized(vline(), VLINE_W)
                     .child_flex(body, 1.0)
             }
-            SettingsCategory::About => {
-                hstack().gap(0)
-                    .child_sized(cat_pane, CATEGORIES_W)
-                    .child_sized(vline(), VLINE_W)
-                    .child_flex(build_about_pane(), 1.0)
-            }
+            SettingsCategory::About => hstack()
+                .gap(0)
+                .child_sized(cat_pane, CATEGORIES_W)
+                .child_sized(vline(), VLINE_W)
+                .child_flex(build_about_pane(), 1.0),
         }
     }
 }
@@ -182,7 +187,8 @@ fn build_model_settings_body(
         cursor_on,
     );
 
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(prov_pane, PROVIDERS_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail_pane, 1.0)
@@ -193,15 +199,16 @@ fn build_model_settings_body(
 /// General body:UI 偏好 toggle 列表。每行读对应 signal 显示当前值(阴阳同源:
 /// 与 `execute_slash_action` 的 toggle 写路径读写同一 signal)。`focused` = body
 /// 在焦点(非 Categories 栏);`selected` = 当前高亮行(`GeneralRow::ALL` 下标)。
-fn build_general_pane(
-    store: &AppStore,
-    focused: bool,
-    selected: usize,
-) -> revue::widget::Stack {
+fn build_general_pane(store: &AppStore, focused: bool, selected: usize) -> revue::widget::Stack {
     use crate::store::types::GeneralRow;
 
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let mut s = vstack().gap(0)
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(title_row("  ☯ General", title_color), 1)
         .child_sized(Text::new(""), 1);
@@ -212,7 +219,8 @@ fn build_general_pane(
     let wd_w = cell_w(&wd_line);
     s = s
         .child_sized(
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(wd_line).fg(colors::FG_TRACE()), wd_w)
                 .child_flex(Text::new(""), 1.0),
             1,
@@ -242,12 +250,16 @@ fn general_row_value(store: &AppStore, row: crate::store::types::GeneralRow) -> 
         GeneralRow::ShowHeader => on_off(store.show_header.get()),
         GeneralRow::ShowTips => on_off(store.show_tips.get()),
         GeneralRow::CompactDensity => on_off(store.compact_density.get()),
-        GeneralRow::Theme => store.theme_id.get().label().to_string()
+        GeneralRow::Theme => store.theme_id.get().label().to_string(),
     }
 }
 
 fn on_off(v: bool) -> String {
-    if v { "On".to_string() } else { "Off".to_string() }
+    if v {
+        "On".to_string()
+    } else {
+        "Off".to_string()
+    }
 }
 
 /// 单个 toggle 行:`{marker} {label} ........ [{value}]`。
@@ -272,34 +284,42 @@ fn general_toggle_row(
     };
     let pill = format!("[ {} ]", value);
     let pill_w = cell_w(&pill);
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(label).fg(label_color), label_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(pill).fg(value_color), pill_w)
         .child_sized(Text::new("  "), 2)
 }
 
-fn general_row_desc(
-    row: crate::store::types::GeneralRow,
-    selected: bool,
-) -> revue::widget::Stack {
-    let color = if selected { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
+fn general_row_desc(row: crate::store::types::GeneralRow, selected: bool) -> revue::widget::Stack {
+    let color = if selected {
+        colors::FG_SECONDARY()
+    } else {
+        colors::FG_TRACE()
+    };
     let line = format!("      {}", row.description());
     let w = cell_w(&line);
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
 }
 
 fn general_footer_hint(focused: bool) -> revue::widget::Stack {
-    let color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
+    let color = if focused {
+        colors::FG_SECONDARY()
+    } else {
+        colors::FG_TRACE()
+    };
     let line = if focused {
         "  ↑/↓: Row   Enter/Space: Toggle   Tab: Categories   Esc: Back"
     } else {
         "  Tab/Enter: Enter General   Esc: Back"
     };
-    let w = cell_w(&line);
-    hstack().gap(0)
+    let w = cell_w(line);
+    hstack()
+        .gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
 }
@@ -311,16 +331,27 @@ fn build_about_pane() -> revue::widget::Stack {
     let title = format!("  ℹ AgenDao TUI  v{}", version);
     let title_w = cell_w(&title);
     let lines: [(&str, Color); 5] = [
-        ("  道纪 — Canon of Flow and Governance", colors::FG_SECONDARY()),
-        ("  A terminal UI for the AgenDao agent runtime.", colors::FG_PRIMARY()),
+        (
+            "  道纪 — Canon of Flow and Governance",
+            colors::FG_SECONDARY(),
+        ),
+        (
+            "  A terminal UI for the AgenDao agent runtime.",
+            colors::FG_PRIMARY(),
+        ),
         ("", colors::FG_PRIMARY()),
-        ("  Press Ctrl+P or / for the command palette.", colors::FG_TRACE()),
+        (
+            "  Press Ctrl+P or / for the command palette.",
+            colors::FG_TRACE(),
+        ),
         ("  Press ? for keyboard shortcuts.", colors::FG_TRACE()),
     ];
-    let mut s = vstack().gap(0)
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(title).fg(colors::E_TEAL()).bold(), title_w)
                 .child_flex(Text::new(""), 1.0),
             1,
@@ -329,7 +360,8 @@ fn build_about_pane() -> revue::widget::Stack {
     for (line, color) in lines {
         let w = cell_w(line).max(1);
         s = s.child_sized(
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(line).fg(color), w)
                 .child_flex(Text::new(""), 1.0),
             1,
@@ -351,15 +383,16 @@ pub fn keybindings_visible_rows(pane_height: u16) -> usize {
 
 /// Keybindings body:只读快捷键参考,数据源唯一 = `dialog::help::KEYBINDINGS`。
 /// `scroll` = 首个可见 entry 下标(视窗起点),超长时 ↑/↓/PgUp/PgDn 滚动。
-fn build_keybindings_pane(
-    focused: bool,
-    scroll: usize,
-    pane_height: u16,
-) -> revue::widget::Stack {
+fn build_keybindings_pane(focused: bool, scroll: usize, pane_height: u16) -> revue::widget::Stack {
     use crate::dialog::help::{HelpEntry, KEYBINDINGS};
 
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let mut s = vstack().gap(0)
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(title_row("  ⌨ Keybindings", title_color), 1)
         .child_sized(Text::new(""), 1);
@@ -370,14 +403,20 @@ fn build_keybindings_pane(
     let end = (start + visible).min(total);
     for entry in &KEYBINDINGS[start..end] {
         let row = match entry {
-            HelpEntry::Section(title) => hstack().gap(0)
-                .child_flex(Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE()), 1.0),
+            HelpEntry::Section(title) => hstack().gap(0).child_flex(
+                Text::new(format!("  {}", title)).fg(colors::ACCENT_BLUE()),
+                1.0,
+            ),
             HelpEntry::Binding(key, desc) => {
                 let key_str = format!("  {:>12}", key);
                 let key_w = cell_w(&key_str);
-                hstack().gap(2)
+                hstack()
+                    .gap(2)
                     .child_sized(Text::new(key_str).fg(colors::ACCENT_CYAN()), key_w)
-                    .child_flex(Text::new((*desc).to_string()).fg(colors::FG_SECONDARY()), 1.0)
+                    .child_flex(
+                        Text::new((*desc).to_string()).fg(colors::FG_SECONDARY()),
+                        1.0,
+                    )
             }
         };
         s = s.child_sized(row, 1);
@@ -386,18 +425,26 @@ fn build_keybindings_pane(
     let more = total.saturating_sub(end);
     let hint = if focused {
         if more > 0 {
-            format!("  ↑/↓/PgUp/PgDn: Scroll  (+{} below)   Tab: Categories", more)
+            format!(
+                "  ↑/↓/PgUp/PgDn: Scroll  (+{} below)   Tab: Categories",
+                more
+            )
         } else {
             "  ↑/↓: Scroll   Tab: Categories   Esc: Back".to_string()
         }
     } else {
         "  Tab/Enter: Enter Keybindings   Esc: Back".to_string()
     };
-    let hint_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
+    let hint_color = if focused {
+        colors::FG_SECONDARY()
+    } else {
+        colors::FG_TRACE()
+    };
     let hint_w = cell_w(&hint);
     s.child_flex(Text::new(""), 1.0)
         .child_sized(
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(hint).fg(hint_color), hint_w)
                 .child_flex(Text::new(""), 1.0),
             1,
@@ -413,7 +460,10 @@ fn build_mcp_body(
     focus: SettingsFocusPane,
 ) -> revue::widget::Stack {
     let rows = store.settings_mcp.get();
-    let selected = store.settings_mcp_selected.get().min(rows.len().saturating_sub(1));
+    let selected = store
+        .settings_mcp_selected
+        .get()
+        .min(rows.len().saturating_sub(1));
     let list_focused = focus == SettingsFocusPane::Providers;
     let detail_focused = focus == SettingsFocusPane::Details;
 
@@ -443,7 +493,8 @@ fn build_mcp_body(
             let prefix = format!(" {} {}", marker, r.name);
             let prefix_w = cell_w(&prefix);
             let (pill, pill_color) = on_off_pill(r.enabled);
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(prefix).fg(color), prefix_w)
                 .child_flex(Text::new(""), 1.0)
                 .child_sized(Text::new(pill).fg(pill_color), cell_w(pill))
@@ -464,15 +515,27 @@ fn build_mcp_body(
         build_empty_detail("No MCP servers configured — press a to add", detail_focused)
     };
 
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(list, LIST_COL_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail, 1.0)
 }
 
-fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let pill = if r.is_connected() { " Connected " } else { " Disconnected " };
+fn build_mcp_detail(
+    r: &crate::store::types::SettingsMcpRow,
+    focused: bool,
+) -> revue::widget::Stack {
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let pill = if r.is_connected() {
+        " Connected "
+    } else {
+        " Disconnected "
+    };
     let pill_color = if r.is_connected() {
         colors::ACCENT_GREEN()
     } else {
@@ -480,12 +543,14 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
     };
     let header = format!("  ⚔ {}", r.name);
     let header_w = cell_w(&header);
-    let pill_w = cell_w(&pill);
+    let pill_w = cell_w(pill);
     let (on_pill, on_pill_color) = on_off_pill(r.enabled);
-    let mut s = vstack().gap(0)
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(1)
+            hstack()
+                .gap(1)
                 .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                 .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
                 .child_sized(Text::new(on_pill).fg(on_pill_color).bold(), cell_w(on_pill))
@@ -493,9 +558,15 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
             1,
         )
         .child_sized(Text::new(""), 1)
-        .child_sized(field_block("Status", &r.status, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(
+            field_block("Status", &r.status, colors::FG_PRIMARY(), ""),
+            3,
+        )
         .child_sized(Text::new(""), 1)
-        .child_sized(field_block("Transport", &r.transport, colors::FG_PRIMARY(), ""), 3);
+        .child_sized(
+            field_block("Transport", &r.transport, colors::FG_PRIMARY(), ""),
+            3,
+        );
     // transport 对应端点字段：local → command；remote → url；unknown → 两者皆无。
     if let Some(ref cmd) = r.command {
         s = s
@@ -512,8 +583,16 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
         .child_sized(
             field_block(
                 "Enabled",
-                if r.enabled { "on (config.mcp)" } else { "off (config.mcp)" },
-                if r.enabled { colors::FG_PRIMARY() } else { colors::FG_MUTED() },
+                if r.enabled {
+                    "on (config.mcp)"
+                } else {
+                    "off (config.mcp)"
+                },
+                if r.enabled {
+                    colors::FG_PRIMARY()
+                } else {
+                    colors::FG_MUTED()
+                },
                 "t: toggle",
             ),
             3,
@@ -525,7 +604,12 @@ fn build_mcp_detail(r: &crate::store::types::SettingsMcpRow, focused: bool) -> r
         )
         .child_sized(Text::new(""), 1)
         .child_sized(
-            field_block("Resources", &r.resources.to_string(), colors::FG_PRIMARY(), ""),
+            field_block(
+                "Resources",
+                &r.resources.to_string(),
+                colors::FG_PRIMARY(),
+                "",
+            ),
             3,
         );
     if let Some(ref err) = r.error {
@@ -592,7 +676,8 @@ fn build_plugins_body(
             let prefix_w = cell_w(&prefix);
             let name_w = cell_w(&r.name);
             let (pill, pill_color) = on_off_pill(!r.disabled);
-            hstack().gap(0)
+            hstack()
+                .gap(0)
                 .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
                 .child_sized(Text::new(r.name.clone()).fg(name_color), name_w)
                 .child_flex(Text::new(""), 1.0)
@@ -612,7 +697,8 @@ fn build_plugins_body(
         build_empty_detail("No plugins installed — press a to install", detail_focused)
     };
 
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(list, LIST_COL_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail, 1.0)
@@ -622,7 +708,11 @@ fn build_plugin_detail(
     r: &crate::store::types::SettingsPluginRow,
     focused: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let header = format!("  ⧉ {}", r.name);
     let header_w = cell_w(&header);
     let (pill, pill_color) = on_off_pill(!r.disabled);
@@ -632,22 +722,33 @@ fn build_plugin_detail(
     } else {
         "discovered (directory scan)"
     };
-    let mut s = vstack().gap(0)
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(1)
+            hstack()
+                .gap(1)
                 .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                 .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
                 .child_flex(Text::new(""), 1.0),
             1,
         )
         .child_sized(Text::new(""), 1)
-        .child_sized(field_block("Type", &r.plugin_type, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(
+            field_block("Type", &r.plugin_type, colors::FG_PRIMARY(), ""),
+            3,
+        )
         .child_sized(Text::new(""), 1)
-        .child_sized(field_block("Source", source_label, colors::FG_PRIMARY(), ""), 3)
+        .child_sized(
+            field_block("Source", source_label, colors::FG_PRIMARY(), ""),
+            3,
+        )
         .child_sized(Text::new(""), 1)
         // 安装途径：server `build_plugin_list_entries` 单点权威标签。
-        .child_sized(field_block("Origin", &r.origin, colors::FG_PRIMARY(), ""), 3);
+        .child_sized(
+            field_block("Origin", &r.origin, colors::FG_PRIMARY(), ""),
+            3,
+        );
     if let Some(ref path) = r.path {
         s = s
             .child_sized(Text::new(""), 1)
@@ -729,7 +830,8 @@ fn build_skills_body(
                 let line_w = cell_w(&line);
                 let (pill, pill_color) = group_switch_pill(*count, *disabled_count);
                 let pill_w = cell_w(&pill);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(Text::new(line).fg(color), line_w)
                     .child_flex(Text::new(""), 1.0)
                     .child_sized(Text::new(pill).fg(pill_color), pill_w)
@@ -756,7 +858,8 @@ fn build_skills_body(
                 let prefix_w = cell_w(&prefix);
                 let name = r.label().to_string();
                 let name_w = cell_w(&name);
-                let mut row = hstack().gap(0)
+                let mut row = hstack()
+                    .gap(0)
                     .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
                     .child_sized(Text::new(name).fg(name_color), name_w)
                     .child_flex(Text::new(""), 1.0);
@@ -783,12 +886,15 @@ fn build_skills_body(
             count,
             collapsed,
             disabled_count,
-        }) => build_skill_category_detail(name, *count, *collapsed, *disabled_count, detail_focused),
+        }) => {
+            build_skill_category_detail(name, *count, *collapsed, *disabled_count, detail_focused)
+        }
         Some(SettingsSkillLine::Row(src)) => build_skill_detail(&rows[*src], detail_focused),
         None => build_empty_detail("No skills or proposals", detail_focused),
     };
 
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(list, LIST_COL_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail, 1.0)
@@ -826,10 +932,18 @@ fn build_skill_category_detail(
     disabled_count: usize,
     focused: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let header = format!("  ✧ {}", name);
     let header_w = cell_w(&header);
-    let state = if collapsed { " Collapsed " } else { " Expanded " };
+    let state = if collapsed {
+        " Collapsed "
+    } else {
+        " Expanded "
+    };
     let state_w = cell_w(state);
     let (pill, pill_color) = group_switch_pill(count, disabled_count);
     let pill_w = cell_w(&pill);
@@ -845,10 +959,12 @@ fn build_skill_category_detail(
     } else {
         "  Tab: Detail pane"
     };
-    vstack().gap(0)
+    vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(1)
+            hstack()
+                .gap(1)
                 .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                 .child_sized(Text::new(state).fg(colors::FG_MUTED()).bold(), state_w)
                 .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
@@ -862,7 +978,12 @@ fn build_skill_category_detail(
         )
         .child_sized(Text::new(""), 1)
         .child_sized(
-            field_block("Switch", &switch_state, colors::FG_PRIMARY(), "t toggles name/*"),
+            field_block(
+                "Switch",
+                &switch_state,
+                colors::FG_PRIMARY(),
+                "t toggles name/*",
+            ),
             3,
         )
         .child_flex(Text::new(""), 1.0)
@@ -919,7 +1040,11 @@ fn build_skill_detail(
     focused: bool,
 ) -> revue::widget::Stack {
     use crate::store::types::SettingsSkillRow;
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let mut s = vstack().gap(0).child_sized(Text::new(""), 1);
     match r {
         SettingsSkillRow::Catalog {
@@ -936,7 +1061,8 @@ fn build_skill_detail(
             let pill_w = cell_w(pill);
             s = s
                 .child_sized(
-                    hstack().gap(1)
+                    hstack()
+                        .gap(1)
                         .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                         .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
                         .child_flex(Text::new(""), 1.0),
@@ -957,7 +1083,10 @@ fn build_skill_detail(
                     3,
                 )
                 .child_sized(Text::new(""), 1)
-                .child_sized(field_block("Location", location, colors::FG_PRIMARY(), ""), 3)
+                .child_sized(
+                    field_block("Location", location, colors::FG_PRIMARY(), ""),
+                    3,
+                )
                 .child_sized(Text::new(""), 1)
                 // 安装途径：entry 无 source/root 字段，按 location 前缀推断并注明。
                 .child_sized(
@@ -1023,7 +1152,8 @@ fn build_skill_detail(
             let header_w = cell_w(&header);
             s = s
                 .child_sized(
-                    hstack().gap(0)
+                    hstack()
+                        .gap(0)
                         .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                         .child_flex(Text::new(""), 1.0)
                         .child_sized(Text::new(" Proposal ").fg(colors::E_AMBER()).bold(), 11),
@@ -1096,7 +1226,8 @@ fn build_tools_body(
                 let line_w = cell_w(&line);
                 let (pill, pill_color) = group_switch_pill(*count, *disabled_count);
                 let pill_w = cell_w(&pill);
-                hstack().gap(0)
+                hstack()
+                    .gap(0)
                     .child_sized(Text::new(line).fg(color), line_w)
                     .child_flex(Text::new(""), 1.0)
                     .child_sized(Text::new(pill).fg(pill_color), pill_w)
@@ -1122,7 +1253,8 @@ fn build_tools_body(
                 let prefix = format!("   {} {} ", marker, tag);
                 let prefix_w = cell_w(&prefix);
                 let name_w = cell_w(&r.id);
-                let mut row = hstack().gap(0)
+                let mut row = hstack()
+                    .gap(0)
                     .child_sized(Text::new(prefix).fg(tag_color), prefix_w)
                     .child_sized(Text::new(r.id.clone()).fg(name_color), name_w)
                     .child_flex(Text::new(""), 1.0);
@@ -1153,7 +1285,8 @@ fn build_tools_body(
         None => build_empty_detail("No tools", detail_focused),
     };
 
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(list, LIST_COL_W)
         .child_sized(vline(), VLINE_W)
         .child_flex(detail, 1.0)
@@ -1167,10 +1300,18 @@ fn build_tool_category_detail(
     disabled_count: usize,
     focused: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let header = format!("  ⛏ {}", name);
     let header_w = cell_w(&header);
-    let state = if collapsed { " Collapsed " } else { " Expanded " };
+    let state = if collapsed {
+        " Collapsed "
+    } else {
+        " Expanded "
+    };
     let state_w = cell_w(state);
     let (pill, pill_color) = group_switch_pill(count, disabled_count);
     let pill_w = cell_w(&pill);
@@ -1186,10 +1327,12 @@ fn build_tool_category_detail(
     } else {
         "  Tab: Detail pane"
     };
-    vstack().gap(0)
+    vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(
-            hstack().gap(1)
+            hstack()
+                .gap(1)
                 .child_sized(Text::new(header).fg(title_color).bold(), header_w)
                 .child_sized(Text::new(state).fg(colors::FG_MUTED()).bold(), state_w)
                 .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
@@ -1203,7 +1346,12 @@ fn build_tool_category_detail(
         )
         .child_sized(Text::new(""), 1)
         .child_sized(
-            field_block("Switch", &switch_state, colors::FG_PRIMARY(), "t toggles family/*"),
+            field_block(
+                "Switch",
+                &switch_state,
+                colors::FG_PRIMARY(),
+                "t toggles family/*",
+            ),
             3,
         )
         .child_flex(Text::new(""), 1.0)
@@ -1222,26 +1370,27 @@ fn build_tool_detail(
     r: &crate::store::types::SettingsToolRow,
     focused: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let header = format!("  ⛏ {}", r.id);
     let header_w = cell_w(&header);
-    let mut header_row = hstack().gap(1)
+    let mut header_row = hstack()
+        .gap(1)
         .child_sized(Text::new(header).fg(title_color).bold(), header_w);
     if r.protected {
-        header_row = header_row.child_sized(
-            Text::new(" protected ").fg(colors::E_AMBER()).bold(),
-            11,
-        );
+        header_row =
+            header_row.child_sized(Text::new(" protected ").fg(colors::E_AMBER()).bold(), 11);
     } else {
         let (pill, pill_color) = on_off_pill(!r.disabled);
-        header_row = header_row.child_sized(
-            Text::new(pill).fg(pill_color).bold(),
-            cell_w(pill),
-        );
+        header_row = header_row.child_sized(Text::new(pill).fg(pill_color).bold(), cell_w(pill));
     }
     header_row = header_row.child_flex(Text::new(""), 1.0);
 
-    let mut s = vstack().gap(0)
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(header_row, 1)
         .child_sized(Text::new(""), 1)
@@ -1308,7 +1457,8 @@ fn build_empty_detail(msg: &str, focused: bool) -> revue::widget::Stack {
     } else {
         colors::FG_MUTED()
     };
-    vstack().gap(0)
+    vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(Text::new(format!("  {}", msg)).fg(color), 1)
         .child_flex(Text::new(""), 1.0)
@@ -1327,8 +1477,13 @@ fn build_named_list_pane<F>(
 where
     F: FnMut(usize) -> revue::widget::Stack,
 {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let mut s = vstack().gap(0)
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(title_row(&format!("  {}", title), title_color), 1)
         .child_sized(Text::new(""), 1);
@@ -1342,8 +1497,7 @@ where
     }
 
     let visible_rows = pane_height.saturating_sub(5).max(1) as usize;
-    let (start, end) =
-        crate::dialog::backdrop::list_viewport_window(total, selected, visible_rows);
+    let (start, end) = crate::dialog::backdrop::list_viewport_window(total, selected, visible_rows);
     for i in start..end {
         s = s.child_sized(row_builder(i), 1);
     }
@@ -1354,8 +1508,9 @@ where
     } else {
         colors::FG_TRACE()
     };
-    let footer_w = cell_w(&footer);
-    let footer_row = hstack().gap(0)
+    let footer_w = cell_w(footer);
+    let footer_row = hstack()
+        .gap(0)
         .child_sized(Text::new(footer).fg(footer_color), footer_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(pos).fg(colors::FG_TRACE()), pos_w)
@@ -1379,7 +1534,8 @@ fn cell_w(s: &str) -> u16 {
 /// 按区域清),裸 `child_sized(Text, 1)` 的行只占内容宽,新标题比旧标题短时
 /// 旧字符残留在行尾(切换分类残影,如 "MCP Servergs")。
 fn title_row(title: &str, color: Color) -> revue::widget::Stack {
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(title.to_string()).fg(color).bold(), cell_w(title))
         .child_flex(Text::new(""), 1.0)
 }
@@ -1400,8 +1556,13 @@ fn build_categories_pane(
 ) -> revue::widget::Stack {
     // 标题 + 6 项 + flex 空白 + 底部 Esc 提示。Pane 不画边框(列已用 VLine 划界),
     // 这样视觉重量集中在 active 行的高亮,与 HTML 稿一致。
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let mut s = vstack().gap(0)
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1) // 顶呼吸 1 行
         .child_sized(title_row("  ⚙ Preferences", title_color), 1)
         .child_sized(Text::new(""), 1);
@@ -1434,7 +1595,8 @@ fn category_row(cat: SettingsCategory, is_active: bool) -> revue::widget::Stack 
     };
     let line = format!(" {} {} {}", icon, cat.icon(), cat.label());
     let w = cell_w(&line);
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(line).fg(color), w)
         .child_flex(Text::new(""), 1.0)
 }
@@ -1454,24 +1616,23 @@ fn build_providers_pane(
     selected_idx: Option<usize>,
     is_add: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
-    let mut s = vstack().gap(0)
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(title_row("  ◆ Providers", title_color), 1)
         .child_sized(Text::new(""), 1);
 
     if providers.is_empty() && !is_add {
         // 空态:加载中或 server 无 provider 配置。
-        s = s.child_sized(
-            Text::new("   (no providers)").fg(colors::FG_TRACE()),
-            1,
-        );
+        s = s.child_sized(Text::new("   (no providers)").fg(colors::FG_TRACE()), 1);
         return s
             .child_flex(Text::new(""), 1.0)
-            .child_sized(
-                Text::new("  + Add provider").fg(colors::FG_TRACE()),
-                1,
-            )
+            .child_sized(Text::new("  + Add provider").fg(colors::FG_TRACE()), 1)
             .child_sized(Text::new(""), 1);
     }
 
@@ -1491,7 +1652,10 @@ fn build_providers_pane(
         let is_selected = !is_add && selected_id == Some(p.id.as_str());
         let is_connected = connected.contains(&p.id);
         let is_testing = testing_id == Some(p.id.as_str());
-        s = s.child_sized(provider_row(&p.name, is_connected, is_selected, is_testing), 1);
+        s = s.child_sized(
+            provider_row(&p.name, is_connected, is_selected, is_testing),
+            1,
+        );
     }
     // Add 模式 + 虚拟行落在窗口内 → 追加 "(new provider)" highlight 行
     // (selected_idx == providers.len(),只要 end > providers.len() 即在窗口内)。
@@ -1506,15 +1670,24 @@ fn build_providers_pane(
         None => format!("-/{}", total),
     };
     let pos_w = cell_w(&pos);
-    let add_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
+    let add_color = if focused {
+        colors::FG_SECONDARY()
+    } else {
+        colors::FG_TRACE()
+    };
     // Providers pane 通常窄(~24 列),hint 必须极简:`a/e/d` 三字母合订 +
     // 后边 `+ Add provider` 主入口文案。详细 hint("a: Add e: Edit d: Delete")
     // 由 Details pane footer_hint 承接(底部 1 行更宽,文字不挤),
     // 同一信号同时存在于两层窗口对**不同视野阶**用户友好:
     // 老用户看 a/e/d 即懂,新用户切 Details focus 后看长 hint(金律·成形递进)。
-    let add_text = if focused { "  + Add  (a/e/d)" } else { "  + Add provider" };
-    let add_w = cell_w(&add_text);
-    let footer_row = hstack().gap(0)
+    let add_text = if focused {
+        "  + Add  (a/e/d)"
+    } else {
+        "  + Add provider"
+    };
+    let add_w = cell_w(add_text);
+    let footer_row = hstack()
+        .gap(0)
         .child_sized(Text::new(add_text).fg(add_color), add_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(pos).fg(colors::FG_TRACE()), pos_w)
@@ -1528,17 +1701,27 @@ fn build_providers_pane(
 /// Add 模式下虚拟追加的"(new provider)"草稿行(永远 selected,标 highlight)。
 /// 不进入 store.providers——纯渲染层占位,close 后随 edit_state 一起消失。
 fn provider_row_draft(focused: bool) -> revue::widget::Stack {
-    let name_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
+    let name_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let prefix = " ▸ (new provider)";
-    let prefix_w = cell_w(&prefix);
-    hstack().gap(0)
+    let prefix_w = cell_w(prefix);
+    hstack()
+        .gap(0)
         .child_sized(Text::new(prefix).fg(name_color).italic(), prefix_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new("✎").fg(colors::E_AMBER()), 1)
         .child_sized(Text::new(" "), 1)
 }
 
-fn provider_row(name: &str, is_connected: bool, is_selected: bool, is_testing: bool) -> revue::widget::Stack {
+fn provider_row(
+    name: &str,
+    is_connected: bool,
+    is_selected: bool,
+    is_testing: bool,
+) -> revue::widget::Stack {
     // active provider 行(selected):▸ + E_TEAL;否则 ◇ + FG_SECONDARY。
     // 连接状态 dot:● ACCENT_GREEN(connected) / ─ FG_TRACE(disconnected);
     // 测连接进行中(U6):◌ E_AMBER 覆盖 dot——行内 pending 标记。
@@ -1556,7 +1739,8 @@ fn provider_row(name: &str, is_connected: bool, is_selected: bool, is_testing: b
     };
     let prefix = format!(" {} {}", marker, name);
     let prefix_w = cell_w(&prefix);
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(prefix).fg(color), prefix_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(dot).fg(dot_color), 1)
@@ -1574,7 +1758,11 @@ fn build_details_pane(
     edit_state: Option<&SettingsEditState>,
     cursor_on: bool,
 ) -> revue::widget::Stack {
-    let title_color = if focused { colors::E_TEAL() } else { colors::FG_SECONDARY() };
+    let title_color = if focused {
+        colors::E_TEAL()
+    } else {
+        colors::FG_SECONDARY()
+    };
     let editing_active = edit_state.is_some_and(|s| s.active);
     let is_add = edit_state.is_some_and(|s| s.is_add());
 
@@ -1590,7 +1778,8 @@ fn build_details_pane(
 
     // 没 provider 且非 Add 草稿:空态。
     if provider_opt.is_none() && !is_add {
-        return vstack().gap(0)
+        return vstack()
+            .gap(0)
             .child_sized(Text::new(""), 1)
             .child_sized(Text::new("  Select a provider").fg(colors::FG_MUTED()), 1)
             .child_flex(Text::new(""), 1.0);
@@ -1600,7 +1789,11 @@ fn build_details_pane(
     // 非 editing:◆ name + 状态 pill（可点击 toggle disabled，见 keymap 命中）;
     // Add:◆ (new provider) + [Drafting] pill;Edit:照常显示 provider.name
     let (header_label, pill, pill_color) = if is_add {
-        ("  ◆ (new provider)".to_string(), " Drafting ", colors::E_AMBER())
+        (
+            "  ◆ (new provider)".to_string(),
+            " Drafting ",
+            colors::E_AMBER(),
+        )
     } else {
         let p = provider_opt.expect("provider_opt is Some when !is_add");
         let is_connected = connected.contains(&p.id);
@@ -1617,12 +1810,16 @@ fn build_details_pane(
         (lbl, pl, pc)
     };
     let header_label_w = cell_w(&header_label);
-    let pill_w = cell_w(&pill);
+    let pill_w = cell_w(pill);
     // 右侧操作：⚡ Test connection（可点击/按 t——keymap 命中与键路由同权威）。
     let mode_text = "⚡ Test";
-    let mode_w = cell_w(&mode_text);
-    let header = hstack().gap(1)
-        .child_sized(Text::new(header_label).fg(title_color).bold(), header_label_w)
+    let mode_w = cell_w(mode_text);
+    let header = hstack()
+        .gap(1)
+        .child_sized(
+            Text::new(header_label).fg(title_color).bold(),
+            header_label_w,
+        )
         .child_sized(Text::new(pill).fg(pill_color).bold(), pill_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(mode_text).fg(colors::FG_TRACE()), mode_w)
@@ -1657,14 +1854,24 @@ fn build_details_pane(
     let base_field = if editing_active {
         let st = edit_state.expect("editing_active");
         let focused_field = st.focus == SettingsEditField::BaseUrl;
-        field_block_editing("Base URL", st.base_url_input.clone(), "", focused_field, cursor_on)
+        field_block_editing(
+            "Base URL",
+            st.base_url_input.clone(),
+            "",
+            focused_field,
+            cursor_on,
+        )
     } else {
         let p = provider_opt.expect("non-editing => provider_opt Some");
         let base_value = p
             .base_url
             .clone()
             .unwrap_or_else(|| "(not set)".to_string());
-        let base_color = if p.base_url.is_some() { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
+        let base_color = if p.base_url.is_some() {
+            colors::FG_PRIMARY()
+        } else {
+            colors::FG_TRACE()
+        };
         field_block("Base URL", &base_value, base_color, "")
     };
 
@@ -1676,15 +1883,19 @@ fn build_details_pane(
     } else {
         let p = provider_opt.expect("non-editing => provider_opt Some");
         // 与 base_url 配对(同 server 唯一权威),决定 HTTP 实际打哪条契约
-        // (`openai`/`anthropic`/`google`/...:openai-compatible /v1/chat/completions
-        // vs anthropic-compatible /v1/messages 等)。`None` = catalog/config 都没记 npm,
+        // (OpenAI Responses / Chat Completions / Anthropic Messages)。
+        // `None` = catalog/config 都没有可识别的 wire protocol，
         // 显示 `(unknown)` 诚实标注,不假装"openai"(土律·第十条·可观测性权利)。
         let protocol_value = p
             .protocol
             .as_deref()
             .map(protocol_display_label)
             .unwrap_or("(unknown)");
-        let protocol_color = if p.protocol.is_some() { colors::FG_PRIMARY() } else { colors::FG_TRACE() };
+        let protocol_color = if p.protocol.is_some() {
+            colors::FG_PRIMARY()
+        } else {
+            colors::FG_TRACE()
+        };
         field_block("Protocol", protocol_value, protocol_color, "")
     };
 
@@ -1695,7 +1906,13 @@ fn build_details_pane(
     let api_key_field = if editing_active {
         let st = edit_state.expect("editing_active");
         let focused_field = st.focus == SettingsEditField::ApiKey;
-        field_block_editing("API key", st.api_key_input.clone(), "", focused_field, cursor_on)
+        field_block_editing(
+            "API key",
+            st.api_key_input.clone(),
+            "",
+            focused_field,
+            cursor_on,
+        )
     } else {
         let api_key_hint = if focused { "e: Edit" } else { "" };
         field_block(
@@ -1711,20 +1928,30 @@ fn build_details_pane(
     // 与 Providers footer 同形态(金律·成形语法权威):每个区段的"可用动作"
     // 都贴在该区段的边缘,而非藏在屏幕底栏一并展示。
     let models_label = "  Models";
-    let models_label_w = cell_w(&models_label);
-    let models_hint = if focused && !editing_active { "m: Add  e: Edit  d: Delete  " } else { "" };
-    let models_hint_w = cell_w(&models_hint);
+    let models_label_w = cell_w(models_label);
+    let models_hint = if focused && !editing_active {
+        "m: Add  e: Edit  d: Delete  "
+    } else {
+        ""
+    };
+    let models_hint_w = cell_w(models_hint);
     // 动作区高亮（E_AMBER）：focused 时让可用动作一眼可见（与 API key 行
     // "e: Edit" hint 同信号，金律·成形语法权威）。
-    let models_hint_color = if focused { colors::E_AMBER() } else { colors::FG_TRACE() };
-    let models_header_row = hstack().gap(0)
+    let models_hint_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::FG_TRACE()
+    };
+    let models_header_row = hstack()
+        .gap(0)
         .child_sized(
             Text::new(models_label).fg(colors::FG_SECONDARY()).bold(),
             models_label_w,
         )
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(models_hint).fg(models_hint_color), models_hint_w);
-    let mut models_block = vstack().gap(0)
+    let mut models_block = vstack()
+        .gap(0)
         .child_sized(models_header_row, 1)
         .child_sized(Text::new(""), 1);
     // editing 中或 Add 草稿:不展示 models 列表(避免对未落盘 provider 谈 models);
@@ -1745,18 +1972,23 @@ fn build_details_pane(
         }
     } else if is_add {
         models_block = models_block.child_sized(
-            Text::new("   (add models after saving)").fg(colors::FG_TRACE()).italic(),
+            Text::new("   (add models after saving)")
+                .fg(colors::FG_TRACE())
+                .italic(),
             1,
         );
     } else {
         models_block = models_block.child_sized(
-            Text::new("   (models hidden while editing)").fg(colors::FG_TRACE()).italic(),
+            Text::new("   (models hidden while editing)")
+                .fg(colors::FG_TRACE())
+                .italic(),
             1,
         );
     }
 
     // 组装总 stack:editing 时 Name 字段只在 Add 模式出现;其余字段一律渲染。
-    let mut s = vstack().gap(0)
+    let mut s = vstack()
+        .gap(0)
         .child_sized(Text::new(""), 1)
         .child_sized(header, 1)
         .child_sized(Text::new(""), 1);
@@ -1770,7 +2002,10 @@ fn build_details_pane(
         .child_sized(api_key_field, 3)
         .child_sized(Text::new(""), 1)
         .child_flex(models_block, 1.0)
-        .child_sized(footer_hint_editing(focused, selected_model.is_some(), editing_active), 1)
+        .child_sized(
+            footer_hint_editing(focused, selected_model.is_some(), editing_active),
+            1,
+        )
         .child_sized(Text::new(""), 1)
 }
 
@@ -1785,8 +2020,9 @@ fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revu
     } else {
         let lab = format!("  {}", label);
         let lab_w = cell_w(&lab);
-        let hint_w = cell_w(&hint);
-        hstack().gap(0)
+        let hint_w = cell_w(hint);
+        hstack()
+            .gap(0)
             .child_sized(Text::new(lab).fg(colors::FG_SECONDARY()), lab_w)
             .child_flex(Text::new(""), 1.0)
             // 动作 hint（如 API key 行的 "e: Edit"）用 E_AMBER + bold 显眼化——
@@ -1794,14 +2030,14 @@ fn field_block(label: &str, value: &str, value_color: Color, hint: &str) -> revu
             .child_sized(Text::new(hint).fg(colors::E_AMBER()).bold(), hint_w)
             .child_sized(Text::new("  "), 2)
     };
-    let bordered = Border::only_bottom()
-        .fg(colors::BORDER())
-        .child(
-            hstack().gap(0)
-                .child_sized(Text::new("  "), 2)
-                .child_flex(Text::new(value.to_string()).fg(value_color), 1.0),
-        );
-    vstack().gap(0)
+    let bordered = Border::only_bottom().fg(colors::BORDER()).child(
+        hstack()
+            .gap(0)
+            .child_sized(Text::new("  "), 2)
+            .child_flex(Text::new(value.to_string()).fg(value_color), 1.0),
+    );
+    vstack()
+        .gap(0)
         .child_sized(label_line, 1)
         .child_sized(bordered, 2) // value 行(1) + 下边框(1)
 }
@@ -1822,18 +2058,26 @@ fn field_block_editing(
     focused: bool,
     cursor_on: bool,
 ) -> revue::widget::Stack {
-    let label_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
-    let border_color = if focused { colors::E_AMBER() } else { colors::BORDER() };
+    let label_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let border_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::BORDER()
+    };
     let label_line = if hint.is_empty() {
-        hstack().gap(0).child_flex(
-            Text::new(format!("  {}", label)).fg(label_color),
-            1.0,
-        )
+        hstack()
+            .gap(0)
+            .child_flex(Text::new(format!("  {}", label)).fg(label_color), 1.0)
     } else {
         let lab = format!("  {}", label);
         let lab_w = cell_w(&lab);
-        let hint_w = cell_w(&hint);
-        hstack().gap(0)
+        let hint_w = cell_w(hint);
+        hstack()
+            .gap(0)
             .child_sized(Text::new(lab).fg(label_color), lab_w)
             .child_flex(Text::new(""), 1.0)
             .child_sized(Text::new(hint).fg(colors::FG_TRACE()), hint_w)
@@ -1845,14 +2089,14 @@ fn field_block_editing(
         .focused(focused)
         .cursor_visible(cursor_on)
         .fg(colors::FG_PRIMARY());
-    let bordered = Border::only_bottom()
-        .fg(border_color)
-        .child(
-            hstack().gap(0)
-                .child_sized(Text::new("  "), 2)
-                .child_flex(input_view, 1.0),
-        );
-    vstack().gap(0)
+    let bordered = Border::only_bottom().fg(border_color).child(
+        hstack()
+            .gap(0)
+            .child_sized(Text::new("  "), 2)
+            .child_flex(input_view, 1.0),
+    );
+    vstack()
+        .gap(0)
         .child_sized(label_line, 1)
         .child_sized(bordered, 2)
 }
@@ -1860,24 +2104,41 @@ fn field_block_editing(
 /// 字段块·横向选择器(Protocol 字段专用):`‹ openai ›` 形态,focused 时
 /// 高亮箭头 + 加宽视觉权重,告诉用户"按 ←/→ 切",其他键无效。
 fn field_block_choice(label: &str, choice_label: &str, focused: bool) -> revue::widget::Stack {
-    let label_color = if focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
-    let border_color = if focused { colors::E_AMBER() } else { colors::BORDER() };
-    let arrow_color = if focused { colors::E_AMBER() } else { colors::FG_TRACE() };
-    let value_color = if focused { colors::FG_PRIMARY() } else { colors::FG_SECONDARY() };
-    let label_line = hstack().gap(0).child_flex(
-        Text::new(format!("  {}", label)).fg(label_color),
-        1.0,
-    );
+    let label_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let border_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::BORDER()
+    };
+    let arrow_color = if focused {
+        colors::E_AMBER()
+    } else {
+        colors::FG_TRACE()
+    };
+    let value_color = if focused {
+        colors::FG_PRIMARY()
+    } else {
+        colors::FG_SECONDARY()
+    };
+    let label_line = hstack()
+        .gap(0)
+        .child_flex(Text::new(format!("  {}", label)).fg(label_color), 1.0);
     let value_text = format!("  ‹ {} ›", choice_label);
     let arrow_hint = if focused { "  ←/→ to change  " } else { "" };
-    let arrow_hint_w = cell_w(&arrow_hint);
+    let arrow_hint_w = cell_w(arrow_hint);
     let value_w = cell_w(&value_text);
-    let value_row = hstack().gap(0)
+    let value_row = hstack()
+        .gap(0)
         .child_sized(Text::new(value_text).fg(value_color), value_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(arrow_hint).fg(arrow_color), arrow_hint_w);
     let bordered = Border::only_bottom().fg(border_color).child(value_row);
-    vstack().gap(0)
+    vstack()
+        .gap(0)
         .child_sized(label_line, 1)
         .child_sized(bordered, 2)
 }
@@ -1893,9 +2154,17 @@ fn model_row(
     //
     // pane_focused 区分"Details 在焦点 → 选中色显眼"与"Details 失焦 → 选中淡显"
     // (金律·成形语法:focus 信号通过颜色权威而非位置变化传达,避免视觉跳动)。
-    let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+    let name = if m.name.is_empty() {
+        m.id.clone()
+    } else {
+        m.name.clone()
+    };
     let (marker, name_color) = if selected {
-        let color = if pane_focused { colors::E_AMBER() } else { colors::FG_SECONDARY() };
+        let color = if pane_focused {
+            colors::E_AMBER()
+        } else {
+            colors::FG_SECONDARY()
+        };
         ("▸ ", color)
     } else {
         ("  ", colors::FG_PRIMARY())
@@ -1907,7 +2176,8 @@ fn model_row(
     let name_str = format!("{}{}", marker, name);
     let name_w = cell_w(&name_str);
     let ctx_w = cell_w(&ctx_label);
-    hstack().gap(0)
+    hstack()
+        .gap(0)
         .child_sized(Text::new(name_str).fg(name_color), name_w)
         .child_flex(Text::new(""), 1.0)
         .child_sized(Text::new(ctx_label).fg(colors::FG_MUTED()), ctx_w)
@@ -1920,22 +2190,16 @@ fn model_row(
         .child_sized(Text::new("  "), 2)
 }
 
-/// 把 server 端 protocol 标识(`openai` / `anthropic` / ...)映射成用户能读的
-/// "协议族 + 契约提示"标签。语义对应 server 端 `protocol_to_npm` 反向映射
-/// (provider.rs:582),保持单点权威(土律·第四条)。
+/// 把 server 端 wire protocol 标识映射成用户能读的
+/// "协议族 + 契约提示"标签。语义对应 server 端的 wire protocol profile
+/// 解析，保持单点权威(土律·第四条)。
 ///
 /// 未识别值原样返回(不假装),便于未来加新 protocol 时灰度上线。
 fn protocol_display_label(protocol: &str) -> &str {
     match protocol {
-        "openai" => "openai-compatible (/v1/chat/completions)",
-        "anthropic" => "anthropic (/v1/messages)",
-        "google" => "google generative-ai",
-        "bedrock" => "amazon bedrock",
-        "vertex" => "google vertex-ai",
-        "openrouter" => "openrouter (openai-compatible)",
-        "perplexity" => "perplexity",
-        "github-copilot" => "github copilot",
-        "gitlab" => "gitlab duo",
+        "openai-responses" => "OpenAI Responses (/v1/responses)",
+        "openai-chat" => "OpenAI Chat Completions (/v1/chat/completions)",
+        "anthropic" => "Anthropic Messages (/v1/messages)",
         other => other,
     }
 }
@@ -1947,7 +2211,11 @@ fn footer_hint_editing(
 ) -> revue::widget::Stack {
     // 三状态:editing 中显示 Tab/Enter/Esc 编辑流;Details focused + 有 model 选中
     // → m/e/d;其他 → 通用 Tab/↑/↓。单点权威:每个状态对应唯一一行 hint。
-    let active_color = if focused { colors::FG_SECONDARY() } else { colors::FG_TRACE() };
+    let active_color = if focused {
+        colors::FG_SECONDARY()
+    } else {
+        colors::FG_TRACE()
+    };
     let line = if editing_active {
         "  Tab: Next field   ←/→: Protocol   Enter: Save   Esc: Cancel"
     } else if focused && has_selected_model {
@@ -1957,8 +2225,9 @@ fn footer_hint_editing(
     } else {
         "  Tab: Cycle Panes   ↑/↓: Navigate   Enter: Select   Esc: Back"
     };
-    let w = cell_w(&line);
-    hstack().gap(0)
+    let w = cell_w(line);
+    hstack()
+        .gap(0)
         .child_sized(Text::new(line).fg(active_color), w)
         .child_flex(Text::new(""), 1.0)
 }
@@ -1992,8 +2261,8 @@ mod tests {
             name: "Provider One".to_string(),
             models: vec![],
             base_url: Some("https://api.example.com".to_string()),
-            protocol: Some("openai".to_string()),
-                disabled: false,
+            protocol: Some("openai-chat".to_string()),
+            disabled: false,
         }]);
         store.settings_selected_provider.set(Some("p1".to_string()));
         let mut buf = Buffer::new(120, 40);
@@ -2032,8 +2301,16 @@ mod tests {
             .map(|y| collect_row(&buf, y, 120))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(merged.contains("General"), "General title missing:\n{}", merged);
-        assert!(merged.contains("Show thinking blocks"), "toggle row missing:\n{}", merged);
+        assert!(
+            merged.contains("General"),
+            "General title missing:\n{}",
+            merged
+        );
+        assert!(
+            merged.contains("Show thinking blocks"),
+            "toggle row missing:\n{}",
+            merged
+        );
         assert!(merged.contains("Theme"), "Theme row missing:\n{}", merged);
     }
 
@@ -2054,7 +2331,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(merged.contains("Keybindings"), "title missing:\n{}", merged);
-        assert!(merged.contains("Send prompt"), "binding missing:\n{}", merged);
+        assert!(
+            merged.contains("Send prompt"),
+            "binding missing:\n{}",
+            merged
+        );
     }
 
     /// MCP Servers 分类:空列表也能渲染,不 panic。
@@ -2109,7 +2390,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(merged.contains("Skills"), "title missing:\n{}", merged);
-        assert!(merged.contains("Add trigger") || merged.contains("[P]"), "proposal missing:\n{}", merged);
+        assert!(
+            merged.contains("Add trigger") || merged.contains("[P]"),
+            "proposal missing:\n{}",
+            merged
+        );
     }
 
     /// Skills 分类:catalog 行带 [ On ] 开关 pill;disabled 行带 [ Off ]。
@@ -2149,7 +2434,11 @@ mod tests {
         assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
         assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
         // 类目头聚合：1/2 启用。
-        assert!(merged.contains("[1/2]"), "partial pill missing:\n{}", merged);
+        assert!(
+            merged.contains("[1/2]"),
+            "partial pill missing:\n{}",
+            merged
+        );
     }
 
     /// Tools 分类:family 类目头 + 行开关 pill + protected 行无 pill。
@@ -2185,10 +2474,18 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(merged.contains("Tools"), "title missing:\n{}", merged);
-        assert!(merged.contains("shell"), "family group missing:\n{}", merged);
+        assert!(
+            merged.contains("shell"),
+            "family group missing:\n{}",
+            merged
+        );
         assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
         // protected 行详情：开关禁用说明。
-        assert!(merged.contains("protected") || merged.contains("[*]"), "protected marker missing:\n{}", merged);
+        assert!(
+            merged.contains("protected") || merged.contains("[*]"),
+            "protected marker missing:\n{}",
+            merged
+        );
     }
 
     /// About 分类:body 渲染版本号,不 panic。
@@ -2207,7 +2504,11 @@ mod tests {
             .map(|y| collect_row(&buf, y, 120))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(merged.contains("AgenDao TUI"), "About title missing:\n{}", merged);
+        assert!(
+            merged.contains("AgenDao TUI"),
+            "About title missing:\n{}",
+            merged
+        );
     }
 
     #[test]
@@ -2224,11 +2525,13 @@ mod tests {
                 models: vec![],
                 base_url: None,
                 protocol: None,
-                    disabled: false,
+                disabled: false,
             });
         }
         store.providers.set(providers);
-        store.settings_selected_provider.set(Some("p14".to_string()));
+        store
+            .settings_selected_provider
+            .set(Some("p14".to_string()));
         // pane_height=12 → visible_rows = 12 - 5 = 7;total=14 > 7,
         // selected_idx=13(最后一个,selected+1>=total) → 钉底 start = 14-7 = 7,
         // 数据行可见 = P8..P14。
@@ -2242,17 +2545,29 @@ mod tests {
         let rows: Vec<String> = (0..12).map(|y| collect_row(&buf, y, 120)).collect();
         let merged = rows.join("\n");
         // 末尾 P14 必须可见(被选中,钉底跟随)。
-        assert!(merged.contains("P14"), "P14 (selected) must be visible:\n{}", merged);
+        assert!(
+            merged.contains("P14"),
+            "P14 (selected) must be visible:\n{}",
+            merged
+        );
         // P13 也必须可见(钉底后 selected 上一行)。
         assert!(merged.contains("P13"), "P13 must be visible:\n{}", merged);
         // P1 不应可见(已滑出视野)。
         // 用 word-boundary 兜底:P10/P11/P12... 都包含 "P1" substring。
-        let has_p1_token = rows.iter().any(|r| {
-            r.contains(" P1 ") || r.contains("▸ P1 ") || r.contains("◇ P1 ")
-        });
-        assert!(!has_p1_token, "P1 must be scrolled off when selecting P14:\n{}", merged);
+        let has_p1_token = rows
+            .iter()
+            .any(|r| r.contains(" P1 ") || r.contains("▸ P1 ") || r.contains("◇ P1 "));
+        assert!(
+            !has_p1_token,
+            "P1 must be scrolled off when selecting P14:\n{}",
+            merged
+        );
         // 位置指示 "14/14" 应在 footer "+ Add provider" 行右侧。
-        assert!(merged.contains("14/14"), "position indicator 14/14 missing:\n{}", merged);
+        assert!(
+            merged.contains("14/14"),
+            "position indicator 14/14 missing:\n{}",
+            merged
+        );
     }
 
     /// Plugins 分类：managed/discovered 行渲染 tag + 开关 pill + detail 字段。
@@ -2293,11 +2608,19 @@ mod tests {
             .join("\n");
         assert!(merged.contains("Plugins"), "title missing:\n{}", merged);
         assert!(merged.contains("[M]"), "managed tag missing:\n{}", merged);
-        assert!(merged.contains("[D]"), "discovered tag missing:\n{}", merged);
+        assert!(
+            merged.contains("[D]"),
+            "discovered tag missing:\n{}",
+            merged
+        );
         assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
         assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
         // detail 区：首行选中 my-tools → Origin 字段。
-        assert!(merged.contains("Origin"), "origin field missing:\n{}", merged);
+        assert!(
+            merged.contains("Origin"),
+            "origin field missing:\n{}",
+            merged
+        );
     }
 
     /// MCP 分类：行渲染启停 pill + 连接 dot；detail 展示 transport/command/enabled。
@@ -2343,8 +2666,20 @@ mod tests {
         assert!(merged.contains("[ On ]"), "on pill missing:\n{}", merged);
         assert!(merged.contains("[ Off ]"), "off pill missing:\n{}", merged);
         // detail（首行 fs 选中）：transport + command + enabled 字段。
-        assert!(merged.contains("Transport"), "transport field missing:\n{}", merged);
-        assert!(merged.contains("npx -y srv /tmp"), "command field missing:\n{}", merged);
-        assert!(merged.contains("Enabled"), "enabled field missing:\n{}", merged);
+        assert!(
+            merged.contains("Transport"),
+            "transport field missing:\n{}",
+            merged
+        );
+        assert!(
+            merged.contains("npx -y srv /tmp"),
+            "command field missing:\n{}",
+            merged
+        );
+        assert!(
+            merged.contains("Enabled"),
+            "enabled field missing:\n{}",
+            merged
+        );
     }
 }

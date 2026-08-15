@@ -6,7 +6,6 @@ export type SettingsTabId =
   | "general"
   | "memory"
   | "providers"
-  | "scheduler"
   | "validation"
   | "skills"
   | "mcp"
@@ -17,7 +16,6 @@ export const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: "general", label: "General" },
   { id: "memory", label: "Memory" },
   { id: "providers", label: "Providers" },
-  { id: "scheduler", label: "Scheduler" },
   { id: "validation", label: "Validation" },
   { id: "skills", label: "Skills" },
   { id: "mcp", label: "MCP" },
@@ -56,8 +54,6 @@ export function isolatedWorkspaceNotice(
       return t("settings.isolated.providers");
     case "memory":
       return t("settings.isolated.memory");
-    case "scheduler":
-      return t("settings.isolated.scheduler");
     case "validation":
       return t("settings.isolated.validation");
     case "skills":
@@ -150,7 +146,7 @@ export function validationJumpTarget(
   item: ConfigPolicyValidationItemRecord,
 ):
   | {
-      tab: Extract<SettingsTabId, "providers" | "scheduler">;
+      tab: Extract<SettingsTabId, "providers">;
       label: string;
       providerId?: string;
     }
@@ -160,12 +156,6 @@ export function validationJumpTarget(
       tab: "providers",
       label: "settings.validation.openProviders",
       providerId: item.scope.subject_id ?? undefined,
-    };
-  }
-  if (item.owner === "scheduler") {
-    return {
-      tab: "scheduler",
-      label: "settings.validation.openScheduler",
     };
   }
   return null;

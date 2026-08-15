@@ -26,13 +26,18 @@ impl ArtifactReadTool {
     }
 
     fn is_governed_artifact_path(path: &Path) -> bool {
-        path.components().any(|component| component.as_os_str() == "session-artifacts")
+        path.components()
+            .any(|component| component.as_os_str() == "session-artifacts")
             && path
                 .components()
                 .any(|component| component.as_os_str() == "tool-results")
     }
 
-    fn normalize_artifact_path(&self, artifact_path: &str, ctx: &ToolContext) -> Result<PathBuf, ToolError> {
+    fn normalize_artifact_path(
+        &self,
+        artifact_path: &str,
+        ctx: &ToolContext,
+    ) -> Result<PathBuf, ToolError> {
         let trimmed = artifact_path.trim();
         if trimmed.is_empty() {
             return Err(ToolError::InvalidArguments(

@@ -1,4 +1,4 @@
-use crate::bootstrap::{apply_custom_loaders, filter_models_by_status};
+use crate::bootstrap::filter_models_by_status;
 use crate::catalog::{
     default_model_catalog_authority, metadata_path_for_snapshot, ModelCatalogAuthority,
 };
@@ -60,9 +60,8 @@ impl ModelsRegistry {
             .await
     }
 
-    pub async fn get_with_customization(&self, enable_experimental: bool) -> ModelsData {
+    pub async fn get_filtered(&self, enable_experimental: bool) -> ModelsData {
         let mut data = self.get().await;
-        apply_custom_loaders(&mut data);
         filter_models_by_status(&mut data, enable_experimental);
         data
     }

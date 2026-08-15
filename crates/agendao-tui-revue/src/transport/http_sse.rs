@@ -5,6 +5,7 @@
 //!
 //! Connects to /event?session={id}&tier=tui, parses FrontendEvent from SSE payload.
 
+use agendao_server_core::frontend_events::FrontendEvent;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
@@ -13,7 +14,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use agendao_server_core::frontend_events::FrontendEvent;
 
 /// Spawn a background task that connects to the HTTP SSE endpoint.
 /// Mirrors old TUI's spawn_server_event_listener_task().
@@ -52,7 +52,9 @@ pub fn spawn_http_event_source(
             let connected = session_filter_rx.borrow().clone();
             let Some(ref sid) = connected else {
                 recovery_sync = false;
-                if session_filter_rx.changed().await.is_err() { break; }
+                if session_filter_rx.changed().await.is_err() {
+                    break;
+                }
                 continue;
             };
 
@@ -68,8 +70,13 @@ pub fn spawn_http_event_source(
             };
 
             recovery_sync = consume_stream(
-                &mut source, &tx, &mut session_filter_rx, connected, &mut recovery_sync,
-            ).await;
+                &mut source,
+                &tx,
+                &mut session_filter_rx,
+                connected,
+                &mut recovery_sync,
+            )
+            .await;
 
             if recovery_sync {
                 tokio::time::sleep(Duration::from_millis(400)).await;
@@ -90,7 +97,9 @@ async fn consume_stream(
         match event {
             Ok(SseEvent::Open) => {
                 tracing::debug!(filter=?connected, "SSE connected");
-                if *recovery { *recovery = false; }
+                if *recovery {
+                    *recovery = false;
+                }
             }
             Ok(SseEvent::Message(msg)) => {
                 if let Some(fe) = parse_event(&msg.data) {
@@ -99,7 +108,9 @@ async fn consume_stream(
                         None => true,
                         Some(sid) => filter_rx.borrow().as_deref() == Some(sid),
                     };
-                    if pass && tx.send(fe).is_err() { return true; }
+                    if pass && tx.send(fe).is_err() {
+                        return true;
+                    }
                 }
                 // Check if session filter changed
                 if *filter_rx.borrow() != connected {
@@ -127,7 +138,9 @@ fn build_url(base: &str, session_id: Option<&str>) -> Url {
 
 fn parse_event(payload: &str) -> Option<FrontendEvent> {
     let payload = payload.trim();
-    if payload.is_empty() { return None; }
+    if payload.is_empty() {
+        return None;
+    }
     serde_json::from_str::<FrontendEvent>(payload).ok()
 }
 

@@ -22,7 +22,6 @@ import type {
 import type { GeneralTabProps } from "./GeneralTab";
 import type { MemoryTabProps } from "./MemoryTab";
 import type { ProvidersTabProps } from "./ProvidersTab";
-import type { SchedulerTabProps } from "./SchedulerTab";
 import type { SkillsTabProps } from "./SkillsTab";
 import type { ValidationTabProps } from "./ValidationTab";
 import type { McpTabProps } from "./McpTab";
@@ -43,7 +42,6 @@ import type {
   LspStatus,
   McpStatusInfo,
   PluginAuthProviderInfo,
-  SchedulerConfigResponse,
   SettingsDrawerProps,
 } from "./types";
 import { useConfigTabSettingsMutations, useConfigTabSettingsState } from "./hooks/useConfigTabSettings";
@@ -66,7 +64,6 @@ export interface SettingsDrawerView {
   generalTabProps: GeneralTabProps;
   memoryTabProps: MemoryTabProps;
   providersTabProps: ProvidersTabProps;
-  schedulerTabProps: SchedulerTabProps;
   validationTabProps: ValidationTabProps;
   skillsTabProps: SkillsTabProps;
   mcpTabProps: McpTabProps;
@@ -131,9 +128,6 @@ export function useSettingsDrawerController({
     setSelectedManagedProviderId,
   } = providersState;
   const {
-    setSchedulerConfig,
-    setSchedulerPathDraft,
-    setSchedulerContentDraft,
     setConfigValidation,
     setMcpStatus,
     setMcpDrafts,
@@ -177,11 +171,10 @@ export function useSettingsDrawerController({
       const skillCatalogPath = selectedSessionId
         ? `/skill/catalog?session_id=${encodeURIComponent(selectedSessionId)}`
         : "/skill/catalog";
-      const [config, managed, scheduler, validation, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubUsage, skillHubNegativeEntropy, skillHubSemanticConflicts, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, _skillHubAudit, skillHubTimeline] =
+      const [config, managed, validation, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubUsage, skillHubNegativeEntropy, skillHubSemanticConflicts, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, _skillHubAudit, skillHubTimeline] =
         await Promise.all([
           apiJson<AppConfigSnapshot>("/config"),
           apiJson<{ providers: ManagedProviderInfoRecord[] }>("/provider/managed"),
-          apiJson<SchedulerConfigResponse>("/config/scheduler"),
           apiJson<ConfigPolicyValidationSnapshotRecord>("/config/validation").catch(() => null),
           apiJson<Record<string, McpStatusInfo>>("/mcp"),
           apiJson<PluginAuthProviderInfo[]>("/plugin/auth").catch(() => []),
@@ -202,9 +195,6 @@ export function useSettingsDrawerController({
         ]);
       setConfigSnapshot(config);
       setManagedProviders(managed.providers ?? []);
-      setSchedulerConfig(scheduler);
-      setSchedulerPathDraft(scheduler.raw_path ?? "");
-      setSchedulerContentDraft(scheduler.content ?? "");
       setConfigValidation(validation);
       setMcpStatus(mcp ?? {});
       setMcpDrafts(
@@ -245,9 +235,6 @@ export function useSettingsDrawerController({
     selectedSessionId,
     t,
     setManagedProviders,
-    setSchedulerConfig,
-    setSchedulerPathDraft,
-    setSchedulerContentDraft,
     setConfigValidation,
     setMcpStatus,
     setMcpDrafts,
@@ -340,13 +327,7 @@ export function useSettingsDrawerController({
 
   const configTabMutations = useConfigTabSettingsMutations({
     api,
-    apiJson,
     runMutation,
-    schedulerPathDraft: configTabsState.schedulerPathDraft,
-    schedulerContentDraft: configTabsState.schedulerContentDraft,
-    setSchedulerConfig: configTabsState.setSchedulerConfig,
-    setSchedulerPathDraft: configTabsState.setSchedulerPathDraft,
-    setSchedulerContentDraft: configTabsState.setSchedulerContentDraft,
   });
 
   const generalTabProps: GeneralTabProps = {
@@ -365,8 +346,6 @@ export function useSettingsDrawerController({
     workspaceRootPath,
     workspaceConfigDir,
     providerSummary,
-    schedulerConfig: configTabsState.schedulerConfig,
-    configSnapshot,
     mcpConfigs,
     pluginConfigs,
     styles: {
@@ -469,23 +448,6 @@ export function useSettingsDrawerController({
     onSaveModelOverride: () => void providersActions.saveModelOverride(),
     onDeleteModelOverride: (providerId, modelKey) =>
       void providersActions.deleteModelOverride(providerId, modelKey),
-  };
-
-  const schedulerTabProps: SchedulerTabProps = {
-    styles: {
-      primaryButtonClass: SETTINGS_DRAWER_STYLES.primaryButtonClass,
-      formLabelClass: SETTINGS_DRAWER_STYLES.formLabelClass,
-      formHintClass: SETTINGS_DRAWER_STYLES.formHintClass,
-      inputClass: SETTINGS_DRAWER_STYLES.inputClass,
-      editorTextareaClass: SETTINGS_DRAWER_STYLES.editorTextareaClass,
-    },
-    busyKey,
-    schedulerConfig: configTabsState.schedulerConfig,
-    schedulerPathDraft: configTabsState.schedulerPathDraft,
-    onSchedulerPathDraftChange: configTabsState.setSchedulerPathDraft,
-    schedulerContentDraft: configTabsState.schedulerContentDraft,
-    onSchedulerContentDraftChange: configTabsState.setSchedulerContentDraft,
-    onSaveScheduler: () => void configTabMutations.saveScheduler(),
   };
 
   const validationTabProps: ValidationTabProps = {
@@ -653,7 +615,6 @@ export function useSettingsDrawerController({
     generalTabProps,
     memoryTabProps,
     providersTabProps,
-    schedulerTabProps,
     validationTabProps,
     skillsTabProps,
     mcpTabProps,

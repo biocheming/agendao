@@ -1,14 +1,8 @@
-/// Frontend transport abstraction - supports Direct, Unix Socket, and HTTP modes.
-///
-/// Phase 1: Only Direct + Http
-/// Phase 2: Add Unix socket ✓
-/// Phase 3: Smart fallback logic ✓
-pub mod direct;
+/// Frontend transport abstraction for the canonical server authority.
 pub mod http;
 pub mod selector;
 pub mod unix;
 
-pub use direct::DirectTransport;
 pub use http::HttpTransport;
 pub use selector::TransportSelector;
 pub use unix::UnixSocketTransport;
@@ -20,15 +14,8 @@ use anyhow::Result;
 
 /// Transport layer for frontend-to-core communication.
 ///
-/// Architecture note (AgenDao Constitution Article 1 & 9):
-/// - Direct mode: TUI/CLI directly call OrchestrationCore (zero network overhead)
-/// - Unix mode: Local IPC via Unix domain socket (minimal overhead)
-/// - Http mode: Web frontend or remote connections use HTTP client
-/// - All transports execute through the same OrchestrationCore authority
+/// Unix and HTTP both execute through the same server/session authority.
 pub enum FrontendTransport {
-    /// Direct in-process call to OrchestrationCore
-    Direct(DirectTransport),
-
     /// Unix domain socket (local IPC)
     Unix(UnixSocketTransport),
 
@@ -37,11 +24,6 @@ pub enum FrontendTransport {
 }
 
 impl FrontendTransport {
-    /// Create Direct transport (local mode, default SessionManager).
-    pub async fn direct(config: &agendao_config::Config) -> Result<Self> {
-        Ok(Self::Direct(DirectTransport::new(config).await?))
-    }
-
     /// Create Unix Socket transport (local IPC)
     pub fn unix(socket_path: String) -> Self {
         Self::Unix(UnixSocketTransport::new(socket_path))
@@ -60,7 +42,6 @@ impl FrontendTransport {
         options: PromptOptions,
     ) -> Result<PromptResponse> {
         match self {
-            Self::Direct(t) => t.prompt(session_id, text, options).await,
             Self::Unix(t) => t.prompt(session_id, text, options).await,
             Self::Http(t) => t.prompt(session_id, text, options).await,
         }
@@ -69,7 +50,6 @@ impl FrontendTransport {
     /// List sessions
     pub async fn list_sessions(&self) -> Result<Vec<agendao_api::SessionListItem>> {
         match self {
-            Self::Direct(t) => t.list_sessions().await,
             Self::Unix(t) => t.list_sessions().await,
             Self::Http(t) => t.list_sessions().await,
         }
@@ -77,7 +57,6 @@ impl FrontendTransport {
 
     pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
         match self {
-            Self::Direct(t) => t.get_workspace_context().await,
             Self::Unix(t) => t.get_workspace_context().await,
             Self::Http(t) => t.get_workspace_context().await,
         }
@@ -85,7 +64,6 @@ impl FrontendTransport {
 
     pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
         match self {
-            Self::Direct(t) => t.get_recent_models().await,
             Self::Unix(t) => t.get_recent_models().await,
             Self::Http(t) => t.get_recent_models().await,
         }
@@ -96,7 +74,6 @@ impl FrontendTransport {
         recent_models: &[RecentModelEntry],
     ) -> Result<Vec<RecentModelEntry>> {
         match self {
-            Self::Direct(t) => t.put_recent_models(recent_models).await,
             Self::Unix(t) => t.put_recent_models(recent_models).await,
             Self::Http(t) => t.put_recent_models(recent_models).await,
         }
@@ -104,7 +81,6 @@ impl FrontendTransport {
 
     pub async fn get_all_providers(&self) -> Result<FullProviderListResponse> {
         match self {
-            Self::Direct(t) => t.get_all_providers().await,
             Self::Unix(t) => t.get_all_providers().await,
             Self::Http(t) => t.get_all_providers().await,
         }
@@ -112,7 +88,6 @@ impl FrontendTransport {
 
     pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
         match self {
-            Self::Direct(t) => t.list_execution_modes().await,
             Self::Unix(t) => t.list_execution_modes().await,
             Self::Http(t) => t.list_execution_modes().await,
         }
@@ -120,7 +95,6 @@ impl FrontendTransport {
 
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
         match self {
-            Self::Direct(t) => t.list_agents().await,
             Self::Unix(t) => t.list_agents().await,
             Self::Http(t) => t.list_agents().await,
         }
@@ -129,7 +103,6 @@ impl FrontendTransport {
     /// Get session detail
     pub async fn get_session(&self, session_id: &str) -> Result<SessionDetail> {
         match self {
-            Self::Direct(t) => t.get_session(session_id).await,
             Self::Unix(t) => t.get_session(session_id).await,
             Self::Http(t) => t.get_session(session_id).await,
         }
@@ -140,7 +113,7 @@ impl FrontendTransport {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PromptOptions {
     pub agent_id: Option<String>,
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub model: Option<String>,
     pub variant: Option<String>,
     pub continue_last: bool,
@@ -149,8 +122,7 @@ pub struct PromptOptions {
     pub ingress_source: Option<String>,
     pub idempotency_key: Option<String>,
     /// Structured command hint for diagnostics/routing (P2.3).
-    /// Direct/HTTP/Unix transport: preserved end-to-end to orchestrator
-    /// when the transport uses `PromptOptions`.
+    /// Preserved end-to-end when the transport uses `PromptOptions`.
     pub command: Option<String>,
 }
 

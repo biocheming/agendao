@@ -6,8 +6,8 @@
 //!
 //! 子模块按 Task 增量建立：theme（Task 1-2）→ color/text/primitives（Task 3-4）。
 
-pub mod theme;
 pub mod color;
-pub mod text;
-pub mod primitives;
 pub mod osc11;
+pub mod primitives;
+pub mod text;
+pub mod theme;

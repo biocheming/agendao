@@ -71,11 +71,8 @@ export interface PromptResponseRecord {
 
 export interface QuestionInfoResponseRecord {
   id: string;
-  session_id?: string;
-  sessionId?: string;
-  questions?: string[];
-  options?: string[][];
-  items?: Array<{
+  session_id: string;
+  items: Array<{
     question: string;
     header?: string;
     multiple?: boolean;
@@ -128,61 +125,20 @@ export function normalizeQuestionItems(input: unknown): QuestionItem[] {
 }
 
 function questionSessionId(
-  info: Pick<QuestionInfoResponseRecord, "session_id" | "sessionId">,
+  info: Pick<QuestionInfoResponseRecord, "session_id">,
 ): string | undefined {
-  return typeof info.session_id === "string"
-    ? info.session_id
-    : typeof info.sessionId === "string"
-      ? info.sessionId
-      : undefined;
+  return typeof info.session_id === "string" ? info.session_id : undefined;
 }
 
 export function questionInteractionFromInfo(
   info: QuestionInfoResponseRecord,
 ): QuestionInteractionRecord {
   const items = normalizeQuestionItems(info.items);
-  if (items.length > 0) {
-    return {
-      request_id: info.id,
-      session_id: questionSessionId(info),
-      questions: items,
-    };
-  }
-  const questions = Array.isArray(info.questions) ? info.questions : [];
-  const options = Array.isArray(info.options) ? info.options : [];
   return {
     request_id: info.id,
     session_id: questionSessionId(info),
-    questions: questions.map((question, index) => ({
-      question,
-      multiple: false,
-      options: Array.isArray(options[index])
-        ? options[index]
-            .map((label) => (typeof label === "string" && label ? { label } : null))
-            .filter((option): option is QuestionOption => Boolean(option))
-        : undefined,
-    })),
+    questions: items,
   };
-}
-
-export function questionInteractionFromEvent(
-  event: Record<string, unknown>,
-  sessionId?: string,
-): QuestionInteractionRecord {
-  return questionInteractionFromInfo({
-    id: String(event.requestID ?? ""),
-    session_id: sessionId,
-    items:
-      Array.isArray(event.questions) &&
-      event.questions.some((candidate) => candidate && typeof candidate === "object")
-        ? (event.questions as QuestionInfoResponseRecord["items"])
-        : [],
-    questions:
-      Array.isArray(event.questions) &&
-      event.questions.every((candidate) => typeof candidate === "string")
-        ? (event.questions as string[])
-        : undefined,
-  });
 }
 
 export function permissionInteractionFromEvent(

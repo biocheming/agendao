@@ -29,9 +29,7 @@ import type {
 
 export type PromptPart =
   | { type: "text"; text: string }
-  | { type: "file"; url: string; filename?: string; mime?: string }
-  | { type: "agent"; name: string }
-  | { type: "subtask"; prompt: string; description?: string; agent: string };
+  | { type: "file"; url: string; filename?: string; mime?: string };
 
 /** SetStateFn<T> accepts either a direct value or a functional updater, matching React's Dispatch<SetStateAction<T>>. */
 export type SetStateFn<T> = T | ((prev: T) => T);

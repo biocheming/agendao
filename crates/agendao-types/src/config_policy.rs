@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigPolicyValidationOwner {
-    Scheduler,
-    SkillTree,
     ProviderProfile,
     ExternalAdapter,
 }
@@ -12,8 +10,6 @@ pub enum ConfigPolicyValidationOwner {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigPolicyValidationScopeKind {
-    SchedulerPath,
-    SkillTree,
     Provider,
     ExternalAdapter,
 }
@@ -28,7 +24,6 @@ pub enum ConfigPolicyValidationSeverity {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigPolicyValidationEffect {
-    SoftFallback,
     FailClosedBootstrap,
     FailClosedRequestGate,
 }
@@ -49,8 +44,6 @@ pub struct ConfigPolicyValidationItem {
     pub effect: ConfigPolicyValidationEffect,
     pub code: String,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

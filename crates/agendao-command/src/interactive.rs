@@ -216,8 +216,6 @@ pub enum InteractiveCommand {
     ListProviders,
     ConnectProvider(Option<String>),
     ListThemes,
-    ListPresets,
-    SelectPreset(String),
     ListSessions,
     ParentSession,
     ListAttachedSessions,
@@ -225,9 +223,6 @@ pub enum InteractiveCommand {
     FocusNextAttachedSession,
     FocusPreviousAttachedSession,
     BackToRootSession,
-    ListTasks,
-    ShowTask(String),
-    KillTask(String),
     Compact(Option<String>),
     Copy,
     ListAgents,
@@ -272,11 +267,8 @@ impl InteractiveCommand {
             Self::ListProviders => (UiActionId::ConnectProvider, None),
             Self::ConnectProvider(query) => (UiActionId::ConnectProvider, query.clone()),
             Self::ListThemes => (UiActionId::OpenThemeList, None),
-            Self::ListPresets => (UiActionId::OpenPresetList, None),
-            Self::SelectPreset(name) => (UiActionId::OpenPresetList, Some(name.clone())),
             Self::ListSessions => (UiActionId::OpenSessionList, None),
             Self::ParentSession => (UiActionId::NavigateParentSession, None),
-            Self::ListTasks => (UiActionId::ListTasks, None),
             Self::Compact(focus) => (UiActionId::CompactSession, focus.clone()),
             Self::Copy => (UiActionId::CopySession, None),
             Self::ListAgents => (UiActionId::OpenAgentList, None),
@@ -406,13 +398,6 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
             (!arg.is_empty()).then_some(arg),
         )),
         "theme" | "themes" => Some(InteractiveCommand::ListThemes),
-        "preset" | "presets" => {
-            if arg.is_empty() {
-                Some(InteractiveCommand::ListPresets)
-            } else {
-                Some(InteractiveCommand::SelectPreset(arg))
-            }
-        }
         "session" | "sessions" | "resume" | "continue" => Some(InteractiveCommand::ListSessions),
         "parent" | "back" => Some(InteractiveCommand::ParentSession),
         "attached" | "attachments" => {
@@ -469,22 +454,6 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
         "up" | "pageup" => Some(InteractiveCommand::ScrollUp),
         "down" | "pagedown" => Some(InteractiveCommand::ScrollDown),
         "bottom" | "end" => Some(InteractiveCommand::ScrollBottom),
-        "tasks" | "task" => {
-            if arg.is_empty() {
-                Some(InteractiveCommand::ListTasks)
-            } else {
-                let mut sub_parts = arg.split_whitespace();
-                let sub_cmd = sub_parts.next().unwrap_or("");
-                let sub_arg = sub_parts.collect::<Vec<_>>().join(" ");
-                match sub_cmd {
-                    "show" if !sub_arg.is_empty() => Some(InteractiveCommand::ShowTask(sub_arg)),
-                    "kill" | "cancel" if !sub_arg.is_empty() => {
-                        Some(InteractiveCommand::KillTask(sub_arg))
-                    }
-                    _ => Some(InteractiveCommand::ListTasks),
-                }
-            }
-        }
         _ => Some(InteractiveCommand::Unknown(name)),
     }
 }
@@ -551,10 +520,6 @@ mod tests {
             Some(InteractiveCommand::ConnectProvider(Some(
                 "openrouter".to_string()
             )))
-        );
-        assert_eq!(
-            parse_interactive_command("/preset"),
-            Some(InteractiveCommand::ListPresets)
         );
         assert_eq!(
             parse_interactive_command("/session"),
@@ -707,10 +672,6 @@ mod tests {
             Some(InteractiveCommand::SelectAgent("build".to_string()))
         );
         assert_eq!(
-            parse_interactive_command("/preset prometheus"),
-            Some(InteractiveCommand::SelectPreset("prometheus".to_string()))
-        );
-        assert_eq!(
             parse_interactive_command("/image ./fixtures/cat.png"),
             Some(InteractiveCommand::AttachImage(
                 "./fixtures/cat.png".to_string()
@@ -770,30 +731,6 @@ mod tests {
     fn ignores_non_commands() {
         assert_eq!(parse_interactive_command(""), None);
         assert_eq!(parse_interactive_command("hello agendao"), None);
-    }
-
-    #[test]
-    fn parses_tasks_commands() {
-        assert_eq!(
-            parse_interactive_command("/tasks"),
-            Some(InteractiveCommand::ListTasks)
-        );
-        assert_eq!(
-            parse_interactive_command("/task"),
-            Some(InteractiveCommand::ListTasks)
-        );
-        assert_eq!(
-            parse_interactive_command("/tasks show a1"),
-            Some(InteractiveCommand::ShowTask("a1".to_string()))
-        );
-        assert_eq!(
-            parse_interactive_command("/tasks kill a1"),
-            Some(InteractiveCommand::KillTask("a1".to_string()))
-        );
-        assert_eq!(
-            parse_interactive_command("/tasks cancel a2"),
-            Some(InteractiveCommand::KillTask("a2".to_string()))
-        );
     }
 
     #[test]
@@ -957,10 +894,6 @@ mod tests {
             Some(UiActionId::CompactSession)
         );
         assert_eq!(
-            InteractiveCommand::ListPresets.ui_action_id(),
-            Some(UiActionId::OpenPresetList)
-        );
-        assert_eq!(
             InteractiveCommand::Copy.ui_action_id(),
             Some(UiActionId::CopySession)
         );
@@ -994,14 +927,6 @@ mod tests {
                 action_id: UiActionId::OpenAgentList,
                 argument_kind: UiCommandArgumentKind::AgentRef,
                 argument: Some("build".to_string()),
-            })
-        );
-        assert_eq!(
-            InteractiveCommand::SelectPreset("atlas".to_string()).ui_action_invocation(),
-            Some(ResolvedUiCommand {
-                action_id: UiActionId::OpenPresetList,
-                argument_kind: UiCommandArgumentKind::PresetRef,
-                argument: Some("atlas".to_string()),
             })
         );
         assert_eq!(

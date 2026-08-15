@@ -704,7 +704,7 @@ fn search_source_indices_does_not_mark_same_name_from_other_source_as_managed() 
     governance
         .upsert_managed_skill(ManagedSkillRecord {
             skill_name: "shared-reviewer".to_string(),
-            source: Some(source_a.clone()),
+            source: Some(source_a),
             installed_revision: Some("rev-a".to_string()),
             local_hash: None,
             last_synced_at: Some(1_712_345_681),
@@ -985,7 +985,7 @@ fn search_source_indices_returns_stale_for_old_index() {
 
     // Inject an index snapshot with a timestamp that is definitely stale.
     let old_snapshot = agendao_types::SkillSourceIndexSnapshot {
-        source: source.clone(),
+        source,
         updated_at: 1, // Unix epoch + 1 second — always stale
         entries: vec![agendao_types::SkillSourceIndexEntry {
             skill_name: "legacy-skill".to_string(),

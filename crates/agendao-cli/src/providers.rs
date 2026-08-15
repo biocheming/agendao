@@ -109,19 +109,7 @@ fn provider_to_bootstrap(
     provider: &agendao_config::ProviderConfig,
     mode: ProviderBootstrapMode,
 ) -> BootstrapConfigProvider {
-    let mut options = provider.options.clone().unwrap_or_default();
-    if mode == ProviderBootstrapMode::Runtime {
-        if let Some(api_key) = &provider.api_key {
-            options
-                .entry("apiKey".to_string())
-                .or_insert_with(|| serde_json::Value::String(api_key.clone()));
-        }
-        if let Some(base_url) = &provider.base_url {
-            options
-                .entry("baseURL".to_string())
-                .or_insert_with(|| serde_json::Value::String(base_url.clone()));
-        }
-    }
+    let options = provider.options.clone().unwrap_or_default();
 
     let models = provider.models.as_ref().map(|models| {
         models
@@ -132,6 +120,9 @@ fn provider_to_bootstrap(
 
     BootstrapConfigProvider {
         name: provider.name.clone(),
+        api_key: (mode == ProviderBootstrapMode::Runtime)
+            .then(|| provider.api_key.clone())
+            .flatten(),
         api: provider.base_url.clone(),
         npm: provider.npm.clone(),
         api_style: provider.api_style.clone(),
@@ -148,12 +139,7 @@ fn provider_to_bootstrap(
 }
 
 fn model_to_bootstrap(id: &str, model: &agendao_config::ModelConfig) -> BootstrapConfigModel {
-    let mut options = model.options.clone().unwrap_or_default();
-    if let Some(api_key) = &model.api_key {
-        options
-            .entry("apiKey".to_string())
-            .or_insert_with(|| serde_json::Value::String(api_key.clone()));
-    }
+    let options = model.options.clone().unwrap_or_default();
 
     let variants = model.variants.as_ref().map(|variants| {
         variants

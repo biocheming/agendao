@@ -14,28 +14,39 @@
 //!   第二次 Enter 走正常 submit 才执行（VS Code 命令面板同口径）。
 //! - **Esc = 恢复原文**：open 时暂存 `/` 之前的内容，Esc 写回输入框。
 
-use agendao_command::{CommandRegistry, UiActionId, UiCommandArgumentKind, UiCommandSpec};
-use revue::prelude::*;
-use revue::event::Key;
-use revue::runtime::render::Cell;
 use crate::theme::colors;
+use agendao_command::{CommandRegistry, UiActionId, UiCommandArgumentKind, UiCommandSpec};
+use revue::event::Key;
+use revue::prelude::*;
+use revue::runtime::render::Cell;
 // 截断唯一实现见 backdrop(水律:消灭第二处),Home 窄输入框下防止 positioned 裁半个 CJK。
 use crate::dialog::backdrop::{list_viewport_window, truncate_to_width};
 
 /// Simple fuzzy match: check if all chars of `query` appear in `target` in order.
 pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
     let q = query.trim().to_lowercase();
-    if q.is_empty() { return Some(0); }
+    if q.is_empty() {
+        return Some(0);
+    }
     let t = target.to_lowercase();
     let mut qi = q.chars();
     let mut current = qi.next();
     let mut score = 0i32;
     for (i, tc) in t.chars().enumerate() {
         if let Some(qc) = current {
-            if qc == tc { score += 100 - (i as i32).min(50); current = qi.next(); }
-        } else { break; }
+            if qc == tc {
+                score += 100 - (i as i32).min(50);
+                current = qi.next();
+            }
+        } else {
+            break;
+        }
     }
-    if current.is_none() { Some(score) } else { None }
+    if current.is_none() {
+        Some(score)
+    } else {
+        None
+    }
 }
 
 /// popup 两种形态。
@@ -114,7 +125,9 @@ impl SlashPopup {
     }
 
     pub fn open(&mut self) {
-        self.visible = true; self.selected = 0; self.query.clear();
+        self.visible = true;
+        self.selected = 0;
+        self.query.clear();
         self.mode = SlashPopupMode::Completion;
         self.arg_hint = None;
         self.pre_slash_text.clear();
@@ -133,13 +146,17 @@ impl SlashPopup {
     }
 
     pub fn close(&mut self) {
-        self.visible = false; self.query.clear(); self.filtered.clear();
+        self.visible = false;
+        self.query.clear();
+        self.filtered.clear();
         self.selected = 0;
         self.mode = SlashPopupMode::Completion;
         self.arg_hint = None;
     }
 
-    pub fn is_open(&self) -> bool { self.visible }
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
 
     /// U3·trigger 收窄：仅当 `/` 是**首 token**（前仅空白）且命令名
     /// 尚未完成（单 token、无参数空格）时返回 `/` 后的 query。
@@ -161,7 +178,9 @@ impl SlashPopup {
     }
 
     /// Number of filtered results (for sizing the popup).
-    pub fn filtered_count(&self) -> usize { self.filtered.len() }
+    pub fn filtered_count(&self) -> usize {
+        self.filtered.len()
+    }
 
     /// popup 渲染高度（app/mod.rs 的布局预算唯一口径）。
     pub fn display_height(&self) -> u16 {
@@ -191,30 +210,32 @@ impl SlashPopup {
             UiCommandArgumentKind::ThemeId => "theme id",
             UiCommandArgumentKind::ModeRef => "mode",
             UiCommandArgumentKind::AgentRef => "agent",
-            UiCommandArgumentKind::PresetRef => "preset",
         }
     }
 
     pub(crate) fn handle_key(&mut self, key: &Key) -> SlashKeyOutcome {
-        if !self.visible { return SlashKeyOutcome::Pass; }
+        if !self.visible {
+            return SlashKeyOutcome::Pass;
+        }
         match self.mode {
             SlashPopupMode::Completion => match key {
-                Key::Escape => { self.close(); SlashKeyOutcome::Restore }
+                Key::Escape => {
+                    self.close();
+                    SlashKeyOutcome::Restore
+                }
                 // Enter/Tab = 填回不执行（U3 行为 Breaking：老"选中即执行"
                 // 让位给带参命令可补参。第二次 Enter 走正常 submit 执行）。
                 Key::Enter | Key::Tab => {
                     if let Some(idx) = self.filtered.get(self.selected) {
                         let cmd = &self.all_commands[*idx];
                         // registry 的 slash.name 含前导 `/`（"/compact"）。
-                        let name = cmd.slash.as_ref()
-                            .map(|s| s.name)
-                            .unwrap_or(cmd.title);
+                        let name = cmd.slash.as_ref().map(|s| s.name).unwrap_or(cmd.title);
                         let kind = cmd.argument_kind();
                         let takes_args = kind != UiCommandArgumentKind::None;
                         if takes_args {
                             self.mode = SlashPopupMode::ArgHint;
-                            self.arg_hint = Some(format!(
-                                "{} 〈{}〉", name, Self::arg_kind_label(kind)));
+                            self.arg_hint =
+                                Some(format!("{} 〈{}〉", name, Self::arg_kind_label(kind)));
                             // visible 保持——转参数提示条
                         } else {
                             self.close();
@@ -232,7 +253,9 @@ impl SlashPopup {
                 }
                 Key::Down => {
                     let max = self.filtered.len().saturating_sub(1);
-                    if self.selected < max { self.selected += 1; }
+                    if self.selected < max {
+                        self.selected += 1;
+                    }
                     SlashKeyOutcome::Consumed
                 }
                 // 其余键（字符/Backspace/Paste/Ctrl）全部贯穿给 prompt——
@@ -240,8 +263,14 @@ impl SlashPopup {
                 _ => SlashKeyOutcome::Pass,
             },
             SlashPopupMode::ArgHint => match key {
-                Key::Escape => { self.close(); SlashKeyOutcome::Restore }
-                Key::Enter => { self.close(); SlashKeyOutcome::Submit }
+                Key::Escape => {
+                    self.close();
+                    SlashKeyOutcome::Restore
+                }
+                Key::Enter => {
+                    self.close();
+                    SlashKeyOutcome::Submit
+                }
                 // ↑/↓ 也让路（prompt 历史导航），参数阶段 popup 只是提示条。
                 _ => SlashKeyOutcome::Pass,
             },
@@ -257,20 +286,32 @@ impl SlashPopup {
                 .into_iter()
                 .map(|cmd| cmd.action_id)
                 .collect();
-            self.filtered = self.all_commands.iter().enumerate()
+            self.filtered = self
+                .all_commands
+                .iter()
+                .enumerate()
                 .filter(|(_, cmd)| suggested.contains(&cmd.action_id))
                 .map(|(i, _)| i)
                 .collect();
         } else {
-            let mut scored: Vec<(usize, i32)> = self.all_commands.iter().enumerate()
+            let mut scored: Vec<(usize, i32)> = self
+                .all_commands
+                .iter()
+                .enumerate()
                 .filter_map(|(i, cmd)| {
                     let slash = cmd.slash.as_ref()?;
                     let name_score = fuzzy_match(&self.query, slash.name);
-                    let alias_score = slash.aliases.iter()
+                    let alias_score = slash
+                        .aliases
+                        .iter()
                         .filter_map(|alias| fuzzy_match(&self.query, alias))
                         .max();
                     let title_score = fuzzy_match(&self.query, cmd.title);
-                    let best = name_score.into_iter().chain(alias_score).chain(title_score).max()?;
+                    let best = name_score
+                        .into_iter()
+                        .chain(alias_score)
+                        .chain(title_score)
+                        .max()?;
                     Some((i, best))
                 })
                 .collect();
@@ -297,10 +338,14 @@ impl SlashPopup {
             let hint = self.arg_hint.clone().unwrap_or_default();
             let hint = truncate_to_width(&hint, w.saturating_sub(1).max(8) as usize);
             list = list.child(
-                Text::new(format!(" {}", hint)).fg(colors::ACCENT_CYAN()).bg(colors::BG_SURFACE()),
+                Text::new(format!(" {}", hint))
+                    .fg(colors::ACCENT_CYAN())
+                    .bg(colors::BG_SURFACE()),
             );
             list = list.child(
-                Text::new(" Enter: run · Esc: cancel").fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
+                Text::new(" Enter: run · Esc: cancel")
+                    .fg(colors::FG_MUTED())
+                    .bg(colors::BG_SURFACE()),
             );
             stack = stack.child(list);
             return stack;
@@ -309,7 +354,9 @@ impl SlashPopup {
         // 空状态:背景由 fill_background 预填,这里只显示提示(文字格补 .bg)
         if self.filtered.is_empty() {
             stack = stack.child(
-                Text::new("  No results ").fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
+                Text::new("  No results ")
+                    .fg(colors::FG_MUTED())
+                    .bg(colors::BG_SURFACE()),
             );
             return stack;
         }
@@ -339,26 +386,37 @@ impl SlashPopup {
                     list = list.child(Text::new("").bg(colors::BG_SURFACE()));
                 }
                 list = list.child(
-                    Text::new(format!(" {}:", cat)).fg(colors::ACCENT_BLUE()).bg(colors::BG_SURFACE()),
+                    Text::new(format!(" {}:", cat))
+                        .fg(colors::ACCENT_BLUE())
+                        .bg(colors::BG_SURFACE()),
                 );
                 last_category = Some(cat);
             }
 
-            let slash_name = cmd.slash.as_ref()
+            let slash_name = cmd
+                .slash
+                .as_ref()
                 .map(|s| s.name.trim_start_matches('/'))
                 .unwrap_or(cmd.title);
 
             // ❯ pointer + 文字色;.bg(BG_SURFACE) 补文字格,否则 ctx.set 默认 bg=None 发黑
             let pointer = if is_selected { "❯ " } else { "  " };
             let keybind_str = cmd.keybind.map(|k| format!(" ({})", k)).unwrap_or_default();
-            let desc = format!("{} /{}{}  {}", pointer, slash_name, keybind_str, cmd.description);
+            let desc = format!(
+                "{} /{}{}  {}",
+                pointer, slash_name, keybind_str, cmd.description
+            );
             // 窄宽（Home 64）截断 + …，留 1 列右边距，避免 positioned 裁半个 CJK。
             let desc = truncate_to_width(&desc, w.saturating_sub(1).max(8) as usize);
 
             let text = if is_selected {
-                Text::new(&desc).fg(colors::ACCENT_CYAN()).bg(colors::BG_SURFACE())
+                Text::new(&desc)
+                    .fg(colors::ACCENT_CYAN())
+                    .bg(colors::BG_SURFACE())
             } else {
-                Text::new(&desc).fg(colors::FG_SECONDARY()).bg(colors::BG_SURFACE())
+                Text::new(&desc)
+                    .fg(colors::FG_SECONDARY())
+                    .bg(colors::BG_SURFACE())
             };
             list = list.child(text);
         }
@@ -374,8 +432,12 @@ impl SlashPopup {
 
         // 底部 hint
         list = list.child(
-            Text::new(format!(" ↑/↓ navigate · Enter/Tab complete · Esc cancel{}", position_hint))
-                .fg(colors::FG_MUTED()).bg(colors::BG_SURFACE()),
+            Text::new(format!(
+                " ↑/↓ navigate · Enter/Tab complete · Esc cancel{}",
+                position_hint
+            ))
+            .fg(colors::FG_MUTED())
+            .bg(colors::BG_SURFACE()),
         );
 
         stack = stack.child(list);
@@ -411,7 +473,6 @@ mod tests {
         assert!(hint.contains("Esc:cancel"), "{hint}");
     }
 
-
     /// U3·trigger 收窄：仅首 token 且命令名未完成时触发。
     #[test]
     fn slash_token_narrowed_trigger() {
@@ -434,7 +495,10 @@ mod tests {
         popup.open_with_query("settings");
         assert!(popup.filtered_count() > 0);
         match popup.handle_key(&Key::Enter) {
-            SlashKeyOutcome::FillBack { command, takes_args } => {
+            SlashKeyOutcome::FillBack {
+                command,
+                takes_args,
+            } => {
                 assert_eq!(command, "/settings ");
                 assert!(!takes_args);
             }
@@ -449,7 +513,10 @@ mod tests {
         let mut popup = SlashPopup::new();
         popup.open_with_query("compact");
         match popup.handle_key(&Key::Enter) {
-            SlashKeyOutcome::FillBack { command, takes_args } => {
+            SlashKeyOutcome::FillBack {
+                command,
+                takes_args,
+            } => {
                 assert_eq!(command, "/compact ");
                 assert!(takes_args);
             }
@@ -505,7 +572,10 @@ mod tests {
         popup.fill_background(&mut buf, 2, 2, 10, 5);
         // 区域内实色
         assert_eq!(buf.get(5, 4).and_then(|c| c.bg), Some(colors::BG_SURFACE()));
-        assert_eq!(buf.get(10, 6).and_then(|c| c.bg), Some(colors::BG_SURFACE()));
+        assert_eq!(
+            buf.get(10, 6).and_then(|c| c.bg),
+            Some(colors::BG_SURFACE())
+        );
         // 区域外未被填充,保持 None
         assert_eq!(buf.get(0, 0).and_then(|c| c.bg), None);
         assert_eq!(buf.get(19, 9).and_then(|c| c.bg), None);
@@ -524,7 +594,9 @@ mod tests {
         view.render(&mut ctx);
         let mut has_solid = false;
         for x in (1u16..59).step_by(5) {
-            if has_solid { break; }
+            if has_solid {
+                break;
+            }
             for y in (1u16..19).step_by(2) {
                 if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE()) {
                     has_solid = true;
@@ -550,7 +622,9 @@ mod tests {
         view.render(&mut ctx);
         let mut has_solid = false;
         for x in (1u16..59).step_by(5) {
-            if has_solid { break; }
+            if has_solid {
+                break;
+            }
             for y in (1u16..5).step_by(2) {
                 if buf.get(x, y).and_then(|c| c.bg) == Some(colors::BG_SURFACE()) {
                     has_solid = true;

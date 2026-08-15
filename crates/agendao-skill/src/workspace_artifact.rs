@@ -13,22 +13,12 @@ use crate::{
 use agendao_types::{
     WorkspaceSkillArtifactAgendaoMetadata, WorkspaceSkillArtifactBundle,
     WorkspaceSkillArtifactEntry, WorkspaceSkillArtifactFile, WorkspaceSkillArtifactFrontmatter,
-    WorkspaceSkillArtifactHermesMetadata, WorkspaceSkillArtifactImportEnvelope,
-    WorkspaceSkillArtifactLegacyPayload, WorkspaceSkillArtifactMetadataBlocks,
+    WorkspaceSkillArtifactHermesMetadata, WorkspaceSkillArtifactMetadataBlocks,
     WorkspaceSkillArtifactPrerequisites, WorkspaceSkillArtifactRequiredEnvironmentVariable,
 };
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-
-pub trait WorkspaceSkillArtifactLegacyAdapter {
-    fn legacy_format(&self) -> &'static str;
-
-    fn import_entries(
-        &self,
-        payload: &WorkspaceSkillArtifactLegacyPayload,
-    ) -> Result<Vec<WorkspaceSkillArtifactEntry>, SkillError>;
-}
 
 pub fn export_workspace_skill_artifact_bundle(
     authority: &SkillAuthority,
@@ -53,17 +43,9 @@ pub fn export_workspace_skill_artifact_bundle(
 
 pub fn import_workspace_skill_artifact_bundle(
     authority: &SkillAuthority,
-    payload: WorkspaceSkillArtifactImportEnvelope,
+    bundle: WorkspaceSkillArtifactBundle,
 ) -> Result<usize, SkillError> {
-    import_workspace_skill_artifact_bundle_with_legacy_adapter(authority, payload, None)
-}
-
-pub fn import_workspace_skill_artifact_bundle_with_legacy_adapter(
-    authority: &SkillAuthority,
-    payload: WorkspaceSkillArtifactImportEnvelope,
-    legacy_adapter: Option<&dyn WorkspaceSkillArtifactLegacyAdapter>,
-) -> Result<usize, SkillError> {
-    let entries = resolve_entries_from_artifact(payload, legacy_adapter)?;
+    let entries = bundle.skills;
     validate_workspace_skill_entries(&entries)?;
 
     for entry in &entries {
@@ -105,26 +87,6 @@ fn export_workspace_supporting_file(
         relative_path: file.relative_path.clone(),
         content,
     })
-}
-
-fn resolve_entries_from_artifact(
-    payload: WorkspaceSkillArtifactImportEnvelope,
-    legacy_adapter: Option<&dyn WorkspaceSkillArtifactLegacyAdapter>,
-) -> Result<Vec<WorkspaceSkillArtifactEntry>, SkillError> {
-    match payload {
-        WorkspaceSkillArtifactImportEnvelope::Bundle(bundle) => Ok(bundle.skills),
-        WorkspaceSkillArtifactImportEnvelope::Legacy(legacy) => match legacy_adapter {
-            Some(adapter) if adapter.legacy_format() == legacy.legacy_format => {
-                adapter.import_entries(&legacy)
-            }
-            _ => Err(SkillError::InvalidSkillContent {
-                message: format!(
-                    "Unsupported legacy workspace skill artifact format: {} (explicit legacy adapter required)",
-                    legacy.legacy_format
-                ),
-            }),
-        },
-    }
 }
 
 fn validate_workspace_skill_entries(
@@ -193,7 +155,7 @@ fn import_workspace_skill_entry(
                 authority.base_dir(),
                 &CreateSkillRequest {
                     name: name.clone(),
-                    description: description.clone(),
+                    description,
                     body: body.clone(),
                     frontmatter: None,
                     category: None,
@@ -318,7 +280,6 @@ fn artifact_frontmatter_from_skill(
                         fallback_for_tools: agendao.fallback_for_tools,
                         requires_toolsets: agendao.requires_toolsets,
                         fallback_for_toolsets: agendao.fallback_for_toolsets,
-                        stage_filter: agendao.stage_filter,
                     }),
             }),
     }
@@ -368,7 +329,6 @@ fn skill_frontmatter_from_artifact(
                     fallback_for_tools: agendao.fallback_for_tools.clone(),
                     requires_toolsets: agendao.requires_toolsets.clone(),
                     fallback_for_toolsets: agendao.fallback_for_toolsets.clone(),
-                    stage_filter: agendao.stage_filter.clone(),
                 }),
             }),
     }
@@ -376,68 +336,14 @@ fn skill_frontmatter_from_artifact(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle,
-        import_workspace_skill_artifact_bundle_with_legacy_adapter,
-        WorkspaceSkillArtifactLegacyAdapter,
-    };
+    use super::{export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle};
     use crate::{SkillAuthority, SkillError};
     use agendao_types::{
         WorkspaceSkillArtifactBundle, WorkspaceSkillArtifactEntry, WorkspaceSkillArtifactFile,
-        WorkspaceSkillArtifactFrontmatter, WorkspaceSkillArtifactImportEnvelope,
-        WorkspaceSkillArtifactLegacyPayload,
+        WorkspaceSkillArtifactFrontmatter,
     };
     use std::fs;
     use tempfile::tempdir;
-
-    struct AlphaLegacyAdapter;
-
-    impl WorkspaceSkillArtifactLegacyAdapter for AlphaLegacyAdapter {
-        fn legacy_format(&self) -> &'static str {
-            "workspace-skill-alpha"
-        }
-
-        fn import_entries(
-            &self,
-            payload: &WorkspaceSkillArtifactLegacyPayload,
-        ) -> Result<Vec<WorkspaceSkillArtifactEntry>, SkillError> {
-            #[derive(serde::Deserialize)]
-            struct LegacySkill {
-                name: String,
-                description: String,
-                body: String,
-            }
-
-            #[derive(serde::Deserialize)]
-            struct LegacyPayload {
-                skills: Vec<LegacySkill>,
-            }
-
-            let raw = payload
-                .payload
-                .clone()
-                .ok_or_else(|| SkillError::InvalidSkillContent {
-                    message: "legacy workspace skill payload body missing".to_string(),
-                })?;
-            let parsed: LegacyPayload =
-                serde_json::from_value(raw).map_err(|error| SkillError::InvalidSkillContent {
-                    message: error.to_string(),
-                })?;
-            Ok(parsed
-                .skills
-                .into_iter()
-                .map(|skill| WorkspaceSkillArtifactEntry {
-                    frontmatter: WorkspaceSkillArtifactFrontmatter {
-                        name: skill.name,
-                        description: skill.description,
-                        ..WorkspaceSkillArtifactFrontmatter::default()
-                    },
-                    body: skill.body,
-                    supporting_files: Vec::new(),
-                })
-                .collect())
-        }
-    }
 
     fn write_skill(
         root: &std::path::Path,
@@ -515,11 +421,7 @@ mod tests {
             }],
         );
 
-        let imported = import_workspace_skill_artifact_bundle(
-            &authority,
-            WorkspaceSkillArtifactImportEnvelope::Bundle(bundle),
-        )
-        .expect("import");
+        let imported = import_workspace_skill_artifact_bundle(&authority, bundle).expect("import");
 
         assert_eq!(imported, 1);
         let loaded = authority
@@ -548,8 +450,7 @@ mod tests {
         let source_authority = SkillAuthority::new(source.path(), None);
         let exported = export_workspace_skill_artifact_bundle(&source_authority).expect("export");
         let payload = serde_json::to_string(&exported).expect("serialize");
-        let parsed: WorkspaceSkillArtifactImportEnvelope =
-            serde_json::from_str(&payload).expect("parse");
+        let parsed: WorkspaceSkillArtifactBundle = serde_json::from_str(&payload).expect("parse");
 
         let target = tempdir().expect("tempdir");
         let target_authority = SkillAuthority::new(target.path(), None);
@@ -589,60 +490,9 @@ mod tests {
             ],
         );
 
-        let error = import_workspace_skill_artifact_bundle(
-            &authority,
-            WorkspaceSkillArtifactImportEnvelope::Bundle(bundle),
-        )
-        .expect_err("duplicate names should fail");
+        let error = import_workspace_skill_artifact_bundle(&authority, bundle)
+            .expect_err("duplicate names should fail");
         assert!(matches!(error, SkillError::InvalidSkillContent { .. }));
         assert!(error.to_string().contains("Duplicate skill name"));
-    }
-
-    #[test]
-    fn import_workspace_skill_bundle_rejects_legacy_payload_without_explicit_adapter() {
-        let dir = tempdir().expect("tempdir");
-        let authority = SkillAuthority::new(dir.path(), None);
-        let envelope =
-            WorkspaceSkillArtifactImportEnvelope::Legacy(WorkspaceSkillArtifactLegacyPayload {
-                legacy_format: "workspace-skill-alpha".to_string(),
-                payload: Some(serde_json::json!({"skills": []})),
-            });
-
-        let error = import_workspace_skill_artifact_bundle(&authority, envelope)
-            .expect_err("legacy payload should fail closed");
-        assert!(error
-            .to_string()
-            .contains("Unsupported legacy workspace skill artifact format"));
-    }
-
-    #[test]
-    fn import_workspace_skill_bundle_accepts_matching_explicit_legacy_adapter() {
-        let dir = tempdir().expect("tempdir");
-        let authority = SkillAuthority::new(dir.path(), None);
-        let envelope =
-            WorkspaceSkillArtifactImportEnvelope::Legacy(WorkspaceSkillArtifactLegacyPayload {
-                legacy_format: "workspace-skill-alpha".to_string(),
-                payload: Some(serde_json::json!({
-                    "skills": [{
-                        "name": "legacy-reviewer",
-                        "description": "Legacy reviewer",
-                        "body": "# Legacy"
-                    }]
-                })),
-            });
-
-        let imported = import_workspace_skill_artifact_bundle_with_legacy_adapter(
-            &authority,
-            envelope,
-            Some(&AlphaLegacyAdapter),
-        )
-        .expect("legacy adapter should import");
-        assert_eq!(imported, 1);
-
-        let loaded = authority
-            .load_skill_for_inspection("legacy-reviewer", None)
-            .expect("imported skill should load");
-        assert_eq!(loaded.meta.name, "legacy-reviewer");
-        assert!(loaded.content.contains("# Legacy"));
     }
 }

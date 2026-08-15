@@ -11,51 +11,10 @@
 use agendao_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use agendao_session::{Session, SessionUsage};
 use agendao_types::{
-    ContextCompactionLifecycleSummary, ContextCompactionSummary,
-    ContextPressureGovernanceSummary, SessionCacheSemanticsSummary,
-    SessionContextClosureContract, SessionContextExplain, SessionDiagnosticsSidecar,
-    SessionUsageBooks, WorkflowUsageSummary,
+    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
+    SessionCacheSemanticsSummary, SessionContextClosureContract, SessionContextExplain,
+    SessionDiagnosticsSidecar, SessionUsageBooks,
 };
-
-// ── Tree observation ───────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SessionTreeObservation {
-    pub(crate) workflow_cumulative: WorkflowUsageSummary,
-    pub(crate) attached_subtree_session_count: usize,
-}
-
-pub(crate) fn session_tree_observation_for_session(
-    sessions: &agendao_session::SessionManager,
-    root_session_id: &str,
-) -> SessionTreeObservation {
-    let mut observation = SessionTreeObservation::default();
-    let mut pending = vec![(root_session_id.to_string(), true)];
-
-    while let Some((session_id, is_root)) = pending.pop() {
-        let Some(session) = sessions.get(&session_id) else {
-            continue;
-        };
-        observation
-            .workflow_cumulative
-            .accumulate_session_usage(&session.get_usage());
-        let attached_children = sessions
-            .attached_sessions(&session_id)
-            .into_iter()
-            .map(|child| child.record().id.clone())
-            .collect::<Vec<_>>();
-        if !is_root {
-            observation.attached_subtree_session_count += 1;
-        }
-        pending.extend(
-            attached_children
-                .into_iter()
-                .map(|child_id| (child_id, false)),
-        );
-    }
-
-    observation
-}
 
 // ── Pressure percent ───────────────────────────────────────────────────────
 
@@ -69,12 +28,10 @@ pub(crate) fn pressure_percent(tokens: Option<u64>, limit_tokens: Option<u64>) -
 
 pub(crate) fn build_context_closure_contract(
     context_explain: Option<&SessionContextExplain>,
-    usage_books: &SessionUsageBooks,
     cache_semantics: Option<&SessionCacheSemanticsSummary>,
     context_compaction_summary: Option<&ContextCompactionSummary>,
     context_compaction_lifecycle_summary: Option<&ContextCompactionLifecycleSummary>,
     context_pressure_governance_summary: Option<&ContextPressureGovernanceSummary>,
-    attached_subtree_session_count: usize,
 ) -> Option<SessionContextClosureContract> {
     let context_explain = context_explain?;
     let cache_semantics = cache_semantics
@@ -184,11 +141,6 @@ pub(crate) fn build_context_closure_contract(
         cache_explainability_source,
         agendao_types::SessionCacheExplainabilitySource::None
     );
-    let owner_session_cumulative_tokens = context_explain.owner_session_cumulative_tokens;
-    let workflow_cumulative_tokens = usage_books.workflow_cumulative.total_tokens();
-    let attached_subtree_cumulative_tokens =
-        workflow_cumulative_tokens.saturating_sub(owner_session_cumulative_tokens);
-
     Some(SessionContextClosureContract {
         prefix_stability: agendao_types::SessionPrefixStabilityContract {
             basis: cache_semantics.basis,
@@ -255,22 +207,6 @@ pub(crate) fn build_context_closure_contract(
             severity: cache_explainability_severity,
             explanation: cache_explainability_text,
         },
-        child_history_isolation: agendao_types::SessionChildHistoryIsolationContract {
-            attached_subtree_session_count,
-            owner_session_cumulative_tokens,
-            workflow_cumulative_tokens,
-            attached_subtree_cumulative_tokens,
-            owner_live_context_tokens: usage_books.live_context_tokens,
-            owner_local_live_prefix: true,
-            child_history_in_live_prefix_detected: false,
-            explanation: if attached_subtree_session_count > 0 {
-                "Attached subtree usage contributes to workflow cumulative only; API view and live prefix remain owner-local."
-                    .to_string()
-            } else {
-                "No attached subtree sessions were observed; the live prefix remains owner-local."
-                    .to_string()
-            },
-        },
     })
 }
 
@@ -278,9 +214,7 @@ pub(crate) fn build_context_closure_contract(
 
 /// The five projection fields carried by `SessionProjectionReplaced`.
 ///
-/// Computed from session-scoped authority data (session record, message
-/// metadata, session tree). The caller must hold a reference to the
-/// `Session` and the `SessionManager` (for tree traversal).
+/// Computed from session-scoped authority data (session record and message metadata).
 pub(crate) struct SessionProjectionFields {
     pub usage_books: SessionUsageBooks,
     pub context_compaction_summary: Option<ContextCompactionSummary>,
@@ -295,16 +229,13 @@ pub(crate) struct SessionProjectionFields {
 /// message metadata. It is safe to call while holding the sessions lock.
 pub(crate) fn build_session_projection_fields(
     session: &Session,
-    session_id: &str,
     runtime_usage: Option<&SessionUsage>,
-    sessions: &agendao_session::SessionManager,
 ) -> SessionProjectionFields {
     // ── usage_books ────────────────────────────────────────────────────
-    let tree_observation = session_tree_observation_for_session(sessions, session_id);
     let mut usage_books = SessionUsageBooks {
         request_context_tokens: session.latest_request_context_tokens(),
         live_context_tokens: runtime_usage.and_then(|u| u.live_context_tokens()),
-        workflow_cumulative: tree_observation.workflow_cumulative.clone(),
+        workflow_cumulative: session.get_usage().workflow_usage_summary(),
     };
 
     // ── diagnostics sidecar (shared for multiple fields) ───────────────
@@ -367,12 +298,10 @@ pub(crate) fn build_session_projection_fields(
     // ── context closure contract ───────────────────────────────────────
     let context_closure_contract = build_context_closure_contract(
         context_explain.as_ref(),
-        &usage_books,
         cache_semantics.as_ref(),
         context_compaction_summary.as_ref(),
         context_compaction_lifecycle_summary.as_ref(),
         context_pressure_governance_summary.as_ref(),
-        tree_observation.attached_subtree_session_count,
     );
 
     SessionProjectionFields {

@@ -10,7 +10,6 @@ import { useAgendaoStore } from "../store";
 
 interface UseServerEventStreamOptions {
   applyLiveExecutionOutputBlock: (block: OutputBlock, sessionId: string) => void;
-  applySchedulerStageOutputBlock: (block: OutputBlock, sessionId: string) => void;
   clearPendingOutputBlockFlush: () => void;
   clearPendingSessionRefresh: () => void;
   flushPendingOutputBlocks: () => void;
@@ -49,7 +48,6 @@ function eventSessionIdFromPayload(event: Record<string, unknown>): string | und
 
 export function useServerEventStream({
   applyLiveExecutionOutputBlock,
-  applySchedulerStageOutputBlock,
   clearPendingOutputBlockFlush,
   clearPendingSessionRefresh,
   flushPendingOutputBlocks,
@@ -75,13 +73,6 @@ export function useServerEventStream({
       if (type === "output_block" && eventSessionId === selectedSessionId) {
         const block = outputBlockFromEvent(event);
         if (!block) return;
-        if (block.kind === "scheduler_stage") {
-          applySchedulerStageOutputBlock(block, eventSessionId);
-          if (shouldQueueLiveTranscriptBlock(block)) {
-            queueVisibleLiveSnapshot(eventSessionId, block);
-          }
-          return;
-        }
         if (block.kind === "tool") {
           applyLiveExecutionOutputBlock(block, eventSessionId);
         }
@@ -243,7 +234,6 @@ export function useServerEventStream({
     };
   }, [
     applyLiveExecutionOutputBlock,
-    applySchedulerStageOutputBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,

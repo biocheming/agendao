@@ -23,9 +23,9 @@ use agendao_command::UiActionId;
 
 use crate::app::app_op;
 use crate::app::{AppHandler, Panel, PendingConfirm};
+use crate::dialog::StashEntry;
 use crate::store::app_store::Route;
 use crate::store::types::{RunStatus, ToolPhase};
-use crate::dialog::StashEntry;
 
 impl AppHandler {
     /// U6⑤ 公共点火闸（弹窗打开拉取）：防抖（单闸）+ bridge 取用 +
@@ -63,7 +63,9 @@ impl AppHandler {
         self.active_session.set_session_id(&info.id);
         self.sf_tx.send_replace(Some(info.id.clone()));
         self.load_session_messages(&info.id);
-        self.store.navigate(Route::Session { session_id: info.id.clone() });
+        self.store.navigate(Route::Session {
+            session_id: info.id.clone(),
+        });
         self.reload_session_list();
     }
 
@@ -98,8 +100,12 @@ impl AppHandler {
         self.prompt.clear();
         if stashed {
             if matches!(action_id, UiActionId::PromptStashPush) {
-                self.store.push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
-            } else if !matches!(action_id, UiActionId::OpenStash | UiActionId::PromptStashList) {
+                self.store
+                    .push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
+            } else if !matches!(
+                action_id,
+                UiActionId::OpenStash | UiActionId::PromptStashList
+            ) {
                 // 查看类动作不打扰（草稿已保全，列表立即可见）。
                 self.store.push_toast(
                     "Draft stashed (/stash to restore)",
@@ -110,7 +116,9 @@ impl AppHandler {
         match action_id {
             UiActionId::ShowHelp | UiActionId::ShowStatus => {
                 self.help.toggle();
-                if self.help.visible { self.panel = Panel::Help; }
+                if self.help.visible {
+                    self.panel = Panel::Help;
+                }
             }
             UiActionId::NewSession => {
                 // 重置 active_session 到新会话初始态:清空当前 session 的消息/状态,
@@ -118,12 +126,16 @@ impl AppHandler {
                 self.active_session.reset_for_new_session();
                 self.store.navigate(Route::Home);
                 self.prompt.focus();
-                self.store.push_toast("New session created", crate::store::types::ToastMsgVariant::Success);
+                self.store.push_toast(
+                    "New session created",
+                    crate::store::types::ToastMsgVariant::Success,
+                );
             }
             UiActionId::AbortExecution => {
                 // Cancel running tools
                 let tools = self.active_session.active_tools.get();
-                let running: Vec<String> = tools.iter()
+                let running: Vec<String> = tools
+                    .iter()
                     .filter(|t| t.phase == ToolPhase::Running)
                     .map(|t| t.id.clone())
                     .collect();
@@ -133,8 +145,10 @@ impl AppHandler {
                             for tool_id in &running {
                                 let _ = api.cancel_tool_call(&sid, tool_id);
                             }
-                            self.store.push_toast(&format!("Cancelled {} tool(s)", running.len()),
-                                crate::store::types::ToastMsgVariant::Info);
+                            self.store.push_toast(
+                                &format!("Cancelled {} tool(s)", running.len()),
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
                         }
                     }
                 } else {
@@ -143,7 +157,10 @@ impl AppHandler {
                         if let Some(ref api) = self.api {
                             let _ = api.abort_session(&sid);
                             self.active_session.run_status.set(RunStatus::Idle);
-                            self.store.push_toast("Session aborted", crate::store::types::ToastMsgVariant::Info);
+                            self.store.push_toast(
+                                "Session aborted",
+                                crate::store::types::ToastMsgVariant::Info,
+                            );
                         }
                     }
                 }
@@ -257,18 +274,6 @@ impl AppHandler {
                     );
                 }
             }
-            UiActionId::ListTasks => {
-                if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading tasks") {
-                    handle.spawn(async move {
-                        let result = api
-                            .list_tasks_async()
-                            .await
-                            .map(app_op::DialogFetchData::Tasks)
-                            .map_err(|e| format!("Failed to load tasks: {}", e));
-                        let _ = tx.send(app_op::AppOpOutcome::DialogFetchDone(result));
-                    });
-                }
-            }
             UiActionId::OpenModeList => {
                 if let Some((api, handle, tx)) = self.begin_dialog_fetch("Loading modes") {
                     handle.spawn(async move {
@@ -307,8 +312,7 @@ impl AppHandler {
                                         .iter()
                                         .find_map(|p| p.text.as_deref())
                                         .map(|t| {
-                                            let flat: String =
-                                                t.chars().take(60).collect();
+                                            let flat: String = t.chars().take(60).collect();
                                             flat.replace('\n', " ")
                                         })
                                         .unwrap_or_default();
@@ -320,7 +324,9 @@ impl AppHandler {
                             }
                             Err(e) => {
                                 self.store.push_toast(
-                                    &format!("Message list unavailable ({e}) — fork whole session only"),
+                                    &format!(
+                                        "Message list unavailable ({e}) — fork whole session only"
+                                    ),
                                     crate::store::types::ToastMsgVariant::Warning,
                                 );
                             }
@@ -348,7 +354,9 @@ impl AppHandler {
                     );
                     return;
                 };
-                let Some(ref api) = self.api else { return; };
+                let Some(ref api) = self.api else {
+                    return;
+                };
                 match api.fork_session(&sid, Some(&prompt_id)) {
                     Ok(info) => {
                         // 切到 fork 后的新会话（reset+set_session_id+sf_tx+load+navigate）。
@@ -450,13 +458,12 @@ impl AppHandler {
                                 .await
                                 .map(|_| ())
                                 .map_err(|e| e.to_string());
-                            let _ = tx.send(
-                                crate::app::app_op::AppOpOutcome::CompactionTriggered {
+                            let _ =
+                                tx.send(crate::app::app_op::AppOpOutcome::CompactionTriggered {
                                     session_id: sid,
                                     focus,
                                     result,
-                                },
-                            );
+                                });
                         });
                     }
                 }
@@ -491,7 +498,8 @@ impl AppHandler {
                     self.confirm_dialog.ask(
                         "Delete Session",
                         &format!("Delete \"{}\"? This cannot be undone.", title),
-                        "Delete");
+                        "Delete",
+                    );
                     // 判别器携带「确认什么」——Confirm 只回 bool，靠它路由
                     // 到 delete_session（土律：单一 Confirm 变体服务所有确认）。
                     self.pending_confirm = Some(PendingConfirm::DeleteSession(sid));
@@ -545,7 +553,10 @@ impl AppHandler {
                 }
             }
             UiActionId::ToggleSidebar => {
-                self.store.push_toast("Sidebar toggled", crate::store::types::ToastMsgVariant::Info);
+                self.store.push_toast(
+                    "Sidebar toggled",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
             }
             UiActionId::ToggleThinking => {
                 let next = !self.store.show_thinking.get();
@@ -600,13 +611,19 @@ impl AppHandler {
                     crate::store::types::ToastMsgVariant::Warning,
                 );
             }
-            UiActionId::ToggleAppearance | UiActionId::AppearanceNext | UiActionId::AppearancePrev => {
+            UiActionId::ToggleAppearance
+            | UiActionId::AppearanceNext
+            | UiActionId::AppearancePrev => {
                 // 主题循环唯一权威（土律归一）：ToggleAppearance=下一个（Ctrl+P
                 // palette 兼容入口），AppearanceNext/Prev=Settings Theme 行 →/←。
                 // 色板 + revue 主题信号经 ds::theme::apply_theme 单点收口；
                 // CSS `:root` 变量写 pending 槽，由 app 事件闭包应用到 stylesheet。
                 let cur = self.store.theme_id.get();
-                let next = if action_id == UiActionId::AppearancePrev { cur.prev() } else { cur.next() };
+                let next = if action_id == UiActionId::AppearancePrev {
+                    cur.prev()
+                } else {
+                    cur.next()
+                };
                 self.pending_theme_vars = Some(crate::ds::theme::apply_theme(next));
                 self.store.theme_id.set(next);
                 // 持久化（config `theme` 键）fire-and-forget：失败仅日志，不阻塞换肤。
@@ -614,7 +631,10 @@ impl AppHandler {
                     let api_c = api.clone();
                     let id_str = next.id().to_string();
                     api.handle().spawn(async move {
-                        if let Err(e) = api_c.patch_config_async(serde_json::json!({ "theme": id_str })).await {
+                        if let Err(e) = api_c
+                            .patch_config_async(serde_json::json!({ "theme": id_str }))
+                            .await
+                        {
                             tracing::warn!(%e, "theme persist failed");
                         }
                     });
@@ -638,9 +658,7 @@ impl AppHandler {
                     crate::store::types::ToastMsgVariant::Warning,
                 );
             }
-            UiActionId::Timeline
-            | UiActionId::NavigateParentSession
-            | UiActionId::VoiceInput => {
+            UiActionId::Timeline | UiActionId::NavigateParentSession | UiActionId::VoiceInput => {
                 self.store.push_toast(
                     &format!("{:?}: not supported by server yet", action_id),
                     crate::store::types::ToastMsgVariant::Warning,
@@ -653,15 +671,6 @@ impl AppHandler {
                     "Toggle dark/light via Ctrl+P → Toggle appearance; full theme picker coming soon",
                     crate::store::types::ToastMsgVariant::Info,
                 );
-            }
-            UiActionId::OpenPresetList => {
-                // 道纪第十条：preset 数据就是 /mode 端点扁平化，无独立权威。
-                // 诚实标注 + 复用 /mode 路径，不伪"独立 preset 列表"。
-                self.store.push_toast(
-                    "Presets are part of /mode — opening mode list",
-                    crate::store::types::ToastMsgVariant::Info,
-                );
-                self.execute_slash_action(UiActionId::OpenModeList);
             }
             UiActionId::ToggleToolDetails => {
                 // 已有 per-block fold（Space 键 toggle），无全局 toggle 权威。

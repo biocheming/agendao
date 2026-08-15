@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::cli::RunOutputFormat;
 use serde::Deserialize;
 use session_attach::{maybe_share_remote_session, resolve_remote_session};
-use stream_consume::consume_remote_sse;
+use stream_consume::consume_remote_events;
 
 fn server_url(base: &str, path: &str) -> String {
     format!(
@@ -40,7 +40,7 @@ pub(super) struct RemoteAttachOptions {
     pub share: bool,
     pub model: Option<String>,
     pub agent: Option<String>,
-    pub scheduler_profile: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub variant: Option<String>,
     pub format: RunOutputFormat,
     pub title: Option<String>,
@@ -59,7 +59,7 @@ pub(super) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         share,
         model,
         agent,
-        scheduler_profile,
+        scheduler,
         variant,
         format,
         title,
@@ -90,16 +90,30 @@ pub(super) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         input
     };
 
-    let endpoint = server_url(&base_url, &format!("/session/{}/stream", session_id));
+    // Subscribe before submitting the prompt so short runs cannot finish before
+    // the CLI has attached to the canonical frontend event authority.
+    let events_endpoint = server_url(&base_url, "/event");
+    let events_response = client
+        .get(events_endpoint)
+        .query(&[("session", session_id.as_str()), ("tier", "cli")])
+        .send()
+        .await?;
+    if !events_response.status().is_success() {
+        let status = events_response.status();
+        let body = events_response.text().await.unwrap_or_default();
+        anyhow::bail!("Remote event subscription failed ({}): {}", status, body);
+    }
+
+    let prompt_endpoint = server_url(&base_url, &format!("/session/{}/prompt", session_id));
     let response = client
-        .post(endpoint)
+        .post(prompt_endpoint)
         .json(&serde_json::json!({
-            "content": content,
+            "message": content,
             "model": model,
             "agent": agent,
-            "scheduler_profile": scheduler_profile,
+            "scheduler": scheduler,
             "variant": variant,
-            "stream": true
+            "ingress_source": "cli"
         }))
         .send()
         .await?;
@@ -110,15 +124,7 @@ pub(super) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         anyhow::bail!("Remote run failed ({}): {}", status, body);
     }
 
-    consume_remote_sse(
-        response,
-        &client,
-        &base_url,
-        &session_id,
-        format,
-        show_thinking,
-    )
-    .await
+    consume_remote_events(events_response, &client, &base_url, format, show_thinking).await
 }
 
 #[cfg(test)]
@@ -127,19 +133,10 @@ mod tests {
     use super::stream_consume::{remote_apply_output_block, RemoteSemanticRenderState};
     use super::transcript::{cli_apply_live_slot_update, CliVisibleTranscript};
     use agendao_command_render::cli_style::CliStyle;
-    use agendao_command_render::governance_fixtures::canonical_scheduler_stage_fixture;
     use agendao_command_render::output_blocks::{
-        MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock, SchedulerStageBlock,
-        StatusBlock,
+        MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock, StatusBlock,
     };
     use agendao_command_render::terminal_presentation::render_terminal_stream_block_semantic;
-
-    #[test]
-    fn parses_canonical_scheduler_stage_payload() {
-        let fixture = canonical_scheduler_stage_fixture();
-        let block = parse_output_block(&fixture.payload).expect("scheduler stage block");
-        assert_eq!(block, OutputBlock::SchedulerStage(Box::new(fixture.block)));
-    }
 
     #[test]
     fn parses_reasoning_payload() {
@@ -178,16 +175,11 @@ mod tests {
         ]
         .into_iter()
         .map(|block| {
-            semantic_state
-                .accumulator
-                .apply_output_block(Some("assistant-1"), &block);
             render_terminal_stream_block_semantic(
                 &mut semantic_state.semantic,
-                &semantic_state.accumulator,
                 &block,
                 None,
                 &style,
-                true,
             )
         })
         .collect::<String>();
@@ -197,7 +189,7 @@ mod tests {
             1,
             "{rendered}"
         );
-        assert_eq!(rendered, "[message:assistant] 快速上升期");
+        assert_eq!(rendered, "[message:assistant] 快速上升期\n");
     }
 
     #[test]
@@ -220,14 +212,11 @@ mod tests {
         ]
         .into_iter()
         .map(|block| {
-            semantic_state.accumulator.apply_output_block(None, &block);
             render_terminal_stream_block_semantic(
                 &mut semantic_state.semantic,
-                &semantic_state.accumulator,
                 &block,
                 None,
                 &style,
-                true,
             )
         })
         .collect::<String>();
@@ -249,7 +238,6 @@ mod tests {
             part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: agendao_types::LiveMessagePartKind::AssistantText,
             phase: agendao_types::LivePartPhase::Snapshot,
-            legacy_block_id: Some("assistant-1".to_string()),
         };
 
         cli_apply_live_slot_update(
@@ -286,66 +274,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_scheduler_stage_identity_does_not_enter_transcript() {
-        let style = CliStyle::plain();
-        let mut transcript = CliVisibleTranscript::new(false);
-        let identity = agendao_types::LiveMessagePartIdentity {
-            message_id: "assistant-1".to_string(),
-            part_key: agendao_types::scheduler_stage_part_key("stage-1"),
-            part_kind: agendao_types::LiveMessagePartKind::SchedulerStage,
-            phase: agendao_types::LivePartPhase::Snapshot,
-            legacy_block_id: None,
-        };
-
-        cli_apply_live_slot_update(
-            &mut transcript,
-            &OutputBlock::SchedulerStage(Box::new(SchedulerStageBlock {
-                stage_id: Some("stage-1".to_string()),
-                profile: Some("default".to_string()),
-                stage: "research".to_string(),
-                title: "Research".to_string(),
-                text: "planning".to_string(),
-                stage_index: Some(1),
-                stage_total: Some(3),
-                step: Some(1),
-                status: Some("running".to_string()),
-                focus: None,
-                last_event: None,
-                waiting_on: None,
-                estimated_context_tokens: None,
-                skill_tree_budget: None,
-                skill_tree_truncation_strategy: None,
-                skill_tree_truncated: None,
-                retry_attempt: None,
-                activity: None,
-                loop_budget: None,
-                available_skill_count: None,
-                available_agent_count: None,
-                available_category_count: None,
-                active_skills: Vec::new(),
-                active_agents: Vec::new(),
-                active_categories: Vec::new(),
-                done_agent_count: 0,
-                total_agent_count: 0,
-                prompt_tokens: None,
-                context_tokens: None,
-                completion_tokens: None,
-                reasoning_tokens: None,
-                cache_read_tokens: None,
-                cache_miss_tokens: None,
-                cache_write_tokens: None,
-                attached_session_id: None,
-                decision: None,
-            })),
-            &identity,
-            &style,
-        );
-
-        let rendered = transcript.rendered_text();
-        assert!(rendered.is_empty(), "{rendered}");
-    }
-
-    #[test]
     fn remote_non_terminal_state_rebuilds_from_transcript_authority() {
         let style = CliStyle::plain();
         let mut semantic_state = RemoteSemanticRenderState {
@@ -357,18 +285,12 @@ mod tests {
             MessageRole::Assistant,
             "第一版".to_string(),
         ));
-        semantic_state
-            .accumulator
-            .apply_output_block(Some("assistant-1"), &first);
         remote_apply_output_block(&mut semantic_state, &first, None, &style, true);
 
         let second = OutputBlock::Message(MessageBlock::delta(
             MessageRole::Assistant,
             " 第二段".to_string(),
         ));
-        semantic_state
-            .accumulator
-            .apply_output_block(Some("assistant-1"), &second);
         remote_apply_output_block(&mut semantic_state, &second, None, &style, true);
 
         assert_eq!(
@@ -430,7 +352,6 @@ mod tests {
             part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: agendao_types::LiveMessagePartKind::AssistantText,
             phase: agendao_types::LivePartPhase::Snapshot,
-            legacy_block_id: Some("assistant-1".to_string()),
         };
 
         remote_apply_output_block(
@@ -477,7 +398,6 @@ mod tests {
             part_key: agendao_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: agendao_types::LiveMessagePartKind::AssistantText,
             phase: agendao_types::LivePartPhase::Snapshot,
-            legacy_block_id: Some("assistant-1".to_string()),
         };
 
         remote_apply_output_block(

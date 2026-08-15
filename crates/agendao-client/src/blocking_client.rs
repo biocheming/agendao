@@ -3,7 +3,6 @@ use std::sync::RwLock;
 
 use agendao_config::{Config as AppConfig, ModelConfig};
 use agendao_runtime_context::ResolvedWorkspaceContext;
-use agendao_stage_protocol::StageEvent;
 use agendao_state::RecentModelEntry;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -24,28 +23,28 @@ use crate::{
     MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
     MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
     MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
-    MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
+    MultimodalPreflightResponse, PermissionRequestInfo, PromptRequest, PromptResponse,
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
     ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
     RecoveryActionKind, RefreshProviderCatalogResponse, RepairQuery, RepairQueryResponse,
     ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest, RevertResponse,
-    SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
-    SessionListItem, SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
+    SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
+    SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
     SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
-    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse, SkillEvolutionProposal,
-    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
-    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
-    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
-    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubNegativeEntropyResponse,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
-    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
-    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
-    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
-    SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    TaskSummaryInfo, UpdateSessionRequest,
+    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
+    SkillEvolutionProposal, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
+    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
+    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
+    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
+    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 pub struct BlockingApiClient {
@@ -86,11 +85,11 @@ impl BlockingApiClient {
 
     pub fn create_session(
         &self,
-        scheduler_profile: Option<String>,
+        scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
         directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let request = CreateSessionRequest {
-            scheduler_profile,
+            scheduler,
             directory,
             project_id: None,
             title: None,
@@ -214,18 +213,6 @@ impl BlockingApiClient {
         self.get_json_query("/global/repair/query", query, "query global repair")
     }
 
-    pub fn get_session_events(
-        &self,
-        session_id: &str,
-        query: &SessionEventsQuery,
-    ) -> anyhow::Result<Vec<StageEvent>> {
-        self.get_json_query(
-            &format!("/session/{}/events", session_id),
-            query,
-            &format!("get session events `{}`", session_id),
-        )
-    }
-
     pub fn get_session_todos(&self, session_id: &str) -> anyhow::Result<Vec<ApiTodoItem>> {
         let response = self
             .client
@@ -268,9 +255,8 @@ impl BlockingApiClient {
         &self,
         session_id: &str,
         action: RecoveryActionKind,
-        target_id: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
-        let request = ExecuteRecoveryRequest { action, target_id };
+        let request = ExecuteRecoveryRequest { action };
         self.post_json(
             &format!("/session/{}/recovery/execute", session_id),
             &format!("execute session recovery `{}`", session_id),
@@ -354,68 +340,11 @@ impl BlockingApiClient {
     pub fn send_prompt(
         &self,
         session_id: &str,
-        content: String,
-        parts: Option<Vec<PromptPart>>,
-        agent: Option<String>,
-        scheduler_profile: Option<String>,
-        model: Option<String>,
-        variant: Option<String>,
-        ingress_source: Option<String>,
-        idempotency_key: Option<String>,
-        source_origin: Option<agendao_types::MessageSourceOrigin>,
-        source_surface: Option<agendao_types::MessageSourceSurface>,
-        command: Option<String>,
+        request: PromptRequest,
     ) -> anyhow::Result<PromptResponse> {
-        let request = PromptRequest {
-            message: (!content.trim().is_empty()).then_some(content),
-            parts,
-            idempotency_key,
-            ingress_source,
-            agent,
-            scheduler_profile,
-            model,
-            variant,
-            command,
-            arguments: None,
-            source_origin,
-            source_surface,
-        };
         self.post_json(
             &format!("/session/{}/prompt", session_id),
             &format!("send prompt to session `{}`", session_id),
-            &request,
-        )
-    }
-
-    pub fn send_command_prompt(
-        &self,
-        session_id: &str,
-        command: String,
-        arguments: Option<String>,
-        model: Option<String>,
-        variant: Option<String>,
-        ingress_source: Option<String>,
-        idempotency_key: Option<String>,
-        source_origin: Option<agendao_types::MessageSourceOrigin>,
-        source_surface: Option<agendao_types::MessageSourceSurface>,
-    ) -> anyhow::Result<PromptResponse> {
-        let request = PromptRequest {
-            message: None,
-            parts: None,
-            idempotency_key,
-            ingress_source,
-            agent: None,
-            scheduler_profile: None,
-            model,
-            variant,
-            command: Some(command),
-            arguments,
-            source_origin,
-            source_surface,
-        };
-        self.post_json(
-            &format!("/session/{}/prompt", session_id),
-            &format!("send command prompt to session `{}`", session_id),
             &request,
         )
     }
@@ -681,11 +610,6 @@ impl BlockingApiClient {
         Self::json_ok(response, "list skills")
     }
 
-    /// `/task`：全局 agent 任务注册表（非 per-session）。读视图。
-    pub fn list_tasks(&self) -> anyhow::Result<Vec<TaskSummaryInfo>> {
-        self.get_json("/task/", "list tasks")
-    }
-
     /// `/skill/proposal/{id}/status` POST：approve（"accepted"）/reject（"rejected"）。
     /// parity with async client（bridge 用 async，此处仅补全 public API）。
     pub fn update_skill_proposal_status(
@@ -699,16 +623,6 @@ impl BlockingApiClient {
             "update skill proposal status",
             &body,
         )
-    }
-
-    /// `/task/{id}` DELETE：取消运行中 task。返回 `{"cancelled": id}`。
-    /// parity with async client。
-    pub fn cancel_task(&self, task_id: &str) -> anyhow::Result<serde_json::Value> {
-        let response = self.delete_expect_success(
-            &format!("/task/{}", task_id),
-            &format!("cancel task `{}`", task_id),
-        )?;
-        Ok(response.json::<serde_json::Value>()?)
     }
 
     pub fn get_skill_detail(

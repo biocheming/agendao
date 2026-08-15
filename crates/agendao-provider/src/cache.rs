@@ -15,56 +15,25 @@ pub const CACHE_EVIDENCE_METADATA_KEY: &str = "cache_evidence";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheProtocolFamily {
-    CloseAiCompatible,
-    EthnopicCompatible,
+    OpenAiCompatible,
+    AnthropicCompatible,
     Disabled,
 }
 
 impl CacheProtocolFamily {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::CloseAiCompatible => "closeai-compatible",
-            Self::EthnopicCompatible => "ethnopic-compatible",
+            Self::OpenAiCompatible => "openai-compatible",
+            Self::AnthropicCompatible => "anthropic-compatible",
             Self::Disabled => "disabled",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CloseAiCompatibleApiShape {
+pub enum OpenAiCompatibleApiShape {
     ChatCompletions,
     Responses,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CloseAiCacheCapabilities {
-    pub api_shape: CloseAiCompatibleApiShape,
-    pub supports_prompt_cache_key: bool,
-    pub supports_prompt_cache_retention: bool,
-    pub supports_previous_response_id: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EthnopicCacheCapabilities {
-    pub supports_cache_control: bool,
-    pub supports_cache_ttl: bool,
-    pub supports_cache_scope: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderCacheCapabilities {
-    pub family: CacheProtocolFamily,
-    pub closeai: Option<CloseAiCacheCapabilities>,
-    pub ethnopic: Option<EthnopicCacheCapabilities>,
-    pub override_: ProviderCacheOverrides,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderCacheOverrideContext<'a> {
-    pub provider_id: &'a str,
-    pub npm: &'a str,
-    pub api_id: &'a str,
-    pub family: CacheProtocolFamily,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,41 +75,41 @@ impl CacheBreakpointPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EthnopicCacheTtl {
+pub enum AnthropicCacheTtl {
     FiveMinutes,
     OneHour,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EthnopicCacheCompatibility {
+pub enum AnthropicCacheCompatibility {
     ExplicitBlocks,
     ProviderOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EthnopicCachePolicy {
+pub struct AnthropicCachePolicy {
     pub enabled: bool,
-    pub ttl: EthnopicCacheTtl,
+    pub ttl: AnthropicCacheTtl,
     pub global_scope: bool,
-    pub compatibility: EthnopicCacheCompatibility,
+    pub compatibility: AnthropicCacheCompatibility,
 }
 
-impl Default for EthnopicCachePolicy {
+impl Default for AnthropicCachePolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            ttl: EthnopicCacheTtl::FiveMinutes,
+            ttl: AnthropicCacheTtl::FiveMinutes,
             global_scope: false,
-            compatibility: EthnopicCacheCompatibility::ProviderOptions,
+            compatibility: AnthropicCacheCompatibility::ProviderOptions,
         }
     }
 }
 
-pub fn ethnopic_cache_policy_hash(policy: &EthnopicCachePolicy) -> String {
+pub fn anthropic_cache_policy_hash(policy: &AnthropicCachePolicy) -> String {
     serializable_fingerprint(policy)
 }
 
-pub fn plan_ethnopic_message_breakpoints(messages: &[Message]) -> CacheBreakpointPlan {
+pub fn plan_anthropic_message_breakpoints(messages: &[Message]) -> CacheBreakpointPlan {
     let max_breakpoints = 4;
     let mut candidates = Vec::new();
 
@@ -197,16 +166,14 @@ pub fn plan_ethnopic_message_breakpoints(messages: &[Message]) -> CacheBreakpoin
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CloseAiPromptCacheKeyField {
+pub enum OpenAiPromptCacheKeyField {
     CamelCase,
-    SnakeCase,
 }
 
-impl CloseAiPromptCacheKeyField {
+impl OpenAiPromptCacheKeyField {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CamelCase => "promptCacheKey",
-            Self::SnakeCase => "prompt_cache_key",
         }
     }
 }
@@ -215,66 +182,30 @@ impl CloseAiPromptCacheKeyField {
 pub struct PromptCacheKeyContext<'a> {
     pub session_id: &'a str,
     pub stage: &'a str,
-    pub preset_hash: Option<&'a str>,
     pub repo_hash: Option<&'a str>,
 }
 
 pub fn build_prompt_cache_key(ctx: PromptCacheKeyContext<'_>) -> String {
     let session_hash = short_hash(ctx.session_id);
     let stage = stable_key_segment(ctx.stage).unwrap_or("chat");
-    let preset = ctx
-        .preset_hash
-        .and_then(stable_key_segment)
-        .unwrap_or("default");
     let repo = ctx
         .repo_hash
         .and_then(stable_key_segment)
         .unwrap_or("no-repo");
-    format!("agendao:{session_hash}:{stage}:{preset}:{repo}")
+    format!("agendao:{session_hash}:{stage}:{repo}")
 }
 
-pub fn closeai_prompt_cache_key_field(
+pub fn openai_prompt_cache_key_field(
     provider_id: &str,
     npm: &str,
-    provider_options: &serde_json::Map<String, Value>,
-) -> Option<CloseAiPromptCacheKeyField> {
+) -> Option<OpenAiPromptCacheKeyField> {
     let provider_id = provider_id.trim().to_ascii_lowercase();
     let npm = npm.trim();
-    let explicit = provider_options
-        .get("setCacheKey")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    if explicit
-        || provider_id == "openai"
-        || npm == "@ai-sdk/openai"
-        || provider_id.starts_with("opencode")
-        || provider_id == "venice"
-    {
-        return Some(CloseAiPromptCacheKeyField::CamelCase);
-    }
-
-    if provider_id == "openrouter" || npm == "@openrouter/ai-sdk-provider" {
-        return Some(CloseAiPromptCacheKeyField::SnakeCase);
-    }
-
-    if provider_id.contains("kimi")
-        || provider_id.contains("moonshot")
-        || provider_options
-            .get("cacheProvider")
-            .and_then(Value::as_str)
-            .is_some_and(|provider| matches!(provider, "kimi" | "moonshot"))
-    {
-        return Some(CloseAiPromptCacheKeyField::SnakeCase);
+    if provider_id == "openai" || npm == "@ai-sdk/openai" {
+        return Some(OpenAiPromptCacheKeyField::CamelCase);
     }
 
     None
-}
-
-fn provider_matches(provider_id: &str, npm: &str, api_id: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| {
-        provider_id.contains(needle) || npm.contains(needle) || api_id.contains(needle)
-    })
 }
 
 fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
@@ -304,141 +235,22 @@ fn push_diff<T: PartialEq>(
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderCacheOverrides {
-    pub usage_parser: Option<CacheUsageParserKind>,
-    pub extra_headers: Vec<CacheHeaderCapability>,
-    pub ignored_fields: Vec<String>,
-    pub provider_notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CacheUsageParserKind {
-    CloseAiCachedTokens,
-    CloseAiCachedTokensWithCreation,
-    EthnopicReadWrite,
-    PromptCacheHitMiss,
-    AutoDetect,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CacheHeaderCapability {
-    pub name: String,
-    pub value: String,
-}
-
-pub fn provider_cache_overrides(ctx: ProviderCacheOverrideContext<'_>) -> ProviderCacheOverrides {
-    let provider_id = ctx.provider_id.trim().to_ascii_lowercase();
-    let npm = ctx.npm.trim().to_ascii_lowercase();
-    let api_id = ctx.api_id.trim().to_ascii_lowercase();
-
-    let mut override_ = ProviderCacheOverrides::default();
-
-    if provider_matches(&provider_id, &npm, &api_id, &["deepseek"]) {
-        override_.usage_parser = Some(CacheUsageParserKind::PromptCacheHitMiss);
-        override_.provider_notes.push(
-            "official docs expose usage.prompt_cache_hit_tokens and usage.prompt_cache_miss_tokens"
-                .to_string(),
-        );
-        return override_;
-    }
-
-    if provider_matches(&provider_id, &npm, &api_id, &["kimi", "moonshot"]) {
-        override_.usage_parser = Some(CacheUsageParserKind::CloseAiCachedTokens);
-        override_
-            .provider_notes
-            .push("official docs expose usage.cached_tokens and prompt_cache_key".to_string());
-        return override_;
-    }
-
-    if provider_matches(
-        &provider_id,
-        &npm,
-        &api_id,
-        &["zai", "z.ai", "zhipu", "glm"],
-    ) {
-        override_.usage_parser = Some(CacheUsageParserKind::CloseAiCachedTokens);
-        override_
-            .provider_notes
-            .push("official docs expose usage.prompt_tokens_details.cached_tokens".to_string());
-        return override_;
-    }
-
-    if provider_matches(&provider_id, &npm, &api_id, &["minimax"]) {
-        override_.usage_parser = Some(match ctx.family {
-            CacheProtocolFamily::EthnopicCompatible => CacheUsageParserKind::EthnopicReadWrite,
-            _ => CacheUsageParserKind::CloseAiCachedTokens,
-        });
-        override_.provider_notes.push(match ctx.family {
-            CacheProtocolFamily::EthnopicCompatible => {
-                "official ethnopic-compatible docs expose cache_creation_input_tokens and cache_read_input_tokens"
-            }
-            _ => "official closeai-compatible docs expose prompt_tokens_details.cached_tokens",
-        }.to_string());
-        return override_;
-    }
-
-    if provider_matches(
-        &provider_id,
-        &npm,
-        &api_id,
-        &["qwen", "dashscope", "alibaba"],
-    ) {
-        override_.usage_parser = Some(CacheUsageParserKind::CloseAiCachedTokensWithCreation);
-        override_
-            .provider_notes
-            .push("official docs expose prompt_tokens_details.cached_tokens and prompt_tokens_details.cache_creation_input_tokens".to_string());
-        if ctx.family == CacheProtocolFamily::CloseAiCompatible {
-            override_.extra_headers.push(CacheHeaderCapability {
-                name: "x-dashscope-session-cache".to_string(),
-                value: "enable".to_string(),
-            });
-            override_
-                .provider_notes
-                .push("official Responses session cache can be enabled with x-dashscope-session-cache when that API shape is used".to_string());
-        }
-        return override_;
-    }
-
-    if provider_matches(
-        &provider_id,
-        &npm,
-        &api_id,
-        &["doubao", "volc", "bytedance"],
-    ) {
-        override_.usage_parser = Some(CacheUsageParserKind::CloseAiCachedTokens);
-        override_
-            .provider_notes
-            .push("official docs expose usage.prompt_tokens_details.cached_tokens".to_string());
-        return override_;
-    }
-
-    if provider_matches(&provider_id, &npm, &api_id, &["mimo", "xiaomi"]) {
-        override_.provider_notes.push(
-            "no official cache usage fields confirmed; keep generic protocol parsing only"
-                .to_string(),
-        );
-    }
-
-    override_
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RawCacheUsage {
-    CloseAi { raw_json: Value },
-    Ethnopic { raw_json: Value },
+    OpenAi { raw_json: Value },
+    Anthropic { raw_json: Value },
     Unknown { raw_json: Value },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NormalizedCacheUsage {
-    CloseAi {
+    OpenAi {
         input_tokens: u64,
         cached_input_tokens: u64,
         non_cached_input_tokens: u64,
         output_tokens: u64,
     },
-    Ethnopic {
+    Anthropic {
         input_tokens: u64,
         cache_read_input_tokens: u64,
         cache_creation_input_tokens: u64,
@@ -451,9 +263,9 @@ pub fn normalize_cache_usage(
     usage_shape: ProviderUsageShape,
 ) -> Option<NormalizedCacheUsage> {
     match raw {
-        RawCacheUsage::CloseAi { raw_json } => {
+        RawCacheUsage::OpenAi { raw_json } => {
             let metrics = TokenUsageMetrics::from_value_with_shape(&raw_json, usage_shape);
-            Some(NormalizedCacheUsage::CloseAi {
+            Some(NormalizedCacheUsage::OpenAi {
                 input_tokens: metrics.input_tokens,
                 cached_input_tokens: metrics.cache_read_tokens,
                 non_cached_input_tokens: metrics.cache_miss_tokens.max(
@@ -464,12 +276,12 @@ pub fn normalize_cache_usage(
                 output_tokens: metrics.output_tokens,
             })
         }
-        RawCacheUsage::Ethnopic { raw_json } => {
+        RawCacheUsage::Anthropic { raw_json } => {
             let metrics = TokenUsageMetrics::from_value_with_shape(
                 &raw_json,
-                ProviderUsageShape::EthnopicReadWrite,
+                ProviderUsageShape::AnthropicReadWrite,
             );
-            Some(NormalizedCacheUsage::Ethnopic {
+            Some(NormalizedCacheUsage::Anthropic {
                 input_tokens: metrics.input_tokens,
                 cache_read_input_tokens: metrics.cache_read_tokens,
                 cache_creation_input_tokens: metrics.cache_write_tokens,
@@ -477,17 +289,15 @@ pub fn normalize_cache_usage(
             })
         }
         RawCacheUsage::Unknown { raw_json } => match usage_shape {
-            ProviderUsageShape::CloseAiCachedTokens => normalize_cache_usage(
-                RawCacheUsage::CloseAi { raw_json },
-                ProviderUsageShape::CloseAiCachedTokens,
+            ProviderUsageShape::OpenAiCachedTokens => normalize_cache_usage(
+                RawCacheUsage::OpenAi { raw_json },
+                ProviderUsageShape::OpenAiCachedTokens,
             ),
-            ProviderUsageShape::EthnopicReadWrite => normalize_cache_usage(
-                RawCacheUsage::Ethnopic { raw_json },
-                ProviderUsageShape::EthnopicReadWrite,
+            ProviderUsageShape::AnthropicReadWrite => normalize_cache_usage(
+                RawCacheUsage::Anthropic { raw_json },
+                ProviderUsageShape::AnthropicReadWrite,
             ),
-            ProviderUsageShape::Gemini
-            | ProviderUsageShape::Bedrock
-            | ProviderUsageShape::Unknown => None,
+            ProviderUsageShape::Unknown => None,
         },
     }
 }
@@ -502,7 +312,7 @@ pub struct PromptSurfaceFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CloseAiCacheFingerprint {
+pub struct OpenAiCacheFingerprint {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<String>,
     pub previous_response_id_used: bool,
@@ -511,7 +321,7 @@ pub struct CloseAiCacheFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EthnopicCacheFingerprint {
+pub struct AnthropicCacheFingerprint {
     pub cache_control_hash: String,
     pub breakpoint_placement: Vec<usize>,
     pub ttl: Option<String>,
@@ -562,9 +372,9 @@ pub struct CacheRequestFingerprint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_profile: Option<ProviderProfileFingerprint>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub closeai: Option<CloseAiCacheFingerprint>,
+    pub openai: Option<OpenAiCacheFingerprint>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ethnopic: Option<EthnopicCacheFingerprint>,
+    pub anthropic: Option<AnthropicCacheFingerprint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -730,8 +540,8 @@ pub fn inspect_cache_fingerprint_change(
         CacheEvidenceSeverity::MediumChange,
         "prefix changed before the stable boundary",
     );
-    inspect_closeai_fingerprint(previous, current, &mut changes);
-    inspect_ethnopic_fingerprint(previous, current, &mut changes);
+    inspect_openai_fingerprint(previous, current, &mut changes);
+    inspect_anthropic_fingerprint(previous, current, &mut changes);
     inspect_provider_profile_fingerprint(previous, current, &mut changes);
 
     let severity = changes
@@ -809,12 +619,12 @@ fn inspect_provider_profile_fingerprint(
     );
 }
 
-fn inspect_closeai_fingerprint(
+fn inspect_openai_fingerprint(
     previous: &CacheRequestFingerprint,
     current: &CacheRequestFingerprint,
     changes: &mut Vec<CacheFingerprintDiff>,
 ) {
-    let (Some(previous), Some(current)) = (previous.closeai.as_ref(), current.closeai.as_ref())
+    let (Some(previous), Some(current)) = (previous.openai.as_ref(), current.openai.as_ref())
     else {
         return;
     };
@@ -850,12 +660,12 @@ fn inspect_closeai_fingerprint(
     }
 }
 
-fn inspect_ethnopic_fingerprint(
+fn inspect_anthropic_fingerprint(
     previous: &CacheRequestFingerprint,
     current: &CacheRequestFingerprint,
     changes: &mut Vec<CacheFingerprintDiff>,
 ) {
-    let (Some(previous), Some(current)) = (previous.ethnopic.as_ref(), current.ethnopic.as_ref())
+    let (Some(previous), Some(current)) = (previous.anthropic.as_ref(), current.anthropic.as_ref())
     else {
         return;
     };
@@ -916,9 +726,8 @@ impl TokenUsageMetrics {
         let total_tokens = read_u64_any(value, &["total_tokens"]);
         let reasoning_tokens = read_u64_any(value, &["reasoning_tokens"]);
         let (cache_read_tokens, cache_miss_tokens, cache_write_tokens) = match usage_shape {
-            ProviderUsageShape::CloseAiCachedTokens => closeai_usage_cache_tokens(value),
-            ProviderUsageShape::EthnopicReadWrite => ethnopic_usage_cache_tokens(value),
-            ProviderUsageShape::Gemini | ProviderUsageShape::Bedrock => (0, 0, 0),
+            ProviderUsageShape::OpenAiCachedTokens => openai_usage_cache_tokens(value),
+            ProviderUsageShape::AnthropicReadWrite => anthropic_usage_cache_tokens(value),
             ProviderUsageShape::Unknown => autodetect_usage_cache_tokens(value),
         };
         let context_tokens = input_tokens
@@ -950,17 +759,17 @@ impl TokenUsageMetrics {
 }
 
 fn autodetect_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
-    let closeai = closeai_usage_cache_tokens(value);
-    let ethnopic = ethnopic_usage_cache_tokens(value);
+    let openai = openai_usage_cache_tokens(value);
+    let anthropic = anthropic_usage_cache_tokens(value);
 
     (
-        closeai.0.max(ethnopic.0),
-        closeai.1.max(ethnopic.1),
-        closeai.2.max(ethnopic.2),
+        openai.0.max(anthropic.0),
+        openai.1.max(anthropic.1),
+        openai.2.max(anthropic.2),
     )
 }
 
-fn closeai_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
+fn openai_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
     let cache_read_tokens = read_u64_any(value, &["cached_tokens", "prompt_cache_hit_tokens"]).max(
         read_nested_u64_any(
             value,
@@ -989,7 +798,7 @@ fn closeai_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
     (cache_read_tokens, cache_miss_tokens, cache_write_tokens)
 }
 
-fn ethnopic_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
+fn anthropic_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
     let cache_read_tokens = read_u64_any(value, &["cache_read_input_tokens", "cache_read_tokens"]);
     let cache_miss_tokens = read_u64_any(value, &["cache_miss_input_tokens", "cache_miss_tokens"]);
     let cache_write_tokens = read_u64_any(
@@ -1114,16 +923,14 @@ pub fn stable_tool_name_cmp(left: &str, right: &str) -> Ordering {
 
 fn cache_tool_order_rank(name: &str) -> u8 {
     match name {
-        "task_flow" => 0,
-        "task" => 1,
-        "skills_categories" => 2,
-        "skills_list" => 3,
-        "skill_view" => 4,
-        "skill" => 5,
-        "skill_manage" => 6,
+        "skills_categories" => 0,
+        "skills_list" => 1,
+        "skill_view" => 2,
+        "skill" => 3,
+        "skill_manage" => 4,
         "bash" => 250,
         "shell_session" => 251,
-        _ => 7,
+        _ => 5,
     }
 }
 
@@ -1173,7 +980,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_closeai_cached_tokens_shape() {
+    fn extracts_openai_cached_tokens_shape() {
         let metrics = TokenUsageMetrics::from_value(&serde_json::json!({
             "prompt_tokens": 1000,
             "completion_tokens": 50,
@@ -1190,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_closeai_responses_cached_tokens_shape() {
+    fn extracts_openai_responses_cached_tokens_shape() {
         let metrics = TokenUsageMetrics::from_value(&serde_json::json!({
             "input_tokens": 1000,
             "output_tokens": 50,
@@ -1239,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_ethnopic_read_write_shape() {
+    fn extracts_anthropic_read_write_shape() {
         let metrics = TokenUsageMetrics::from_value(&serde_json::json!({
             "input_tokens": 1200,
             "output_tokens": 80,
@@ -1264,15 +1071,15 @@ mod tests {
             "cache_creation_input_tokens": 100
         });
 
-        let closeai =
-            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::CloseAiCachedTokens);
-        let ethnopic =
-            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::EthnopicReadWrite);
+        let openai =
+            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::OpenAiCachedTokens);
+        let anthropic =
+            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::AnthropicReadWrite);
 
-        assert_eq!(closeai.cache_read_tokens, 700);
-        assert_eq!(closeai.cache_write_tokens, 0);
-        assert_eq!(ethnopic.cache_read_tokens, 200);
-        assert_eq!(ethnopic.cache_write_tokens, 100);
+        assert_eq!(openai.cache_read_tokens, 700);
+        assert_eq!(openai.cache_write_tokens, 0);
+        assert_eq!(anthropic.cache_read_tokens, 200);
+        assert_eq!(anthropic.cache_write_tokens, 100);
     }
 
     #[test]
@@ -1287,12 +1094,12 @@ mod tests {
                     }
                 }),
             },
-            ProviderUsageShape::CloseAiCachedTokens,
+            ProviderUsageShape::OpenAiCachedTokens,
         );
 
         assert_eq!(
             normalized,
-            Some(NormalizedCacheUsage::CloseAi {
+            Some(NormalizedCacheUsage::OpenAi {
                 input_tokens: 1000,
                 cached_input_tokens: 750,
                 non_cached_input_tokens: 250,
@@ -1306,103 +1113,32 @@ mod tests {
         let key = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "session-with-local-detail",
             stage: "exec",
-            preset_hash: Some("preset_123"),
             repo_hash: Some("repo_456"),
         });
 
         assert!(key.starts_with("agendao:"));
-        assert!(key.contains(":exec:preset_123:repo_456"));
+        assert!(key.contains(":exec:repo_456"));
         assert!(!key.contains("session-with-local-detail"));
     }
 
     #[test]
     fn prompt_cache_key_field_is_capability_gated() {
         assert_eq!(
-            closeai_prompt_cache_key_field("openai", "@ai-sdk/openai", &serde_json::Map::new()),
-            Some(CloseAiPromptCacheKeyField::CamelCase)
+            openai_prompt_cache_key_field("openai", "@ai-sdk/openai"),
+            Some(OpenAiPromptCacheKeyField::CamelCase)
         );
         assert_eq!(
-            closeai_prompt_cache_key_field(
-                "openrouter",
-                "@openrouter/ai-sdk-provider",
-                &serde_json::Map::new()
-            ),
-            Some(CloseAiPromptCacheKeyField::SnakeCase)
-        );
-        assert_eq!(
-            closeai_prompt_cache_key_field(
-                "deepseek",
-                "@ai-sdk/openai-compatible",
-                &serde_json::Map::new()
-            ),
+            openai_prompt_cache_key_field("openrouter", "@ai-sdk/openai-compatible"),
             None
         );
         assert_eq!(
-            closeai_prompt_cache_key_field(
-                "kimi",
-                "@ai-sdk/openai-compatible",
-                &serde_json::Map::new()
-            ),
-            Some(CloseAiPromptCacheKeyField::SnakeCase)
+            openai_prompt_cache_key_field("custom", "@ai-sdk/openai"),
+            Some(OpenAiPromptCacheKeyField::CamelCase)
         );
     }
 
     #[test]
-    fn provider_cache_overrides_are_protocol_family_specific() {
-        let deepseek = provider_cache_overrides(ProviderCacheOverrideContext {
-            provider_id: "deepseek",
-            npm: "@ai-sdk/openai-compatible",
-            api_id: "deepseek-chat",
-            family: CacheProtocolFamily::CloseAiCompatible,
-        });
-        assert_eq!(
-            deepseek.usage_parser,
-            Some(CacheUsageParserKind::PromptCacheHitMiss)
-        );
-
-        let minimax_ethnopic = provider_cache_overrides(ProviderCacheOverrideContext {
-            provider_id: "minimax",
-            npm: "ethnopic-compatible",
-            api_id: "minimax-m2",
-            family: CacheProtocolFamily::EthnopicCompatible,
-        });
-        assert_eq!(
-            minimax_ethnopic.usage_parser,
-            Some(CacheUsageParserKind::EthnopicReadWrite)
-        );
-
-        let qwen = provider_cache_overrides(ProviderCacheOverrideContext {
-            provider_id: "alibaba-cn",
-            npm: "@ai-sdk/openai-compatible",
-            api_id: "qwen3-coder",
-            family: CacheProtocolFamily::CloseAiCompatible,
-        });
-        assert_eq!(
-            qwen.usage_parser,
-            Some(CacheUsageParserKind::CloseAiCachedTokensWithCreation)
-        );
-        assert_eq!(
-            qwen.extra_headers
-                .first()
-                .map(|header| header.name.as_str()),
-            Some("x-dashscope-session-cache")
-        );
-
-        let mimo = provider_cache_overrides(ProviderCacheOverrideContext {
-            provider_id: "mimo",
-            npm: "@ai-sdk/openai-compatible",
-            api_id: "mimo",
-            family: CacheProtocolFamily::CloseAiCompatible,
-        });
-        assert_eq!(mimo.usage_parser, None);
-        assert!(mimo
-            .provider_notes
-            .iter()
-            .any(|note| note.contains("no official cache usage fields confirmed")));
-    }
-
-    #[test]
-    fn ethnopic_breakpoint_plan_uses_system_and_stable_boundary() {
+    fn anthropic_breakpoint_plan_uses_system_and_stable_boundary() {
         let messages = vec![
             Message::system("system"),
             Message::user("first"),
@@ -1410,7 +1146,7 @@ mod tests {
             Message::user("current"),
         ];
 
-        let plan = plan_ethnopic_message_breakpoints(&messages);
+        let plan = plan_anthropic_message_breakpoints(&messages);
         let indices = plan.message_indices().collect::<Vec<_>>();
 
         assert_eq!(indices, vec![0, 2]);
@@ -1420,10 +1156,10 @@ mod tests {
     }
 
     #[test]
-    fn ethnopic_breakpoint_plan_does_not_mark_current_user() {
+    fn anthropic_breakpoint_plan_does_not_mark_current_user() {
         let messages = vec![Message::system("system"), Message::user("current")];
 
-        let plan = plan_ethnopic_message_breakpoints(&messages);
+        let plan = plan_anthropic_message_breakpoints(&messages);
         let indices = plan.message_indices().collect::<Vec<_>>();
 
         assert_eq!(indices, vec![0]);
@@ -1438,14 +1174,14 @@ mod tests {
                 parameters: serde_json::from_str(r#"{"z":1,"a":{"b":2,"a":1}}"#).unwrap(),
             },
             ToolDefinition {
-                name: "task".to_string(),
+                name: "bash".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
         ];
         let second = vec![
             ToolDefinition {
-                name: "task".to_string(),
+                name: "bash".to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1508,7 +1244,7 @@ mod tests {
     #[test]
     fn prompt_surface_fingerprint_tracks_message_prefix() {
         let tools = vec![ToolDefinition {
-            name: "task".to_string(),
+            name: "bash".to_string(),
             description: None,
             parameters: serde_json::json!({}),
         }];
@@ -1569,9 +1305,9 @@ mod tests {
     }
 
     #[test]
-    fn cache_evidence_inspector_marks_closeai_key_change_as_likely_bust() {
-        let previous = test_closeai_cache_request_fingerprint(Some("key-a"));
-        let current = test_closeai_cache_request_fingerprint(Some("key-b"));
+    fn cache_evidence_inspector_marks_openai_key_change_as_likely_bust() {
+        let previous = test_openai_cache_request_fingerprint(Some("key-a"));
+        let current = test_openai_cache_request_fingerprint(Some("key-b"));
 
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
@@ -1583,9 +1319,9 @@ mod tests {
     }
 
     #[test]
-    fn cache_evidence_inspector_marks_ethnopic_cache_control_change_as_hard_bust() {
-        let previous = test_ethnopic_cache_request_fingerprint("cache-a", vec![0, 2]);
-        let current = test_ethnopic_cache_request_fingerprint("cache-b", vec![0, 2]);
+    fn cache_evidence_inspector_marks_anthropic_cache_control_change_as_hard_bust() {
+        let previous = test_anthropic_cache_request_fingerprint("cache-a", vec![0, 2]);
+        let current = test_anthropic_cache_request_fingerprint("cache-b", vec![0, 2]);
 
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
@@ -1609,9 +1345,17 @@ mod tests {
         let mut current = previous.clone();
         current.provider_profile = Some(ProviderProfileFingerprint::from_profile(
             &crate::ProviderProfileResolver::resolve_with_npm(
-                "openai",
-                "@ai-sdk/openai",
-                &HashMap::from([("useResponsesApi".to_string(), Value::Bool(true))]),
+                "custom-chat",
+                "@ai-sdk/openai-compatible",
+                &HashMap::from([(
+                    "provider_profile".to_string(),
+                    serde_json::json!({
+                        "api_style": "openai-compatible",
+                        "api_shape": "chat-completions",
+                        "transport": "bearer",
+                        "usage_shape": "openai-cached-tokens"
+                    }),
+                )]),
             ),
         ));
 
@@ -1697,41 +1441,37 @@ mod tests {
     }
 
     #[test]
-    fn ethnopic_cache_policy_hash_tracks_policy_shape() {
-        let default = EthnopicCachePolicy::default();
-        let one_hour = EthnopicCachePolicy {
-            ttl: EthnopicCacheTtl::OneHour,
+    fn anthropic_cache_policy_hash_tracks_policy_shape() {
+        let default = AnthropicCachePolicy::default();
+        let one_hour = AnthropicCachePolicy {
+            ttl: AnthropicCacheTtl::OneHour,
             ..Default::default()
         };
 
         assert_ne!(
-            ethnopic_cache_policy_hash(&default),
-            ethnopic_cache_policy_hash(&one_hour)
+            anthropic_cache_policy_hash(&default),
+            anthropic_cache_policy_hash(&one_hour)
         );
     }
 
     // ── Prompt cache key default value regression ──────────────────────
-    // P1.1: lock down session / stage / preset / repo → cache key mapping.
+    // P1.1: lock down session / stage / repo → cache key mapping.
 
     #[test]
-    fn prompt_cache_key_defaults_preset_and_repo_when_absent() {
-        // preset_hash = None → "default", repo_hash = None → "no-repo"
+    fn prompt_cache_key_defaults_repo_when_absent() {
         let key = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "ses",
             stage: "chat",
-            preset_hash: None,
             repo_hash: None,
         });
-        assert!(key.contains(":chat:default:no-repo"));
+        assert!(key.contains(":chat:no-repo"));
 
-        // preset_hash = Some("") is empty-after-trim → "default"
         let key_empty = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "ses",
             stage: "chat",
-            preset_hash: Some(""),
             repo_hash: Some(""),
         });
-        assert!(key_empty.contains(":chat:default:no-repo"));
+        assert!(key_empty.contains(":chat:no-repo"));
     }
 
     #[test]
@@ -1740,18 +1480,16 @@ mod tests {
         let key = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "ses",
             stage: "",
-            preset_hash: None,
             repo_hash: None,
         });
-        assert!(key.contains(":chat:default:no-repo"));
+        assert!(key.contains(":chat:no-repo"));
 
         let key_ws = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "ses",
             stage: "   ",
-            preset_hash: None,
             repo_hash: None,
         });
-        assert!(key_ws.contains(":chat:default:no-repo"));
+        assert!(key_ws.contains(":chat:no-repo"));
     }
 
     #[test]
@@ -1775,13 +1513,12 @@ mod tests {
         let key = build_prompt_cache_key(PromptCacheKeyContext {
             session_id: "a-very-specific-session-name-with-details",
             stage: "exec",
-            preset_hash: Some("abc123"),
             repo_hash: Some("xyz789"),
         });
         // The session id must not appear as-is.
         assert!(!key.contains("a-very-specific-session-name-with-details"));
-        // But the stage, preset, repo segments are verbatim (they are already validated).
-        assert!(key.contains(":exec:abc123:xyz789"));
+        // The stage and repo segments are verbatim (they are already validated).
+        assert!(key.contains(":exec:xyz789"));
         // Prefix must always be there.
         assert!(key.starts_with("agendao:"));
     }
@@ -1791,7 +1528,7 @@ mod tests {
         message_prefix_hash: &str,
     ) -> CacheRequestFingerprint {
         CacheRequestFingerprint {
-            family: CacheProtocolFamily::CloseAiCompatible,
+            family: CacheProtocolFamily::OpenAiCompatible,
             surface: PromptSurfaceFingerprint {
                 model: "model-a".to_string(),
                 system_hash: "system-a".to_string(),
@@ -1800,16 +1537,16 @@ mod tests {
                 api_params_hash: "params-a".to_string(),
             },
             provider_profile: None,
-            closeai: None,
-            ethnopic: None,
+            openai: None,
+            anthropic: None,
         }
     }
 
-    fn test_closeai_cache_request_fingerprint(
+    fn test_openai_cache_request_fingerprint(
         prompt_cache_key: Option<&str>,
     ) -> CacheRequestFingerprint {
         let mut fingerprint = test_cache_request_fingerprint("tools-a", "messages-a");
-        fingerprint.closeai = Some(CloseAiCacheFingerprint {
+        fingerprint.openai = Some(OpenAiCacheFingerprint {
             prompt_cache_key: prompt_cache_key.map(ToString::to_string),
             prompt_cache_retention: Some("in_memory".to_string()),
             previous_response_id_used: true,
@@ -1819,13 +1556,13 @@ mod tests {
         fingerprint
     }
 
-    fn test_ethnopic_cache_request_fingerprint(
+    fn test_anthropic_cache_request_fingerprint(
         cache_control_hash: &str,
         breakpoint_placement: Vec<usize>,
     ) -> CacheRequestFingerprint {
         let mut fingerprint = test_cache_request_fingerprint("tools-a", "messages-a");
-        fingerprint.family = CacheProtocolFamily::EthnopicCompatible;
-        fingerprint.ethnopic = Some(EthnopicCacheFingerprint {
+        fingerprint.family = CacheProtocolFamily::AnthropicCompatible;
+        fingerprint.anthropic = Some(AnthropicCacheFingerprint {
             cache_control_hash: cache_control_hash.to_string(),
             breakpoint_placement,
             ttl: None,

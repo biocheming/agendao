@@ -43,10 +43,9 @@ pub use tool_result_governance::*;
 
 pub use agendao_types::SessionTime as SessionListTime;
 pub use agendao_types::{
-    PermissionRulesetInfo, PersistedStageTelemetrySummary, SessionInfo, SessionListContract,
-    SessionListHints, SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo,
-    SessionShareInfo, SessionSummaryInfo, SessionTelemetrySnapshot,
-    SessionTelemetrySnapshotVersion, SessionTimeInfo,
+    PermissionRulesetInfo, SessionInfo, SessionListContract, SessionListHints, SessionListItem,
+    SessionListResponse, SessionListSummary, SessionRevertInfo, SessionShareInfo,
+    SessionSummaryInfo, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionTimeInfo,
 };
 pub use session::{
     BusyError, FileDiff, PermissionRuleset, RunStatus, Session, SessionError, SessionEvent,

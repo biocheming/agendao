@@ -52,16 +52,16 @@ impl ContextDocsOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 struct ContextDocsInput {
     operation: ContextDocsOperation,
     #[serde(default)]
     library: Option<String>,
-    #[serde(default, alias = "library_id")]
+    #[serde(default)]
     library_id: Option<String>,
     #[serde(default)]
     query: Option<String>,
-    #[serde(default, alias = "page_id")]
+    #[serde(default)]
     page_id: Option<String>,
     #[serde(default)]
     version: Option<String>,

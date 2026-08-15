@@ -36,15 +36,25 @@ impl InputReadlineExt for Input {
         match event.key {
             // readline 语义：A=行首 E=行尾（revue 固有的 ctrl+a=select_all
             // 在弹窗字段里没有对应手势，统一为 readline 口径）。
-            Key::Char('a') => { self.handle_key(&Key::Home); }
-            Key::Char('e') => { self.handle_key(&Key::End); }
+            Key::Char('a') => {
+                self.handle_key(&Key::Home);
+            }
+            Key::Char('e') => {
+                self.handle_key(&Key::End);
+            }
             Key::Char('w') | Key::Backspace => kill_word_before(self),
             Key::Char('u') => kill_to_line_start(self),
             Key::Char('k') => kill_to_line_end(self),
-            Key::Char('z') => { self.undo(); }
-            Key::Char('y') => { self.redo(); }
+            Key::Char('z') => {
+                self.undo();
+            }
+            Key::Char('y') => {
+                self.redo();
+            }
             // 词跳：revue 固有 ctrl+←/→ 已实现（含 shift 选区），直接透传。
-            Key::Left | Key::Right => { self.handle_key_event(event); }
+            Key::Left | Key::Right => {
+                self.handle_key_event(event);
+            }
             // 未绑定 chord：吞掉。
             _ => {}
         }
@@ -57,8 +67,12 @@ impl InputReadlineExt for Input {
 pub(crate) fn word_start_before(text: &str, cursor: usize) -> usize {
     let chars: Vec<char> = text.chars().collect();
     let mut start = cursor.min(chars.len());
-    while start > 0 && chars[start - 1].is_whitespace() { start -= 1; }
-    while start > 0 && !chars[start - 1].is_whitespace() { start -= 1; }
+    while start > 0 && chars[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    while start > 0 && !chars[start - 1].is_whitespace() {
+        start -= 1;
+    }
     start
 }
 
@@ -88,8 +102,15 @@ pub(crate) fn linear_to_line_col(content: &str, idx: usize) -> (usize, usize) {
     let mut line = 0;
     let mut col = 0;
     for (i, ch) in content.chars().enumerate() {
-        if i == idx { break; }
-        if ch == '\n' { line += 1; col = 0; } else { col += 1; }
+        if i == idx {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
     }
     (line, col)
 }
@@ -111,7 +132,12 @@ mod tests {
     use super::*;
 
     fn ctrl(key: Key) -> KeyEvent {
-        KeyEvent { key, ctrl: true, alt: false, shift: false }
+        KeyEvent {
+            key,
+            ctrl: true,
+            alt: false,
+            shift: false,
+        }
     }
 
     #[test]
@@ -160,7 +186,11 @@ mod tests {
         let content = "ab\ncde\nf";
         assert_eq!(line_col_to_linear(content, 1, 2), 5);
         assert_eq!(linear_to_line_col(content, 5), (1, 2));
-        assert_eq!(line_col_to_linear(content, 0, 99), 2, "col 越界 clamp 到行尾");
+        assert_eq!(
+            line_col_to_linear(content, 0, 99),
+            2,
+            "col 越界 clamp 到行尾"
+        );
         assert_eq!(linear_to_line_col(content, 0), (0, 0));
     }
 

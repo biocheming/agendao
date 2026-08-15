@@ -2,14 +2,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use agendao_config::ResolvedExternalToolCatalog;
-use agendao_orchestrator::session_title_request;
+use agendao_execution_types::session_title_request;
 use agendao_provider::cache::{ToolSurfaceSourceDigest, ToolSurfaceSourceKind};
 use agendao_provider::{Content, Message, Provider, Role, ToolDefinition};
 use agendao_types::ToolCatalogMetadata;
 
-use crate::{MessageRole, PartType, Session, SessionMessage, sanitize_display_text};
-
-use super::MAX_STEPS;
+use crate::{sanitize_display_text, MessageRole, PartType, Session, SessionMessage};
 
 // --- Structured Output ---
 
@@ -55,88 +53,6 @@ pub fn extract_structured_output(parts: &[crate::MessagePart]) -> Option<serde_j
         }
     }
     None
-}
-
-// --- Plan Mode ---
-
-const PROMPT_PLAN: &str = r#"You are in PLAN mode. The user wants you to create a plan before executing.
-
-## Your task:
-1. Understand the user's request thoroughly
-2. Explore the codebase to understand the current state
-3. Create a detailed plan in the plan file
-4. Use the plan_exit tool when done planning
-
-## Important:
-- Do NOT make any edits or run commands (except read operations)
-- Only create/modify the plan file
-- Ask clarifying questions if needed
-- Use explore subagent to understand the codebase"#;
-
-const BUILD_SWITCH: &str = r#"The user has approved your plan and wants you to execute it.
-
-## Your task:
-1. Execute the plan step by step
-2. Make the necessary changes to the codebase
-3. Test your changes
-4. Verify the implementation matches the plan
-
-## Important:
-- You may now use all tools including edit, write, bash
-- Follow the plan closely but adapt as needed
-- Report progress to the user"#;
-
-pub fn insert_reminders(
-    mut messages: Vec<SessionMessage>,
-    agent_name: &str,
-    was_plan: bool,
-) -> Vec<SessionMessage> {
-    let last_user_idx = messages
-        .iter()
-        .rposition(|m| matches!(m.role, MessageRole::User));
-
-    // 就地修改传入的 Vec：无 reminder 需要插入时原样返回，零克隆。
-    if let Some(idx) = last_user_idx {
-        if agent_name == "plan" {
-            let reminder_text = PROMPT_PLAN.to_string();
-            messages[idx].parts.push(crate::MessagePart {
-                id: format!("prt_{}", uuid::Uuid::new_v4()),
-                part_type: PartType::Text {
-                    text: reminder_text,
-                    synthetic: None,
-                    ignored: None,
-                },
-                created_at: chrono::Utc::now(),
-                message_id: None,
-            });
-        }
-
-        if was_plan && agent_name == "build" {
-            let reminder_text = BUILD_SWITCH.to_string();
-            messages[idx].parts.push(crate::MessagePart {
-                id: format!("prt_{}", uuid::Uuid::new_v4()),
-                part_type: PartType::Text {
-                    text: reminder_text,
-                    synthetic: None,
-                    ignored: None,
-                },
-                created_at: chrono::Utc::now(),
-                message_id: None,
-            });
-        }
-    }
-
-    messages
-}
-
-pub fn was_plan_agent(messages: &[SessionMessage]) -> bool {
-    messages.iter().any(|m| {
-        if let Some(agent) = m.metadata.get("agent") {
-            agent.as_str() == Some("plan")
-        } else {
-            false
-        }
-    })
 }
 
 // --- Tool Resolution ---
@@ -222,7 +138,12 @@ pub fn resolve_tool_catalog_mode(
 
     if family_counts
         .values()
-        .any(|count| *count >= LARGE_FAMILY_THRESHOLD) { ToolCatalogMode::SearchFacade } else { ToolCatalogMode::FullSchema }
+        .any(|count| *count >= LARGE_FAMILY_THRESHOLD)
+    {
+        ToolCatalogMode::SearchFacade
+    } else {
+        ToolCatalogMode::FullSchema
+    }
 }
 
 pub fn tool_catalog_fingerprint(catalog_by_tool: &BTreeMap<String, ToolCatalogMetadata>) -> String {
@@ -420,10 +341,8 @@ fn materialize_model_tool_surface(
                 .cloned()
                 .collect::<Vec<_>>();
             if facade.is_empty() {
-                tracing::warn!(
-                    "search-facade mode selected without facade tools; falling back to full schema surface"
-                );
-                tools.to_vec()
+                tracing::error!("search-facade mode selected without canonical facade tools");
+                facade
             } else {
                 facade.sort_by(|a, b| {
                     search_facade_visible_bridge_rank(&a.name)
@@ -560,38 +479,8 @@ mod title_tests {
     }
 
     #[test]
-    fn prioritize_tool_definitions_prefers_task_flow_over_task() {
-        let mut tools = vec![
-            ToolDefinition {
-                name: "websearch".to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: "task".to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: "task_flow".to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-        ];
-
-        prioritize_tool_definitions(&mut tools);
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-        assert_eq!(names, vec!["task_flow", "task", "websearch"]);
-    }
-
-    #[test]
     fn prioritize_tool_definitions_prefers_skill_discovery_before_skill_loading_tools() {
         let mut tools = vec![
-            ToolDefinition {
-                name: "skill".to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
             ToolDefinition {
                 name: "websearch".to_string(),
                 description: None,
@@ -627,7 +516,6 @@ mod title_tests {
                 "skills_categories",
                 "skills_list",
                 "skill_view",
-                "skill",
                 "skill_manage",
                 "websearch"
             ]
@@ -687,17 +575,15 @@ mod title_tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].name, "read");
         assert_eq!(merged[0].description.as_deref(), Some("built-in read"));
-        assert!(
-            merged[0].parameters["properties"]
-                .get("file_path")
-                .is_some()
-        );
+        assert!(merged[0].parameters["properties"]
+            .get("file_path")
+            .is_some());
     }
 
     #[test]
     fn merge_tool_definitions_is_stable_across_extra_tool_order() {
         let base = vec![ToolDefinition {
-            name: "task".to_string(),
+            name: "bash".to_string(),
             description: None,
             parameters: serde_json::json!({}),
         }];
@@ -726,7 +612,7 @@ mod title_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names_a, names_b);
-        assert_eq!(names_a, vec!["task", "github_search", "repo_scan"]);
+        assert_eq!(names_a, vec!["bash", "github_search", "repo_scan"]);
     }
 
     #[test]
@@ -889,13 +775,11 @@ mod title_tests {
             .iter()
             .find(|tool| tool.name == "dock_pose")
             .expect("external tool should be present");
-        assert!(
-            dock_pose
-                .description
-                .as_deref()
-                .expect("description")
-                .contains("catalog-only")
-        );
+        assert!(dock_pose
+            .description
+            .as_deref()
+            .expect("description")
+            .contains("catalog-only"));
         assert_eq!(
             dock_pose.parameters["description"],
             serde_json::json!(
@@ -909,12 +793,10 @@ mod title_tests {
                 .and_then(|catalog| catalog.domain.as_deref()),
             Some("cadd")
         );
-        assert!(
-            merged
-                .source_digests
-                .iter()
-                .any(|digest| digest.source == ToolSurfaceSourceKind::Dynamic)
-        );
+        assert!(merged
+            .source_digests
+            .iter()
+            .any(|digest| digest.source == ToolSurfaceSourceKind::Dynamic));
         assert_ne!(
             merged.catalog_hash,
             tool_catalog_fingerprint(&BTreeMap::new())
@@ -1024,13 +906,11 @@ mod title_tests {
             .find(|tool| tool.name == "score_pose")
             .expect("executable external tool should be present");
 
-        assert!(
-            score_pose
-                .description
-                .as_deref()
-                .expect("description")
-                .contains("executable")
-        );
+        assert!(score_pose
+            .description
+            .as_deref()
+            .expect("description")
+            .contains("executable"));
         assert_eq!(
             score_pose.parameters["description"],
             serde_json::json!(
@@ -1148,11 +1028,6 @@ mod title_tests {
             ToolDefinition {
                 name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
                 description: Some("call".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID.to_string(),
-                description: Some("legacy search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
@@ -1276,7 +1151,6 @@ mod title_tests {
         assert!(names.contains(&"artifact_read"));
         assert!(!names.contains(&"websearch"));
         assert!(!names.contains(&"webfetch"));
-        assert!(!names.contains(&agendao_tool::tool_catalog::LEGACY_MCP_SEARCH_TOOL_ID));
     }
 
     #[tokio::test]
@@ -1293,12 +1167,6 @@ mod title_tests {
             "invalid should remain available for fallback execution but not be exposed on the model tool surface"
         );
     }
-}
-
-// --- Misc ---
-
-pub fn max_steps_for_agent(agent_steps: Option<u32>) -> u32 {
-    agent_steps.unwrap_or(MAX_STEPS)
 }
 
 fn is_system_reminder_open_tag(line: &str) -> bool {

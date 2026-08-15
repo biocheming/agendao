@@ -1,26 +1,32 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use agendao_execution_types::{session_runtime_request_defaults, CompiledExecutionRequest};
-use agendao_orchestrator::runtime::events::{
-    CancelToken as RuntimeCancelToken, LoopError as RuntimeLoopError,
+use agendao_orchestrator::agent_loop::{CancellationFlag, ProviderModelBackend};
+use agendao_orchestrator::blueprint::{
+    AgentId, AgentNode, BlueprintName, BlueprintSchemaVersion, EndNode, ExecutionLimits,
+    ModelCapability, NodeId, NodeSpec, OutputContract, OutputFormat, ResultSource,
+    SchedulerBlueprint, ToolId, ValidatedBlueprint,
 };
-use agendao_orchestrator::runtime::policy::{LoopPolicy, ToolDedupScope};
-use agendao_orchestrator::runtime::run_loop;
-use agendao_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
+use agendao_orchestrator::catalog::{
+    AgentCatalogEntry, EffectClass, PermissionClass, SchedulerCatalog, ToolCatalogEntry,
+};
+use agendao_orchestrator::context::HandoffPacket;
+use agendao_orchestrator::engine::{
+    ArtifactRequest, CapabilityBackend, CheckpointHandle, CheckpointRequest, EvaluationOutcome,
+    EvaluatorBackend, RestoreRequest, RunDisposition, RunRequest, SchedulerEngine,
+};
+use agendao_orchestrator::policy::PolicyEnvelope;
 use agendao_output_blocks::{OutputBlock, StatusBlock};
 use agendao_plugin::{HookContext, HookEvent};
 use agendao_provider::cache::{
-    inspect_cache_fingerprint_change, CacheEvidenceSummary, CacheProtocolFamily,
-    CacheRequestFingerprint, CloseAiCacheFingerprint, EthnopicCacheFingerprint,
-    EthnopicCachePolicy, PromptSurfaceFingerprint, ProviderProfileFingerprint,
-    CACHE_EVIDENCE_INSPECTION_METADATA_KEY, CACHE_EVIDENCE_METADATA_KEY,
-    CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
+    inspect_cache_fingerprint_change, AnthropicCacheFingerprint, AnthropicCachePolicy,
+    CacheEvidenceSummary, CacheProtocolFamily, CacheRequestFingerprint, OpenAiCacheFingerprint,
+    PromptSurfaceFingerprint, ProviderProfileFingerprint, CACHE_EVIDENCE_INSPECTION_METADATA_KEY,
+    CACHE_EVIDENCE_METADATA_KEY, CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
 };
 use agendao_provider::error_code::StandardErrorCode;
 use agendao_provider::transform::{apply_caching, ProviderType};
@@ -32,25 +38,24 @@ use crate::tool_result_governance::{
 };
 use crate::{EnvironmentContext, MessageRole, Session, SessionMessage, SystemPrompt};
 
-use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
+use super::runtime_step::{SessionAgentObserver, SessionStepRuntimeOutput, SessionToolBackend};
 use super::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, is_terminal_finish,
     merge_tool_definitions, session_message_hook_payload, skill_reflection,
     surface_authority::PromptSurfaceInputs, surface_authority::PromptSurfaceSections,
     tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
-    SessionStepShared, MAX_STEPS, PENDING_SANITIZER_STAGE_METADATA_KEY,
-    PROMPT_SURFACE_EVIDENCE_METADATA_KEY, PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY,
-    STREAM_UPDATE_INTERVAL_MS,
+    PENDING_SANITIZER_STAGE_METADATA_KEY, PROMPT_SURFACE_EVIDENCE_METADATA_KEY,
+    PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
 };
 
 const MAX_LENGTH_CONTINUATION_RETRIES: u8 = 2;
+const MAX_OVERFLOW_RECOVERY_RETRIES: u8 = 1;
+const MAX_CONTEXT_COMPACTION_PASSES: u8 = 3;
+const DEFAULT_DIRECT_AGENT_STEPS: u32 = 16;
+const DEFAULT_DIRECT_TIMEOUT_SECS: u64 = 30 * 60;
+const MAX_TOOLS_PER_AGENT_STEP: u32 = 8;
+const MAX_TURN_MODEL_RUNS: u8 = 1 + MAX_LENGTH_CONTINUATION_RETRIES + MAX_OVERFLOW_RECOVERY_RETRIES;
 const LENGTH_CONTINUATION_PROMPT: &str = "[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]";
-
-#[derive(Clone)]
-struct SessionStepCancelToken {
-    user_cancel: CancellationToken,
-    step_complete: Arc<AtomicBool>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PromptSurfaceStateSnapshot {
@@ -61,7 +66,7 @@ struct PromptSurfaceStateSnapshot {
     protocol_family: CacheProtocolFamily,
     provider_id: String,
     model_id: String,
-    api_shape: Option<agendao_provider::cache::CloseAiCompatibleApiShape>,
+    api_shape: Option<agendao_provider::cache::OpenAiCompatibleApiShape>,
     system_hash: String,
     stable_system_surface_hash: String,
     tool_surface_hash: String,
@@ -75,9 +80,9 @@ struct PromptSurfaceStateSnapshot {
     reasoning_mode_hash: Option<String>,
     output_projection_policy_hash: String,
     scc_stable_refs_hash: Option<String>,
-    closeai_prompt_cache_key: Option<String>,
-    ethnopic_policy_hash: Option<String>,
-    ethnopic_breakpoint_plan_hash: Option<String>,
+    openai_prompt_cache_key: Option<String>,
+    anthropic_policy_hash: Option<String>,
+    anthropic_breakpoint_plan_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ingress_policy_hash: Option<String>,
     evidence: Option<PromptSurfaceEvidence>,
@@ -99,7 +104,7 @@ struct PromptSurfaceStableFields {
     protocol_family: CacheProtocolFamily,
     provider_id: String,
     model_id: String,
-    api_shape: Option<agendao_provider::cache::CloseAiCompatibleApiShape>,
+    api_shape: Option<agendao_provider::cache::OpenAiCompatibleApiShape>,
     system_hash: String,
     stable_system_surface_hash: String,
     tool_surface_hash: String,
@@ -113,16 +118,21 @@ struct PromptSurfaceStableFields {
     reasoning_mode_hash: Option<String>,
     output_projection_policy_hash: String,
     scc_stable_refs_hash: Option<String>,
-    closeai_prompt_cache_key: Option<String>,
-    ethnopic_policy_hash: Option<String>,
-    ethnopic_breakpoint_plan_hash: Option<String>,
+    openai_prompt_cache_key: Option<String>,
+    anthropic_policy_hash: Option<String>,
+    anthropic_breakpoint_plan_hash: Option<String>,
     ingress_policy_hash: Option<String>,
 }
 
-impl RuntimeCancelToken for SessionStepCancelToken {
-    fn is_cancelled(&self) -> bool {
-        self.user_cancel.is_cancelled() || self.step_complete.load(Ordering::Relaxed)
-    }
+struct CacheFingerprintInput<'a> {
+    session_id: &'a str,
+    provider_id: &'a str,
+    model_id: &'a str,
+    system_prompt: Option<&'a str>,
+    messages: &'a [agendao_provider::Message],
+    tools: &'a [ToolDefinition],
+    compiled_request: &'a CompiledExecutionRequest,
+    provider_profile: Option<ProviderProfileFingerprint>,
 }
 
 fn prompt_surface_volatility_finding_to_internal(
@@ -132,12 +142,6 @@ fn prompt_surface_volatility_finding_to_internal(
         kind: match finding.kind {
             agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField => {
                 crate::prompt::surface_authority::PromptSurfaceVolatilityKind::VolatileEnvField
-            }
-            agendao_types::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
-                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance
-            }
-            agendao_types::PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
-                crate::prompt::surface_authority::PromptSurfaceVolatilityKind::OversizedCapabilityProjection
             }
             agendao_types::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
                 crate::prompt::surface_authority::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface
@@ -297,7 +301,7 @@ mod cache_fingerprint_tests {
     use agendao_provider::Message;
 
     #[test]
-    fn cache_request_fingerprint_records_closeai_family_without_wire_changes() {
+    fn cache_request_fingerprint_records_openai_family_without_wire_changes() {
         let messages = vec![Message::system("system"), Message::user("hello")];
         let compiled = CompiledExecutionRequest {
             model_id: "gpt-test".to_string(),
@@ -308,19 +312,18 @@ mod cache_fingerprint_tests {
             ..Default::default()
         };
 
-        let fingerprint = SessionPrompt::cache_request_fingerprint(
-            "ses_test",
-            "openai",
-            "gpt-test",
-            Some("system"),
-            &messages,
-            &[],
-            &compiled,
-            ProviderType::OpenAI,
-            Some(openai_provider_profile_fingerprint()),
-        );
+        let fingerprint = SessionPrompt::cache_request_fingerprint(CacheFingerprintInput {
+            session_id: "ses_test",
+            provider_id: "openai",
+            model_id: "gpt-test",
+            system_prompt: Some("system"),
+            messages: &messages,
+            tools: &[],
+            compiled_request: &compiled,
+            provider_profile: Some(openai_provider_profile_fingerprint()),
+        });
 
-        assert_eq!(fingerprint.family, CacheProtocolFamily::CloseAiCompatible);
+        assert_eq!(fingerprint.family, CacheProtocolFamily::OpenAiCompatible);
         let provider_profile = fingerprint
             .provider_profile
             .as_ref()
@@ -328,20 +331,20 @@ mod cache_fingerprint_tests {
         assert_eq!(provider_profile.provider_id, "openai");
         assert_eq!(
             provider_profile.api_family,
-            agendao_provider::ProviderApiFamily::CloseAiCompatible
+            agendao_provider::ProviderApiFamily::OpenAiCompatible
         );
         assert_eq!(
             provider_profile.api_shape,
-            agendao_provider::ProviderApiShape::ChatCompletions
+            agendao_provider::ProviderApiShape::Responses
         );
         assert_eq!(
             fingerprint
-                .closeai
+                .openai
                 .as_ref()
                 .and_then(|value| value.prompt_cache_key.as_deref()),
             Some("agendao:key")
         );
-        assert!(fingerprint.ethnopic.is_none());
+        assert!(fingerprint.anthropic.is_none());
     }
 
     #[test]
@@ -356,28 +359,27 @@ mod cache_fingerprint_tests {
             ..Default::default()
         };
 
-        let fingerprint = SessionPrompt::cache_request_fingerprint(
-            "ses_test",
-            "custom-provider",
-            "gpt-test",
-            Some("system"),
-            &messages,
-            &[],
-            &compiled,
-            ProviderType::OpenAI,
-            None,
-        );
+        let fingerprint = SessionPrompt::cache_request_fingerprint(CacheFingerprintInput {
+            session_id: "ses_test",
+            provider_id: "custom-provider",
+            model_id: "gpt-test",
+            system_prompt: Some("system"),
+            messages: &messages,
+            tools: &[],
+            compiled_request: &compiled,
+            provider_profile: None,
+        });
 
-        assert_eq!(fingerprint.family, CacheProtocolFamily::CloseAiCompatible);
+        assert_eq!(fingerprint.family, CacheProtocolFamily::Disabled);
         assert!(
             fingerprint.provider_profile.is_none(),
             "request options are not provider profile authority"
         );
-        assert!(fingerprint.closeai.is_some());
+        assert!(fingerprint.openai.is_none());
     }
 
     #[test]
-    fn cache_request_fingerprint_records_generated_closeai_cache_key() {
+    fn cache_request_fingerprint_records_generated_openai_cache_key() {
         let messages = vec![Message::system("system"), Message::user("hello")];
         let compiled = CompiledExecutionRequest {
             model_id: "gpt-test".to_string(),
@@ -388,20 +390,19 @@ mod cache_fingerprint_tests {
             ..Default::default()
         };
 
-        let fingerprint = SessionPrompt::cache_request_fingerprint(
-            "ses_generated_key",
-            "openai",
-            "gpt-test",
-            Some("system"),
-            &messages,
-            &[],
-            &compiled,
-            ProviderType::OpenAI,
-            None,
-        );
+        let fingerprint = SessionPrompt::cache_request_fingerprint(CacheFingerprintInput {
+            session_id: "ses_generated_key",
+            provider_id: "openai",
+            model_id: "gpt-test",
+            system_prompt: Some("system"),
+            messages: &messages,
+            tools: &[],
+            compiled_request: &compiled,
+            provider_profile: Some(openai_provider_profile_fingerprint()),
+        });
 
         let prompt_cache_key = fingerprint
-            .closeai
+            .openai
             .as_ref()
             .and_then(|value| value.prompt_cache_key.as_deref())
             .expect("generated prompt cache key should be recorded");
@@ -429,7 +430,7 @@ mod cache_fingerprint_tests {
     fn latest_cache_request_fingerprint_reads_previous_assistant_metadata() {
         let mut session = Session::new("project", "/tmp");
         let fingerprint = CacheRequestFingerprint {
-            family: CacheProtocolFamily::CloseAiCompatible,
+            family: CacheProtocolFamily::OpenAiCompatible,
             surface: PromptSurfaceFingerprint {
                 model: "model-a".to_string(),
                 system_hash: "system-a".to_string(),
@@ -438,8 +439,8 @@ mod cache_fingerprint_tests {
                 api_params_hash: "params-a".to_string(),
             },
             provider_profile: None,
-            closeai: None,
-            ethnopic: None,
+            openai: None,
+            anthropic: None,
         };
         let assistant = session.add_assistant_message();
         assistant.metadata.insert(
@@ -461,10 +462,10 @@ mod cache_fingerprint_tests {
             generation: 4,
             created_at_ms: 100,
             updated_at_ms: 200,
-            protocol_family: CacheProtocolFamily::CloseAiCompatible,
+            protocol_family: CacheProtocolFamily::OpenAiCompatible,
             provider_id: "openai".to_string(),
             model_id: "gpt-test".to_string(),
-            api_shape: Some(agendao_provider::cache::CloseAiCompatibleApiShape::ChatCompletions),
+            api_shape: Some(agendao_provider::cache::OpenAiCompatibleApiShape::ChatCompletions),
             system_hash: "system-a".to_string(),
             stable_system_surface_hash: "stable-system-a".to_string(),
             tool_surface_hash: "tools-a".to_string(),
@@ -478,9 +479,9 @@ mod cache_fingerprint_tests {
             reasoning_mode_hash: None,
             output_projection_policy_hash: "projection-a".to_string(),
             scc_stable_refs_hash: None,
-            closeai_prompt_cache_key: Some("agendao:key".to_string()),
-            ethnopic_policy_hash: None,
-            ethnopic_breakpoint_plan_hash: None,
+            openai_prompt_cache_key: Some("agendao:key".to_string()),
+            anthropic_policy_hash: None,
+            anthropic_breakpoint_plan_hash: None,
             ingress_policy_hash: None,
             evidence: None,
         };
@@ -505,8 +506,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &first_fingerprint,
             Some("system"),
@@ -525,8 +525,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &second_fingerprint,
             Some("system"),
@@ -557,8 +556,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &first_fingerprint,
             Some("system"),
@@ -577,8 +575,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &second_fingerprint,
             Some("system"),
@@ -663,8 +660,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &first_fingerprint,
             Some(first_system),
@@ -683,8 +679,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &second_fingerprint,
             Some(second_system),
@@ -721,8 +716,7 @@ mod cache_fingerprint_tests {
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -744,8 +738,7 @@ mod cache_fingerprint_tests {
         let stable_again = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -778,8 +771,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -801,8 +793,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -844,8 +835,7 @@ mod cache_fingerprint_tests {
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -854,7 +844,7 @@ mod cache_fingerprint_tests {
 
         assert_eq!(
             stable.api_shape,
-            Some(agendao_provider::cache::CloseAiCompatibleApiShape::Responses)
+            Some(agendao_provider::cache::OpenAiCompatibleApiShape::Responses)
         );
     }
 
@@ -883,8 +873,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &[projected],
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -904,8 +893,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &[full],
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -944,8 +932,7 @@ mod cache_fingerprint_tests {
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &[baseline.clone()],
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -972,8 +959,7 @@ mod cache_fingerprint_tests {
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &[baseline],
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -1037,7 +1023,7 @@ mod cache_fingerprint_tests {
     // ── P1.1: snapshot field regression — lock down cache-key and hash fields ──
 
     #[test]
-    fn snapshot_preserves_closeai_prompt_cache_key_across_generations() {
+    fn snapshot_preserves_openai_prompt_cache_key_across_generations() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
@@ -1045,8 +1031,7 @@ mod cache_fingerprint_tests {
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -1061,7 +1046,7 @@ mod cache_fingerprint_tests {
             100,
         );
 
-        // Same stable fields → same closeai_prompt_cache_key, same generation.
+        // Same stable fields → same openai_prompt_cache_key, same generation.
         let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
@@ -1071,8 +1056,8 @@ mod cache_fingerprint_tests {
         );
 
         assert_eq!(
-            first.closeai_prompt_cache_key, second.closeai_prompt_cache_key,
-            "closeai_prompt_cache_key must be stable when stable fields are unchanged"
+            first.openai_prompt_cache_key, second.openai_prompt_cache_key,
+            "openai_prompt_cache_key must be stable when stable fields are unchanged"
         );
         assert_eq!(second.generation, first.generation);
         assert!(second.evidence.is_none());
@@ -1093,8 +1078,7 @@ mod cache_fingerprint_tests {
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some(system_prompt),
@@ -1122,8 +1106,7 @@ mod cache_fingerprint_tests {
         let stable2 = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some(system_prompt),
@@ -1153,8 +1136,7 @@ mod cache_fingerprint_tests {
         let stable_a = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint_a,
             Some("system"),
@@ -1174,8 +1156,7 @@ mod cache_fingerprint_tests {
         let stable_b = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint_b,
             Some("system"),
@@ -1210,8 +1191,7 @@ mod cache_fingerprint_tests {
         let stable_a = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -1229,8 +1209,7 @@ mod cache_fingerprint_tests {
         let stable_b = SessionPrompt::prompt_surface_stable_fields(
             &session,
             &session.messages,
-            "openai",
-            "gpt-test",
+            ("openai", "gpt-test"),
             &compiled,
             &fingerprint,
             Some("system"),
@@ -1259,10 +1238,10 @@ mod cache_fingerprint_tests {
     #[test]
     fn snapshot_records_tool_catalog_diagnostics() {
         let stable = PromptSurfaceStableFields {
-            protocol_family: CacheProtocolFamily::CloseAiCompatible,
+            protocol_family: CacheProtocolFamily::OpenAiCompatible,
             provider_id: "openai".to_string(),
             model_id: "gpt-test".to_string(),
-            api_shape: Some(agendao_provider::cache::CloseAiCompatibleApiShape::ChatCompletions),
+            api_shape: Some(agendao_provider::cache::OpenAiCompatibleApiShape::ChatCompletions),
             system_hash: "system-a".to_string(),
             stable_system_surface_hash: "stable-a".to_string(),
             tool_surface_hash: "tools-a".to_string(),
@@ -1276,9 +1255,9 @@ mod cache_fingerprint_tests {
             reasoning_mode_hash: None,
             output_projection_policy_hash: "projection-a".to_string(),
             scc_stable_refs_hash: None,
-            closeai_prompt_cache_key: Some("agendao:key".to_string()),
-            ethnopic_policy_hash: None,
-            ethnopic_breakpoint_plan_hash: None,
+            openai_prompt_cache_key: Some("agendao:key".to_string()),
+            anthropic_policy_hash: None,
+            anthropic_breakpoint_plan_hash: None,
             ingress_policy_hash: None,
         };
 
@@ -1302,7 +1281,7 @@ mod cache_fingerprint_tests {
         api_params_hash: &str,
     ) -> CacheRequestFingerprint {
         CacheRequestFingerprint {
-            family: CacheProtocolFamily::CloseAiCompatible,
+            family: CacheProtocolFamily::OpenAiCompatible,
             surface: PromptSurfaceFingerprint {
                 model: "gpt-test".to_string(),
                 system_hash: system_hash.to_string(),
@@ -1311,14 +1290,14 @@ mod cache_fingerprint_tests {
                 api_params_hash: api_params_hash.to_string(),
             },
             provider_profile: None,
-            closeai: Some(CloseAiCacheFingerprint {
+            openai: Some(OpenAiCacheFingerprint {
                 prompt_cache_key: Some("agendao:key".to_string()),
                 prompt_cache_retention: None,
                 previous_response_id_used: false,
                 incremental_input_used: false,
                 cached_tokens_observed: 0,
             }),
-            ethnopic: None,
+            anthropic: None,
         }
     }
 }
@@ -1339,7 +1318,6 @@ struct PromptLoopContext {
 struct RuntimeStepContext {
     provider: Arc<dyn Provider>,
     model_id: String,
-    provider_id: String,
     agent_name: Option<String>,
     compiled_request: CompiledExecutionRequest,
     hooks: PromptHooks,
@@ -1349,9 +1327,126 @@ struct RuntimeStepContext {
 struct RuntimeStepInput {
     session_id: String,
     assistant_index: usize,
+    system_prompt: String,
     chat_messages: Vec<agendao_provider::Message>,
     tool_registry: Arc<agendao_tool::ToolRegistry>,
     step_ctx: RuntimeStepContext,
+}
+
+struct DirectEvaluator;
+
+#[async_trait::async_trait]
+impl EvaluatorBackend for DirectEvaluator {
+    async fn evaluate(
+        &self,
+        evaluator: &agendao_orchestrator::blueprint::EvaluatorId,
+        _candidate: &agendao_orchestrator::context::NodeResult,
+    ) -> Result<EvaluationOutcome, String> {
+        Err(format!(
+            "direct blueprint cannot invoke evaluator '{}'",
+            evaluator.as_str()
+        ))
+    }
+}
+
+struct DirectCapabilities;
+
+#[async_trait::async_trait]
+impl CapabilityBackend for DirectCapabilities {
+    async fn checkpoint(&self, request: &CheckpointRequest) -> Result<CheckpointHandle, String> {
+        Err(format!(
+            "direct blueprint cannot invoke checkpoint capability '{}'",
+            request.capability.as_str()
+        ))
+    }
+
+    async fn restore(&self, request: &RestoreRequest) -> Result<(), String> {
+        Err(format!(
+            "direct blueprint cannot restore checkpoint '{}'",
+            request.checkpoint.id
+        ))
+    }
+
+    async fn store_artifact(&self, request: &ArtifactRequest) -> Result<String, String> {
+        Err(format!(
+            "direct blueprint cannot invoke artifact capability '{}'",
+            request.capability.as_str()
+        ))
+    }
+
+    async fn finalize(&self, _disposition: RunDisposition) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn configured_agent_steps(
+    config_store: Option<&agendao_config::ConfigStore>,
+    agent_name: Option<&str>,
+) -> u32 {
+    let configured = config_store
+        .and_then(|store| store.config().agent.clone())
+        .and_then(|agents| agent_name.and_then(|name| agents.entries.get(name).cloned()))
+        .and_then(|agent| agent.steps.or(agent.max_steps));
+    configured.unwrap_or(DEFAULT_DIRECT_AGENT_STEPS).max(1)
+}
+
+fn direct_execution_limits(
+    request: &CompiledExecutionRequest,
+    max_agent_steps: u32,
+) -> ExecutionLimits {
+    let max_output_tokens = request.max_tokens.unwrap_or(64_000).max(1);
+    ExecutionLimits {
+        max_model_calls: max_agent_steps,
+        max_tool_calls: max_agent_steps.saturating_mul(MAX_TOOLS_PER_AGENT_STEP),
+        max_total_tokens: max_output_tokens.saturating_mul(u64::from(max_agent_steps)),
+        max_wall_time_ms: request
+            .timeout_secs
+            .unwrap_or(DEFAULT_DIRECT_TIMEOUT_SECS)
+            .saturating_mul(1_000),
+        max_parallelism: 1,
+        max_graph_nodes: 2,
+        max_graph_depth: 2,
+        max_loop_iterations: 1,
+        max_agent_steps,
+    }
+}
+
+fn direct_blueprint(
+    agent: AgentId,
+    tools: BTreeSet<ToolId>,
+    limits: ExecutionLimits,
+    max_agent_steps: u32,
+) -> SchedulerBlueprint {
+    SchedulerBlueprint {
+        schema: BlueprintSchemaVersion::V1,
+        name: BlueprintName::new("session-direct"),
+        entry: NodeId::new("execute"),
+        nodes: BTreeMap::from([
+            (
+                NodeId::new("execute"),
+                NodeSpec::Agent(AgentNode {
+                    agent,
+                    skills: BTreeSet::new(),
+                    tools,
+                    required_model_capabilities: BTreeSet::new(),
+                    max_steps: max_agent_steps,
+                    next: NodeId::new("done"),
+                }),
+            ),
+            (
+                NodeId::new("done"),
+                NodeSpec::End(EndNode {
+                    result: ResultSource::LastNode,
+                }),
+            ),
+        ]),
+        limits,
+        output: OutputContract {
+            format: OutputFormat::Markdown,
+            include_usage: true,
+            include_artifact_refs: true,
+        },
+    }
 }
 
 struct PreparedChatMessages {
@@ -1469,7 +1564,6 @@ impl SessionPrompt {
             ),
         )
         .set_environment_identity(surface_inputs.env_context.clone())
-        .set_preset_extension(surface_inputs.preset_extension.clone())
         .set_memory_prefetch(surface_inputs.memory_prefetch.clone())
         .set_tool_surface(
             surface_inputs.tools.clone(),
@@ -1521,7 +1615,7 @@ impl SessionPrompt {
             .model
             .as_ref()
             .map(|m| m.provider_id.clone())
-            .unwrap_or_else(|| "ethnopic".to_string());
+            .unwrap_or_else(|| "anthropic".to_string());
 
         let result = async {
             Self::record_ingress_turn(session, &input);
@@ -1564,7 +1658,7 @@ impl SessionPrompt {
             }
 
             let result = self
-                .loop_inner(
+                .run_turn_lifecycle(
                     session_id.clone(),
                     token,
                     session,
@@ -1704,7 +1798,7 @@ impl SessionPrompt {
         let provider_id = model
             .as_ref()
             .map(|m| m.provider_id.clone())
-            .unwrap_or_else(|| "ethnopic".to_string());
+            .unwrap_or_else(|| "anthropic".to_string());
         let surface_inputs =
             PromptSurfaceInputs::builder(session_id.to_string(), compiled_request.clone())
                 .set_base_system_prompt(system_prompt)
@@ -1760,7 +1854,7 @@ impl SessionPrompt {
         );
 
         let result = self
-            .loop_inner(
+            .run_turn_lifecycle(
                 session_id.clone(),
                 token,
                 session,
@@ -1799,63 +1893,36 @@ impl SessionPrompt {
             .get(input.assistant_index)
             .map(|m| m.id.clone())
             .unwrap_or_default();
-        let shared = Arc::new(Mutex::new(SessionStepShared {
-            assistant_message_id: Some(assistant_message_id),
-        }));
-        let step_complete = Arc::new(AtomicBool::new(false));
-        let cancel = SessionStepCancelToken {
-            user_cancel: token.clone(),
-            step_complete: step_complete.clone(),
-        };
-
-        let subsessions = Arc::new(Mutex::new(Self::load_persisted_subsessions(session)));
-
-        let model = SimpleModelCaller {
-            provider: input.step_ctx.provider.clone(),
-            config: SimpleModelCallerConfig {
-                request: input
-                    .step_ctx
-                    .compiled_request
-                    .with_model(input.step_ctx.model_id.clone())
-                    .inherit_missing(&session_runtime_request_defaults(None)),
-            },
-        };
-        let allowed_tools = Some(Arc::new(
+        let allowed_tools = Arc::new(
             resolved_tools
                 .iter()
                 .map(|tool| tool.name.clone())
                 .collect::<HashSet<_>>(),
-        ));
-
-        let tools = SessionStepToolDispatcher {
+        );
+        let runtime_skill_instructions =
+            session.metadata.get("runtime_skill_instructions").cloned();
+        let workspace_root = session.directory.clone();
+        let tools = SessionToolBackend {
             session_id: input.session_id.clone(),
-            directory: session.directory.clone(),
+            directory: workspace_root.clone(),
             agent_name: input.step_ctx.agent_name.clone().unwrap_or_default(),
             abort_token: token.clone(),
             tool_registry: input.tool_registry,
-            provider: input.step_ctx.provider.clone(),
-            provider_id: input.step_ctx.provider_id.clone(),
-            model_id: input.step_ctx.model_id.clone(),
-            resolved_tools,
             allowed_tools,
-            shared,
-            subsessions: subsessions.clone(),
-            agent_lookup: input.step_ctx.hooks.agent_lookup.clone(),
+            assistant_message_id,
             ask_question_hook: input.step_ctx.hooks.ask_question_hook.clone(),
             ask_permission_hook: input.step_ctx.hooks.ask_permission_hook.clone(),
             publish_bus_hook: input.step_ctx.hooks.publish_bus_hook.clone(),
             tool_runtime_config: self.tool_runtime_config.clone(),
             config_store: input.step_ctx.config_store.clone(),
-            runtime_skill_instructions: session.metadata.get("runtime_skill_instructions").cloned(),
+            runtime_skill_instructions,
         };
-
-        let mut sink = SessionStepSink::new(
+        let observer = SessionAgentObserver::new(
             session,
             input.assistant_index,
             input.step_ctx.hooks.update_hook.as_ref(),
             input.step_ctx.hooks.event_broadcast.as_ref(),
             input.step_ctx.hooks.output_block_hook.as_ref(),
-            step_complete,
             tool_result_budget(
                 input
                     .step_ctx
@@ -1866,64 +1933,122 @@ impl SessionPrompt {
                     .and_then(|cfg| cfg.runtime_budget.as_ref()),
             ),
         );
-        let policy = LoopPolicy {
-            max_steps: Some(MAX_STEPS),
-            tool_dedup: ToolDedupScope::None,
-            ..Default::default()
+        let tool_definitions = resolved_tools
+            .into_iter()
+            .map(|tool| (ToolId::new(tool.name.clone()), tool))
+            .collect::<BTreeMap<_, _>>();
+        let tool_ids = tool_definitions.keys().cloned().collect::<BTreeSet<_>>();
+        let agent_id = AgentId::new(
+            input
+                .step_ctx
+                .agent_name
+                .clone()
+                .unwrap_or_else(|| "direct".to_string()),
+        );
+        let max_agent_steps = configured_agent_steps(
+            input.step_ctx.config_store.as_deref(),
+            input.step_ctx.agent_name.as_deref(),
+        );
+        let limits = direct_execution_limits(&input.step_ctx.compiled_request, max_agent_steps);
+        let catalog = SchedulerCatalog {
+            revision: "session-direct-v1".to_string(),
+            agents: BTreeMap::from([(
+                agent_id.clone(),
+                AgentCatalogEntry {
+                    id: agent_id.clone(),
+                    system_policy: input.system_prompt.clone(),
+                    available_skills: BTreeSet::new(),
+                    available_tools: tool_ids.clone(),
+                    model_capabilities: BTreeSet::from([
+                        ModelCapability::ToolCalls,
+                        ModelCapability::Reasoning,
+                    ]),
+                },
+            )]),
+            skills: BTreeMap::new(),
+            tools: tool_ids
+                .iter()
+                .cloned()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        ToolCatalogEntry {
+                            id,
+                            effect: EffectClass::WorkspaceMutation,
+                            permission: PermissionClass::Ask,
+                        },
+                    )
+                })
+                .collect(),
+            evaluators: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
         };
-        let mut chat_messages = input.chat_messages;
-        let outcome = run_loop(
+        let policy = PolicyEnvelope::allow_catalog(limits.clone(), &catalog);
+        let blueprint = ValidatedBlueprint::new(
+            direct_blueprint(agent_id, tool_ids, limits, max_agent_steps),
+            &catalog,
+            &policy,
+        )?;
+        let request_defaults = input
+            .step_ctx
+            .compiled_request
+            .with_model(input.step_ctx.model_id.clone())
+            .inherit_missing(&session_runtime_request_defaults(None));
+        let model = ProviderModelBackend::new(
+            input.step_ctx.provider.clone(),
+            request_defaults,
+            tool_definitions,
+        );
+        let conversation_seed = input
+            .chat_messages
+            .into_iter()
+            .filter(|message| !matches!(message.role, agendao_provider::Role::System))
+            .collect();
+        let cancellation = CancellationFlag::default();
+        let cancellation_signal = cancellation.clone();
+        let cancellation_task = tokio::spawn(async move {
+            token.cancelled().await;
+            cancellation_signal.cancel();
+        });
+        let execution = SchedulerEngine::new(
             &model,
             &tools,
-            &mut sink,
+            &DirectEvaluator,
+            &DirectCapabilities,
+            &catalog,
             &policy,
-            &cancel,
-            &mut chat_messages,
+            &input.system_prompt,
+        )
+        .with_agent_observer(&observer)
+        .run(
+            &blueprint,
+            RunRequest {
+                handoff: HandoffPacket {
+                    goal: "Continue the current session task".to_string(),
+                    ..HandoffPacket::default()
+                },
+                conversation_seed,
+                workspace_root: workspace_root.clone(),
+                workspace_summary: workspace_root,
+            },
+            cancellation,
         )
         .await;
-        let mut output = sink.into_output();
-
-        let persisted = subsessions.lock().await.clone();
-        Self::save_persisted_subsessions(session, &persisted);
-
-        match outcome {
-            Ok(outcome) => {
-                // P3-F: Propagate stream termination for backfill decisions.
-                output.stream_termination = outcome.stream_termination;
-                Ok(output)
-            }
-            Err(RuntimeLoopError::ModelError(failure)) => Err(anyhow::Error::new(
-                super::PromptError::ProviderFailure(failure),
-            )),
-            Err(RuntimeLoopError::ModelErrorWithTermination {
-                failure,
-                stream_termination,
-            }) => {
-                output.stream_termination = Some(stream_termination);
-                Err(anyhow::Error::new(super::PromptError::ProviderFailure(
-                    failure,
-                )))
-            }
-            Err(RuntimeLoopError::ToolDispatchError { tool, error }) => {
-                let lower = error.to_ascii_lowercase();
-                if token.is_cancelled()
-                    || lower.contains("cancelled")
-                    || lower.contains("canceled")
-                    || lower.contains("aborted")
-                {
-                    Ok(output)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Tool dispatch failed ({}): {}",
-                        tool,
-                        error
-                    ))
-                }
-            }
-            Err(RuntimeLoopError::Cancelled) => Ok(output),
-            Err(RuntimeLoopError::SinkError(message)) | Err(RuntimeLoopError::Other(message)) => {
-                Err(anyhow::anyhow!("{}", message))
-            }
+        cancellation_task.abort();
+        let output = observer.into_output();
+        match execution {
+            Ok(_) => Ok(output),
+            Err(agendao_orchestrator::engine::EngineError::Agent(
+                agendao_orchestrator::agent_loop::AgentLoopError::Cancelled,
+            )) => Ok(output),
+            Err(agendao_orchestrator::engine::EngineError::Agent(
+                agendao_orchestrator::agent_loop::AgentLoopError::Model(
+                    agendao_orchestrator::agent_loop::ModelBackendError::Provider(summary),
+                ),
+            )) => Err(anyhow::Error::new(super::PromptError::ProviderFailure(
+                *summary,
+            ))),
+            Err(error) => Err(anyhow::anyhow!(error)),
         }
     }
 
@@ -2057,15 +2182,14 @@ impl SessionPrompt {
         super::persist_lightweight_trim_summary(session, None);
         let Some(assessment) = Self::assess_compaction(
             filtered_messages,
+            &session.messages,
             provider.as_ref(),
             model_id,
             compiled_request.max_tokens,
             &compaction_config,
-            None,
-            request_context_tokens,
-            request_body_chars,
+            super::ContextUsageSnapshot::new(None, request_context_tokens, request_body_chars),
         ) else {
-            if let Some(backoff) = Self::auto_compaction_backoff_summary(filtered_messages) {
+            if let Some(backoff) = Self::auto_compaction_backoff_summary(&session.messages) {
                 let summary = super::context_pressure_governance_summary(
                     "auto_preflight",
                     "prompt.pre_request",
@@ -2107,20 +2231,16 @@ impl SessionPrompt {
             Some(assessment.reason),
             agendao_types::ContextCompactionLifecycleStatus::Started,
             force_compaction,
-            request_context_tokens,
-            None,
+            super::ContextUsageSnapshot::new(None, request_context_tokens, assessment.body_chars),
             assessment.limit_tokens,
-            assessment.body_chars,
         );
         let record = Self::build_compaction_record(
             "auto_preflight",
             Some("prompt.pre_request"),
             Some(assessment.reason),
             force_compaction,
-            request_context_tokens,
-            None,
+            super::ContextUsageSnapshot::new(None, request_context_tokens, assessment.body_chars),
             assessment.limit_tokens,
-            assessment.body_chars,
         );
         let compacted = Self::compact_context_for_reason(
             session_id,
@@ -2195,9 +2315,13 @@ impl SessionPrompt {
         update_hook: Option<&super::SessionUpdateHook>,
         compaction_lifecycle_hook: Option<&super::CompactionLifecycleHook>,
         output_block_hook: Option<&super::OutputBlockHook>,
-        request_context_tokens: Option<u64>,
-        request_body_chars: Option<usize>,
+        usage: super::ContextUsageSnapshot,
     ) -> bool {
+        let super::ContextUsageSnapshot {
+            request_context_tokens,
+            request_body_chars,
+            ..
+        } = usage;
         let drop_placeholder = session
             .get_message(assistant_message_id)
             .map(|message| {
@@ -2215,20 +2339,16 @@ impl SessionPrompt {
             Some("provider_overflow"),
             agendao_types::ContextCompactionLifecycleStatus::Started,
             true,
-            request_context_tokens,
+            super::ContextUsageSnapshot::new(None, request_context_tokens, request_body_chars),
             None,
-            None,
-            request_body_chars,
         );
         let record = Self::build_compaction_record(
             "overflow_recovery",
             Some("prompt.provider_overflow"),
             Some("provider_overflow"),
             true,
-            request_context_tokens,
+            super::ContextUsageSnapshot::new(None, request_context_tokens, request_body_chars),
             None,
-            None,
-            request_body_chars,
         );
         Self::compact_context_for_reason(
             session_id,
@@ -2273,11 +2393,7 @@ impl SessionPrompt {
             apply_chat_messages_hook_outputs(&mut filtered_messages, message_hook_outputs);
         }
 
-        let mut prompt_messages = filtered_messages;
-        if let Some(agent) = agent_name {
-            let was_plan = super::was_plan_agent(&prompt_messages);
-            prompt_messages = super::insert_reminders(prompt_messages, agent, was_plan);
-        }
+        let prompt_messages = filtered_messages;
 
         let output_projection_policy_hash =
             PromptSurfaceInputs::output_projection_policy_hash(&prompt_messages);
@@ -2341,7 +2457,6 @@ impl SessionPrompt {
     /// `SessionPrompt` documents for surface assembly.
     fn prompt_surface_stable_fields_from_inputs(
         session: &Session,
-        _prompt_messages: &[SessionMessage],
         provider_id: &str,
         model_id: &str,
         fingerprint: &CacheRequestFingerprint,
@@ -2350,30 +2465,32 @@ impl SessionPrompt {
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
         let api_shape =
-            (fingerprint.family == CacheProtocolFamily::CloseAiCompatible).then(
+            (fingerprint.family == CacheProtocolFamily::OpenAiCompatible).then(
                 || match fingerprint
                     .provider_profile
                     .as_ref()
                     .map(|profile| profile.api_shape)
                 {
                     Some(agendao_provider::ProviderApiShape::Responses) => {
-                        agendao_provider::cache::CloseAiCompatibleApiShape::Responses
+                        agendao_provider::cache::OpenAiCompatibleApiShape::Responses
                     }
-                    _ => agendao_provider::cache::CloseAiCompatibleApiShape::ChatCompletions,
+                    _ => agendao_provider::cache::OpenAiCompatibleApiShape::ChatCompletions,
                 },
             );
-        let closeai_prompt_cache_key = fingerprint
-            .closeai
+        let openai_prompt_cache_key = fingerprint
+            .openai
             .as_ref()
-            .and_then(|closeai| closeai.prompt_cache_key.clone());
-        let ethnopic_policy_hash = (fingerprint.family == CacheProtocolFamily::EthnopicCompatible)
-            .then(|| {
-                agendao_provider::cache::ethnopic_cache_policy_hash(&EthnopicCachePolicy::default())
+            .and_then(|openai| openai.prompt_cache_key.clone());
+        let anthropic_policy_hash =
+            (fingerprint.family == CacheProtocolFamily::AnthropicCompatible).then(|| {
+                agendao_provider::cache::anthropic_cache_policy_hash(
+                    &AnthropicCachePolicy::default(),
+                )
             });
-        let ethnopic_breakpoint_plan_hash = fingerprint.ethnopic.as_ref().map(|ethnopic| {
+        let anthropic_breakpoint_plan_hash = fingerprint.anthropic.as_ref().map(|anthropic| {
             agendao_provider::cache::json_fingerprint(&serde_json::json!({
-                "breakpoint_placement": ethnopic.breakpoint_placement,
-                "cache_control_hash": ethnopic.cache_control_hash,
+                "breakpoint_placement": anthropic.breakpoint_placement,
+                "cache_control_hash": anthropic.cache_control_hash,
             }))
         });
         let ingress_policy_hash = Self::ingress_policy_hash(session);
@@ -2403,10 +2520,10 @@ impl SessionPrompt {
             reasoning_mode_hash: surface_sections.reasoning_mode_hash.clone(),
             output_projection_policy_hash: surface_sections.output_projection_policy_hash.clone(),
             scc_stable_refs_hash: Self::scc_stable_refs_hash(session),
-            closeai_prompt_cache_key: closeai_prompt_cache_key
-                .or_else(|| surface_sections.closeai_prompt_cache_key.clone()),
-            ethnopic_policy_hash,
-            ethnopic_breakpoint_plan_hash,
+            openai_prompt_cache_key: openai_prompt_cache_key
+                .or_else(|| surface_sections.openai_prompt_cache_key.clone()),
+            anthropic_policy_hash,
+            anthropic_breakpoint_plan_hash,
             ingress_policy_hash: surface_sections
                 .ingress_policy_hash
                 .clone()
@@ -2418,13 +2535,13 @@ impl SessionPrompt {
     fn prompt_surface_stable_fields(
         session: &Session,
         prompt_messages: &[SessionMessage],
-        provider_id: &str,
-        model_id: &str,
+        provider_model: (&str, &str),
         compiled_request: &CompiledExecutionRequest,
         fingerprint: &CacheRequestFingerprint,
         system_prompt: Option<&str>,
         tool_source_surface_hash: String,
     ) -> PromptSurfaceStableFields {
+        let (provider_id, model_id) = provider_model;
         let surface_inputs =
             PromptSurfaceInputs::builder(session.id.clone(), compiled_request.clone())
                 .set_base_system_prompt(system_prompt.map(str::to_string));
@@ -2435,7 +2552,6 @@ impl SessionPrompt {
         );
         Self::prompt_surface_stable_fields_from_inputs(
             session,
-            prompt_messages,
             provider_id,
             model_id,
             fingerprint,
@@ -2546,9 +2662,9 @@ impl SessionPrompt {
             reasoning_mode_hash: stable.reasoning_mode_hash,
             output_projection_policy_hash: stable.output_projection_policy_hash,
             scc_stable_refs_hash: stable.scc_stable_refs_hash,
-            closeai_prompt_cache_key: stable.closeai_prompt_cache_key,
-            ethnopic_policy_hash: stable.ethnopic_policy_hash,
-            ethnopic_breakpoint_plan_hash: stable.ethnopic_breakpoint_plan_hash,
+            openai_prompt_cache_key: stable.openai_prompt_cache_key,
+            anthropic_policy_hash: stable.anthropic_policy_hash,
+            anthropic_breakpoint_plan_hash: stable.anthropic_breakpoint_plan_hash,
             ingress_policy_hash: stable.ingress_policy_hash,
             evidence,
         }
@@ -2572,8 +2688,7 @@ impl SessionPrompt {
             provider_params_hash: previous.provider_params_hash.clone(),
             reasoning_mode_hash: previous.reasoning_mode_hash.clone(),
             tool_policy_hash: previous.tool_policy_hash.clone(),
-            preset_identity: None,
-            closeai_prompt_cache_key: previous.closeai_prompt_cache_key.clone(),
+            openai_prompt_cache_key: previous.openai_prompt_cache_key.clone(),
             ingress_policy_hash: previous.ingress_policy_hash.clone(),
             output_projection_policy_hash: previous.output_projection_policy_hash.clone(),
         };
@@ -2589,8 +2704,7 @@ impl SessionPrompt {
             provider_params_hash: current.provider_params_hash.clone(),
             reasoning_mode_hash: current.reasoning_mode_hash.clone(),
             tool_policy_hash: current.tool_policy_hash.clone(),
-            preset_identity: None,
-            closeai_prompt_cache_key: current.closeai_prompt_cache_key.clone(),
+            openai_prompt_cache_key: current.openai_prompt_cache_key.clone(),
             ingress_policy_hash: current.ingress_policy_hash.clone(),
             output_projection_policy_hash: current.output_projection_policy_hash.clone(),
         };
@@ -2650,18 +2764,21 @@ impl SessionPrompt {
         }
     }
 
-    fn cache_request_fingerprint(
-        session_id: &str,
-        provider_id: &str,
-        model_id: &str,
-        system_prompt: Option<&str>,
-        messages: &[agendao_provider::Message],
-        tools: &[ToolDefinition],
-        compiled_request: &CompiledExecutionRequest,
-        provider_type: ProviderType,
-        provider_profile: Option<ProviderProfileFingerprint>,
-    ) -> CacheRequestFingerprint {
-        let family = Self::cache_protocol_family(provider_type);
+    fn cache_request_fingerprint(input: CacheFingerprintInput<'_>) -> CacheRequestFingerprint {
+        let CacheFingerprintInput {
+            session_id,
+            provider_id,
+            model_id,
+            system_prompt,
+            messages,
+            tools,
+            compiled_request,
+            provider_profile,
+        } = input;
+        let family = provider_profile
+            .as_ref()
+            .map(|profile| profile.cache_family)
+            .unwrap_or(CacheProtocolFamily::Disabled);
         let api_params = serde_json::json!({
             "provider_id": provider_id,
             "max_tokens": compiled_request.max_tokens,
@@ -2672,14 +2789,14 @@ impl SessionPrompt {
         });
         let surface =
             PromptSurfaceFingerprint::new(model_id, system_prompt, tools, messages, &api_params);
-        let closeai = (family == CacheProtocolFamily::CloseAiCompatible).then(|| {
+        let openai = (family == CacheProtocolFamily::OpenAiCompatible).then(|| {
             let provider_options = compiled_request.provider_options.as_ref();
-            let prompt_cache_key = Self::closeai_prompt_cache_key_for_fingerprint(
+            let prompt_cache_key = Self::openai_prompt_cache_key_for_fingerprint(
                 session_id,
                 provider_id,
                 provider_options,
             );
-            CloseAiCacheFingerprint {
+            OpenAiCacheFingerprint {
                 prompt_cache_key,
                 prompt_cache_retention: provider_options.and_then(|options| {
                     options
@@ -2693,11 +2810,11 @@ impl SessionPrompt {
                 cached_tokens_observed: 0,
             }
         });
-        let ethnopic = (family == CacheProtocolFamily::EthnopicCompatible).then(|| {
+        let anthropic = (family == CacheProtocolFamily::AnthropicCompatible).then(|| {
             let breakpoint_plan =
-                agendao_provider::cache::plan_ethnopic_message_breakpoints(messages);
-            let cache_policy = EthnopicCachePolicy::default();
-            EthnopicCacheFingerprint {
+                agendao_provider::cache::plan_anthropic_message_breakpoints(messages);
+            let cache_policy = AnthropicCachePolicy::default();
+            AnthropicCacheFingerprint {
                 cache_control_hash: agendao_provider::cache::json_fingerprint(&serde_json::json!({
                     "policy": cache_policy,
                     "breakpoints": breakpoint_plan,
@@ -2714,12 +2831,12 @@ impl SessionPrompt {
             family,
             surface,
             provider_profile,
-            closeai,
-            ethnopic,
+            openai,
+            anthropic,
         }
     }
 
-    fn closeai_prompt_cache_key_for_fingerprint(
+    fn openai_prompt_cache_key_for_fingerprint(
         session_id: &str,
         provider_id: &str,
         provider_options: Option<&HashMap<String, serde_json::Value>>,
@@ -2727,22 +2844,12 @@ impl SessionPrompt {
         let options = provider_options.cloned().unwrap_or_default();
         if let Some(existing) = options
             .get("promptCacheKey")
-            .or_else(|| options.get("prompt_cache_key"))
             .and_then(|value| value.as_str())
         {
             return Some(existing.to_string());
         }
 
-        let provider_options_object = options
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        agendao_provider::cache::closeai_prompt_cache_key_field(
-            provider_id,
-            "",
-            &provider_options_object,
-        )
-        .map(|_| {
+        agendao_provider::cache::openai_prompt_cache_key_field(provider_id, "").map(|_| {
             agendao_provider::cache::build_prompt_cache_key(
                 agendao_provider::cache::PromptCacheKeyContext {
                     session_id,
@@ -2750,27 +2857,12 @@ impl SessionPrompt {
                         .get("cacheStage")
                         .and_then(|value| value.as_str())
                         .unwrap_or("chat"),
-                    preset_hash: options
-                        .get("cachePresetHash")
-                        .and_then(|value| value.as_str()),
                     repo_hash: options
                         .get("cacheRepoHash")
                         .and_then(|value| value.as_str()),
                 },
             )
         })
-    }
-
-    fn cache_protocol_family(provider_type: ProviderType) -> CacheProtocolFamily {
-        match provider_type {
-            ProviderType::Ethnopic | ProviderType::Bedrock | ProviderType::Gateway => {
-                CacheProtocolFamily::EthnopicCompatible
-            }
-            ProviderType::OpenAI | ProviderType::OpenRouter => {
-                CacheProtocolFamily::CloseAiCompatible
-            }
-            ProviderType::Other => CacheProtocolFamily::Disabled,
-        }
     }
 
     fn finalize_assistant_message(
@@ -2889,18 +2981,27 @@ impl SessionPrompt {
         }
     }
 
-    async fn loop_inner(
+    async fn run_turn_lifecycle(
         &self,
         session_id: String,
         token: CancellationToken,
         session: &mut Session,
         prompt_ctx: PromptLoopContext,
     ) -> anyhow::Result<()> {
-        let mut step = 0u32;
-        let provider_type = ProviderType::from_provider_id(&prompt_ctx.provider_id);
+        let provider_profile = prompt_ctx
+            .provider
+            .provider_profile_fingerprint()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider `{}` is missing a validated runtime profile",
+                    prompt_ctx.provider_id
+                )
+            })?;
+        let provider_type = ProviderType::from_api_family(provider_profile.api_family);
         let mut overflow_recovery_attempts = 0_u8;
         let mut length_continuation_retries = 0_u8;
-        let mut post_first_step_ran = false;
+        let mut context_compaction_passes = 0_u8;
+        let mut model_run_attempts = 0_u8;
         let turn_start_index = session.messages.len().saturating_sub(1);
 
         loop {
@@ -2924,20 +3025,6 @@ impl SessionPrompt {
                 None => return Err(anyhow::anyhow!("No user message found")),
             };
 
-            if self
-                .process_pending_subtasks(
-                    session,
-                    prompt_ctx.provider.clone(),
-                    &prompt_ctx.provider_id,
-                    &prompt_ctx.model_id,
-                    &prompt_ctx.hooks,
-                )
-                .await?
-            {
-                tracing::info!("Processed pending subtask parts for session {}", session_id);
-                continue;
-            }
-
             if let Some(assistant_idx) = last_assistant_idx {
                 let assistant = &filtered_messages[assistant_idx];
                 if is_terminal_finish(assistant.finish.as_deref()) && last_user_idx < assistant_idx
@@ -2948,12 +3035,6 @@ impl SessionPrompt {
                     );
                     break;
                 }
-            }
-
-            step += 1;
-            if step > MAX_STEPS {
-                tracing::warn!("Max steps reached for session {}", session_id);
-                break;
             }
 
             let PreparedChatMessages {
@@ -3095,27 +3176,35 @@ impl SessionPrompt {
             let (request_context_tokens, request_body_chars) =
                 Self::estimate_request_context_tokens_from_provider_messages(&chat_messages);
             let filtered_messages = Self::filter_compacted_messages(&session.messages);
-            if Self::maybe_compact_context_from_request_view(
-                &session_id,
-                session,
-                &filtered_messages,
-                &prompt_ctx.provider,
-                &prompt_ctx.model_id,
-                &prompt_ctx.compiled_request,
-                prompt_ctx.config_store.as_deref(),
-                prompt_ctx.hooks.update_hook.as_ref(),
-                prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
-                prompt_ctx.hooks.output_block_hook.as_ref(),
-                request_context_tokens,
-                Some(request_body_chars),
-            )
-            .await
+            if context_compaction_passes < MAX_CONTEXT_COMPACTION_PASSES
+                && Self::maybe_compact_context_from_request_view(
+                    &session_id,
+                    session,
+                    &filtered_messages,
+                    &prompt_ctx.provider,
+                    &prompt_ctx.model_id,
+                    &prompt_ctx.compiled_request,
+                    prompt_ctx.config_store.as_deref(),
+                    prompt_ctx.hooks.update_hook.as_ref(),
+                    prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
+                    prompt_ctx.hooks.output_block_hook.as_ref(),
+                    request_context_tokens,
+                    Some(request_body_chars),
+                )
+                .await
             {
+                context_compaction_passes += 1;
                 continue;
             }
 
+            model_run_attempts += 1;
+            if model_run_attempts > MAX_TURN_MODEL_RUNS {
+                return Err(anyhow::anyhow!(
+                    "turn lifecycle exceeded its bounded model-run attempts ({MAX_TURN_MODEL_RUNS})"
+                ));
+            }
             tracing::info!(
-                step = step,
+                model_run_attempt = model_run_attempts,
                 session_id = %session_id,
                 message_count = prompt_messages.len(),
                 request_context_tokens,
@@ -3131,18 +3220,16 @@ impl SessionPrompt {
             let tool_source_surface_hash =
                 agendao_provider::cache::tool_source_surface_fingerprint(&tool_source_digests);
             let resolved_tools = merge_tool_definitions(base_tools, extra_tools);
-            let provider_profile = prompt_ctx.provider.provider_profile_fingerprint();
-            let cache_fingerprint = Self::cache_request_fingerprint(
-                &session_id,
-                &prompt_ctx.provider_id,
-                &prompt_ctx.model_id,
-                prompt_ctx.surface_inputs.system_prompt.as_deref(),
-                &chat_messages,
-                &resolved_tools,
-                &prompt_ctx.compiled_request,
-                provider_type,
-                provider_profile,
-            );
+            let cache_fingerprint = Self::cache_request_fingerprint(CacheFingerprintInput {
+                session_id: &session_id,
+                provider_id: &prompt_ctx.provider_id,
+                model_id: &prompt_ctx.model_id,
+                system_prompt: prompt_ctx.surface_inputs.system_prompt.as_deref(),
+                messages: &chat_messages,
+                tools: &resolved_tools,
+                compiled_request: &prompt_ctx.compiled_request,
+                provider_profile: Some(provider_profile.clone()),
+            });
             let previous_cache_fingerprint = Self::latest_cache_request_fingerprint(session);
             let cache_evidence_inspection = inspect_cache_fingerprint_change(
                 previous_cache_fingerprint.as_ref(),
@@ -3156,7 +3243,6 @@ impl SessionPrompt {
             )
             .set_base_system_prompt(prompt_ctx.surface_inputs.system_prompt.clone())
             .set_environment_identity(prompt_ctx.surface_inputs.env_context.clone())
-            .set_preset_extension(prompt_ctx.surface_inputs.preset_extension.clone())
             .set_memory_prefetch(prompt_ctx.surface_inputs.memory_prefetch.clone())
             .set_tool_surface(
                 resolved_tools.clone(),
@@ -3174,7 +3260,6 @@ impl SessionPrompt {
             .set_provider_options(prompt_ctx.surface_inputs.provider_options.clone());
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields_from_inputs(
                 session,
-                &prompt_messages,
                 &prompt_ctx.provider_id,
                 &prompt_ctx.model_id,
                 &cache_fingerprint,
@@ -3190,12 +3275,6 @@ impl SessionPrompt {
                     kind: match finding.kind {
                         crate::prompt::surface_authority::PromptSurfaceVolatilityKind::VolatileEnvField => {
                             agendao_types::PromptSurfaceVolatilityKind::VolatileEnvField
-                        }
-                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance => {
-                            agendao_types::PromptSurfaceVolatilityKind::DynamicCatalogBeforeStableGovernance
-                        }
-                        crate::prompt::surface_authority::PromptSurfaceVolatilityKind::OversizedCapabilityProjection => {
-                            agendao_types::PromptSurfaceVolatilityKind::OversizedCapabilityProjection
                         }
                         crate::prompt::surface_authority::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface => {
                             agendao_types::PromptSurfaceVolatilityKind::ProviderOptionsAffectSurface
@@ -3290,12 +3369,12 @@ impl SessionPrompt {
                     RuntimeStepInput {
                         session_id: session_id.clone(),
                         assistant_index,
+                        system_prompt: surface_sections.system_text.clone(),
                         chat_messages,
                         tool_registry: tool_registry.clone(),
                         step_ctx: RuntimeStepContext {
                             provider: prompt_ctx.provider.clone(),
                             model_id: prompt_ctx.model_id.clone(),
-                            provider_id: prompt_ctx.provider_id.clone(),
                             agent_name: prompt_ctx.agent_name.clone(),
                             compiled_request: prompt_ctx.compiled_request.clone(),
                             hooks: prompt_ctx.hooks.clone(),
@@ -3305,12 +3384,9 @@ impl SessionPrompt {
                 )
                 .await
             {
-                Ok(output) => {
-                    overflow_recovery_attempts = 0;
-                    output
-                }
+                Ok(output) => output,
                 Err(error) => {
-                    if overflow_recovery_attempts == 0
+                    if overflow_recovery_attempts < MAX_OVERFLOW_RECOVERY_RETRIES
                         && Self::provider_failure_is_overflow(&error)
                         && Self::maybe_recover_provider_overflow(
                             &session_id,
@@ -3319,8 +3395,11 @@ impl SessionPrompt {
                             prompt_ctx.hooks.update_hook.as_ref(),
                             prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
                             prompt_ctx.hooks.output_block_hook.as_ref(),
-                            request_context_tokens,
-                            Some(request_body_chars),
+                            super::ContextUsageSnapshot::new(
+                                None,
+                                request_context_tokens,
+                                Some(request_body_chars),
+                            ),
                         )
                         .await
                     {
@@ -3328,7 +3407,7 @@ impl SessionPrompt {
                             PENDING_SANITIZER_STAGE_METADATA_KEY,
                             serde_json::json!(agendao_types::SanitizerStage::FallbackRetry.label()),
                         );
-                        overflow_recovery_attempts = 1;
+                        overflow_recovery_attempts += 1;
                         continue;
                     }
                     return Err(error);
@@ -3336,8 +3415,6 @@ impl SessionPrompt {
             };
 
             let finish_reason = step_output.finish_reason.clone();
-            let executed_local_tools_this_step = step_output.executed_local_tools_this_step;
-
             Self::finalize_assistant_message(session, assistant_index, &step_output);
 
             Self::append_stream_tool_results_as_message(
@@ -3387,42 +3464,27 @@ impl SessionPrompt {
                     max_retries = MAX_LENGTH_CONTINUATION_RETRIES,
                     "assistant output remained truncated after continuation retries"
                 );
-            } else {
-                length_continuation_retries = 0;
             }
 
-            if executed_local_tools_this_step {
-                continue;
-            }
+            Self::ensure_title(session, prompt_ctx.provider.clone(), &prompt_ctx.model_id).await;
+            let _ = Self::summarize_session(
+                session,
+                &session_id,
+                &prompt_ctx.provider_id,
+                &prompt_ctx.model_id,
+                prompt_ctx.provider.as_ref(),
+            )
+            .await;
 
-            if !post_first_step_ran {
-                Self::ensure_title(session, prompt_ctx.provider.clone(), &prompt_ctx.model_id)
-                    .await;
-                let _ = Self::summarize_session(
-                    session,
-                    &session_id,
-                    &prompt_ctx.provider_id,
-                    &prompt_ctx.model_id,
-                    prompt_ctx.provider.as_ref(),
-                )
-                .await;
-                post_first_step_ran = true;
-            }
-
-            if is_terminal_finish(finish_reason.as_deref()) {
-                Self::maybe_append_runtime_skill_save_suggestion(session, turn_start_index);
-                skill_reflection::update_skill_reflection_metadata(
-                    self.config_store.clone(),
-                    session,
-                );
-                Self::emit_session_update(prompt_ctx.hooks.update_hook.as_ref(), session);
-                tracing::info!(
-                    "Prompt loop complete for session {} with finish: {:?}",
-                    session_id,
-                    finish_reason
-                );
-                break;
-            }
+            Self::maybe_append_runtime_skill_save_suggestion(session, turn_start_index);
+            skill_reflection::update_skill_reflection_metadata(self.config_store.clone(), session);
+            Self::emit_session_update(prompt_ctx.hooks.update_hook.as_ref(), session);
+            tracing::info!(
+                "Turn lifecycle complete for session {} with finish: {:?}",
+                session_id,
+                finish_reason
+            );
+            break;
         }
 
         if token.is_cancelled() {
@@ -3464,11 +3526,38 @@ impl SessionPrompt {
 mod tests {
     use super::*;
     use crate::prompt::PromptError;
-    use agendao_orchestrator::runtime::events::ModelFailure;
     use agendao_provider::{
         error_code::StandardErrorCode, ProviderDiagnosticSeverity, ProviderDiagnosticSource,
         ProviderDiagnosticSummary, ProviderErrorKind, ProviderErrorSummary,
     };
+
+    #[test]
+    fn direct_limits_are_bounded_and_honor_request_timeout() {
+        let request = CompiledExecutionRequest {
+            max_tokens: Some(4_096),
+            timeout_secs: Some(45),
+            ..CompiledExecutionRequest::default()
+        };
+
+        let limits = direct_execution_limits(&request, 7);
+
+        assert_eq!(limits.max_agent_steps, 7);
+        assert_eq!(limits.max_model_calls, 7);
+        assert_eq!(limits.max_tool_calls, 7 * MAX_TOOLS_PER_AGENT_STEP);
+        assert_eq!(limits.max_total_tokens, 4_096 * 7);
+        assert_eq!(limits.max_wall_time_ms, 45_000);
+    }
+
+    #[test]
+    fn direct_limits_use_small_finite_defaults() {
+        let request = CompiledExecutionRequest::default();
+        let steps = configured_agent_steps(None, None);
+        let limits = direct_execution_limits(&request, steps);
+
+        assert_eq!(steps, DEFAULT_DIRECT_AGENT_STEPS);
+        assert_eq!(limits.max_model_calls, DEFAULT_DIRECT_AGENT_STEPS);
+        assert_eq!(limits.max_wall_time_ms, DEFAULT_DIRECT_TIMEOUT_SECS * 1_000);
+    }
 
     #[test]
     fn provider_failure_is_overflow_accepts_typed_request_too_large() {
@@ -3489,18 +3578,16 @@ mod tests {
                 message: "maximum context length exceeded".to_string(),
             }),
         };
-        let error = anyhow::Error::new(PromptError::ProviderFailure(ModelFailure::Provider(
-            summary,
-        )));
+        let error = anyhow::Error::new(PromptError::ProviderFailure(summary));
 
         assert!(SessionPrompt::provider_failure_is_overflow(&error));
     }
 
     #[test]
     fn provider_failure_is_overflow_accepts_untyped_overflow_text() {
-        let error = anyhow::Error::new(PromptError::ProviderFailure(ModelFailure::Message(
+        let error = anyhow::Error::new(PromptError::Provider(
             "provider rejected request: maximum context length is 128000 tokens".to_string(),
-        )));
+        ));
 
         assert!(SessionPrompt::provider_failure_is_overflow(&error));
     }

@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 /// Protocol-agnostic event bus.
 ///
-/// The sender can be handed to any transport task (direct bridge,
+/// The sender can be handed to any transport task (local receiver,
 /// socket subscriber, SSE listener). The main event loop drains the
 /// receiver on each Tick and applies events to SessionStore.
 pub struct EventBus {
@@ -64,9 +64,12 @@ mod tests {
             question: agendao_client::QuestionInfo {
                 id: "q1".into(),
                 session_id: "s1".into(),
-                questions: vec!["ok?".into()],
-                options: None,
-                items: vec![],
+                items: vec![agendao_client::QuestionItemInfo {
+                    question: "ok?".into(),
+                    header: None,
+                    options: vec![],
+                    multiple: false,
+                }],
             },
         })
         .unwrap();
@@ -99,14 +102,16 @@ mod tests {
             block: serde_json::json!({"kind": "message", "phase": "delta", "text": "Hello"}),
             id: Some("msg-1".into()),
             live_identity: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         tx.send(FrontendEvent::OutputBlockAppended {
             session_id: "s1".into(),
             block: serde_json::json!({"kind": "message", "phase": "delta", "text": " World"}),
             id: Some("msg-1".into()),
             live_identity: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Drain and apply
         let events = bus.drain();

@@ -6,9 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
-thiserror = { workspace = true }
 walkdir = "2"
 serde = { workspace = true }
-serde_json = { workspace = true }
 regex = { workspace = true }

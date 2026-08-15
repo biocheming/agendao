@@ -251,7 +251,10 @@ impl Tool for GrepTool {
             let mut output_lines = if truncated {
                 // The walk stops at `limit` matches, so the true total is
                 // unknown; report it as a lower bound.
-                vec![format!("Found more than {} matches (showing first {})", limit, limit)]
+                vec![format!(
+                    "Found more than {} matches (showing first {})",
+                    limit, limit
+                )]
             } else {
                 vec![format!("Found {} matches", total_matches)]
             };
@@ -411,7 +414,8 @@ mod tests {
         std::fs::write(dir.path().join("target/ignored.txt"), "TODO: ignored\n")
             .expect("write ignored file");
         std::fs::write(dir.path().join("kept.txt"), "TODO: kept\n").expect("write kept file");
-        std::fs::write(dir.path().join(".hidden.txt"), "TODO: hidden\n").expect("write hidden file");
+        std::fs::write(dir.path().join(".hidden.txt"), "TODO: hidden\n")
+            .expect("write hidden file");
 
         let tool = GrepTool::new();
         let result = tool

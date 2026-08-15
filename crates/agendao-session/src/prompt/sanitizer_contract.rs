@@ -14,7 +14,7 @@ use agendao_provider::protocols::request_sanitizer::{
     sanitize_messages_for_protocol_owned_with_actions, SanitizerOptions,
 };
 use agendao_provider::Message as ProviderMessage;
-use agendao_tool::{append_structured_repair_event, repair_event_builder, Metadata};
+use agendao_tool::{append_repair_event, repair_event_builder, Metadata};
 use agendao_types::{RepairEvent, RepairPolicy, SanitizerAction, SanitizerStage};
 
 // ── Contract ────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ impl SanitizerTelemetry {
             .reason(action.description())
             .build();
 
-        append_structured_repair_event(repair_metadata, &event);
+        append_repair_event(repair_metadata, event);
         self.actions.push(action);
     }
 
@@ -112,11 +112,8 @@ pub fn sanitize_with_contract_owned(
     };
 
     let mut actions = Vec::new();
-    let sanitized = sanitize_messages_for_protocol_owned_with_actions(
-        messages,
-        options,
-        Some(&mut actions),
-    );
+    let sanitized =
+        sanitize_messages_for_protocol_owned_with_actions(messages, options, Some(&mut actions));
 
     telemetry.message_count_after = sanitized.len();
 
@@ -129,7 +126,7 @@ pub fn sanitize_with_contract_owned(
         if matches!(policy, RepairPolicy::Permissive) {
             event.strict_mode_would_fail = is_synthetic_repair_action(action);
         }
-        append_structured_repair_event(repair_metadata, &event);
+        append_repair_event(repair_metadata, event);
         telemetry.actions.push(action.clone());
     }
 

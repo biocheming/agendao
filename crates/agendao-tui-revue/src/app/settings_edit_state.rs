@@ -35,7 +35,7 @@ pub enum SettingsEditMode {
 /// 字段游标:Add 模式 4 字段循环;Edit 模式 3 字段循环(Name 被跳过)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEditField {
-    Name,     // 仅 Add
+    Name, // 仅 Add
     BaseUrl,
     Protocol,
     ApiKey,
@@ -75,16 +75,12 @@ pub enum SettingsEditAction {
 /// server 端才是跨端真相(`/provider/connect/schema` 可拉取);TUI 静态副本
 /// 只为省一次启动 API 调用,新增协议时两处需同步。
 pub const PROTOCOL_OPTIONS: &[(&str, &str)] = &[
-    ("openai", "OpenAI"),
-    ("openrouter", "OpenRouter"),
-    ("perplexity", "Perplexity"),
-    ("anthropic", "Anthropic"),
-    ("google", "Google"),
-    ("bedrock", "Amazon Bedrock"),
-    ("vertex", "Google Vertex"),
-    ("github-copilot", "GitHub Copilot"),
-    ("gitlab", "GitLab"),
+    ("openai-responses", "OpenAI Responses"),
+    ("openai-chat", "OpenAI Chat Completions"),
+    ("anthropic", "Anthropic Messages"),
 ];
+
+const DEFAULT_PROTOCOL_IDX: usize = 1;
 
 pub struct SettingsEditState {
     /// editing 是否进行中。Details pane 渲染读它判断 editable / readonly 形态。
@@ -112,7 +108,7 @@ impl SettingsEditState {
             focus: SettingsEditField::BaseUrl,
             name_input: Input::new().placeholder("e.g. My OpenAI"),
             base_url_input: Input::new().placeholder("https://api.openai.com/v1"),
-            protocol_idx: 0,
+            protocol_idx: DEFAULT_PROTOCOL_IDX,
             api_key_input: Input::new().password(true).placeholder("sk-..."),
         }
     }
@@ -133,7 +129,7 @@ impl SettingsEditState {
         self.focus = SettingsEditField::Name;
         self.name_input = Input::new().placeholder("e.g. my-openai");
         self.base_url_input = Input::new().placeholder("https://api.openai.com/v1");
-        self.protocol_idx = 0; // 默认 openai(最常见)
+        self.protocol_idx = DEFAULT_PROTOCOL_IDX;
         self.api_key_input = Input::new().password(true).placeholder("sk-...");
     }
 
@@ -153,7 +149,7 @@ impl SettingsEditState {
             .protocol
             .as_deref()
             .and_then(|p| PROTOCOL_OPTIONS.iter().position(|(k, _)| *k == p))
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_PROTOCOL_IDX);
         // api_key Edit prefill 留空 — 与 dialog 方案语义一致:留空 = 不改 server auth,
         // 非空 = 重置 auth.json 条目。永不下发(server `ProviderInfo` 无 api_key 字段)。
         self.api_key_input = Input::new()
@@ -176,7 +172,7 @@ impl SettingsEditState {
         PROTOCOL_OPTIONS
             .get(self.protocol_idx)
             .map(|(k, _)| *k)
-            .unwrap_or("openai")
+            .unwrap_or("openai-chat")
     }
 
     /// 当前 protocol 显示名(field_block 渲染用)。
@@ -184,7 +180,7 @@ impl SettingsEditState {
         PROTOCOL_OPTIONS
             .get(self.protocol_idx)
             .map(|(_, l)| *l)
-            .unwrap_or("OpenAI")
+            .unwrap_or("OpenAI Chat Completions")
     }
 
     /// 字段路由:keymap 在 handle_settings_key 编辑态分支调用。
@@ -292,7 +288,11 @@ mod tests {
         s.handle_key(&Key::Tab);
         assert_eq!(s.focus, SettingsEditField::ApiKey);
         s.handle_key(&Key::Tab);
-        assert_eq!(s.focus, SettingsEditField::Name, "Add 4-field cycle returns to Name");
+        assert_eq!(
+            s.focus,
+            SettingsEditField::Name,
+            "Add 4-field cycle returns to Name"
+        );
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
             name: "OpenAI".into(),
             models: vec![],
             base_url: Some("https://api.openai.com/v1".into()),
-            protocol: Some("openai".into()),
+            protocol: Some("openai-chat".into()),
             disabled: false,
         };
         s.enter_edit(&info);
@@ -315,7 +315,11 @@ mod tests {
         s.handle_key(&Key::Tab);
         assert_eq!(s.focus, SettingsEditField::ApiKey);
         s.handle_key(&Key::Tab);
-        assert_eq!(s.focus, SettingsEditField::Name, "Edit 4-field cycle returns to Name");
+        assert_eq!(
+            s.focus,
+            SettingsEditField::Name,
+            "Edit 4-field cycle returns to Name"
+        );
     }
 
     #[test]
@@ -337,7 +341,10 @@ mod tests {
         s.api_key_input.set_value("sk-secret");
         assert_eq!(s.api_key_input.text(), "sk-secret");
         s.close();
-        assert!(s.api_key_input.text().is_empty(), "api_key 明文必须在 close 时抹除");
+        assert!(
+            s.api_key_input.text().is_empty(),
+            "api_key 明文必须在 close 时抹除"
+        );
     }
 
     #[test]

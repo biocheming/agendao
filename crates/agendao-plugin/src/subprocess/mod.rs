@@ -7,10 +7,8 @@
 pub mod auth;
 pub mod client;
 pub mod loader;
-pub mod protocol;
 pub mod runtime;
 
-// Re-exports for convenience
 pub use auth::{
     PluginAuthBridge, PluginAuthError, PluginFetchRequest, PluginFetchResponse,
     PluginFetchStreamResponse,
@@ -40,7 +38,6 @@ pub fn hook_name_to_event(name: &str) -> Option<HookEvent> {
         "experimental.chat.messages.transform" => Some(HookEvent::ChatMessagesTransform),
         "experimental.session.compacting" => Some(HookEvent::SessionCompacting),
         "experimental.telemetry.snapshot.updated" => Some(HookEvent::TelemetrySnapshotUpdated),
-        "experimental.telemetry.stage.summary.updated" => Some(HookEvent::StageSummaryUpdated),
         "experimental.text.complete" => Some(HookEvent::TextComplete),
         _ => None,
     }
@@ -55,10 +52,6 @@ mod tests {
         assert_eq!(
             hook_name_to_event("experimental.telemetry.snapshot.updated"),
             Some(HookEvent::TelemetrySnapshotUpdated)
-        );
-        assert_eq!(
-            hook_name_to_event("experimental.telemetry.stage.summary.updated"),
-            Some(HookEvent::StageSummaryUpdated)
         );
     }
 }

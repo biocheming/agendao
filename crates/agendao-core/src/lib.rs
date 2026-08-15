@@ -5,8 +5,6 @@
 //! - Do not introduce network, database, UI, or parser dependencies here.
 //! - Runtime/process coordination stays behind explicit crate features.
 
-#[cfg(feature = "agent-task-registry")]
-pub mod agent_task_registry;
 #[cfg(feature = "event-bus")]
 pub mod bus;
 #[cfg(feature = "subprocess-runtime")]

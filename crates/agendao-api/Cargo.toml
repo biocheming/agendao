@@ -6,10 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-stage-protocol = { path = "../agendao-stage-protocol" }
-tracing = { workspace = true }
 agendao-multimodal = { path = "../agendao-multimodal" }
 agendao-skill = { path = "../agendao-skill" }
 agendao-types = { path = "../agendao-types" }
+agendao-orchestrator = { path = "../agendao-orchestrator" }
 serde = { workspace = true }
 serde_json = { workspace = true }

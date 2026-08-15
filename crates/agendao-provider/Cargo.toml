@@ -23,14 +23,10 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true, features = ["charset", "http2", "json", "stream", "system-proxy"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
-pin-project-lite = "0.2"
 uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = "0.10"
-hmac = "0.12"
 hex = "0.4"
-urlencoding = "2.1"
-dirs = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
 bytes = "1"

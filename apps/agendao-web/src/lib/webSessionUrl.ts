@@ -10,7 +10,7 @@ export interface WebExternalAdapterProvisioningRoute {
   actorId: string;
   workspaceId: string | null;
   routePolicyId: string | null;
-  schedulerProfile: string | null;
+  scheduler: string | null;
   directory: string | null;
   projectId: string | null;
   title: string | null;
@@ -47,7 +47,7 @@ function readExternalProvisioning(
     actorId,
     workspaceId: cleanText(params.get("external_workspace_id")),
     routePolicyId: cleanText(params.get("external_route_policy_id")),
-    schedulerProfile: cleanText(params.get("external_scheduler_profile")),
+    scheduler: cleanText(params.get("external_scheduler")),
     directory: cleanText(params.get("external_directory")),
     projectId: cleanText(params.get("external_project_id")),
     title: cleanText(params.get("external_title")),
@@ -63,7 +63,7 @@ function writeExternalProvisioning(
     "external_actor_id",
     "external_workspace_id",
     "external_route_policy_id",
-    "external_scheduler_profile",
+    "external_scheduler",
     "external_directory",
     "external_project_id",
     "external_title",
@@ -79,8 +79,8 @@ function writeExternalProvisioning(
   if (provisioning.routePolicyId) {
     params.set("external_route_policy_id", provisioning.routePolicyId);
   }
-  if (provisioning.schedulerProfile) {
-    params.set("external_scheduler_profile", provisioning.schedulerProfile);
+  if (provisioning.scheduler) {
+    params.set("external_scheduler", provisioning.scheduler);
   }
   if (provisioning.directory) {
     params.set("external_directory", provisioning.directory);

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{cache::ProviderProfileFingerprint, ChatRequest, ChatResponse, StreamResult};
+use crate::{
+    cache::ProviderProfileFingerprint, ChatRequest, ChatResponse, ProviderApiShape, StreamResult,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -42,6 +44,12 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
     fn provider_profile_fingerprint(&self) -> Option<ProviderProfileFingerprint> {
+        None
+    }
+
+    /// The wire shape is part of request projection, not an inference from a
+    /// provider name. Callers use it to choose replay versus token continuation.
+    fn api_shape(&self) -> Option<ProviderApiShape> {
         None
     }
 
@@ -89,35 +97,6 @@ pub enum ProviderError {
 
     #[error("Context overflow: {0}")]
     ContextOverflow(String),
-}
-
-impl crate::retry::IsRetryable for ProviderError {
-    fn is_retryable(&self) -> Option<String> {
-        match self {
-            ProviderError::RateLimit => Some("Rate limited".to_string()),
-            ProviderError::Timeout => Some("Request timed out".to_string()),
-            ProviderError::NetworkError(msg) => Some(format!("Network error: {msg}")),
-            ProviderError::ApiErrorWithStatus {
-                status_code,
-                message,
-            } => {
-                if matches!(status_code, 429 | 500 | 502 | 503 | 504) {
-                    Some(format!("API error {status_code}: {message}"))
-                } else {
-                    None
-                }
-            }
-            ProviderError::ApiError(_)
-            | ProviderError::AuthError(_)
-            | ProviderError::ModelNotFound(_)
-            | ProviderError::InvalidRequest(_)
-            | ProviderError::ProviderNotFound(_)
-            | ProviderError::ConfigError(_)
-            | ProviderError::ContextOverflow(_) => None,
-            ProviderError::StreamError(message) => is_retryable_stream_error_message(message)
-                .then(|| format!("Transient stream error: {message}")),
-        }
-    }
 }
 
 static OVERFLOW_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
@@ -229,16 +208,7 @@ pub fn parse_api_call_error(provider_id: &str, error: &ProviderError) -> ParsedA
     }
 }
 
-pub(crate) fn format_error_message(provider_id: &str, error: &ProviderError) -> String {
-    // GitHub Copilot 403 special case
-    if provider_id.contains("github-copilot") {
-        if let ProviderError::ApiErrorWithStatus {
-            status_code: 403, ..
-        } = error
-        {
-            return "Please reauthenticate with the copilot provider to ensure your credentials work properly with AgenDao.".to_string();
-        }
-    }
+pub(crate) fn format_error_message(error: &ProviderError) -> String {
     error.to_string()
 }
 
@@ -421,16 +391,12 @@ impl Default for ProviderRegistry {
     }
 }
 
-pub fn create_default_registry() -> ProviderRegistry {
-    ProviderRegistry::new()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_overflow_detection_ethnopic() {
+    fn test_overflow_detection_anthropic() {
         assert!(ProviderError::is_overflow("prompt is too long"));
         assert!(ProviderError::is_overflow(
             "The prompt is too long for this model"
@@ -445,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_overflow_detection_bedrock() {
+    fn test_overflow_detection_input_too_long() {
         assert!(ProviderError::is_overflow(
             "input is too long for requested model"
         ));
@@ -467,17 +433,8 @@ mod tests {
     #[test]
     fn test_parse_api_call_error_overflow() {
         let error = ProviderError::ApiError("prompt is too long".to_string());
-        let parsed = parse_api_call_error("ethnopic", &error);
+        let parsed = parse_api_call_error("anthropic", &error);
         assert!(matches!(parsed, ParsedAPICallError::ContextOverflow { .. }));
-    }
-
-    #[test]
-    fn test_parse_api_call_error_github_copilot_403() {
-        let error = ProviderError::api_error_with_status("Forbidden", 403);
-        let parsed = parse_api_call_error("github-copilot", &error);
-        if let ParsedAPICallError::ApiError { message, .. } = parsed {
-            assert!(message.contains("reauthenticate"));
-        }
     }
 
     #[test]

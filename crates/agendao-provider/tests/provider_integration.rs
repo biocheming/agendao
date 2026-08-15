@@ -7,12 +7,12 @@ use std::collections::HashMap;
 fn create_test_registry() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
-    // Ethnopic-family provider via runtime adapter.
-    let ethnopic_models: HashMap<String, ModelInfo> = vec![
+    // Anthropic-family provider via runtime adapter.
+    let anthropic_models: HashMap<String, ModelInfo> = vec![
         ModelInfo {
             id: "test-model-large".to_string(),
             name: "Test Model Large".to_string(),
-            provider: "ethnopic".to_string(),
+            provider: "anthropic".to_string(),
             context_window: 200000,
             max_input_tokens: None,
             max_output_tokens: 16000,
@@ -26,7 +26,7 @@ fn create_test_registry() -> ProviderRegistry {
         ModelInfo {
             id: "test-model-v2".to_string(),
             name: "Test Model V2".to_string(),
-            provider: "ethnopic".to_string(),
+            provider: "anthropic".to_string(),
             context_window: 200000,
             max_input_tokens: None,
             max_output_tokens: 8192,
@@ -43,14 +43,14 @@ fn create_test_registry() -> ProviderRegistry {
     .collect();
 
     registry.register(ProviderInstance::new(
-        "ethnopic".to_string(),
-        "Ethnopic".to_string(),
-        ProviderConfig::new("ethnopic", "", "test-key"),
-        agendao_provider::create_provider_adapter(ProviderRuntimeAdapter::Ethnopic),
-        ethnopic_models,
+        "anthropic".to_string(),
+        "Anthropic".to_string(),
+        ProviderConfig::new("anthropic", "", "test-key"),
+        agendao_provider::create_provider_adapter(ProviderRuntimeAdapter::Anthropic),
+        anthropic_models,
     ));
 
-    // OpenAI provider using the closeai-compatible runtime adapter.
+    // OpenAI provider using the openai-compatible runtime adapter.
     let openai_models: HashMap<String, ModelInfo> = vec![ModelInfo {
         id: "gpt-4o".to_string(),
         name: "GPT-4o".to_string(),
@@ -73,35 +73,8 @@ fn create_test_registry() -> ProviderRegistry {
         "openai".to_string(),
         "OpenAI".to_string(),
         ProviderConfig::new("openai", "", "test-key"),
-        agendao_provider::create_provider_adapter(ProviderRuntimeAdapter::CloseAiCompatible),
+        agendao_provider::create_provider_adapter(ProviderRuntimeAdapter::OpenAiCompatible),
         openai_models,
-    ));
-
-    // Google provider using the Gemini runtime adapter.
-    let google_models: HashMap<String, ModelInfo> = vec![ModelInfo {
-        id: "gemini-2.0-flash".to_string(),
-        name: "Gemini 2.0 Flash".to_string(),
-        provider: "google".to_string(),
-        context_window: 1_000_000,
-        max_input_tokens: None,
-        max_output_tokens: 8192,
-        supports_vision: true,
-        supports_tools: true,
-        cost_per_million_input: 0.1,
-        cost_per_million_output: 0.4,
-        cost_per_million_cache_read: None,
-        cost_per_million_cache_write: None,
-    }]
-    .into_iter()
-    .map(|m| (m.id.clone(), m))
-    .collect();
-
-    registry.register(ProviderInstance::new(
-        "google".to_string(),
-        "Google AI".to_string(),
-        ProviderConfig::new("google", "", "test-key"),
-        agendao_provider::create_provider_adapter(ProviderRuntimeAdapter::Gemini),
-        google_models,
     ));
 
     registry
@@ -116,16 +89,12 @@ fn test_registry_lists_providers() {
 
     let provider_ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
     assert!(
-        provider_ids.contains(&"ethnopic"),
-        "Should have ethnopic provider"
+        provider_ids.contains(&"anthropic"),
+        "Should have anthropic provider"
     );
     assert!(
         provider_ids.contains(&"openai"),
         "Should have openai provider"
-    );
-    assert!(
-        provider_ids.contains(&"google"),
-        "Should have google provider"
     );
 }
 
@@ -155,7 +124,7 @@ fn test_find_model_by_id() {
     assert!(result.is_some(), "Should find test-model-v2 model");
 
     let (provider_id, model) = result.unwrap();
-    assert_eq!(provider_id, "ethnopic");
+    assert_eq!(provider_id, "anthropic");
     assert!(model.supports_vision);
     assert!(model.supports_tools);
 }
@@ -164,12 +133,12 @@ fn test_find_model_by_id() {
 fn test_provider_metadata() {
     let registry = create_test_registry();
 
-    let ethnopic = registry.get("ethnopic");
-    assert!(ethnopic.is_some());
-    let provider = ethnopic.unwrap();
+    let anthropic = registry.get("anthropic");
+    assert!(anthropic.is_some());
+    let provider = anthropic.unwrap();
 
-    assert_eq!(provider.id(), "ethnopic");
-    assert_eq!(provider.name(), "Ethnopic");
+    assert_eq!(provider.id(), "anthropic");
+    assert_eq!(provider.name(), "Anthropic");
 
     let models = provider.models();
     assert!(!models.is_empty());

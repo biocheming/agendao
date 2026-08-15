@@ -280,7 +280,6 @@ fn parse_agendao_conditions(frontmatter: &str) -> SkillConditions {
         fallback_for_tools: parse_scoped_frontmatter_list(frontmatter, "fallback_for_tools"),
         requires_toolsets: parse_scoped_frontmatter_list(frontmatter, "requires_toolsets"),
         fallback_for_toolsets: parse_scoped_frontmatter_list(frontmatter, "fallback_for_toolsets"),
-        stage_filter: parse_scoped_frontmatter_list(frontmatter, "stage_filter"),
     }
 }
 

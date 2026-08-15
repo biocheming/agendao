@@ -36,8 +36,7 @@ pub enum ModelEditMode {
 /// reasoning effort 循环选项。`default` = 不写(ModelConfig.reasoning_effort = None,
 /// 继承 server/全局默认);其余原样写入。与 agendao-config schema 注释
 /// (none/minimal/low/medium/high)同源,`default` 是 UI 层的"不设置"哨兵。
-pub(crate) const EFFORT_OPTIONS: &[&str] =
-    &["default", "none", "minimal", "low", "medium", "high"];
+pub(crate) const EFFORT_OPTIONS: &[&str] = &["default", "none", "minimal", "low", "medium", "high"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelEditField {
@@ -151,13 +150,10 @@ impl ModelEditDialog {
             id_input: revue::widget::Input::new().placeholder("e.g. gpt-4o-mini"),
             name_input: revue::widget::Input::new().placeholder("Display name"),
             context_input: revue::widget::Input::new().placeholder("e.g. 128000"),
-            max_output_input: revue::widget::Input::new()
-                .placeholder("e.g. 16384 (optional)"),
+            max_output_input: revue::widget::Input::new().placeholder("e.g. 16384 (optional)"),
             effort_idx: 0,
-            timeout_input: revue::widget::Input::new()
-                .placeholder("e.g. 120 (optional)"),
-            stall_input: revue::widget::Input::new()
-                .placeholder("e.g. 30 (optional)"),
+            timeout_input: revue::widget::Input::new().placeholder("e.g. 120 (optional)"),
+            stall_input: revue::widget::Input::new().placeholder("e.g. 30 (optional)"),
             focus: ModelEditField::Id,
             reasoning_visible: true,
             prefill: None,
@@ -172,13 +168,10 @@ impl ModelEditDialog {
         self.id_input = revue::widget::Input::new().placeholder("e.g. gpt-4o-mini");
         self.name_input = revue::widget::Input::new().placeholder("Display name");
         self.context_input = revue::widget::Input::new().placeholder("e.g. 128000");
-        self.max_output_input = revue::widget::Input::new()
-            .placeholder("e.g. 16384 (optional)");
+        self.max_output_input = revue::widget::Input::new().placeholder("e.g. 16384 (optional)");
         self.effort_idx = 0;
-        self.timeout_input = revue::widget::Input::new()
-            .placeholder("e.g. 120 (optional)");
-        self.stall_input = revue::widget::Input::new()
-            .placeholder("e.g. 30 (optional)");
+        self.timeout_input = revue::widget::Input::new().placeholder("e.g. 120 (optional)");
+        self.stall_input = revue::widget::Input::new().placeholder("e.g. 30 (optional)");
         self.focus = ModelEditField::Id;
         self.reasoning_visible = true;
         self.prefill = None;
@@ -186,11 +179,7 @@ impl ModelEditDialog {
         self.visible = true;
     }
 
-    pub fn open_edit(
-        &mut self,
-        provider_id: &str,
-        model: &agendao_client::ProviderModelInfo,
-    ) {
+    pub fn open_edit(&mut self, provider_id: &str, model: &agendao_client::ProviderModelInfo) {
         self.mode = ModelEditMode::Edit;
         self.provider_id = provider_id.to_string();
         self.origin_model_key = model.id.clone();
@@ -214,13 +203,10 @@ impl ModelEditDialog {
             .value(ctx_str);
         // max_output/timeout/effort 字段在 ProviderModelInfo 不直接暴露;Edit prefill
         // 留空,AppHandler 拿到原 ModelConfig 后经 `set_prefill` 回填(土律·第十条·完整 prefill)。
-        self.max_output_input = revue::widget::Input::new()
-            .placeholder("e.g. 16384 (optional)");
+        self.max_output_input = revue::widget::Input::new().placeholder("e.g. 16384 (optional)");
         self.effort_idx = 0;
-        self.timeout_input = revue::widget::Input::new()
-            .placeholder("e.g. 120 (optional)");
-        self.stall_input = revue::widget::Input::new()
-            .placeholder("e.g. 30 (optional)");
+        self.timeout_input = revue::widget::Input::new().placeholder("e.g. 120 (optional)");
+        self.stall_input = revue::widget::Input::new().placeholder("e.g. 30 (optional)");
         self.focus = ModelEditField::Id;
         // 未知 reasoning 能力前先隐藏 effort 字段;set_prefill 到达后按原 config 决定。
         self.reasoning_visible = false;
@@ -304,25 +290,35 @@ impl ModelEditDialog {
                 }
                 // 数字字段三态：空=清除 / 合法=Some / 非法=错误不提交
                 // （此前非法按 None 提交 = 打错字抹掉已有配置）。
-                let context_window = match self.numeric_field(ModelEditField::ContextWindow, "Context Window") {
+                let context_window =
+                    match self.numeric_field(ModelEditField::ContextWindow, "Context Window") {
+                        Ok(v) => v,
+                        Err(()) => return None,
+                    };
+                let max_output_tokens = match self
+                    .numeric_field(ModelEditField::MaxOutputTokens, "Max Output Tokens")
+                {
                     Ok(v) => v,
                     Err(()) => return None,
                 };
-                let max_output_tokens = match self.numeric_field(ModelEditField::MaxOutputTokens, "Max Output Tokens") {
+                let timeout_secs = match self.numeric_field(ModelEditField::TimeoutSecs, "Timeout")
+                {
                     Ok(v) => v,
                     Err(()) => return None,
                 };
-                let timeout_secs = match self.numeric_field(ModelEditField::TimeoutSecs, "Timeout") {
+                let stream_stall_timeout_secs = match self
+                    .numeric_field(ModelEditField::StreamStallSecs, "Stream stall timeout")
+                {
                     Ok(v) => v,
                     Err(()) => return None,
                 };
-                let stream_stall_timeout_secs = match self.numeric_field(ModelEditField::StreamStallSecs, "Stream stall timeout") {
-                    Ok(v) => v,
-                    Err(()) => return None,
-                };
-                let reasoning_effort = EFFORT_OPTIONS
-                    .get(self.effort_idx)
-                    .and_then(|v| if *v == "default" { None } else { Some(v.to_string()) });
+                let reasoning_effort = EFFORT_OPTIONS.get(self.effort_idx).and_then(|v| {
+                    if *v == "default" {
+                        None
+                    } else {
+                        Some(v.to_string())
+                    }
+                });
                 let model_key = if self.mode == ModelEditMode::Edit {
                     self.origin_model_key.clone()
                 } else {
@@ -354,8 +350,7 @@ impl ModelEditDialog {
             }
             // Reasoning effort 字段下 ←/→ 切选项(其他字段走 Input 光标移动)。
             Key::Left | Key::Right
-                if self.focus == ModelEditField::ReasoningEffort
-                    && self.reasoning_visible =>
+                if self.focus == ModelEditField::ReasoningEffort && self.reasoning_visible =>
             {
                 let n = EFFORT_OPTIONS.len();
                 self.effort_idx = match key {
@@ -485,9 +480,13 @@ impl ModelEditDialog {
                     self.mode == ModelEditMode::Edit, // Edit 时 readonly hint
                     cursor_on,
                 ),
-                ModelEditField::Name => {
-                    field_input("Display Name", self.name_input.clone(), focused, false, cursor_on)
-                }
+                ModelEditField::Name => field_input(
+                    "Display Name",
+                    self.name_input.clone(),
+                    focused,
+                    false,
+                    cursor_on,
+                ),
                 ModelEditField::ContextWindow => field_input(
                     "Context Window (tokens)",
                     self.context_input.clone(),
@@ -504,7 +503,10 @@ impl ModelEditDialog {
                 ),
                 ModelEditField::ReasoningEffort => field_choice(
                     "Reasoning effort",
-                    EFFORT_OPTIONS.get(self.effort_idx).copied().unwrap_or("default"),
+                    EFFORT_OPTIONS
+                        .get(self.effort_idx)
+                        .copied()
+                        .unwrap_or("default"),
                     focused,
                 ),
                 ModelEditField::TimeoutSecs => field_input(
@@ -619,7 +621,9 @@ fn field_input(
     } else {
         colors::BORDER()
     };
-    input = input.focused(focused && !readonly).cursor_visible(cursor_on);
+    input = input
+        .focused(focused && !readonly)
+        .cursor_visible(cursor_on);
     let label_text = if readonly {
         format!(" {} (read-only)", label)
     } else {
@@ -874,9 +878,15 @@ mod tests {
     fn field_at_block_index_respects_effort_visibility() {
         let mut d = ModelEditDialog::new();
         d.open_add("openai"); // reasoning_visible=true → 7 块
-        assert_eq!(d.field_at_block_index(4), Some(ModelEditField::ReasoningEffort));
+        assert_eq!(
+            d.field_at_block_index(4),
+            Some(ModelEditField::ReasoningEffort)
+        );
         assert_eq!(d.field_at_block_index(5), Some(ModelEditField::TimeoutSecs));
-        assert_eq!(d.field_at_block_index(6), Some(ModelEditField::StreamStallSecs));
+        assert_eq!(
+            d.field_at_block_index(6),
+            Some(ModelEditField::StreamStallSecs)
+        );
         assert_eq!(d.field_at_block_index(7), None);
         d.open_edit("openai", &sample_model()); // 隐藏 → 6 块,下标 4 = Timeout
         assert_eq!(d.field_at_block_index(4), Some(ModelEditField::TimeoutSecs));

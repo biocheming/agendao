@@ -16,11 +16,19 @@ pub fn parse_osc11_response(resp: &str) -> Option<(u8, u8, u8)> {
     let body = body.trim_end_matches(['\x07', '\x1b', '\\']);
     let rgb = body.strip_prefix("rgb:")?;
     let parts: Vec<&str> = rgb.split('/').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let parse = |s: &str| -> Option<u8> {
         let s = s.trim();
         // 16-bit（≥4 hex）取前 2 位截到 8-bit；8-bit（≥2 hex）整体用。
-        let h = if s.len() >= 4 { &s[..2] } else if s.len() >= 2 { s } else { return None };
+        let h = if s.len() >= 4 {
+            &s[..2]
+        } else if s.len() >= 2 {
+            s
+        } else {
+            return None;
+        };
         u8::from_str_radix(h, 16).ok()
     };
     Some((parse(parts[0])?, parse(parts[1])?, parse(parts[2])?))

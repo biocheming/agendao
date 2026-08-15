@@ -1,10 +1,5 @@
 use super::permission::request_permission;
 use crate::{ApiError, Result, ServerState};
-use agendao_orchestrator::{
-    stage_policy_available_tools, stage_policy_from_label, SchedulerProfilePlan, SchedulerSkillRef,
-    SchedulerStageKind, SchedulerStageOverride, StageToolPolicy,
-};
-use agendao_session::{MessageRole, Session, SessionMessage};
 use agendao_skill::{
     extract_methodology_template_from_markdown, infer_toolsets_from_tools,
     render_methodology_skill_body, CreateSkillRequest, DeleteSkillRequest, EditSkillRequest,
@@ -25,13 +20,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct SkillCatalogQuery {
     #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
     pub category: Option<String>,
-    #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub tool_policy: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -104,14 +93,7 @@ pub(crate) struct SkillMethodologyExtractResponse {
 struct OwnedSkillFilter {
     available_tools: HashSet<String>,
     available_toolsets: HashSet<String>,
-    current_stage: Option<String>,
     category: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct SessionSkillScope {
-    current_stage: Option<String>,
-    tool_policy: Option<String>,
 }
 
 impl OwnedSkillFilter {
@@ -119,7 +101,6 @@ impl OwnedSkillFilter {
         SkillFilter {
             available_tools: Some(&self.available_tools),
             available_toolsets: Some(&self.available_toolsets),
-            current_stage: self.current_stage.as_deref(),
             category: self.category.as_deref(),
         }
     }
@@ -140,9 +121,7 @@ pub(crate) async fn list_skill_catalog_entries(
         return Ok(Json(
             skills
                 .into_iter()
-                .map(|(skill, disabled)| {
-                    skill_catalog_entry_from_meta(&authority, skill, disabled)
-                })
+                .map(|(skill, disabled)| skill_catalog_entry_from_meta(&authority, skill, disabled))
                 .collect(),
         ));
     }
@@ -258,88 +237,6 @@ pub(crate) async fn manage_skill(
     }))
 }
 
-pub(crate) async fn enrich_scheduler_plan_skills(
-    state: &Arc<ServerState>,
-    plan: &mut SchedulerProfilePlan,
-) -> Result<()> {
-    let inventory = normalized_tool_inventory(&state.tool_registry.list_ids().await);
-    let requested_plan_skills = requested_skill_names(&plan.skill_list);
-
-    plan.skill_list = resolve_skill_refs_for_stage(
-        state,
-        &inventory,
-        None,
-        None,
-        requested_plan_skills.as_deref(),
-    )
-    .await?;
-
-    for stage in plan.stages.clone() {
-        let policy = plan.stage_policy(stage).tool_policy;
-        let requested_stage_skills = plan
-            .stage_overrides
-            .get(&stage)
-            .and_then(|override_cfg| requested_skill_names(&override_cfg.skill_list))
-            .or_else(|| requested_plan_skills.clone());
-        let filtered_stage_skills = resolve_skill_refs_for_stage(
-            state,
-            &inventory,
-            Some(stage),
-            Some(policy),
-            requested_stage_skills.as_deref(),
-        )
-        .await?;
-
-        plan.stage_skill_lists
-            .insert(stage, filtered_stage_skills.clone());
-
-        if stage.needs_capabilities() {
-            let stage_override =
-                plan.stage_overrides
-                    .entry(stage)
-                    .or_insert_with(|| SchedulerStageOverride {
-                        kind: stage,
-                        tool_policy: None,
-                        loop_budget: None,
-                        session_projection: None,
-                        agent_tree: None,
-                        agents: Vec::new(),
-                        skill_list: Vec::new(),
-                    });
-            stage_override.skill_list = filtered_stage_skills;
-        }
-    }
-
-    Ok(())
-}
-
-async fn resolve_skill_refs_for_stage(
-    state: &Arc<ServerState>,
-    _inventory: &[String],
-    stage: Option<SchedulerStageKind>,
-    policy: Option<StageToolPolicy>,
-    requested_names: Option<&[String]>,
-) -> Result<Vec<SchedulerSkillRef>> {
-    let query = SkillCatalogQuery {
-        session_id: None,
-        category: None,
-        stage: stage.map(|stage| stage.event_name().to_string()),
-        tool_policy: policy.map(StageToolPolicy::label),
-        tools: Vec::new(),
-        toolsets: Vec::new(),
-        include_disabled: false,
-    };
-    let views = resolve_skill_catalog_inner(state, &query, requested_names, true).await?;
-    Ok(views
-        .into_iter()
-        .map(|skill| SchedulerSkillRef {
-            name: skill.name,
-            description: skill.description,
-            category: skill.category,
-        })
-        .collect())
-}
-
 async fn resolve_skill_catalog_inner(
     state: &Arc<ServerState>,
     query: &SkillCatalogQuery,
@@ -365,34 +262,19 @@ async fn build_skill_filter(
     state: &Arc<ServerState>,
     query: &SkillCatalogQuery,
 ) -> Result<Option<OwnedSkillFilter>> {
-    let session_scope = session_skill_scope(state, query).await?;
     let has_explicit_scope = query
         .category
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_some()
-        || query
-            .stage
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        || query
-            .tool_policy
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
         || !query.tools.is_empty()
-        || !query.toolsets.is_empty()
-        || session_scope.current_stage.is_some()
-        || session_scope.tool_policy.is_some();
+        || !query.toolsets.is_empty();
     if !has_explicit_scope {
         return Ok(None);
     }
 
-    let available_tools = available_tools_for_query(state, query, &session_scope).await?;
+    let available_tools = available_tools_for_query(state, query).await?;
     let mut available_toolsets =
         infer_toolsets_from_tools(available_tools.iter().map(String::as_str));
     available_toolsets.extend(
@@ -406,13 +288,6 @@ async fn build_skill_filter(
     Ok(Some(OwnedSkillFilter {
         available_tools,
         available_toolsets,
-        current_stage: query
-            .stage
-            .as_deref()
-            .or(session_scope.current_stage.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
         category: query
             .category
             .as_deref()
@@ -425,7 +300,6 @@ async fn build_skill_filter(
 async fn available_tools_for_query(
     state: &Arc<ServerState>,
     query: &SkillCatalogQuery,
-    session_scope: &SessionSkillScope,
 ) -> Result<HashSet<String>> {
     if !query.tools.is_empty() {
         return Ok(query
@@ -439,89 +313,7 @@ async fn available_tools_for_query(
     let inventory = state.tool_registry.list_ids().await;
     let normalized_inventory = normalized_tool_inventory(&inventory);
 
-    let Some(policy_label) = query
-        .tool_policy
-        .as_deref()
-        .or(session_scope.tool_policy.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(normalized_inventory.into_iter().collect());
-    };
-
-    let policy = stage_policy_from_label(policy_label).ok_or_else(|| {
-        ApiError::BadRequest(format!(
-            "unknown skill catalog tool policy `{}`",
-            policy_label
-        ))
-    })?;
-    Ok(stage_policy_available_tools(policy, &normalized_inventory))
-}
-
-async fn session_skill_scope(
-    state: &Arc<ServerState>,
-    query: &SkillCatalogQuery,
-) -> Result<SessionSkillScope> {
-    let Some(session_id) = query
-        .session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(SessionSkillScope::default());
-    };
-
-    let sessions = state.sessions.lock().await;
-    let session = sessions
-        .get(session_id)
-        .ok_or_else(|| ApiError::SessionNotFound(session_id.to_string()))?;
-    Ok(active_session_skill_scope(session))
-}
-
-fn active_session_skill_scope(session: &Session) -> SessionSkillScope {
-    let Some(message) = find_active_scheduler_stage_message(session) else {
-        return SessionSkillScope::default();
-    };
-
-    SessionSkillScope {
-        current_stage: message
-            .metadata
-            .get("scheduler_stage")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        tool_policy: message
-            .metadata
-            .get("scheduler_stage_tool_policy")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-    }
-}
-
-fn find_active_scheduler_stage_message(session: &Session) -> Option<&SessionMessage> {
-    session.record().messages.iter().rev().find(|message| {
-        message.role == MessageRole::Assistant
-            && message
-                .metadata
-                .get("scheduler_stage_emitted")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-            && (message
-                .metadata
-                .get("scheduler_stage_streaming")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                || matches!(
-                    message
-                        .metadata
-                        .get("scheduler_stage_status")
-                        .and_then(|value| value.as_str()),
-                    Some("running" | "waiting" | "cancelling" | "retry")
-                ))
-    })
+    Ok(normalized_inventory.into_iter().collect())
 }
 
 fn normalized_tool_inventory(tool_ids: &[String]) -> Vec<String> {
@@ -535,24 +327,6 @@ fn normalized_tool_inventory(tool_ids: &[String]) -> Vec<String> {
         normalized.push(tool);
     }
     normalized
-}
-
-fn requested_skill_names(skill_list: &[SchedulerSkillRef]) -> Option<Vec<String>> {
-    let mut names = Vec::new();
-    for skill in skill_list {
-        let trimmed = skill.name.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if names
-            .iter()
-            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
-        {
-            continue;
-        }
-        names.push(trimmed.to_string());
-    }
-    (!names.is_empty()).then_some(names)
 }
 
 fn select_skill_views(
@@ -978,7 +752,6 @@ mod tests {
     use agendao_config::ConfigStore;
     use agendao_memory::MemoryAuthority;
     use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
-    use agendao_session::{Session, SessionMessage};
     use agendao_state::UserStateAuthority;
     use agendao_storage::{Database, MemoryRepository};
     use std::fs;
@@ -986,6 +759,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn server_state_for_project(project_dir: &std::path::Path) -> Arc<ServerState> {
+        crate::isolate_test_config_home();
         let mut state = ServerState::new();
         let config_store = Arc::new(
             ConfigStore::from_project_dir(project_dir).expect("project config store should load"),
@@ -1004,6 +778,7 @@ mod tests {
     async fn server_state_for_project_with_memory(
         project_dir: &std::path::Path,
     ) -> Arc<ServerState> {
+        crate::isolate_test_config_home();
         let mut state = ServerState::new();
         let config_store = Arc::new(
             ConfigStore::from_project_dir(project_dir).expect("project config store should load"),
@@ -1019,14 +794,10 @@ mod tests {
         state.workspace_root = project_dir.to_path_buf();
         state.user_state = user_state.clone();
         state.resolved_context_authority = resolved_context_authority.clone();
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
-            Arc::new(
-                MemoryAuthority::new(user_state, resolved_context_authority)
-                    .with_repository(repository),
-            ),
-            project_dir,
-            Some(state.config_store.clone()),
-        ));
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(
+            MemoryAuthority::new(user_state, resolved_context_authority)
+                .with_repository(repository),
+        )));
         Arc::new(state)
     }
 
@@ -1363,161 +1134,6 @@ description: extracted
                 .as_ref()
                 .map(|template| template.when_to_use.len()),
             Some(1)
-        );
-    }
-
-    #[test]
-    fn active_session_skill_scope_reads_latest_active_stage_metadata() {
-        let mut session = Session::new("project", "/tmp/project");
-        let mut done = SessionMessage::assistant(&session.record().id);
-        done.metadata.insert(
-            "scheduler_stage_emitted".to_string(),
-            serde_json::json!(true),
-        );
-        done.metadata.insert(
-            "scheduler_stage_status".to_string(),
-            serde_json::json!("done"),
-        );
-        done.metadata.insert(
-            "scheduler_stage".to_string(),
-            serde_json::json!("execution"),
-        );
-        session.push_message(done);
-
-        let mut active = SessionMessage::assistant(&session.record().id);
-        active.metadata.insert(
-            "scheduler_stage_emitted".to_string(),
-            serde_json::json!(true),
-        );
-        active.metadata.insert(
-            "scheduler_stage_status".to_string(),
-            serde_json::json!("waiting"),
-        );
-        active
-            .metadata
-            .insert("scheduler_stage".to_string(), serde_json::json!("planning"));
-        active.metadata.insert(
-            "scheduler_stage_tool_policy".to_string(),
-            serde_json::json!("allow-read-only"),
-        );
-        session.push_message(active);
-
-        let scope = active_session_skill_scope(&session);
-        assert_eq!(scope.current_stage.as_deref(), Some("planning"));
-        assert_eq!(scope.tool_policy.as_deref(), Some("allow-read-only"));
-    }
-
-    #[tokio::test]
-    async fn session_skill_scope_uses_requested_session_and_keeps_idle_sessions_unfiltered() {
-        let dir = tempdir().expect("tempdir");
-        let state = server_state_for_project(dir.path());
-        let session = {
-            let mut sessions = state.sessions.lock().await;
-            sessions
-                .create("project", dir.path().display().to_string())
-                .id
-                .clone()
-        };
-
-        let scope = session_skill_scope(
-            &state,
-            &SkillCatalogQuery {
-                session_id: Some(session.clone()),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("idle session should still resolve");
-        assert_eq!(scope.current_stage, None);
-        assert_eq!(scope.tool_policy, None);
-
-        let error = session_skill_scope(
-            &state,
-            &SkillCatalogQuery {
-                session_id: Some("missing-session".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect_err("missing session should fail");
-        assert!(matches!(error, ApiError::SessionNotFound(_)));
-    }
-
-    #[tokio::test]
-    async fn skill_detail_honors_session_scope_filters() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        fs::create_dir_all(root.join(".agendao/skills/planning/plan-only")).expect("skill dir");
-        fs::write(
-            root.join(".agendao/skills/planning/plan-only/SKILL.md"),
-            r#"---
-name: plan-only
-description: planning only
-metadata:
-  agendao:
-    stage_filter:
-      - planning
----
-Only for planning.
-"#,
-        )
-        .expect("skill file");
-
-        let state = server_state_for_project(root);
-        let session_id = {
-            let mut sessions = state.sessions.lock().await;
-            let mut session = sessions.create("project", root.display().to_string());
-            let mut active = SessionMessage::assistant(&session.record().id);
-            active.metadata.insert(
-                "scheduler_stage_emitted".to_string(),
-                serde_json::json!(true),
-            );
-            active.metadata.insert(
-                "scheduler_stage_status".to_string(),
-                serde_json::json!("running"),
-            );
-            active.metadata.insert(
-                "scheduler_stage".to_string(),
-                serde_json::json!("execution"),
-            );
-            session.push_message(active);
-            let id = session.id.clone();
-            sessions.update(session);
-            id
-        };
-
-        let error = get_skill_detail(
-            State(state.clone()),
-            Query(SkillDetailQuery {
-                name: "plan-only".to_string(),
-                catalog: SkillCatalogQuery {
-                    session_id: Some(session_id.clone()),
-                    ..Default::default()
-                },
-            }),
-        )
-        .await
-        .expect_err("filtered skill should not resolve");
-        assert!(matches!(error, ApiError::NotFound(_)));
-
-        let Json(detail) = get_skill_detail(
-            State(state),
-            Query(SkillDetailQuery {
-                name: "plan-only".to_string(),
-                catalog: SkillCatalogQuery {
-                    session_id: None,
-                    ..Default::default()
-                },
-            }),
-        )
-        .await
-        .expect("unfiltered detail should resolve");
-        assert_eq!(detail.skill.meta.name, "plan-only");
-        assert!(detail.runtime_resolution.inspection_available);
-        assert!(detail.runtime_resolution.runtime_available);
-        assert_eq!(
-            detail.runtime_resolution.vitality_state,
-            agendao_types::SkillVitalityState::Active
         );
     }
 

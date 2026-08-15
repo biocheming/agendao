@@ -101,11 +101,7 @@ mod tests {
 
     #[test]
     fn directory_param_is_emitted_when_provided() {
-        let params = build_session_list_params_with_directory(
-            Some("/home/me/proj"),
-            None,
-            None,
-        );
+        let params = build_session_list_params_with_directory(Some("/home/me/proj"), None, None);
         assert_eq!(params, vec![("directory", "/home/me/proj".to_string())]);
     }
 
@@ -118,11 +114,7 @@ mod tests {
 
     #[test]
     fn directory_search_limit_compose_in_order() {
-        let params = build_session_list_params_with_directory(
-            Some("/p"),
-            Some("hello"),
-            Some(50),
-        );
+        let params = build_session_list_params_with_directory(Some("/p"), Some("hello"), Some(50));
         assert_eq!(
             params,
             vec![

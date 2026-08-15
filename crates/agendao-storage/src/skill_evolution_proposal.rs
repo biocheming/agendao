@@ -418,8 +418,7 @@ fn build_suggested_changes(
                 .cloned()
                 .collect();
             let boundaries: Vec<String> = record.boundaries.clone();
-            let validation: Vec<String> =
-                record.evidence_refs.iter().map(format_ref).collect();
+            let validation: Vec<String> = record.evidence_refs.iter().map(format_ref).collect();
 
             (
                 format!("Create skill '{}'", suggested_name),

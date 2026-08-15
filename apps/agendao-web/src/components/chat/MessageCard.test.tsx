@@ -9,7 +9,6 @@ function renderMessageCard(message: FeedMessage, onEditAndResend = vi.fn<(messag
       message={message}
       onEditAndResend={onEditAndResend}
       onNavigateStage={vi.fn<(stageId: string) => void>()}
-      onNavigateAttachedSession={vi.fn<(sessionId: string) => void>()}
     />,
   );
 }

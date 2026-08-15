@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::Json;
 
-use agendao_core::agent_task_registry::{global_task_registry, AgentTask, AgentTaskStatus};
 use agendao_session::{PartType, Session, ToolCallStatus};
 
 use crate::{ApiError, Result, ServerState};
@@ -37,11 +36,7 @@ pub(super) async fn build_session_execution_topology_snapshot(
         .runtime_telemetry
         .list_session_execution_records(session_id)
         .await;
-    let mut extra_records = collect_active_tool_execution_records(session, &base_records);
-    extra_records.extend(collect_active_agent_task_execution_records(
-        session_id,
-        &base_records,
-    ));
+    let extra_records = collect_active_tool_execution_records(session, &base_records);
     state
         .runtime_telemetry
         .build_session_execution_topology(session_id.to_string(), extra_records)
@@ -70,21 +65,10 @@ pub(super) async fn cancel_session_execution(
         .cancel_execution(&execution_id)
         .await;
     match result {
-        Some(kind) => {
-            // For AgentTask, also cancel via the global task registry.
-            if matches!(
-                kind,
-                agendao_server_core::runtime_control::ExecutionKind::AgentTask
-            ) {
-                if let Some(task_id) = execution_id.strip_prefix("agent_task:") {
-                    let _ = global_task_registry().cancel(task_id);
-                }
-            }
-            Ok(Json(serde_json::json!({
-                "cancelled": true,
-                "kind": kind,
-            })))
-        }
+        Some(kind) => Ok(Json(serde_json::json!({
+            "cancelled": true,
+            "kind": kind,
+        }))),
         None => Ok(Json(serde_json::json!({
             "cancelled": false,
             "error": "execution not found",
@@ -197,112 +181,10 @@ pub(super) fn collect_active_tool_execution_records(
     records
 }
 
-pub(super) fn collect_active_agent_task_execution_records(
-    session_id: &str,
-    existing_records: &[agendao_server_core::runtime_control::ExecutionRecord],
-) -> Vec<agendao_server_core::runtime_control::ExecutionRecord> {
-    let parent_id = select_active_agent_task_parent_id(existing_records);
-    let stage_id = parent_id.as_ref().and_then(|pid| {
-        existing_records
-            .iter()
-            .find(|r| r.id == *pid)
-            .and_then(|r| r.stage_id.clone())
-    });
-    global_task_registry()
-        .list()
-        .into_iter()
-        .filter(|task| task.session_id.as_deref() == Some(session_id))
-        .filter(|task| !task.status.is_terminal())
-        .map(|task| {
-            agent_task_execution_record(task, session_id, parent_id.clone(), stage_id.clone())
-        })
-        .collect()
-}
-
-fn agent_task_execution_record(
-    task: AgentTask,
-    session_id: &str,
-    parent_id: Option<String>,
-    stage_id: Option<String>,
-) -> agendao_server_core::runtime_control::ExecutionRecord {
-    let (status, waiting_on, recent_event, step) = match &task.status {
-        AgentTaskStatus::Pending => (
-            agendao_server_core::runtime_control::ExecutionStatus::Waiting,
-            Some("agent".to_string()),
-            Some("Agent task queued".to_string()),
-            None,
-        ),
-        AgentTaskStatus::Running { step } => (
-            agendao_server_core::runtime_control::ExecutionStatus::Running,
-            Some("agent".to_string()),
-            Some(match task.max_steps {
-                Some(max_steps) => format!("Step {} / {}", step, max_steps),
-                None => format!("Step {}", step),
-            }),
-            Some(*step),
-        ),
-        AgentTaskStatus::Completed { .. }
-        | AgentTaskStatus::Cancelled
-        | AgentTaskStatus::Failed { .. } => (
-            agendao_server_core::runtime_control::ExecutionStatus::Running,
-            None,
-            None,
-            None,
-        ),
-    };
-
-    agendao_server_core::runtime_control::ExecutionRecord {
-        id: format!("agent_task:{}", task.id),
-        session_id: session_id.to_string(),
-        kind: agendao_server_core::runtime_control::ExecutionKind::AgentTask,
-        status,
-        label: Some(format!("Agent task: {}", task.agent_name)),
-        parent_id,
-        stage_id,
-        waiting_on,
-        recent_event,
-        started_at: task.started_at.saturating_mul(1000),
-        updated_at: chrono::Utc::now().timestamp_millis(),
-        metadata: Some(serde_json::json!({
-            "task_id": task.id,
-            "agent_name": task.agent_name,
-            "prompt": task.prompt,
-            "max_steps": task.max_steps,
-            "step": step,
-            "output_tail": task.output_tail,
-        })),
-    }
-}
-
 fn select_active_tool_parent_id(
     records: &[agendao_server_core::runtime_control::ExecutionRecord],
 ) -> Option<String> {
     select_preferred_execution_parent_id(records)
-}
-
-fn select_active_agent_task_parent_id(
-    records: &[agendao_server_core::runtime_control::ExecutionRecord],
-) -> Option<String> {
-    records
-        .iter()
-        .filter(|record| {
-            matches!(
-                record.kind,
-                agendao_server_core::runtime_control::ExecutionKind::ToolCall
-            )
-        })
-        .filter(|record| {
-            record
-                .metadata
-                .as_ref()
-                .and_then(|value| value.get("tool_name"))
-                .and_then(|value| value.as_str())
-                .map(|name| matches!(name, "task" | "task_flow"))
-                .unwrap_or(false)
-        })
-        .max_by_key(|record| record.updated_at)
-        .map(|record| record.id.clone())
-        .or_else(|| select_preferred_execution_parent_id(records))
 }
 
 fn select_preferred_execution_parent_id(
@@ -315,7 +197,7 @@ fn select_preferred_execution_parent_id(
                 record.kind,
                 agendao_server_core::runtime_control::ExecutionKind::PromptRun
                     | agendao_server_core::runtime_control::ExecutionKind::SchedulerRun
-                    | agendao_server_core::runtime_control::ExecutionKind::SchedulerStage
+                    | agendao_server_core::runtime_control::ExecutionKind::SchedulerNode
             )
         })
         .max_by_key(|record| {
@@ -332,9 +214,8 @@ fn execution_parent_rank(kind: &agendao_server_core::runtime_control::ExecutionK
     match kind {
         agendao_server_core::runtime_control::ExecutionKind::PromptRun => 0,
         agendao_server_core::runtime_control::ExecutionKind::SchedulerRun => 1,
-        agendao_server_core::runtime_control::ExecutionKind::SchedulerStage => 2,
+        agendao_server_core::runtime_control::ExecutionKind::SchedulerNode => 2,
         agendao_server_core::runtime_control::ExecutionKind::ToolCall
-        | agendao_server_core::runtime_control::ExecutionKind::AgentTask
         | agendao_server_core::runtime_control::ExecutionKind::Question => 0,
     }
 }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -70,12 +70,16 @@ impl Ripgrep {
         if path.is_file() {
             search_file(path, &regex, &mut matches, limit)?;
         } else if path.is_dir() {
-            let files = Self::files(path, FileSearchOptions::default())?;
-            for file in files {
+            let walker = WalkDir::new(path)
+                .into_iter()
+                .filter_entry(|entry| !is_git_entry(entry));
+            for entry in walker.filter_map(Result::ok) {
                 if matches.len() >= limit {
                     break;
                 }
-                let _ = search_file(&file, &regex, &mut matches, limit);
+                if entry.file_type().is_file() {
+                    let _ = search_file(entry.path(), &regex, &mut matches, limit);
+                }
             }
         }
 
@@ -94,39 +98,30 @@ impl Ripgrep {
             ));
         }
 
+        let matcher = GlobMatcher::new(&options.glob)?;
         let mut result = Vec::new();
-        let mut walk = WalkDir::new(path);
+        let mut walk = WalkDir::new(path).follow_links(options.follow);
 
         if let Some(depth) = options.max_depth {
             walk = walk.max_depth(depth);
         }
 
-        for entry in walk.into_iter().filter_map(|e| e.ok()) {
+        for entry in walk
+            .into_iter()
+            .filter_entry(|entry| {
+                !is_git_entry(entry)
+                    && (options.hidden || entry.depth() == 0 || !is_hidden_entry(entry))
+            })
+            .filter_map(Result::ok)
+        {
             let entry_path = entry.path();
 
             if !entry.file_type().is_file() {
                 continue;
             }
 
-            let file_name = entry.file_name().to_string_lossy();
-            if !options.hidden && file_name.starts_with('.') {
+            if !matcher.matches(entry_path) {
                 continue;
-            }
-
-            if file_name == ".git" || entry_path.to_string_lossy().contains(".git/") {
-                continue;
-            }
-
-            if !options.glob.is_empty() {
-                let matches_glob = options.glob.iter().any(|g| {
-                    if let Some(pattern) = g.strip_prefix('!') {
-                        return !glob_match::glob_match(pattern, entry_path);
-                    }
-                    glob_match::glob_match(g, entry_path)
-                });
-                if !matches_glob {
-                    continue;
-                }
             }
 
             result.push(entry_path.to_path_buf());
@@ -167,38 +162,25 @@ impl Ripgrep {
         let total = count_nodes(&root);
         let limit = limit.unwrap_or(total);
         let mut lines: Vec<String> = Vec::new();
-        let mut queue: Vec<(String, String)> = Vec::new();
+        let mut queue: VecDeque<(String, &TreeNode)> = VecDeque::new();
 
-        for (_, node) in root.iter() {
-            let node_json = serde_json::to_string(node).unwrap_or_default();
-            queue.push((node.name.clone(), node_json));
+        for node in root.values() {
+            queue.push_back((node.name.clone(), node));
         }
 
         let mut used = 0;
-        let mut i = 0;
-        while i < queue.len() && used < limit {
-            let (path_str, node_json) = &queue[i];
-            let node: TreeNode = match serde_json::from_str(node_json) {
-                Ok(n) => n,
-                Err(_) => {
-                    i += 1;
-                    continue;
-                }
-            };
+        while let Some((path_str, node)) = queue.pop_front() {
+            if used >= limit {
+                break;
+            }
             lines.push(path_str.clone());
             used += 1;
 
-            let children_to_add: Vec<(String, String)> = node
-                .children
-                .values()
-                .map(|child| {
-                    let child_json = serde_json::to_string(child).unwrap_or_default();
-                    (format!("{}/{}", path_str, child.name), child_json)
-                })
-                .collect();
-
-            queue.extend(children_to_add);
-            i += 1;
+            queue.extend(
+                node.children
+                    .values()
+                    .map(|child| (format!("{}/{}", path_str, child.name), child)),
+            );
         }
 
         if total > used {
@@ -253,7 +235,7 @@ fn search_file(
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct TreeNode {
     name: String,
     children: BTreeMap<String, TreeNode>,
@@ -267,34 +249,61 @@ fn count_nodes(node: &BTreeMap<String, TreeNode>) -> usize {
     total
 }
 
-mod glob_match {
-    use std::path::Path;
+fn is_git_entry(entry: &walkdir::DirEntry) -> bool {
+    entry.depth() > 0 && entry.file_type().is_dir() && entry.file_name() == ".git"
+}
 
-    pub fn glob_match(pattern: &str, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-        let pattern = pattern.trim_start_matches("./");
+fn is_hidden_entry(entry: &walkdir::DirEntry) -> bool {
+    entry.file_name().to_string_lossy().starts_with('.')
+}
 
-        if pattern.contains('*') {
-            let regex = glob_to_regex(pattern);
-            regex.is_match(&path_str)
-        } else {
-            path_str.ends_with(pattern) || path_str.contains(pattern)
+struct GlobMatcher {
+    includes: Vec<regex::Regex>,
+    excludes: Vec<regex::Regex>,
+}
+
+impl GlobMatcher {
+    fn new(patterns: &[String]) -> Result<Self, io::Error> {
+        let mut includes = Vec::new();
+        let mut excludes = Vec::new();
+        for raw in patterns {
+            let (target, pattern) = if let Some(pattern) = raw.strip_prefix('!') {
+                (&mut excludes, pattern)
+            } else {
+                (&mut includes, raw.as_str())
+            };
+            target.push(
+                glob_to_regex(pattern).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
+                })?,
+            );
         }
+        Ok(Self { includes, excludes })
     }
 
-    fn glob_to_regex(pattern: &str) -> regex::Regex {
-        let mut regex_str = String::from("^.*");
-        for c in pattern.chars() {
-            match c {
-                '*' => regex_str.push_str("[^/]*"),
-                '?' => regex_str.push_str("[^/]"),
-                '.' => regex_str.push_str("\\."),
-                _ => regex_str.push(c),
-            }
-        }
-        regex_str.push('$');
-        regex::Regex::new(&regex_str).unwrap_or_else(|_| regex::Regex::new(".*").unwrap())
+    fn matches(&self, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        !self.excludes.iter().any(|pattern| pattern.is_match(&path))
+            && (self.includes.is_empty()
+                || self.includes.iter().any(|pattern| pattern.is_match(&path)))
     }
+}
+
+fn glob_to_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    let contains_wildcard = pattern.contains('*') || pattern.contains('?');
+    let mut regex = String::from("^.*");
+    for character in pattern.trim_start_matches("./").chars() {
+        match character {
+            '*' => regex.push_str("[^/]*"),
+            '?' => regex.push_str("[^/]"),
+            character => regex.push_str(&regex::escape(&character.to_string())),
+        }
+    }
+    if !contains_wildcard {
+        regex.push_str(".*");
+    }
+    regex.push('$');
+    regex::Regex::new(&regex)
 }
 
 #[cfg(test)]
@@ -323,5 +332,13 @@ mod tests {
     fn test_tree() {
         let result = Ripgrep::tree(".", Some(10)).unwrap();
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn glob_matcher_applies_includes_and_excludes_once() {
+        let matcher = GlobMatcher::new(&["*.rs".into(), "!generated.rs".into()]).unwrap();
+        assert!(matcher.matches(Path::new("src/main.rs")));
+        assert!(!matcher.matches(Path::new("src/generated.rs")));
+        assert!(!matcher.matches(Path::new("src/main.ts")));
     }
 }

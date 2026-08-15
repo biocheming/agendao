@@ -269,8 +269,7 @@ impl<'a> MultimodalCapabilityAuthority<'a> {
         }];
         transform_messages(
             &mut messages,
-            ProviderType::from_provider_id(&capability.provider_id),
-            &model.id,
+            ProviderType::from_supported_npm(&model.api.npm).unwrap_or(ProviderType::Other),
             &supported_modalities(capability),
             &model.api.npm,
             &capability.provider_id,
@@ -307,24 +306,23 @@ impl<'a> MultimodalCapabilityAuthority<'a> {
 fn build_transport_message_parts(parts: &[PromptPart]) -> Vec<ContentPart> {
     parts
         .iter()
-        .filter_map(|part| match part {
-            PromptPart::Text { text } => Some(ContentPart {
+        .map(|part| match part {
+            PromptPart::Text { text } => ContentPart {
                 content_type: "text".to_string(),
                 text: Some(text.clone()),
                 ..Default::default()
-            }),
+            },
             PromptPart::File {
                 url,
                 filename,
                 mime,
-            } => Some(ContentPart {
+            } => ContentPart {
                 content_type: "file".to_string(),
                 image_url: Some(ImageUrl { url: url.clone() }),
                 media_type: mime.clone(),
                 filename: filename.clone(),
                 ..Default::default()
-            }),
-            PromptPart::Agent { .. } | PromptPart::Subtask { .. } => None,
+            },
         })
         .collect()
 }

@@ -1,10 +1,8 @@
 use super::file_ops::{
-    migrate_legacy_toml_config, parse_external_tool_catalog_jsonc, parse_jsonc,
-    resolve_file_references, substitute_env_vars,
+    parse_external_tool_catalog_jsonc, parse_jsonc, resolve_file_references, substitute_env_vars,
 };
 use super::markdown_parser::{
-    fallback_sanitize_yaml, parse_markdown_agent, parse_markdown_command,
-    serde_yaml_frontmatter_to_json, split_frontmatter,
+    parse_markdown_agent, parse_markdown_command, serde_yaml_frontmatter_to_json, split_frontmatter,
 };
 use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::*;
@@ -58,7 +56,7 @@ impl ScopedEnvVar {
     {
         let guard = env_var_lock()
             .lock()
-            .expect("env var test lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = std::env::var_os(key);
         std::env::set_var(key, value);
         Self {
@@ -112,7 +110,7 @@ fn test_parse_jsonc_allows_trailing_comma_in_object() {
 }
 
 #[test]
-fn test_parse_jsonc_allows_trailing_comma_in_array() {
+fn test_parse_jsonc_rejects_plugin_array() {
     let content = r#"{
         "instructions": ["a.md", "b.md",],
         "plugin": [
@@ -120,15 +118,8 @@ fn test_parse_jsonc_allows_trailing_comma_in_array() {
             "p2",
         ],
     }"#;
-    let config: Config = parse_jsonc(content).unwrap();
-    assert_eq!(
-        config.instructions,
-        vec!["a.md".to_string(), "b.md".to_string()]
-    );
-    // Old array format is backward-compatible: converted to HashMap
-    assert_eq!(config.plugin.len(), 2);
-    assert!(config.plugin.contains_key("p1"));
-    assert!(config.plugin.contains_key("p2"));
+    let parsed: Result<Config, _> = parse_jsonc(content);
+    assert!(parsed.is_err());
 }
 
 #[test]
@@ -410,35 +401,6 @@ fn test_load_project_ignores_opencode_files() {
     assert_ne!(cfg.model.as_deref(), Some("legacy-model"));
     assert_eq!(cfg.theme.as_deref(), Some("dark"));
     assert_eq!(cfg.instructions, vec!["current.md".to_string()]);
-}
-
-#[test]
-fn test_load_from_file_normalizes_scheduler_path_relative_to_config_file() {
-    let temp = TestDir::new("agendao_config_scheduler_path");
-    let root = temp.path.join("repo");
-    let config_dir = root.join(".agendao");
-    fs::create_dir_all(&config_dir).unwrap();
-
-    fs::write(
-        config_dir.join("agendao.jsonc"),
-        r#"{ "schedulerPath": "scheduler/sisyphus.jsonc" }"#,
-    )
-    .unwrap();
-
-    let mut loader = ConfigLoader::new();
-    loader
-        .load_from_file(config_dir.join("agendao.jsonc"))
-        .unwrap();
-
-    assert_eq!(
-        loader.config().scheduler_path.as_deref(),
-        Some(
-            config_dir
-                .join("scheduler/sisyphus.jsonc")
-                .to_string_lossy()
-                .as_ref()
-        )
-    );
 }
 
 #[test]
@@ -827,7 +789,7 @@ fn shared_tool_import_is_loaded_only_once_across_multiple_config_sources() {
     )
     .unwrap();
 
-    let _config_dir = ScopedEnvVar::set("AGENDAO_CONFIG_DIR", &global_dir);
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", &global_dir);
     let mut loader = ConfigLoader::new();
     loader.load_global().unwrap();
     loader.load_project(&project_dir).unwrap();
@@ -847,16 +809,17 @@ fn shared_tool_import_is_loaded_only_once_across_multiple_config_sources() {
 fn test_load_all_reads_plugins_from_plugin_paths() {
     let temp = TestDir::new("agendao_config_plugin_paths");
     let root = temp.path.join("repo");
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", temp.path.join("home"));
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::create_dir_all(root.join(".opencode/plugins")).unwrap();
-    let plugin_path = root.join(".opencode/plugins/legacy-plugin.ts");
+    let plugin_path = root.join(".opencode/plugins/external-plugin.ts");
     fs::write(&plugin_path, "export default {};\n").unwrap();
     fs::create_dir_all(root.join(".agendao")).unwrap();
     fs::write(
         root.join(".agendao/agendao.json"),
         r#"{
   "plugin_paths": {
-"legacy-opencode": ".opencode/plugins"
+"external": ".opencode/plugins"
   }
 }"#,
     )
@@ -867,11 +830,11 @@ fn test_load_all_reads_plugins_from_plugin_paths() {
 
     // File plugins are keyed by file stem
     assert!(
-        cfg.plugin.contains_key("legacy-plugin"),
-        "expected legacy-plugin key in {:?}",
+        cfg.plugin.contains_key("external-plugin"),
+        "expected external-plugin key in {:?}",
         cfg.plugin
     );
-    let plugin_cfg = &cfg.plugin["legacy-plugin"];
+    let plugin_cfg = &cfg.plugin["external-plugin"];
     assert_eq!(plugin_cfg.plugin_type, "file");
     assert_eq!(
         plugin_cfg.path.as_deref(),
@@ -883,6 +846,7 @@ fn test_load_all_reads_plugins_from_plugin_paths() {
 fn test_load_all_reads_plugins_from_default_agendao_plugin_dir() {
     let temp = TestDir::new("agendao_config_plugin_default_dir");
     let root = temp.path.join("repo");
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", temp.path.join("home"));
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::create_dir_all(root.join(".agendao/plugins")).unwrap();
     let plugin_path = root.join(".agendao/plugins/default-plugin.ts");
@@ -908,11 +872,17 @@ fn test_load_all_reads_plugins_from_default_agendao_plugin_dir() {
 fn test_load_all_preserves_explicit_file_plugin() {
     let temp = TestDir::new("agendao_config_plugin_list_preserved");
     let root = temp.path.join("repo");
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", temp.path.join("home"));
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::write(
         root.join("agendao.json"),
         r#"{
-  "plugin": ["file:///tmp/should-not-be-loaded.ts"]
+  "plugin": {
+    "should-not-be-loaded": {
+      "type": "file",
+      "path": "/tmp/should-not-be-loaded.ts"
+    }
+  }
 }"#,
     )
     .unwrap();
@@ -934,6 +904,7 @@ fn test_load_all_preserves_explicit_file_plugin() {
 fn test_load_all_prefers_higher_precedence_discovered_plugin() {
     let temp = TestDir::new("agendao_config_plugin_precedence");
     let root = temp.path.join("repo");
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", temp.path.join("home"));
     let extra_root = root.join("team-plugins");
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::create_dir_all(root.join(".agendao/plugins")).unwrap();
@@ -992,7 +963,7 @@ fn test_discover_web_plugins_prefers_later_roots_and_supports_mjs() {
     )
     .unwrap();
 
-    let plugins = discover_web_plugins(&[low_root.clone(), high_root.clone()]);
+    let plugins = discover_web_plugins(&[low_root, high_root.clone()]);
 
     let molstar = plugins
         .iter()
@@ -1045,6 +1016,21 @@ fn test_resolve_file_references_skips_comments() {
     }"#;
     let result = resolve_file_references(input, &temp.path).unwrap();
     assert!(result.contains("{file:secret.txt}"));
+}
+
+#[test]
+fn test_resolve_file_references_distinguishes_duplicate_comment_positions() {
+    let temp = TestDir::new("agendao_file_ref_duplicate_comment");
+    fs::write(temp.path.join("secret.txt"), "resolved-secret").unwrap();
+    let input = r#"{
+        // "example": "{file:secret.txt}"
+        "api_key": "{file:secret.txt}"
+    }"#;
+
+    let result = resolve_file_references(input, &temp.path).unwrap();
+
+    assert!(result.contains(r#"// "example": "{file:secret.txt}""#));
+    assert!(result.contains(r#""api_key": "resolved-secret""#));
 }
 
 #[test]
@@ -1335,42 +1321,6 @@ fn test_yaml_frontmatter_quoted_values() {
 }
 
 #[test]
-fn test_fallback_sanitize_yaml_colon_in_value() {
-    let yaml = "description: Use model: test-model for tasks\nname: test";
-    let sanitized = fallback_sanitize_yaml(yaml);
-    assert!(sanitized.contains("description: |-"));
-    assert!(sanitized.contains("  Use model: test-model for tasks"));
-    assert!(sanitized.contains("name: test"));
-}
-
-#[test]
-fn test_fallback_sanitize_yaml_preserves_quoted() {
-    let yaml = "description: \"already: quoted\"\nname: test";
-    let sanitized = fallback_sanitize_yaml(yaml);
-    // Quoted values should not be converted to block scalars
-    assert!(sanitized.contains("description: \"already: quoted\""));
-}
-
-#[test]
-fn test_fallback_sanitize_yaml_preserves_block_scalar() {
-    let yaml = "description: |\n  block content\nname: test";
-    let sanitized = fallback_sanitize_yaml(yaml);
-    assert!(sanitized.contains("description: |"));
-}
-
-#[test]
-fn test_yaml_frontmatter_value_with_colon_via_fallback() {
-    // This YAML has a value with a colon, which would confuse naive parsers.
-    // The fallback sanitization should handle it.
-    let yaml = "description: Use model: test-model for tasks\nname: test";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    // After fallback, description should be preserved
-    assert_eq!(json["name"], "test");
-    let desc = json["description"].as_str().unwrap();
-    assert!(desc.contains("model: test-model"));
-}
-
-#[test]
 fn test_yaml_frontmatter_inline_map() {
     let yaml = "options: {verbose: true, timeout: 30}";
     let json = serde_yaml_frontmatter_to_json(yaml);
@@ -1451,14 +1401,13 @@ fn test_parse_markdown_agent_with_tools_map() {
 }
 
 #[test]
-fn test_parse_markdown_agent_colon_in_description_fallback() {
+fn test_parse_markdown_agent_colon_in_quoted_description() {
     let temp = TestDir::new("agendao_md_agent_colon");
     let agent_dir = temp.path.join("agents");
     fs::create_dir_all(&agent_dir).unwrap();
-    // Description contains a colon -- this is the case the fallback handles
     fs::write(
         agent_dir.join("tricky.md"),
-        "---\ndescription: Use model: test-model for tasks\nmode: primary\n---\n\nTricky prompt.\n",
+        "---\ndescription: \"Use model: test-model for tasks\"\nmode: primary\n---\n\nTricky prompt.\n",
     )
     .unwrap();
 
@@ -1467,39 +1416,4 @@ fn test_parse_markdown_agent_colon_in_description_fallback() {
     let (_name, config) = result.unwrap();
     let desc = config.description.unwrap();
     assert!(desc.contains("model: test-model"));
-}
-
-#[test]
-fn legacy_toml_config_migrates_to_agendao_json() {
-    let temp = TestDir::new("agendao_legacy_toml");
-    let config_dir = temp.path.join("agendao");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::write(
-        config_dir.join("config"),
-        r#"
-provider = "ethnopic"
-model = "test-model-v2"
-theme = "dark"
-"#,
-    )
-    .unwrap();
-
-    let mut config = Config::default();
-    let migrated = migrate_legacy_toml_config(&config_dir, &mut config);
-    assert!(migrated.is_some());
-    assert_eq!(config.model.as_deref(), Some("ethnopic/test-model-v2"));
-    assert_eq!(config.theme.as_deref(), Some("dark"));
-    assert_eq!(
-        config.schema.as_deref(),
-        Some("https://opencode.ai/config.json") //no agendao.ai domain name now
-    );
-
-    let json_path = config_dir.join("agendao.json");
-    assert!(json_path.exists());
-    assert!(!config_dir.join("config").exists());
-
-    let content = fs::read_to_string(json_path).unwrap();
-    let written: Config = serde_json::from_str(&content).unwrap();
-    assert_eq!(written.model.as_deref(), Some("ethnopic/test-model-v2"));
-    assert_eq!(written.theme.as_deref(), Some("dark"));
 }

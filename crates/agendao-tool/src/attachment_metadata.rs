@@ -56,10 +56,7 @@ mod tests {
     fn collect_attachments_deduplicates_identical_payloads() {
         let attachment = serde_json::json!({ "mime": "application/pdf", "url": "data:application/pdf;base64,AA==" });
         let mut metadata = Metadata::new();
-        metadata.insert(
-            "attachments".to_string(),
-            serde_json::json!([attachment.clone()]),
-        );
+        metadata.insert("attachments".to_string(), serde_json::json!([attachment]));
         metadata.insert("attachment".to_string(), attachment);
 
         let attachments = collect_attachments_from_metadata(&metadata);

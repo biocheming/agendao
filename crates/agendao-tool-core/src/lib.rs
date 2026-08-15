@@ -1,4 +1,3 @@
-use agendao_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use agendao_permission::{PermissionClass, PermissionLifetime, PermissionMatcherKind};
 use agendao_types::ToolCatalogMetadata;
 use async_trait::async_trait;
@@ -89,55 +88,6 @@ pub type QuestionCallback = Arc<
         + Sync,
 >;
 
-pub type SwitchAgentCallback = Arc<
-    dyn (Fn(
-            String,
-            Option<String>,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send>>)
-        + Send
-        + Sync,
->;
-
-pub type CreateSubsessionCallback = Arc<
-    dyn (Fn(
-            String,
-            Option<String>,
-            Option<String>,
-            Vec<String>,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ToolError>> + Send>>)
-        + Send
-        + Sync,
->;
-
-pub type PromptSubsessionCallback = Arc<
-    dyn (Fn(
-            String,
-            agendao_types::SubsessionHandoffPacket,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<agendao_types::SubsessionResultEnvelope, ToolError>,
-                    > + Send,
-            >,
-        >) + Send
-        + Sync,
->;
-
-pub type BuildAgentCallback = Arc<
-    dyn (Fn(
-            String,
-            Option<String>,
-            Option<String>,
-            Option<u32>,
-            Vec<String>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<TaskAgentInfo, ToolError>> + Send>,
-        >) + Send
-        + Sync,
->;
-
 pub type FileTimeAssertCallback = Arc<
     dyn (Fn(
             String,
@@ -176,15 +126,6 @@ pub type UpdatePartCallback = Arc<
         + Sync,
 >;
 
-pub type UpdateMessageCallback = Arc<
-    dyn (Fn(
-            serde_json::Value,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send>>)
-        + Send
-        + Sync,
->;
-
 pub type LspTouchFileCallback = Arc<
     dyn (Fn(
             String,
@@ -194,14 +135,6 @@ pub type LspTouchFileCallback = Arc<
         + Send
         + Sync,
 >;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SyntheticAttachment {
-    pub url: String,
-    pub mime: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItemData {
@@ -226,109 +159,6 @@ pub type TodoGetCallback = Arc<
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Vec<TodoItemData>, ToolError>> + Send>,
         >) + Send
-        + Sync,
->;
-
-pub type GetLastModelCallback = Arc<
-    dyn (Fn(
-            String,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Option<String>, ToolError>> + Send>,
-        >) + Send
-        + Sync,
->;
-
-#[derive(Debug, Clone)]
-pub struct TaskAgentInfo {
-    pub name: String,
-    pub model: Option<TaskAgentModel>,
-    pub can_use_task: bool,
-    pub steps: Option<u32>,
-    pub execution: Option<ExecutionRequestContext>,
-    pub max_tokens: Option<u64>,
-    pub temperature: Option<f32>,
-    pub top_p: Option<f32>,
-    pub variant: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskAgentModel {
-    pub provider_id: String,
-    pub model_id: String,
-}
-
-impl TaskAgentInfo {
-    pub fn execution_model(&self) -> Option<TaskAgentModel> {
-        self.execution
-            .as_ref()
-            .and_then(|context| context.model_ref())
-            .map(|model| TaskAgentModel {
-                provider_id: model.provider_id,
-                model_id: model.model_id,
-            })
-            .or_else(|| self.model.clone())
-    }
-
-    pub fn compiled_request(&self) -> Option<CompiledExecutionRequest> {
-        self.execution
-            .as_ref()
-            .and_then(|context| context.compile())
-            .or_else(|| {
-                self.execution_model()
-                    .map(|model| CompiledExecutionRequest {
-                        model_id: model.model_id,
-                        max_tokens: self.max_tokens,
-                        temperature: self.temperature,
-                        top_p: self.top_p,
-                        variant: self.variant.clone(),
-                        provider_options: None,
-                        reasoning_effort: None,
-                        timeout_secs: None,
-                        stream_stall_timeout_secs: None,
-                    })
-            })
-    }
-}
-
-pub type GetAgentInfoCallback = Arc<
-    dyn (Fn(
-            String,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Option<TaskAgentInfo>, ToolError>> + Send>,
-        >) + Send
-        + Sync,
->;
-
-#[derive(Debug, Clone)]
-pub struct TaskCategoryInfo {
-    pub name: String,
-    pub description: String,
-    pub model: Option<TaskAgentModel>,
-    pub prompt_suffix: Option<String>,
-    pub variant: Option<String>,
-}
-
-pub type ResolveCategoryCallback = Arc<
-    dyn (Fn(
-            String,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Result<Option<TaskCategoryInfo>, ToolError>>
-                    + Send,
-            >,
-        >) + Send
-        + Sync,
->;
-
-pub type CreateSyntheticMessageCallback = Arc<
-    dyn (Fn(
-            String,
-            Option<String>,
-            String,
-            Vec<SyntheticAttachment>,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send>>)
-        + Send
         + Sync,
 >;
 
@@ -451,7 +281,7 @@ fn default_permission_class_for_name(permission: &str) -> PermissionClass {
         | "ast_grep_replace" | "skill_manage" => PermissionClass::WorkspaceWrite,
         "external_directory" | "webfetch" | "websearch" | "browser_session" | "github_research"
         | "skill_hub" | "codesearch" => PermissionClass::ExternalAccess,
-        "bash" | "shell_session" | "task" | "task_flow" => PermissionClass::DangerousExec,
+        "bash" | "shell_session" => PermissionClass::DangerousExec,
         _ => PermissionClass::DangerousExec,
     }
 }
@@ -513,76 +343,6 @@ pub struct ToolRuntimeConfig {
     pub context_docs_registry_path: Option<String>,
 }
 
-pub const SUBSESSION_HANDOFF_RECENT_TAIL_EXTRA_KEY: &str = "subsession_handoff_recent_tail";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum SubsessionHandoffTailExtraEntry {
-    Text(String),
-    Rich {
-        text: String,
-        #[serde(default)]
-        title: Option<String>,
-    },
-}
-
-pub fn subsession_handoff_recent_tail_fields(
-    extra: &Metadata,
-) -> Vec<agendao_types::SubsessionHandoffField> {
-    extra
-        .get(SUBSESSION_HANDOFF_RECENT_TAIL_EXTRA_KEY)
-        .and_then(|value| {
-            serde_json::from_value::<Vec<SubsessionHandoffTailExtraEntry>>(value.clone()).ok()
-        })
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| match entry {
-            SubsessionHandoffTailExtraEntry::Text(text) => {
-                let trimmed = text.trim();
-                (!trimmed.is_empty()).then(|| {
-                    agendao_types::SubsessionHandoffField::new(
-                        agendao_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
-                        trimmed.to_string(),
-                    )
-                })
-            }
-            SubsessionHandoffTailExtraEntry::Rich { text, title } => {
-                let trimmed = text.trim();
-                (!trimmed.is_empty()).then(|| {
-                    if let Some(title) = title
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                    {
-                        agendao_types::SubsessionHandoffField::titled(
-                            agendao_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
-                            title,
-                            trimmed.to_string(),
-                        )
-                    } else {
-                        agendao_types::SubsessionHandoffField::new(
-                            agendao_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
-                            trimmed.to_string(),
-                        )
-                    }
-                })
-            }
-        })
-        .collect()
-}
-
-pub fn append_subsession_handoff_recent_tail_from_extra(
-    packet: &mut agendao_types::SubsessionHandoffPacket,
-    extra: &Metadata,
-) {
-    let fields = subsession_handoff_recent_tail_fields(extra);
-    if fields.is_empty() {
-        return;
-    }
-
-    packet.richness = agendao_types::SubsessionHandoffRichness::Enriched;
-    packet.fields.extend(fields);
-}
-
 impl ToolRuntimeConfig {
     pub fn from_config(config: &agendao_config::Config) -> Self {
         Self {
@@ -633,22 +393,13 @@ pub struct ToolContext {
     pub extra: HashMap<String, serde_json::Value>,
     pub ask: Option<AskCallback>,
     pub ask_question: Option<QuestionCallback>,
-    pub switch_agent: Option<SwitchAgentCallback>,
-    pub create_subsession: Option<CreateSubsessionCallback>,
-    pub prompt_subsession: Option<PromptSubsessionCallback>,
     pub file_time_assert: Option<FileTimeAssertCallback>,
     pub file_time_read: Option<FileTimeReadCallback>,
     pub publish_bus: Option<PublishBusCallback>,
     pub update_part: Option<UpdatePartCallback>,
-    pub update_message: Option<UpdateMessageCallback>,
     pub lsp_touch_file: Option<LspTouchFileCallback>,
     pub todo_update: Option<TodoUpdateCallback>,
     pub todo_get: Option<TodoGetCallback>,
-    pub get_last_model: Option<GetLastModelCallback>,
-    pub get_agent_info: Option<GetAgentInfoCallback>,
-    pub resolve_category: Option<ResolveCategoryCallback>,
-    pub build_agent: Option<BuildAgentCallback>,
-    pub create_synthetic_message: Option<CreateSyntheticMessageCallback>,
     pub project_root: String,
     pub runtime_config: ToolRuntimeConfig,
     pub config_store: Option<Arc<agendao_config::ConfigStore>>,
@@ -710,22 +461,13 @@ impl ToolContext {
             extra: HashMap::new(),
             ask: None,
             ask_question: None,
-            switch_agent: None,
-            create_subsession: None,
-            prompt_subsession: None,
             file_time_assert: None,
             file_time_read: None,
             publish_bus: None,
             update_part: None,
-            update_message: None,
             lsp_touch_file: None,
             todo_update: None,
             todo_get: None,
-            get_last_model: None,
-            get_agent_info: None,
-            resolve_category: None,
-            build_agent: None,
-            create_synthetic_message: None,
             project_root: directory,
             runtime_config: ToolRuntimeConfig::default(),
             config_store: None,
@@ -810,83 +552,6 @@ impl ToolContext {
         }
     }
 
-    pub fn with_switch_agent<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String, Option<String>) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), ToolError>> + Send + 'static,
-    {
-        self.switch_agent = Some(Arc::new(move |agent, model| {
-            Box::pin(callback(agent, model))
-        }));
-        self
-    }
-
-    pub async fn do_switch_agent(
-        &self,
-        agent: String,
-        model: Option<String>,
-    ) -> Result<(), ToolError> {
-        if let Some(ref callback) = self.switch_agent {
-            callback(agent, model).await
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn with_create_subsession<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String, Option<String>, Option<String>, Vec<String>) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<String, ToolError>> + Send + 'static,
-    {
-        self.create_subsession = Some(Arc::new(move |agent, title, model, disabled_tools| {
-            Box::pin(callback(agent, title, model, disabled_tools))
-        }));
-        self
-    }
-
-    pub async fn do_create_subsession(
-        &self,
-        agent: String,
-        title: Option<String>,
-        model: Option<String>,
-        disabled_tools: Vec<String>,
-    ) -> Result<String, ToolError> {
-        if let Some(ref callback) = self.create_subsession {
-            callback(agent, title, model, disabled_tools).await
-        } else {
-            Ok(format!("task_{}_{}", agent, uuid::Uuid::new_v4()))
-        }
-    }
-
-    pub fn with_prompt_subsession<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String, agendao_types::SubsessionHandoffPacket) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<agendao_types::SubsessionResultEnvelope, ToolError>>
-            + Send
-            + 'static,
-    {
-        self.prompt_subsession = Some(Arc::new(move |session_id, handoff| {
-            Box::pin(callback(session_id, handoff))
-        }));
-        self
-    }
-
-    pub async fn do_prompt_subsession(
-        &self,
-        session_id: String,
-        handoff: agendao_types::SubsessionHandoffPacket,
-    ) -> Result<agendao_types::SubsessionResultEnvelope, ToolError> {
-        if let Some(ref callback) = self.prompt_subsession {
-            callback(session_id, handoff).await
-        } else {
-            Err(ToolError::ExecutionError(
-                "The current execution environment does not support subagent sessions (task/task_flow). \
-                 This usually happens when the tool context was created without a prompt_subsession callback."
-                    .to_string(),
-            ))
-        }
-    }
-
     pub fn with_file_time_assert<F, Fut>(mut self, callback: F) -> Self
     where
         F: Fn(String, String) -> Fut + Send + Sync + 'static,
@@ -959,23 +624,6 @@ impl ToolContext {
         }
     }
 
-    pub fn with_update_message<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), ToolError>> + Send + 'static,
-    {
-        self.update_message = Some(Arc::new(move |msg| Box::pin(callback(msg))));
-        self
-    }
-
-    pub async fn do_update_message(&self, msg: serde_json::Value) -> Result<(), ToolError> {
-        if let Some(ref callback) = self.update_message {
-            callback(msg).await
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn with_lsp_touch_file<F, Fut>(mut self, callback: F) -> Self
     where
         F: Fn(String, bool) -> Fut + Send + Sync + 'static,
@@ -1031,128 +679,6 @@ impl ToolContext {
         }
     }
 
-    pub fn with_get_last_model<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<Option<String>, ToolError>> + Send + 'static,
-    {
-        self.get_last_model = Some(Arc::new(move |session_id| Box::pin(callback(session_id))));
-        self
-    }
-
-    pub async fn do_get_last_model(&self) -> Option<String> {
-        if let Some(ref callback) = self.get_last_model {
-            callback(self.session_id.clone()).await.ok().flatten()
-        } else {
-            None
-        }
-    }
-
-    pub fn with_get_agent_info<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String) -> Fut + Send + Sync + 'static,
-        Fut:
-            std::future::Future<Output = Result<Option<TaskAgentInfo>, ToolError>> + Send + 'static,
-    {
-        self.get_agent_info = Some(Arc::new(move |name| Box::pin(callback(name))));
-        self
-    }
-
-    pub async fn do_get_agent_info(&self, name: &str) -> Option<TaskAgentInfo> {
-        if let Some(ref callback) = self.get_agent_info {
-            callback(name.to_string()).await.ok().flatten()
-        } else {
-            None
-        }
-    }
-
-    pub fn with_resolve_category<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<Option<TaskCategoryInfo>, ToolError>>
-            + Send
-            + 'static,
-    {
-        self.resolve_category = Some(Arc::new(move |cat| Box::pin(callback(cat))));
-        self
-    }
-
-    pub async fn do_resolve_category(&self, category: &str) -> Option<TaskCategoryInfo> {
-        if let Some(ref callback) = self.resolve_category {
-            callback(category.to_string()).await.ok().flatten()
-        } else {
-            None
-        }
-    }
-
-    pub fn with_build_agent<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String, Option<String>, Option<String>, Option<u32>, Vec<String>) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: std::future::Future<Output = Result<TaskAgentInfo, ToolError>> + Send + 'static,
-    {
-        self.build_agent = Some(Arc::new(move |name, prompt, model, max_steps, tools| {
-            Box::pin(callback(name, prompt, model, max_steps, tools))
-        }));
-        self
-    }
-
-    pub async fn do_build_agent(
-        &self,
-        name: String,
-        system_prompt: Option<String>,
-        model: Option<String>,
-        max_steps: Option<u32>,
-        allowed_tools: Vec<String>,
-    ) -> Result<TaskAgentInfo, ToolError> {
-        if let Some(ref callback) = self.build_agent {
-            callback(name, system_prompt, model, max_steps, allowed_tools).await
-        } else {
-            Err(ToolError::ExecutionError(
-                "Build agent callback not configured".to_string(),
-            ))
-        }
-    }
-
-    pub fn with_create_synthetic_message<F, Fut>(mut self, callback: F) -> Self
-    where
-        F: Fn(String, Option<String>, String, Vec<SyntheticAttachment>) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: std::future::Future<Output = Result<(), ToolError>> + Send + 'static,
-    {
-        self.create_synthetic_message =
-            Some(Arc::new(move |session_id, agent, text, attachments| {
-                Box::pin(callback(session_id, agent, text, attachments))
-            }));
-        self
-    }
-
-    pub async fn do_create_synthetic_message(
-        &self,
-        agent: Option<String>,
-        text: String,
-    ) -> Result<(), ToolError> {
-        self.do_create_synthetic_message_with_attachments(agent, text, Vec::new())
-            .await
-    }
-
-    pub async fn do_create_synthetic_message_with_attachments(
-        &self,
-        agent: Option<String>,
-        text: String,
-        attachments: Vec<SyntheticAttachment>,
-    ) -> Result<(), ToolError> {
-        if let Some(ref callback) = self.create_synthetic_message {
-            callback(self.session_id.clone(), agent, text, attachments).await
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn is_cancelled(&self) -> bool {
         self.abort.is_cancelled()
     }
@@ -1175,9 +701,6 @@ impl std::fmt::Debug for ToolContext {
             .field("agent", &self.agent)
             .field("directory", &self.directory)
             .field("worktree", &self.worktree)
-            .field("get_agent_info", &self.get_agent_info.is_some())
-            .field("resolve_category", &self.resolve_category.is_some())
-            .field("build_agent", &self.build_agent.is_some())
             .finish()
     }
 }

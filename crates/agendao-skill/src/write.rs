@@ -605,7 +605,6 @@ fn normalize_metadata_blocks(mut value: crate::SkillMetadataBlocks) -> crate::Sk
             agendao.fallback_for_tools = normalize_string_list(&agendao.fallback_for_tools);
             agendao.requires_toolsets = normalize_string_list(&agendao.requires_toolsets);
             agendao.fallback_for_toolsets = normalize_string_list(&agendao.fallback_for_toolsets);
-            agendao.stage_filter = normalize_string_list(&agendao.stage_filter);
             agendao
         })
         .filter(|agendao| {
@@ -613,7 +612,6 @@ fn normalize_metadata_blocks(mut value: crate::SkillMetadataBlocks) -> crate::Sk
                 || !agendao.fallback_for_tools.is_empty()
                 || !agendao.requires_toolsets.is_empty()
                 || !agendao.fallback_for_toolsets.is_empty()
-                || !agendao.stage_filter.is_empty()
         });
 
     value
@@ -918,7 +916,7 @@ mod tests {
             })
             .unwrap();
 
-        let location = created.location.clone();
+        let location = created.location;
         let skill_dir = location.parent().unwrap().to_path_buf();
         let deleted = authority
             .delete_skill(DeleteSkillRequest {

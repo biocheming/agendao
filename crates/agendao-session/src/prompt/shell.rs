@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::LazyLock;
 
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -6,6 +7,9 @@ use tokio_util::sync::CancellationToken;
 use crate::Session;
 
 use super::ModelRef;
+
+static COMMAND_PLACEHOLDER_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\$(\d+)").unwrap());
 
 /// Input for the `shell()` function.
 #[derive(Debug, Clone)]
@@ -197,8 +201,7 @@ pub fn resolve_command_template(template: &str, arguments: &str) -> String {
 
     // Find the highest placeholder index
     let mut max_index = 0u32;
-    let placeholder_re = regex::Regex::new(r"\$(\d+)").unwrap();
-    for cap in placeholder_re.captures_iter(template) {
+    for cap in COMMAND_PLACEHOLDER_RE.captures_iter(template) {
         if let Ok(idx) = cap[1].parse::<u32>() {
             if idx > max_index {
                 max_index = idx;
@@ -209,7 +212,7 @@ pub fn resolve_command_template(template: &str, arguments: &str) -> String {
     let has_arguments_placeholder = template.contains("$ARGUMENTS");
 
     // Replace $N placeholders
-    let mut result = placeholder_re
+    let mut result = COMMAND_PLACEHOLDER_RE
         .replace_all(template, |caps: &regex::Captures| {
             let idx: usize = caps[1].parse().unwrap_or(0);
             if idx == 0 || idx > args.len() {

@@ -40,21 +40,10 @@ pub(crate) fn tui_routes() -> Router<Arc<ServerState>> {
         .route("/control/response", post(submit_tui_response))
 }
 
-pub(crate) type QuestionEventHook = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
-
 pub(crate) async fn request_question_answers(
     state: Arc<ServerState>,
     session_id: String,
     questions: Vec<agendao_tool::QuestionDef>,
-) -> std::result::Result<Vec<Vec<String>>, agendao_tool::ToolError> {
-    request_question_answers_with_hook(state, session_id, questions, None).await
-}
-
-pub(crate) async fn request_question_answers_with_hook(
-    state: Arc<ServerState>,
-    session_id: String,
-    questions: Vec<agendao_tool::QuestionDef>,
-    event_hook: Option<QuestionEventHook>,
 ) -> std::result::Result<Vec<Vec<String>>, agendao_tool::ToolError> {
     if questions.is_empty() {
         return Ok(Vec::new());
@@ -73,15 +62,7 @@ pub(crate) async fn request_question_answers_with_hook(
             .unwrap_or_else(|_| serde_json::Value::Array(vec![])),
     };
 
-    // P3: Broadcast to canonical event bus (all transports)
     crate::session_runtime::events::broadcast_server_event(&state, &created_event);
-
-    // Legacy: Also send via SSE event_hook for backward compatibility
-    if let Some(hook) = event_hook.as_ref() {
-        if let Some(payload) = created_event.to_json_value() {
-            hook(payload);
-        }
-    }
 
     let wait_result = tokio::time::timeout(Duration::from_secs(300), rx).await;
 
@@ -95,46 +76,24 @@ pub(crate) async fn request_question_answers_with_hook(
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
-                resolution: Some(
-                    crate::session_runtime::events::QuestionResolutionKind::Answered,
-                ),
-                answers: Some(
-                    serde_json::to_value(&answers).unwrap_or(serde_json::Value::Null),
-                ),
+                resolution: Some(crate::session_runtime::events::QuestionResolutionKind::Answered),
+                answers: Some(serde_json::to_value(&answers).unwrap_or(serde_json::Value::Null)),
                 reason: None,
             };
 
-            // P3: Broadcast to canonical event bus
             crate::session_runtime::events::broadcast_server_event(&state, &event);
-
-            // Legacy: Also send via SSE event_hook
-            if let Some(hook) = event_hook.as_ref() {
-                if let Some(payload) = event.to_json_value() {
-                    hook(payload);
-                }
-            }
             Ok(answers)
         }
         Ok(Ok(QuestionReply::Rejected)) => {
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
-                resolution: Some(
-                    crate::session_runtime::events::QuestionResolutionKind::Rejected,
-                ),
+                resolution: Some(crate::session_runtime::events::QuestionResolutionKind::Rejected),
                 answers: None,
                 reason: None,
             };
 
-            // P3: Broadcast to canonical event bus
             crate::session_runtime::events::broadcast_server_event(&state, &event);
-
-            // Legacy: Also send via SSE event_hook
-            if let Some(hook) = event_hook.as_ref() {
-                if let Some(payload) = event.to_json_value() {
-                    hook(payload);
-                }
-            }
             Err(agendao_tool::ToolError::QuestionRejected(
                 "User rejected question request".to_string(),
             ))
@@ -143,22 +102,12 @@ pub(crate) async fn request_question_answers_with_hook(
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
-                resolution: Some(
-                    crate::session_runtime::events::QuestionResolutionKind::Cancelled,
-                ),
+                resolution: Some(crate::session_runtime::events::QuestionResolutionKind::Cancelled),
                 answers: None,
                 reason: Some("cancelled".to_string()),
             };
 
-            // P3: Broadcast to canonical event bus
             crate::session_runtime::events::broadcast_server_event(&state, &event);
-
-            // Legacy: Also send via SSE event_hook
-            if let Some(hook) = event_hook.as_ref() {
-                if let Some(payload) = event.to_json_value() {
-                    hook(payload);
-                }
-            }
             Err(agendao_tool::ToolError::Cancelled)
         }
         Ok(Err(_)) => Err(agendao_tool::ToolError::ExecutionError(
@@ -257,7 +206,7 @@ static TUI_RESPONSE_QUEUE: Lazy<Mutex<VecDeque<serde_json::Value>>> =
 static TUI_REQUEST_NOTIFY: Lazy<Notify> = Lazy::new(Notify::new);
 static TUI_RESPONSE_NOTIFY: Lazy<Notify> = Lazy::new(Notify::new);
 
-async fn enqueue_tui_request(state: &Arc<ServerState>, path: &str, body: serde_json::Value) {
+async fn enqueue_tui_request(_state: &Arc<ServerState>, path: &str, body: serde_json::Value) {
     let mut queue = TUI_REQUEST_QUEUE.lock().await;
     queue.push_back(TuiRequest {
         path: path.to_string(),
@@ -265,15 +214,6 @@ async fn enqueue_tui_request(state: &Arc<ServerState>, path: &str, body: serde_j
     });
     drop(queue);
     TUI_REQUEST_NOTIFY.notify_one();
-
-    state.broadcast_raw(
-        serde_json::json!({
-            "type": "tui.request",
-            "path": path,
-            "body": body,
-        })
-        .to_string(),
-    );
 }
 
 async fn append_prompt(
@@ -499,7 +439,7 @@ async fn submit_tui_response(Json(body): Json<serde_json::Value>) -> Json<bool> 
 mod tests {
     use super::*;
     use crate::ServerState;
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::sync::Arc;
 
     fn sample_question() -> agendao_tool::QuestionDef {
         agendao_tool::QuestionDef {
@@ -511,128 +451,6 @@ mod tests {
             }],
             multiple: false,
         }
-    }
-
-    #[tokio::test]
-    async fn request_question_answers_hook_emits_created_and_replied_events() {
-        let state = Arc::new(ServerState::new());
-        let session_id = "session-1".to_string();
-        let captured = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
-        let captured_hook = captured.clone();
-        let event_hook: QuestionEventHook = Arc::new(move |payload| {
-            captured_hook.lock().expect("capture lock").push(payload);
-        });
-
-        let state_for_answer = state.clone();
-        let captured_for_answer = captured.clone();
-        let responder = tokio::spawn(async move {
-            loop {
-                let maybe_request_id = {
-                    let events = captured_for_answer.lock().expect("capture lock");
-                    events.iter().find_map(|event| {
-                        let ty = event.get("type").and_then(|value| value.as_str())?;
-                        if ty == "question.created" {
-                            event
-                                .get("requestID")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                };
-                if let Some(request_id) = maybe_request_id.as_deref() {
-                    state_for_answer
-                        .runtime_control
-                        .answer_question(request_id, vec![vec!["Yes".to_string()]])
-                        .await;
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        });
-
-        let answers = request_question_answers_with_hook(
-            state,
-            session_id.clone(),
-            vec![sample_question()],
-            Some(event_hook),
-        )
-        .await
-        .expect("question answers");
-
-        responder.await.expect("responder join");
-        assert_eq!(answers, vec![vec!["Yes".to_string()]]);
-
-        let events = captured.lock().expect("capture lock");
-        assert!(events.iter().any(|event| {
-            event.get("type").and_then(|value| value.as_str()) == Some("question.created")
-                && event.get("sessionID").and_then(|value| value.as_str())
-                    == Some(session_id.as_str())
-        }));
-        assert!(events.iter().any(|event| {
-            event.get("type").and_then(|value| value.as_str()) == Some("question.resolved")
-                && event.get("resolution").and_then(|value| value.as_str()) == Some("answered")
-        }));
-    }
-
-    #[tokio::test]
-    async fn request_question_answers_hook_emits_rejected_event_on_reject() {
-        let state = Arc::new(ServerState::new());
-        let captured = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
-        let captured_hook = captured.clone();
-        let event_hook: QuestionEventHook = Arc::new(move |payload| {
-            captured_hook.lock().expect("capture lock").push(payload);
-        });
-
-        let state_for_reject = state.clone();
-        let captured_for_reject = captured.clone();
-        let rejector = tokio::spawn(async move {
-            loop {
-                let maybe_request_id = {
-                    let events = captured_for_reject.lock().expect("capture lock");
-                    events.iter().find_map(|event| {
-                        let ty = event.get("type").and_then(|value| value.as_str())?;
-                        if ty == "question.created" {
-                            event
-                                .get("requestID")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                };
-                if let Some(request_id) = maybe_request_id.as_deref() {
-                    state_for_reject
-                        .runtime_control
-                        .reject_question(request_id)
-                        .await;
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        });
-
-        let result = request_question_answers_with_hook(
-            state,
-            "session-2".to_string(),
-            vec![sample_question()],
-            Some(event_hook),
-        )
-        .await;
-
-        rejector.await.expect("rejector join");
-        assert!(matches!(
-            result,
-            Err(agendao_tool::ToolError::QuestionRejected(_))
-        ));
-
-        let events = captured.lock().expect("capture lock");
-        assert!(events.iter().any(|event| {
-            event.get("type").and_then(|value| value.as_str()) == Some("question.resolved")
-                && event.get("resolution").and_then(|value| value.as_str()) == Some("rejected")
-        }));
     }
 
     #[tokio::test]
@@ -657,34 +475,36 @@ mod tests {
         });
 
         let request_task = tokio::spawn(async move {
-            request_question_answers_with_hook(
-                state,
-                session_id.clone(),
-                vec![sample_question()],
-                None, // No event_hook - only canonical bus
-            )
-            .await
+            request_question_answers(state, session_id.clone(), vec![sample_question()]).await
         });
 
-        // Expect QuestionCreated on event_bus
         let mut saw_created = false;
         let mut saw_resolved = false;
         let mut question_id = String::new();
 
         for _ in 0..10 {
-            let raw = rx.recv().await.expect("question lifecycle event");
-            let json: serde_json::Value =
-                serde_json::from_str(raw.json()).expect("question lifecycle json");
-
-            match json["type"].as_str() {
-                Some("question.created") => {
-                    assert_eq!(json["sessionID"], "session-1");
-                    question_id = json["requestID"].as_str().unwrap_or("").to_string();
+            let event = rx.recv().await.expect("question lifecycle event");
+            match event.event_ref() {
+                ServerEvent::QuestionCreated {
+                    session_id,
+                    request_id,
+                    ..
+                } => {
+                    assert_eq!(session_id, "session-1");
+                    question_id.clone_from(request_id);
                     saw_created = true;
                 }
-                Some("question.resolved") if json["requestID"] == question_id => {
-                    assert_eq!(json["sessionID"], "session-1");
-                    assert_eq!(json["resolution"], "answered");
+                ServerEvent::QuestionResolved {
+                    session_id,
+                    request_id,
+                    resolution,
+                    ..
+                } if request_id == &question_id => {
+                    assert_eq!(session_id, "session-1");
+                    assert!(matches!(
+                        resolution,
+                        Some(crate::session_runtime::events::QuestionResolutionKind::Answered)
+                    ));
                     saw_resolved = true;
                 }
                 _ => {}
@@ -696,7 +516,10 @@ mod tests {
         }
 
         responder.await.expect("responder join");
-        request_task.await.expect("request join").expect("question answers");
+        request_task
+            .await
+            .expect("request join")
+            .expect("question answers");
 
         assert!(saw_created, "missing question.created on event_bus");
         assert!(saw_resolved, "missing question.resolved on event_bus");

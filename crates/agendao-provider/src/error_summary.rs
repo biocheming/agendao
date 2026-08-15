@@ -65,7 +65,7 @@ pub struct ProviderErrorSummary {
 impl ProviderErrorSummary {
     pub fn from_error(provider_id: &str, model_id: Option<&str>, error: &ProviderError) -> Self {
         let raw_message = error.to_string();
-        let message = format_error_message(provider_id, error);
+        let message = format_error_message(error);
         let provider_diagnostic = provider_diagnostic_from_error_text(
             provider_id,
             model_id,
@@ -157,16 +157,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summarize_provider_error_preserves_provider_specific_message() {
+    fn summarize_provider_error_preserves_message() {
         let summary = summarize_provider_error(
-            "github-copilot",
+            "openai",
             Some("gpt-4.1"),
             &ProviderError::api_error_with_status("Forbidden", 403),
         );
 
         assert_eq!(summary.kind, ProviderErrorKind::ApiErrorWithStatus);
         assert_eq!(summary.status_code, Some(403));
-        assert!(summary.message.contains("reauthenticate"));
+        assert!(summary.message.contains("Forbidden"));
     }
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn summarize_provider_error_promotes_overflow_message_to_request_too_large() {
         let summary = summarize_provider_error(
-            "ethnopic",
+            "anthropic",
             Some("claude"),
             &ProviderError::ApiError("prompt is too long".to_string()),
         );

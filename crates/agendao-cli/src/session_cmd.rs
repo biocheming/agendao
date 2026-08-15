@@ -4,29 +4,33 @@ use crate::api_client::{
 
 #[cfg(feature = "session-db")]
 use crate::cli::SessionListFormat;
-use crate::cli::{SessionCommands, SessionProvisionFormat};
+use crate::cli::{SessionBlueprintCommands, SessionCommands, SessionProvisionFormat};
 #[cfg(feature = "session-db")]
 use crate::cli_session_store;
-use crate::server_lifecycle::CliRuntimeContext;
 #[cfg(feature = "session-db")]
 use crate::util::truncate_text;
+use crate::CliRuntimeContext;
 
 pub(super) async fn handle_session_command(
     action: SessionCommands,
     runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
+        SessionCommands::Blueprint { action } => {
+            handle_blueprint_command(action, runtime_context).await
+        }
         SessionCommands::ProvisionExternalAdapter {
             adapter_id,
             actor_id,
             workspace_id,
             route_policy_id,
-            scheduler_profile,
+            scheduler,
             directory,
             project_id,
             title,
             format,
         } => {
+            let scheduler = crate::scheduler_choice::parse_scheduler_choice(scheduler.as_deref())?;
             let client = session_client(runtime_context).await?;
             let response = client
                 .provision_external_adapter_session(&ProvisionExternalAdapterSessionRequest {
@@ -34,7 +38,7 @@ pub(super) async fn handle_session_command(
                     actor_id,
                     workspace_id,
                     route_policy_id,
-                    scheduler_profile,
+                    scheduler,
                     directory: directory.map(|path| path.display().to_string()),
                     project_id,
                     title,
@@ -147,6 +151,55 @@ pub(super) async fn handle_session_command(
             }
         }
     }
+}
+
+async fn handle_blueprint_command(
+    action: SessionBlueprintCommands,
+    runtime_context: &CliRuntimeContext,
+) -> anyhow::Result<()> {
+    let client = session_client(runtime_context).await?;
+    match action {
+        SessionBlueprintCommands::Inspect { session_id } => {
+            let view = client.get_session_blueprint(&session_id).await?;
+            println!("{}", serde_json::to_string_pretty(&view)?);
+        }
+        SessionBlueprintCommands::Save {
+            session_id,
+            output,
+            force,
+        } => {
+            let view = client.get_session_blueprint(&session_id).await?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true);
+            if force {
+                options.create(true).truncate(true);
+            } else {
+                options.create_new(true);
+            }
+            let mut file = options.open(&output).map_err(|error| {
+                anyhow::anyhow!("failed to create Blueprint '{}': {error}", output.display())
+            })?;
+            use std::io::Write;
+            serde_json::to_writer_pretty(&mut file, &view.blueprint)?;
+            file.write_all(b"\n")?;
+            println!("{}", output.display());
+        }
+        SessionBlueprintCommands::Edit { session_id, file } => {
+            let blueprint = crate::scheduler_choice::parse_blueprint_file(&file)?;
+            let view = client
+                .set_session_blueprint(
+                    &session_id,
+                    &crate::api_client::SetSessionBlueprintRequest { blueprint },
+                )
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&view)?);
+        }
+        SessionBlueprintCommands::Reject { session_id } => {
+            let response = client.reject_session_blueprint(&session_id).await?;
+            println!("{}", response.rejected_fingerprint);
+        }
+    }
+    Ok(())
 }
 
 async fn session_client(runtime_context: &CliRuntimeContext) -> anyhow::Result<CliApiClient> {

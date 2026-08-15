@@ -38,7 +38,6 @@ pub fn tool_glyph(name: &str) -> &'static str {
         "webfetch" | "web_fetch" | "fetch" => "%",
         "codesearch" | "code_search" => "◇",
         "websearch" | "web_search" => "◈",
-        "task" | "subagent" => "#",
         "apply_patch" | "applyPatch" => "%",
         "skill" => "⚙",
         "batch" => "⫘",
@@ -190,31 +189,6 @@ pub fn tool_argument_preview(normalized_name: &str, arguments: &str) -> Option<S
         }
     }
 
-    if normalized_name == "task" {
-        let category = parsed
-            .as_ref()
-            .and_then(|value| extract_string_key(value, &["category", "type", "subagent_type"]));
-        let description = parsed
-            .as_ref()
-            .and_then(|value| extract_string_key(value, &["description"]));
-        let prompt = parsed
-            .as_ref()
-            .and_then(|value| extract_string_key(value, &["prompt", "input", "text"]))
-            .and_then(|value| extract_task_prompt_preview(&value));
-        return match (category, description, prompt) {
-            (Some(category), Some(description), _) => Some(format!(
-                "{} task {}",
-                category,
-                format_preview_line(&description, 56)
-            )),
-            (Some(category), None, Some(prompt)) => Some(format!("{category} task {prompt}")),
-            (Some(category), None, None) => Some(format!("{category} task")),
-            (None, Some(description), _) => Some(format_preview_line(&description, 72)),
-            (None, None, Some(prompt)) => Some(prompt),
-            (None, None, None) => None,
-        };
-    }
-
     if matches!(normalized_name, "apply_patch" | "applypatch") {
         return Some("Patch".to_string());
     }
@@ -258,7 +232,7 @@ pub fn render_tool_segment_lines(
     let normalized = normalize_tool_name(name);
     if matches!(state, TerminalToolState::Completed)
         && !show_tool_details
-        && !matches!(normalized.as_str(), "task" | "todowrite" | "todo_write")
+        && !matches!(normalized.as_str(), "todowrite" | "todo_write")
     {
         return Vec::new();
     }
@@ -494,32 +468,6 @@ fn format_primitive_arguments(
     }
 }
 
-fn extract_task_prompt_preview(prompt: &str) -> Option<String> {
-    let trimmed = prompt.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    for line in trimmed.lines() {
-        let candidate = line.trim();
-        if candidate.is_empty() {
-            continue;
-        }
-        if candidate.starts_with('#') {
-            continue;
-        }
-        if let Some(rest) = candidate
-            .strip_prefix("- [ ] ")
-            .or_else(|| candidate.strip_prefix("* [ ] "))
-        {
-            return Some(format_preview_line(rest.trim(), 72));
-        }
-        return Some(format_preview_line(candidate, 72));
-    }
-
-    None
-}
-
 fn extract_jsonish_string_field(input: &str, field: &str) -> Option<String> {
     let needle = format!("\"{}\"", field);
     let field_idx = input.find(&needle)?;
@@ -629,16 +577,6 @@ mod tests {
         let args = r#"{"todos":[{"content":"Add tests"},{"content":"Refine TUI"}]}"#;
         let preview = tool_argument_preview("todowrite", args);
         assert_eq!(preview.as_deref(), Some("2 todos"));
-    }
-
-    #[test]
-    fn task_preview_uses_prompt_when_description_missing() {
-        let args = r###"{"category":"quick","prompt":"## 1. TASK\nRedesign t2.html with stronger visual impact."}"###;
-        let preview = tool_argument_preview("task", args);
-        assert_eq!(
-            preview.as_deref(),
-            Some("quick task Redesign t2.html with stronger visual impact.")
-        );
     }
 
     #[test]

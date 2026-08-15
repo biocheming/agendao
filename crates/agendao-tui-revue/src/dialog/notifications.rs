@@ -7,11 +7,11 @@
 //!
 //! 入口：`/notifications` slash + status bar 🔔 角标点击。Esc 关闭。
 
-use revue::prelude::*;
-use revue::event::Key;
-use crate::theme::colors;
 use crate::dialog::backdrop::{self, ListItem};
 use crate::store::types::{ToastMsg, ToastMsgVariant};
+use crate::theme::colors;
+use revue::event::Key;
+use revue::prelude::*;
 
 pub struct NotificationDialog {
     pub visible: bool,
@@ -40,7 +40,10 @@ fn fmt_age(created_at: u64, now_ms: u64) -> String {
 
 impl NotificationDialog {
     pub fn new() -> Self {
-        Self { visible: false, selected: 0 }
+        Self {
+            visible: false,
+            selected: 0,
+        }
     }
 
     pub fn open(&mut self) {
@@ -79,7 +82,12 @@ impl NotificationDialog {
         true
     }
 
-    pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom, history: &[ToastMsg]) {
+    pub fn render(
+        &self,
+        ctx: &mut RenderContext,
+        geom: backdrop::PromptGeom,
+        history: &[ToastMsg],
+    ) {
         if !self.visible {
             return;
         }
@@ -89,12 +97,16 @@ impl NotificationDialog {
                 muted: true,
             }];
             backdrop::render_list_dialog_bottom(
-                "Notifications",
-                colors::ACCENT_CYAN(),
+                backdrop::ListDialogHeading {
+                    title: "Notifications",
+                    border_color: colors::ACCENT_CYAN(),
+                },
                 &items,
                 0,
                 "Esc: close",
-                ctx, geom, 3,
+                ctx,
+                geom,
+                3,
             );
             return;
         }
@@ -129,12 +141,16 @@ impl NotificationDialog {
             })
             .collect();
         backdrop::render_list_dialog_bottom(
-            "Notifications",
-            colors::ACCENT_CYAN(),
+            backdrop::ListDialogHeading {
+                title: "Notifications",
+                border_color: colors::ACCENT_CYAN(),
+            },
             &items,
             self.selected,
             "↑↓ navigate  Home/End: jump  Esc: close",
-            ctx, geom, 12,
+            ctx,
+            geom,
+            12,
         );
     }
 }
