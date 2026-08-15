@@ -101,6 +101,7 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
   "lsp": { ... },
   "uiPreferences": { ... },
   "permission": { ... },
+  "runtimeBudget": { ... },
   "tools": { ... },
   "webSearch": { ... },
   "enterprise": { ... },
@@ -137,6 +138,32 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | `autoupdate` | boolean 或 string | null | 自动更新。`true` 启用，`false` 禁用，`"notify"` 仅通知 |
 | `taskCategoryPath` | string | null | 任务分类配置路径 |
 | `toolImports` | string[] | `[]` | 外部 tool catalog 文件导入列表。支持相对于声明该配置文件的相对路径，也支持绝对路径 |
+
+### Scheduler 运行预算
+
+`runtimeBudget` 是 Scheduler 与其他运行时资源限制的唯一配置入口。Scheduler 相关字段及默认值：
+
+```jsonc
+{
+  "runtimeBudget": {
+    "scheduler_max_model_calls": 32,
+    "scheduler_max_tool_calls": 96,
+    "scheduler_max_total_tokens": 1048576,
+    "scheduler_max_wall_time_ms": 1800000,
+    "scheduler_max_parallelism": 4,
+    "scheduler_max_graph_nodes": 48,
+    "scheduler_max_graph_depth": 16,
+    "scheduler_max_loop_iterations": 6,
+    "scheduler_max_agent_steps": 16,
+    "scheduler_workspace_max_files": 10000,
+    "scheduler_workspace_max_total_bytes": 1073741824,
+    "scheduler_workspace_min_free_disk_bytes": 536870912,
+    "scheduler_workspace_operation_timeout_ms": 30000
+  }
+}
+```
+
+模型请求中的 token 和 timeout 配置只能把对应 Scheduler 上限收紧，不能越过这里的硬预算。
 
 ### 外部 Tool Catalog 导入
 
@@ -329,8 +356,8 @@ Agent 定义在 `agent` 字段中，也可以从 `.agendao/agent/` 或 `.agendao
 | `hidden` | boolean | 是否在自动补全中隐藏 |
 | `options` | object | Agent 级别额外选项 |
 | `color` | string | ANSI 显示颜色 |
-| `steps` | integer | 最大步数 |
-| `max_steps` | integer | 最大步数 |
+| `steps` | integer | leaf AgentLoop 最大步数（`max_steps` 的同义配置字段） |
+| `max_steps` | integer | leaf AgentLoop 最大步数；不能扩大 Blueprint 或 runtimeBudget 上限 |
 | `max_tokens` | integer | 最大输出 Token |
 | `permission` | object | 工具权限规则（见 PermissionConfig） |
 | `tools` | object | 工具启用/禁用映射 |
@@ -645,6 +672,10 @@ Scheduler 不从 `agendao.jsonc` 加载路径。session 创建和 prompt 请求�
 `kind` 可以是 `auto`、`template` 或 `blueprint`。`blueprint` 直接内联当前
 `SchedulerBlueprint` schema；不存在路径加载、旧 profile 转换或失败回退。详见
 [Scheduler](scheduler) 和 [当前示例](examples/scheduler/README)。
+
+请求仅携带 `agent` 而没有 `scheduler` 时，会生成以该 Agent 为 primary leaf 的 `direct`
+Blueprint；这不是另一条执行路径。Web 的 Session Insights 也可以通过 session Blueprint API 管理
+当前锁定图，AI Planner 生成的临时 Agent manifest 随图保存，不写回 `agent` 配置。
 
 ---
 

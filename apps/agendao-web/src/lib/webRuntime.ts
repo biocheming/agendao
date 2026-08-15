@@ -8,6 +8,34 @@ export interface ExecutionMode {
   mode?: string;
 }
 
+export type SchedulerTemplateId =
+  | "direct"
+  | "plan"
+  | "coordinate"
+  | "verify"
+  | "autoresearch";
+
+export type SchedulerChoiceRecord =
+  | { kind: "auto" }
+  | { kind: "template"; template: SchedulerTemplateId };
+
+const SCHEDULER_TEMPLATE_IDS = new Set<SchedulerTemplateId>([
+  "direct",
+  "plan",
+  "coordinate",
+  "verify",
+  "autoresearch",
+]);
+
+export function schedulerChoiceFromId(id: string): SchedulerChoiceRecord {
+  const normalized = id.trim().toLowerCase();
+  if (normalized === "auto") return { kind: "auto" };
+  if (SCHEDULER_TEMPLATE_IDS.has(normalized as SchedulerTemplateId)) {
+    return { kind: "template", template: normalized as SchedulerTemplateId };
+  }
+  throw new Error(`Unknown scheduler mode: ${id}`);
+}
+
 export const THEMES: Array<{ id: ThemeId; label: string }> = [
   { id: "daylight", label: "Daylight" },
   { id: "sunset", label: "Sunset" },

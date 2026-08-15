@@ -25,9 +25,10 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "pending_command_invocation",
     "prompt_surface_state_snapshot",
     "request_boundary_hygiene_summary",
-    "scheduler_applied",
     "scheduler",
-    "scheduler_root_agent",
+    "scheduler_blueprint",
+    "scheduler_blueprint_fingerprint",
+    "scheduler_generated_agents",
     "scheduler_session_context_packet",
     "session_context_kind",
     "skill_reflection",
@@ -76,8 +77,10 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "resolved_system_prompt_preview",
     "resolved_user_prompt",
     "runtime_hint",
-    "scheduler_applied",
     "scheduler",
+    "scheduler_blueprint",
+    "scheduler_blueprint_fingerprint",
+    "scheduler_selection_source",
     "scheduler_steps",
     "scheduler_tool_calls",
     "snapshot",
@@ -867,6 +870,18 @@ mod tests {
         session
             .metadata
             .insert("last_ingress_source".to_string(), serde_json::json!("web"));
+        session.metadata.insert(
+            "scheduler_blueprint".to_string(),
+            serde_json::json!({"schema": "v1", "name": "review"}),
+        );
+        session.metadata.insert(
+            "scheduler_blueprint_fingerprint".to_string(),
+            serde_json::json!("blueprint-fingerprint"),
+        );
+        session.metadata.insert(
+            "scheduler_generated_agents".to_string(),
+            serde_json::json!([{"id": "security-reviewer", "base_agent": "build"}]),
+        );
         session
             .metadata
             .insert("custom_session_key".to_string(), serde_json::json!(true));
@@ -893,7 +908,12 @@ mod tests {
 
         assert_eq!(
             value["metadata_authority"]["session"]["sanctioned_keys"],
-            serde_json::json!(["last_ingress_source"])
+            serde_json::json!([
+                "last_ingress_source",
+                "scheduler_blueprint",
+                "scheduler_blueprint_fingerprint",
+                "scheduler_generated_agents"
+            ])
         );
         assert_eq!(
             value["metadata_authority"]["session"]["passthrough_keys"],

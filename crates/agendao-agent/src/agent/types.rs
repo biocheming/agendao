@@ -3,13 +3,6 @@ use std::collections::HashMap;
 
 use agendao_permission::PermissionRuleset;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeneratedAgentConfig {
-    pub identifier: String,
-    pub when_to_use: String,
-    pub system_prompt: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BuiltinAgent {
@@ -20,11 +13,7 @@ pub enum BuiltinAgent {
     DeepWorker,
     ArchitectureAdvisor,
     DocsResearcher,
-    CodeExplorer,
     MediaReader,
-    Metis,
-    Momus,
-    Oracle,
     Compaction,
     Title,
 }
@@ -39,17 +28,13 @@ impl BuiltinAgent {
             Self::DeepWorker => "deep-worker",
             Self::ArchitectureAdvisor => "architecture-advisor",
             Self::DocsResearcher => "docs-researcher",
-            Self::CodeExplorer => "code-explorer",
             Self::MediaReader => "media-reader",
-            Self::Metis => "metis",
-            Self::Momus => "momus",
-            Self::Oracle => "oracle",
             Self::Compaction => "compaction",
             Self::Title => "title",
         }
     }
 
-    pub const fn all() -> [BuiltinAgent; 14] {
+    pub const fn all() -> [BuiltinAgent; 10] {
         [
             BuiltinAgent::Build,
             BuiltinAgent::Plan,
@@ -58,11 +43,7 @@ impl BuiltinAgent {
             BuiltinAgent::DeepWorker,
             BuiltinAgent::ArchitectureAdvisor,
             BuiltinAgent::DocsResearcher,
-            BuiltinAgent::CodeExplorer,
             BuiltinAgent::MediaReader,
-            BuiltinAgent::Metis,
-            BuiltinAgent::Momus,
-            BuiltinAgent::Oracle,
             BuiltinAgent::Compaction,
             BuiltinAgent::Title,
         ]
@@ -110,46 +91,4 @@ pub enum AgentMode {
 pub struct ModelRef {
     pub model_id: String,
     pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenerateResult {
-    pub content: String,
-    pub tool_calls: Vec<ToolCallResult>,
-    pub usage: Option<UsageInfo>,
-    pub finished: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallResult {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-    pub result: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsageInfo {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenerateInput {
-    pub description: String,
-    pub model: Option<ModelRef>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("Provider error: {0}")]
-    ProviderError(#[from] agendao_provider::ProviderError),
-
-    #[error("Failed to parse generated config: {0}")]
-    ParseError(String),
-
-    #[error("No default model available")]
-    NoDefaultModel,
 }

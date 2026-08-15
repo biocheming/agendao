@@ -6,10 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-execution-types = { path = "../agendao-execution-types" }
-agendao-provider = { path = "../agendao-provider" }
 agendao-permission = { path = "../agendao-permission" }
 agendao-config = { path = "../agendao-config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }

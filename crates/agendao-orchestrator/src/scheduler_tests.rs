@@ -42,6 +42,7 @@ fn catalog() -> SchedulerCatalog {
             AgentCatalogEntry {
                 id: AgentId::from("worker"),
                 system_policy: "Inspect evidence before changing code.".to_string(),
+                max_steps: 12,
                 available_skills: set([audit.clone()]),
                 available_tools: set([read.clone(), write.clone()]),
                 model_capabilities: set([ModelCapability::ToolCalls, ModelCapability::Reasoning]),
@@ -54,6 +55,10 @@ fn catalog() -> SchedulerCatalog {
                 summary: "Audit a repository with evidence".to_string(),
                 content_fingerprint: "skill-audit-v1".to_string(),
                 capability_tags: set(["code-review".to_string()]),
+                requires_tools: BTreeSet::new(),
+                fallback_for_tools: BTreeSet::new(),
+                requires_toolsets: BTreeSet::new(),
+                fallback_for_toolsets: BTreeSet::new(),
                 hydrated_prompt: Some(Arc::from("Follow the repository audit procedure.")),
             },
         )]),
@@ -286,6 +291,38 @@ fn rejects_zero_and_policy_exceeding_limits() {
 }
 
 #[test]
+fn agent_step_limit_cannot_exceed_the_agent_or_blueprint_limit() {
+    let mut catalog = catalog();
+    catalog
+        .agents
+        .get_mut(&AgentId::from("worker"))
+        .unwrap()
+        .max_steps = 3;
+    let policy = PolicyEnvelope::allow_catalog(limits(), &catalog);
+    let error = validate(single_agent_blueprint(), &catalog, &policy)
+        .expect_err("node max_steps 4 must exceed agent maximum 3");
+    assert!(matches!(
+        error,
+        BlueprintValidationError::InvalidAgentSteps {
+            steps: 4,
+            maximum: 3,
+            ..
+        }
+    ));
+
+    let mut parameters = template_parameters();
+    parameters
+        .agent_max_steps
+        .insert(AgentId::from("worker"), 3);
+    parameters.limits.max_agent_steps = 12;
+    let blueprint = build_template(TemplateId::Direct, &parameters).expect("direct template");
+    let NodeSpec::Agent(node) = &blueprint.nodes[&NodeId::from("execute")] else {
+        panic!("direct execute node must be an agent");
+    };
+    assert_eq!(node.max_steps, 3);
+}
+
+#[test]
 fn rejects_unknown_and_agent_incompatible_skill() {
     let full_catalog = catalog();
     let policy = PolicyEnvelope::allow_catalog(limits(), &full_catalog);
@@ -511,7 +548,7 @@ fn serde_rejects_unknown_blueprint_fields() {
     value
         .as_object_mut()
         .expect("object")
-        .insert("legacyProfile".to_string(), serde_json::json!("sisyphus"));
+        .insert("unexpectedField".to_string(), serde_json::json!(true));
     let error = serde_json::from_value::<SchedulerBlueprint>(value).expect_err("unknown field");
     assert!(error.to_string().contains("unknown field"));
 }
@@ -587,6 +624,68 @@ impl ModelBackend for TestModel {
             finish_reason: Some("stop".to_string()),
             reasoning_continuation: None,
         })
+    }
+}
+
+#[derive(Default)]
+struct BoundaryInputModel {
+    calls: AtomicU32,
+    histories: Mutex<Vec<Vec<ConversationItem>>>,
+}
+
+#[async_trait]
+impl ModelBackend for BoundaryInputModel {
+    async fn invoke(
+        &self,
+        request: ModelRequest,
+        _context: &AgentObservationContext<'_>,
+        _observer: &dyn AgentLoopObserver,
+    ) -> Result<AssistantTurn, ModelBackendError> {
+        self.histories
+            .lock()
+            .expect("history mutex poisoned")
+            .push(request.prompt.dynamic.history_tail.as_ref().clone());
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if call == 0 {
+            return Ok(AssistantTurn {
+                content: None,
+                reasoning: None,
+                tool_calls: vec![ToolCall {
+                    id: "call-boundary".to_string(),
+                    tool: ToolId::from("read"),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                }],
+                usage: Usage::default(),
+                finish_reason: Some("tool-calls".to_string()),
+                reasoning_continuation: None,
+            });
+        }
+        Ok(AssistantTurn {
+            content: Some("steering adopted".to_string()),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+            finish_reason: Some("stop".to_string()),
+            reasoning_continuation: None,
+        })
+    }
+}
+
+#[derive(Default)]
+struct SecondStepBoundaryObserver {
+    calls: AtomicU32,
+}
+
+#[async_trait]
+impl AgentLoopObserver for SecondStepBoundaryObserver {
+    async fn take_boundary_inputs(
+        &self,
+        _context: &AgentObservationContext<'_>,
+    ) -> Result<Vec<String>, String> {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok((call == 1)
+            .then(|| vec!["Inspect the configuration path too.".to_string()])
+            .unwrap_or_default())
     }
 }
 
@@ -935,6 +1034,68 @@ async fn engine_runs_one_agent_loop_with_ordered_tool_history() {
     assert_eq!(outcome.result.usage.output_tokens, 4);
     assert_eq!(model.calls.load(Ordering::Relaxed), 2);
     assert_eq!(tools.calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn boundary_input_is_visible_in_the_next_agent_model_request() {
+    let model = BoundaryInputModel::default();
+    let tools = TestTools::default();
+    let evaluator = TestEvaluator {
+        pass_after: 1,
+        calls: AtomicU32::new(0),
+    };
+    let capabilities = TestCapabilities::default();
+    let observer = SecondStepBoundaryObserver::default();
+    let outcome = test_engine(&model, &tools, &evaluator, &capabilities)
+        .with_agent_observer(&observer)
+        .run(
+            &validated(single_agent_blueprint()),
+            run_request("inspect the repository"),
+            CancellationFlag::default(),
+        )
+        .await
+        .expect("steered run");
+    assert_eq!(outcome.result.output.as_deref(), Some("steering adopted"));
+
+    let histories = model.histories.lock().expect("history mutex poisoned");
+    assert_eq!(histories.len(), 2);
+    assert!(!histories[0]
+        .iter()
+        .any(|item| matches!(item, ConversationItem::User { .. })));
+    assert!(histories[1].iter().any(|item| matches!(
+        item,
+        ConversationItem::User { content }
+            if content == "Inspect the configuration path too."
+    )));
+}
+
+#[tokio::test]
+async fn agent_loop_enforces_the_validated_node_step_limit() {
+    let model = TwoToolModel;
+    let tools = TestTools::default();
+    let evaluator = TestEvaluator {
+        pass_after: 1,
+        calls: AtomicU32::new(0),
+    };
+    let capabilities = TestCapabilities::default();
+    let mut draft = single_agent_blueprint();
+    let NodeSpec::Agent(node) = draft.nodes.get_mut(&NodeId::from("execute")).unwrap() else {
+        panic!("execute node must be an agent");
+    };
+    node.max_steps = 1;
+
+    let error = test_engine(&model, &tools, &evaluator, &capabilities)
+        .run(
+            &validated(draft),
+            run_request("keep using tools"),
+            CancellationFlag::default(),
+        )
+        .await
+        .expect_err("tool-calling model must stop at the node step limit");
+    assert_eq!(
+        error,
+        EngineError::Agent(AgentLoopError::StepLimitExceeded { steps: 1 })
+    );
 }
 
 #[tokio::test]
@@ -1493,9 +1654,11 @@ fn template_parameters() -> TemplateParameters {
     TemplateParameters {
         name: BlueprintName::from("generated"),
         primary_agent: AgentId::from("worker"),
+        planning_agent: Some(AgentId::from("worker")),
         collaborators: vec![AgentId::from("worker"), AgentId::from("worker")],
-        skills: set([SkillId::from("audit")]),
-        tools: set([ToolId::from("read")]),
+        agent_skills: BTreeMap::from([(AgentId::from("worker"), set([SkillId::from("audit")]))]),
+        agent_tools: BTreeMap::from([(AgentId::from("worker"), set([ToolId::from("read")]))]),
+        agent_max_steps: BTreeMap::from([(AgentId::from("worker"), 12)]),
         evaluator: Some(EvaluatorId::from("quality")),
         checkpoint: Some(CapabilityId::from("checkpoint")),
         limits: limits(),
@@ -1522,6 +1685,7 @@ impl PlannerBackend for CapturingPlanner {
         *self.input.lock().expect("planner input mutex poisoned") = Some(input);
         Ok(PlannerDecision::CreateBlueprint {
             blueprint: single_agent_blueprint(),
+            agents: Vec::new(),
         })
     }
 }
@@ -1569,6 +1733,88 @@ async fn planner_receives_workspace_and_catalog_summary_without_skill_body() {
     assert!(!encoded.contains("Follow the repository audit procedure."));
 }
 
+#[tokio::test]
+async fn planner_can_materialize_a_bounded_ephemeral_agent() {
+    let mut blueprint = single_agent_blueprint();
+    let generated_id = AgentId::from("security-auditor");
+    let NodeSpec::Agent(node) = blueprint
+        .nodes
+        .values_mut()
+        .find(|node| matches!(node, NodeSpec::Agent(_)))
+        .expect("agent node")
+    else {
+        unreachable!()
+    };
+    node.agent = generated_id.clone();
+    let spec = GeneratedAgentSpec {
+        id: generated_id.clone(),
+        base_agent: AgentId::from("worker"),
+        system_policy: "Focus on credential boundaries and cite concrete evidence.".to_string(),
+    };
+    let planner = StaticPlanner {
+        calls: AtomicU32::new(0),
+        decision: PlannerDecision::CreateBlueprint {
+            blueprint,
+            agents: vec![spec.clone()],
+        },
+    };
+    let selected = AutoSelector::new(&planner, test_catalog(), test_policy())
+        .select(SelectionRequest {
+            explicit: None,
+            locked: None,
+            task: TaskShape::default(),
+            default_parameters: template_parameters(),
+            goal: "audit credential boundaries".to_string(),
+            workspace_summary: "workspace".to_string(),
+            rejected_blueprint_fingerprints: BTreeSet::new(),
+        })
+        .await
+        .expect("generated agent selection");
+    assert_eq!(selected.generated_agents, vec![spec.clone()]);
+
+    let extended = materialize_generated_agents(test_catalog(), &[spec]).unwrap();
+    let base = &test_catalog().agents[&AgentId::from("worker")];
+    let generated = &extended.agents[&generated_id];
+    assert_eq!(generated.available_tools, base.available_tools);
+    assert_eq!(generated.available_skills, base.available_skills);
+    assert_eq!(generated.model_capabilities, base.model_capabilities);
+    assert!(generated.system_policy.starts_with(&base.system_policy));
+    assert!(generated.system_policy.contains("credential boundaries"));
+}
+
+#[test]
+fn generated_agents_cannot_shadow_expand_or_exist_without_use() {
+    let shadow = GeneratedAgentSpec {
+        id: AgentId::from("worker"),
+        base_agent: AgentId::from("worker"),
+        system_policy: "specialize".to_string(),
+    };
+    assert_eq!(
+        materialize_generated_agents(test_catalog(), &[shadow]).unwrap_err(),
+        GeneratedAgentError::CatalogShadow("worker".to_string())
+    );
+
+    let invalid = GeneratedAgentSpec {
+        id: AgentId::from("Invalid_ID"),
+        base_agent: AgentId::from("worker"),
+        system_policy: "specialize".to_string(),
+    };
+    assert!(matches!(
+        materialize_generated_agents(test_catalog(), &[invalid]),
+        Err(GeneratedAgentError::InvalidId(_))
+    ));
+
+    let unused = GeneratedAgentSpec {
+        id: AgentId::from("unused-specialist"),
+        base_agent: AgentId::from("worker"),
+        system_policy: "specialize".to_string(),
+    };
+    assert_eq!(
+        validate_generated_agent_usage(&single_agent_blueprint(), &[unused]).unwrap_err(),
+        GeneratedAgentError::Unused("unused-specialist".to_string())
+    );
+}
+
 #[test]
 fn every_builtin_template_is_data_validated_by_the_same_validator() {
     for template in [
@@ -1584,12 +1830,29 @@ fn every_builtin_template_is_data_validated_by_the_same_validator() {
     }
 }
 
+#[test]
+fn plan_template_assigns_planner_and_executor_semantically() {
+    let mut parameters = template_parameters();
+    parameters.primary_agent = AgentId::from("executor");
+    parameters.planning_agent = Some(AgentId::from("planner"));
+    let blueprint = build_template(TemplateId::Plan, &parameters).expect("plan template");
+    let NodeSpec::Agent(plan) = &blueprint.nodes[&NodeId::from("plan")] else {
+        panic!("plan node must be an agent");
+    };
+    let NodeSpec::Agent(execute) = &blueprint.nodes[&NodeId::from("execute")] else {
+        panic!("execute node must be an agent");
+    };
+    assert_eq!(plan.agent, AgentId::from("planner"));
+    assert_eq!(execute.agent, AgentId::from("executor"));
+}
+
 #[tokio::test]
-async fn selector_skips_planner_for_user_lock_and_simple_task() {
+async fn selector_preserves_user_lock_and_skips_planner_for_simple_tasks() {
     let planner = StaticPlanner {
         calls: AtomicU32::new(0),
         decision: PlannerDecision::CreateBlueprint {
             blueprint: single_agent_blueprint(),
+            agents: Vec::new(),
         },
     };
     let selector = AutoSelector::new(&planner, test_catalog(), test_policy());
@@ -1600,7 +1863,10 @@ async fn selector_skips_planner_for_user_lock_and_simple_task() {
                 parameters: template_parameters(),
             }),
             locked: None,
-            task: TaskShape::default(),
+            task: TaskShape {
+                requires_verification: true,
+                ..TaskShape::default()
+            },
             default_parameters: template_parameters(),
             goal: "ignored".to_string(),
             workspace_summary: "workspace".to_string(),
@@ -1609,6 +1875,12 @@ async fn selector_skips_planner_for_user_lock_and_simple_task() {
         .await
         .expect("selection");
     assert_eq!(selected.source, SelectionSource::User);
+    assert!(!selected
+        .blueprint
+        .blueprint()
+        .nodes
+        .values()
+        .any(|node| matches!(node, NodeSpec::Gate(_))));
     assert_eq!(selected.blueprint.blueprint().nodes.len(), 2);
     let selected = selector
         .select(SelectionRequest {
@@ -1628,8 +1900,15 @@ async fn selector_skips_planner_for_user_lock_and_simple_task() {
     let selected = selector
         .select(SelectionRequest {
             explicit: None,
-            locked: Some(locked),
-            task: TaskShape::default(),
+            locked: Some(LockedSelection {
+                blueprint: locked,
+                source: SelectionSource::User,
+                generated_agents: Vec::new(),
+            }),
+            task: TaskShape {
+                requires_verification: true,
+                ..TaskShape::default()
+            },
             default_parameters: template_parameters(),
             goal: "continuation".to_string(),
             workspace_summary: "workspace".to_string(),
@@ -1637,7 +1916,13 @@ async fn selector_skips_planner_for_user_lock_and_simple_task() {
         })
         .await
         .expect("session lock selection");
-    assert_eq!(selected.source, SelectionSource::SessionLock);
+    assert_eq!(selected.source, SelectionSource::User);
+    assert!(!selected
+        .blueprint
+        .blueprint()
+        .nodes
+        .values()
+        .any(|node| matches!(node, NodeSpec::Gate(_))));
     let selected = selector
         .select(SelectionRequest {
             explicit: None,
@@ -1658,12 +1943,122 @@ async fn selector_skips_planner_for_user_lock_and_simple_task() {
 }
 
 #[tokio::test]
+async fn selector_prioritizes_complex_shape_and_reuses_only_suitable_locks() {
+    let planner = StaticPlanner {
+        calls: AtomicU32::new(0),
+        decision: PlannerDecision::CreateBlueprint {
+            blueprint: single_agent_blueprint(),
+            agents: Vec::new(),
+        },
+    };
+    let selector = AutoSelector::new(&planner, test_catalog(), test_policy());
+    let parameters = template_parameters();
+
+    let selected = selector
+        .select(SelectionRequest {
+            explicit: None,
+            locked: Some(LockedSelection {
+                blueprint: ValidatedBlueprint::new(
+                    build_template(TemplateId::Direct, &parameters).unwrap(),
+                    test_catalog(),
+                    test_policy(),
+                )
+                .unwrap(),
+                source: SelectionSource::Heuristic,
+                generated_agents: Vec::new(),
+            }),
+            task: TaskShape {
+                simple: true,
+                requires_verification: true,
+                ..TaskShape::default()
+            },
+            default_parameters: parameters.clone(),
+            goal: "全面审计并验证整个项目".to_string(),
+            workspace_summary: "workspace".to_string(),
+            rejected_blueprint_fingerprints: BTreeSet::new(),
+        })
+        .await
+        .expect("verification topology");
+    assert_eq!(selected.source, SelectionSource::Heuristic);
+    assert!(selected
+        .blueprint
+        .blueprint()
+        .nodes
+        .values()
+        .any(|node| matches!(node, NodeSpec::Gate(_))));
+
+    let iterative = ValidatedBlueprint::new(
+        build_template(TemplateId::Autoresearch, &parameters).unwrap(),
+        test_catalog(),
+        test_policy(),
+    )
+    .unwrap();
+    let selected = selector
+        .select(SelectionRequest {
+            explicit: None,
+            locked: Some(LockedSelection {
+                blueprint: iterative,
+                source: SelectionSource::Heuristic,
+                generated_agents: Vec::new(),
+            }),
+            task: TaskShape {
+                iterative_research: true,
+                ..TaskShape::default()
+            },
+            default_parameters: parameters.clone(),
+            goal: "continue iterative research".to_string(),
+            workspace_summary: "workspace".to_string(),
+            rejected_blueprint_fingerprints: BTreeSet::new(),
+        })
+        .await
+        .expect("iterative lock");
+    assert_eq!(selected.source, SelectionSource::Heuristic);
+
+    let parallel = ValidatedBlueprint::new(
+        build_template(TemplateId::Coordinate, &parameters).unwrap(),
+        test_catalog(),
+        test_policy(),
+    )
+    .unwrap();
+    let selected = selector
+        .select(SelectionRequest {
+            explicit: None,
+            locked: Some(LockedSelection {
+                blueprint: parallel,
+                source: SelectionSource::Heuristic,
+                generated_agents: Vec::new(),
+            }),
+            task: TaskShape {
+                simple: true,
+                ..TaskShape::default()
+            },
+            default_parameters: parameters,
+            goal: "rename one symbol".to_string(),
+            workspace_summary: "workspace".to_string(),
+            rejected_blueprint_fingerprints: BTreeSet::new(),
+        })
+        .await
+        .expect("simple replacement");
+    assert_eq!(selected.source, SelectionSource::Heuristic);
+    assert!(!selected
+        .blueprint
+        .blueprint()
+        .nodes
+        .values()
+        .any(|node| matches!(node, NodeSpec::Parallel(_))));
+    assert_eq!(planner.calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn selector_validates_ai_generated_blueprint_without_fallback() {
     let mut invalid = single_agent_blueprint();
     invalid.limits.max_model_calls = 0;
     let planner = StaticPlanner {
         calls: AtomicU32::new(0),
-        decision: PlannerDecision::CreateBlueprint { blueprint: invalid },
+        decision: PlannerDecision::CreateBlueprint {
+            blueprint: invalid,
+            agents: Vec::new(),
+        },
     };
     let selector = AutoSelector::new(&planner, test_catalog(), test_policy());
     let error = selector
@@ -1693,7 +2088,10 @@ async fn selector_refuses_a_user_rejected_ai_blueprint() {
         .to_string();
     let planner = StaticPlanner {
         calls: AtomicU32::new(0),
-        decision: PlannerDecision::CreateBlueprint { blueprint: draft },
+        decision: PlannerDecision::CreateBlueprint {
+            blueprint: draft,
+            agents: Vec::new(),
+        },
     };
     let selector = AutoSelector::new(&planner, test_catalog(), test_policy());
     let error = selector

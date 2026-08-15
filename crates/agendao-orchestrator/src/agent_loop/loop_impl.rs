@@ -52,6 +52,13 @@ pub trait AgentLoopObserver: Send + Sync {
         Ok(())
     }
 
+    async fn take_boundary_inputs(
+        &self,
+        _context: &AgentObservationContext<'_>,
+    ) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
     async fn assistant_turn(
         &self,
         _context: &AgentObservationContext<'_>,
@@ -319,6 +326,16 @@ impl<'a> AgentLoop<'a> {
                 .step_started(&observation, step)
                 .await
                 .map_err(AgentLoopError::Observer)?;
+            let boundary_inputs = context
+                .observer
+                .take_boundary_inputs(&observation)
+                .await
+                .map_err(AgentLoopError::Observer)?;
+            Arc::make_mut(&mut conversation).extend(
+                boundary_inputs
+                    .into_iter()
+                    .map(|content| ConversationItem::User { content }),
+            );
             context.budget.reserve_model_call()?;
             local_usage.model_calls += 1;
             let prompt = build_prompt_surface(

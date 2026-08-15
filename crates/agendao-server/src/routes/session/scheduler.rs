@@ -36,7 +36,7 @@ pub(crate) struct PromptRequestConfigInput<'a> {
     pub config: &'a AppConfig,
     pub session_id: &'a str,
     pub requested_agent: Option<&'a str>,
-    pub requested_scheduler: Option<&'a agendao_orchestrator::selector::SchedulerChoice>,
+    pub requested_scheduler: &'a agendao_orchestrator::selector::SchedulerChoice,
     pub request_model: Option<&'a str>,
     pub request_variant: Option<&'a str>,
     pub route: &'static str,
@@ -88,9 +88,15 @@ pub(super) fn resolve_effective_scheduler_choice(
     command_scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     request_scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     has_explicit_agent: bool,
-) -> Option<agendao_orchestrator::selector::SchedulerChoice> {
-    command_scheduler.or(request_scheduler).or_else(|| {
-        (!has_explicit_agent).then_some(agendao_orchestrator::selector::SchedulerChoice::Auto)
+) -> agendao_orchestrator::selector::SchedulerChoice {
+    command_scheduler.or(request_scheduler).unwrap_or_else(|| {
+        if has_explicit_agent {
+            agendao_orchestrator::selector::SchedulerChoice::Template {
+                template: agendao_orchestrator::templates::TemplateId::Direct,
+            }
+        } else {
+            agendao_orchestrator::selector::SchedulerChoice::Auto
+        }
     })
 }
 
@@ -787,30 +793,19 @@ pub(crate) fn resolve_config_default_agent_name(config: &AppConfig) -> String {
 }
 
 pub(crate) struct ResolvedPromptRequestConfig {
-    pub scheduler_applied: bool,
-    pub scheduler_choice: Option<agendao_orchestrator::selector::SchedulerChoice>,
+    pub scheduler_choice: agendao_orchestrator::selector::SchedulerChoice,
     pub resolved_agent: Option<AgentInfo>,
     pub provider: Arc<dyn agendao_provider::Provider>,
     pub provider_id: String,
     pub model_id: String,
-    pub agent_system_prompt: Option<String>,
     pub compiled_request: CompiledExecutionRequest,
 }
 
 pub(crate) fn apply_scheduler_selection_session_metadata(
     session: &mut agendao_session::Session,
-    resolved: &ResolvedPromptRequestConfig,
+    _resolved: &ResolvedPromptRequestConfig,
 ) {
-    session.insert_metadata(
-        "scheduler_selection_source",
-        serde_json::json!(if resolved.scheduler_applied {
-            "request"
-        } else {
-            "none"
-        }),
-    );
-    session.remove_metadata("scheduler_selection_trace");
-    session.remove_metadata("scheduler_selection_warning");
+    session.insert_metadata("scheduler_selection_source", serde_json::json!("request"));
 }
 
 pub(super) fn resolve_request_model_inputs(
@@ -859,8 +854,7 @@ pub(crate) async fn resolve_prompt_request_config(
         route,
     } = input;
 
-    let scheduler_choice = requested_scheduler.cloned();
-    let scheduler_applied = scheduler_choice.is_some();
+    let scheduler_choice = requested_scheduler.clone();
     let default_agent_name = requested_agent
         .is_none()
         .then(|| resolve_config_default_agent_name(config));
@@ -868,13 +862,12 @@ pub(crate) async fn resolve_prompt_request_config(
     let agent_registry = AgentRegistry::from_config(config);
     let selected_agent_name = requested_agent.or(default_agent_name.as_deref());
     let resolved_agent = selected_agent_name.and_then(|name| agent_registry.get(name).cloned());
-    if requested_agent.is_some() && resolved_agent.is_none() {
-        tracing::warn!(
-            route,
-            requested_agent = ?requested_agent,
-            default_agent = ?default_agent_name,
-            "requested agent not found in registry; proceeding without agent-specific overrides"
-        );
+    if let Some(requested_agent) = requested_agent {
+        if resolved_agent.is_none() {
+            return Err(crate::error::ApiError::BadRequest(format!(
+                "unknown agent '{requested_agent}'"
+            )));
+        }
     }
 
     let agent_model = resolved_agent
@@ -895,10 +888,6 @@ pub(crate) async fn resolve_prompt_request_config(
     )
     .await?;
 
-    let agent_system_prompt = resolved_agent
-        .as_ref()
-        .and_then(|agent| agent.resolved_system_prompt());
-
     let compiled_request = resolve_compiled_execution_request(
         config,
         &build_execution_resolution_context(
@@ -913,25 +902,21 @@ pub(crate) async fn resolve_prompt_request_config(
     tracing::info!(
         route,
         requested_agent = ?requested_agent,
-        scheduler_applied,
         default_agent = ?default_agent_name,
         resolved_agent = ?resolved_agent.as_ref().map(|agent| agent.name.as_str()),
         agent_model = ?agent_model,
         request_model_input = ?request_model_input,
         config_model_input = ?config_model_input,
         config_provider_input = ?config_provider_input,
-        system_prompt_applied = agent_system_prompt.is_some(),
         "resolved request prompt agent configuration"
     );
 
     Ok(ResolvedPromptRequestConfig {
-        scheduler_applied,
         scheduler_choice,
         resolved_agent,
         provider,
         provider_id,
         model_id,
-        agent_system_prompt,
         compiled_request,
     })
 }

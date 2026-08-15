@@ -17,12 +17,14 @@ pub enum TemplateId {
 pub struct TemplateParameters {
     pub name: BlueprintName,
     pub primary_agent: AgentId,
+    pub planning_agent: Option<AgentId>,
     #[serde(default)]
     pub collaborators: Vec<AgentId>,
     #[serde(default)]
-    pub skills: BTreeSet<SkillId>,
+    pub agent_skills: BTreeMap<AgentId, BTreeSet<SkillId>>,
     #[serde(default)]
-    pub tools: BTreeSet<ToolId>,
+    pub agent_tools: BTreeMap<AgentId, BTreeSet<ToolId>>,
+    pub agent_max_steps: BTreeMap<AgentId, u32>,
     pub evaluator: Option<EvaluatorId>,
     pub checkpoint: Option<CapabilityId>,
     pub limits: ExecutionLimits,
@@ -66,12 +68,27 @@ fn blueprint(
 }
 
 fn agent(parameters: &TemplateParameters, agent: AgentId, next: &str) -> NodeSpec {
+    let skills = parameters
+        .agent_skills
+        .get(&agent)
+        .cloned()
+        .unwrap_or_default();
+    let tools = parameters
+        .agent_tools
+        .get(&agent)
+        .cloned()
+        .unwrap_or_default();
     NodeSpec::Agent(AgentNode {
+        max_steps: parameters
+            .agent_max_steps
+            .get(&agent)
+            .copied()
+            .unwrap_or(parameters.limits.max_agent_steps)
+            .min(parameters.limits.max_agent_steps),
         agent,
-        skills: parameters.skills.clone(),
-        tools: parameters.tools.clone(),
+        skills,
+        tools,
         required_model_capabilities: BTreeSet::new(),
-        max_steps: parameters.limits.max_agent_steps,
         next: NodeId::from(next),
     })
 }
@@ -97,20 +114,19 @@ fn direct(parameters: &TemplateParameters) -> SchedulerBlueprint {
 }
 
 fn plan(parameters: &TemplateParameters) -> SchedulerBlueprint {
-    let executor = parameters
-        .collaborators
-        .first()
-        .cloned()
+    let planner = parameters
+        .planning_agent
+        .clone()
         .unwrap_or_else(|| parameters.primary_agent.clone());
     blueprint(
         parameters,
         "plan",
         BTreeMap::from([
+            (NodeId::from("plan"), agent(parameters, planner, "execute")),
             (
-                NodeId::from("plan"),
-                agent(parameters, parameters.primary_agent.clone(), "execute"),
+                NodeId::from("execute"),
+                agent(parameters, parameters.primary_agent.clone(), "done"),
             ),
-            (NodeId::from("execute"), agent(parameters, executor, "done")),
             (NodeId::from("done"), end()),
         ]),
     )

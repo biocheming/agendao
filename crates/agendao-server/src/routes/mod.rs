@@ -15,7 +15,6 @@ mod plugin_auth;
 mod process;
 mod project;
 mod provider;
-mod provider_diagnostics;
 #[cfg(feature = "pty")]
 mod pty;
 mod session;

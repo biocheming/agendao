@@ -7,7 +7,6 @@ use agendao_memory::{
     load_last_prefetch_packet, load_persisted_memory_snapshot, render_frozen_snapshot_block,
     render_prefetch_packet_block, PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
-use agendao_storage::{MessageRepository, SessionRepository};
 use agendao_types::{
     message_latest_compaction_summary, ExternalAdapterResolvedBinding, MemoryRetrievalPacket,
     MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
@@ -22,13 +21,10 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::recovery::RecoveryExecutionContext;
 use crate::routes::multimodal::resolve_provider_model;
-use crate::routes::permission::request_permission;
-use crate::routes::provider_diagnostics::attach_provider_diagnostic_from_error;
 use crate::session_runtime::events::{
     broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
 };
@@ -43,12 +39,10 @@ use agendao_command_render::output_blocks::{
 };
 use agendao_multimodal::{MultimodalAuthority, RuntimeMultimodalExplain, SessionPartAdapter};
 use agendao_server_core::runtime_control::SessionRunStatus;
-use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
+use agendao_server_core::runtime_events::ReconcileReason;
 use agendao_session::prompt::assistant_text_live_identity;
-use agendao_session::{EnvironmentContext, SystemPrompt};
 use agendao_types::{ControlInputKind, ControlInputPhase, LivePartPhase};
 
-use super::super::tui::request_question_answers;
 use super::super::{
     apply_plugin_config_hooks, get_plugin_loader, plugin_auth::ensure_plugin_loader_active,
     should_apply_plugin_config_hooks,
@@ -58,8 +52,7 @@ use super::messages::{
 };
 use super::scheduler::{apply_scheduler_selection_session_metadata, resolve_prompt_request_config};
 use super::session_crud::{
-    compaction_lifecycle_status_hook, persist_session_if_enabled, resolved_session_directory,
-    set_session_run_status, IdleGuard,
+    persist_session_if_enabled, resolved_session_directory, set_session_run_status, IdleGuard,
 };
 use super::telemetry::persist_session_telemetry_metadata;
 
@@ -73,35 +66,10 @@ struct ResolvedPromptPayload {
     pending_raw_arguments: Option<String>,
 }
 
-fn build_prompt_env_context(provider_id: &str, model_id: &str, working_directory: &str) -> String {
-    SystemPrompt::environment(&EnvironmentContext::from_current(
-        model_id.to_string(),
-        provider_id.to_string(),
-        working_directory.to_string(),
-    ))
-}
-
 const LIVE_WEB_INGRESS_BATCH_METADATA_KEY: &str = "live_web_ingress_batch";
 const LIVE_WEB_INGRESS_BATCH_WINDOW_MS: i64 = 250;
 pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
     "verified_external_adapter_binding";
-
-fn reconcile_reason_for_stream_termination(session: &agendao_session::Session) -> ReconcileReason {
-    let termination = session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, agendao_session::MessageRole::Assistant))
-        .and_then(|message| message.metadata.get("stream_termination"))
-        .and_then(|value| {
-            serde_json::from_value::<agendao_provider::StreamTermination>(value.clone()).ok()
-        });
-
-    match termination {
-        None | Some(agendao_provider::StreamTermination::Completed) => ReconcileReason::TurnFinal,
-        Some(_) => ReconcileReason::Backfill,
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct VerifiedSessionIngress {
@@ -227,147 +195,6 @@ pub(crate) fn persist_verified_external_adapter_binding(
             VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY.to_string(),
             value,
         );
-    }
-}
-
-// ============================================================================
-// Streaming persistence worker (incremental, watermark-based)
-// ============================================================================
-
-/// Job handed to the coalescing persistence worker.
-enum PersistJob {
-    /// Mid-stream snapshot: persist incrementally (changed messages only).
-    ///
-    /// 以 `Arc<Session>` 共享：同一份快照同时存入 SessionManager 与持久化
-    /// worker，不再为每个 tick 各深拷贝一份。
-    Incremental(Arc<agendao_session::Session>),
-    /// Terminal snapshot: full flush (session row + every message + stale-row
-    /// cleanup). `None` means the worker should flush the last snapshot it
-    /// already drained.
-    Final(Option<Arc<agendao_session::Session>>),
-}
-
-/// Convert any pending incremental snapshot into a terminal job, or queue a
-/// retained-flush marker when the worker already drained the latest snapshot.
-async fn queue_final_persist_job(latest: &Arc<tokio::sync::Mutex<Option<PersistJob>>>) {
-    let mut guard = latest.lock().await;
-    let job = match guard.take() {
-        Some(PersistJob::Incremental(snapshot)) => PersistJob::Final(Some(snapshot)),
-        Some(job @ PersistJob::Final(_)) => job,
-        None => PersistJob::Final(None),
-    };
-    *guard = Some(job);
-}
-
-/// Watermark of which messages have already been persisted, index-aligned with
-/// the session's message list.
-#[derive(Default)]
-struct MessagePersistWatermark {
-    persisted_ids: Vec<String>,
-}
-
-impl MessagePersistWatermark {
-    /// Returns the sub-slice of `messages` that must be (re-)upserted to bring
-    /// storage up to date. Does not advance the watermark — call
-    /// [`Self::commit`] once the planned upserts succeeded.
-    ///
-    /// Messages are append-mostly: during streaming only the tail message
-    /// changes and everything before it is already stored, so we re-upsert the
-    /// last persisted message plus everything appended after it. When the
-    /// persisted prefix no longer matches (compaction / revert / prune rewrote
-    /// history) or the list shrank, fall back to re-upserting every message;
-    /// stale rows left behind by a shrink are deleted by the terminal full
-    /// flush (`flush_with_messages`).
-    fn plan_upserts<'m>(
-        &self,
-        messages: &'m [agendao_types::SessionMessage],
-    ) -> &'m [agendao_types::SessionMessage] {
-        let common = self.persisted_ids.len().min(messages.len());
-        let prefix_intact = messages.len() >= self.persisted_ids.len()
-            && self.persisted_ids[..common]
-                .iter()
-                .zip(messages[..common].iter())
-                .all(|(persisted_id, message)| *persisted_id == message.id);
-        let start = if prefix_intact {
-            self.persisted_ids.len().saturating_sub(1)
-        } else {
-            0
-        };
-        &messages[start..]
-    }
-
-    /// Advance the watermark after the planned upserts succeeded.
-    fn commit(&mut self, messages: &[agendao_types::SessionMessage]) {
-        self.persisted_ids.clear();
-        self.persisted_ids
-            .extend(messages.iter().map(|message| message.id.clone()));
-    }
-}
-
-/// Coalescing persistence worker: drains the latest queued snapshot and writes
-/// it to storage.
-///
-/// Mid-stream snapshots are persisted incrementally — the session row (cheap;
-/// carries usage/title/metadata) plus only the messages the watermark flags as
-/// new or still-streaming. The terminal job performs a full
-/// `flush_with_messages` so the stored state matches a complete sync
-/// (including deletion of messages dropped by compaction/revert), then the
-/// worker exits.
-async fn run_session_persist_worker(
-    latest: Arc<tokio::sync::Mutex<Option<PersistJob>>>,
-    notify: Arc<Notify>,
-    session_repo: Option<SessionRepository>,
-    message_repo: Option<MessageRepository>,
-) {
-    let mut watermark = MessagePersistWatermark::default();
-    // Last drained snapshot, kept so a terminal `Final(None)` job can still
-    // flush when the last update arrived while this worker was processing it.
-    // 以 Arc 保留：与 SessionManager 共享同一份会话本体，零拷贝。
-    let mut retained: Option<Arc<agendao_session::Session>> = None;
-    loop {
-        notify.notified().await;
-        let job = latest.lock().await.take();
-        let Some(job) = job else { continue };
-        match job {
-            PersistJob::Incremental(snapshot) => {
-                // 只借用快照：`upsert` 只绑定会话行字段（不序列化 messages），
-                // `plan_upserts` 只读消息切片，因此无需消费/克隆整份会话。
-                let record = snapshot.record();
-                if let (Some(session_repo), Some(message_repo)) = (&session_repo, &message_repo) {
-                    if let Err(e) = session_repo.upsert(record).await {
-                        tracing::warn!(session_id = %record.id, %e, "incremental session upsert failed");
-                    }
-                    let mut all_persisted = true;
-                    for message in watermark.plan_upserts(&record.messages) {
-                        if let Err(e) = message_repo.upsert(message).await {
-                            all_persisted = false;
-                            tracing::warn!(message_id = %message.id, %e, "incremental message upsert failed");
-                        }
-                    }
-                    if all_persisted {
-                        watermark.commit(&record.messages);
-                    }
-                }
-                if session_repo.is_some() {
-                    retained = Some(snapshot);
-                }
-            }
-            PersistJob::Final(pending) => {
-                let target = pending.or_else(|| retained.take());
-                if let (Some(session), Some(session_repo)) = (target, &session_repo) {
-                    // `flush_with_messages` 的会话行绑定同样忽略 `messages`
-                    // 字段，直接以借用传入整份 record + 消息切片。
-                    let record = session.record();
-                    if let Err(e) = session_repo
-                        .flush_with_messages(record, &record.messages)
-                        .await
-                    {
-                        tracing::warn!(session_id = %record.id, %e, "final session flush failed");
-                    }
-                }
-                break;
-            }
-        }
     }
 }
 
@@ -639,24 +466,6 @@ pub(super) fn build_scheduler_session_context_block(
     session: &agendao_session::Session,
 ) -> Option<String> {
     build_scheduler_session_context_packet(session).map(|packet| packet.render())
-}
-
-pub(super) fn merge_system_prompt_with_memory_snapshot(
-    base: Option<String>,
-    frozen_snapshot_block: Option<&str>,
-) -> Option<String> {
-    match (
-        base.map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        frozen_snapshot_block
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-    ) {
-        (Some(base), Some(snapshot)) => Some(format!("{base}\n\n{snapshot}")),
-        (Some(base), None) => Some(base),
-        (None, Some(snapshot)) => Some(snapshot.to_string()),
-        (None, None) => None,
-    }
 }
 
 pub(super) fn merge_scheduler_prompt_with_memory(
@@ -1801,18 +1610,16 @@ async fn session_prompt_inner(
             config: &config,
             session_id: &id,
             requested_agent: effective_agent.as_deref(),
-            requested_scheduler: effective_scheduler.as_ref(),
+            requested_scheduler: &effective_scheduler,
             request_model: req.model.as_deref(),
             request_variant: req.variant.as_deref(),
             route: "session",
         })
         .await?;
-    let scheduler_applied = request_config.scheduler_applied;
     let resolved_agent = request_config.resolved_agent.clone();
     let provider = request_config.provider.clone();
     let provider_id = request_config.provider_id.clone();
     let model_id = request_config.model_id.clone();
-    let agent_system_prompt = request_config.agent_system_prompt.clone();
     let task_compiled_request = request_config.compiled_request.clone();
     let multimodal_explain = {
         let prompt_input_parts = prompt_parts_from_session_parts(&prompt_parts);
@@ -1863,8 +1670,6 @@ async fn session_prompt_inner(
     let task_model = model_id.clone();
     let task_provider_client = provider.clone();
     let task_provider = provider_id.clone();
-    let task_system_prompt = agent_system_prompt.clone();
-    let task_scheduler_applied = scheduler_applied;
     let task_scheduler_choice = request_config.scheduler_choice.clone();
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
@@ -2020,18 +1825,9 @@ async fn session_prompt_inner(
             session.remove_metadata("agent");
         }
         session.insert_metadata(
-            "scheduler_applied",
-            serde_json::json!(task_scheduler_applied),
+            "scheduler",
+            serde_json::to_value(&task_scheduler_choice).unwrap_or(serde_json::Value::Null),
         );
-        if let Some(choice) = task_scheduler_choice.as_ref() {
-            session.insert_metadata(
-                "scheduler",
-                serde_json::to_value(choice).unwrap_or(serde_json::Value::Null),
-            );
-        } else {
-            session.remove_metadata("scheduler");
-        }
-        session.remove_metadata("scheduler_root_agent");
         apply_scheduler_selection_session_metadata(&mut session, &request_config);
         if let Some(recovery) = task_recovery.as_ref() {
             if let Some(action) = recovery.action.as_ref() {
@@ -2039,25 +1835,17 @@ async fn session_prompt_inner(
             }
         }
 
-        let prompt_env_context = build_prompt_env_context(
-            &task_provider,
-            &task_model,
-            session.record().directory.as_str(),
-        );
-        let (memory_frozen_snapshot_block, memory_prefetch_packet, memory_prefetch_block) =
+        let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
         let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
-        let task_system_prompt = merge_system_prompt_with_memory_snapshot(
-            task_system_prompt.clone(),
-            memory_frozen_snapshot_block.as_deref(),
-        );
         let scheduler_execution_prompt = merge_scheduler_prompt_with_memory(
             &prompt_text,
             memory_frozen_snapshot_block.as_deref(),
             memory_prefetch_block.as_deref(),
         );
 
-        if let Some(choice) = task_scheduler_choice.clone() {
+        {
+            let choice = task_scheduler_choice.clone();
             let scheduler_input = agendao_session::PromptInput {
                 session_id: session_id.clone(),
                 message_id: None,
@@ -2098,6 +1886,9 @@ async fn session_prompt_inner(
                     return;
                 }
             };
+            if let Some(explain) = task_multimodal_explain.as_ref() {
+                annotate_last_user_message_multimodal_metadata(&mut session, explain);
+            }
             let conversation_seed =
                 match agendao_session::prompt::replay_provider_messages(&session.messages) {
                     Ok(messages) => messages,
@@ -2154,6 +1945,9 @@ async fn session_prompt_inner(
                     directory,
                     goal: scheduler_execution_prompt,
                     choice,
+                    primary_agent: task_agent
+                        .as_deref()
+                        .map(agendao_orchestrator::blueprint::AgentId::new),
                     provider: task_provider_client.clone(),
                     request: task_compiled_request.clone(),
                     conversation_seed,
@@ -2194,9 +1988,6 @@ async fn session_prompt_inner(
                 assistant
                     .metadata
                     .insert("model_id".to_string(), serde_json::json!(&task_model));
-                assistant
-                    .metadata
-                    .insert("scheduler_applied".to_string(), serde_json::json!(true));
                 match scheduler_result {
                     Ok(output) => {
                         assistant.finish = Some("stop".to_string());
@@ -2274,11 +2065,12 @@ async fn session_prompt_inner(
                 .map(assistant_visible_text)
                 .unwrap_or_default();
             let session_usage = session.get_usage();
-            task_state.sessions.lock().await.update(session);
             let _ = task_state
                 .runtime_telemetry
                 .record_session_usage(&session_id, Some(&assistant_message_id), session_usage)
                 .await;
+            persist_session_telemetry_metadata(&task_state, &mut session).await;
+            task_state.sessions.lock().await.update(session);
             broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),
@@ -2304,366 +2096,56 @@ async fn session_prompt_inner(
                 .await;
             }
             persist_session_if_enabled(&task_state, &session_id).await;
-            return;
-        }
-
-        let (update_tx, mut update_rx) =
-            watch::channel::<Option<Arc<agendao_session::Session>>>(None);
-        let update_state = task_state.clone();
-        let update_session_repo = task_state.session_repo.clone();
-        let update_message_repo = task_state.message_repo.clone();
-
-        // Coalescing persistence worker — only persists the latest snapshot, not every tick.
-        let persist_latest: Arc<tokio::sync::Mutex<Option<PersistJob>>> =
-            Arc::new(tokio::sync::Mutex::new(None));
-        let persist_notify = Arc::new(Notify::new());
-        let persist_worker = {
-            let latest = persist_latest.clone();
-            let notify = persist_notify.clone();
-            let s_repo = update_session_repo.clone();
-            let m_repo = update_message_repo.clone();
-            tokio::spawn(
-                async move { run_session_persist_worker(latest, notify, s_repo, m_repo).await },
-            )
-        };
-
-        let mut update_task = tokio::spawn({
-            let persist_latest = persist_latest.clone();
-            let persist_notify = persist_notify.clone();
-            async move {
-                while update_rx.changed().await.is_ok() {
-                    let Some(snapshot) = update_rx.borrow_and_update().clone() else {
-                        continue;
-                    };
-                    {
-                        let mut sessions = update_state.sessions.lock().await;
-                        // Arc 共享；watch 在消费者落后时只保留最新快照。
-                        sessions.update(snapshot.clone());
-                    }
-
-                    *persist_latest.lock().await = Some(PersistJob::Incremental(snapshot));
-                    persist_notify.notify_one();
-                }
-                // Channel closed: the prompt run ended. Convert any pending snapshot
-                // into a terminal job so the worker performs a full flush.
-                queue_final_persist_job(&persist_latest).await;
-                persist_notify.notify_one();
-            }
-        });
-        // Keep persist_worker handle at this scope so the outer timeout path can abort it.
-        let mut persist_worker_handle = persist_worker;
-        let update_hook: agendao_session::SessionUpdateHook = Arc::new(move |snapshot| {
-            // 每个流式 tick 唯一的一次深拷贝；下游 manager / persist 全部共享此 Arc。
-            let _ = update_tx.send(Some(Arc::new(snapshot.clone())));
-        });
-        let compaction_lifecycle_hook = Some(compaction_lifecycle_status_hook(
-            task_state.clone(),
-            session_id.clone(),
-            SessionRunStatus::Busy,
-        ));
-
-        let prompt_runner = task_state.prompt_runner.clone();
-        let resolved_tool_surface = agendao_session::merge_external_tool_catalogs(
-            agendao_session::resolve_tool_surface(task_state.tool_registry.as_ref()).await,
-            task_state.external_tool_catalogs.as_ref(),
-        );
-        let tool_defs = resolved_tool_surface.tools;
-        let input = agendao_session::PromptInput {
-            session_id: session_id.clone(),
-            message_id: None,
-            model: Some(agendao_session::prompt::ModelRef {
-                provider_id: task_provider.clone(),
-                model_id: task_model.clone(),
-            }),
-            agent: task_agent.clone(),
-            no_reply: false,
-            system: None,
-            variant: task_variant.clone(),
-            parts: effective_parts.clone(),
-            tools: None,
-            ingress: Some(effective_ingress.clone()),
-        };
-
-        let ask_question_hook: Option<agendao_session::prompt::AskQuestionHook> = {
-            let state = task_state.clone();
-            Some(Arc::new(move |session_id, questions| {
-                let state = state.clone();
-                Box::pin(
-                    async move { request_question_answers(state, session_id, questions).await },
-                )
-            }))
-        };
-        let ask_permission_hook: Option<agendao_session::prompt::AskPermissionHook> = {
-            let state = task_state.clone();
-            Some(Arc::new(move |session_id, request| {
-                let state = state.clone();
-                Box::pin(async move { request_permission(state, session_id, request).await })
-            }))
-        };
-
-        let event_broadcast: Option<agendao_session::prompt::EventBroadcastHook> = {
-            let state = task_state.clone();
-            Some(Arc::new(move |event| {
-                match serde_json::from_value::<ServerEvent>(event) {
-                    Ok(server_event) => state.broadcast_event(server_event),
-                    Err(_) => {
-                        tracing::warn!("ignored non-ServerEvent payload in prompt event_broadcast")
-                    }
-                }
-            }))
-        };
-        let publish_bus_hook: Option<agendao_session::prompt::PublishBusHook> = None;
-
-        let prompt_surface_inputs =
-            agendao_session::prompt::surface_authority::PromptSurfaceInputs::builder(
-                session_id.clone(),
-                task_compiled_request.clone(),
-            )
-            .set_base_system_prompt(task_system_prompt.clone())
-            .set_environment_identity(Some(prompt_env_context))
-            .set_memory_prefetch(memory_prefetch_packet.clone())
-            .set_tool_surface(
-                tool_defs,
-                resolved_tool_surface.source_digests,
-                resolved_tool_surface.catalog_by_tool,
-                resolved_tool_surface.catalog_mode,
-                resolved_tool_surface.catalog_hash,
-            );
-        let prompt_request = agendao_session::prompt::PromptRequestContext::new(
-            provider,
-            prompt_surface_inputs,
-            task_compiled_request.clone(),
-            agendao_session::prompt::PromptHooks {
-                update_hook: Some(update_hook),
-                event_broadcast,
-                compaction_lifecycle_hook,
-                output_block_hook,
-                ask_question_hook,
-                ask_permission_hook,
-                publish_bus_hook,
-                steering_boundary_hook: Some(Arc::new({
-                    let store = state.steering_store.clone();
-                    let runtime_telemetry = state.runtime_telemetry.clone();
-                    move |owner_id| {
-                        let store = store.clone();
-                        let runtime_telemetry = runtime_telemetry.clone();
-                        Box::pin(async move {
-                            let mut queue = store.lock().await;
-                            let drained = queue.drain(&owner_id);
-                            if !drained.is_empty() {
-                                let now = chrono::Utc::now().timestamp_millis();
-                                runtime_telemetry
-                                    .emit_control_input_transition(
-                                        &owner_id,
-                                        ControlInputKind::Steering,
-                                        ControlInputPhase::Adopted,
-                                        now,
-                                    )
-                                    .await;
-                                runtime_telemetry
-                                    .emit_control_input_transition(
-                                        &owner_id,
-                                        ControlInputKind::Steering,
-                                        ControlInputPhase::Consumed,
-                                        now,
-                                    )
-                                    .await;
-                            }
-                            runtime_telemetry
-                                .runtime_state()
-                                .steering_cleared(&owner_id)
-                                .await;
-                            runtime_telemetry
-                                .emit_control_input_transition(
-                                    &owner_id,
-                                    ControlInputKind::Steering,
-                                    ControlInputPhase::Cleared,
-                                    chrono::Utc::now().timestamp_millis(),
-                                )
-                                .await;
-                            drained
-                                .into_iter()
-                                .map(|m| agendao_session::prompt::SteeringMessage {
-                                    text: m.text,
-                                    created_at: m.created_at,
-                                    source_session_id: m.source_session_id,
-                                })
-                                .collect()
-                        })
-                    }
-                })),
-            },
-        );
-
-        let prompt_result = if let Some(token) = task_reserved_run {
-            prompt_runner
-                .prompt_with_reserved_update_hook(input, &mut session, prompt_request, token)
-                .await
-        } else {
-            prompt_runner
-                .prompt_with_update_hook(input, &mut session, prompt_request)
-                .await
-        };
-
-        if let Err(error) = prompt_result {
-            tracing::error!(
-                session_id = %session_id,
-                provider_id = %task_provider,
-                model_id = %task_model,
-                %error,
-                "session prompt failed"
-            );
-            let assistant = session.add_assistant_message();
-            assistant.finish = Some("error".to_string());
-            assistant
-                .metadata
-                .insert("error".to_string(), serde_json::json!(error.to_string()));
-            assistant
-                .metadata
-                .insert("finish_reason".to_string(), serde_json::json!("error"));
-            assistant.metadata.insert(
-                "model_provider".to_string(),
-                serde_json::json!(&task_provider),
-            );
-            assistant
-                .metadata
-                .insert("model_id".to_string(), serde_json::json!(&task_model));
-            if let Some(agent) = task_agent.as_deref() {
-                assistant
-                    .metadata
-                    .insert("agent".to_string(), serde_json::json!(agent));
-            }
-            attach_provider_diagnostic_from_error(
-                assistant,
-                &error,
-                &task_provider,
-                Some(&task_model),
-            );
-            let error_text = format!("Provider error: {}", error);
-            assistant.add_text(error_text.clone());
-            // 实时上屏:错误文本经 output block 广播,TUI/web 即时可见;
-            // 此前只落库,用户要下次启动才发现连接失败(静默失败)。
-            let error_output_hook = server_output_block_hook(task_state.clone());
-            emit_output_block_via_hook(
-                Some(&error_output_hook),
-                agendao_session::prompt::OutputBlockEvent {
-                    session_id: session_id.clone(),
-                    block: OutputBlock::Message(MessageBlock::full(
-                        OutputMessageRole::Assistant,
-                        error_text,
-                    )),
-                    id: Some(assistant.id.clone()),
-                    live_identity: Some(assistant_text_live_identity(
-                        &assistant.id,
-                        LivePartPhase::Snapshot,
-                    )),
-                },
-            )
-            .await;
-        }
-        match tokio::time::timeout(Duration::from_secs(1), &mut update_task).await {
-            Ok(joined) => {
-                let _ = joined;
-            }
-            Err(_) => {
-                update_task.abort();
-                tracing::warn!(
-                    session_id = %session_id,
-                    "timed out waiting for prompt update task shutdown; aborted task"
-                );
-            }
-        }
-        // Terminal full flush: guarantee the worker drains a Final job even when
-        // update_task was aborted before queueing one, then wait for the worker to
-        // finish instead of aborting it mid-write after a fixed sleep.
-        queue_final_persist_job(&persist_latest).await;
-        persist_notify.notify_one();
-        match tokio::time::timeout(Duration::from_secs(5), &mut persist_worker_handle).await {
-            Ok(_) => {}
-            Err(_) => {
-                persist_worker_handle.abort();
-                tracing::warn!(
-                    session_id = %session_id,
-                    "timed out waiting for final session persist flush; aborted worker"
-                );
-            }
-        }
-
-        let latest_assistant_message_id = session
-            .messages
-            .iter()
-            .rev()
-            .find(|message| matches!(message.role, agendao_session::MessageRole::Assistant))
-            .map(|message| message.id.clone());
-        if let Some(explain) = task_multimodal_explain.as_ref() {
-            annotate_last_user_message_multimodal_metadata(&mut session, explain);
-        }
-        let _ = task_state
-            .runtime_telemetry
-            .record_session_usage(
-                &session_id,
-                latest_assistant_message_id.as_deref(),
-                session.get_usage(),
-            )
-            .await;
-        persist_session_telemetry_metadata(&task_state, &mut session).await;
-        {
-            let mut sessions = task_state.sessions.lock().await;
-            sessions.update(session.clone());
-        }
-        let reconcile_reason = reconcile_reason_for_stream_termination(&session);
-        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason)
-            .await;
-        // Normal path reached — defuse the guard so we handle cleanup explicitly.
-        _idle_guard.defuse();
-        set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;
-        if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
-            task_state
-                .runtime_telemetry
-                .emit_control_input_transition(
-                    &session_id,
-                    ControlInputKind::Followup,
-                    ControlInputPhase::Adopted,
-                    chrono::Utc::now().timestamp_millis(),
-                )
-                .await;
-            clear_followup_pending(&task_state, &session_id).await;
-            let state = task_state.clone();
-            let session_id_for_followup = session_id.clone();
-            let handle = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || {
-                handle.block_on(async move {
-                    state
-                        .runtime_telemetry
-                        .emit_control_input_transition(
-                            &session_id_for_followup,
-                            ControlInputKind::Followup,
-                            ControlInputPhase::Consumed,
-                            chrono::Utc::now().timestamp_millis(),
-                        )
-                        .await;
-                    let headers = if queued.apply_plugin_config_hooks {
-                        HeaderMap::new()
-                    } else {
-                        internal_prompt_headers()
-                    };
-                    if let Err(error) = session_prompt_inner(
-                        state.clone(),
-                        headers,
-                        session_id_for_followup.clone(),
-                        queued.request,
-                        None,
+            _idle_guard.defuse();
+            set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;
+            if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
+                task_state
+                    .runtime_telemetry
+                    .emit_control_input_transition(
+                        &session_id,
+                        ControlInputKind::Followup,
+                        ControlInputPhase::Adopted,
+                        chrono::Utc::now().timestamp_millis(),
                     )
-                    .await
-                    {
-                        tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
-                    }
+                    .await;
+                clear_followup_pending(&task_state, &session_id).await;
+                let state = task_state.clone();
+                let session_id_for_followup = session_id.clone();
+                let handle = tokio::runtime::Handle::current();
+                tokio::task::spawn_blocking(move || {
+                    handle.block_on(async move {
+                        state
+                            .runtime_telemetry
+                            .emit_control_input_transition(
+                                &session_id_for_followup,
+                                ControlInputKind::Followup,
+                                ControlInputPhase::Consumed,
+                                chrono::Utc::now().timestamp_millis(),
+                            )
+                            .await;
+                        let headers = if queued.apply_plugin_config_hooks {
+                            HeaderMap::new()
+                        } else {
+                            internal_prompt_headers()
+                        };
+                        if let Err(error) = session_prompt_inner(
+                            state.clone(),
+                            headers,
+                            session_id_for_followup.clone(),
+                            queued.request,
+                            None,
+                        )
+                        .await
+                        {
+                            tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
+                        }
+                    });
                 });
-            });
-        }
-        // Only flush the current session — full sync is deferred to shutdown/startup.
-        if let Err(err) = task_state.flush_session_to_storage(&session_id).await {
-            tracing::error!(session_id = %session_id, %err, "failed to flush session to storage");
+            }
+            if let Err(error) = task_state.flush_session_to_storage(&session_id).await {
+                tracing::error!(session_id = %session_id, %error, "failed to flush session to storage");
+            }
+            return;
         }
     });
 
@@ -2712,15 +2194,17 @@ mod tests {
     fn scheduler_choice_defaults_to_auto_without_an_explicit_agent() {
         assert_eq!(
             super::super::scheduler::resolve_effective_scheduler_choice(None, None, false),
-            Some(agendao_orchestrator::selector::SchedulerChoice::Auto)
+            agendao_orchestrator::selector::SchedulerChoice::Auto
         );
     }
 
     #[test]
-    fn explicit_agent_skips_auto_but_explicit_scheduler_is_preserved() {
+    fn explicit_agent_uses_direct_scheduler_and_explicit_scheduler_is_preserved() {
         assert_eq!(
             super::super::scheduler::resolve_effective_scheduler_choice(None, None, true),
-            None
+            agendao_orchestrator::selector::SchedulerChoice::Template {
+                template: agendao_orchestrator::templates::TemplateId::Direct,
+            }
         );
 
         let explicit = agendao_orchestrator::selector::SchedulerChoice::Template {
@@ -2732,284 +2216,8 @@ mod tests {
                 Some(explicit.clone()),
                 false,
             ),
-            Some(explicit)
+            explicit
         );
-    }
-
-    // ------------------------------------------------------------------
-    // Streaming persist worker: watermark planning + incremental/final flush
-    // ------------------------------------------------------------------
-
-    fn persist_test_message(id: &str) -> agendao_types::SessionMessage {
-        agendao_types::SessionMessage {
-            id: id.to_string(),
-            session_id: "sess".to_string(),
-            role: agendao_types::MessageRole::User,
-            parts: vec![],
-            created_at: chrono::Utc::now(),
-            metadata: Default::default(),
-            usage: None,
-            finish: None,
-        }
-    }
-
-    fn planned_ids(planned: &[agendao_types::SessionMessage]) -> Vec<&str> {
-        planned.iter().map(|message| message.id.as_str()).collect()
-    }
-
-    #[test]
-    fn watermark_first_pass_plans_everything_and_tracks_ids() {
-        let mut watermark = MessagePersistWatermark::default();
-        let batch = vec![persist_test_message("a"), persist_test_message("b")];
-
-        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["a", "b"]);
-        // Watermark does not advance before commit.
-        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["a", "b"]);
-
-        watermark.commit(&batch);
-        assert_eq!(
-            watermark.persisted_ids,
-            vec!["a".to_string(), "b".to_string()]
-        );
-    }
-
-    #[test]
-    fn watermark_append_only_plans_tail_plus_new_messages() {
-        let mut watermark = MessagePersistWatermark::default();
-        let batch = vec![persist_test_message("a"), persist_test_message("b")];
-        watermark.plan_upserts(&batch);
-        watermark.commit(&batch);
-
-        // Append-only growth: re-upsert the possibly-still-streaming tail "b"
-        // plus the newly appended "c" — the unchanged "a" is skipped.
-        let batch = vec![
-            persist_test_message("a"),
-            persist_test_message("b"),
-            persist_test_message("c"),
-        ];
-        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["b", "c"]);
-        watermark.commit(&batch);
-        assert_eq!(
-            watermark.persisted_ids,
-            vec!["a".to_string(), "b".to_string(), "c".to_string()]
-        );
-
-        // No growth: only the tail is re-planned.
-        assert_eq!(planned_ids(watermark.plan_upserts(&batch)), vec!["c"]);
-    }
-
-    #[test]
-    fn watermark_falls_back_to_full_upsert_when_history_rewritten() {
-        let mut watermark = MessagePersistWatermark::default();
-        let batch = vec![persist_test_message("a"), persist_test_message("b")];
-        watermark.plan_upserts(&batch);
-        watermark.commit(&batch);
-
-        // Prefix rewritten in place (compaction/revert): full re-plan.
-        let rewritten = vec![persist_test_message("a"), persist_test_message("x")];
-        assert_eq!(
-            planned_ids(watermark.plan_upserts(&rewritten)),
-            vec!["a", "x"]
-        );
-
-        // History shrank (prune): full re-plan of what remains.
-        let shrunk = vec![persist_test_message("a")];
-        assert_eq!(planned_ids(watermark.plan_upserts(&shrunk)), vec!["a"]);
-        watermark.commit(&shrunk);
-        assert_eq!(watermark.persisted_ids, vec!["a".to_string()]);
-
-        // Empty history: nothing to upsert, watermark resets.
-        let empty: Vec<agendao_types::SessionMessage> = vec![];
-        assert!(watermark.plan_upserts(&empty).is_empty());
-        watermark.commit(&empty);
-        assert!(watermark.persisted_ids.is_empty());
-        assert!(watermark.plan_upserts(&empty).is_empty());
-    }
-
-    #[tokio::test]
-    async fn queue_final_persist_job_converts_pending_and_handles_empty() {
-        use tokio::sync::Mutex;
-
-        // Pending incremental snapshot becomes the terminal snapshot.
-        let latest = Arc::new(Mutex::new(Some(PersistJob::Incremental(Arc::new(
-            agendao_session::Session::new("proj", "/tmp"),
-        )))));
-        queue_final_persist_job(&latest).await;
-        let queued = persist_job_name(latest.lock().await.as_ref());
-        assert_eq!(queued, "Final(Some)");
-
-        // A queued final job is left untouched.
-        queue_final_persist_job(&latest).await;
-        let queued = persist_job_name(latest.lock().await.as_ref());
-        assert_eq!(queued, "Final(Some)");
-
-        // Nothing pending: queue a retained-flush marker.
-        let latest = Arc::new(Mutex::new(None));
-        queue_final_persist_job(&latest).await;
-        let queued = persist_job_name(latest.lock().await.as_ref());
-        assert_eq!(queued, "Final(None)");
-    }
-
-    fn persist_job_name(job: Option<&PersistJob>) -> &'static str {
-        match job {
-            Some(PersistJob::Incremental(_)) => "Incremental",
-            Some(PersistJob::Final(Some(_))) => "Final(Some)",
-            Some(PersistJob::Final(None)) => "Final(None)",
-            None => "None",
-        }
-    }
-
-    async fn wait_for_persisted_messages(
-        message_repo: &MessageRepository,
-        session_id: &str,
-        len: usize,
-    ) {
-        for _ in 0..200 {
-            let messages = message_repo
-                .list_for_session(session_id)
-                .await
-                .expect("list messages");
-            if messages.len() == len {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("timed out waiting for {len} persisted messages");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn persist_worker_incremental_ticks_then_final_full_flush() {
-        let db = agendao_storage::Database::in_memory()
-            .await
-            .expect("in-memory database");
-        let session_repo = SessionRepository::new(db.pool().clone());
-        let message_repo = MessageRepository::new(db.pool().clone());
-
-        let latest = Arc::new(tokio::sync::Mutex::new(None));
-        let notify = Arc::new(Notify::new());
-        let worker = tokio::spawn(run_session_persist_worker(
-            latest.clone(),
-            notify.clone(),
-            Some(session_repo.clone()),
-            Some(message_repo.clone()),
-        ));
-
-        // Tick 1: user message + a still-streaming assistant message.
-        let mut session = agendao_session::Session::new("proj", "/tmp");
-        let session_id = session.id.clone();
-        session.push_message(agendao_session::SessionMessage::user(
-            session_id.clone(),
-            "hi",
-        ));
-        let mut assistant = agendao_session::SessionMessage::assistant(session_id.clone());
-        assistant.add_text("partial");
-        session.push_message(assistant);
-        let assistant_id = session.messages[1].id.clone();
-
-        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
-        notify.notify_one();
-        wait_for_persisted_messages(&message_repo, &session_id, 2).await;
-
-        // Tick 2: the tail streams more text and a new message is appended.
-        session.messages_mut()[1].add_text(" more");
-        session.push_message(agendao_session::SessionMessage::user(
-            session_id.clone(),
-            "followup",
-        ));
-        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
-        notify.notify_one();
-        wait_for_persisted_messages(&message_repo, &session_id, 3).await;
-
-        // The streamed tail content must have been re-upserted incrementally.
-        let stored = message_repo
-            .list_for_session(&session_id)
-            .await
-            .expect("list messages");
-        let tail = stored
-            .iter()
-            .find(|message| message.id == assistant_id)
-            .expect("assistant message persisted");
-        let tail_text: String = tail
-            .parts
-            .iter()
-            .filter_map(|part| match &part.part_type {
-                agendao_types::PartType::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            tail_text.contains("partial"),
-            "tail text persisted: {tail_text}"
-        );
-
-        // Terminal: history rewritten (compaction-like) — final job must flush
-        // everything and delete stale rows the incremental path never touched.
-        session.messages_mut().clear();
-        session.push_message(agendao_session::SessionMessage::user(
-            session_id.clone(),
-            "compacted summary",
-        ));
-        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session.clone())));
-        queue_final_persist_job(&latest).await;
-        notify.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(5), worker)
-            .await
-            .expect("worker should exit after final flush")
-            .expect("worker join");
-
-        let stored = message_repo
-            .list_for_session(&session_id)
-            .await
-            .expect("list messages");
-        assert_eq!(stored.len(), 1, "stale messages deleted by final flush");
-        assert!(session_repo
-            .get(&session_id)
-            .await
-            .expect("get session")
-            .is_some());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn persist_worker_final_without_pending_flushes_retained_snapshot() {
-        let db = agendao_storage::Database::in_memory()
-            .await
-            .expect("in-memory database");
-        let session_repo = SessionRepository::new(db.pool().clone());
-        let message_repo = MessageRepository::new(db.pool().clone());
-
-        let latest = Arc::new(tokio::sync::Mutex::new(None));
-        let notify = Arc::new(Notify::new());
-        let worker = tokio::spawn(run_session_persist_worker(
-            latest.clone(),
-            notify.clone(),
-            Some(session_repo.clone()),
-            Some(message_repo.clone()),
-        ));
-
-        let mut session = agendao_session::Session::new("proj", "/tmp");
-        let session_id = session.id.clone();
-        session.push_message(agendao_session::SessionMessage::user(
-            session_id.clone(),
-            "hi",
-        ));
-        *latest.lock().await = Some(PersistJob::Incremental(Arc::new(session)));
-        notify.notify_one();
-        wait_for_persisted_messages(&message_repo, &session_id, 1).await;
-
-        // Nothing pending anymore: Final(None) must flush the retained copy and
-        // the worker must exit cleanly.
-        queue_final_persist_job(&latest).await;
-        notify.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(5), worker)
-            .await
-            .expect("worker should exit after final flush")
-            .expect("worker join");
-
-        let stored = message_repo
-            .list_for_session(&session_id)
-            .await
-            .expect("list messages");
-        assert_eq!(stored.len(), 1);
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub(super) async fn build_session_effective_policy(
         config: &config,
         session_id: &session.record().id,
         requested_agent: requested_agent.as_deref(),
-        requested_scheduler: requested_scheduler.as_ref(),
+        requested_scheduler: &requested_scheduler,
         request_model: requested_model.as_deref(),
         request_variant: requested_variant.as_deref(),
         route: "session_effective_policy",
@@ -62,7 +62,7 @@ pub(super) async fn build_session_effective_policy(
         Ok(resolved) => (
             Some(build_scheduler_policy(
                 metadata,
-                requested_scheduler.as_ref(),
+                &requested_scheduler,
                 &resolved,
             )),
             Some(build_provider_policy(
@@ -82,7 +82,7 @@ pub(super) async fn build_session_effective_policy(
             (
                 Some(build_scheduler_policy_from_metadata(
                     metadata,
-                    requested_scheduler.as_ref(),
+                    &requested_scheduler,
                     None,
                 )),
                 None,
@@ -103,7 +103,7 @@ pub(super) async fn build_session_effective_policy(
 
 fn build_scheduler_policy(
     metadata: &HashMap<String, serde_json::Value>,
-    requested_scheduler: Option<&SchedulerChoice>,
+    requested_scheduler: &SchedulerChoice,
     resolved: &ResolvedPromptRequestConfig,
 ) -> SessionEffectiveSchedulerPolicy {
     build_scheduler_policy_from_metadata(
@@ -118,26 +118,20 @@ fn build_scheduler_policy(
 
 fn build_scheduler_policy_from_metadata(
     metadata: &HashMap<String, serde_json::Value>,
-    requested_scheduler: Option<&SchedulerChoice>,
+    requested_scheduler: &SchedulerChoice,
     resolved_agent: Option<String>,
 ) -> SessionEffectiveSchedulerPolicy {
     let blueprint = metadata.get("scheduler_blueprint");
     SessionEffectiveSchedulerPolicy {
-        requested_kind: requested_scheduler.map(scheduler_choice_kind),
+        requested_kind: Some(scheduler_choice_kind(requested_scheduler)),
         blueprint_name: blueprint
             .and_then(|value| value.get("name"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
         blueprint_fingerprint: metadata_string(metadata, "scheduler_blueprint_fingerprint"),
-        source: metadata_string(metadata, "scheduler_selection_source").unwrap_or_else(|| {
-            if requested_scheduler.is_some() {
-                "session"
-            } else {
-                "none"
-            }
-            .to_string()
-        }),
-        applied: blueprint.is_some() || requested_scheduler.is_some(),
+        source: metadata_string(metadata, "scheduler_selection_source")
+            .unwrap_or_else(|| "session".to_string()),
+        applied: true,
         resolved_agent,
     }
 }

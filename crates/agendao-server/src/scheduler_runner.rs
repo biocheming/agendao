@@ -1,6 +1,8 @@
 use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_execution_types::CompiledExecutionRequest;
-use agendao_orchestrator::agent_loop::{CancellationFlag, ModelRoute, ProviderModelBackend};
+use agendao_orchestrator::agent_loop::{
+    AgentLoopObserver, AgentObservationContext, CancellationFlag, ModelRoute, ProviderModelBackend,
+};
 use agendao_orchestrator::blueprint::{
     AgentId, BlueprintName, CapabilityId, EvaluatorId, ExecutionLimits, ModelCapability,
     OutputContract, OutputFormat, SchedulerBlueprint, SkillId, ToolId, ValidatedBlueprint,
@@ -12,13 +14,15 @@ use agendao_orchestrator::catalog::{
 use agendao_orchestrator::context::{HandoffPacket, NodeResult, Usage};
 use agendao_orchestrator::engine::{RunRequest, SchedulerEngine};
 use agendao_orchestrator::events::{EventSink, ExecutionEvent};
-use agendao_orchestrator::policy::PolicyEnvelope;
+use agendao_orchestrator::policy::{PolicyEnvelope, WorkspaceLimits};
 use agendao_orchestrator::selector::{
-    AutoSelector, ExplicitSelection, SchedulerChoice, SelectionRequest, SelectionSource, TaskShape,
+    materialize_generated_agents, AutoSelector, ExplicitSelection, GeneratedAgentSpec,
+    LockedSelection, SchedulerChoice, SelectionRequest, SelectionSource, TaskShape,
 };
 use agendao_orchestrator::templates::TemplateParameters;
 use agendao_provider::{Message, Provider, ToolDefinition};
 use agendao_skill::{infer_toolsets_from_tools, SkillConditions, SkillRuntimeResolver};
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,11 +36,13 @@ use crate::routes::{
 use crate::scheduler_backends::{ModelEvaluatorBackend, ModelPlannerBackend};
 use crate::scheduler_cache::BoundedLruCache;
 use crate::scheduler_capabilities::WorkspaceCapabilityHost;
+use crate::session_runtime::events::broadcast_session_reconcile;
 use crate::ServerState;
 
 pub(crate) const BLUEPRINT_LOCK_METADATA_KEY: &str = "scheduler_blueprint";
 pub(crate) const BLUEPRINT_FINGERPRINT_METADATA_KEY: &str = "scheduler_blueprint_fingerprint";
 pub(crate) const SELECTION_SOURCE_METADATA_KEY: &str = "scheduler_selection_source";
+pub(crate) const GENERATED_AGENTS_METADATA_KEY: &str = "scheduler_generated_agents";
 pub(crate) const REJECTED_BLUEPRINTS_METADATA_KEY: &str =
     "scheduler_rejected_blueprint_fingerprints";
 
@@ -57,6 +63,7 @@ pub struct SchedulerRunInput {
     pub directory: String,
     pub goal: String,
     pub choice: SchedulerChoice,
+    pub primary_agent: Option<AgentId>,
     pub provider: Arc<dyn Provider>,
     pub request: CompiledExecutionRequest,
     pub conversation_seed: Vec<Message>,
@@ -74,6 +81,153 @@ pub struct SchedulerRunOutput {
 
 struct SchedulerEventChannel(tokio::sync::mpsc::UnboundedSender<ExecutionEvent>);
 
+struct SchedulerAgentObserver {
+    state: Arc<ServerState>,
+    session_id: String,
+}
+
+#[async_trait]
+impl AgentLoopObserver for SchedulerAgentObserver {
+    async fn take_boundary_inputs(
+        &self,
+        _context: &AgentObservationContext<'_>,
+    ) -> Result<Vec<String>, String> {
+        let steering = self
+            .state
+            .steering_store
+            .lock()
+            .await
+            .drain(&self.session_id);
+        if steering.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let last_source = steering
+            .iter()
+            .rev()
+            .find_map(|message| message.source_session_id.clone());
+        let last_latency_ms = steering.iter().rev().find_map(|message| {
+            (message.created_at > 0).then_some(now.saturating_sub(message.created_at) as u64)
+        });
+        let inputs = steering
+            .iter()
+            .map(|message| message.text.clone())
+            .collect::<Vec<_>>();
+
+        {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            for (index, message) in steering.iter().enumerate() {
+                let mut record = agendao_session::SessionMessage::user(
+                    self.session_id.clone(),
+                    message.text.clone(),
+                );
+                record.metadata.insert(
+                    "steering_mode".to_string(),
+                    serde_json::json!("next_tool_boundary"),
+                );
+                record
+                    .metadata
+                    .insert("steering_status".to_string(), serde_json::json!("consumed"));
+                record
+                    .metadata
+                    .insert("steering_index".to_string(), serde_json::json!(index));
+                record
+                    .metadata
+                    .insert("steering_injected_at".to_string(), serde_json::json!(now));
+                record.metadata.insert(
+                    "steering_owner_session_id".to_string(),
+                    serde_json::json!(&self.session_id),
+                );
+                record.metadata.insert(
+                    "steering_injected_during_active_run".to_string(),
+                    serde_json::json!(true),
+                );
+                if let Some(source) = message.source_session_id.as_ref() {
+                    record.metadata.insert(
+                        "steering_source_session_id".to_string(),
+                        serde_json::json!(source),
+                    );
+                }
+                let (admission, authority) = agendao_types::origin_to_admission_authority(
+                    agendao_types::MessageSourceOrigin::System,
+                );
+                agendao_types::apply_message_source_metadata(
+                    &mut record.metadata,
+                    agendao_types::MessageSourceOrigin::System,
+                    agendao_types::MessageSourceSurface::HttpApi,
+                );
+                agendao_types::apply_message_admission_metadata(
+                    &mut record.metadata,
+                    admission,
+                    authority,
+                );
+                session.push_message(record);
+            }
+            let consumed = session
+                .record()
+                .metadata
+                .get("consumed_steering_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .saturating_add(steering.len() as u64);
+            session.insert_metadata("consumed_steering_count", serde_json::json!(consumed));
+            session.insert_metadata("last_steering_injected_at", serde_json::json!(now));
+            session.insert_metadata(
+                "last_steering_source_session_id",
+                serde_json::json!(last_source),
+            );
+            session.insert_metadata(
+                "last_steering_latency_ms",
+                serde_json::json!(last_latency_ms),
+            );
+        }
+
+        self.state
+            .runtime_telemetry
+            .emit_control_input_transition(
+                &self.session_id,
+                agendao_types::ControlInputKind::Steering,
+                agendao_types::ControlInputPhase::Adopted,
+                now,
+            )
+            .await;
+        self.state
+            .runtime_telemetry
+            .emit_control_input_transition(
+                &self.session_id,
+                agendao_types::ControlInputKind::Steering,
+                agendao_types::ControlInputPhase::Consumed,
+                now,
+            )
+            .await;
+        self.state
+            .runtime_telemetry
+            .runtime_state()
+            .steering_cleared(&self.session_id)
+            .await;
+        self.state
+            .runtime_telemetry
+            .emit_control_input_transition(
+                &self.session_id,
+                agendao_types::ControlInputKind::Steering,
+                agendao_types::ControlInputPhase::Cleared,
+                now,
+            )
+            .await;
+        broadcast_session_reconcile(
+            self.state.as_ref(),
+            self.session_id.clone(),
+            agendao_server_core::runtime_events::ReconcileReason::StatusChange,
+        )
+        .await;
+        Ok(inputs)
+    }
+}
+
 impl EventSink for SchedulerEventChannel {
     fn emit(&self, event: ExecutionEvent) {
         let _ = self.0.send(event);
@@ -84,11 +238,13 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     let config = input.state.config_store.config();
     let agents = Arc::new(AgentRegistry::from_config(&config));
     let tool_definitions = scheduler_tool_definitions(&input.state).await;
-    let mut catalog = build_catalog(&input.state, &agents, &tool_definitions)?;
-    let limits = execution_limits(&input.request);
-    let policy = PolicyEnvelope::allow_catalog(limits.clone(), &catalog);
-    let primary = primary_agent(&agents)?;
-    let parameters = template_parameters(&catalog, &agents, primary, limits);
+    let mut catalog = build_catalog(&input.state, &config, &agents, &tool_definitions)?;
+    let runtime_budget = agendao_config::RuntimeBudgetConfig::from_config(Some(&config));
+    let limits = execution_limits(&input.request, &runtime_budget);
+    let policy = build_policy(&config, &catalog, limits.clone(), &runtime_budget);
+    let task = classify_task(&input.goal);
+    let primary = primary_agent(&agents, input.primary_agent.as_ref())?;
+    let parameters = template_parameters(&catalog, &agents, primary, limits, &input.goal, &task);
     let workspace_summary = workspace_summary(&input.state, &input.directory).await?;
     let rejected_blueprint_fingerprints =
         load_rejected_blueprints(&input.state, &input.session_id).await?;
@@ -110,7 +266,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         .select(SelectionRequest {
             explicit,
             locked,
-            task: classify_task(&input.goal),
+            task,
             default_parameters: parameters,
             goal: input.goal.clone(),
             workspace_summary: workspace_summary.clone(),
@@ -119,6 +275,8 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         .await
         .map_err(|error| error.to_string())?;
 
+    catalog = materialize_generated_agents(&catalog, &selection.generated_agents)
+        .map_err(|error| error.to_string())?;
     hydrate_selected_skills(&input.state, selection.blueprint.blueprint(), &mut catalog)?;
     let blueprint =
         ValidatedBlueprint::new(selection.blueprint.blueprint().clone(), &catalog, &policy)
@@ -128,6 +286,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         &input.session_id,
         &blueprint,
         selection.source,
+        &selection.generated_agents,
     )
     .await?;
 
@@ -139,7 +298,15 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
             .cloned()
             .map(|definition| (ToolId::new(definition.name.clone()), definition)),
     )
-    .with_routes(model_routes(&input.state, &agents, &input.request).await?);
+    .with_routes(
+        model_routes(
+            &input.state,
+            &agents,
+            &selection.generated_agents,
+            &input.request,
+        )
+        .await?,
+    );
     let tool_backend = SessionSchedulerToolExecutor::new(
         input.state.clone(),
         SessionSchedulerToolExecutorInput {
@@ -170,6 +337,10 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     });
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_sink = SchedulerEventChannel(event_tx);
+    let agent_observer = SchedulerAgentObserver {
+        state: input.state.clone(),
+        session_id: input.session_id.clone(),
+    };
     let projection_task = tokio::spawn(project_scheduler_events(
         input.state.clone(),
         input.session_id.clone(),
@@ -185,6 +356,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         "You are operating inside AgenDao's governed harness. Follow the selected agent policy, use only declared tools and skills, respect workspace authority, and return concise evidence-backed results.",
     )
     .with_events(&event_sink)
+    .with_agent_observer(&agent_observer)
     .run(
         &blueprint,
         RunRequest {
@@ -241,11 +413,10 @@ pub(crate) async fn validate_user_blueprint(
     let config = state.config_store.config();
     let agents = AgentRegistry::from_config(&config);
     let tools = scheduler_tool_definitions(state).await;
-    let mut catalog = build_catalog(state, &agents, &tools)?;
-    let policy = PolicyEnvelope::allow_catalog(
-        execution_limits(&CompiledExecutionRequest::default()),
-        &catalog,
-    );
+    let mut catalog = build_catalog(state, &config, &agents, &tools)?;
+    let runtime_budget = agendao_config::RuntimeBudgetConfig::from_config(Some(&config));
+    let limits = execution_limits(&CompiledExecutionRequest::default(), &runtime_budget);
+    let policy = build_policy(&config, &catalog, limits, &runtime_budget);
     hydrate_selected_skills(state, &blueprint, &mut catalog)?;
     ValidatedBlueprint::new(blueprint, &catalog, &policy).map_err(|error| error.to_string())
 }
@@ -392,6 +563,7 @@ async fn scheduler_tool_definitions(state: &ServerState) -> Vec<ToolDefinition> 
 
 fn build_catalog(
     state: &ServerState,
+    config: &agendao_config::Config,
     agents: &AgentRegistry,
     tools: &[ToolDefinition],
 ) -> Result<SchedulerCatalog, String> {
@@ -404,7 +576,7 @@ fn build_catalog(
                 ToolCatalogEntry {
                     id,
                     effect: tool_effect(&tool.name),
-                    permission: PermissionClass::Ask,
+                    permission: global_tool_permission_class(config, &tool.name),
                 },
             )
         })
@@ -432,6 +604,30 @@ fn build_catalog(
                     summary: skill.description,
                     content_fingerprint: fingerprint,
                     capability_tags: skill.category.into_iter().collect(),
+                    requires_tools: skill
+                        .conditions
+                        .requires_tools
+                        .into_iter()
+                        .map(|tool| ToolId::new(tool.trim().to_ascii_lowercase()))
+                        .collect(),
+                    fallback_for_tools: skill
+                        .conditions
+                        .fallback_for_tools
+                        .into_iter()
+                        .map(|tool| ToolId::new(tool.trim().to_ascii_lowercase()))
+                        .collect(),
+                    requires_toolsets: skill
+                        .conditions
+                        .requires_toolsets
+                        .into_iter()
+                        .map(|toolset| toolset.trim().to_ascii_lowercase())
+                        .collect(),
+                    fallback_for_toolsets: skill
+                        .conditions
+                        .fallback_for_toolsets
+                        .into_iter()
+                        .map(|toolset| toolset.trim().to_ascii_lowercase())
+                        .collect(),
                     hydrated_prompt: None,
                 },
             )
@@ -446,7 +642,10 @@ fn build_catalog(
             let id = AgentId::new(agent.name.clone());
             let available_tools = tool_entries
                 .keys()
-                .filter(|tool| agent.is_tool_allowed(tool.as_str()))
+                .filter(|tool| {
+                    agent.is_tool_allowed(tool.as_str())
+                        && tool_entries[*tool].permission != PermissionClass::DenyByDefault
+                })
                 .cloned()
                 .collect();
             (
@@ -454,6 +653,7 @@ fn build_catalog(
                 AgentCatalogEntry {
                     id,
                     system_policy: agent.resolved_system_prompt().unwrap_or_default(),
+                    max_steps: agent.max_steps.unwrap_or(1),
                     available_skills: all_skills.clone(),
                     available_tools,
                     model_capabilities: BTreeSet::from([
@@ -489,21 +689,141 @@ fn build_catalog(
     })
 }
 
-fn execution_limits(request: &CompiledExecutionRequest) -> ExecutionLimits {
+fn execution_limits(
+    request: &CompiledExecutionRequest,
+    budget: &agendao_config::RuntimeBudgetConfig,
+) -> ExecutionLimits {
     ExecutionLimits {
-        max_model_calls: 32,
-        max_tool_calls: 96,
-        max_total_tokens: request.max_tokens_or(8_192).saturating_mul(32),
-        max_wall_time_ms: request.timeout_secs.unwrap_or(1_800).saturating_mul(1_000),
-        max_parallelism: 4,
-        max_graph_nodes: 48,
-        max_graph_depth: 16,
-        max_loop_iterations: 6,
-        max_agent_steps: 16,
+        max_model_calls: budget.scheduler_max_model_calls,
+        max_tool_calls: budget.scheduler_max_tool_calls,
+        max_total_tokens: request
+            .max_tokens_or(8_192)
+            .saturating_mul(u64::from(budget.scheduler_max_model_calls))
+            .min(budget.scheduler_max_total_tokens),
+        max_wall_time_ms: request
+            .timeout_secs
+            .unwrap_or(budget.scheduler_max_wall_time_ms / 1_000)
+            .saturating_mul(1_000)
+            .min(budget.scheduler_max_wall_time_ms),
+        max_parallelism: budget.scheduler_max_parallelism,
+        max_graph_nodes: budget.scheduler_max_graph_nodes,
+        max_graph_depth: budget.scheduler_max_graph_depth,
+        max_loop_iterations: budget.scheduler_max_loop_iterations,
+        max_agent_steps: budget.scheduler_max_agent_steps,
     }
 }
 
-fn primary_agent(agents: &AgentRegistry) -> Result<AgentId, String> {
+fn build_policy(
+    config: &agendao_config::Config,
+    catalog: &SchedulerCatalog,
+    hard_limits: ExecutionLimits,
+    budget: &agendao_config::RuntimeBudgetConfig,
+) -> PolicyEnvelope {
+    let allowed_tools = catalog
+        .tools
+        .iter()
+        .filter(|(_, tool)| tool.permission != PermissionClass::DenyByDefault)
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let allowed_capabilities = catalog
+        .capabilities
+        .iter()
+        .filter(|(_, capability)| capability_effect_is_automatic(config, capability.effect))
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let allowed_effects = catalog
+        .tools
+        .iter()
+        .filter(|(id, _)| allowed_tools.contains(*id))
+        .map(|(_, tool)| tool.effect)
+        .chain(
+            catalog
+                .capabilities
+                .iter()
+                .filter(|(id, _)| allowed_capabilities.contains(*id))
+                .map(|(_, capability)| capability.effect),
+        )
+        .collect();
+    PolicyEnvelope {
+        hard_limits,
+        allowed_tools,
+        allowed_effects,
+        allowed_capabilities,
+        workspace_limits: WorkspaceLimits {
+            max_files: budget.scheduler_workspace_max_files,
+            max_total_bytes: budget.scheduler_workspace_max_total_bytes,
+            min_free_disk_bytes: budget.scheduler_workspace_min_free_disk_bytes,
+            operation_timeout_ms: budget.scheduler_workspace_operation_timeout_ms,
+        },
+    }
+}
+
+fn global_tool_permission_class(config: &agendao_config::Config, tool: &str) -> PermissionClass {
+    match configured_tool_permission(config, tool) {
+        agendao_permission::PermissionAction::Allow => PermissionClass::Automatic,
+        agendao_permission::PermissionAction::Ask => PermissionClass::Ask,
+        agendao_permission::PermissionAction::Deny => PermissionClass::DenyByDefault,
+    }
+}
+
+fn configured_tool_permission(
+    config: &agendao_config::Config,
+    tool: &str,
+) -> agendao_permission::PermissionAction {
+    let Some(permission) = config.permission.as_ref() else {
+        return agendao_permission::PermissionAction::Allow;
+    };
+    let permission_name = agendao_permission::tool_to_permission(tool);
+    let Some(rule) = permission
+        .rules
+        .get(permission_name)
+        .or_else(|| permission.rules.get("*"))
+    else {
+        return agendao_permission::PermissionAction::Allow;
+    };
+    match rule {
+        agendao_config::PermissionRule::Action(action) => map_permission_action(action),
+        agendao_config::PermissionRule::Object(patterns) => {
+            agendao_permission::combine_actions(patterns.values().map(map_permission_action))
+        }
+    }
+}
+
+fn map_permission_action(
+    action: &agendao_config::PermissionAction,
+) -> agendao_permission::PermissionAction {
+    match action {
+        agendao_config::PermissionAction::Allow => agendao_permission::PermissionAction::Allow,
+        agendao_config::PermissionAction::Ask => agendao_permission::PermissionAction::Ask,
+        agendao_config::PermissionAction::Deny => agendao_permission::PermissionAction::Deny,
+    }
+}
+
+fn capability_effect_is_automatic(config: &agendao_config::Config, effect: EffectClass) -> bool {
+    let representative_tool = match effect {
+        EffectClass::ReadOnly => "read",
+        EffectClass::WorkspaceMutation => "write",
+        EffectClass::ProcessExecution => "bash",
+        EffectClass::Network => "webfetch",
+        EffectClass::ExternalMutation => "question",
+    };
+    configured_tool_permission(config, representative_tool)
+        == agendao_permission::PermissionAction::Allow
+}
+
+fn primary_agent(agents: &AgentRegistry, requested: Option<&AgentId>) -> Result<AgentId, String> {
+    if let Some(requested) = requested {
+        return agents
+            .get(requested.as_str())
+            .filter(|agent| !agent.hidden)
+            .map(|agent| AgentId::new(agent.name.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "scheduler primary agent '{}' is unavailable",
+                    requested.as_str()
+                )
+            });
+    }
     agents
         .get("build")
         .or_else(|| agents.list_primary().first().copied())
@@ -516,24 +836,47 @@ fn template_parameters(
     agents: &AgentRegistry,
     primary_agent: AgentId,
     limits: ExecutionLimits,
+    goal: &str,
+    task: &TaskShape,
 ) -> TemplateParameters {
-    let collaborators = agents
-        .list_subagents()
-        .into_iter()
-        .take(3)
-        .map(|agent| AgentId::new(agent.name.clone()))
+    let planning_agent = agents
+        .get("plan")
+        .filter(|agent| {
+            !agent.hidden
+                && catalog
+                    .agents
+                    .contains_key(&AgentId::new(agent.name.clone()))
+        })
+        .map(|agent| AgentId::new(agent.name.clone()));
+    let collaborators = semantic_collaborators(agents, goal, task);
+    let agent_tools = std::iter::once(primary_agent.clone())
+        .chain(planning_agent.iter().cloned())
+        .chain(collaborators.iter().cloned())
+        .filter_map(|id| {
+            catalog
+                .agents
+                .get(&id)
+                .map(|agent| (id, agent.available_tools.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let agent_skills = semantic_skills(catalog, goal, task, &agent_tools);
+    let agent_max_steps = agent_tools
+        .keys()
+        .filter_map(|id| {
+            catalog
+                .agents
+                .get(id)
+                .map(|agent| (id.clone(), agent.max_steps))
+        })
         .collect();
-    let tools = catalog
-        .agents
-        .get(&primary_agent)
-        .map(|agent| agent.available_tools.clone())
-        .unwrap_or_default();
     TemplateParameters {
         name: BlueprintName::from("session-scheduler"),
         primary_agent,
+        planning_agent,
         collaborators,
-        skills: BTreeSet::new(),
-        tools,
+        agent_skills,
+        agent_tools,
+        agent_max_steps,
         evaluator: Some(EvaluatorId::from("quality")),
         checkpoint: Some(CapabilityId::from("workspace-checkpoint")),
         limits,
@@ -545,22 +888,375 @@ fn template_parameters(
     }
 }
 
+fn semantic_skills(
+    catalog: &SchedulerCatalog,
+    goal: &str,
+    task: &TaskShape,
+    agent_tools: &BTreeMap<AgentId, BTreeSet<ToolId>>,
+) -> BTreeMap<AgentId, BTreeSet<SkillId>> {
+    let normalized_goal = goal.to_lowercase();
+    let goal_terms = semantic_terms(&normalized_goal);
+    agent_tools
+        .iter()
+        .filter_map(|(agent_id, tools)| {
+            let agent = catalog.agents.get(agent_id)?;
+            let mut ranked = catalog
+                .skills
+                .iter()
+                .filter(|(skill_id, skill)| {
+                    agent.available_skills.contains(*skill_id)
+                        && skill_supports_tool_surface(skill, tools)
+                })
+                .filter_map(|(skill_id, skill)| {
+                    let score =
+                        skill_relevance(skill_id, skill, &normalized_goal, &goal_terms, task);
+                    (score > 0).then_some((score, skill_id.clone()))
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+            let selected = ranked
+                .into_iter()
+                .take(3)
+                .map(|(_, skill)| skill)
+                .collect::<BTreeSet<_>>();
+            (!selected.is_empty()).then_some((agent_id.clone(), selected))
+        })
+        .collect()
+}
+
+fn semantic_terms(value: &str) -> BTreeSet<String> {
+    const STOP_WORDS: &[&str] = &[
+        "about", "all", "and", "entire", "from", "into", "project", "that", "the", "this", "with",
+        "一个", "全部", "整个", "以及", "进行", "这个", "项目",
+    ];
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3 && !STOP_WORDS.contains(term))
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn skill_relevance(
+    skill_id: &SkillId,
+    skill: &SkillCatalogEntry,
+    goal: &str,
+    goal_terms: &BTreeSet<String>,
+    task: &TaskShape,
+) -> i32 {
+    let id = skill_id.as_str().to_lowercase();
+    let searchable = format!(
+        "{} {} {}",
+        id,
+        skill.summary.to_lowercase(),
+        skill
+            .capability_tags
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    );
+    let mut score = if goal.contains(&id) || goal.contains(&id.replace('-', " ")) {
+        20
+    } else {
+        0
+    };
+    score += goal_terms
+        .iter()
+        .filter(|term| searchable.contains(term.as_str()))
+        .count() as i32
+        * 3;
+    if task.requires_verification
+        && contains_any(
+            &searchable,
+            &["audit", "review", "verify", "validation", "test", "quality"],
+        )
+    {
+        score += 8;
+    }
+    if task.iterative_research
+        && contains_any(
+            &searchable,
+            &["research", "experiment", "benchmark", "evaluation"],
+        )
+    {
+        score += 8;
+    }
+    if task.benefits_from_parallelism
+        && contains_any(&searchable, &["compare", "analysis", "review", "research"])
+    {
+        score += 3;
+    }
+    score
+}
+
+fn skill_supports_tool_surface(skill: &SkillCatalogEntry, tools: &BTreeSet<ToolId>) -> bool {
+    let available_tools = tools
+        .iter()
+        .map(|tool| tool.as_str().trim().to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let available_toolsets = infer_toolsets_from_tools(available_tools.iter().map(String::as_str));
+    skill
+        .requires_tools
+        .iter()
+        .all(|tool| available_tools.contains(tool.as_str()))
+        && skill
+            .fallback_for_tools
+            .iter()
+            .all(|tool| !available_tools.contains(tool.as_str()))
+        && skill
+            .requires_toolsets
+            .iter()
+            .all(|toolset| available_toolsets.contains(toolset))
+        && skill
+            .fallback_for_toolsets
+            .iter()
+            .all(|toolset| !available_toolsets.contains(toolset))
+}
+
+fn semantic_collaborators(agents: &AgentRegistry, goal: &str, task: &TaskShape) -> Vec<AgentId> {
+    let normalized = goal.to_ascii_lowercase();
+    let architecture_work = contains_any(
+        &normalized,
+        &[
+            "architecture",
+            "design",
+            "refactor",
+            "performance",
+            "security",
+            "架构",
+            "设计",
+            "重构",
+            "性能",
+            "安全",
+        ],
+    );
+    let external_research = contains_any(
+        &normalized,
+        &[
+            "documentation",
+            "docs",
+            "external",
+            "provider",
+            "protocol",
+            "文档",
+            "外部",
+            "协议",
+            "供应商",
+        ],
+    );
+    let media_work = contains_any(
+        &normalized,
+        &[
+            "pdf",
+            "image",
+            "screenshot",
+            "diagram",
+            "attachment",
+            "图片",
+            "截图",
+            "图表",
+            "附件",
+        ],
+    );
+    let code_work = contains_any(
+        &normalized,
+        &[
+            "code",
+            "repository",
+            "project",
+            "debug",
+            "audit",
+            "代码",
+            "仓库",
+            "项目",
+            "调试",
+            "审计",
+        ],
+    );
+
+    let mut ranked = agents
+        .list_subagents()
+        .into_iter()
+        .map(|agent| {
+            let role = agent.name.as_str();
+            let mut score = semantic_description_overlap(agent, &normalized);
+            if task.iterative_research {
+                score += match role {
+                    "docs-researcher" => 8,
+                    "explore" => 5,
+                    "architecture-advisor" => 2,
+                    _ => 0,
+                };
+            }
+            if task.requires_verification {
+                score += match role {
+                    "explore" => 7,
+                    "architecture-advisor" => 6,
+                    "docs-researcher" => 1,
+                    _ => 0,
+                };
+            }
+            if task.benefits_from_parallelism {
+                score += 1;
+            }
+            if architecture_work && role == "architecture-advisor" {
+                score += 8;
+            }
+            if external_research && role == "docs-researcher" {
+                score += 8;
+            }
+            if media_work && role == "media-reader" {
+                score += 10;
+            }
+            if code_work && role == "explore" {
+                score += 8;
+            }
+            (score, collaborator_role_rank(role), agent.name.clone())
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    ranked
+        .into_iter()
+        .take(3)
+        .map(|(_, _, name)| AgentId::new(name))
+        .collect()
+}
+
+fn semantic_description_overlap(agent: &AgentInfo, goal: &str) -> i32 {
+    agent
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| word.len() >= 4)
+        .map(str::to_ascii_lowercase)
+        .filter(|word| goal.contains(word))
+        .count() as i32
+}
+
+fn collaborator_role_rank(role: &str) -> u8 {
+    match role {
+        "explore" => 0,
+        "architecture-advisor" => 1,
+        "docs-researcher" => 2,
+        "media-reader" => 3,
+        _ => 4,
+    }
+}
+
 fn classify_task(goal: &str) -> TaskShape {
     let normalized = goal.to_ascii_lowercase();
+    let iterative_research = contains_any(
+        &normalized,
+        &[
+            "autoresearch",
+            "iterative research",
+            "research loop",
+            "迭代研究",
+            "循环实验",
+            "持续研究",
+            "多轮研究",
+        ],
+    );
+    let requires_verification = contains_any(
+        &normalized,
+        &[
+            "verify",
+            "validation",
+            "audit",
+            "review",
+            "验证",
+            "核验",
+            "审计",
+            "复查",
+            "测试",
+        ],
+    );
+    let benefits_from_parallelism = contains_any(
+        &normalized,
+        &[
+            "parallel",
+            "compare",
+            "comparison",
+            "comprehensive",
+            "entire project",
+            "并行",
+            "对比",
+            "比较",
+            "全面",
+            "整个项目",
+            "全项目",
+            "逐项",
+        ],
+    );
+    let complex = contains_any(
+        &normalized,
+        &[
+            "architecture",
+            "refactor",
+            "redesign",
+            "migration",
+            "security",
+            "permission",
+            "performance",
+            "optimize",
+            "dead code",
+            "架构",
+            "重构",
+            "重新设计",
+            "迁移",
+            "安全",
+            "权限",
+            "性能",
+            "优化",
+            "死代码",
+            "治理",
+        ],
+    );
+    let explicitly_small = contains_any(
+        &normalized,
+        &[
+            "typo",
+            "fix ",
+            "rename",
+            "format this",
+            "explain",
+            "show me",
+            "single file",
+            "one file",
+            "错别字",
+            "修复",
+            "重命名",
+            "格式化",
+            "解释",
+            "查看",
+            "列出",
+            "单个文件",
+            "一处",
+        ],
+    );
     TaskShape {
-        simple: goal.chars().count() <= 160
-            && !normalized.contains("audit")
-            && !normalized.contains("research")
-            && !normalized.contains("verify"),
-        iterative_research: normalized.contains("autoresearch")
-            || normalized.contains("iterative research"),
-        requires_verification: normalized.contains("verify")
-            || normalized.contains("验证")
-            || normalized.contains("审计"),
-        benefits_from_parallelism: normalized.contains("parallel")
-            || normalized.contains("compare")
-            || normalized.contains("全面"),
+        simple: !iterative_research
+            && !requires_verification
+            && !benefits_from_parallelism
+            && !complex
+            && goal.chars().count() <= 160
+            && explicitly_small,
+        iterative_research,
+        requires_verification,
+        benefits_from_parallelism,
     }
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn hydrate_selected_skills(
@@ -773,6 +1469,7 @@ async fn workspace_summary(state: &ServerState, directory: &str) -> Result<Strin
 async fn model_routes(
     state: &ServerState,
     agents: &AgentRegistry,
+    generated_agents: &[GeneratedAgentSpec],
     request_defaults: &CompiledExecutionRequest,
 ) -> Result<BTreeMap<AgentId, ModelRoute>, String> {
     let providers = state.providers.read().await;
@@ -791,6 +1488,11 @@ async fn model_routes(
                 request: agent_request(request_defaults, agent, &model.model_id),
             },
         );
+    }
+    for generated in generated_agents {
+        if let Some(route) = routes.get(&generated.base_agent).cloned() {
+            routes.insert(generated.id.clone(), route);
+        }
     }
     Ok(routes)
 }
@@ -816,7 +1518,7 @@ async fn load_locked_blueprint(
     session_id: &str,
     catalog: &SchedulerCatalog,
     policy: &PolicyEnvelope,
-) -> Result<Option<ValidatedBlueprint>, String> {
+) -> Result<Option<LockedSelection>, String> {
     let sessions = state.sessions.lock().await;
     let Some(session) = sessions.get(session_id) else {
         return Ok(None);
@@ -827,8 +1529,32 @@ async fn load_locked_blueprint(
     let blueprint = serde_json::from_value(value.clone()).map_err(|error| {
         format!("stored scheduler Blueprint is invalid and cannot be reused: {error}")
     })?;
-    ValidatedBlueprint::new(blueprint, catalog, policy)
-        .map(Some)
+    let generated_agents = session
+        .record()
+        .metadata
+        .get(GENERATED_AGENTS_METADATA_KEY)
+        .ok_or_else(|| "stored scheduler Blueprint has no generated-agent manifest".to_string())
+        .and_then(|value| {
+            serde_json::from_value::<Vec<GeneratedAgentSpec>>(value.clone())
+                .map_err(|error| format!("stored generated-agent manifest is invalid: {error}"))
+        })?;
+    let source = session
+        .record()
+        .metadata
+        .get(SELECTION_SOURCE_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "stored scheduler Blueprint has no selection source".to_string())
+        .and_then(parse_selection_source)?;
+    let extended = materialize_generated_agents(catalog, &generated_agents)
+        .map_err(|error| format!("stored generated-agent manifest no longer validates: {error}"))?;
+    ValidatedBlueprint::new(blueprint, &extended, policy)
+        .map(|blueprint| {
+            Some(LockedSelection {
+                blueprint,
+                source,
+                generated_agents,
+            })
+        })
         .map_err(|error| format!("stored scheduler Blueprint no longer validates: {error}"))
 }
 
@@ -837,6 +1563,7 @@ async fn persist_blueprint_lock(
     session_id: &str,
     blueprint: &ValidatedBlueprint,
     source: SelectionSource,
+    generated_agents: &[GeneratedAgentSpec],
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().await;
     let mut session = sessions
@@ -855,6 +1582,10 @@ async fn persist_blueprint_lock(
         SELECTION_SOURCE_METADATA_KEY,
         serde_json::json!(selection_source_name(source)),
     );
+    session.insert_metadata(
+        GENERATED_AGENTS_METADATA_KEY,
+        serde_json::to_value(generated_agents).map_err(|error| error.to_string())?,
+    );
     sessions.update(session);
     Ok(())
 }
@@ -862,9 +1593,19 @@ async fn persist_blueprint_lock(
 pub(crate) fn selection_source_name(source: SelectionSource) -> &'static str {
     match source {
         SelectionSource::User => "user",
-        SelectionSource::SessionLock => "session-lock",
         SelectionSource::Heuristic => "heuristic",
         SelectionSource::Planner => "planner",
+    }
+}
+
+fn parse_selection_source(source: &str) -> Result<SelectionSource, String> {
+    match source {
+        "user" => Ok(SelectionSource::User),
+        "heuristic" => Ok(SelectionSource::Heuristic),
+        "planner" => Ok(SelectionSource::Planner),
+        other => Err(format!(
+            "stored scheduler selection source '{other}' is invalid"
+        )),
     }
 }
 
@@ -888,8 +1629,362 @@ mod tests {
     #[test]
     fn classification_keeps_simple_work_on_direct_path() {
         assert!(classify_task("Explain this function").simple);
-        assert!(classify_task("全面审计并验证整个项目").requires_verification);
+        let audit = classify_task("全面审计并验证整个项目");
+        assert!(!audit.simple);
+        assert!(audit.requires_verification);
+        assert!(audit.benefits_from_parallelism);
         assert!(classify_task("run autoresearch").iterative_research);
+        assert!(!classify_task("redesign the provider architecture").simple);
+        assert_eq!(
+            classify_task("implement a credential rotation workflow"),
+            TaskShape::default()
+        );
+    }
+
+    #[test]
+    fn collaborator_selection_matches_task_semantics() {
+        let agents = AgentRegistry::new();
+        let audit = classify_task("全面审计项目架构、性能和权限并逐项验证");
+        assert_eq!(
+            semantic_collaborators(&agents, "全面审计项目架构、性能和权限并逐项验证", &audit),
+            vec![
+                AgentId::from("explore"),
+                AgentId::from("architecture-advisor"),
+                AgentId::from("docs-researcher"),
+            ]
+        );
+
+        let media = classify_task("compare the attached screenshots");
+        assert_eq!(
+            semantic_collaborators(&agents, "compare the attached screenshots", &media)[0],
+            AgentId::from("media-reader")
+        );
+    }
+
+    #[test]
+    fn requested_agent_becomes_the_direct_blueprint_primary_leaf() {
+        let state = ServerState::new();
+        let config = agendao_config::Config::default();
+        let agents = AgentRegistry::from_config(&config);
+        let requested = AgentId::from("deep-worker");
+        let primary = primary_agent(&agents, Some(&requested)).expect("visible requested agent");
+        assert_eq!(primary, requested);
+
+        let definitions = ["read", "grep", "bash"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect::<Vec<_>>();
+        let catalog = build_catalog(&state, &config, &agents, &definitions).unwrap();
+        let budget = agendao_config::RuntimeBudgetConfig::default();
+        let limits = execution_limits(&CompiledExecutionRequest::default(), &budget);
+        let parameters = template_parameters(
+            &catalog,
+            &agents,
+            primary,
+            limits,
+            "perform a deep repository analysis",
+            &TaskShape {
+                simple: true,
+                ..TaskShape::default()
+            },
+        );
+        let blueprint = agendao_orchestrator::templates::build_template(
+            agendao_orchestrator::templates::TemplateId::Direct,
+            &parameters,
+        )
+        .expect("direct template");
+        let NodeSpec::Agent(execute) = &blueprint.nodes[&NodeId::from("execute")] else {
+            panic!("direct execute node must be an agent");
+        };
+        assert_eq!(execute.agent, AgentId::from("deep-worker"));
+    }
+
+    #[tokio::test]
+    async fn generated_agent_manifest_round_trips_with_the_blueprint_lock() {
+        let state = ServerState::new();
+        let session = agendao_session::Session::new("project", ".");
+        let session_id = session.id.clone();
+        state.sessions.lock().await.update(session);
+
+        let config = agendao_config::Config::default();
+        let agents = AgentRegistry::from_config(&config);
+        let catalog = build_catalog(&state, &config, &agents, &[]).unwrap();
+        let budget = agendao_config::RuntimeBudgetConfig::default();
+        let limits = execution_limits(&CompiledExecutionRequest::default(), &budget);
+        let policy = build_policy(&config, &catalog, limits.clone(), &budget);
+        let base = primary_agent(&agents, None).unwrap();
+        let parameters = template_parameters(
+            &catalog,
+            &agents,
+            base.clone(),
+            limits,
+            "inspect authentication boundaries",
+            &TaskShape {
+                simple: true,
+                ..TaskShape::default()
+            },
+        );
+        let generated = GeneratedAgentSpec {
+            id: AgentId::from("auth-reviewer"),
+            base_agent: base,
+            system_policy: "Focus on authentication boundaries and cite evidence.".to_string(),
+        };
+        let mut blueprint = agendao_orchestrator::templates::build_template(
+            agendao_orchestrator::templates::TemplateId::Direct,
+            &parameters,
+        )
+        .unwrap();
+        let NodeSpec::Agent(execute) = blueprint
+            .nodes
+            .get_mut(&NodeId::from("execute"))
+            .expect("execute node")
+        else {
+            panic!("execute node must be an agent");
+        };
+        execute.agent = generated.id.clone();
+        let extended = materialize_generated_agents(&catalog, std::slice::from_ref(&generated))
+            .expect("materialized generated agent");
+        let validated = ValidatedBlueprint::new(blueprint.clone(), &extended, &policy)
+            .expect("generated-agent Blueprint");
+
+        persist_blueprint_lock(
+            &state,
+            &session_id,
+            &validated,
+            SelectionSource::Planner,
+            std::slice::from_ref(&generated),
+        )
+        .await
+        .expect("persist Blueprint lock");
+        let loaded = load_locked_blueprint(&state, &session_id, &catalog, &policy)
+            .await
+            .expect("load Blueprint lock")
+            .expect("stored lock");
+
+        assert_eq!(loaded.source, SelectionSource::Planner);
+        assert_eq!(loaded.generated_agents, vec![generated]);
+        assert_eq!(loaded.blueprint.blueprint(), &blueprint);
+    }
+
+    #[test]
+    fn semantic_skill_selection_is_agent_scoped_and_tool_aware() {
+        let review = SkillId::from("code-review");
+        let research = SkillId::from("docs-research");
+        let blocked = SkillId::from("write-audit");
+        let skill = |id: SkillId, summary: &str, required: &str| SkillCatalogEntry {
+            id,
+            summary: summary.to_string(),
+            content_fingerprint: format!("skill-{summary}"),
+            capability_tags: BTreeSet::new(),
+            requires_tools: BTreeSet::from([ToolId::from(required)]),
+            fallback_for_tools: BTreeSet::new(),
+            requires_toolsets: BTreeSet::new(),
+            fallback_for_toolsets: BTreeSet::new(),
+            hydrated_prompt: None,
+        };
+        let reviewer = AgentId::from("reviewer");
+        let researcher = AgentId::from("researcher");
+        let catalog = SchedulerCatalog {
+            revision: "semantic-skills-test".to_string(),
+            agents: BTreeMap::from([
+                (
+                    reviewer.clone(),
+                    AgentCatalogEntry {
+                        id: reviewer.clone(),
+                        system_policy: String::new(),
+                        max_steps: 4,
+                        available_skills: BTreeSet::from([review.clone(), blocked.clone()]),
+                        available_tools: BTreeSet::from([ToolId::from("read")]),
+                        model_capabilities: BTreeSet::new(),
+                    },
+                ),
+                (
+                    researcher.clone(),
+                    AgentCatalogEntry {
+                        id: researcher.clone(),
+                        system_policy: String::new(),
+                        max_steps: 4,
+                        available_skills: BTreeSet::from([research.clone(), blocked.clone()]),
+                        available_tools: BTreeSet::from([ToolId::from("webfetch")]),
+                        model_capabilities: BTreeSet::new(),
+                    },
+                ),
+            ]),
+            skills: BTreeMap::from([
+                (
+                    review.clone(),
+                    skill(review.clone(), "Review and verify source code", "read"),
+                ),
+                (
+                    research.clone(),
+                    skill(
+                        research.clone(),
+                        "Research and verify external documentation",
+                        "webfetch",
+                    ),
+                ),
+                (
+                    blocked.clone(),
+                    skill(blocked.clone(), "Audit and verify written output", "write"),
+                ),
+            ]),
+            tools: BTreeMap::new(),
+            evaluators: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
+        };
+        let agent_tools = BTreeMap::from([
+            (reviewer.clone(), BTreeSet::from([ToolId::from("read")])),
+            (
+                researcher.clone(),
+                BTreeSet::from([ToolId::from("webfetch")]),
+            ),
+        ]);
+
+        let selected = semantic_skills(
+            &catalog,
+            "review code and research external documentation, then verify it",
+            &TaskShape {
+                requires_verification: true,
+                ..TaskShape::default()
+            },
+            &agent_tools,
+        );
+
+        assert_eq!(selected[&reviewer], BTreeSet::from([review]));
+        assert_eq!(selected[&researcher], BTreeSet::from([research]));
+        assert!(selected.values().all(|skills| !skills.contains(&blocked)));
+    }
+
+    #[test]
+    fn production_policy_intersects_permissions_and_runtime_budget() {
+        let config = agendao_config::Config {
+            permission: Some(agendao_config::PermissionConfig {
+                rules: HashMap::from([
+                    (
+                        "bash".to_string(),
+                        agendao_config::PermissionRule::Action(
+                            agendao_config::PermissionAction::Deny,
+                        ),
+                    ),
+                    (
+                        "edit".to_string(),
+                        agendao_config::PermissionRule::Action(
+                            agendao_config::PermissionAction::Ask,
+                        ),
+                    ),
+                ]),
+            }),
+            ..Default::default()
+        };
+        let tools = [
+            ("read", EffectClass::ReadOnly),
+            ("write", EffectClass::WorkspaceMutation),
+            ("bash", EffectClass::ProcessExecution),
+        ]
+        .into_iter()
+        .map(|(name, effect)| {
+            let id = ToolId::from(name);
+            (
+                id.clone(),
+                ToolCatalogEntry {
+                    id,
+                    effect,
+                    permission: global_tool_permission_class(&config, name),
+                },
+            )
+        })
+        .collect();
+        let catalog = SchedulerCatalog {
+            revision: "policy-test".to_string(),
+            agents: BTreeMap::new(),
+            skills: BTreeMap::new(),
+            tools,
+            evaluators: BTreeMap::new(),
+            capabilities: BTreeMap::from([(
+                CapabilityId::from("workspace-checkpoint"),
+                CapabilityCatalogEntry {
+                    id: CapabilityId::from("workspace-checkpoint"),
+                    kind: CapabilityKind::WorkspaceCheckpoint,
+                    effect: EffectClass::WorkspaceMutation,
+                },
+            )]),
+        };
+        let budget = agendao_config::RuntimeBudgetConfig {
+            scheduler_max_model_calls: 3,
+            scheduler_max_tool_calls: 7,
+            scheduler_max_total_tokens: 12_000,
+            scheduler_max_wall_time_ms: 9_000,
+            scheduler_workspace_max_files: 12,
+            scheduler_workspace_max_total_bytes: 34_000,
+            scheduler_workspace_min_free_disk_bytes: 56_000,
+            scheduler_workspace_operation_timeout_ms: 7_000,
+            ..Default::default()
+        };
+        let request = CompiledExecutionRequest {
+            max_tokens: Some(8_000),
+            timeout_secs: Some(30),
+            ..Default::default()
+        };
+        let limits = execution_limits(&request, &budget);
+        let policy = build_policy(&config, &catalog, limits.clone(), &budget);
+
+        assert_eq!(limits.max_model_calls, 3);
+        assert_eq!(limits.max_tool_calls, 7);
+        assert_eq!(limits.max_total_tokens, 12_000);
+        assert_eq!(limits.max_wall_time_ms, 9_000);
+        assert!(policy.allowed_tools.contains(&ToolId::from("read")));
+        assert!(policy.allowed_tools.contains(&ToolId::from("write")));
+        assert!(!policy.allowed_tools.contains(&ToolId::from("bash")));
+        assert!(!policy
+            .allowed_effects
+            .contains(&EffectClass::ProcessExecution));
+        assert!(policy.allowed_capabilities.is_empty());
+        assert_eq!(policy.workspace_limits.max_files, 12);
+        assert_eq!(policy.workspace_limits.max_total_bytes, 34_000);
+        assert_eq!(policy.workspace_limits.min_free_disk_bytes, 56_000);
+        assert_eq!(policy.workspace_limits.operation_timeout_ms, 7_000);
+    }
+
+    #[test]
+    fn production_templates_use_each_agents_own_tool_surface() {
+        let state = ServerState::new();
+        let config = agendao_config::Config::default();
+        let agents = AgentRegistry::from_config(&config);
+        let definitions = ["read", "grep", "write", "bash", "websearch"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect::<Vec<_>>();
+        let catalog = build_catalog(&state, &config, &agents, &definitions).unwrap();
+        let budget = agendao_config::RuntimeBudgetConfig::default();
+        let limits = execution_limits(&CompiledExecutionRequest::default(), &budget);
+        let policy = build_policy(&config, &catalog, limits.clone(), &budget);
+        let task = classify_task("全面并行审计项目架构和性能");
+        let parameters = template_parameters(
+            &catalog,
+            &agents,
+            primary_agent(&agents, None).unwrap(),
+            limits,
+            "全面并行审计项目架构和性能",
+            &task,
+        );
+
+        for template in [
+            agendao_orchestrator::templates::TemplateId::Plan,
+            agendao_orchestrator::templates::TemplateId::Coordinate,
+        ] {
+            let blueprint = agendao_orchestrator::templates::build_template(template, &parameters)
+                .expect("template");
+            ValidatedBlueprint::new(blueprint, &catalog, &policy)
+                .unwrap_or_else(|error| panic!("{template:?} failed: {error}"));
+        }
     }
 
     #[test]
@@ -964,7 +2059,10 @@ mod tests {
                     }),
                 ),
             ]),
-            limits: execution_limits(&CompiledExecutionRequest::default()),
+            limits: execution_limits(
+                &CompiledExecutionRequest::default(),
+                &agendao_config::RuntimeBudgetConfig::default(),
+            ),
             output: OutputContract {
                 format: OutputFormat::Markdown,
                 include_usage: true,

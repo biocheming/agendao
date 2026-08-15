@@ -34,12 +34,9 @@ name = "agendao-agent"
 version = "2026.6.10"
 dependencies = [
  "agendao-config",
- "agendao-execution-types",
  "agendao-permission",
- "agendao-provider",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -1,11 +1,7 @@
 mod architecture_advisor;
-mod code_explorer;
 mod deep_worker;
 mod docs_researcher;
 mod media_reader;
-mod metis;
-mod momus;
-mod oracle;
 
 use super::*;
 use std::collections::HashMap;
@@ -15,13 +11,9 @@ use agendao_permission::{
 };
 
 pub use architecture_advisor::architecture_advisor;
-pub use code_explorer::code_explorer;
 pub use deep_worker::deep_worker;
 pub use docs_researcher::docs_researcher;
 pub use media_reader::media_reader;
-pub use metis::metis;
-pub use momus::momus;
-pub use oracle::oracle;
 
 fn base_agent(name: &str, mode: AgentMode) -> AgentInfo {
     AgentInfo {
@@ -94,11 +86,7 @@ impl AgentInfo {
             BuiltinAgent::DeepWorker => Self::deep_worker(),
             BuiltinAgent::ArchitectureAdvisor => Self::architecture_advisor(),
             BuiltinAgent::DocsResearcher => Self::docs_researcher(),
-            BuiltinAgent::CodeExplorer => Self::code_explorer(),
             BuiltinAgent::MediaReader => Self::media_reader(),
-            BuiltinAgent::Metis => Self::metis(),
-            BuiltinAgent::Momus => Self::momus(),
-            BuiltinAgent::Oracle => Self::oracle(),
             BuiltinAgent::Compaction => Self::compaction(),
             BuiltinAgent::Title => Self::title(),
         }
@@ -221,24 +209,8 @@ impl AgentInfo {
         docs_researcher()
     }
 
-    pub fn code_explorer() -> Self {
-        code_explorer()
-    }
-
     pub fn media_reader() -> Self {
         media_reader()
-    }
-
-    pub fn metis() -> Self {
-        metis()
-    }
-
-    pub fn momus() -> Self {
-        momus()
-    }
-
-    pub fn oracle() -> Self {
-        oracle()
     }
 
     pub fn title() -> Self {

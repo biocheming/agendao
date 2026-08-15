@@ -19,6 +19,10 @@ session 创建和 prompt 请求都接受 `scheduler` 字段。未指定时等价
 可用模板是 `direct`、`plan`、`coordinate`、`verify` 和 `autoresearch`。模板只是生成
 Blueprint 的纯数据函数，不拥有独立 runtime。
 
+单独提交 `agent` 字段时，运行时会选择 `direct` 模板，并把该 Agent 作为 primary leaf；同时提交
+模板 Scheduler 时，该 Agent 覆盖模板的 primary leaf。显式 Blueprint 已经逐节点声明 Agent，因而
+不读取这个 leaf override。无论哪种入口，请求都只进入 SchedulerEngine，不存在单 Agent 旁路。
+
 用户也可以直接提交 Blueprint：
 
 ```json
@@ -69,12 +73,22 @@ Blueprint 的纯数据函数，不拥有独立 runtime。
 `auto` 按以下顺序决定 Blueprint：
 
 1. 用户显式选择优先。
-2. session 已锁定的 Blueprint 保持不变。
-3. 明确的简单、验证、并行或迭代研究任务选择对应内置模板。
+2. `user` 来源的 session Blueprint lock 无条件优先；`heuristic` 或 `planner` 来源只有在拓扑仍满足
+   当前任务形状时才复用。
+3. 明确任务按“迭代研究、验证、并行、简单”的优先级选择对应内置模板。
 4. 其余任务由 AI planner 在 catalog 和 policy 边界内选择模板或生成 Blueprint。
 
 planner 的结果必须通过同一个 validator。planner 失败或 Blueprint 非法时请求失败，不会切换到
 另一套执行路径。
+
+planner 创建 Blueprint 时必须同时返回 `agents` 数组。数组可以为空；非空项只能从 catalog 中的
+base Agent 派生受限临时身份。生成身份不能扩大 base Agent 的工具、Skill、模型能力、权限或模型
+路由，不能覆盖已有 ID，也不能脱离 Blueprint 成为未使用配置。
+
+`GET /session/{id}/blueprint` 返回 Blueprint、fingerprint、真实 selection source 和完整
+generated-agent manifest。`PUT` 经过同一个 validator 后保存用户 Blueprint；reject 只适用于 AI
+Planner 结果，并把 fingerprint 写入拒绝集合。Web 的 Session Insights 提供加载、JSON 编辑、保存、
+重载和拒绝入口，不要求用户只能编辑磁盘 JSONC。
 
 ## Blueprint 节点
 
@@ -101,12 +115,21 @@ PolicyEnvelope 对工具、副作用、capability 和资源预算设置硬上限
 - 图连通性、普通环、并行 join 和 loop 结构；
 - graph depth、node count、model/tool call、token、wall time 和并发预算。
 
+生产 PolicyEnvelope 由当前配置构造：Catalog 工具与顶层 `permission` 取交集，`deny` 工具不会
+进入 allowlist，`ask` 工具保留交互式审批语义；没有审批通道的 workspace capability 只在对应
+effect 被明确允许时开放。执行和 workspace 数值上限来自 `runtimeBudget`，请求只能进一步缩小
+这些上限。
+
 ## Agent、Skill 与 Verifier
 
 - Agent 是 Blueprint 的叶节点配置，不拥有子图或调度器。
-- Skill 是 agent node 上的 typed 引用，负责知识和方法上下文，不执行控制流。
+- Skill 是 agent node 上的 typed 引用，负责知识和方法上下文，不执行控制流；模板按 Agent 的工具面
+  和任务语义分别选择 Skill，Planner 也能看到 Skill 的工具/toolset 前置条件。
 - Verifier 是 catalog evaluator，由 `gate` 或 `loop` 调用。
 - Autoresearch 是 `loop + evaluator + checkpoint` 模板，不是独立引擎。
+
+Agent node 的 `max_steps` 必须小于等于 Agent 自身 `maxSteps`、Blueprint
+`limits.max_agent_steps` 和 PolicyEnvelope 硬上限三者的最小值；AgentLoop 按该节点值停止。
 
 ## 事件与投影
 

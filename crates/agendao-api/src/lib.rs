@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[serde(rename_all = "camelCase")]
 pub struct SessionBlueprintView {
     pub blueprint: agendao_orchestrator::blueprint::SchedulerBlueprint,
+    pub generated_agents: Vec<agendao_orchestrator::selector::GeneratedAgentSpec>,
     pub fingerprint: String,
     pub selection_source: String,
 }

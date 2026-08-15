@@ -9,7 +9,8 @@ use std::sync::Arc;
 use crate::error::{ApiError, Result};
 use crate::scheduler_runner::{
     selection_source_name, validate_user_blueprint, BLUEPRINT_FINGERPRINT_METADATA_KEY,
-    BLUEPRINT_LOCK_METADATA_KEY, REJECTED_BLUEPRINTS_METADATA_KEY, SELECTION_SOURCE_METADATA_KEY,
+    BLUEPRINT_LOCK_METADATA_KEY, GENERATED_AGENTS_METADATA_KEY, REJECTED_BLUEPRINTS_METADATA_KEY,
+    SELECTION_SOURCE_METADATA_KEY,
 };
 use crate::ServerState;
 
@@ -42,8 +43,22 @@ pub(super) async fn get_session_blueprint(
             ApiError::InternalError("Blueprint selection source is missing".to_string())
         })?
         .to_string();
+    let generated_agents = metadata
+        .get(GENERATED_AGENTS_METADATA_KEY)
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::InternalError("Blueprint generated-agent manifest is missing".to_string())
+        })
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                ApiError::InternalError(format!(
+                    "invalid generated-agent manifest metadata: {error}"
+                ))
+            })
+        })?;
     Ok(Json(SessionBlueprintView {
         blueprint,
+        generated_agents,
         fingerprint,
         selection_source,
     }))
@@ -59,6 +74,7 @@ pub(super) async fn set_session_blueprint(
         .map_err(ApiError::BadRequest)?;
     let view = SessionBlueprintView {
         blueprint: validated.blueprint().clone(),
+        generated_agents: Vec::new(),
         fingerprint: validated.fingerprint().to_string(),
         selection_source: selection_source_name(
             agendao_orchestrator::selector::SelectionSource::User,
@@ -83,6 +99,7 @@ pub(super) async fn set_session_blueprint(
             SELECTION_SOURCE_METADATA_KEY,
             serde_json::json!(&view.selection_source),
         );
+        session.insert_metadata(GENERATED_AGENTS_METADATA_KEY, serde_json::json!([]));
     }
     persist_session_if_enabled(&state, &id).await;
     Ok(Json(view))
@@ -134,6 +151,7 @@ pub(super) async fn reject_session_blueprint(
         session.remove_metadata(BLUEPRINT_LOCK_METADATA_KEY);
         session.remove_metadata(BLUEPRINT_FINGERPRINT_METADATA_KEY);
         session.remove_metadata(SELECTION_SOURCE_METADATA_KEY);
+        session.remove_metadata(GENERATED_AGENTS_METADATA_KEY);
         fingerprint
     };
     persist_session_if_enabled(&state, &id).await;
@@ -149,6 +167,7 @@ mod tests {
         AgentId, AgentNode, BlueprintName, BlueprintSchemaVersion, EndNode, ExecutionLimits,
         NodeId, NodeSpec, OutputContract, OutputFormat, ResultSource, SchedulerBlueprint,
     };
+    use agendao_orchestrator::selector::GeneratedAgentSpec;
     use std::collections::BTreeMap;
 
     fn valid_user_blueprint() -> SchedulerBlueprint {
@@ -212,6 +231,7 @@ mod tests {
         .await
         .expect("save validated Blueprint");
         assert_eq!(saved.blueprint, blueprint);
+        assert!(saved.generated_agents.is_empty());
         assert_eq!(saved.selection_source, "user");
         assert_eq!(saved.fingerprint.len(), 64);
 
@@ -245,6 +265,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inspecting_planner_blueprint_returns_generated_agent_manifest() {
+        let state = Arc::new(ServerState::new());
+        let mut session = agendao_session::Session::new("project", ".");
+        let id = session.id.clone();
+        let generated = GeneratedAgentSpec {
+            id: AgentId::from("security-reviewer"),
+            base_agent: AgentId::from("build"),
+            system_policy: "Focus on security boundaries.".to_string(),
+        };
+        let mut blueprint = valid_user_blueprint();
+        let NodeSpec::Agent(agent) = blueprint
+            .nodes
+            .get_mut(&NodeId::from("execute"))
+            .expect("agent node")
+        else {
+            panic!("expected agent node");
+        };
+        agent.agent = generated.id.clone();
+        session.insert_metadata(
+            BLUEPRINT_LOCK_METADATA_KEY,
+            serde_json::to_value(&blueprint).unwrap(),
+        );
+        session.insert_metadata(
+            BLUEPRINT_FINGERPRINT_METADATA_KEY,
+            serde_json::json!("planner-fingerprint"),
+        );
+        session.insert_metadata(SELECTION_SOURCE_METADATA_KEY, serde_json::json!("planner"));
+        session.insert_metadata(
+            GENERATED_AGENTS_METADATA_KEY,
+            serde_json::to_value([generated.clone()]).unwrap(),
+        );
+        state.sessions.lock().await.update(session);
+
+        let Json(view) = get_session_blueprint(State(state), Path(id))
+            .await
+            .expect("inspect planner Blueprint");
+        assert_eq!(view.blueprint, blueprint);
+        assert_eq!(view.generated_agents, vec![generated]);
+        assert_eq!(view.selection_source, "planner");
+    }
+
+    #[tokio::test]
     async fn rejecting_planner_blueprint_clears_lock_and_records_fingerprint() {
         let state = Arc::new(ServerState::new());
         let mut session = agendao_session::Session::new("project", ".");
@@ -258,6 +320,7 @@ mod tests {
             serde_json::json!("fingerprint-1"),
         );
         session.insert_metadata(SELECTION_SOURCE_METADATA_KEY, serde_json::json!("planner"));
+        session.insert_metadata(GENERATED_AGENTS_METADATA_KEY, serde_json::json!([]));
         state.sessions.lock().await.update(session);
 
         let Json(response) = reject_session_blueprint(State(state.clone()), Path(id.clone()))
@@ -268,6 +331,7 @@ mod tests {
         let sessions = state.sessions.lock().await;
         let metadata = &sessions.get(&id).unwrap().record().metadata;
         assert!(!metadata.contains_key(BLUEPRINT_LOCK_METADATA_KEY));
+        assert!(!metadata.contains_key(GENERATED_AGENTS_METADATA_KEY));
         assert_eq!(
             serde_json::from_value::<BTreeSet<String>>(
                 metadata[REJECTED_BLUEPRINTS_METADATA_KEY].clone()

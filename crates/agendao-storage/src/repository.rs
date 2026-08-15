@@ -2830,24 +2830,15 @@ mod tests {
         let session_repo = SessionRepository::new(db.pool().clone());
 
         let mut session = make_session("s_meta");
+        let scheduler = serde_json::json!({"kind": "auto"});
         session
             .metadata
-            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
-        session
-            .metadata
-            .insert("scheduler_applied".to_string(), serde_json::json!(true));
+            .insert("scheduler".to_string(), scheduler.clone());
 
         session_repo.upsert(&session).await.unwrap();
 
         let loaded = session_repo.get("s_meta").await.unwrap().unwrap();
-        assert_eq!(
-            loaded.metadata.get("scheduler"),
-            Some(&serde_json::json!("sisyphus"))
-        );
-        assert_eq!(
-            loaded.metadata.get("scheduler_applied"),
-            Some(&serde_json::json!(true))
-        );
+        assert_eq!(loaded.metadata.get("scheduler"), Some(&scheduler));
     }
 
     #[tokio::test]
@@ -2861,29 +2852,27 @@ mod tests {
         let mut message = make_message("m_meta", "s_meta", MessageRole::User);
         message.metadata.insert(
             "resolved_system_prompt".to_string(),
-            serde_json::json!("You are Sisyphus"),
+            serde_json::json!("Inspect evidence before acting."),
         );
+        let scheduler = serde_json::json!({"kind": "template", "template": "direct"});
         message
             .metadata
-            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
+            .insert("scheduler".to_string(), scheduler.clone());
         message
             .metadata
-            .insert("mode".to_string(), serde_json::json!("sisyphus"));
+            .insert("mode".to_string(), serde_json::json!("scheduler"));
 
         message_repo.create(&message).await.unwrap();
 
         let loaded = message_repo.get("m_meta").await.unwrap().unwrap();
         assert_eq!(
             loaded.metadata.get("resolved_system_prompt"),
-            Some(&serde_json::json!("You are Sisyphus"))
+            Some(&serde_json::json!("Inspect evidence before acting."))
         );
-        assert_eq!(
-            loaded.metadata.get("scheduler"),
-            Some(&serde_json::json!("sisyphus"))
-        );
+        assert_eq!(loaded.metadata.get("scheduler"), Some(&scheduler));
         assert_eq!(
             loaded.metadata.get("mode"),
-            Some(&serde_json::json!("sisyphus"))
+            Some(&serde_json::json!("scheduler"))
         );
     }
 
@@ -3011,9 +3000,10 @@ mod tests {
             "model_id".to_string(),
             serde_json::json!("deepseek-v4-flash"),
         );
+        let scheduler = serde_json::json!({"kind": "auto"});
         message
             .metadata
-            .insert("scheduler".to_string(), serde_json::json!("sisyphus"));
+            .insert("scheduler".to_string(), scheduler.clone());
         message.finish = Some("stop".to_string());
         message.usage = Some(agendao_types::MessageUsage {
             input_tokens: 19_199,
@@ -3037,10 +3027,7 @@ mod tests {
             .unwrap()
             .expect("message should persist");
         assert_eq!(loaded.finish.as_deref(), Some("stop"));
-        assert_eq!(
-            loaded.metadata.get("scheduler"),
-            Some(&serde_json::json!("sisyphus"))
-        );
+        assert_eq!(loaded.metadata.get("scheduler"), Some(&scheduler));
         assert_eq!(loaded.parts.len(), 1);
         match &loaded.parts[0].part_type {
             PartType::Text { text, .. } => assert_eq!(text, "answer"),

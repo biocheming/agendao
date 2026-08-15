@@ -9,12 +9,11 @@ const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
     "model_id",
     "model_provider",
     "model_variant",
-    "scheduler_applied",
     "scheduler",
-    "scheduler_root_agent",
+    "scheduler_blueprint",
+    "scheduler_blueprint_fingerprint",
+    "scheduler_generated_agents",
     "scheduler_selection_source",
-    "scheduler_selection_trace",
-    "scheduler_selection_warning",
 ];
 
 const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
@@ -22,9 +21,8 @@ const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
     "model_id",
     "model_provider",
     "model_variant",
-    "scheduler_applied",
     "scheduler",
-    "scheduler_root_agent",
+    "scheduler_blueprint_fingerprint",
 ];
 
 pub(crate) fn copy_fork_policy_metadata_from(source: &Session, target: &mut Session) {

@@ -29,6 +29,7 @@ impl SchedulerCatalog {
 pub struct AgentCatalogEntry {
     pub id: AgentId,
     pub system_policy: String,
+    pub max_steps: u32,
     pub available_skills: BTreeSet<SkillId>,
     pub available_tools: BTreeSet<ToolId>,
     pub model_capabilities: BTreeSet<ModelCapability>,
@@ -41,6 +42,10 @@ pub struct SkillCatalogEntry {
     pub summary: String,
     pub content_fingerprint: String,
     pub capability_tags: BTreeSet<String>,
+    pub requires_tools: BTreeSet<ToolId>,
+    pub fallback_for_tools: BTreeSet<ToolId>,
+    pub requires_toolsets: BTreeSet<String>,
+    pub fallback_for_toolsets: BTreeSet<String>,
     /// Populated only after selection. It is intentionally omitted from the
     /// serialized catalog; `content_fingerprint` carries its cache identity.
     #[serde(default, skip_serializing, skip_deserializing)]

@@ -90,7 +90,7 @@ impl PlannerBackend for ModelPlannerBackend {
                 Vec::new(),
                 Some(false),
                 Some(
-                    "Select an AgenDao scheduler. Return exactly one JSON object matching the requested typed decision. Use only catalog IDs, stay within policy limits, and never add prose or markdown fences."
+                    "Select an AgenDao scheduler. Return exactly one JSON object matching the requested typed decision. A create-blueprint decision must contain both `blueprint` and `agents`; use an empty agents array when no specialization is needed. A generated agent may only declare `id`, `base_agent`, and `system_policy`; its id must be new lowercase kebab-case and it inherits all tools, skills, model capabilities, permissions, and model routing from base_agent. Use only catalog IDs, stay within policy limits, and never add prose or markdown fences."
                         .to_string(),
                 ),
             ))

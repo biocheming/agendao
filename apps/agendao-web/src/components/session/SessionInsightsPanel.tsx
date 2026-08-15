@@ -7,6 +7,7 @@ import {
 import { multimodalCombinedWarnings, multimodalDisplayLabel } from "../../lib/multimodal";
 import { useI18n } from "@/i18n/I18nProvider";
 import { CompactionContinuityCard } from "../execution/CompactionContinuityCard";
+import { SessionBlueprintEditor } from "./SessionBlueprintEditor";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
 
@@ -314,6 +315,14 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : (
                 <p className="text-sm text-muted-foreground">{t("session.noSchedulerPolicy")}</p>
               )}
+              <div className="flex flex-wrap gap-2">
+                <SessionBlueprintEditor
+                  sessionId={insights.id}
+                  hasBlueprint={Boolean(schedulerPolicy?.blueprint_fingerprint)}
+                  apiJson={apiJson}
+                  onChanged={activity.refreshExecutionActivity}
+                />
+              </div>
               {(effectivePolicy.warnings ?? []).length ? (
                 <div className="grid gap-2">
                   <p className="roc-section-label">{t("session.policyWarnings")}</p>

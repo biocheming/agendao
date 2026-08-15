@@ -1922,7 +1922,27 @@ mod tests {
         let mut session = manager.create("project-1", "/path/to/project");
         session.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
         session.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
-        session.insert_metadata("scheduler".to_string(), serde_json::json!("atlas"));
+        let scheduler = serde_json::json!({"kind": "auto"});
+        let blueprint = serde_json::json!({"schema": "v1", "name": "review"});
+        let generated_agents = serde_json::json!([{
+            "id": "security-reviewer",
+            "base_agent": "build",
+            "system_policy": "Focus on security boundaries."
+        }]);
+        session.insert_metadata("scheduler".to_string(), scheduler.clone());
+        session.insert_metadata("scheduler_blueprint".to_string(), blueprint.clone());
+        session.insert_metadata(
+            "scheduler_blueprint_fingerprint".to_string(),
+            serde_json::json!("blueprint-fingerprint"),
+        );
+        session.insert_metadata(
+            "scheduler_generated_agents".to_string(),
+            generated_agents.clone(),
+        );
+        session.insert_metadata(
+            "scheduler_selection_source".to_string(),
+            serde_json::json!("planner"),
+        );
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata("custom_session_key".to_string(), serde_json::json!(true));
         session.add_user_message("hello");
@@ -1973,9 +1993,15 @@ mod tests {
             forked.metadata.get("model_id"),
             Some(&serde_json::json!("gpt-4.1"))
         );
+        assert_eq!(forked.metadata.get("scheduler"), Some(&scheduler));
+        assert_eq!(forked.metadata.get("scheduler_blueprint"), Some(&blueprint));
         assert_eq!(
-            forked.metadata.get("scheduler"),
-            Some(&serde_json::json!("atlas"))
+            forked.metadata.get("scheduler_generated_agents"),
+            Some(&generated_agents)
+        );
+        assert_eq!(
+            forked.metadata.get("scheduler_selection_source"),
+            Some(&serde_json::json!("planner"))
         );
         assert!(!forked.metadata.contains_key("last_ingress_source"));
         assert!(!forked.metadata.contains_key("custom_session_key"));

@@ -433,27 +433,6 @@ pub(super) async fn set_session_run_status(
     );
 }
 
-pub(super) fn compaction_lifecycle_status_hook(
-    state: Arc<ServerState>,
-    session_id: String,
-    settled_status: SessionRunStatus,
-) -> agendao_session::prompt::CompactionLifecycleHook {
-    Arc::new(move |summary| {
-        let state = state.clone();
-        let session_id = session_id.clone();
-        let settled_status = settled_status.clone();
-        tokio::spawn(async move {
-            let next_status = match summary.status {
-                agendao_types::ContextCompactionLifecycleStatus::Started => {
-                    SessionRunStatus::Compacting
-                }
-                _ => settled_status,
-            };
-            set_session_run_status(&state, &session_id, next_status).await;
-        });
-    })
-}
-
 /// Drop guard that sets session status to idle when the prompt task exits.
 /// Mirrors the TS `defer(() => cancel(sessionID))` pattern to guarantee
 /// the spinner stops even if the spawned task panics.
@@ -638,7 +617,6 @@ pub(crate) async fn create_session_from_spec(
             serde_json::to_value(choice)
                 .map_err(|error| ApiError::BadRequest(error.to_string()))?,
         );
-        session.insert_metadata("scheduler_applied", serde_json::json!(true));
         sessions.update(session.clone());
     }
     drop(sessions);

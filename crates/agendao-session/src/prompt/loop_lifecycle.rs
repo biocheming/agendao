@@ -1955,6 +1955,7 @@ impl SessionPrompt {
                 AgentCatalogEntry {
                     id: agent_id.clone(),
                     system_policy: input.system_prompt.clone(),
+                    max_steps: max_agent_steps,
                     available_skills: BTreeSet::new(),
                     available_tools: tool_ids.clone(),
                     model_capabilities: BTreeSet::from([

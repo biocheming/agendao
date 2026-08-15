@@ -77,7 +77,7 @@ export interface PendingCommandInvocationRecord {
   command: string;
   rawArguments?: string;
   missingFields?: string[];
-  scheduler?: string;
+  scheduler?: import("./webRuntime").SchedulerChoiceRecord;
   questionId?: string;
 }
 
@@ -115,7 +115,7 @@ export interface ProvisionExternalAdapterSessionRequestRecord {
   actor_id: string;
   workspace_id?: string | null;
   route_policy_id?: string | null;
-  scheduler?: string | null;
+  scheduler?: import("./webRuntime").SchedulerChoiceRecord | null;
   directory?: string | null;
   project_id?: string | null;
   title?: string | null;

@@ -16,13 +16,6 @@ use agendao_permission::PermissionAction;
 #[cfg(test)]
 use std::collections::HashMap;
 
-const PROMPT_GENERATE: &str = r#"You are an AI agent configuration generator. Given a description of what an agent should do, generate a JSON configuration with:
-- identifier: A unique, lowercase, single-word identifier for the agent (use underscores if needed)
-- whenToUse: A brief description of when this agent should be used
-- systemPrompt: The system prompt that will be given to this agent
-
-The identifier should be descriptive but concise. The system prompt should be detailed enough to guide the agent's behavior."#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,10 +57,6 @@ mod tests {
         ));
         assert!(matches!(
             registry.get("docs-researcher").map(|a| a.mode),
-            Some(AgentMode::Subagent)
-        ));
-        assert!(matches!(
-            registry.get("code-explorer").map(|a| a.mode),
             Some(AgentMode::Subagent)
         ));
         assert!(matches!(
@@ -124,7 +113,6 @@ mod tests {
         let deep = AgentInfo::deep_worker();
         let architecture = AgentInfo::architecture_advisor();
         let docs = AgentInfo::docs_researcher();
-        let code = AgentInfo::code_explorer();
         let media = AgentInfo::media_reader();
 
         assert_eq!(
@@ -191,19 +179,6 @@ mod tests {
         );
 
         assert_eq!(
-            code.tool_permission_decision("grep"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            code.tool_permission_decision("ast_grep_search"),
-            PermissionAction::Allow
-        );
-        assert_eq!(
-            code.tool_permission_decision("write"),
-            PermissionAction::Deny
-        );
-
-        assert_eq!(
             media.tool_permission_decision("read"),
             PermissionAction::Allow
         );
@@ -218,7 +193,6 @@ mod tests {
         let deep = AgentInfo::deep_worker();
         let architecture = AgentInfo::architecture_advisor();
         let docs = AgentInfo::docs_researcher();
-        let code = AgentInfo::code_explorer();
         let media = AgentInfo::media_reader();
 
         let deep_prompt = deep.system_prompt.as_deref().expect("deep worker prompt");
@@ -248,12 +222,6 @@ mod tests {
         assert!(docs_prompt.contains("context7_*"));
         assert!(docs_prompt.contains("grep_app_searchGitHub"));
         assert!(docs_prompt.contains("Do not claim access"));
-
-        let code_prompt = code.system_prompt.as_deref().expect("code explorer prompt");
-        assert!(code_prompt.contains("glob"));
-        assert!(code_prompt.contains("grep"));
-        assert!(code_prompt.contains("ast_grep_search"));
-        assert!(code_prompt.contains("read-only"));
 
         let media_prompt = media.system_prompt.as_deref().expect("media reader prompt");
         assert!(media_prompt.contains("attachment"));

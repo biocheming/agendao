@@ -14,6 +14,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RuntimeBudgetConfig {
+    // ── Scheduler execution ──
+    pub scheduler_max_model_calls: u32,
+    pub scheduler_max_tool_calls: u32,
+    pub scheduler_max_total_tokens: u64,
+    pub scheduler_max_wall_time_ms: u64,
+    pub scheduler_max_parallelism: u32,
+    pub scheduler_max_graph_nodes: u32,
+    pub scheduler_max_graph_depth: u32,
+    pub scheduler_max_loop_iterations: u32,
+    pub scheduler_max_agent_steps: u32,
+
+    // ── Scheduler workspace capabilities ──
+    pub scheduler_workspace_max_files: u32,
+    pub scheduler_workspace_max_total_bytes: u64,
+    pub scheduler_workspace_min_free_disk_bytes: u64,
+    pub scheduler_workspace_operation_timeout_ms: u64,
+
     // ── Tool result governance ──
     /// Max chars in a single tool result before artifact offload.
     pub tool_result_max_chars: usize,
@@ -73,6 +90,23 @@ pub struct RuntimeBudgetConfig {
 impl Default for RuntimeBudgetConfig {
     fn default() -> Self {
         Self {
+            // Scheduler execution
+            scheduler_max_model_calls: 32,
+            scheduler_max_tool_calls: 96,
+            scheduler_max_total_tokens: 1_048_576,
+            scheduler_max_wall_time_ms: 1_800_000,
+            scheduler_max_parallelism: 4,
+            scheduler_max_graph_nodes: 48,
+            scheduler_max_graph_depth: 16,
+            scheduler_max_loop_iterations: 6,
+            scheduler_max_agent_steps: 16,
+
+            // Scheduler workspace capabilities
+            scheduler_workspace_max_files: 10_000,
+            scheduler_workspace_max_total_bytes: 1_073_741_824,
+            scheduler_workspace_min_free_disk_bytes: 536_870_912,
+            scheduler_workspace_operation_timeout_ms: 30_000,
+
             // Tool result governance
             tool_result_max_chars: 32_000,
             tool_result_preview_chars: 8_000,

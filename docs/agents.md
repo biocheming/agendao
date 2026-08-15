@@ -27,8 +27,9 @@ registry 合并内置 agent 与当前配置中的 agent 定义。可见 agent �
 Blueprint 引用不存在的 agent，或请求 agent 未暴露的 skill/tool/model capability，会在执行前
 被 validator 拒绝。
 
-当前内置身份包括主执行、规划、探索、深度工作、架构、文档研究、代码探索、媒体读取和评审等
-职责。它们共享同一个 AgentLoop；增加身份主要增加数据和 policy，不增加执行器。
+当前可见内置身份收敛为 `build`、`plan`、`general`、`deep-worker`、`explore`、
+`architecture-advisor`、`docs-researcher` 和 `media-reader`。`compaction`、`title`、`summary`
+是隐藏的系统身份。它们共享同一个 AgentLoop；增加身份只增加数据和 policy，不增加执行器。
 
 ## 配置
 
@@ -64,13 +65,26 @@ skill 组合属于 agent node：
 ```
 
 AI planner 可以根据任务和 catalog 自主选择 skill 组合；用户也可以在显式 Blueprint 中指定。
-skill 的 frontmatter 只描述工具可用性等自身前置条件，不再通过字符串阶段控制可见性。
+内置模板会根据 goal、任务形状、每个 Agent 的工具面和 Skill 前置条件分别选择，单个 Agent 最多
+三个；不会把一份全局 Skill 集合复制给所有 Agent。skill 的 frontmatter 只描述工具可用性等自身
+前置条件，不再通过字符串阶段控制可见性。
+
+## 临时 Agent
+
+AI planner 可以在 `create-blueprint` 决策中同时声明最多四个 session-scoped Agent Profile。
+每个临时 Agent 只能声明新 kebab-case ID、现有 `base_agent` 和任务专用 system policy。运行时从
+base Agent 原样继承 tools、skills、model capabilities、权限和模型路由；临时 policy 只能追加，
+不能覆盖 base policy。profile 随 session Blueprint lock 保存，不写入 JSONC，也不会注册到全局
+Agent Registry。用户显式持久化 Agent 仍使用唯一的 `agent` 配置入口。
 
 ## 用户选择
 
-用户可以用现有 CLI/TUI agent 选择覆盖默认 leaf 身份，也可以在 `SchedulerChoice::Blueprint` 中
-精确指定每个节点的 agent。显式 scheduler 选择优先于 auto selector，运行期间由 session lock
-保持同一份已验证 Blueprint。
+用户可以用 CLI/TUI/Web 的 agent 选择覆盖模板 primary leaf，也可以在
+`SchedulerChoice::Blueprint` 中精确指定每个节点的 agent。仅指定 Agent 时等价于选择 `direct`
+模板并覆盖其 primary leaf；同时指定模板时仍覆盖该模板的 primary leaf；显式 Blueprint 内的节点
+身份以 Blueprint 自身为准。所有三种形式最终都进入同一个 SchedulerEngine，不存在 direct prompt
+runtime。运行期间，已验证 Blueprint 连同真实来源 `user / heuristic / planner` 和临时 Agent manifest
+一起保存在 session lock 中。
 
 ## 上下文边界
 

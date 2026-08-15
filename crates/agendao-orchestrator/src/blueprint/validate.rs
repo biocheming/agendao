@@ -376,13 +376,12 @@ impl<'a> Validator<'a> {
                         agent: agent_node.agent.as_str().to_string(),
                     }
                 })?;
-                if agent_node.max_steps == 0
-                    || agent_node.max_steps > self.blueprint.limits.max_agent_steps
-                {
+                let maximum = self.blueprint.limits.max_agent_steps.min(agent.max_steps);
+                if agent_node.max_steps == 0 || agent_node.max_steps > maximum {
                     return Err(BlueprintValidationError::InvalidAgentSteps {
                         node: node_path.clone(),
                         steps: agent_node.max_steps,
-                        maximum: self.blueprint.limits.max_agent_steps,
+                        maximum,
                     });
                 }
                 for skill in &agent_node.skills {

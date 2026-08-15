@@ -119,59 +119,6 @@ impl AgentRegistry {
             .next()
             .expect("Agent registry is empty; expected at least one agent")
     }
-
-    pub async fn generate(
-        &self,
-        input: GenerateInput,
-        provider_registry: &agendao_provider::ProviderRegistry,
-    ) -> Result<GeneratedAgentConfig, AgentError> {
-        let model_ref = input.model.clone().ok_or(AgentError::NoDefaultModel)?;
-
-        let provider = provider_registry
-            .get(&model_ref.provider_id)
-            .ok_or(AgentError::NoDefaultModel)?;
-
-        let existing_names: Vec<&str> = self.agents.keys().map(|s| s.as_str()).collect();
-        let existing_list = existing_names.join(", ");
-
-        let user_content = format!(
-            "Create an agent configuration based on this request: \"{}\".\n\n\
-             IMPORTANT: The following identifiers already exist and must NOT be used: {}\n\
-             Return ONLY the JSON object, no other text, do not wrap in backticks",
-            input.description, existing_list
-        );
-
-        let messages = vec![
-            agendao_provider::Message::system(PROMPT_GENERATE),
-            agendao_provider::Message::user(&user_content),
-        ];
-
-        let request = agendao_execution_types::agent_generation_request(model_ref.model_id.clone())
-            .to_chat_request(messages, vec![], false);
-
-        let response = provider.chat(request).await?;
-
-        let content = response
-            .choices
-            .first()
-            .and_then(|c| match &c.message.content {
-                agendao_provider::Content::Text(text) => Some(text.clone()),
-                agendao_provider::Content::Parts(parts) => {
-                    parts.first().and_then(|p| p.text.clone())
-                }
-            })
-            .unwrap_or_default();
-
-        let cleaned = content
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
-
-        serde_json::from_str(cleaned)
-            .map_err(|e| AgentError::ParseError(format!("{}: {}", e, cleaned)))
-    }
 }
 
 impl Default for AgentRegistry {

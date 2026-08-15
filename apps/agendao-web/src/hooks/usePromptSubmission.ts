@@ -7,6 +7,7 @@ import {
 import { formatError, promptPreviewText } from "../lib/display";
 import type { FeedMessage } from "../lib/history";
 import type { PromptResponseRecord } from "../lib/interaction";
+import { schedulerChoiceFromId } from "../lib/webRuntime";
 import {
   applyOutputBlock,
   createOptimisticUserFeedMessage,
@@ -112,6 +113,7 @@ export function usePromptSubmission({
         if (selectedMode) {
           const [kind, id] = selectedMode.split(":", 2);
           if (kind === "agent") payload.agent = id;
+          if (kind === "scheduler") payload.scheduler = schedulerChoiceFromId(id);
         }
         await sendCommandRequest(sessionId, payload);
         setStreaming(false);
@@ -231,7 +233,7 @@ export function usePromptSubmission({
         if (selectedMode) {
           const [kind, id] = selectedMode.split(":", 2);
           if (kind === "agent") payload.agent = id;
-          if (kind === "scheduler") payload.scheduler = id;
+          if (kind === "scheduler") payload.scheduler = schedulerChoiceFromId(id);
         }
 
         const response = await sendPromptRequest(sessionId, payload);

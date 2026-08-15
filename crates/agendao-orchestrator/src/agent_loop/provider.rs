@@ -187,6 +187,9 @@ fn append_conversation_items(
 ) -> Result<(), String> {
     for item in history {
         match item {
+            ConversationItem::User { content } => {
+                messages.push(Message::user(content.clone()));
+            }
             ConversationItem::Assistant { turn } => {
                 let mut parts = Vec::new();
                 if let Some(reasoning) = turn.reasoning.as_deref().filter(|text| !text.is_empty()) {

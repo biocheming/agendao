@@ -25,6 +25,9 @@ pub struct ToolExecution {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ConversationItem {
+    User {
+        content: String,
+    },
     Assistant {
         turn: AssistantTurn,
     },

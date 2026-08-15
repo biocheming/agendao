@@ -164,6 +164,7 @@ pub(super) async fn run_github_prompt(
             AgentCatalogEntry {
                 id: agent_id.clone(),
                 system_policy: agent.resolved_system_prompt().unwrap_or_default(),
+                max_steps: limits.max_agent_steps,
                 available_skills: BTreeSet::new(),
                 available_tools: tool_ids.clone(),
                 model_capabilities: BTreeSet::from([
@@ -197,10 +198,12 @@ pub(super) async fn run_github_prompt(
         TemplateId::Direct,
         &TemplateParameters {
             name: BlueprintName::from("github-direct"),
-            primary_agent: agent_id,
+            primary_agent: agent_id.clone(),
+            planning_agent: None,
             collaborators: Vec::new(),
-            skills: BTreeSet::new(),
-            tools: tool_ids,
+            agent_skills: BTreeMap::new(),
+            agent_tools: BTreeMap::from([(agent_id.clone(), tool_ids)]),
+            agent_max_steps: BTreeMap::from([(agent_id.clone(), limits.max_agent_steps)]),
             evaluator: None,
             checkpoint: None,
             limits,

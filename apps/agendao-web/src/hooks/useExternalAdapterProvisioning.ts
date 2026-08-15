@@ -6,6 +6,7 @@ import {
 import type { SessionRecord } from "../lib/session";
 import { normalizeSessionRecord } from "../lib/sidebar";
 import type { WebExternalAdapterProvisioningRoute } from "../lib/webSessionUrl";
+import { schedulerChoiceFromId } from "../lib/webRuntime";
 
 export interface ProvisioningCallbacks {
   apiJson: <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -27,7 +28,7 @@ export function useExternalAdapterProvisioning(
         actor_id: route.actorId,
         workspace_id: route.workspaceId,
         route_policy_id: route.routePolicyId,
-        scheduler: route.scheduler,
+        scheduler: route.scheduler ? schedulerChoiceFromId(route.scheduler) : null,
         directory: route.directory,
         project_id: route.projectId,
         title: route.title,
