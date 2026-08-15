@@ -1,5 +1,14 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
-use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
+use agendao_api::{
+    AgentInfo, ApiTodoItem, CompactResponse, ConnectProviderRequest, CreateSessionRequest,
+    DisabledConfigUpdate, ExecutionModeInfo, FullProviderListResponse, McpAuthStartInfo,
+    McpStatusInfo, MessageInfo, PermissionRequestInfo, PluginListEntry, ProviderDescriptorResponse,
+    QuestionInfo, RecoveryActionKind, RefreshProviderCatalogResponse, SessionInfo, SessionListItem,
+    SessionRecoveryProtocol, SessionRuntimeState, SkillCatalogEntry, SkillCatalogQuery,
+    SkillDetailQuery, SkillDetailResponse, SkillEvolutionProposal, SkillManageRequest,
+    SkillManageResponse, TestProviderConnectionResponse, ToolListEntry,
+};
+use agendao_config::Config;
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
 use anyhow::{Context, Result};
@@ -83,8 +92,68 @@ impl UnixSocketTransport {
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<SessionListItem>> {
-        self.send_request("list_sessions", serde_json::json!({}))
-            .await
+        self.list_sessions_filtered(None, None, Some(100)).await
+    }
+
+    pub async fn create_session(&self, request: CreateSessionRequest) -> Result<SessionInfo> {
+        self.send_request("create_session", request).await
+    }
+
+    pub async fn list_sessions_filtered(
+        &self,
+        directory: Option<&str>,
+        search: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<SessionListItem>> {
+        self.send_request(
+            "list_sessions",
+            serde_json::json!({
+                "directory": directory,
+                "search": search,
+                "limit": limit,
+            }),
+        )
+        .await
+    }
+
+    pub async fn list_messages(&self, session_id: &str) -> Result<Vec<MessageInfo>> {
+        self.send_request(
+            "list_messages",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn get_session_info(&self, session_id: &str) -> Result<SessionInfo> {
+        self.send_request(
+            "get_session_info",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn get_session_runtime(&self, session_id: &str) -> Result<SessionRuntimeState> {
+        self.send_request(
+            "get_session_runtime",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn get_session_todos(&self, session_id: &str) -> Result<Vec<ApiTodoItem>> {
+        self.send_request(
+            "get_session_todos",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn get_config(&self) -> Result<Config> {
+        self.send_request("get_config", serde_json::json!({})).await
+    }
+
+    pub async fn patch_config(&self, patch: &serde_json::Value) -> Result<Config> {
+        self.send_request("patch_config", patch).await
     }
 
     pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
@@ -113,6 +182,114 @@ impl UnixSocketTransport {
             .await
     }
 
+    pub async fn get_provider_descriptor(
+        &self,
+        provider_id: &str,
+    ) -> Result<ProviderDescriptorResponse> {
+        self.send_request(
+            "get_provider_descriptor",
+            serde_json::json!({ "provider_id": provider_id }),
+        )
+        .await
+    }
+
+    pub async fn connect_provider(&self, request: &ConnectProviderRequest) -> Result<()> {
+        let _: bool = self.send_request("connect_provider", request).await?;
+        Ok(())
+    }
+
+    pub async fn update_provider(
+        &self,
+        provider_id: &str,
+        name: Option<&str>,
+        base_url: Option<&str>,
+        protocol: Option<&str>,
+    ) -> Result<bool> {
+        self.send_request(
+            "update_provider",
+            serde_json::json!({
+                "provider_id": provider_id,
+                "name": name,
+                "base_url": base_url,
+                "protocol": protocol,
+            }),
+        )
+        .await
+    }
+
+    pub async fn delete_provider(&self, provider_id: &str) -> Result<bool> {
+        self.send_request(
+            "delete_provider",
+            serde_json::json!({ "provider_id": provider_id }),
+        )
+        .await
+    }
+
+    pub async fn get_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> Result<agendao_config::ModelConfig> {
+        self.send_request(
+            "get_provider_model_config",
+            serde_json::json!({ "provider_id": provider_id, "model_key": model_key }),
+        )
+        .await
+    }
+
+    pub async fn put_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+        model: &agendao_config::ModelConfig,
+    ) -> Result<Config> {
+        self.send_request(
+            "put_provider_model_config",
+            serde_json::json!({
+                "provider_id": provider_id,
+                "model_key": model_key,
+                "model": model,
+            }),
+        )
+        .await
+    }
+
+    pub async fn delete_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> Result<Config> {
+        self.send_request(
+            "delete_provider_model_config",
+            serde_json::json!({ "provider_id": provider_id, "model_key": model_key }),
+        )
+        .await
+    }
+
+    pub async fn set_provider_disabled(&self, provider_id: &str, disabled: bool) -> Result<bool> {
+        self.send_request(
+            "set_provider_disabled",
+            serde_json::json!({ "provider_id": provider_id, "disabled": disabled }),
+        )
+        .await
+    }
+
+    pub async fn test_provider_connection(
+        &self,
+        provider_id: &str,
+    ) -> Result<TestProviderConnectionResponse> {
+        self.send_request(
+            "test_provider_connection",
+            serde_json::json!({ "provider_id": provider_id }),
+        )
+        .await
+    }
+
+    pub async fn refresh_provider_catalog(&self) -> Result<RefreshProviderCatalogResponse> {
+        self.send_request("refresh_provider_catalog", serde_json::json!({}))
+            .await
+    }
+
     pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
         self.send_request("list_execution_modes", serde_json::json!({}))
             .await
@@ -121,6 +298,258 @@ impl UnixSocketTransport {
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
         self.send_request("list_agents", serde_json::json!({}))
             .await
+    }
+
+    pub async fn list_tools(&self) -> Result<Vec<ToolListEntry>> {
+        self.send_request("list_tools", serde_json::json!({})).await
+    }
+
+    pub async fn list_skills(&self, query: &SkillCatalogQuery) -> Result<Vec<SkillCatalogEntry>> {
+        self.send_request("list_skills", query).await
+    }
+
+    pub async fn get_skill_detail(&self, query: &SkillDetailQuery) -> Result<SkillDetailResponse> {
+        self.send_request("get_skill_detail", query).await
+    }
+
+    pub async fn manage_skill(&self, request: &SkillManageRequest) -> Result<SkillManageResponse> {
+        self.send_request("manage_skill", request).await
+    }
+
+    pub async fn list_skill_proposals(&self, status: &str) -> Result<Vec<SkillEvolutionProposal>> {
+        self.send_request(
+            "list_skill_proposals",
+            serde_json::json!({ "status": status }),
+        )
+        .await
+    }
+
+    pub async fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<SkillEvolutionProposal> {
+        self.send_request(
+            "update_skill_proposal_status",
+            serde_json::json!({ "id": id, "status": status }),
+        )
+        .await
+    }
+
+    pub async fn get_mcp_status(&self) -> Result<Vec<McpStatusInfo>> {
+        self.send_request("get_mcp_status", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn connect_mcp(&self, name: &str) -> Result<bool> {
+        self.send_request("connect_mcp", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn disconnect_mcp(&self, name: &str) -> Result<bool> {
+        self.send_request("disconnect_mcp", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn start_mcp_auth(&self, name: &str) -> Result<McpAuthStartInfo> {
+        self.send_request("start_mcp_auth", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn authenticate_mcp(&self, name: &str) -> Result<McpStatusInfo> {
+        self.send_request("authenticate_mcp", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn remove_mcp_auth(&self, name: &str) -> Result<bool> {
+        self.send_request("remove_mcp_auth", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    pub async fn put_mcp_config(
+        &self,
+        key: &str,
+        mcp: &agendao_config::McpServerConfig,
+    ) -> Result<Config> {
+        self.send_request(
+            "put_mcp_config",
+            serde_json::json!({ "key": key, "mcp": mcp }),
+        )
+        .await
+    }
+
+    pub async fn delete_mcp_config(&self, key: &str) -> Result<Config> {
+        self.send_request("delete_mcp_config", serde_json::json!({ "key": key }))
+            .await
+    }
+
+    pub async fn list_plugins(&self) -> Result<Vec<PluginListEntry>> {
+        self.send_request("list_plugins", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn put_plugin_config(
+        &self,
+        key: &str,
+        plugin: &agendao_config::PluginConfig,
+    ) -> Result<Config> {
+        self.send_request(
+            "put_plugin_config",
+            serde_json::json!({ "key": key, "plugin": plugin }),
+        )
+        .await
+    }
+
+    pub async fn delete_plugin_config(&self, key: &str) -> Result<Config> {
+        self.send_request("delete_plugin_config", serde_json::json!({ "key": key }))
+            .await
+    }
+
+    pub async fn cancel_tool_call(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.send_request(
+            "cancel_tool_call",
+            serde_json::json!({ "session_id": session_id, "tool_call_id": tool_call_id }),
+        )
+        .await
+    }
+
+    pub async fn execute_shell(
+        &self,
+        session_id: &str,
+        command: &str,
+        workdir: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.send_request(
+            "execute_shell",
+            serde_json::json!({
+                "session_id": session_id,
+                "command": command,
+                "workdir": workdir,
+            }),
+        )
+        .await
+    }
+
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+    ) -> Result<SessionInfo> {
+        self.send_request(
+            "fork_session",
+            serde_json::json!({ "session_id": session_id, "message_id": message_id }),
+        )
+        .await
+    }
+
+    pub async fn execute_session_recovery(
+        &self,
+        session_id: &str,
+        action: RecoveryActionKind,
+    ) -> Result<serde_json::Value> {
+        self.send_request(
+            "execute_session_recovery",
+            serde_json::json!({ "session_id": session_id, "action": action }),
+        )
+        .await
+    }
+
+    pub async fn get_session_recovery(&self, session_id: &str) -> Result<SessionRecoveryProtocol> {
+        self.send_request(
+            "get_session_recovery",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn list_questions(&self) -> Result<Vec<QuestionInfo>> {
+        self.send_request("list_questions", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn reply_question(&self, question_id: &str, answers: Vec<Vec<String>>) -> Result<()> {
+        let _: bool = self
+            .send_request(
+                "reply_question",
+                serde_json::json!({ "question_id": question_id, "answers": answers }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn reject_question(&self, question_id: &str) -> Result<()> {
+        let _: bool = self
+            .send_request("reject_question", serde_json::json!({ "id": question_id }))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn abort_session(&self, session_id: &str) -> Result<serde_json::Value> {
+        self.send_request(
+            "abort_session",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        focus: Option<&str>,
+    ) -> Result<CompactResponse> {
+        self.send_request(
+            "compact_session",
+            serde_json::json!({ "session_id": session_id, "focus": focus }),
+        )
+        .await
+    }
+
+    pub async fn update_session_title(&self, session_id: &str, title: &str) -> Result<SessionInfo> {
+        self.send_request(
+            "update_session_title",
+            serde_json::json!({ "session_id": session_id, "title": title }),
+        )
+        .await
+    }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
+        self.send_request(
+            "delete_session",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn put_disabled_config(&self, update: &DisabledConfigUpdate) -> Result<Config> {
+        self.send_request("put_disabled_config", update).await
+    }
+
+    pub async fn list_permissions(&self) -> Result<Vec<PermissionRequestInfo>> {
+        self.send_request("list_permissions", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn reply_permission(
+        &self,
+        permission_id: &str,
+        reply: &str,
+        message: Option<String>,
+    ) -> Result<()> {
+        let _: bool = self
+            .send_request(
+                "reply_permission",
+                serde_json::json!({
+                    "permission_id": permission_id,
+                    "reply": reply,
+                    "message": message,
+                }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Subscribe to server events. When `session_id` is `Some`, the server may

@@ -303,6 +303,16 @@ pub async fn local_get_config(state: Arc<ServerState>) -> anyhow::Result<agendao
     Ok(config)
 }
 
+/// 与 HTTP `POST /config/reload` 同语义的进程内入口。
+pub async fn local_reload_config(
+    state: Arc<ServerState>,
+) -> anyhow::Result<agendao_config::Config> {
+    let Json(config) = super::super::config::reload_config(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(config)
+}
+
 /// 与 HTTP `PATCH /config` 同语义的进程内 shim（TUI 主题等 UI 偏好落盘用）。
 pub async fn local_patch_config(
     state: Arc<ServerState>,

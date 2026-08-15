@@ -444,14 +444,24 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
 fn load_external_catalogs(
     ctx: &ToolContext,
 ) -> Result<Vec<ResolvedExternalToolCatalog>, ToolError> {
-    let project_root = if let Some(config_store) = ctx.config_store.as_ref() {
-        if config_store.config().tool_imports.is_empty() {
+    if let Some(config_store) = ctx.config_store.as_ref() {
+        let config = config_store.config();
+        if config.tool_imports.is_empty() {
             return Ok(Vec::new());
         }
-        config_store
+        let project_root = config_store
             .project_dir()
-            .unwrap_or_else(|| PathBuf::from(ctx.directory.clone()))
-    } else if !ctx.project_root.trim().is_empty() {
+            .unwrap_or_else(|| PathBuf::from(ctx.directory.clone()));
+        return agendao_config::load_external_tool_catalogs_from_imports(
+            project_root,
+            &config.tool_imports,
+        )
+        .map_err(|error| {
+            ToolError::ExecutionError(format!("failed to load external tool catalogs: {error}"))
+        });
+    }
+
+    let project_root = if !ctx.project_root.trim().is_empty() {
         PathBuf::from(ctx.project_root.trim())
     } else {
         PathBuf::from(ctx.directory.clone())
@@ -1035,6 +1045,14 @@ mod tests {
         }
     }
 
+    fn local_config_store(temp: &TestDir) -> Arc<agendao_config::ConfigStore> {
+        let mut loader = agendao_config::ConfigLoader::new();
+        loader
+            .load_from_file(temp.path.join(".agendao/agendao.jsonc"))
+            .expect("local test config");
+        Arc::new(agendao_config::ConfigStore::new(loader.into_config()))
+    }
+
     #[tokio::test]
     async fn search_results_are_ranked_stably() {
         let ctx = test_tool_context_with_registry(vec![
@@ -1219,9 +1237,7 @@ mod tests {
         )
         .expect("catalog");
 
-        let store = Arc::new(
-            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
-        );
+        let store = local_config_store(&temp);
         let ctx = ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),
@@ -1317,9 +1333,7 @@ print(payload["query"])
         )
         .expect("catalog");
 
-        let store = Arc::new(
-            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
-        );
+        let store = local_config_store(&temp);
         let ctx = ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),
@@ -1370,9 +1384,7 @@ print(payload["query"])
         )
         .expect("catalog");
 
-        let store = Arc::new(
-            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
-        );
+        let store = local_config_store(&temp);
         let ctx = ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),
@@ -1423,9 +1435,7 @@ print(payload["query"])
         )
         .expect("catalog");
 
-        let store = Arc::new(
-            agendao_config::ConfigStore::from_project_dir(&temp.path).expect("config store"),
-        );
+        let store = local_config_store(&temp);
         let ctx = ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),

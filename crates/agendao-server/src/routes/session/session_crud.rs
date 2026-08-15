@@ -125,7 +125,9 @@ pub struct ExecuteCommandRequest {
     pub command: String,
     pub arguments: Option<String>,
     pub model: Option<String>,
+    pub variant: Option<String>,
     pub agent: Option<String>,
+    pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -878,9 +880,9 @@ pub(super) async fn get_session_summary(
 #[cfg(test)]
 mod tests {
     use super::{
-        create_session, fork_session, session_list_contract, session_revert, session_to_info,
-        session_to_list_item, start_compaction, CompactRequest, CreateSessionRequest,
-        ForkSessionRequest, RevertRequest,
+        create_session, execute_command, fork_session, session_list_contract, session_revert,
+        session_to_info, session_to_list_item, start_compaction, CompactRequest,
+        CreateSessionRequest, ExecuteCommandRequest, ForkSessionRequest, RevertRequest,
     };
     use crate::ApiError;
     use crate::ServerState;
@@ -891,9 +893,60 @@ mod tests {
     use agendao_types::SessionForkHistoryMode;
     use axum::{
         extract::{Path, Query, State},
+        http::HeaderMap,
         Json,
     };
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn command_route_uses_canonical_preflight_and_registers_missing_fields() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        let Json(response) = execute_command(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Path(session_id.clone()),
+            Json(ExecuteCommandRequest {
+                command: "autoresearch".to_string(),
+                arguments: None,
+                model: None,
+                variant: None,
+                agent: None,
+                scheduler: None,
+            }),
+        )
+        .await
+        .expect("autoresearch command preflight");
+
+        assert_eq!(response["status"], "awaiting_user");
+        assert_eq!(
+            response["missing_fields"],
+            serde_json::json!(["goal", "scope", "metric", "verify"])
+        );
+        let question_id = response["pending_question_id"]
+            .as_str()
+            .expect("pending question id");
+        let questions = crate::local_list_questions(Arc::clone(&state))
+            .await
+            .expect("list questions");
+        let question = questions
+            .iter()
+            .find(|question| question.id == question_id)
+            .expect("registered command question");
+        assert_eq!(question.session_id, session_id);
+        assert_eq!(question.items.len(), 4);
+
+        let sessions = state.sessions.lock().await;
+        let pending = sessions
+            .get(&session_id)
+            .and_then(|session| session.metadata.get("pending_command_invocation"))
+            .expect("pending command metadata");
+        assert_eq!(pending["questionId"], question_id);
+    }
 
     #[test]
     fn session_to_info_includes_typed_persisted_telemetry() {
@@ -1540,48 +1593,19 @@ pub(super) async fn session_unrevert(Path(_id): Path<String>) -> Result<Json<ser
 
 pub(super) async fn execute_command(
     State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<ExecuteCommandRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let mut sessions = state.sessions.lock().await;
-    let session = sessions
-        .get_mut(&id)
-        .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-    let text = req
-        .arguments
-        .as_deref()
-        .map(|args| format!("/{cmd} {args}", cmd = req.command))
-        .unwrap_or_else(|| format!("/{}", req.command));
-    session.add_user_message_with_source(
-        text,
-        agendao_types::MessageSourceOrigin::Operator,
-        agendao_types::MessageSourceSurface::HttpApi,
+    let request = super::prompt::SessionPromptRequest::from_command(
+        req.command,
+        req.arguments,
+        req.model,
+        req.variant,
+        req.agent,
+        req.scheduler,
     );
-    let assistant = session.add_assistant_message();
-    assistant.add_text(format!("Command queued: {}", req.command));
-    let assistant_id = assistant.id.clone();
-    let arguments = req
-        .arguments
-        .as_deref()
-        .map(|value| {
-            value
-                .split_whitespace()
-                .map(|item| item.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    sessions.publish_command_executed(&req.command, &id, arguments, &assistant_id);
-    drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
-
-    Ok(Json(serde_json::json!({
-        "executed": true,
-        "command": req.command,
-        "arguments": req.arguments,
-        "model": req.model,
-        "agent": req.agent,
-        "message_id": assistant_id,
-    })))
+    super::prompt::session_prompt(State(state), headers, Path(id), Json(request)).await
 }
 
 pub(super) async fn get_session_diff(

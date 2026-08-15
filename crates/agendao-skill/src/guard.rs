@@ -1,8 +1,8 @@
 use crate::discovery::is_valid_relative_skill_path;
 use crate::methodology::SkillQualityRubric;
 use crate::write::{
-    build_skill_document, parse_skill_document, read_frontmatter_value, validate_skill_description,
-    validate_skill_name,
+    build_skill_document, parse_skill_document, parse_skill_frontmatter,
+    validate_skill_description, validate_skill_name,
 };
 use agendao_types::{SkillGuardReport, SkillGuardSeverity, SkillGuardStatus, SkillGuardViolation};
 
@@ -129,28 +129,12 @@ impl SkillGuardEngine {
     ) -> SkillGuardReport {
         let mut violations = Vec::new();
         match parse_skill_document(content) {
-            Ok(document) => {
-                let next_name = read_frontmatter_value(&document.frontmatter_lines, "name");
-                let description =
-                    read_frontmatter_value(&document.frontmatter_lines, "description");
-                if next_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_none()
-                    || description
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .is_none()
-                {
-                    violations.push(error_violation(
-                        "frontmatter.required_fields",
-                        "edited SKILL.md must include both `name` and `description` frontmatter.",
-                        None,
-                    ));
-                }
-            }
+            Ok(document) if parse_skill_frontmatter(&document).is_ok() => {}
+            Ok(_) => violations.push(error_violation(
+                "frontmatter.required_fields",
+                "edited SKILL.md must contain valid YAML with non-empty `name` and `description` frontmatter.",
+                None,
+            )),
             Err(_) => violations.push(error_violation(
                 "frontmatter.required_fields",
                 "edited SKILL.md could not be parsed into a valid frontmatter/body document.",

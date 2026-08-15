@@ -116,7 +116,7 @@ pub(super) fn collect_agendao_directories(project_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Load command definitions from markdown files in {command,commands}/**/*.md
-pub(super) fn load_commands_from_dir(dir: &Path) -> HashMap<String, CommandConfig> {
+pub(super) fn load_commands_from_dir(dir: &Path) -> Result<HashMap<String, CommandConfig>> {
     let mut result = HashMap::new();
 
     for subdir_name in &["command", "commands"] {
@@ -124,20 +124,17 @@ pub(super) fn load_commands_from_dir(dir: &Path) -> HashMap<String, CommandConfi
         if !subdir.is_dir() {
             continue;
         }
-        if let Ok(entries) = glob_md_files(&subdir) {
-            for entry in entries {
-                if let Some((name, content)) = parse_markdown_command(&entry, dir) {
-                    result.insert(name, content);
-                }
-            }
+        for entry in glob_md_files(&subdir)? {
+            let (name, content) = parse_markdown_command(&entry, dir)?;
+            result.insert(name, content);
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Load agent definitions from markdown files in {agent,agents}/**/*.md
-pub(super) fn load_agents_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
+pub(super) fn load_agents_from_dir(dir: &Path) -> Result<HashMap<String, AgentConfig>> {
     let mut result = HashMap::new();
 
     for subdir_name in &["agent", "agents"] {
@@ -145,16 +142,13 @@ pub(super) fn load_agents_from_dir(dir: &Path) -> HashMap<String, AgentConfig> {
         if !subdir.is_dir() {
             continue;
         }
-        if let Ok(entries) = glob_md_files(&subdir) {
-            for entry in entries {
-                if let Some((name, config)) = parse_markdown_agent(&entry, dir) {
-                    result.insert(name, config);
-                }
-            }
+        for entry in glob_md_files(&subdir)? {
+            let (name, config) = parse_markdown_agent(&entry, dir)?;
+            result.insert(name, config);
         }
     }
 
-    result
+    Ok(result)
 }
 
 pub fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {

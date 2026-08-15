@@ -47,6 +47,12 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 
 数组类型字段（如 `instructions`）为拼接而非覆盖。
 
+### 启动与运行期重载
+
+配置文件及 Markdown Agent/Command frontmatter 是启动契约。任一层解析失败时，Server、Web 和 TUI 的本地 Server 都会明确启动失败，不会静默退回默认配置。
+
+运行期间不会监视磁盘并隐式改写当前配置。外部编辑配置文件后，必须调用 `POST /config/reload`；这是唯一的磁盘重载入口。重载会先完整解析所有配置层：解析失败时返回 `400` 并保留当前配置；成功后替换配置快照，重建 provider、tool、Agent 和执行模式派生状态，并广播 `config.updated`，Web 与 TUI 随后刷新各自的配置视图。已经开始的 Agent 回合继续使用启动该回合时捕获的执行上下文，新回合使用重载后的配置。
+
 ---
 
 ## Memory 边界与 Workspace 作用域
@@ -75,8 +81,8 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
   "theme": "dracula",
   "logLevel": "warn",
   "model": "glm-5.1",
-  "smallModel": "qwen3.6-plus",
-  "defaultAgent": "code",
+  "small_model": "qwen3.6-plus",
+  "default_agent": "code",
   "username": "dev",
   "layout": "auto",
   "snapshot": true,
@@ -128,8 +134,8 @@ AgenDao 从项目目录向上查找配置文件，按以下优先级加载（后
 | `theme` | string | null | TUI 主题名称。内置主题可通过 `Theme::builtin_theme_names()` 查看，格式为 `name@dark` 或 `name@light` |
 | `logLevel` | string | `"warn"` | 日志级别。可选 `trace`、`debug`、`info`、`warn`、`error`。也可通过 `RUST_LOG` 环境变量设置 |
 | `model` | string | null | 默认模型 ID。如 `glm-5.1`、`qwen3.6-plus`、`kimi-k2.5` |
-| `smallModel` | string | null | 小型模型 ID，用于轻量任务（摘要、路由） |
-| `defaultAgent` | string | null | 默认 Agent 名称 |
+| `small_model` | string | null | 小型模型 ID，用于轻量任务（摘要、路由） |
+| `default_agent` | string | null | 默认 Agent 名称 |
 | `username` | string | null | 显示在 TUI 中的用户名 |
 | `layout` | string | `"auto"` | 布局模式。可选 `"auto"`、`"stretch"` |
 | `snapshot` | boolean | null | 启用文件快照（用于 diff 和回退） |

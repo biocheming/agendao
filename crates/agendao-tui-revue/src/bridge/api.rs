@@ -3,6 +3,7 @@
 //! Wraps `agendao_client::AsyncApiClient` using a background tokio runtime.
 //! Mirrors the full API surface of old TUI's RuntimeApiClient.
 
+use agendao_client::transport::{PromptOptions, UnixSocketTransport};
 use agendao_client::{AsyncApiClient, PromptResponse, SessionInfo};
 use agendao_orchestrator::selector::SchedulerChoice;
 use agendao_server::ServerState;
@@ -14,6 +15,8 @@ pub struct ApiBridge {
     client: Arc<AsyncApiClient>,
     /// In-process local server state for local-direct mode.
     local: Option<Arc<ServerState>>,
+    /// Unix JSON-RPC authority for socket mode.
+    unix: Option<Arc<UnixSocketTransport>>,
     handle: tokio::runtime::Handle,
 }
 
@@ -24,8 +27,18 @@ impl ApiBridge {
         Ok(Self {
             client,
             local: None,
+            unix: None,
             handle,
         })
+    }
+
+    pub fn new_unix(socket_path: String, handle: tokio::runtime::Handle) -> Self {
+        Self {
+            client: Arc::new(AsyncApiClient::new("http://127.0.0.1:0".into())),
+            local: None,
+            unix: Some(Arc::new(UnixSocketTransport::new(socket_path))),
+            handle,
+        }
     }
 
     /// Create an in-process local transport backed by the canonical server.
@@ -36,6 +49,7 @@ impl ApiBridge {
         Self {
             client,
             local: Some(local),
+            unix: None,
             handle,
         }
     }
@@ -63,6 +77,14 @@ impl ApiBridge {
                 self.block_on(agendao_server::local_create_session(Arc::clone(ls), req))?;
             return Ok(result);
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.create_session(agendao_client::CreateSessionRequest {
+                scheduler,
+                directory,
+                project_id: None,
+                title: None,
+            }));
+        }
         self.block_on(self.client.create_session(scheduler, directory))
     }
 
@@ -88,6 +110,8 @@ impl ApiBridge {
                 None,
                 None,
             ))?
+        } else if let Some(ref unix) = self.unix {
+            self.block_on(unix.list_sessions_filtered(directory.as_deref(), None, None))?
         } else {
             self.block_on(
                 self.client
@@ -106,6 +130,9 @@ impl ApiBridge {
                 session_id,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_session_info(session_id));
+        }
         self.block_on(self.client.get_session(session_id))
     }
 
@@ -113,6 +140,9 @@ impl ApiBridge {
     pub async fn get_session_async(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_get_session(Arc::clone(ls), session_id).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.get_session_info(session_id).await;
         }
         self.client.get_session(session_id).await
     }
@@ -129,6 +159,9 @@ impl ApiBridge {
                 None,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_messages(session_id));
+        }
         self.block_on(self.client.get_messages(session_id))
     }
 
@@ -140,6 +173,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_list_messages(Arc::clone(ls), session_id, None, None)
                 .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.list_messages(session_id).await;
         }
         self.client.get_messages(session_id).await
     }
@@ -161,6 +197,9 @@ impl ApiBridge {
                 })
                 .collect());
         }
+        if let Some(ref unix) = self.unix {
+            return unix.get_session_todos(session_id).await;
+        }
         self.client.get_session_todos(session_id).await
     }
 
@@ -168,6 +207,9 @@ impl ApiBridge {
     pub async fn list_questions_async(&self) -> anyhow::Result<Vec<agendao_client::QuestionInfo>> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_list_questions(Arc::clone(ls)).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.list_questions().await;
         }
         self.client.list_questions().await
     }
@@ -178,6 +220,9 @@ impl ApiBridge {
     ) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_list_permissions(Arc::clone(ls)).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.list_permissions().await;
         }
         self.client.list_permissions().await
     }
@@ -202,6 +247,21 @@ impl ApiBridge {
         model: Option<String>,
         variant: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
+        if let Some(ref unix) = self.unix {
+            let response = self.block_on(unix.prompt(
+                session_id,
+                &content,
+                PromptOptions {
+                    agent_id: agent,
+                    scheduler,
+                    model,
+                    variant,
+                    source_surface: Some(agendao_types::MessageSourceSurface::Tui),
+                    ..Default::default()
+                },
+            ))?;
+            return Ok(transport_prompt_response(response));
+        }
         let request = agendao_client::PromptRequest {
             message: Some(content),
             parts: None,
@@ -242,6 +302,23 @@ impl ApiBridge {
         model: Option<String>,
         variant: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
+        if let Some(ref unix) = self.unix {
+            let response = unix
+                .prompt(
+                    session_id,
+                    &content,
+                    PromptOptions {
+                        agent_id: agent,
+                        scheduler,
+                        model,
+                        variant,
+                        source_surface: Some(agendao_types::MessageSourceSurface::Tui),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            return Ok(transport_prompt_response(response));
+        }
         let request = agendao_client::PromptRequest {
             message: Some(content),
             parts: None,
@@ -269,12 +346,18 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_get_all_providers(Arc::clone(ls)));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_all_providers());
+        }
         self.block_on(self.client.get_all_providers())
     }
 
     pub fn get_recent_models(&self) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_get_recent_models(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_recent_models());
         }
         self.block_on(self.client.get_recent_models())
     }
@@ -289,6 +372,9 @@ impl ApiBridge {
                 entries,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.put_recent_models(&entries));
+        }
         self.block_on(self.client.put_recent_models(&entries))
     }
 
@@ -300,6 +386,9 @@ impl ApiBridge {
     ) -> anyhow::Result<Vec<RecentModelEntry>> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_put_recent_models(Arc::clone(ls), entries).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.put_recent_models(&entries).await;
         }
         self.client.put_recent_models(&entries).await
     }
@@ -315,6 +404,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 provider_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_provider_descriptor(provider_id));
         }
         self.block_on(self.client.get_provider_descriptor(provider_id))
     }
@@ -336,6 +428,16 @@ impl ApiBridge {
             };
             return self.block_on(agendao_server::local_connect_provider(Arc::clone(ls), req));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(
+                unix.connect_provider(&agendao_client::ConnectProviderRequest {
+                    provider_id: provider_id.to_string(),
+                    api_key: api_key.to_string(),
+                    base_url,
+                    protocol,
+                }),
+            );
+        }
         self.block_on(
             self.client
                 .connect_provider(provider_id, api_key, base_url, protocol),
@@ -343,6 +445,16 @@ impl ApiBridge {
     }
 
     pub fn set_auth(&self, provider_id: &str, api_key: &str) -> anyhow::Result<()> {
+        if let Some(ref unix) = self.unix {
+            return self.block_on(
+                unix.connect_provider(&agendao_client::ConnectProviderRequest {
+                    provider_id: provider_id.to_string(),
+                    api_key: api_key.to_string(),
+                    base_url: None,
+                    protocol: None,
+                }),
+            );
+        }
         self.block_on(self.client.set_auth(provider_id, api_key))
     }
 
@@ -364,6 +476,16 @@ impl ApiBridge {
                 protocol: Some(protocol.to_string()),
             };
             return self.block_on(agendao_server::local_connect_provider(Arc::clone(ls), req));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(
+                unix.connect_provider(&agendao_client::ConnectProviderRequest {
+                    provider_id: provider_id.to_string(),
+                    api_key: api_key.to_string(),
+                    base_url: Some(base_url.to_string()),
+                    protocol: Some(protocol.to_string()),
+                }),
+            );
         }
         self.block_on(self.client.register_custom_provider(
             provider_id,
@@ -391,6 +513,9 @@ impl ApiBridge {
                 protocol.map(str::to_string),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.update_provider(provider_id, name, base_url, protocol));
+        }
         self.block_on(
             self.client
                 .update_provider(provider_id, name, base_url, protocol),
@@ -404,6 +529,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 provider_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.delete_provider(provider_id));
         }
         self.block_on(self.client.delete_provider(provider_id))
     }
@@ -423,6 +551,9 @@ impl ApiBridge {
                 provider_id,
                 model_key,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_provider_model_config(provider_id, model_key));
         }
         self.block_on(
             self.client
@@ -446,6 +577,9 @@ impl ApiBridge {
                 model.clone(),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.put_provider_model_config(provider_id, model_key, model));
+        }
         self.block_on(
             self.client
                 .put_provider_model_config(provider_id, model_key, model),
@@ -465,6 +599,9 @@ impl ApiBridge {
                 model_key,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.delete_provider_model_config(provider_id, model_key));
+        }
         self.block_on(
             self.client
                 .delete_provider_model_config(provider_id, model_key),
@@ -477,12 +614,18 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_get_workspace_context(Arc::clone(ls)));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_workspace_context());
+        }
         self.block_on(self.client.get_workspace_context())
     }
 
     pub fn get_config(&self) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_get_config(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_config());
         }
         self.block_on(self.client.get_config())
     }
@@ -495,6 +638,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_patch_config(Arc::clone(ls), patch).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.patch_config(&patch).await;
+        }
         self.client.patch_config(&patch).await
     }
 
@@ -502,6 +648,9 @@ impl ApiBridge {
     pub fn patch_config(&self, patch: serde_json::Value) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_patch_config(Arc::clone(ls), patch));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.patch_config(&patch));
         }
         self.block_on(self.client.patch_config(&patch))
     }
@@ -514,6 +663,9 @@ impl ApiBridge {
                 provider_id,
                 disabled,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.set_provider_disabled(provider_id, disabled));
         }
         self.block_on(self.client.set_provider_disabled(provider_id, disabled))
     }
@@ -529,6 +681,9 @@ impl ApiBridge {
                 provider_id,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.test_provider_connection(provider_id));
+        }
         self.block_on(self.client.test_provider_connection(provider_id))
     }
 
@@ -542,6 +697,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_test_provider_connection(Arc::clone(ls), provider_id)
                 .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.test_provider_connection(provider_id).await;
         }
         self.client.test_provider_connection(provider_id).await
     }
@@ -559,6 +717,9 @@ impl ApiBridge {
             ))?;
             return Ok(serde_json::from_value(serde_json::to_value(runtime)?)?);
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_session_runtime(session_id));
+        }
         self.block_on(self.client.get_session_runtime(session_id))
     }
 
@@ -570,6 +731,9 @@ impl ApiBridge {
                 ls,
             )));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.refresh_provider_catalog());
+        }
         self.block_on(self.client.refresh_provider_catalog())
     }
 
@@ -578,6 +742,9 @@ impl ApiBridge {
     pub fn list_agents(&self) -> anyhow::Result<Vec<agendao_client::AgentInfo>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_agents(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_agents());
         }
         self.block_on(self.client.list_agents())
     }
@@ -590,6 +757,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 session_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.abort_session(session_id));
         }
         self.block_on(self.client.abort_session(session_id))
     }
@@ -605,6 +775,9 @@ impl ApiBridge {
                 session_id,
                 tool_call_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.cancel_tool_call(session_id, tool_call_id));
         }
         self.block_on(self.client.cancel_tool_call(session_id, tool_call_id))
     }
@@ -622,6 +795,9 @@ impl ApiBridge {
                 command,
                 workdir,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.execute_shell(session_id, &command, workdir.as_deref()));
         }
         self.block_on(self.client.execute_shell(session_id, command, workdir))
     }
@@ -643,6 +819,11 @@ impl ApiBridge {
             )
             .await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix
+                .execute_shell(session_id, &command, workdir.as_deref())
+                .await;
+        }
         self.client
             .execute_shell(session_id, command, workdir)
             .await
@@ -662,16 +843,25 @@ impl ApiBridge {
                 message_id.map(str::to_string),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.fork_session(session_id, message_id));
+        }
         self.block_on(self.client.fork_session(session_id, message_id))
     }
 
     pub fn share_session(&self, session_id: &str) -> anyhow::Result<agendao_client::ShareResponse> {
+        if self.local.is_some() || self.unix.is_some() {
+            anyhow::bail!("session sharing requires HTTP transport")
+        }
         self.block_on(self.client.share_session(session_id))
     }
 
     /// /unshare：撤销分享链接。与 `share_session` 同范式，仅走 HTTP
     /// （local-direct 暂不短路；与 share 一致）。
     pub fn unshare_session(&self, session_id: &str) -> anyhow::Result<bool> {
+        if self.local.is_some() || self.unix.is_some() {
+            anyhow::bail!("session unsharing requires HTTP transport")
+        }
         self.block_on(self.client.unshare_session(session_id))
     }
 
@@ -687,6 +877,9 @@ impl ApiBridge {
                 session_id,
                 focus.map(str::to_string),
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.compact_session(session_id, focus));
         }
         self.block_on(self.client.compact_session(session_id, focus))
     }
@@ -706,6 +899,9 @@ impl ApiBridge {
             )
             .await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.compact_session(session_id, focus).await;
+        }
         self.client.compact_session(session_id, focus).await
     }
 
@@ -717,6 +913,10 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             let query = query.cloned().unwrap_or_default();
             return self.block_on(agendao_server::local_list_skills(Arc::clone(ls), query));
+        }
+        if let Some(ref unix) = self.unix {
+            let query = query.cloned().unwrap_or_default();
+            return self.block_on(unix.list_skills(&query));
         }
         self.block_on(self.client.list_skills(query))
     }
@@ -741,6 +941,9 @@ impl ApiBridge {
             name: name.to_string(),
             ..Default::default()
         };
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_skill_detail(&query));
+        }
         self.block_on(self.client.get_skill_detail(&query))
     }
 
@@ -748,6 +951,9 @@ impl ApiBridge {
     pub fn list_tools(&self) -> anyhow::Result<Vec<agendao_client::ToolListEntry>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_tools(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_tools());
         }
         self.block_on(self.client.list_tools())
     }
@@ -764,6 +970,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 update.clone(),
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.put_disabled_config(update));
         }
         self.block_on(self.client.put_disabled_config(update))
     }
@@ -782,6 +991,9 @@ impl ApiBridge {
                 req.clone(),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.manage_skill(req));
+        }
         self.block_on(self.client.manage_skill(req))
     }
 
@@ -799,6 +1011,9 @@ impl ApiBridge {
                 status,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_skill_proposals(status));
+        }
         self.block_on(self.client.list_skill_proposals(status))
     }
 
@@ -807,6 +1022,9 @@ impl ApiBridge {
     pub fn get_mcp_status(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_get_mcp_status(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_mcp_status());
         }
         self.block_on(self.client.get_mcp_status())
     }
@@ -821,6 +1039,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 session_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_session_recovery(session_id));
         }
         self.block_on(self.client.get_session_recovery(session_id))
     }
@@ -839,6 +1060,9 @@ impl ApiBridge {
                 status,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.update_skill_proposal_status(id, status));
+        }
         self.block_on(self.client.update_skill_proposal_status(id, status))
     }
 
@@ -848,6 +1072,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_connect_mcp(Arc::clone(ls), name));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.connect_mcp(name));
+        }
         self.block_on(self.client.connect_mcp(name))
     }
 
@@ -856,6 +1083,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_disconnect_mcp(Arc::clone(ls), name));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.disconnect_mcp(name));
+        }
         self.block_on(self.client.disconnect_mcp(name))
     }
 
@@ -863,6 +1093,9 @@ impl ApiBridge {
     pub fn start_mcp_auth(&self, name: &str) -> anyhow::Result<agendao_client::McpAuthStartInfo> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_start_mcp_auth(Arc::clone(ls), name));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.start_mcp_auth(name));
         }
         self.block_on(self.client.start_mcp_auth(name))
     }
@@ -873,6 +1106,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_authenticate_mcp(Arc::clone(ls), name));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.authenticate_mcp(name));
+        }
         self.block_on(self.client.authenticate_mcp(name))
     }
 
@@ -880,6 +1116,9 @@ impl ApiBridge {
     pub fn remove_mcp_auth(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_remove_mcp_auth(Arc::clone(ls), name));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.remove_mcp_auth(name));
         }
         self.block_on(self.client.remove_mcp_auth(name))
     }
@@ -898,6 +1137,9 @@ impl ApiBridge {
                 mcp.clone(),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.put_mcp_config(key, mcp));
+        }
         self.block_on(self.client.put_mcp_config(key, mcp))
     }
 
@@ -906,6 +1148,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_delete_mcp_config(Arc::clone(ls), key));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.delete_mcp_config(key));
+        }
         self.block_on(self.client.delete_mcp_config(key))
     }
 
@@ -913,6 +1158,9 @@ impl ApiBridge {
     pub fn list_plugins(&self) -> anyhow::Result<Vec<agendao_client::PluginListEntry>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_plugins(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_plugins());
         }
         self.block_on(self.client.list_plugins())
     }
@@ -930,6 +1178,9 @@ impl ApiBridge {
                 plugin.clone(),
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.put_plugin_config(key, plugin));
+        }
         self.block_on(self.client.put_plugin_config(key, plugin))
     }
 
@@ -940,6 +1191,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 key,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.delete_plugin_config(key));
         }
         self.block_on(self.client.delete_plugin_config(key))
     }
@@ -954,6 +1208,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_get_config(Arc::clone(ls)).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.get_config().await;
+        }
         self.client.get_config().await
     }
 
@@ -965,6 +1222,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_put_disabled_config(Arc::clone(ls), update.clone()).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.put_disabled_config(update).await;
+        }
         self.client.put_disabled_config(update).await
     }
 
@@ -975,6 +1235,9 @@ impl ApiBridge {
     ) -> anyhow::Result<agendao_client::SkillManageResponse> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_manage_skill(Arc::clone(ls), req.clone()).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.manage_skill(req).await;
         }
         self.client.manage_skill(req).await
     }
@@ -989,6 +1252,9 @@ impl ApiBridge {
             return agendao_server::local_update_skill_proposal_status(Arc::clone(ls), id, status)
                 .await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.update_skill_proposal_status(id, status).await;
+        }
         self.client.update_skill_proposal_status(id, status).await
     }
 
@@ -997,6 +1263,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_connect_mcp(Arc::clone(ls), name).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.connect_mcp(name).await;
+        }
         self.client.connect_mcp(name).await
     }
 
@@ -1004,6 +1273,9 @@ impl ApiBridge {
     pub async fn disconnect_mcp_async(&self, name: &str) -> anyhow::Result<bool> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_disconnect_mcp(Arc::clone(ls), name).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.disconnect_mcp(name).await;
         }
         self.client.disconnect_mcp(name).await
     }
@@ -1017,6 +1289,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_put_mcp_config(Arc::clone(ls), key, mcp.clone()).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.put_mcp_config(key, mcp).await;
+        }
         self.client.put_mcp_config(key, mcp).await
     }
 
@@ -1027,6 +1302,9 @@ impl ApiBridge {
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_delete_mcp_config(Arc::clone(ls), key).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.delete_mcp_config(key).await;
         }
         self.client.delete_mcp_config(key).await
     }
@@ -1041,6 +1319,9 @@ impl ApiBridge {
             return agendao_server::local_put_plugin_config(Arc::clone(ls), key, plugin.clone())
                 .await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.put_plugin_config(key, plugin).await;
+        }
         self.client.put_plugin_config(key, plugin).await
     }
 
@@ -1051,6 +1332,9 @@ impl ApiBridge {
     ) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_delete_plugin_config(Arc::clone(ls), key).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.delete_plugin_config(key).await;
         }
         self.client.delete_plugin_config(key).await
     }
@@ -1068,6 +1352,9 @@ impl ApiBridge {
         let mut items = if let Some(ref ls) = self.local {
             agendao_server::local_list_sessions(Arc::clone(ls), directory.clone(), None, None)
                 .await?
+        } else if let Some(ref unix) = self.unix {
+            unix.list_sessions_filtered(directory.as_deref(), None, None)
+                .await?
         } else {
             self.client
                 .list_sessions_in_directory(directory.as_deref(), None, None)
@@ -1082,6 +1369,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_get_recent_models(Arc::clone(ls)).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.get_recent_models().await;
+        }
         self.client.get_recent_models().await
     }
 
@@ -1094,6 +1384,10 @@ impl ApiBridge {
             let query = query.cloned().unwrap_or_default();
             return agendao_server::local_list_skills(Arc::clone(ls), query).await;
         }
+        if let Some(ref unix) = self.unix {
+            let query = query.cloned().unwrap_or_default();
+            return unix.list_skills(&query).await;
+        }
         self.client.list_skills(query).await
     }
 
@@ -1105,6 +1399,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_list_skill_proposals(Arc::clone(ls), status).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.list_skill_proposals(status).await;
+        }
         self.client.list_skill_proposals(status).await
     }
 
@@ -1112,6 +1409,9 @@ impl ApiBridge {
     pub async fn get_mcp_status_async(&self) -> anyhow::Result<Vec<agendao_client::McpStatusInfo>> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_get_mcp_status(Arc::clone(ls)).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.get_mcp_status().await;
         }
         self.client.get_mcp_status().await
     }
@@ -1124,6 +1424,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return agendao_server::local_get_session_recovery(Arc::clone(ls), session_id).await;
         }
+        if let Some(ref unix) = self.unix {
+            return unix.get_session_recovery(session_id).await;
+        }
         self.client.get_session_recovery(session_id).await
     }
 
@@ -1133,6 +1436,9 @@ impl ApiBridge {
     ) -> anyhow::Result<Vec<agendao_client::ExecutionModeInfo>> {
         if let Some(ref ls) = self.local {
             return agendao_server::local_list_execution_modes(Arc::clone(ls)).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.list_execution_modes().await;
         }
         self.client.list_execution_modes().await
     }
@@ -1151,6 +1457,9 @@ impl ApiBridge {
                 action,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.execute_session_recovery(session_id, action));
+        }
         self.block_on(self.client.execute_session_recovery(session_id, action))
     }
 
@@ -1166,6 +1475,9 @@ impl ApiBridge {
                 title,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.update_session_title(session_id, title));
+        }
         self.block_on(self.client.update_session_title(session_id, title))
     }
 
@@ -1175,6 +1487,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 session_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.delete_session(session_id));
         }
         self.block_on(self.client.delete_session(session_id))
     }
@@ -1191,6 +1506,9 @@ impl ApiBridge {
                 answers,
             ));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.reply_question(question_id, answers));
+        }
         self.block_on(self.client.reply_question(question_id, answers))
     }
 
@@ -1200,6 +1518,9 @@ impl ApiBridge {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_questions(Arc::clone(ls)));
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_questions());
+        }
         self.block_on(self.client.list_questions())
     }
 
@@ -1207,6 +1528,9 @@ impl ApiBridge {
     pub fn list_permissions(&self) -> anyhow::Result<Vec<agendao_client::PermissionRequestInfo>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_permissions(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_permissions());
         }
         self.block_on(self.client.list_permissions())
     }
@@ -1218,6 +1542,9 @@ impl ApiBridge {
                 Arc::clone(ls),
                 question_id,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.reject_question(question_id));
         }
         self.block_on(self.client.reject_question(question_id))
     }
@@ -1235,6 +1562,9 @@ impl ApiBridge {
                 reply.to_string(),
                 msg,
             ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.reply_permission(permission_id, reply, msg));
         }
         self.block_on(self.client.reply_permission(permission_id, reply, msg))
     }
@@ -1258,12 +1588,18 @@ impl ApiBridge {
                 })
                 .collect());
         }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.get_session_todos(session_id));
+        }
         self.block_on(self.client.get_session_todos(session_id))
     }
 
     pub fn list_execution_modes(&self) -> anyhow::Result<Vec<agendao_client::ExecutionModeInfo>> {
         if let Some(ref ls) = self.local {
             return self.block_on(agendao_server::local_list_execution_modes(Arc::clone(ls)));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.list_execution_modes());
         }
         self.block_on(self.client.list_execution_modes())
     }
@@ -1278,6 +1614,20 @@ impl ApiBridge {
     }
     pub fn raw_client(&self) -> &AsyncApiClient {
         &self.client
+    }
+}
+
+fn transport_prompt_response(
+    response: agendao_client::transport::PromptResponse,
+) -> PromptResponse {
+    PromptResponse {
+        status: response.text,
+        ok: Some(true),
+        session_id: Some(response.session_id),
+        queued_count: None,
+        pending_question_id: None,
+        command: None,
+        missing_fields: Vec::new(),
     }
 }
 

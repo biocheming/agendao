@@ -90,6 +90,7 @@ pub struct PlannerInput {
     pub catalog_fingerprint: String,
     pub catalog: PlannerCatalogSummary,
     pub policy: PolicyEnvelope,
+    pub default_parameters: TemplateParameters,
     pub rejected_blueprint_fingerprints: BTreeSet<String>,
 }
 
@@ -268,6 +269,7 @@ impl<'a> AutoSelector<'a> {
                 catalog_fingerprint: catalog_fingerprint.to_string(),
                 catalog: PlannerCatalogSummary::from_catalog(self.catalog),
                 policy: self.policy.clone(),
+                default_parameters: request.default_parameters,
                 rejected_blueprint_fingerprints: request.rejected_blueprint_fingerprints.clone(),
             })
             .await

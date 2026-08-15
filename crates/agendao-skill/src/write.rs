@@ -303,26 +303,12 @@ pub(crate) fn parse_skill_frontmatter_lines(
     lines: &[String],
 ) -> Result<SkillFrontmatter, SkillError> {
     let yaml = lines.join("\n");
-    if let Ok(frontmatter) = serde_yaml::from_str::<SkillFrontmatter>(&yaml) {
-        return validate_skill_frontmatter(&frontmatter);
-    }
-
-    // Best-effort fallback for malformed YAML: preserve minimum required fields.
-    let name = read_frontmatter_value(lines, "name").ok_or_else(|| {
+    let frontmatter = serde_yaml::from_str::<SkillFrontmatter>(&yaml).map_err(|error| {
         SkillError::InvalidSkillFrontmatter {
-            message: "missing `name`".to_string(),
+            message: error.to_string(),
         }
     })?;
-    let description = read_frontmatter_value(lines, "description").ok_or_else(|| {
-        SkillError::InvalidSkillFrontmatter {
-            message: "missing `description`".to_string(),
-        }
-    })?;
-    validate_skill_frontmatter(&SkillFrontmatter {
-        name,
-        description,
-        ..SkillFrontmatter::default()
-    })
+    validate_skill_frontmatter(&frontmatter)
 }
 
 pub(crate) fn render_skill_frontmatter_lines(
@@ -416,26 +402,6 @@ pub(crate) fn build_create_frontmatter(
         apply_frontmatter_patch(&mut frontmatter, patch);
     }
     validate_skill_frontmatter(&frontmatter)
-}
-
-pub(crate) fn read_frontmatter_value(lines: &[String], key: &str) -> Option<String> {
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix(&format!("{key}:")) {
-            let value = value.trim();
-            if value.len() >= 2
-                && ((value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\'')))
-            {
-                return Some(value[1..value.len() - 1].to_string());
-            }
-            return Some(value.to_string());
-        }
-    }
-    None
 }
 
 pub(crate) fn atomic_write_string(path: &Path, content: &str) -> Result<(), SkillError> {
@@ -709,6 +675,16 @@ mod tests {
     use agendao_config::{Config, ConfigStore};
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn malformed_yaml_frontmatter_is_rejected_without_fallback() {
+        let document =
+            parse_skill_document("---\nname: broken\ndescription: [unterminated\n---\n\nBody.\n")
+                .unwrap();
+
+        let error = parse_skill_frontmatter(&document).unwrap_err();
+        assert!(matches!(error, SkillError::InvalidSkillFrontmatter { .. }));
+    }
 
     #[test]
     fn create_skill_writes_into_workspace_root_and_is_immediately_visible() {

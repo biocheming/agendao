@@ -674,6 +674,7 @@ mod tests {
             max_output_tokens: None,
             cost_per_million_input: None,
             cost_per_million_output: None,
+            capabilities: None,
         }
     }
 

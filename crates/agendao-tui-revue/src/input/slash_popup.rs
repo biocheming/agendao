@@ -15,12 +15,94 @@
 //! - **Esc = 恢复原文**：open 时暂存 `/` 之前的内容，Esc 写回输入框。
 
 use crate::theme::colors;
-use agendao_command::{CommandRegistry, UiActionId, UiCommandArgumentKind, UiCommandSpec};
+use agendao_command::{CommandRegistry, UiCommandArgumentKind, UiCommandSpec};
 use revue::event::Key;
 use revue::prelude::*;
 use revue::runtime::render::Cell;
 // 截断唯一实现见 backdrop(水律:消灭第二处),Home 窄输入框下防止 positioned 裁半个 CJK。
 use crate::dialog::backdrop::{list_viewport_window, truncate_to_width};
+
+#[derive(Debug, Clone)]
+enum SlashCompletion {
+    Ui(UiCommandSpec),
+    Prompt {
+        name: String,
+        title: String,
+        description: String,
+    },
+}
+
+impl SlashCompletion {
+    fn slash_name(&self) -> &str {
+        match self {
+            Self::Ui(command) => command
+                .slash
+                .as_ref()
+                .map(|slash| slash.name)
+                .unwrap_or(command.title),
+            Self::Prompt { name, .. } => name,
+        }
+    }
+
+    fn title(&self) -> &str {
+        match self {
+            Self::Ui(command) => command.title,
+            Self::Prompt { title, .. } => title,
+        }
+    }
+
+    fn description(&self) -> &str {
+        match self {
+            Self::Ui(command) => command.description,
+            Self::Prompt { description, .. } => description,
+        }
+    }
+
+    fn category_label(&self) -> &str {
+        match self {
+            Self::Ui(command) => command.category.label(),
+            Self::Prompt { .. } => "Commands",
+        }
+    }
+
+    fn keybind(&self) -> Option<&str> {
+        match self {
+            Self::Ui(command) => command.keybind,
+            Self::Prompt { .. } => None,
+        }
+    }
+
+    fn argument_kind(&self) -> UiCommandArgumentKind {
+        match self {
+            Self::Ui(command) => command.argument_kind(),
+            Self::Prompt { .. } => UiCommandArgumentKind::None,
+        }
+    }
+
+    fn is_suggested(&self) -> bool {
+        matches!(self, Self::Ui(command) if command.slash.as_ref().is_some_and(|slash| slash.suggested))
+    }
+
+    fn fuzzy_score(&self, query: &str) -> Option<i32> {
+        let name_score = fuzzy_match(query, self.slash_name());
+        let title_score = fuzzy_match(query, self.title());
+        let alias_score = match self {
+            Self::Ui(command) => command
+                .slash
+                .as_ref()
+                .into_iter()
+                .flat_map(|slash| slash.aliases.iter())
+                .filter_map(|alias| fuzzy_match(query, alias))
+                .max(),
+            Self::Prompt { .. } => None,
+        };
+        name_score
+            .into_iter()
+            .chain(alias_score)
+            .chain(title_score)
+            .max()
+    }
+}
 
 /// Simple fuzzy match: check if all chars of `query` appear in `target` in order.
 pub(crate) fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
@@ -84,8 +166,8 @@ pub struct SlashPopup {
     /// Esc 恢复快照：popup 首次打开时输入框中 `/` 之前的内容
     /// （trigger 收窄后通常仅前导空白；Ctrl+P 手动打开为空串）。
     pub(crate) pre_slash_text: String,
-    /// All slash commands from the registry
-    all_commands: Vec<UiCommandSpec>,
+    /// Built-in UI actions plus server-resolved Markdown commands.
+    all_commands: Vec<SlashCompletion>,
     /// Filtered indices into all_commands
     filtered: Vec<usize>,
 }
@@ -98,20 +180,34 @@ impl Default for SlashPopup {
 
 impl SlashPopup {
     pub fn new() -> Self {
-        Self::with_dir(None)
+        Self::with_prompt_commands(Vec::new())
     }
 
-    /// Optionally load custom commands from a project directory.
-    pub fn with_dir(dir: Option<&std::path::Path>) -> Self {
-        let mut registry = CommandRegistry::new();
-        if let Some(d) = dir {
-            let _ = registry.load_from_directory(d);
-        }
-        let all_commands: Vec<UiCommandSpec> = registry
+    /// Add Markdown commands from the already merged workspace config. Their
+    /// execution remains server-authoritative; this list is discovery only.
+    pub fn with_prompt_commands(commands: Vec<(String, String, String)>) -> Self {
+        let registry = CommandRegistry::new();
+        let mut all_commands: Vec<SlashCompletion> = registry
             .ui_all_slash_commands()
             .into_iter()
             .cloned()
+            .map(SlashCompletion::Ui)
             .collect();
+        for (name, title, description) in commands {
+            let name = format!("/{}", name.trim().trim_start_matches('/'));
+            if name == "/"
+                || all_commands
+                    .iter()
+                    .any(|command| command.slash_name() == name)
+            {
+                continue;
+            }
+            all_commands.push(SlashCompletion::Prompt {
+                name,
+                title,
+                description,
+            });
+        }
         Self {
             visible: false,
             query: String::new(),
@@ -228,8 +324,7 @@ impl SlashPopup {
                 Key::Enter | Key::Tab => {
                     if let Some(idx) = self.filtered.get(self.selected) {
                         let cmd = &self.all_commands[*idx];
-                        // registry 的 slash.name 含前导 `/`（"/compact"）。
-                        let name = cmd.slash.as_ref().map(|s| s.name).unwrap_or(cmd.title);
+                        let name = cmd.slash_name().to_string();
                         let kind = cmd.argument_kind();
                         let takes_args = kind != UiCommandArgumentKind::None;
                         if takes_args {
@@ -241,7 +336,7 @@ impl SlashPopup {
                             self.close();
                         }
                         return SlashKeyOutcome::FillBack {
-                            command: format!("{} ", name),
+                            command: format!("{name} "),
                             takes_args,
                         };
                     }
@@ -279,18 +374,11 @@ impl SlashPopup {
 
     fn refresh_filter(&mut self) {
         if self.query.is_empty() {
-            // Show suggested commands from the registry
-            let registry = CommandRegistry::new();
-            let suggested: Vec<UiActionId> = registry
-                .ui_suggested_slash_commands()
-                .into_iter()
-                .map(|cmd| cmd.action_id)
-                .collect();
             self.filtered = self
                 .all_commands
                 .iter()
                 .enumerate()
-                .filter(|(_, cmd)| suggested.contains(&cmd.action_id))
+                .filter(|(_, command)| command.is_suggested())
                 .map(|(i, _)| i)
                 .collect();
         } else {
@@ -298,22 +386,7 @@ impl SlashPopup {
                 .all_commands
                 .iter()
                 .enumerate()
-                .filter_map(|(i, cmd)| {
-                    let slash = cmd.slash.as_ref()?;
-                    let name_score = fuzzy_match(&self.query, slash.name);
-                    let alias_score = slash
-                        .aliases
-                        .iter()
-                        .filter_map(|alias| fuzzy_match(&self.query, alias))
-                        .max();
-                    let title_score = fuzzy_match(&self.query, cmd.title);
-                    let best = name_score
-                        .into_iter()
-                        .chain(alias_score)
-                        .chain(title_score)
-                        .max()?;
-                    Some((i, best))
-                })
+                .filter_map(|(i, command)| command.fuzzy_score(&self.query).map(|score| (i, score)))
                 .collect();
             scored.sort_by(|a, b| b.1.cmp(&a.1));
             self.filtered = scored.into_iter().map(|(i, _)| i).collect();
@@ -380,7 +453,7 @@ impl SlashPopup {
             let is_selected = abs_idx == self.selected;
 
             // 分类分隔
-            let cat = cmd.category.label();
+            let cat = cmd.category_label();
             if last_category.map(|c| c != cat).unwrap_or(true) {
                 if last_category.is_some() {
                     list = list.child(Text::new("").bg(colors::BG_SURFACE()));
@@ -393,18 +466,20 @@ impl SlashPopup {
                 last_category = Some(cat);
             }
 
-            let slash_name = cmd
-                .slash
-                .as_ref()
-                .map(|s| s.name.trim_start_matches('/'))
-                .unwrap_or(cmd.title);
+            let slash_name = cmd.slash_name().trim_start_matches('/');
 
             // ❯ pointer + 文字色;.bg(BG_SURFACE) 补文字格,否则 ctx.set 默认 bg=None 发黑
             let pointer = if is_selected { "❯ " } else { "  " };
-            let keybind_str = cmd.keybind.map(|k| format!(" ({})", k)).unwrap_or_default();
+            let keybind_str = cmd
+                .keybind()
+                .map(|keybind| format!(" ({keybind})"))
+                .unwrap_or_default();
             let desc = format!(
                 "{} /{}{}  {}",
-                pointer, slash_name, keybind_str, cmd.description
+                pointer,
+                slash_name,
+                keybind_str,
+                cmd.description()
             );
             // 窄宽（Home 64）截断 + …，留 1 列右边距，避免 positioned 裁半个 CJK。
             let desc = truncate_to_width(&desc, w.saturating_sub(1).max(8) as usize);
@@ -534,6 +609,28 @@ mod tests {
             _ => panic!("ArgHint Enter 应 Submit"),
         }
         assert!(!popup.is_open());
+    }
+
+    #[test]
+    fn configured_prompt_command_is_discoverable_and_fills_back() {
+        let mut popup = SlashPopup::with_prompt_commands(vec![(
+            "global-only".to_string(),
+            "Global only".to_string(),
+            "Inherited Markdown command".to_string(),
+        )]);
+
+        popup.open_with_query("global-only");
+        assert_eq!(popup.filtered_count(), 1);
+        match popup.handle_key(&Key::Enter) {
+            SlashKeyOutcome::FillBack {
+                command,
+                takes_args,
+            } => {
+                assert_eq!(command, "/global-only ");
+                assert!(!takes_args);
+            }
+            _ => panic!("expected configured command fill-back"),
+        }
     }
 
     /// U3·Esc → Restore（调用方据 pre_slash_text 恢复输入框）。

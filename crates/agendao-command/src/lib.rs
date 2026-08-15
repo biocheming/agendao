@@ -148,6 +148,7 @@ pub struct Command {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CommandSource {
     File(PathBuf),
+    Config,
     Builtin,
     Mcp { server: String, prompt: String },
     Skill { name: String },

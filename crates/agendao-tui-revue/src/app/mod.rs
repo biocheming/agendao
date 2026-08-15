@@ -178,14 +178,18 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             config.unix_socket_path.clone(),
             config.base_url.clone(),
         );
-        ApiBridge::new(
-            &config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://127.0.0.1:3000".into()),
-            rt.handle().clone(),
-        )
-        .ok()
+        if let Some(socket_path) = config.unix_socket_path.clone() {
+            Some(ApiBridge::new_unix(socket_path, rt.handle().clone()))
+        } else {
+            ApiBridge::new(
+                &config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:3000".into()),
+                rt.handle().clone(),
+            )
+            .ok()
+        }
     };
     tracing::info!(
         api_present = api.is_some(),
@@ -839,6 +843,7 @@ impl AppHandler {
             .with_placeholders(HOME_PROMPT_PLACEHOLDERS, HOME_SHELL_PLACEHOLDERS);
         let mut model_select = ModelSelectDialog::new();
         let mut agent_select = AgentSelectDialog::new();
+        let mut prompt_commands = Vec::new();
 
         // ── 完整启动初始化 ──
         if let Some(ref api) = a {
@@ -850,6 +855,22 @@ impl AppHandler {
                 Ok(ctx) => {
                     tracing::info!(workspace = %ctx.identity.workspace_key, "init: workspace_context loaded");
                     s.working_dir.set(ctx.identity.workspace_key);
+                    if let Some(commands) = ctx.config.command.as_ref() {
+                        prompt_commands = commands
+                            .iter()
+                            .map(|(id, command)| {
+                                (
+                                    id.clone(),
+                                    command.name.clone().unwrap_or_else(|| id.clone()),
+                                    command
+                                        .description
+                                        .clone()
+                                        .unwrap_or_else(|| "Run configured command".to_string()),
+                                )
+                            })
+                            .collect();
+                        prompt_commands.sort_by(|left, right| left.0.cmp(&right.0));
+                    }
                     if !ctx.recent_models.is_empty() {
                         let _ = api.put_recent_models(ctx.recent_models);
                     }
@@ -975,7 +996,7 @@ impl AppHandler {
             store: s,
             api: a,
             prompt,
-            slash_popup: SlashPopup::new(),
+            slash_popup: SlashPopup::with_prompt_commands(prompt_commands),
             model_select,
             agent_select,
             mode_select: ModeSelectDialog::new(),

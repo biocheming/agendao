@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::discovery::{
-    load_agents_from_dir, load_commands_from_dir, load_plugins_from_path, normalize_existing_path,
-};
-use super::transforms::{apply_post_load_transforms, merge_agent_config};
+use super::discovery::{load_plugins_from_path, normalize_existing_path};
+use super::file_ops::get_global_config_paths;
+use super::transforms::apply_post_load_transforms;
 use super::{ConfigLoader, DIRECTORY_CONFIG_FILES};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -127,42 +126,27 @@ impl ConfigLoader {
             return self.load_all(&identity.workspace_root);
         };
 
-        let mut has_local_config = false;
+        // Isolated controls workspace-scoped data authority; it does not create
+        // a second configuration root. Global config remains the base layer and
+        // the workspace-local config only overrides fields it explicitly owns.
+        self.load_global()?;
         for file_name in DIRECTORY_CONFIG_FILES {
             let path = config_dir.join(file_name);
-            if path.exists() {
-                has_local_config = true;
-                self.load_from_file(&path)?;
-            }
+            self.load_from_file(&path)?;
         }
 
-        // A local `.agendao` directory does not automatically imply that it owns
-        // the entire config surface. Only an explicit local `agendao.json(c)`
-        // cuts off global config inheritance.
-        if !has_local_config {
-            self.load_global()?;
-        }
-
-        let commands = load_commands_from_dir(config_dir);
-        if !commands.is_empty() {
-            let mut cmd_map = self.config.command.take().unwrap_or_default();
-            for (name, cmd) in commands {
-                cmd_map.insert(name, cmd);
+        let mut loaded_sidecar_dirs = std::collections::HashSet::new();
+        for global_dir in get_global_config_paths()
+            .into_iter()
+            .filter_map(|path| path.parent().map(normalize_existing_path))
+        {
+            if loaded_sidecar_dirs.insert(global_dir.clone()) {
+                self.load_directory_sidecars(&global_dir)?;
             }
-            self.config.command = Some(cmd_map);
         }
-
-        let agents = load_agents_from_dir(config_dir);
-        if !agents.is_empty() {
-            let mut agent_configs = self.config.agent.take().unwrap_or_default();
-            for (name, agent) in agents {
-                if let Some(existing) = agent_configs.entries.get_mut(&name) {
-                    merge_agent_config(existing, agent);
-                } else {
-                    agent_configs.entries.insert(name, agent);
-                }
-            }
-            self.config.agent = Some(agent_configs);
+        let local_dir = normalize_existing_path(config_dir);
+        if loaded_sidecar_dirs.insert(local_dir.clone()) {
+            self.load_directory_sidecars(&local_dir)?;
         }
         let mut discovered_plugins = std::collections::HashMap::new();
         for plugin_dir in [

@@ -649,16 +649,18 @@ impl MemoryRepository {
             .collect())
     }
 
-    /// Resolve the memory record carrying evidence for a given tool call.
+    /// Resolve the memory record carrying evidence for a session-local tool call.
     /// Used to link skill_write observations back to the tool-result
     /// candidate without relying on the record id derivation scheme.
     pub async fn find_record_id_by_tool_call_evidence(
         &self,
+        session_id: &str,
         tool_call_id: &str,
     ) -> Result<Option<String>, DatabaseError> {
         sqlx::query_scalar::<_, String>(
-            "SELECT memory_id FROM memory_evidence WHERE tool_call_id = ? LIMIT 1",
+            "SELECT memory_id FROM memory_evidence WHERE session_id = ? AND tool_call_id = ? LIMIT 1",
         )
+        .bind(session_id)
         .bind(tool_call_id)
         .fetch_optional(&self.pool)
         .await
@@ -3354,14 +3356,24 @@ mod tests {
         let repo = MemoryRepository::new(db.pool().clone());
         let record = make_memory_record("mem_evidence_lookup", MemoryScope::WorkspaceShared);
         repo.upsert_record(&record).await.unwrap();
+        let mut other_session =
+            make_memory_record("mem_evidence_lookup_other", MemoryScope::WorkspaceShared);
+        other_session.evidence_refs[0].session_id = Some("ses_2".to_string());
+        other_session.source_session_id = Some("ses_2".to_string());
+        repo.upsert_record(&other_session).await.unwrap();
 
         let found = repo
-            .find_record_id_by_tool_call_evidence("call_1")
+            .find_record_id_by_tool_call_evidence("ses_1", "call_1")
             .await
             .unwrap();
         assert_eq!(found.as_deref(), Some("mem_evidence_lookup"));
+        let other_found = repo
+            .find_record_id_by_tool_call_evidence("ses_2", "call_1")
+            .await
+            .unwrap();
+        assert_eq!(other_found.as_deref(), Some("mem_evidence_lookup_other"));
         assert!(repo
-            .find_record_id_by_tool_call_evidence("call_missing")
+            .find_record_id_by_tool_call_evidence("ses_1", "call_missing")
             .await
             .unwrap()
             .is_none());

@@ -557,9 +557,14 @@ async function run() {
       previousActiveSessionId
         ? `(() => {
             const active = document.querySelector('[data-testid="session-item"][data-active="true"]');
-            return Boolean(active && active.dataset.sessionId && active.dataset.sessionId !== ${JSON.stringify(previousActiveSessionId)});
+            return Boolean(
+              active &&
+              active.dataset.sessionId?.startsWith('ses_') &&
+              active.dataset.sessionId !== ${JSON.stringify(previousActiveSessionId)}
+            );
           })()`
-        : "Boolean(document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]'))",
+        : `document.querySelector('[data-testid="session-item"][data-active="true"]')
+            ?.dataset.sessionId?.startsWith('ses_') === true`,
     );
     const sessionId = await activeSessionId(client);
     assert(sessionId, "failed to resolve the newly created active session");
@@ -579,7 +584,18 @@ async function run() {
       client,
       "Boolean(document.querySelector('[data-testid=\"terminal-viewport\"]'))",
     );
-    record("terminal-create", "terminal open created or reused a PTY session and loaded the live terminal surface");
+    const terminalPermissions = await fetchJson(`${BASE_URL}/permission`);
+    for (const pending of terminalPermissions.filter((item) => item.session_id === sessionId)) {
+      await postJson(`${BASE_URL}/permission/${pending.id}/reply`, { reply: "once" });
+    }
+    await waitForExpression(
+      client,
+      "document.querySelector('[data-testid=\"composer-input\"]')?.disabled === false",
+    );
+    record(
+      "terminal-create",
+      "terminal open created or reused a PTY session, resolved its permission gate, and loaded the live terminal surface",
+    );
 
     await postJson(`${BASE_URL}/experimental/frontend-smoke/question`, {
       session_id: sessionId,

@@ -958,6 +958,11 @@ fn rule_hit(
     if let Some(memory_id) = memory_id.as_ref() {
         hasher.update(memory_id.0.as_bytes());
     }
+    // Reflection hits often have no memory id, so their detail is the only
+    // field that distinguishes multiple findings emitted by the same rule.
+    if let Some(detail) = detail.as_deref() {
+        hasher.update(detail.as_bytes());
+    }
     let digest = format!("{:x}", hasher.finalize());
 
     MemoryRuleHit {
@@ -1076,5 +1081,27 @@ mod tests {
             methodology.derived_skill_name.as_deref(),
             Some("provider-refresh")
         );
+    }
+
+    #[test]
+    fn rule_hit_ids_distinguish_reflection_details_without_memory_ids() {
+        let left = rule_hit(
+            "run-1",
+            Some(REFLECTION_PACK_ID),
+            None,
+            "reflection.extract_methodology_scope",
+            Some("Merged overlapping records.".to_string()),
+            10,
+        );
+        let right = rule_hit(
+            "run-1",
+            Some(REFLECTION_PACK_ID),
+            None,
+            "reflection.extract_methodology_scope",
+            Some("Promoted a lesson cluster.".to_string()),
+            10,
+        );
+
+        assert_ne!(left.id, right.id);
     }
 }

@@ -1406,7 +1406,7 @@ impl AsyncApiClient {
         &self,
         status: &str,
     ) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
-        let url = format!("/skill/proposal/?status={}", status);
+        let url = skill_proposals_path(status);
         self.get_json(&url, "list skill proposals").await
     }
 
@@ -1442,5 +1442,22 @@ impl AsyncApiClient {
     ) -> anyhow::Result<T> {
         let bytes = Self::expect_success(resp, action).await?;
         Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
+fn skill_proposals_path(status: &str) -> String {
+    format!("/skill/proposal?status={status}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skill_proposals_path;
+
+    #[test]
+    fn skill_proposals_path_matches_nested_route_without_trailing_slash() {
+        assert_eq!(
+            skill_proposals_path("draft"),
+            "/skill/proposal?status=draft"
+        );
     }
 }

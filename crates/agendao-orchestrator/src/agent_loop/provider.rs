@@ -316,6 +316,14 @@ async fn collect_stream(
             _ => {}
         }
     }
+    tracing::debug!(
+        provider_id,
+        model_id,
+        reasoning_chars = reasoning.chars().count(),
+        text_chars = text.chars().count(),
+        tool_call_count = tool_calls.len(),
+        "collected scheduler provider turn"
+    );
     Ok(AssistantTurn {
         content: (!text.is_empty()).then_some(text),
         reasoning: (!reasoning.is_empty()).then_some(reasoning),

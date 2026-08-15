@@ -39,9 +39,16 @@ pub(in crate::run) async fn run_cli_prompt_local(
     } = request;
     let session_id =
         resolve_local_session(state, continue_last, session, fork, title, directory).await?;
+    let previous_assistant_id =
+        local_server_bridge::local_list_messages(Arc::clone(state), &session_id)
+            .await?
+            .into_iter()
+            .rev()
+            .find(|message| message.role != "user")
+            .map(|message| message.id);
 
     let message = build_prompt_message(input, command);
-    local_server_bridge::local_prompt(
+    let response = local_server_bridge::local_prompt(
         Arc::clone(state),
         &session_id,
         agendao_client::PromptRequest {
@@ -61,8 +68,38 @@ pub(in crate::run) async fn run_cli_prompt_local(
     )
     .await?;
 
-    let messages = local_server_bridge::local_list_messages(Arc::clone(state), &session_id).await?;
-    print_assistant_messages(&messages);
+    if response.status == "awaiting_user" {
+        anyhow::bail!(
+            "prompt is awaiting user input{}",
+            response
+                .pending_question_id
+                .as_deref()
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default()
+        );
+    }
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(1_800), async {
+        loop {
+            let messages =
+                local_server_bridge::local_list_messages(Arc::clone(state), &session_id).await?;
+            if let Some(message) = messages.into_iter().rev().find(|message| {
+                message.role != "user"
+                    && previous_assistant_id.as_deref() != Some(message.id.as_str())
+                    && message.finish.is_some()
+            }) {
+                return Ok::<_, anyhow::Error>(message);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("prompt execution timed out"))??;
+
+    if let Some(error) = completed.error.as_deref() {
+        anyhow::bail!("prompt execution failed: {error}");
+    }
+    print_assistant_messages(std::slice::from_ref(&completed));
     Ok(())
 }
 

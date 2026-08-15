@@ -790,7 +790,7 @@ impl MemoryAuthority {
             // in its evidence row; resolving via evidence keeps this lookup
             // independent of the record id derivation scheme.
             let exact_record_id = repository
-                .find_record_id_by_tool_call_evidence(tool_call_id)
+                .find_record_id_by_tool_call_evidence(observation.session_id, tool_call_id)
                 .await?;
             if let Some(record_id) = exact_record_id {
                 if let Some(record) = repository.get_record(&record_id).await? {
@@ -2123,7 +2123,7 @@ mod tests {
 
         // The evidence row tracks the most recent tool call.
         let resolved = repository
-            .find_record_id_by_tool_call_evidence("call_2")
+            .find_record_id_by_tool_call_evidence("ses_2", "call_2")
             .await
             .expect("evidence lookup should succeed");
         assert_eq!(resolved.as_deref(), Some(first.id.0.as_str()));

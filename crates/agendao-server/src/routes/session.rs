@@ -40,10 +40,10 @@ pub use self::local_api::{
     local_list_tools, local_manage_skill, local_patch_config, local_preflight_multimodal,
     local_prompt, local_put_disabled_config, local_put_mcp_config, local_put_plugin_config,
     local_put_provider_model_config, local_put_recent_models, local_refresh_provider_catalog,
-    local_register_provider, local_reject_question, local_remove_mcp_auth, local_reply_permission,
-    local_reply_question, local_resolve_provider_connect, local_set_provider_disabled,
-    local_start_mcp_auth, local_test_provider_connection, local_update_provider,
-    local_update_session_title, local_update_skill_proposal_status,
+    local_register_provider, local_reject_question, local_reload_config, local_remove_mcp_auth,
+    local_reply_permission, local_reply_question, local_resolve_provider_connect,
+    local_set_provider_disabled, local_start_mcp_auth, local_test_provider_connection,
+    local_update_provider, local_update_session_title, local_update_skill_proposal_status,
 };
 pub(crate) use self::scheduler::{
     scheduler_host_tool_definitions, SessionSchedulerToolExecutor,

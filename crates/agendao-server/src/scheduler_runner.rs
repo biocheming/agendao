@@ -2,6 +2,7 @@ use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_orchestrator::agent_loop::{
     AgentLoopObserver, AgentObservationContext, CancellationFlag, ModelRoute, ProviderModelBackend,
+    ToolCall, ToolExecution,
 };
 use agendao_orchestrator::blueprint::{
     AgentId, BlueprintName, CapabilityId, EvaluatorId, ExecutionLimits, ModelCapability,
@@ -77,6 +78,15 @@ pub struct SchedulerRunOutput {
     pub blueprint: SchedulerBlueprint,
     pub fingerprint: String,
     pub source: SelectionSource,
+    pub review: SchedulerReviewSignals,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchedulerReviewSignals {
+    pub tool_call_count: usize,
+    pub error_tool_call_count: usize,
+    pub skill_write_count: usize,
+    pub used_skill_names: Vec<String>,
 }
 
 struct SchedulerEventChannel(tokio::sync::mpsc::UnboundedSender<ExecutionEvent>);
@@ -84,10 +94,81 @@ struct SchedulerEventChannel(tokio::sync::mpsc::UnboundedSender<ExecutionEvent>)
 struct SchedulerAgentObserver {
     state: Arc<ServerState>,
     session_id: String,
+    tool_call_count: AtomicU64,
+    error_tool_call_count: AtomicU64,
+    skill_write_count: AtomicU64,
 }
 
 #[async_trait]
 impl AgentLoopObserver for SchedulerAgentObserver {
+    async fn tool_finished(
+        &self,
+        context: &AgentObservationContext<'_>,
+        call: &ToolCall,
+        result: &ToolExecution,
+    ) -> Result<(), String> {
+        self.tool_call_count.fetch_add(1, Ordering::Relaxed);
+        if result.is_error {
+            self.error_tool_call_count.fetch_add(1, Ordering::Relaxed);
+        }
+        let memory = self.state.runtime_memory.memory_authority();
+        if let Err(error) = memory
+            .ingest_tool_result_observation(&agendao_memory::ToolMemoryObservation {
+                session_id: &self.session_id,
+                tool_call_id: &call.id,
+                tool_name: call.tool.as_str(),
+                stage_id: Some(context.node_path),
+                output: &result.output,
+                is_error: result.is_error,
+            })
+            .await
+        {
+            tracing::warn!(
+                %error,
+                session_id = %self.session_id,
+                tool_call_id = %call.id,
+                tool = %call.tool.as_str(),
+                stage_id = %context.node_path,
+                "failed to ingest scheduler tool result into memory"
+            );
+        }
+
+        if call.tool.as_str() == "skill_manage" && !result.is_error {
+            self.skill_write_count.fetch_add(1, Ordering::Relaxed);
+            if let Some((action, name, location, supporting_file, guard_report)) =
+                scheduler_skill_write_metadata(result)
+            {
+                if let Err(error) = memory
+                    .ingest_skill_write_observation(&agendao_memory::SkillWriteObservation {
+                        session_id: &self.session_id,
+                        tool_call_id: Some(&call.id),
+                        skill_name: name,
+                        action,
+                        location,
+                        supporting_file,
+                        guard_report: guard_report.as_ref(),
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        session_id = %self.session_id,
+                        tool_call_id = %call.id,
+                        skill = %name,
+                        "failed to link scheduler skill write to memory"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    tool_call_id = %call.id,
+                    "scheduler skill_manage result omitted required write metadata"
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn take_boundary_inputs(
         &self,
         _context: &AgentObservationContext<'_>,
@@ -228,6 +309,40 @@ impl AgentLoopObserver for SchedulerAgentObserver {
     }
 }
 
+fn scheduler_skill_write_metadata(
+    result: &ToolExecution,
+) -> Option<(
+    &'static str,
+    &str,
+    Option<&str>,
+    Option<&str>,
+    Option<agendao_types::SkillGuardReport>,
+)> {
+    let metadata = result.metadata.as_ref()?.as_object()?;
+    let action = match metadata.get("action")?.as_str()? {
+        "created" | "create" => "create",
+        "patched" | "patch" => "patch",
+        "edited" | "edit" => "edit",
+        "supporting_file_written" | "write_file" => "write_file",
+        "supporting_file_removed" | "remove_file" => "remove_file",
+        "deleted" | "delete" => "delete",
+        _ => return None,
+    };
+    let name = metadata.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let location = metadata.get("location").and_then(serde_json::Value::as_str);
+    let supporting_file = metadata
+        .get("file_path")
+        .and_then(serde_json::Value::as_str);
+    let guard_report = metadata
+        .get("guard_report")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    Some((action, name, location, supporting_file, guard_report))
+}
+
 impl EventSink for SchedulerEventChannel {
     fn emit(&self, event: ExecutionEvent) {
         let _ = self.0.send(event);
@@ -340,7 +455,14 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     let agent_observer = SchedulerAgentObserver {
         state: input.state.clone(),
         session_id: input.session_id.clone(),
+        tool_call_count: AtomicU64::new(0),
+        error_tool_call_count: AtomicU64::new(0),
+        skill_write_count: AtomicU64::new(0),
     };
+    let used_skill_names = selected_skill_tool_surfaces(blueprint.blueprint())
+        .keys()
+        .map(|skill| skill.0.clone())
+        .collect::<Vec<_>>();
     let projection_task = tokio::spawn(project_scheduler_events(
         input.state.clone(),
         input.session_id.clone(),
@@ -384,6 +506,13 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         blueprint: blueprint.blueprint().clone(),
         fingerprint: blueprint.fingerprint().to_string(),
         source: selection.source,
+        review: SchedulerReviewSignals {
+            tool_call_count: agent_observer.tool_call_count.load(Ordering::Relaxed) as usize,
+            error_tool_call_count: agent_observer.error_tool_call_count.load(Ordering::Relaxed)
+                as usize,
+            skill_write_count: agent_observer.skill_write_count.load(Ordering::Relaxed) as usize,
+            used_skill_names,
+        },
     })
 }
 
@@ -725,10 +854,13 @@ fn build_policy(
         .filter(|(_, tool)| tool.permission != PermissionClass::DenyByDefault)
         .map(|(id, _)| id.clone())
         .collect::<BTreeSet<_>>();
+    // Ask permits governed scheduler capabilities: the tools that produce
+    // mutations still pass through their normal interactive permission gate,
+    // while checkpoint restore remains the safety rollback for those writes.
     let allowed_capabilities = catalog
         .capabilities
         .iter()
-        .filter(|(_, capability)| capability_effect_is_automatic(config, capability.effect))
+        .filter(|(_, capability)| capability_effect_is_allowed(config, capability.effect))
         .map(|(id, _)| id.clone())
         .collect::<BTreeSet<_>>();
     let allowed_effects = catalog
@@ -799,7 +931,7 @@ fn map_permission_action(
     }
 }
 
-fn capability_effect_is_automatic(config: &agendao_config::Config, effect: EffectClass) -> bool {
+fn capability_effect_is_allowed(config: &agendao_config::Config, effect: EffectClass) -> bool {
     let representative_tool = match effect {
         EffectClass::ReadOnly => "read",
         EffectClass::WorkspaceMutation => "write",
@@ -808,7 +940,7 @@ fn capability_effect_is_automatic(config: &agendao_config::Config, effect: Effec
         EffectClass::ExternalMutation => "question",
     };
     configured_tool_permission(config, representative_tool)
-        == agendao_permission::PermissionAction::Allow
+        != agendao_permission::PermissionAction::Deny
 }
 
 fn primary_agent(agents: &AgentRegistry, requested: Option<&AgentId>) -> Result<AgentId, String> {
@@ -1622,9 +1754,85 @@ fn tool_effect(tool: &str) -> EffectClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_runtime::memory::RuntimeMemoryAuthority;
+    use agendao_config::ConfigStore;
+    use agendao_memory::MemoryAuthority;
     use agendao_orchestrator::blueprint::{
         AgentNode, BlueprintSchemaVersion, EndNode, NodeId, NodeSpec,
     };
+    use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
+    use agendao_state::UserStateAuthority;
+    use agendao_storage::{Database, MemoryRepository};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn scheduler_tool_completion_is_persisted_as_memory() {
+        crate::isolate_test_config_home();
+        let workspace = tempdir().expect("workspace");
+        let config_store = Arc::new(
+            ConfigStore::from_project_dir(workspace.path()).expect("workspace config store"),
+        );
+        let user_state = Arc::new(UserStateAuthority::from_config_store(&config_store));
+        let resolved_context = Arc::new(ResolvedWorkspaceContextAuthority::new(
+            config_store.clone(),
+            user_state.clone(),
+        ));
+        let database = Database::in_memory().await.expect("in-memory database");
+        let repository = Arc::new(MemoryRepository::new(database.pool().clone()));
+        let mut state = ServerState::new();
+        state.workspace_root = workspace.path().to_path_buf();
+        state.config_store = config_store;
+        state.user_state = user_state.clone();
+        state.resolved_context_authority = resolved_context.clone();
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(
+            MemoryAuthority::new(user_state, resolved_context).with_repository(repository),
+        )));
+        let state = Arc::new(state);
+        let observer = SchedulerAgentObserver {
+            state: state.clone(),
+            session_id: "scheduler-memory-session".to_string(),
+            tool_call_count: AtomicU64::new(0),
+            error_tool_call_count: AtomicU64::new(0),
+            skill_write_count: AtomicU64::new(0),
+        };
+        let agent = AgentId::from("worker");
+        let context = AgentObservationContext {
+            node_path: "execute",
+            agent: &agent,
+        };
+        let call = ToolCall {
+            id: "tool-call-1".to_string(),
+            tool: ToolId::from("skill_manage"),
+            arguments: serde_json::json!({"action": "patch", "name": "e2e-skill"}),
+        };
+        let result = ToolExecution {
+            output: "SCHEDULER_MEMORY_EVIDENCE".to_string(),
+            title: None,
+            metadata: Some(serde_json::json!({
+                "action": "patched",
+                "name": "e2e-skill",
+                "location": workspace.path().join(".agendao/skills/e2e-skill/SKILL.md"),
+            })),
+            is_error: false,
+        };
+
+        observer
+            .tool_finished(&context, &call, &result)
+            .await
+            .expect("memory ingestion must not fail the observer");
+
+        let records = state
+            .runtime_memory
+            .list_memory(None)
+            .await
+            .expect("memory query");
+        assert!(records.iter().any(|record| {
+            record.title == "Methodology candidate linked to skill e2e-skill"
+                && record.summary.contains("e2e-skill")
+        }));
+        assert_eq!(observer.tool_call_count.load(Ordering::Relaxed), 1);
+        assert_eq!(observer.skill_write_count.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn classification_keeps_simple_work_on_direct_path() {
@@ -1942,11 +2150,26 @@ mod tests {
         assert!(!policy
             .allowed_effects
             .contains(&EffectClass::ProcessExecution));
-        assert!(policy.allowed_capabilities.is_empty());
+        assert!(policy
+            .allowed_capabilities
+            .contains(&CapabilityId::from("workspace-checkpoint")));
         assert_eq!(policy.workspace_limits.max_files, 12);
         assert_eq!(policy.workspace_limits.max_total_bytes, 34_000);
         assert_eq!(policy.workspace_limits.min_free_disk_bytes, 56_000);
         assert_eq!(policy.workspace_limits.operation_timeout_ms, 7_000);
+
+        let mut denied_config = config.clone();
+        denied_config
+            .permission
+            .as_mut()
+            .expect("permission config")
+            .rules
+            .insert(
+                "edit".to_string(),
+                agendao_config::PermissionRule::Action(agendao_config::PermissionAction::Deny),
+            );
+        let denied_policy = build_policy(&denied_config, &catalog, limits, &budget);
+        assert!(denied_policy.allowed_capabilities.is_empty());
     }
 
     #[test]

@@ -140,13 +140,18 @@ impl ConfigStore {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no project directory set for config reload"))?;
         let resolved = ConfigAuthority::resolve(project_dir)?;
-        let config = resolved.config;
-        let new_arc = Arc::new(config);
+        let mut project_dir_guard = self.write_project_dir()?;
+        let mut identity_guard = self.write_workspace_identity()?;
+        let mut mode_guard = self.write_workspace_mode()?;
+        let new_project_dir = resolved.inputs.identity.workspace_root.clone();
+        let new_arc = Arc::new(resolved.config);
+
+        *project_dir_guard = Some(new_project_dir);
+        *identity_guard = Some(resolved.inputs.identity);
+        *mode_guard = resolved.inputs.mode;
         self.base.store(new_arc.clone());
+        self.invalidate_plugin_cache_blocking();
         self.revision.fetch_add(1, Ordering::Relaxed);
-        *self.write_workspace_identity()? = Some(resolved.inputs.identity);
-        *self.write_workspace_mode()? = resolved.inputs.mode;
-        self.invalidate_plugin_cache().await;
         Ok(new_arc)
     }
 
@@ -389,8 +394,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn patch_persists_to_disk_when_project_dir_is_known() {
+    #[test]
+    fn patch_persists_to_disk_when_project_dir_is_known() {
         let temp = TestDir::new("agendao_config_store_patch");
         fs::create_dir_all(temp.path.join(".agendao")).expect("create config dir");
         fs::write(
@@ -399,14 +404,21 @@ mod tests {
         )
         .expect("seed config");
 
-        let store = ConfigStore::from_project_dir(&temp.path).expect("store");
+        let store = ConfigStore::new(Config {
+            model: Some("before".to_string()),
+            ..Default::default()
+        });
+        *store.project_dir.write().expect("project_dir") = Some(temp.path.clone());
         store
             .patch(serde_json::json!({
                 "uiPreferences": { "showThinking": true }
             }))
             .expect("patch");
 
-        let reloaded = store.reload().await.expect("reload");
+        let reloaded: Config = serde_json::from_str(
+            &fs::read_to_string(temp.path.join(".agendao/agendao.json")).expect("read config"),
+        )
+        .expect("parse config");
         let ui = reloaded.ui_preferences.as_ref().expect("ui preferences");
         assert_eq!(reloaded.model.as_deref(), Some("before"));
         assert_eq!(ui.show_thinking, Some(true));
@@ -422,7 +434,11 @@ mod tests {
         )
         .expect("seed config");
 
-        let store = Arc::new(ConfigStore::from_project_dir(&temp.path).expect("store"));
+        let store = Arc::new(ConfigStore::new(Config {
+            model: Some("before".to_string()),
+            ..Default::default()
+        }));
+        *store.project_dir.write().expect("project_dir") = Some(temp.path.clone());
         let write_guard = store.project_dir.write().expect("project_dir poisoned");
         let store_clone = store.clone();
 
@@ -438,14 +454,17 @@ mod tests {
         drop(write_guard);
         worker.join().expect("worker join");
 
-        let reloaded = crate::load_config(&temp.path).expect("reload from disk");
+        let reloaded: Config = serde_json::from_str(
+            &fs::read_to_string(temp.path.join(".agendao/agendao.json")).expect("read config"),
+        )
+        .expect("parse config");
         let ui = reloaded.ui_preferences.as_ref().expect("ui preferences");
         assert_eq!(reloaded.model.as_deref(), Some("before"));
         assert_eq!(ui.show_thinking, Some(true));
     }
 
-    #[tokio::test]
-    async fn replace_with_persists_full_config_when_project_dir_is_known() {
+    #[test]
+    fn replace_with_persists_full_config_when_project_dir_is_known() {
         let temp = TestDir::new("agendao_config_store_replace");
         fs::create_dir_all(temp.path.join(".agendao")).expect("create config dir");
         fs::write(
@@ -454,7 +473,17 @@ mod tests {
         )
         .expect("seed config");
 
-        let store = ConfigStore::from_project_dir(&temp.path).expect("store");
+        let store = ConfigStore::new(Config {
+            provider: Some(HashMap::from([(
+                "old".to_string(),
+                crate::schema::ProviderConfig {
+                    name: Some("Old".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        });
+        *store.project_dir.write().expect("project_dir") = Some(temp.path.clone());
         store
             .replace_with(|config| {
                 config.provider = Some(HashMap::from([(
@@ -468,7 +497,10 @@ mod tests {
             })
             .expect("replace");
 
-        let reloaded = store.reload().await.expect("reload");
+        let reloaded: Config = serde_json::from_str(
+            &fs::read_to_string(temp.path.join(".agendao/agendao.json")).expect("read config"),
+        )
+        .expect("parse config");
         let providers = reloaded.provider.as_ref().expect("provider map");
         assert!(providers.get("old").is_none());
         assert_eq!(

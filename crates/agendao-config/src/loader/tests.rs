@@ -1,9 +1,7 @@
 use super::file_ops::{
     parse_external_tool_catalog_jsonc, parse_jsonc, resolve_file_references, substitute_env_vars,
 };
-use super::markdown_parser::{
-    parse_markdown_agent, parse_markdown_command, serde_yaml_frontmatter_to_json, split_frontmatter,
-};
+use super::markdown_parser::{parse_markdown_agent, parse_markdown_command, split_frontmatter};
 use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::*;
 use crate::{ShareMode, UiPreferencesConfig};
@@ -242,6 +240,7 @@ fn test_resolve_uses_current_directory_dot_agendao_for_isolated_workspace() {
     let temp = TestDir::new("agendao_config_dotdir");
     let root = temp.path.join("repo");
     let child = root.join("service");
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", temp.path.join("home"));
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::create_dir_all(root.join(".agendao")).unwrap();
     fs::create_dir_all(child.join(".agendao")).unwrap();
@@ -297,8 +296,8 @@ fn test_isolated_workspace_without_local_agendao_config_still_inherits_global_co
 }
 
 #[test]
-fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
-    let temp = TestDir::new("agendao_isolated_local_config_cuts_global");
+fn test_isolated_workspace_merges_local_config_over_global_config() {
+    let temp = TestDir::new("agendao_isolated_local_config_overrides_global");
     let root = temp.path.join("repo");
     let child = root.join("service");
     let local_agendao_dir = child.join(".agendao");
@@ -315,7 +314,7 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
     .unwrap();
     fs::write(
         local_agendao_dir.join("agendao.json"),
-        r#"{ "default_agent": "reviewer" }"#,
+        r#"{ "default_agent": "reviewer", "theme": "dark" }"#,
     )
     .unwrap();
 
@@ -326,8 +325,58 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
 
     assert_eq!(resolved.inputs.mode, WorkspaceMode::Isolated);
     assert_eq!(cfg.default_agent.as_deref(), Some("reviewer"));
-    assert_eq!(cfg.model.as_deref(), None);
-    assert_eq!(cfg.theme.as_deref(), None);
+    assert_eq!(cfg.model.as_deref(), Some("global-model"));
+    assert_eq!(cfg.theme.as_deref(), Some("dark"));
+}
+
+#[test]
+fn test_isolated_workspace_merges_global_and_local_agent_command_sidecars() {
+    let temp = TestDir::new("agendao_isolated_sidecar_inheritance");
+    let workspace = temp.path.join("workspace");
+    let local_dir = workspace.join(".agendao");
+    let global_dir = temp.path.join("home");
+    fs::create_dir_all(global_dir.join("agents")).unwrap();
+    fs::create_dir_all(global_dir.join("commands")).unwrap();
+    fs::create_dir_all(local_dir.join("agents")).unwrap();
+    fs::create_dir_all(local_dir.join("commands")).unwrap();
+    fs::write(local_dir.join("agendao.json"), r#"{ "theme": "dark" }"#).unwrap();
+    fs::write(
+        global_dir.join("agents/reviewer.md"),
+        "---\ndescription: Global reviewer\nmodel: global-model\nsteps: 7\n---\nGlobal policy.",
+    )
+    .unwrap();
+    fs::write(
+        global_dir.join("agents/global-only.md"),
+        "---\ndescription: Global only\n---\nGlobal-only policy.",
+    )
+    .unwrap();
+    fs::write(
+        local_dir.join("agents/reviewer.md"),
+        "---\ndescription: Local reviewer\n---\nLocal policy.",
+    )
+    .unwrap();
+    fs::write(
+        global_dir.join("commands/audit.md"),
+        "Run the global audit.",
+    )
+    .unwrap();
+    fs::write(local_dir.join("commands/audit.md"), "Run the local audit.").unwrap();
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", &global_dir);
+
+    let resolved = ConfigAuthority::resolve(&workspace).unwrap();
+    let agents = resolved.config.agent.expect("agent sidecars").entries;
+    let reviewer = agents.get("reviewer").expect("merged reviewer");
+    assert_eq!(reviewer.description.as_deref(), Some("Local reviewer"));
+    assert_eq!(reviewer.model.as_deref(), Some("global-model"));
+    assert_eq!(reviewer.steps, Some(7));
+    assert_eq!(reviewer.prompt.as_deref(), Some("Local policy."));
+    assert!(agents.contains_key("global-only"));
+
+    let commands = resolved.config.command.expect("command sidecars");
+    assert_eq!(
+        commands["audit"].template.as_deref(),
+        Some("Run the local audit.")
+    );
 }
 
 #[test]
@@ -1220,7 +1269,7 @@ fn test_update_global_config_preserves_existing_json_file() {
 #[test]
 fn test_split_frontmatter_basic() {
     let content = "---\nname: test\ndescription: hello\n---\nBody content here.";
-    let (fm, body) = split_frontmatter(content);
+    let (fm, body) = split_frontmatter(content).unwrap();
     assert!(fm.is_some());
     let fm = fm.unwrap();
     assert!(fm.contains("name: test"));
@@ -1231,110 +1280,9 @@ fn test_split_frontmatter_basic() {
 #[test]
 fn test_split_frontmatter_no_frontmatter() {
     let content = "Just a regular markdown file.";
-    let (fm, body) = split_frontmatter(content);
+    let (fm, body) = split_frontmatter(content).unwrap();
     assert!(fm.is_none());
     assert_eq!(body, content);
-}
-
-#[test]
-fn test_yaml_frontmatter_flat_key_values() {
-    let yaml = "name: reviewer\ndescription: Review code\nmodel: test-model-large";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    assert_eq!(json["name"], "reviewer");
-    assert_eq!(json["description"], "Review code");
-    assert_eq!(json["model"], "test-model-large");
-}
-
-#[test]
-fn test_yaml_frontmatter_booleans_and_numbers() {
-    let yaml = "disable: true\nhidden: false\nsteps: 100\ntemperature: 0.7";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    assert_eq!(json["disable"], true);
-    assert_eq!(json["hidden"], false);
-    assert_eq!(json["steps"], 100);
-    assert_eq!(json["temperature"], 0.7);
-}
-
-#[test]
-fn test_yaml_frontmatter_inline_list() {
-    let yaml = "tools: [bash, read, write]";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let tools = json["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
-    assert_eq!(tools[0], "bash");
-    assert_eq!(tools[1], "read");
-    assert_eq!(tools[2], "write");
-}
-
-#[test]
-fn test_yaml_frontmatter_dash_list() {
-    let yaml = "tools:\n  - bash\n  - read\n  - write";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let tools = json["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
-    assert_eq!(tools[0], "bash");
-    assert_eq!(tools[1], "read");
-    assert_eq!(tools[2], "write");
-}
-
-#[test]
-fn test_yaml_frontmatter_nested_object() {
-    let yaml = "tools:\n  bash: true\n  read: false";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let tools = json["tools"].as_object().unwrap();
-    assert_eq!(tools["bash"], true);
-    assert_eq!(tools["read"], false);
-}
-
-#[test]
-fn test_yaml_frontmatter_block_scalar_literal() {
-    let yaml = "prompt: |\n  Line one\n  Line two";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let prompt = json["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Line one"));
-    assert!(prompt.contains("Line two"));
-}
-
-#[test]
-fn test_yaml_frontmatter_block_scalar_strip() {
-    let yaml = "prompt: |-\n  Line one\n  Line two";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let prompt = json["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Line one"));
-    assert!(!prompt.ends_with('\n'));
-}
-
-#[test]
-fn test_yaml_frontmatter_comments_skipped() {
-    let yaml = "# This is a comment\nname: test\n# Another comment\ndescription: hello";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    assert_eq!(json["name"], "test");
-    assert_eq!(json["description"], "hello");
-}
-
-#[test]
-fn test_yaml_frontmatter_quoted_values() {
-    let yaml = "name: \"quoted value\"\ndescription: 'single quoted'";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    assert_eq!(json["name"], "quoted value");
-    assert_eq!(json["description"], "single quoted");
-}
-
-#[test]
-fn test_yaml_frontmatter_inline_map() {
-    let yaml = "options: {verbose: true, timeout: 30}";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    let options = json["options"].as_object().unwrap();
-    assert_eq!(options["verbose"], true);
-    assert_eq!(options["timeout"], 30);
-}
-
-#[test]
-fn test_yaml_frontmatter_empty_value() {
-    let yaml = "name:\ndescription: hello";
-    let json = serde_yaml_frontmatter_to_json(yaml);
-    assert!(json["name"].is_null());
-    assert_eq!(json["description"], "hello");
 }
 
 #[test]
@@ -1344,16 +1292,15 @@ fn test_parse_markdown_agent_with_frontmatter() {
     fs::create_dir_all(&agent_dir).unwrap();
     fs::write(
         agent_dir.join("reviewer.md"),
-        "---\ndescription: Reviews code changes\nmode: subagent\nmodel: test-model-large\n---\n\nYou are a code reviewer.\n",
+        "---\ndescription: Reviews code changes\nmode: subagent\nmodel: test-model-large\nmaxSteps: 17\n---\n\nYou are a code reviewer.\n",
     )
     .unwrap();
 
-    let result = parse_markdown_agent(&agent_dir.join("reviewer.md"), &temp.path);
-    assert!(result.is_some());
-    let (name, config) = result.unwrap();
+    let (name, config) = parse_markdown_agent(&agent_dir.join("reviewer.md"), &temp.path).unwrap();
     assert_eq!(name, "reviewer");
     assert_eq!(config.description.as_deref(), Some("Reviews code changes"));
     assert_eq!(config.model.as_deref(), Some("test-model-large"));
+    assert_eq!(config.max_steps, Some(17));
     assert!(config.prompt.unwrap().contains("You are a code reviewer."));
 }
 
@@ -1368,9 +1315,7 @@ fn test_parse_markdown_command_with_frontmatter() {
     )
     .unwrap();
 
-    let result = parse_markdown_command(&cmd_dir.join("review.md"), &temp.path);
-    assert!(result.is_some());
-    let (name, config) = result.unwrap();
+    let (name, config) = parse_markdown_command(&cmd_dir.join("review.md"), &temp.path).unwrap();
     assert_eq!(name, "review");
     assert_eq!(config.description.as_deref(), Some("Run a code review"));
     assert_eq!(config.agent.as_deref(), Some("reviewer"));
@@ -1391,9 +1336,7 @@ fn test_parse_markdown_agent_with_tools_map() {
     )
     .unwrap();
 
-    let result = parse_markdown_agent(&agent_dir.join("safe.md"), &temp.path);
-    assert!(result.is_some());
-    let (_name, config) = result.unwrap();
+    let (_name, config) = parse_markdown_agent(&agent_dir.join("safe.md"), &temp.path).unwrap();
     assert_eq!(config.description.as_deref(), Some("Safe agent"));
     let tools = config.tools.unwrap();
     assert_eq!(tools.get("bash"), Some(&false));
@@ -1411,9 +1354,62 @@ fn test_parse_markdown_agent_colon_in_quoted_description() {
     )
     .unwrap();
 
-    let result = parse_markdown_agent(&agent_dir.join("tricky.md"), &temp.path);
-    assert!(result.is_some());
-    let (_name, config) = result.unwrap();
+    let (_name, config) = parse_markdown_agent(&agent_dir.join("tricky.md"), &temp.path).unwrap();
     let desc = config.description.unwrap();
     assert!(desc.contains("model: test-model"));
+}
+
+#[test]
+fn test_parse_markdown_agent_rejects_unknown_frontmatter_field_with_path() {
+    let temp = TestDir::new("agendao_md_agent_unknown_field");
+    let agent_dir = temp.path.join("agents");
+    let agent_path = agent_dir.join("broken.md");
+    fs::create_dir_all(&agent_dir).unwrap();
+    fs::write(
+        &agent_path,
+        "---\ndescription: Broken\nmaxStepz: 4\n---\nPrompt.\n",
+    )
+    .unwrap();
+
+    let error = parse_markdown_agent(&agent_path, &temp.path).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains(&agent_path.display().to_string()));
+    assert!(message.contains("unknown field `maxStepz`"));
+}
+
+#[test]
+fn test_parse_markdown_agent_rejects_unclosed_frontmatter_with_path() {
+    let temp = TestDir::new("agendao_md_agent_unclosed_frontmatter");
+    let agent_dir = temp.path.join("agents");
+    let agent_path = agent_dir.join("broken.md");
+    fs::create_dir_all(&agent_dir).unwrap();
+    fs::write(
+        &agent_path,
+        "---\ndescription: Broken\nPrompt without delimiter.\n",
+    )
+    .unwrap();
+
+    let error = parse_markdown_agent(&agent_path, &temp.path).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains(&agent_path.display().to_string()));
+    assert!(message.contains("no closing delimiter"));
+}
+
+#[test]
+fn test_config_authority_rejects_invalid_agent_sidecar() {
+    let temp = TestDir::new("agendao_authority_invalid_agent");
+    let workspace = temp.path.join("workspace");
+    let agent_dir = workspace.join(".agendao/agents");
+    let agent_path = agent_dir.join("broken.md");
+    let global_dir = temp.path.join("home");
+    fs::create_dir_all(&agent_dir).unwrap();
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::write(workspace.join(".agendao/agendao.json"), "{}").unwrap();
+    fs::write(&agent_path, "---\nmaxStepz: 4\n---\nPrompt.\n").unwrap();
+    let _home = ScopedEnvVar::set("AGENDAO_HOME", global_dir);
+
+    let error = ConfigAuthority::resolve(&workspace).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains(&agent_path.display().to_string()));
+    assert!(message.contains("unknown field `maxStepz`"));
 }

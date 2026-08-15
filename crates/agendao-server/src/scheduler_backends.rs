@@ -6,6 +6,7 @@ use agendao_orchestrator::blueprint::EvaluatorId;
 use agendao_orchestrator::context::NodeResult;
 use agendao_orchestrator::engine::{Evaluation, EvaluationOutcome, EvaluatorBackend};
 use agendao_orchestrator::selector::{PlannerBackend, PlannerDecision, PlannerInput};
+use agendao_orchestrator::templates::{build_template, TemplateId};
 use agendao_provider::{Content, Message, Provider};
 use agendao_tool::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
@@ -90,7 +91,7 @@ impl PlannerBackend for ModelPlannerBackend {
                 Vec::new(),
                 Some(false),
                 Some(
-                    "Select an AgenDao scheduler. Return exactly one JSON object matching the requested typed decision. A create-blueprint decision must contain both `blueprint` and `agents`; use an empty agents array when no specialization is needed. A generated agent may only declare `id`, `base_agent`, and `system_policy`; its id must be new lowercase kebab-case and it inherits all tools, skills, model capabilities, permissions, and model routing from base_agent. Use only catalog IDs, stay within policy limits, and never add prose or markdown fences."
+                    "Select an AgenDao scheduler. Return exactly one JSON object using one of the `decision_examples` shapes in the input. Preserve every required field. For `use-template`, copy `default_parameters` and change only values needed by the task. A `create-blueprint` decision must contain both `blueprint` and `agents`; use an empty agents array when no specialization is needed. A generated agent may only declare `id`, `base_agent`, and `system_policy`; its id must be new lowercase kebab-case and it inherits all tools, skills, model capabilities, permissions, and model routing from base_agent. Use only catalog IDs, stay within policy limits, and never add prose or markdown fences."
                         .to_string(),
                 ),
             ))
@@ -119,11 +120,28 @@ fn planner_prompt_json(input: &PlannerInput) -> Result<String, String> {
     let fingerprint =
         serde_json::to_string(&input.catalog_fingerprint).map_err(|error| error.to_string())?;
     let policy = serde_json::to_string(&input.policy).map_err(|error| error.to_string())?;
+    let default_parameters =
+        serde_json::to_string(&input.default_parameters).map_err(|error| error.to_string())?;
+    let decision_examples = planner_decision_examples_json(input)?;
     let rejected = serde_json::to_string(&input.rejected_blueprint_fingerprints)
         .map_err(|error| error.to_string())?;
     Ok(format!(
-        "{{\"goal\":{goal},\"workspace_summary\":{workspace},\"catalog_revision\":{revision},\"catalog_fingerprint\":{fingerprint},\"catalog\":{catalog},\"policy\":{policy},\"rejected_blueprint_fingerprints\":{rejected}}}"
+        "{{\"goal\":{goal},\"workspace_summary\":{workspace},\"catalog_revision\":{revision},\"catalog_fingerprint\":{fingerprint},\"catalog\":{catalog},\"policy\":{policy},\"default_parameters\":{default_parameters},\"decision_examples\":{decision_examples},\"rejected_blueprint_fingerprints\":{rejected}}}"
     ))
+}
+
+fn planner_decision_examples_json(input: &PlannerInput) -> Result<String, String> {
+    let template = PlannerDecision::UseTemplate {
+        template: TemplateId::Direct,
+        parameters: input.default_parameters.clone(),
+    };
+    let blueprint = build_template(TemplateId::Direct, &input.default_parameters)
+        .map_err(|error| error.to_string())?;
+    let custom = PlannerDecision::CreateBlueprint {
+        blueprint,
+        agents: Vec::new(),
+    };
+    serde_json::to_string(&[template, custom]).map_err(|error| error.to_string())
 }
 
 fn cached_planner_catalog_json(input: &PlannerInput) -> Result<Arc<str>, String> {

@@ -8,6 +8,7 @@ use super::permission::request_permission;
 use super::tui::request_question_answers;
 use crate::session_runtime::events::broadcast_server_event;
 use crate::ServerState;
+use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::ServerEvent;
 
 pub(crate) fn frontend_smoke_routes() -> Router<Arc<ServerState>> {
@@ -55,7 +56,9 @@ async fn frontend_smoke_question(
 ) -> Json<bool> {
     let state = state.clone();
     tokio::spawn(async move {
-        let _ = request_question_answers(state, req.session_id, req.questions).await;
+        let session_id = req.session_id;
+        let _ = request_question_answers(state.clone(), session_id.clone(), req.questions).await;
+        finish_smoke_interaction(&state, &session_id).await;
     });
     Json(true)
 }
@@ -92,9 +95,25 @@ async fn frontend_smoke_permission(
 
     let state = state.clone();
     tokio::spawn(async move {
-        let _ = request_permission(state, req.session_id, request).await;
+        let session_id = req.session_id;
+        let _ = request_permission(state.clone(), session_id.clone(), request).await;
+        finish_smoke_interaction(&state, &session_id).await;
     });
     Json(true)
+}
+
+async fn finish_smoke_interaction(state: &Arc<ServerState>, session_id: &str) {
+    state
+        .runtime_telemetry
+        .set_session_run_status(session_id, SessionRunStatus::Idle)
+        .await;
+    broadcast_server_event(
+        state,
+        &ServerEvent::SessionStatus {
+            session_id: session_id.to_string(),
+            status: serde_json::to_value(SessionRunStatus::Idle).unwrap_or(serde_json::Value::Null),
+        },
+    );
 }
 
 async fn frontend_smoke_output_block(

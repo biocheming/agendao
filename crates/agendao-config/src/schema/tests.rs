@@ -679,6 +679,33 @@ fn disabled_plugins_filter_applies_to_plugin_map_keys() {
 }
 
 #[test]
+fn mcp_full_config_is_not_truncated_to_enabled_shorthand() {
+    let config: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "type": "local",
+        "command": ["/bin/true"],
+        "enabled": false
+    }))
+    .expect("full MCP config should parse");
+
+    match config {
+        McpServerConfig::Full(server) => {
+            assert_eq!(server.server_type.as_deref(), Some("local"));
+            assert_eq!(server.command, vec!["/bin/true"]);
+            assert_eq!(server.enabled, Some(false));
+        }
+        McpServerConfig::Enabled { .. } => panic!("full MCP config was truncated"),
+    }
+
+    let shorthand: McpServerConfig =
+        serde_json::from_value(serde_json::json!({ "enabled": false }))
+            .expect("enabled shorthand should parse");
+    assert!(matches!(
+        shorthand,
+        McpServerConfig::Enabled { enabled: false }
+    ));
+}
+
+#[test]
 fn mcp_enabled_flag_overlay_keeps_existing_full_server_fields() {
     let mut base = Config {
         mcp: Some(HashMap::from([(
@@ -1354,12 +1381,23 @@ fn nested_config_objects_reject_removed_aliases() {
         r#"{"provider":{"openai":{"baseURL":"https://example.com"}}}"#,
         r#"{"provider":{"openai":{"models":{"gpt-5":{"toolCall":true}}}}}"#,
         r#"{"provider":{"openai":{"models":{"gpt-5":{"api_key":"secret"}}}}}"#,
-        r#"{"agent":{"worker":{"maxSteps":10}}}"#,
         r#"{"uiPreferences":{"recentModels":[]}}"#,
     ] {
         let error = serde_json::from_str::<Config>(config).unwrap_err();
         assert!(error.to_string().contains("unknown field"), "{error}");
     }
+}
+
+#[test]
+fn agent_config_accepts_max_steps_camel_case_alias() {
+    let config: Config = serde_json::from_str(r#"{"agent":{"worker":{"maxSteps":10}}}"#).unwrap();
+    assert_eq!(
+        config
+            .agent
+            .and_then(|agents| agents.entries.get("worker").cloned())
+            .and_then(|agent| agent.max_steps),
+        Some(10)
+    );
 }
 
 #[test]

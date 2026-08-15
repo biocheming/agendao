@@ -2430,10 +2430,10 @@ impl AppHandler {
         }) {
             return self.execute_slash_action(spec.action_id);
         }
-        self.store.push_toast(
-            &format!("Unknown command: {}", trimmed),
-            crate::store::types::ToastMsgVariant::Error,
-        );
+        // Markdown commands are resolved from the server's merged config. The
+        // TUI owns only its built-in UI actions, so every other slash command
+        // must cross the same canonical prompt ingress as Web/CLI.
+        self.dispatch(trimmed.to_string());
     }
 
     pub(crate) fn close_all_panels(&mut self) {
@@ -5154,6 +5154,7 @@ mod tests {
             max_output_tokens: None,
             cost_per_million_input: None,
             cost_per_million_output: None,
+            capabilities: None,
         }
     }
 

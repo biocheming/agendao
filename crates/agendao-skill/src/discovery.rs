@@ -161,37 +161,28 @@ pub(crate) fn read_skill_body(path: &Path) -> Result<String, std::io::Error> {
 pub(crate) fn parse_skill_file(path: &Path, root: &SkillRoot) -> Option<SkillMeta> {
     let raw = fs::read_to_string(path).ok()?;
     let normalized = raw.replace("\r\n", "\n");
-    let mut lines = normalized.lines();
-
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-
-    let mut frontmatter_lines = Vec::new();
-    let mut closed = false;
-    for line in lines.by_ref() {
-        if line.trim() == "---" {
-            closed = true;
-            break;
-        }
-        frontmatter_lines.push(line);
-    }
-    if !closed {
-        return None;
-    }
-
-    let frontmatter = frontmatter_lines.join("\n");
-    let name = parse_frontmatter_value(&frontmatter, "name")?;
-    let description = parse_frontmatter_value(&frontmatter, "description")?;
+    let document = crate::write::parse_skill_document(&normalized).ok()?;
+    let frontmatter = crate::write::parse_skill_frontmatter(&document).ok()?;
     let skill_dir = path.parent()?;
+    let conditions = frontmatter
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.agendao.as_ref())
+        .map(|metadata| SkillConditions {
+            requires_tools: metadata.requires_tools.clone(),
+            fallback_for_tools: metadata.fallback_for_tools.clone(),
+            requires_toolsets: metadata.requires_toolsets.clone(),
+            fallback_for_toolsets: metadata.fallback_for_toolsets.clone(),
+        })
+        .unwrap_or_default();
 
     Some(SkillMeta {
-        name,
-        description,
+        name: frontmatter.name,
+        description: frontmatter.description,
         category: derive_category(root, skill_dir),
         location: path.to_path_buf(),
         supporting_files: collect_supporting_files(skill_dir),
-        conditions: parse_agendao_conditions(&frontmatter),
+        conditions,
     })
 }
 
@@ -252,147 +243,6 @@ fn scan_skill_root(root: &SkillRoot) -> Vec<SkillMeta> {
         .into_iter()
         .filter_map(|path| parse_skill_file(&path, root))
         .collect()
-}
-
-fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix(&format!("{key}:")) {
-            let value = value.trim();
-            if value.len() >= 2
-                && ((value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\'')))
-            {
-                return Some(value[1..value.len() - 1].to_string());
-            }
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-fn parse_agendao_conditions(frontmatter: &str) -> SkillConditions {
-    SkillConditions {
-        requires_tools: parse_scoped_frontmatter_list(frontmatter, "requires_tools"),
-        fallback_for_tools: parse_scoped_frontmatter_list(frontmatter, "fallback_for_tools"),
-        requires_toolsets: parse_scoped_frontmatter_list(frontmatter, "requires_toolsets"),
-        fallback_for_toolsets: parse_scoped_frontmatter_list(frontmatter, "fallback_for_toolsets"),
-    }
-}
-
-fn parse_scoped_frontmatter_list(frontmatter: &str, key: &str) -> Vec<String> {
-    let lines = frontmatter.lines().collect::<Vec<_>>();
-    let mut in_metadata = false;
-    let mut metadata_indent = 0usize;
-    let mut in_agendao = false;
-    let mut agendao_indent = 0usize;
-
-    let mut index = 0usize;
-    while index < lines.len() {
-        let line = lines[index];
-        let trimmed = line.trim();
-        let indent = line.len().saturating_sub(line.trim_start().len());
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            index += 1;
-            continue;
-        }
-
-        if in_agendao && indent <= agendao_indent && !trimmed.starts_with('-') {
-            in_agendao = false;
-        }
-        if in_metadata && indent <= metadata_indent && !trimmed.starts_with("metadata:") {
-            in_metadata = false;
-            in_agendao = false;
-        }
-
-        if trimmed == "metadata:" {
-            in_metadata = true;
-            metadata_indent = indent;
-            in_agendao = false;
-            index += 1;
-            continue;
-        }
-
-        if in_metadata && trimmed == "agendao:" {
-            in_agendao = true;
-            agendao_indent = indent;
-            index += 1;
-            continue;
-        }
-
-        if in_agendao {
-            let prefix = format!("{key}:");
-            if let Some(value) = trimmed.strip_prefix(&prefix) {
-                let key_indent = indent;
-                let value = value.trim();
-                if !value.is_empty() {
-                    return parse_inline_yaml_list(value);
-                }
-
-                let mut items = Vec::new();
-                let mut cursor = index + 1;
-                while cursor < lines.len() {
-                    let next = lines[cursor];
-                    let next_trimmed = next.trim();
-                    let next_indent = next.len().saturating_sub(next.trim_start().len());
-                    if next_trimmed.is_empty() || next_trimmed.starts_with('#') {
-                        cursor += 1;
-                        continue;
-                    }
-                    if next_indent <= key_indent {
-                        break;
-                    }
-                    if let Some(item) = next_trimmed.strip_prefix('-') {
-                        let item = normalize_yaml_scalar(item.trim());
-                        if !item.is_empty() {
-                            items.push(item);
-                        }
-                    }
-                    cursor += 1;
-                }
-                return items;
-            }
-        }
-
-        index += 1;
-    }
-
-    Vec::new()
-}
-
-fn parse_inline_yaml_list(value: &str) -> Vec<String> {
-    let trimmed = value.trim();
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return trimmed[1..trimmed.len() - 1]
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(normalize_yaml_scalar)
-            .filter(|item| !item.is_empty())
-            .collect();
-    }
-
-    let scalar = normalize_yaml_scalar(trimmed);
-    if scalar.is_empty() {
-        Vec::new()
-    } else {
-        vec![scalar]
-    }
-}
-
-fn normalize_yaml_scalar(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.len() >= 2
-        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
-    {
-        return trimmed[1..trimmed.len() - 1].trim().to_string();
-    }
-    trimmed.to_string()
 }
 
 fn iter_skill_files(root: &Path) -> Vec<PathBuf> {

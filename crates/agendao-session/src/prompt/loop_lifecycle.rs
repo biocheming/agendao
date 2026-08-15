@@ -1678,6 +1678,8 @@ impl SessionPrompt {
                 return Err(e);
             }
 
+            self.ingest_completed_turn_tool_observations(session).await;
+
             // Nudge-triggered background consolidation: after a completed turn,
             // scan the execution evidence and run deterministic memory review if
             // enough tool/error/skill signals were produced.

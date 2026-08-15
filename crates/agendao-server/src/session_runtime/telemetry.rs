@@ -240,6 +240,7 @@ impl RuntimeTelemetryAuthority {
             .answer_question(id, answers.clone())
             .await?;
         self.runtime_state.question_resolved(&info.session_id).await;
+        self.finish_control_input_wait(&info.session_id).await;
         self.emit(ServerEvent::QuestionResolved {
             session_id: info.session_id.clone(),
             request_id: id.to_string(),
@@ -253,6 +254,7 @@ impl RuntimeTelemetryAuthority {
     pub(crate) async fn reject_question(&self, id: &str) -> Option<QuestionInfo> {
         let info = self.runtime_control.reject_question(id).await?;
         self.runtime_state.question_resolved(&info.session_id).await;
+        self.finish_control_input_wait(&info.session_id).await;
         self.emit(ServerEvent::QuestionResolved {
             session_id: info.session_id.clone(),
             request_id: id.to_string(),
@@ -270,6 +272,7 @@ impl RuntimeTelemetryAuthority {
             .await;
         if !cancelled.is_empty() {
             self.runtime_state.question_resolved(session_id).await;
+            self.finish_control_input_wait(session_id).await;
         }
         for question in &cancelled {
             self.emit(ServerEvent::QuestionResolved {
@@ -286,6 +289,7 @@ impl RuntimeTelemetryAuthority {
     pub(crate) async fn drop_question(&self, session_id: &str, question_id: &str) {
         self.runtime_control.drop_question(question_id).await;
         self.runtime_state.question_resolved(session_id).await;
+        self.finish_control_input_wait(session_id).await;
     }
 
     pub(crate) async fn list_questions(&self) -> Vec<QuestionInfo> {
@@ -334,6 +338,7 @@ impl RuntimeTelemetryAuthority {
         message: Option<String>,
     ) {
         self.runtime_state.permission_resolved(session_id).await;
+        self.finish_control_input_wait(session_id).await;
         let now = chrono::Utc::now().timestamp_millis();
         self.emit_control_input_transition(
             session_id,
@@ -359,6 +364,7 @@ impl RuntimeTelemetryAuthority {
 
     pub(crate) async fn clear_permission_pending(&self, session_id: &str) {
         self.runtime_state.permission_resolved(session_id).await;
+        self.finish_control_input_wait(session_id).await;
         self.emit_control_input_transition(
             session_id,
             ControlInputKind::Permission,
@@ -366,6 +372,12 @@ impl RuntimeTelemetryAuthority {
             chrono::Utc::now().timestamp_millis(),
         )
         .await;
+    }
+
+    async fn finish_control_input_wait(&self, session_id: &str) {
+        if !self.runtime_control.has_prompt_run(session_id).await {
+            self.runtime_state.mark_idle(session_id).await;
+        }
     }
 
     /// Update runtime state when a steering message is enqueued (Constitution §8).
@@ -639,6 +651,47 @@ mod tests {
             .expect("idle transition should arrive");
         assert!(second.contains("\"type\":\"session.status\""));
         assert!(second.contains("\"type\":\"idle\""));
+    }
+
+    #[tokio::test]
+    async fn standalone_permission_resolution_returns_runtime_to_idle() {
+        let (tx, _rx) = broadcast::channel(8);
+        let authority = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "ses_standalone_permission";
+
+        authority
+            .permission_requested(sid, "permission_1", serde_json::json!({ "tool": "pty" }))
+            .await;
+        authority
+            .permission_resolved(sid, "permission_1", "once", None)
+            .await;
+
+        assert_eq!(
+            authority.runtime_state().get(sid).await.unwrap().run_status,
+            agendao_server_core::runtime_state::RunStatus::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_permission_resolution_resumes_running_runtime() {
+        let (tx, _rx) = broadcast::channel(8);
+        let authority = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "ses_prompt_permission";
+
+        authority
+            .set_session_run_status(sid, SessionRunStatus::Busy)
+            .await;
+        authority
+            .permission_requested(sid, "permission_1", serde_json::json!({ "tool": "bash" }))
+            .await;
+        authority
+            .permission_resolved(sid, "permission_1", "once", None)
+            .await;
+
+        assert_eq!(
+            authority.runtime_state().get(sid).await.unwrap().run_status,
+            agendao_server_core::runtime_state::RunStatus::Running
+        );
     }
 
     #[tokio::test]

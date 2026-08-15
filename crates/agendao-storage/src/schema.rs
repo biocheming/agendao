@@ -343,6 +343,8 @@ CREATE INDEX IF NOT EXISTS idx_memory_records_workspace ON memory_records(worksp
 CREATE INDEX IF NOT EXISTS idx_memory_records_session ON memory_records(source_session_id);
 CREATE INDEX IF NOT EXISTS idx_memory_records_signature ON memory_records(signature);
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory ON memory_evidence(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_evidence_session_tool
+ON memory_evidence(session_id, tool_call_id);
 CREATE INDEX IF NOT EXISTS idx_memory_validation_runs_memory ON memory_validation_runs(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_log_session ON memory_retrieval_log(session_id);
 

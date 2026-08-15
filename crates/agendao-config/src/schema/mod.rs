@@ -719,7 +719,7 @@ pub struct AgentConfig {
     pub color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "maxSteps", skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,

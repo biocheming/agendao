@@ -366,7 +366,12 @@ async function run() {
 
     await click(client, "[title='Select sessions']");
     await waitForExpression(client, "Boolean(document.querySelector('[title=\"Cancel session selection\"]'))");
+    // Selection mode intentionally starts with the active session selected.
+    // Deselect the root before selecting the temporary session so this smoke
+    // exercises single-session deletion and its fallback behavior.
+    await click(client, `[data-testid="session-item"][data-session-id="${rootSessionId}"]`);
     await click(client, `[data-testid="session-item"][data-session-id="${createdSessionId}"]`);
+    await waitForExpression(client, "Boolean(document.querySelector('[title=\"Delete 1 selected session\"]'))");
     await click(client, "[title^='Delete']");
     await waitForExpression(client, "Boolean(document.querySelector('[role=\"dialog\"]'))");
     await click(client, "[data-slot='button'][data-variant='destructive']");

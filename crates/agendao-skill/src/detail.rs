@@ -75,12 +75,13 @@ fn read_skill_frontmatter(
         return Ok(None);
     };
     let lines = raw.lines().map(|line| line.to_string()).collect::<Vec<_>>();
-    let parsed = serde_yaml::from_str::<YamlValue>(&raw).ok();
+    let parsed = serde_yaml::from_str::<YamlValue>(&raw)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     let formal = parse_skill_frontmatter_lines(&lines)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     Ok(Some(SkillFrontmatterSource {
         raw,
-        parsed,
+        parsed: Some(parsed),
         formal,
     }))
 }
@@ -791,7 +792,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn read_skill_detail_prefers_yaml_parse_but_keeps_fallback() {
+    fn read_skill_detail_projects_valid_yaml_metadata() {
         let dir = tempdir().unwrap();
         let skill_markdown = dir.path().join("SKILL.md");
         fs::write(
@@ -867,7 +868,7 @@ metadata:
     }
 
     #[test]
-    fn read_skill_detail_falls_back_when_yaml_parse_fails() {
+    fn read_skill_detail_rejects_malformed_yaml() {
         let dir = tempdir().unwrap();
         let skill_markdown = dir.path().join("SKILL.md");
         fs::write(
@@ -886,10 +887,7 @@ required_commands:
         )
         .unwrap();
 
-        let detail = read_skill_detail(&skill_markdown).unwrap();
-        assert_eq!(detail.tags, vec!["[chemistry, design"]);
-        assert_eq!(detail.related_skills, vec!["molecule-report"]);
-        assert_eq!(detail.required_commands, vec!["demo-cli"]);
-        assert_eq!(detail.readiness_status, SkillReadinessStatus::SetupNeeded);
+        let error = read_skill_detail(&skill_markdown).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

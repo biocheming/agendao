@@ -1,3 +1,4 @@
+use anyhow::Context;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{header, header::HeaderValue, request::Parts, Method, Request, StatusCode};
@@ -417,6 +418,20 @@ impl ServerState {
         let mut phase_start = startup_begin;
         let workspace_root = normalize_workspace_root(workspace_root);
 
+        // Configuration is a startup contract. Parse it before opening the
+        // database or spawning plugins so an invalid file fails immediately
+        // without leaving partially initialized background work behind.
+        let config_store = Arc::new(
+            agendao_config::ConfigStore::from_project_dir(&workspace_root).with_context(|| {
+                format!(
+                    "failed to load workspace configuration for {}",
+                    workspace_root.display()
+                )
+            })?,
+        );
+        startup_timing!("config_load", phase_start);
+        phase_start = std::time::Instant::now();
+
         // SQLite 打开 + 迁移（~数百 ms 的 IO/DDL）与后续 plugin/catalog 阶段
         // 互不依赖，提前 spawn 让它们在后台并行推进。
         let db_spawn_start = std::time::Instant::now();
@@ -427,25 +442,11 @@ impl ServerState {
         state.auth_manager = auth_manager.clone();
         startup_timing!("auth_load", phase_start);
 
-        // Load config and convert providers to bootstrap format
-        phase_start = std::time::Instant::now();
-        let config_store = match agendao_config::ConfigStore::from_project_dir(&workspace_root) {
-            Ok(store) => Arc::new(store),
-            Err(error) => {
-                tracing::warn!(%error, "failed to load config, using defaults");
-                Arc::new(agendao_config::ConfigStore::new(
-                    agendao_config::Config::default(),
-                ))
-            }
-        };
         let user_state = Arc::new(UserStateAuthority::from_config_store(&config_store));
         let resolved_context_authority = Arc::new(ResolvedWorkspaceContextAuthority::new(
             config_store.clone(),
             user_state.clone(),
         ));
-
-        // Plugin bootstrap needs config_store for refresh_agent_cache
-        startup_timing!("config_load", phase_start);
 
         // 插件子进程引导（内建 auth 插件 spawn 等）与 models catalog 加载、
         // 后台的 database_open 互不依赖，先 spawn 并行推进；在读取 auth_store
@@ -1487,20 +1488,25 @@ async fn run_server_with_unix_socket(
             .await?,
     );
     state.ensure_frontend_projector();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Start Unix socket server if path is provided
-    if let Some(socket_path) = unix_socket_path {
+    let unix_task = if let Some(socket_path) = unix_socket_path {
         let unix_server =
             crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), socket_path.clone());
+        let unix_listener = unix_server.bind()?;
 
-        tokio::spawn(async move {
-            if let Err(e) = unix_server.serve().await {
+        let task = tokio::spawn(async move {
+            if let Err(e) = unix_server.serve_bound(unix_listener).await {
                 tracing::error!("Unix socket server error: {}", e);
             }
         });
 
         tracing::info!("Unix socket server listening on {}", socket_path);
-    }
+        Some(task)
+    } else {
+        None
+    };
 
     // Start HTTP server
     let app = routes::router()
@@ -1509,11 +1515,14 @@ async fn run_server_with_unix_socket(
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
     tracing::info!("HTTP server listening on {}", addr);
 
-    axum::serve(listener, app).await?;
+    let http_result = axum::serve(listener, app).await;
+    if let Some(task) = unix_task {
+        task.abort();
+        let _ = task.await;
+    }
+    http_result?;
 
     Ok(())
 }
@@ -1522,6 +1531,26 @@ async fn run_server_with_unix_socket(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[tokio::test]
+    async fn server_startup_rejects_invalid_workspace_config() {
+        crate::isolate_test_config_home();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".agendao");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        let config_path = config_dir.join("agendao.json");
+        std::fs::write(&config_path, "{ invalid json").expect("invalid config");
+
+        let result = ServerState::new_with_storage_for_url_in_workspace(
+            "http://127.0.0.1:0".to_string(),
+            temp.path().to_path_buf(),
+        )
+        .await;
+        let error = result.err().expect("startup must reject invalid config");
+        let message = format!("{error:#}");
+        assert!(message.contains("failed to load workspace configuration"));
+        assert!(message.contains(&config_path.display().to_string()));
+    }
 
     #[test]
     fn auth_public_path_only_allows_static_and_health_routes() {

@@ -261,12 +261,8 @@ struct UiCommandApiSpec {
 }
 
 async fn list_commands(State(state): State<Arc<ServerState>>) -> Result<Json<Vec<CommandApiSpec>>> {
-    let mut registry = CommandRegistry::new();
-    registry
-        .load_from_directory(&state.project_root())
-        .map_err(|error| {
-            ApiError::InternalError(format!("Failed to load command registry: {error}"))
-        })?;
+    let config = state.config_store.config();
+    let registry = command_registry_from_config(&config);
 
     let mut commands = registry
         .list()
@@ -283,6 +279,35 @@ async fn list_commands(State(state): State<Arc<ServerState>>) -> Result<Json<Vec
     commands.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(Json(commands))
+}
+
+fn command_registry_from_config(config: &AppConfig) -> CommandRegistry {
+    let mut registry = CommandRegistry::new();
+    if let Some(commands) = config.command.as_ref() {
+        let mut entries = commands.iter().collect::<Vec<_>>();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (key, configured) in entries {
+            let name = configured
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(key);
+            registry.register(agendao_command::Command {
+                name: name.to_string(),
+                description: configured
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("Custom command: {name}")),
+                template: configured.template.clone().unwrap_or_default(),
+                aliases: Vec::new(),
+                invocation: None,
+                interactive: None,
+                source: CommandSource::Config,
+            });
+        }
+    }
+    registry
 }
 
 async fn list_ui_commands() -> Result<Json<Vec<UiCommandApiSpec>>> {

@@ -29,6 +29,45 @@ Do a thorough review.
 }
 
 #[test]
+fn discovery_uses_yaml_semantics_for_multiline_description_and_conditions() {
+    let dir = tempdir().unwrap();
+    let skill_path = dir.path().join(".agendao/skills/multiline/SKILL.md");
+    fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+    fs::write(
+        &skill_path,
+        r#"---
+name: multiline
+description:
+  "First line of the description
+  continues on the second line."
+metadata:
+  agendao:
+    requires_tools:
+      - read
+    fallback_for_toolsets: [shell]
+---
+
+# Multiline
+"#,
+    )
+    .unwrap();
+
+    let authority = SkillAuthority::new(dir.path(), None);
+    let skill = authority
+        .list_skill_catalog(None)
+        .unwrap()
+        .into_iter()
+        .find(|skill| skill.name == "multiline")
+        .expect("multiline skill");
+    assert_eq!(
+        skill.description,
+        "First line of the description continues on the second line."
+    );
+    assert_eq!(skill.conditions.requires_tools, vec!["read"]);
+    assert_eq!(skill.conditions.fallback_for_toolsets, vec!["shell"]);
+}
+
+#[test]
 fn authority_load_skill_detail_returns_formal_detail_view() {
     let dir = tempdir().unwrap();
     let skill_path = dir.path().join(".agendao/skills/reviewer/SKILL.md");

@@ -87,6 +87,7 @@ pub async fn print_openapi_spec() -> anyhow::Result<()> {
         ),
         ("/config/", "get", "configGet"),
         ("/config/", "patch", "configPatch"),
+        ("/config/reload", "post", "configReload"),
         ("/config/providers", "get", "configProviderGet"),
         ("/mcp", "get", "mcpList"),
         ("/mcp", "post", "mcpAdd"),

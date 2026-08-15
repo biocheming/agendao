@@ -74,45 +74,12 @@ impl ConfigLoader {
     }
 
     pub fn load_external_tool_catalogs(&self) -> Result<Vec<ResolvedExternalToolCatalog>> {
-        let mut catalogs = Vec::new();
-        let mut seen_imports = HashSet::new();
-
-        for config_path in &self.config_paths {
-            let Some(base_dir) = config_path.parent() else {
-                continue;
-            };
-
-            for import in &self.config.tool_imports {
-                let resolved = normalize_path_lexically(resolve_configured_path(base_dir, import));
-                if !seen_imports.insert(resolved.clone()) {
-                    continue;
-                }
-                if !resolved.exists() || resolved.is_dir() {
-                    continue;
-                }
-                let content = fs::read_to_string(&resolved).with_context(|| {
-                    format!(
-                        "Failed to read external tool catalog: {}",
-                        resolved.display()
-                    )
-                })?;
-                let catalog = parse_external_tool_catalog_jsonc(&content).with_context(|| {
-                    format!(
-                        "Failed to parse external tool catalog file: {}",
-                        resolved.display()
-                    )
-                })?;
-                let catalog_base_dir = resolved.parent().unwrap_or(base_dir).to_path_buf();
-                let normalized = normalize_external_tool_catalog_paths(catalog, &catalog_base_dir);
-                validate_external_tool_catalog(&normalized, &resolved)?;
-                catalogs.push(ResolvedExternalToolCatalog {
-                    source_path: resolved,
-                    tools: normalized.tools,
-                });
-            }
-        }
-
-        Ok(catalogs)
+        let base_dirs = self
+            .config_paths
+            .iter()
+            .filter_map(|path| path.parent().map(Path::to_path_buf))
+            .collect::<Vec<_>>();
+        load_external_tool_catalogs_from_bases(&base_dirs, &self.config.tool_imports)
     }
 
     pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
@@ -138,6 +105,29 @@ impl ConfigLoader {
 
         self.config.merge(config);
         self.config_paths.push(path.to_path_buf());
+        Ok(())
+    }
+
+    pub(super) fn load_directory_sidecars(&mut self, dir: &Path) -> Result<()> {
+        let commands = load_commands_from_dir(dir)?;
+        if !commands.is_empty() {
+            let mut command_map = self.config.command.take().unwrap_or_default();
+            command_map.extend(commands);
+            self.config.command = Some(command_map);
+        }
+
+        let agents = load_agents_from_dir(dir)?;
+        if !agents.is_empty() {
+            let mut agent_configs = self.config.agent.take().unwrap_or_default();
+            for (name, agent) in agents {
+                if let Some(existing) = agent_configs.entries.get_mut(&name) {
+                    merge_agent_config(existing, agent);
+                } else {
+                    agent_configs.entries.insert(name, agent);
+                }
+            }
+            self.config.agent = Some(agent_configs);
+        }
         Ok(())
     }
 
@@ -226,29 +216,7 @@ impl ConfigLoader {
                 }
             }
 
-            // Load commands and agents from markdown files.
-            let commands = load_commands_from_dir(dir);
-            if !commands.is_empty() {
-                let mut cmd_map = self.config.command.take().unwrap_or_default();
-                for (name, cmd) in commands {
-                    cmd_map.insert(name, cmd);
-                }
-                self.config.command = Some(cmd_map);
-            }
-
-            let agents = load_agents_from_dir(dir);
-            if !agents.is_empty() {
-                let mut agent_configs = self.config.agent.take().unwrap_or_default();
-                for (name, agent) in agents {
-                    if let Some(existing) = agent_configs.entries.get_mut(&name) {
-                        // Deep merge
-                        merge_agent_config(existing, agent);
-                    } else {
-                        agent_configs.entries.insert(name, agent);
-                    }
-                }
-                self.config.agent = Some(agent_configs);
-            }
+            self.load_directory_sidecars(dir)?;
         }
 
         // Plugin discovery is path-driven:
@@ -492,4 +460,53 @@ pub fn load_external_tool_catalogs_for_project<P: AsRef<Path>>(
     let mut loader = ConfigLoader::new();
     loader.load_with_inputs(&inputs)?;
     loader.load_external_tool_catalogs()
+}
+
+/// Load the external catalogs named by an already-resolved config snapshot.
+///
+/// Config consumers use this entry point so catalog reads cannot silently
+/// reload a different config generation from disk.
+pub fn load_external_tool_catalogs_from_imports<P: AsRef<Path>>(
+    project_root: P,
+    imports: &[String],
+) -> Result<Vec<ResolvedExternalToolCatalog>> {
+    load_external_tool_catalogs_from_bases(&[project_root.as_ref().to_path_buf()], imports)
+}
+
+fn load_external_tool_catalogs_from_bases(
+    base_dirs: &[PathBuf],
+    imports: &[String],
+) -> Result<Vec<ResolvedExternalToolCatalog>> {
+    let mut catalogs = Vec::new();
+    let mut seen_imports = HashSet::new();
+
+    for base_dir in base_dirs {
+        for import in imports {
+            let resolved = normalize_path_lexically(resolve_configured_path(base_dir, import));
+            if !seen_imports.insert(resolved.clone()) || !resolved.is_file() {
+                continue;
+            }
+            let content = fs::read_to_string(&resolved).with_context(|| {
+                format!(
+                    "Failed to read external tool catalog: {}",
+                    resolved.display()
+                )
+            })?;
+            let catalog = parse_external_tool_catalog_jsonc(&content).with_context(|| {
+                format!(
+                    "Failed to parse external tool catalog file: {}",
+                    resolved.display()
+                )
+            })?;
+            let catalog_base_dir = resolved.parent().unwrap_or(base_dir);
+            let normalized = normalize_external_tool_catalog_paths(catalog, catalog_base_dir);
+            validate_external_tool_catalog(&normalized, &resolved)?;
+            catalogs.push(ResolvedExternalToolCatalog {
+                source_path: resolved,
+                tools: normalized.tools,
+            });
+        }
+    }
+
+    Ok(catalogs)
 }

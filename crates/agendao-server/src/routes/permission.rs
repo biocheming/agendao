@@ -552,9 +552,16 @@ pub(crate) async fn reply_permission(
 
     let permission = {
         let mut engine = PERMISSION_ENGINE.lock().await;
-        let permission = engine
-            .respond_by_id(&id, response)
-            .map_err(|_| ApiError::NotFound(format!("Permission request not found: {}", id)))?;
+        // PermissionEngine::respond() reports rejection as an error after it
+        // removes the pending entry. The HTTP reply itself is still valid and
+        // must reach the waiter immediately, so rejection takes the explicit
+        // removal path instead of being misreported as a 404.
+        let permission = if response == Response::Reject {
+            engine.remove_pending(&id)
+        } else {
+            engine.respond_by_id(&id, response).ok()
+        }
+        .ok_or_else(|| ApiError::NotFound(format!("Permission request not found: {}", id)))?;
         // Approval/rejection must retire the pending entry immediately, otherwise
         // a follow-up list_permissions() can resurrect the same prompt before the
         // waiting tool task consumes the reply.
@@ -919,6 +926,58 @@ mod tests {
             .await
             .expect("request task join")
             .expect("permission allowed");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn reply_permission_reject_wakes_waiter_and_returns_denial() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-reject";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                agendao_tool::PermissionRequest::new("bash")
+                    .with_pattern("touch forbidden-marker")
+                    .with_metadata("command", serde_json::json!("touch forbidden-marker")),
+            )
+            .await
+        });
+
+        let permission_id = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(id) = engine.list().first().map(|info| info.id.clone()) {
+                break id;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let _ = reply_permission(
+            State(state),
+            Path(permission_id),
+            Json(ReplyPermissionRequest {
+                reply: "reject".to_string(),
+                message: Some("E2E rejection".to_string()),
+            }),
+        )
+        .await
+        .expect("reject reply should be accepted");
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), request_task)
+            .await
+            .expect("rejected request waiter must wake immediately")
+            .expect("request task join")
+            .expect_err("rejected permission must deny the tool");
+        assert!(matches!(
+            error,
+            agendao_tool::ToolError::PermissionDenied(message) if message == "E2E rejection"
+        ));
+        assert!(PERMISSION_ENGINE.lock().await.list().is_empty());
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 

@@ -67,12 +67,13 @@ export interface CommandApiSpec {
 }
 
 export interface ExecuteCommandResponseRecord {
-  executed: boolean;
-  command: string;
-  arguments?: string | null;
-  model?: string | null;
-  agent?: string | null;
-  message_id?: string;
+  status: string;
+  ok?: boolean;
+  session_id?: string;
+  queued_count?: number;
+  pending_question_id?: string;
+  command?: string;
+  missing_fields?: string[];
 }
 
 /**

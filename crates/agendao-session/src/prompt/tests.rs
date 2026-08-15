@@ -18,11 +18,12 @@ use agendao_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
 use agendao_storage::{Database, SkillEvolutionProposalRepository};
 use agendao_tool::{Tool, ToolContext, ToolError, ToolResult};
 use agendao_types::{
-    message_source_origin, message_source_surface, ContextPressureGovernanceStatus,
-    LightweightTrimSummary, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
+    message_source_origin, message_source_surface, CompletedTime, ContextPressureGovernanceStatus,
+    ErrorTime, LightweightTrimSummary, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
     MemoryScope, MemoryStatus, MemoryValidationStatus, MessageSourceOrigin, MessageSourceSurface,
     ProposalStatus, SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
-    SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState,
+    SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState, ToolCallStatus,
+    ToolState,
 };
 use async_trait::async_trait;
 use futures::stream;
@@ -151,6 +152,94 @@ fn isolate_test_config_home() {
         fs::create_dir_all(&path).expect("session test config home should be created");
         std::env::set_var("AGENDAO_HOME", path);
     });
+}
+
+#[test]
+fn completed_tool_memory_observations_only_include_latest_turn_terminal_calls() {
+    let mut session = Session::new("proj", ".");
+    session.push_message(SessionMessage::user(session.id.clone(), "old turn"));
+    let mut old_assistant = SessionMessage::assistant(session.id.clone());
+    old_assistant.add_tool_call("call_old", "read", serde_json::json!({}));
+    SessionPrompt::upsert_tool_call_part(
+        &mut old_assistant,
+        "call_old",
+        None,
+        None,
+        None,
+        Some(ToolCallStatus::Completed),
+        Some(ToolState::Completed {
+            input: serde_json::json!({}),
+            output: "old output".to_string(),
+            title: "Read".to_string(),
+            metadata: Default::default(),
+            time: CompletedTime {
+                start: 1,
+                end: 2,
+                compacted: None,
+            },
+            attachments: None,
+        }),
+    );
+    session.push_message(old_assistant);
+
+    session.push_message(SessionMessage::user(session.id.clone(), "latest turn"));
+    let mut assistant = SessionMessage::assistant(session.id.clone());
+    assistant.add_tool_call("call_ok", "skill_manage", serde_json::json!({}));
+    SessionPrompt::upsert_tool_call_part(
+        &mut assistant,
+        "call_ok",
+        None,
+        None,
+        None,
+        Some(ToolCallStatus::Completed),
+        Some(ToolState::Completed {
+            input: serde_json::json!({}),
+            output: "created skill".to_string(),
+            title: "Skill created".to_string(),
+            metadata: Default::default(),
+            time: CompletedTime {
+                start: 3,
+                end: 4,
+                compacted: None,
+            },
+            attachments: None,
+        }),
+    );
+    assistant.add_tool_call("call_error", "bash", serde_json::json!({}));
+    SessionPrompt::upsert_tool_call_part(
+        &mut assistant,
+        "call_error",
+        None,
+        None,
+        None,
+        Some(ToolCallStatus::Error),
+        Some(ToolState::Error {
+            input: serde_json::json!({}),
+            error: "permission denied".to_string(),
+            metadata: None,
+            time: ErrorTime { start: 5, end: 6 },
+        }),
+    );
+    assistant.add_tool_call("call_pending", "grep", serde_json::json!({}));
+    session.push_message(assistant);
+
+    assert_eq!(
+        completed_tool_memory_observations(&session),
+        vec![
+            CompletedToolMemoryObservation {
+                call_id: "call_ok".to_string(),
+                tool_name: "skill_manage".to_string(),
+                output: "created skill".to_string(),
+                is_error: false,
+            },
+            CompletedToolMemoryObservation {
+                call_id: "call_error".to_string(),
+                tool_name: "bash".to_string(),
+                output: "permission denied".to_string(),
+                is_error: true,
+            },
+        ]
+    );
 }
 
 fn methodology_candidate_record(

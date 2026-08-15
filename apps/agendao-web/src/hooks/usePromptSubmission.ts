@@ -115,9 +115,20 @@ export function usePromptSubmission({
           if (kind === "agent") payload.agent = id;
           if (kind === "scheduler") payload.scheduler = schedulerChoiceFromId(id);
         }
-        await sendCommandRequest(sessionId, payload);
-        setStreaming(false);
-        setStatusLine("ready");
+        const response = await sendCommandRequest(sessionId, payload);
+        if (response.status === "awaiting_user") {
+          setStreaming(false);
+          setStatusLine("awaiting_user");
+          if (response.pending_question_id) {
+            await loadPendingQuestion(response.pending_question_id, sessionId);
+          }
+        } else if (response.status === "queued") {
+          setStreaming(true);
+          setStatusLine("running");
+        } else {
+          setStreaming(false);
+          setStatusLine("ready");
+        }
       } catch (error) {
         setMessages((current) =>
           applyOutputBlock(
@@ -145,6 +156,7 @@ export function usePromptSubmission({
     [
       clearComposerNotice,
       createSession,
+      loadPendingQuestion,
       optimisticMessagesRef,
       refreshSessions,
       selectedMode,

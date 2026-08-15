@@ -308,7 +308,7 @@ async function run() {
     await waitForExpression(
       client,
       `(window.__agendaoTracker?.fetches ?? []).filter((entry) =>
-        entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
+        entry.url.includes('/session/${sessionId}/command') && entry.method === 'POST'
       ).length >= 1`,
     );
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"question-overlay\"]'))");
@@ -339,7 +339,7 @@ async function run() {
       client,
       `(window.__agendaoTracker?.fetches ?? []).filter((entry) =>
         entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
-      ).length >= 2`,
+      ).length >= 1`,
     );
     await waitForExpression(client, "!document.querySelector('[data-testid=\"question-overlay\"]')");
 

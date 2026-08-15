@@ -105,11 +105,34 @@ impl PluginConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum McpServerConfig {
     Enabled { enabled: bool },
     Full(Box<McpServer>),
+}
+
+impl<'de> Deserialize<'de> for McpServerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(object) = value.as_object() {
+            if object.len() == 1 {
+                if let Some(enabled) = object.get("enabled") {
+                    return enabled
+                        .as_bool()
+                        .map(|enabled| Self::Enabled { enabled })
+                        .ok_or_else(|| serde::de::Error::custom("MCP `enabled` must be boolean"));
+                }
+            }
+        }
+
+        serde_json::from_value::<McpServer>(value)
+            .map(|server| Self::Full(Box::new(server)))
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -31,8 +31,7 @@ use crate::session_runtime::events::{
 use crate::session_runtime::{assistant_visible_text, ensure_default_session_title, ModelPricing};
 use crate::{ApiError, Result, ServerState};
 use agendao_command::{
-    Command, CommandArgumentField, CommandArgumentKind, CommandContext, CommandRegistry,
-    InteractivePolicy,
+    Command, CommandArgumentField, CommandArgumentKind, CommandContext, InteractivePolicy,
 };
 use agendao_command_render::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock,
@@ -61,6 +60,7 @@ struct ResolvedPromptPayload {
     display_text: String,
     execution_text: String,
     agent: Option<String>,
+    model: Option<String>,
     scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     command: Option<Command>,
     pending_raw_arguments: Option<String>,
@@ -202,18 +202,16 @@ async fn resolve_prompt_payload(
     display_text: &str,
     session_id: &str,
     session_directory: &str,
-    _config: &AppConfig,
+    config: &AppConfig,
 ) -> Result<ResolvedPromptPayload> {
-    let mut registry = CommandRegistry::new();
-    registry
-        .load_from_directory(&PathBuf::from(session_directory))
-        .map_err(|error| ApiError::BadRequest(format!("Failed to load commands: {}", error)))?;
+    let registry = super::super::command_registry_from_config(config);
 
     let Some(parsed) = registry.parse_invocation(display_text) else {
         return Ok(ResolvedPromptPayload {
             display_text: display_text.to_string(),
             execution_text: display_text.to_string(),
             agent: None,
+            model: None,
             scheduler: None,
             command: None,
             pending_raw_arguments: None,
@@ -221,6 +219,13 @@ async fn resolve_prompt_payload(
     };
 
     let command = parsed.command.clone();
+    let configured_command = config.command.as_ref().and_then(|commands| {
+        commands.get(&command.name).or_else(|| {
+            commands.values().find(|configured| {
+                configured.name.as_deref().map(str::trim) == Some(command.name.as_str())
+            })
+        })
+    });
     let scheduler = command.invocation.as_ref().and_then(|invocation| {
         matches!(
             invocation.mode,
@@ -286,7 +291,8 @@ async fn resolve_prompt_payload(
     Ok(ResolvedPromptPayload {
         display_text: display_text.to_string(),
         execution_text,
-        agent: None,
+        agent: configured_command.and_then(|configured| configured.agent.clone()),
+        model: configured_command.and_then(|configured| configured.model.clone()),
         scheduler,
         command: Some(command.clone()),
         pending_raw_arguments,
@@ -968,6 +974,31 @@ pub(crate) struct SessionPromptRequest {
 }
 
 impl SessionPromptRequest {
+    pub(super) fn from_command(
+        command: String,
+        arguments: Option<String>,
+        model: Option<String>,
+        variant: Option<String>,
+        agent: Option<String>,
+        scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
+    ) -> Self {
+        Self {
+            message: None,
+            parts: None,
+            idempotency_key: None,
+            ingress_source: Some("web-command".to_string()),
+            source_origin: Some(agendao_types::MessageSourceOrigin::Operator),
+            source_surface: Some(agendao_types::MessageSourceSurface::Web),
+            model,
+            variant,
+            agent,
+            scheduler,
+            command: Some(command),
+            arguments,
+            recovery: None,
+        }
+    }
+
     pub(crate) fn from_verified_ingress(
         ingress: &agendao_session::prompt::IngressTurnEnvelope,
     ) -> Self {
@@ -1513,6 +1544,7 @@ async fn session_prompt_inner(
             display_text: prompt_display_text(parts),
             execution_text: prompt_text_from_parts(parts),
             agent: None,
+            model: None,
             scheduler: None,
             command: None,
             pending_raw_arguments: None,
@@ -1611,7 +1643,7 @@ async fn session_prompt_inner(
             session_id: &id,
             requested_agent: effective_agent.as_deref(),
             requested_scheduler: &effective_scheduler,
-            request_model: req.model.as_deref(),
+            request_model: req.model.as_deref().or(resolved_prompt.model.as_deref()),
             request_variant: req.variant.as_deref(),
             route: "session",
         })
@@ -1974,6 +2006,17 @@ async fn session_prompt_inner(
                 .get(&session_id)
                 .cloned()
                 .unwrap_or(session);
+            let scheduler_review = scheduler_result.as_ref().ok().map(|output| {
+                let mut nudge = agendao_session::prompt::RuntimeReviewNudge::from_session(
+                    &session,
+                    output.usage.model_calls as usize,
+                );
+                nudge.tool_call_count = output.review.tool_call_count;
+                nudge.error_tool_call_count = output.review.error_tool_call_count;
+                nudge.skill_write_count = output.review.skill_write_count;
+                nudge.used_skill_names = output.review.used_skill_names.clone();
+                nudge
+            });
             let model_pricing = {
                 let providers = task_state.providers.read().await;
                 providers
@@ -2057,6 +2100,13 @@ async fn session_prompt_inner(
                         assistant.add_text(format!("Scheduler error: {error}"));
                     }
                 }
+            }
+            if let Some(nudge) = scheduler_review.as_ref() {
+                let decision = task_state
+                    .prompt_runner
+                    .maybe_enqueue_background_review(nudge)
+                    .await;
+                agendao_session::prompt::maybe_append_proposal_notice(&mut session, &decision);
             }
             ensure_default_session_title(&mut session, task_provider_client.clone(), &task_model)
                 .await;
@@ -2162,7 +2212,7 @@ async fn session_prompt_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agendao_command::{CommandArgumentOption, CommandRegistry};
+    use agendao_command::{CommandArgumentOption, CommandRegistry, CommandSource};
     use agendao_multimodal::{
         ModalityPreflightResult, ModalitySupportView, ModalityTransportResult,
         MultimodalDisplaySummary, PreflightCapabilityView, RuntimeMultimodalExplain,
@@ -2263,6 +2313,7 @@ mod tests {
             display_text: text.to_string(),
             execution_text: text.to_string(),
             agent: None,
+            model: None,
             scheduler: None,
             command: None,
             pending_raw_arguments: None,
@@ -3099,5 +3150,39 @@ mod tests {
         assert!(raw_arguments.contains("--verify ./custom-verify.sh"));
         assert!(!raw_arguments.contains("--guard"));
         assert!(!raw_arguments.contains("--iterations"));
+    }
+
+    #[tokio::test]
+    async fn configured_command_uses_merged_template_agent_and_model() {
+        let config = AppConfig {
+            command: Some(std::collections::HashMap::from([(
+                "inherited".to_string(),
+                agendao_config::CommandConfig {
+                    description: Some("Inherited command".to_string()),
+                    template: Some("Inspect $ARGUMENTS".to_string()),
+                    agent: Some("global-agent".to_string()),
+                    model: Some("deepseek-v4-flash".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        let resolved = resolve_prompt_payload(
+            "/inherited exact marker",
+            "session-command",
+            "/workspace",
+            &config,
+        )
+        .await
+        .expect("configured command should resolve");
+
+        assert_eq!(resolved.execution_text, "Inspect exact marker");
+        assert_eq!(resolved.agent.as_deref(), Some("global-agent"));
+        assert_eq!(resolved.model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(
+            resolved.command.as_ref().map(|command| &command.source),
+            Some(&CommandSource::Config)
+        );
     }
 }

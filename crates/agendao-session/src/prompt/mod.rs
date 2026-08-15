@@ -203,7 +203,7 @@ use agendao_types::{
 
 use crate::instruction::{InstructionLoader, InstructionSource};
 use crate::system::SystemPrompt;
-use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager};
+use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager, ToolState};
 
 // 流式期 session 快照节流间隔。每次触发都会对完整会话做 clone 并驱动
 // 持久化 worker,1.1M token 会话下 120ms 意味着每秒 8 次数 MB 级深拷贝;
@@ -534,6 +534,14 @@ pub struct RuntimeReviewNudge {
     pub used_skill_names: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletedToolMemoryObservation {
+    call_id: String,
+    tool_name: String,
+    output: String,
+    is_error: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ReviewNudgeThrottleState {
     last_completed_at: Option<tokio::time::Instant>,
@@ -593,6 +601,44 @@ impl RuntimeReviewNudge {
             used_skill_names,
         }
     }
+}
+
+fn completed_tool_memory_observations(session: &Session) -> Vec<CompletedToolMemoryObservation> {
+    let turn_start = session
+        .messages
+        .iter()
+        .rposition(|message| message.role == MessageRole::User)
+        .unwrap_or(0);
+
+    session
+        .messages
+        .iter()
+        .skip(turn_start)
+        .flat_map(|message| message.parts.iter())
+        .filter_map(|part| {
+            let PartType::ToolCall {
+                id, name, state, ..
+            } = &part.part_type
+            else {
+                return None;
+            };
+            match state.as_ref()? {
+                ToolState::Completed { output, .. } => Some(CompletedToolMemoryObservation {
+                    call_id: id.clone(),
+                    tool_name: name.clone(),
+                    output: output.clone(),
+                    is_error: false,
+                }),
+                ToolState::Error { error, .. } => Some(CompletedToolMemoryObservation {
+                    call_id: id.clone(),
+                    tool_name: name.clone(),
+                    output: error.clone(),
+                    is_error: true,
+                }),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn session_review_scope_key(session: &Session) -> String {
@@ -2274,6 +2320,34 @@ impl SessionPrompt {
     ) -> Self {
         self.memory_authority = Some(memory_authority);
         self
+    }
+
+    async fn ingest_completed_turn_tool_observations(&self, session: &Session) {
+        let Some(memory) = self.memory_authority.as_deref() else {
+            return;
+        };
+
+        for observation in completed_tool_memory_observations(session) {
+            if let Err(error) = memory
+                .ingest_tool_result_observation(&agendao_memory::ToolMemoryObservation {
+                    session_id: &session.id,
+                    tool_call_id: &observation.call_id,
+                    tool_name: &observation.tool_name,
+                    stage_id: None,
+                    output: &observation.output,
+                    is_error: observation.is_error,
+                })
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session.id,
+                    tool_call_id = %observation.call_id,
+                    tool_name = %observation.tool_name,
+                    %error,
+                    "failed to persist completed tool result in memory"
+                );
+            }
+        }
     }
 
     pub fn with_proposal_repo(

@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::Utc;
@@ -22,6 +22,7 @@ use super::provider::collect_provider_profile_validation;
 pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/", get(get_config).patch(patch_config))
+        .route("/reload", post(reload_config))
         .route("/disabled", put(put_disabled_config))
         .route("/validation", get(get_config_validation))
         .route("/providers", get(get_config_providers))
@@ -46,6 +47,25 @@ pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
 pub(crate) async fn get_config(State(state): State<Arc<ServerState>>) -> Result<Json<AppConfig>> {
     let config = state.config_store.config();
     Ok(Json((*config).clone()))
+}
+
+/// Re-read all configuration layers from disk and refresh the runtime state
+/// derived from them. Disk changes are intentionally never watched or applied
+/// implicitly; this endpoint is the sole external-reload boundary.
+pub(crate) async fn reload_config(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<AppConfig>> {
+    let updated =
+        state.config_store.reload().await.map_err(|error| {
+            crate::ApiError::BadRequest(format!("config reload failed: {error:#}"))
+        })?;
+
+    state.rebuild_providers().await;
+    state.rebuild_tool_registry().await;
+    crate::routes::refresh_agent_cache(&state.config_store).await;
+    broadcast_config_updated(state.as_ref());
+
+    Ok(Json((*updated).clone()))
 }
 
 pub(crate) async fn get_config_validation(
@@ -635,16 +655,100 @@ async fn build_config_policy_validation_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_config_policy_validation_snapshot, merge_model_config};
+    use super::{build_config_policy_validation_snapshot, merge_model_config, reload_config};
     use crate::ServerState;
     use agendao_config::{
         Config, ConfigStore, ExternalAdapterConfig, ExternalAdapterEntryConfig, ModelConfig,
         ProviderConfig,
     };
+    use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
+    use agendao_state::UserStateAuthority;
     use agendao_types::{ConfigPolicyValidationEffect, ConfigPolicyValidationOwner};
     use axum::{extract::State, Json};
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
+
+    fn state_from_workspace(workspace: &Path) -> Arc<ServerState> {
+        crate::isolate_test_config_home();
+        let config_store = Arc::new(
+            ConfigStore::from_project_dir(workspace).expect("workspace config should load"),
+        );
+        let user_state = Arc::new(UserStateAuthority::from_config_store(&config_store));
+        let resolved_context_authority = Arc::new(ResolvedWorkspaceContextAuthority::new(
+            config_store.clone(),
+            user_state.clone(),
+        ));
+        let mut state = ServerState::new();
+        state.config_store = config_store;
+        state.user_state = user_state;
+        state.resolved_context_authority = resolved_context_authority;
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn config_reload_applies_disk_changes_refreshes_agents_and_broadcasts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".agendao");
+        fs::create_dir_all(config_dir.join("agents")).expect("config dirs");
+        fs::write(config_dir.join("agendao.json"), r#"{ "model": "before" }"#)
+            .expect("initial config");
+        let state = state_from_workspace(temp.path());
+        let mut events = state.event_bus.subscribe();
+
+        fs::write(config_dir.join("agendao.json"), r#"{ "model": "after" }"#)
+            .expect("updated config");
+        fs::write(
+            config_dir.join("agents/reviewer.md"),
+            "---\ndescription: Reloaded reviewer\nmaxSteps: 9\n---\nReview carefully.\n",
+        )
+        .expect("agent sidecar");
+
+        let Json(updated) = reload_config(State(state.clone()))
+            .await
+            .expect("reload should succeed");
+        assert_eq!(updated.model.as_deref(), Some("after"));
+        assert_eq!(
+            updated
+                .agent
+                .as_ref()
+                .and_then(|agents| agents.entries.get("reviewer"))
+                .and_then(|agent| agent.max_steps),
+            Some(9)
+        );
+        assert!(crate::routes::AGENT_LIST_CACHE
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|agents| agents.iter().any(|agent| agent.id == "reviewer")));
+
+        let event = events.recv().await.expect("config.updated event");
+        let payload: serde_json::Value = serde_json::from_str(event.json()).expect("event json");
+        assert_eq!(payload["type"], "config.updated");
+    }
+
+    #[tokio::test]
+    async fn config_reload_failure_keeps_current_snapshot_and_emits_no_event() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".agendao");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(config_dir.join("agendao.json"), r#"{ "model": "stable" }"#)
+            .expect("initial config");
+        let state = state_from_workspace(temp.path());
+        let revision = state.config_store.revision();
+        let mut events = state.event_bus.subscribe();
+
+        fs::write(config_dir.join("agendao.json"), "{ invalid json").expect("invalid config");
+        let error = reload_config(State(state.clone()))
+            .await
+            .expect_err("reload should reject invalid config");
+
+        assert!(error.to_string().contains("config reload failed"));
+        assert_eq!(state.config_store.config().model.as_deref(), Some("stable"));
+        assert_eq!(state.config_store.revision(), revision);
+        assert!(events.try_recv().is_err());
+    }
 
     #[test]
     fn merge_model_config_preserves_unedited_fields() {

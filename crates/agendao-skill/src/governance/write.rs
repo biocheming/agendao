@@ -229,9 +229,8 @@ impl SkillGovernanceAuthority {
             .resolve_skill_for_inspection(&req.name, None)?;
         let next_name = crate::write::parse_skill_document(&req.content)
             .ok()
-            .and_then(|document| {
-                crate::write::read_frontmatter_value(&document.frontmatter_lines, "name")
-            })
+            .and_then(|document| crate::write::parse_skill_frontmatter(&document).ok())
+            .map(|frontmatter| frontmatter.name)
             .unwrap_or_else(|| current.name.clone());
         let duplicate_conflict = !next_name.eq_ignore_ascii_case(&current.name)
             && self

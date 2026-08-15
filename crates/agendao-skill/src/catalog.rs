@@ -71,7 +71,9 @@ pub struct SkillCatalogCache {
 const LOADED_SKILL_CACHE_LIMIT: usize = 16;
 const SNAPSHOT_FILE_NAME: &str = "skills_prompt_snapshot.json";
 pub const SKILL_CATALOG_SNAPSHOT_SCHEMA: &str = "agendao.skill_catalog_snapshot";
-pub const SKILL_CATALOG_SNAPSHOT_VERSION: u32 = 1;
+// Version 2 binds snapshots to the structured YAML discovery parser. Version
+// 1 may contain empty or truncated metadata produced by the removed line parser.
+pub const SKILL_CATALOG_SNAPSHOT_VERSION: u32 = 2;
 
 impl SkillCatalogCache {
     pub fn set_snapshot(&mut self, snapshot: SkillCatalogSnapshot, config_revision: u64) {

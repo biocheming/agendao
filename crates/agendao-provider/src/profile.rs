@@ -216,35 +216,55 @@ impl ProviderProfileResolver {
         npm: &str,
         options: &HashMap<String, Value>,
     ) -> Result<ProviderProfile, ProviderProfileError> {
-        if let Some(profile) = custom_profile_from_options(provider_id, npm, options)? {
-            validate_supported_npm(npm)?;
-            return Ok(profile);
-        }
+        let mut profile =
+            if let Some(profile) = custom_profile_from_options(provider_id, npm, options)? {
+                validate_supported_npm(npm)?;
+                profile
+            } else {
+                let provider_key = provider_id.trim().to_ascii_lowercase();
+                match provider_key.as_str() {
+                    "openai" => builtin_profile(
+                        provider_id,
+                        npm,
+                        "@ai-sdk/openai",
+                        ProviderApiFamily::OpenAiCompatible,
+                        ProviderApiShape::Responses,
+                        ProviderUsageShape::OpenAiCachedTokens,
+                        CacheProtocolFamily::OpenAiCompatible,
+                    )?,
+                    "anthropic" => builtin_profile(
+                        provider_id,
+                        npm,
+                        "@ai-sdk/anthropic",
+                        ProviderApiFamily::AnthropicMessages,
+                        ProviderApiShape::AnthropicMessages,
+                        ProviderUsageShape::AnthropicReadWrite,
+                        CacheProtocolFamily::AnthropicCompatible,
+                    )?,
+                    "deepseek" => builtin_profile(
+                        provider_id,
+                        npm,
+                        "@ai-sdk/openai-compatible",
+                        ProviderApiFamily::OpenAiCompatible,
+                        ProviderApiShape::ChatCompletions,
+                        ProviderUsageShape::OpenAiCachedTokens,
+                        CacheProtocolFamily::OpenAiCompatible,
+                    )?,
+                    _ => {
+                        return Err(ProviderProfileError::MissingField(
+                            "provider_profile".to_string(),
+                        ))
+                    }
+                }
+            };
 
-        let provider_key = provider_id.trim().to_ascii_lowercase();
-        match provider_key.as_str() {
-            "openai" => builtin_profile(
-                provider_id,
-                npm,
-                "@ai-sdk/openai",
-                ProviderApiFamily::OpenAiCompatible,
-                ProviderApiShape::Responses,
-                ProviderUsageShape::OpenAiCachedTokens,
-                CacheProtocolFamily::OpenAiCompatible,
-            ),
-            "anthropic" => builtin_profile(
-                provider_id,
-                npm,
-                "@ai-sdk/anthropic",
-                ProviderApiFamily::AnthropicMessages,
-                ProviderApiShape::AnthropicMessages,
-                ProviderUsageShape::AnthropicReadWrite,
-                CacheProtocolFamily::AnthropicCompatible,
-            ),
-            _ => Err(ProviderProfileError::MissingField(
-                "provider_profile".to_string(),
-            )),
+        // DeepSeek reasoning models require assistant `reasoning_content` on
+        // tool-call continuations. This is a provider contract, not an
+        // optional user preference, so a custom profile cannot erase it.
+        if provider_id.trim().eq_ignore_ascii_case("deepseek") {
+            profile.quirks.insert(ProviderQuirk::RequiresThinkingReplay);
         }
+        Ok(profile)
     }
 }
 
@@ -576,6 +596,44 @@ mod tests {
             profile.cache_family,
             CacheProtocolFamily::AnthropicCompatible
         );
+    }
+
+    #[test]
+    fn projects_deepseek_chat_profile_with_required_thinking_replay() {
+        let profile = ProviderProfileResolver::resolve_with_npm(
+            "deepseek",
+            "@ai-sdk/openai-compatible",
+            &empty_options(),
+        );
+
+        assert_eq!(profile.api_family, ProviderApiFamily::OpenAiCompatible);
+        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
+        assert!(profile
+            .quirks
+            .contains(ProviderQuirk::RequiresThinkingReplay));
+    }
+
+    #[test]
+    fn deepseek_custom_profile_cannot_drop_required_thinking_replay() {
+        let options = HashMap::from([(
+            "provider_profile".to_string(),
+            serde_json::json!({
+                "api_style": "openai-compatible",
+                "api_shape": "chat-completions",
+                "transport": "bearer",
+                "usage_shape": "openai-cached-tokens",
+                "quirks": []
+            }),
+        )]);
+
+        let profile = ProviderProfileResolver::resolve_with_npm(
+            "deepseek",
+            "@ai-sdk/openai-compatible",
+            &options,
+        );
+        assert!(profile
+            .quirks
+            .contains(ProviderQuirk::RequiresThinkingReplay));
     }
 
     #[test]

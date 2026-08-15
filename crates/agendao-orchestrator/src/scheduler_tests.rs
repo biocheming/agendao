@@ -1724,6 +1724,7 @@ async fn planner_receives_workspace_and_catalog_summary_without_skill_body() {
         .clone()
         .expect("captured planner input");
     assert_eq!(input.workspace_summary, "stable-workspace-summary");
+    assert_eq!(input.default_parameters, template_parameters());
     assert_eq!(input.catalog.skills[0].id, SkillId::from("audit"));
     assert_eq!(
         input.catalog.skills[0].capability_tags,

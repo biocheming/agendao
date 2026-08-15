@@ -847,6 +847,8 @@ pub struct MessageTokensInfo {
     #[serde(default)]
     pub input: u64,
     #[serde(default)]
+    pub context: u64,
+    #[serde(default)]
     pub output: u64,
     #[serde(default)]
     pub reasoning: u64,
@@ -1153,6 +1155,11 @@ pub struct ProviderModelInfo {
     pub cost_per_million_input: Option<f64>,
     #[serde(default)]
     pub cost_per_million_output: Option<f64>,
+    /// Provider-specific capability detail projected by the server. Kept as
+    /// structured JSON so clients remain forward-compatible as the catalog
+    /// adds capability fields.
+    #[serde(default)]
+    pub capabilities: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1487,6 +1494,29 @@ mod subscription_tests {
 #[cfg(test)]
 mod canonical_wire_tests {
     use super::*;
+
+    #[test]
+    fn message_info_accepts_server_context_token_count() {
+        let message = serde_json::json!({
+            "id": "message-1",
+            "session_id": "session-1",
+            "role": "assistant",
+            "created_at": 1,
+            "tokens": {
+                "input": 10,
+                "context": 4096,
+                "output": 20,
+                "reasoning": 0,
+                "cache_read": 128,
+                "cache_miss": 0,
+                "cache_write": 0
+            }
+        });
+
+        let parsed = serde_json::from_value::<MessageInfo>(message)
+            .expect("server message payload should match the public API type");
+        assert_eq!(parsed.tokens.context, 4096);
+    }
 
     #[test]
     fn session_and_message_types_reject_removed_camel_case_fields() {
