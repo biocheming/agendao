@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -451,14 +451,38 @@ impl Session {
     }
 
     pub fn context_kind(&self) -> SessionContextKind {
-        self.inner
-            .metadata
-            .get(SESSION_CONTEXT_KIND_METADATA_KEY)
-            .cloned()
-            .map(serde_json::from_value::<SessionContextKind>)
-            .transpose()
-            .expect("session context kind metadata must match the typed contract")
-            .expect("session context kind metadata is required")
+        let Some(raw) = self.inner.metadata.get(SESSION_CONTEXT_KIND_METADATA_KEY) else {
+            // Rows persisted before the typed contract predate fork metadata;
+            // they are root sessions by construction.
+            return SessionContextKind::default();
+        };
+        match serde_json::from_value::<SessionContextKind>(raw.clone()) {
+            Ok(kind) => kind,
+            Err(error) => {
+                // Retired wire values must not kill the worker on load;
+                // isolate them into the closest surviving kind.
+                tracing::warn!(
+                    session_id = %self.inner.id,
+                    %error,
+                    raw = ?raw,
+                    "unknown session context kind in persisted metadata; isolating to a compatible kind"
+                );
+                Self::migrate_retired_context_kind(raw)
+            }
+        }
+    }
+
+    /// Map context-kind wire values that were retired from the typed enum to
+    /// the closest surviving kind. Loading historical rows must degrade, not
+    /// panic.
+    fn migrate_retired_context_kind(raw: &serde_json::Value) -> SessionContextKind {
+        if raw.as_str() == Some("scheduler_stage_output_session") {
+            // Retired scheduler-native stage child: a derived session, not
+            // the continuity owner of its own root line.
+            SessionContextKind::ExplicitFullHistoryFork
+        } else {
+            SessionContextKind::default()
+        }
     }
 
     pub fn ownership_summary(&self) -> SessionOwnershipSummary {
@@ -1188,12 +1212,16 @@ pub struct SessionRow {
 // Session Manager
 // ============================================================================
 
+/// Upper bound on retained lifecycle events. Production has no drain
+/// consumer; without a cap every update tick would grow the queue forever.
+const SESSION_EVENT_QUEUE_CAP: usize = 256;
+
 pub struct SessionManager {
     // 会话本体以 Arc 共享存储：流式快照、持久化 worker、订阅者读取可持有
     // 同一份 `Arc<Session>`，避免每个 update tick 的整份深拷贝。写入走
     // `Arc::make_mut` 写时复制——仅在 Arc 被共享时才拷贝一次。
     sessions: HashMap<String, Arc<Session>>,
-    events: Vec<SessionEvent>,
+    events: VecDeque<SessionEvent>,
     bus: Option<Arc<Bus>>,
 }
 
@@ -1202,10 +1230,19 @@ impl SessionManager {
         session.to_row()
     }
 
+    /// Retained lifecycle events are a diagnostic tail, not a durable log:
+    /// keep only the most recent [`SESSION_EVENT_QUEUE_CAP`] events.
+    fn push_event(&mut self, event: SessionEvent) {
+        if self.events.len() >= SESSION_EVENT_QUEUE_CAP {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
-            events: Vec::new(),
+            events: VecDeque::new(),
             bus: None,
         }
     }
@@ -1214,7 +1251,7 @@ impl SessionManager {
     pub fn with_bus(bus: Arc<Bus>) -> Self {
         Self {
             sessions: HashMap::new(),
-            events: Vec::new(),
+            events: VecDeque::new(),
             bus: Some(bus),
         }
     }
@@ -1282,7 +1319,7 @@ impl SessionManager {
         let session = Session::new(project_id, directory);
         self.sessions
             .insert(session.record().id.clone(), Arc::new(session.clone()));
-        self.events.push(SessionEvent::Created {
+        self.push_event(SessionEvent::Created {
             info: Self::summarize_session(&session),
         });
 
@@ -1409,7 +1446,7 @@ impl SessionManager {
         }
 
         self.sessions.insert(forked_id, Arc::new(forked.clone()));
-        self.events.push(SessionEvent::Created {
+        self.push_event(SessionEvent::Created {
             info: Self::summarize_session(&forked),
         });
         self.publish_session_event(&SESSION_CREATED_EVENT, &forked);
@@ -1423,7 +1460,7 @@ impl SessionManager {
             session.set_share(SessionShare { url: url.into() });
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1437,7 +1474,7 @@ impl SessionManager {
             session.clear_share();
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1451,7 +1488,7 @@ impl SessionManager {
             session.set_archived(time);
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1469,7 +1506,7 @@ impl SessionManager {
             session.set_permission(permission);
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1483,7 +1520,7 @@ impl SessionManager {
             session.set_revert(revert);
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1497,7 +1534,7 @@ impl SessionManager {
             session.clear_revert();
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1511,7 +1548,7 @@ impl SessionManager {
             session.set_summary(summary);
             session.clone()
         };
-        self.events.push(SessionEvent::Updated {
+        self.push_event(SessionEvent::Updated {
             info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
@@ -1596,7 +1633,7 @@ impl SessionManager {
         let session = self.sessions.remove(id)?;
         // 共享句柄仍存活时退化为一次深拷贝；独占时直接取出，零拷贝。
         let session = Arc::try_unwrap(session).unwrap_or_else(|shared| (*shared).clone());
-        self.events.push(SessionEvent::Deleted {
+        self.push_event(SessionEvent::Deleted {
             info: Self::summarize_session(&session),
         });
 
@@ -1624,12 +1661,14 @@ impl SessionManager {
         self.sessions.insert(id.clone(), session);
         // 借回 map 中的副本发事件,避免为事件再深拷贝一次完整会话
         // (流式期每个 update tick 调用,大会话下整份 clone 代价显著)。
-        let Some(stored) = self.sessions.get(&id) else {
-            return;
+        let info = match self.sessions.get(&id) {
+            Some(stored) => Self::summarize_session(stored),
+            None => return,
         };
-        let info = Self::summarize_session(stored);
-        self.events.push(SessionEvent::Updated { info });
-        self.publish_session_event(&SESSION_UPDATED_EVENT, stored);
+        self.push_event(SessionEvent::Updated { info });
+        if let Some(stored) = self.sessions.get(&id) {
+            self.publish_session_event(&SESSION_UPDATED_EVENT, stored);
+        }
     }
 
     /// Restore a session into the in-memory manager without emitting manager events.
@@ -1829,6 +1868,55 @@ mod tests {
             session.context_kind(),
             SessionContextKind::RootSessionContinuity
         );
+    }
+
+    #[test]
+    fn context_kind_isolates_retired_metadata_values() {
+        let mut session = Session::new("project-1", "/path/to/project");
+
+        // Retired scheduler-native stage child: migrates into the fork
+        // bucket instead of panicking on load.
+        session.inner.metadata.insert(
+            SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
+            serde_json::json!("scheduler_stage_output_session"),
+        );
+        assert_eq!(
+            session.context_kind(),
+            SessionContextKind::ExplicitFullHistoryFork
+        );
+
+        // Unknown junk values degrade to the default kind.
+        session.inner.metadata.insert(
+            SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
+            serde_json::json!("not_a_real_kind"),
+        );
+        assert_eq!(
+            session.context_kind(),
+            SessionContextKind::RootSessionContinuity
+        );
+
+        // Rows persisted before the typed contract have no key at all.
+        session
+            .inner
+            .metadata
+            .remove(SESSION_CONTEXT_KIND_METADATA_KEY);
+        assert_eq!(
+            session.context_kind(),
+            SessionContextKind::RootSessionContinuity
+        );
+    }
+
+    #[test]
+    fn session_event_queue_is_bounded() {
+        let mut manager = SessionManager::new();
+        for _ in 0..(SESSION_EVENT_QUEUE_CAP + 50) {
+            manager.create("project-1", "/path/to/project");
+        }
+        assert_eq!(manager.events_count(), SESSION_EVENT_QUEUE_CAP);
+
+        let drained = manager.drain_events();
+        assert_eq!(drained.len(), SESSION_EVENT_QUEUE_CAP);
+        assert_eq!(manager.events_count(), 0);
     }
 
     #[test]

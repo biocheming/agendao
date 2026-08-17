@@ -53,7 +53,7 @@ pub(crate) struct CreateSessionSpec {
 pub struct PermissionRulesetInput {
     pub allow: Option<Vec<String>>,
     pub deny: Option<Vec<String>>,
-    pub mode: Option<String>,
+    pub mode: Option<agendao_types::SessionPermissionMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,7 +330,7 @@ pub(crate) fn session_to_info(session: &agendao_session::Session) -> SessionInfo
             .map(|p| PermissionRulesetInfo {
                 allow: p.allow.clone(),
                 deny: p.deny.clone(),
-                mode: p.mode.clone(),
+                mode: p.mode,
             }),
         fork: session.fork_explain(),
         telemetry: load_session_telemetry_snapshot(session),
@@ -844,13 +844,20 @@ pub(super) async fn set_session_permission(
     Json(req): Json<PermissionRulesetInput>,
 ) -> Result<Json<SessionInfo>> {
     let mut sessions = state.sessions.lock().await;
+    let existing = sessions
+        .get(&id)
+        .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?
+        .record()
+        .permission
+        .clone()
+        .unwrap_or_default();
     let updated = sessions
         .set_permission(
             &id,
             agendao_session::PermissionRuleset {
-                allow: req.allow.unwrap_or_default(),
-                deny: req.deny.unwrap_or_default(),
-                mode: req.mode,
+                allow: req.allow.unwrap_or(existing.allow),
+                deny: req.deny.unwrap_or(existing.deny),
+                mode: req.mode.unwrap_or(existing.mode),
             },
         )
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;

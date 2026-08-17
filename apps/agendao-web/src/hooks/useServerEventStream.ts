@@ -14,6 +14,8 @@ interface UseServerEventStreamOptions {
   clearPendingSessionRefresh: () => void;
   flushPendingOutputBlocks: () => void;
   onConfigUpdated: () => void;
+  /** Called after every successful (re)connection so missed events can be reconciled. */
+  onStreamReconnected: () => void;
   queueVisibleLiveSnapshot: (sessionId: string, block: OutputBlock) => void;
   refreshExecutionActivity: (sessionId: string) => void | Promise<void>;
   scheduleSessionRefresh: () => void;
@@ -52,6 +54,7 @@ export function useServerEventStream({
   clearPendingSessionRefresh,
   flushPendingOutputBlocks,
   onConfigUpdated,
+  onStreamReconnected,
   queueVisibleLiveSnapshot,
   refreshExecutionActivity,
   scheduleSessionRefresh,
@@ -70,6 +73,9 @@ export function useServerEventStream({
       const eventSessionId = eventSessionIdFromPayload(event);
       const selectedSessionId = store.selectedSessionId;
 
+      // Feed/transcript blocks only render for the selected session, but
+      // runtime state below is tracked for EVERY session so switching (or a
+      // reconnect) never resurrects another session's stale state.
       if (type === "output_block" && eventSessionId === selectedSessionId) {
         const block = outputBlockFromEvent(event);
         if (!block) return;
@@ -108,27 +114,15 @@ export function useServerEventStream({
       // frontend bus (see crates/agendao-server/src/session_runtime/
       // frontend_projection.rs). It is also the sidebar-refresh trigger —
       // the legacy `session.updated` vocabulary never reaches this channel.
-      if (type === "session.runtime.replaced" && eventSessionId === selectedSessionId) {
-        flushPendingOutputBlocks();
+      if (type === "session.runtime.replaced" && eventSessionId) {
+        if (eventSessionId === selectedSessionId) {
+          flushPendingOutputBlocks();
+        }
         scheduleSessionRefresh();
         const runtime = event.runtime as Record<string, unknown> | undefined;
         const rawStatus = typeof runtime?.run_status === "string" ? runtime.run_status : "";
-        if (rawStatus === "idle") {
-          store.setStreaming(false);
-          store.setStatusLine("idle");
-          store.setLatestRuntimeError(null);
-        } else if (rawStatus === "waiting_on_user") {
-          store.setStreaming(false);
-          store.setStatusLine("awaiting_user");
-          store.setLatestRuntimeError(null);
-        } else if (rawStatus === "running" || rawStatus === "waiting_on_tool") {
-          store.setStreaming(true);
-          store.setStatusLine("running");
-          store.setLatestRuntimeError(null);
-        } else if (rawStatus === "compacting") {
-          store.setStreaming(true);
-          store.setStatusLine("compacting");
-          store.setLatestRuntimeError(null);
+        if (rawStatus) {
+          store.applySessionRunStatus(eventSessionId, rawStatus);
         }
         return;
       }
@@ -143,50 +137,53 @@ export function useServerEventStream({
       }
 
       // Canonical web-tier question events (payload `question` is QuestionInfo).
-      if (type === "question.upsert" && eventSessionId === selectedSessionId) {
-        flushPendingOutputBlocks();
-        const question = event.question as Parameters<typeof questionInteractionFromInfo>[0];
-        store.setQuestion(questionInteractionFromInfo(question));
-        store.setQuestionAnswers({});
+      if (type === "question.upsert" && eventSessionId) {
+        if (eventSessionId === selectedSessionId) {
+          flushPendingOutputBlocks();
+          store.setQuestionAnswers({});
+        }
+        const question = event.question as Parameters<
+          typeof questionInteractionFromInfo
+        >[0];
+        store.setSessionQuestion(eventSessionId, questionInteractionFromInfo(question));
         store.setQuestionSubmitting(false);
-        store.setStreaming(false);
-        store.setStatusLine("awaiting_user");
-        store.setLatestRuntimeError(null);
+        store.applySessionRunStatus(eventSessionId, "waiting_on_user");
         return;
       }
 
-      if (type === "question.removed" && eventSessionId === selectedSessionId) {
-        store.setQuestion(null);
-        store.setQuestionAnswers({});
-        store.setQuestionSubmitting(false);
-        store.setLatestRuntimeError(null);
-        store.setStreaming(true);
-        store.setStatusLine("running");
+      if (type === "question.removed" && eventSessionId) {
+        store.setSessionQuestion(eventSessionId, null);
+        if (eventSessionId === selectedSessionId) {
+          store.setQuestionAnswers({});
+          store.setQuestionSubmitting(false);
+        }
+        store.applySessionRunStatus(eventSessionId, "running");
         return;
       }
 
       // Canonical web-tier contract: the server projects PermissionRequested
       // into `permission.upsert` (payload `permission` is PermissionRequestInfo,
       // same shape as the legacy `info`), so both paths converge here.
-      if (type === "permission.upsert" && eventSessionId === selectedSessionId) {
+      if (type === "permission.upsert" && eventSessionId) {
         const info = (event.permission ?? {}) as Record<string, unknown>;
-        store.setPermission(
+        store.setSessionPermission(
+          eventSessionId,
           permissionInteractionFromEvent({ permissionID: info.id, info }, eventSessionId),
         );
         store.setPermissionSubmitting(false);
         store.setPermissionSubmitError(null);
         store.setPermissionSubmitStartedAt(null);
         store.setPermissionSubmitCompletedAt(null);
-        store.setLatestRuntimeError(null);
-        store.setStreaming(false);
-        store.setStatusLine("awaiting_user");
+        store.applySessionRunStatus(eventSessionId, "waiting_on_user");
         return;
       }
 
       if (type === "permission.resolved" || type === "permission.removed") {
         const resolvedPermissionId = String(event.permissionID ?? "");
+        const targetSessionId = eventSessionId;
+        if (!targetSessionId) return;
         let resolvedCurrentPermission = false;
-        store.setPermission((current) => {
+        store.setSessionPermission(targetSessionId, (current) => {
           if (!current) return null;
           if (resolvedPermissionId && current.permission_id !== resolvedPermissionId) {
             return current;
@@ -198,9 +195,7 @@ export function useServerEventStream({
           store.setPermissionSubmitting(false);
           store.setPermissionSubmitError(null);
           store.setPermissionSubmitCompletedAt(new Date().toISOString());
-          store.setLatestRuntimeError(null);
-          store.setStreaming(true);
-          store.setStatusLine("running");
+          store.applySessionRunStatus(targetSessionId, "running");
         }
       }
     };
@@ -216,10 +211,16 @@ export function useServerEventStream({
           if (!response.ok) {
             throw new Error(`${response.status} ${response.statusText}`);
           }
+          // Events emitted while disconnected are not replayed; re-derive
+          // the affected sessions from the authoritative runtime state.
+          onStreamReconnected();
           await parseSSE(response, (_eventName, payload) => handleServerEvent(payload));
         } catch {
           if (!active || controller.signal.aborted) return;
-          useAgendaoStore.getState().setStatusLine("reconnecting");
+          const store = useAgendaoStore.getState();
+          if (store.selectedSessionId) {
+            store.setSessionStatusLine(store.selectedSessionId, "reconnecting");
+          }
           await new Promise((resolve) => window.setTimeout(resolve, 1500));
         }
       }
@@ -238,6 +239,7 @@ export function useServerEventStream({
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
     onConfigUpdated,
+    onStreamReconnected,
     queueVisibleLiveSnapshot,
     refreshExecutionActivity,
     scheduleSessionRefresh,

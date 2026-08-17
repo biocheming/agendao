@@ -44,7 +44,8 @@ use crate::{
     SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
     SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
     SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
-    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    UpdateSessionPermissionRequest, UpdateSessionRequest,
 };
 
 pub struct BlockingApiClient {
@@ -307,6 +308,22 @@ impl BlockingApiClient {
             &format!("/permission/{}/reply", permission_id),
             &format!("reply permission `{}`", permission_id),
             Some(&body),
+        )
+    }
+
+    pub fn set_session_permission_mode(
+        &self,
+        session_id: &str,
+        mode: crate::SessionPermissionMode,
+    ) -> anyhow::Result<SessionInfo> {
+        self.patch_json(
+            &format!("/session/{}/permission", session_id),
+            &format!("update session `{}` permission mode", session_id),
+            &UpdateSessionPermissionRequest {
+                allow: None,
+                deny: None,
+                mode: Some(mode),
+            },
         )
     }
 

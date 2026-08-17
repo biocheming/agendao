@@ -294,6 +294,9 @@ async fn handle_request(
         "reject_question" => handle_reject_question(request.params, state).await,
         "list_permissions" => handle_list_permissions(state).await,
         "reply_permission" => handle_reply_permission(request.params, state).await,
+        "set_session_permission_mode" => {
+            handle_set_session_permission_mode(request.params, state).await
+        }
         "abort_session" => handle_abort_session(request.params, state).await,
         "cancel_tool_call" => handle_cancel_tool_call(request.params, state).await,
         "execute_shell" => handle_execute_shell(request.params, state).await,
@@ -998,6 +1001,22 @@ async fn handle_reply_permission(
     Ok(serde_json::Value::Bool(true))
 }
 
+async fn handle_set_session_permission_mode(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let request: SetSessionPermissionModeRequest =
+        serde_json::from_value(params).map_err(to_rpc_invalid_params)?;
+    let session = crate::local_set_session_permission_mode(
+        Arc::clone(state),
+        &request.session_id,
+        request.mode,
+    )
+    .await
+    .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(session).map_err(to_rpc_serde_error)
+}
+
 async fn handle_abort_session(
     params: serde_json::Value,
     state: &Arc<ServerState>,
@@ -1304,6 +1323,12 @@ struct ReplyPermissionRequest {
     reply: String,
     #[serde(default)]
     message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSessionPermissionModeRequest {
+    session_id: String,
+    mode: agendao_types::SessionPermissionMode,
 }
 
 #[derive(Debug, Deserialize)]

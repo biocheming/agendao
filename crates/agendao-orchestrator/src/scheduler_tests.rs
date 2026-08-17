@@ -683,9 +683,11 @@ impl AgentLoopObserver for SecondStepBoundaryObserver {
         _context: &AgentObservationContext<'_>,
     ) -> Result<Vec<String>, String> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
-        Ok((call == 1)
-            .then(|| vec!["Inspect the configuration path too.".to_string()])
-            .unwrap_or_default())
+        Ok(if call == 1 {
+            vec!["Inspect the configuration path too.".to_string()]
+        } else {
+            Vec::new()
+        })
     }
 }
 

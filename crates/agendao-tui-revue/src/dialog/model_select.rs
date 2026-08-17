@@ -31,7 +31,8 @@ pub enum ModelDialogOutcome {
     /// Dialog is still consuming keys (navigation, filtering, etc.).
     None,
     /// User pressed Enter but the selection was invalid (header row,
-    /// disconnected provider). Caller should show this string as a toast.
+    /// model unavailable in the current runtime). Caller should show this
+    /// string as a toast.
     Notice(String),
     /// User picked a usable model; dialog has already closed.
     Selected(ModelEntry),
@@ -55,6 +56,9 @@ pub struct ModelSelectDialog {
     selected: usize,
     variant_idx: usize,
     recent: Vec<(String, String)>,
+    /// Effective model for the active session, rendered independently from
+    /// the recent-model history.
+    current: Option<String>,
     /// Live search query — type to filter, Backspace to delete.
     query: String,
 }
@@ -80,6 +84,7 @@ impl ModelSelectDialog {
             selected: 0,
             variant_idx: 0,
             recent: vec![],
+            current: None,
             query: String::new(),
         }
     }
@@ -118,6 +123,18 @@ impl ModelSelectDialog {
     pub fn set_recent(&mut self, recent: Vec<(String, String)>) {
         self.recent = recent;
         self.rebuild_flat();
+    }
+
+    pub fn set_current(&mut self, current: Option<String>) {
+        self.current = current.filter(|value| !value.trim().is_empty());
+        self.rebuild_flat();
+    }
+
+    fn is_current(&self, model: &ModelEntry) -> bool {
+        self.current.as_deref().is_some_and(|current| {
+            current == format!("{}/{}", model.provider, model.model_id)
+                || (!current.contains('/') && current == model.model_id)
+        })
     }
 
     /// 记录一次模型选择：置顶、按 `(provider, model)` 去重、cap 到 8。
@@ -173,7 +190,19 @@ impl ModelSelectDialog {
         self.selected = self
             .flat
             .iter()
-            .position(|r| matches!(r, FlatRow::Model(_, _)))
+            .position(|row| match row {
+                FlatRow::Model(gi, mi) => self
+                    .groups
+                    .get(*gi)
+                    .and_then(|group| group.models.get(*mi))
+                    .is_some_and(|model| self.is_current(model)),
+                FlatRow::Header(_) => false,
+            })
+            .or_else(|| {
+                self.flat
+                    .iter()
+                    .position(|r| matches!(r, FlatRow::Model(_, _)))
+            })
             .unwrap_or(0);
     }
 
@@ -261,8 +290,8 @@ impl ModelSelectDialog {
                 };
                 if !m.available {
                     return ModelDialogOutcome::Notice(format!(
-                        "Provider '{}' is not connected — pick a model from a connected provider, or use /providers to authenticate first.",
-                        m.provider_display,
+                        "Model '{}' is listed in the catalogue but is not registered in the current '{}' runtime. Add it in Settings or choose an available model.",
+                        m.model_id, m.provider_display,
                     ));
                 }
                 self.close();
@@ -359,8 +388,13 @@ impl ModelSelectDialog {
                     } else {
                         String::new()
                     };
+                    let current = if self.is_current(model) {
+                        "  [current]"
+                    } else {
+                        ""
+                    };
                     ListItem::Row {
-                        display: format!("{}{}", model.display, variant),
+                        display: format!("{}{}{}", model.display, variant, current),
                         muted: !model.available,
                     }
                 }
@@ -394,5 +428,63 @@ impl ModelSelectDialog {
             geom,
             18,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(id: &str, available: bool) -> ModelEntry {
+        ModelEntry {
+            provider: "deepseek".to_string(),
+            provider_display: "DeepSeek".to_string(),
+            model_id: id.to_string(),
+            display: id.to_string(),
+            variants: Vec::new(),
+            available,
+        }
+    }
+
+    #[test]
+    fn unavailable_catalog_model_cannot_be_selected() {
+        let mut dialog = ModelSelectDialog::new();
+        dialog.set_models(vec![model("deepseek-v4-pro", false)]);
+        dialog.open();
+
+        let ModelDialogOutcome::Notice(message) = dialog.handle_key(&Key::Enter) else {
+            panic!("unavailable model must produce a notice");
+        };
+        assert!(message.contains("deepseek-v4-pro"));
+        assert!(dialog.is_open());
+    }
+
+    #[test]
+    fn registered_model_can_be_selected() {
+        let mut dialog = ModelSelectDialog::new();
+        dialog.set_models(vec![model("deepseek-v4-flash", true)]);
+        dialog.open();
+
+        let ModelDialogOutcome::Selected(selected) = dialog.handle_key(&Key::Enter) else {
+            panic!("registered model must be selectable");
+        };
+        assert_eq!(selected.model_id, "deepseek-v4-flash");
+        assert!(!dialog.is_open());
+    }
+
+    #[test]
+    fn current_model_is_distinct_from_recent_and_selected_on_open() {
+        let mut dialog = ModelSelectDialog::new();
+        dialog.set_models(vec![
+            model("deepseek-v4-flash", true),
+            model("deepseek-v4-pro", true),
+        ]);
+        dialog.set_recent(vec![("deepseek".into(), "deepseek-v4-flash".into())]);
+        dialog.set_current(Some("deepseek/deepseek-v4-pro".into()));
+        dialog.open();
+
+        let selected = dialog.selected_model().expect("current model selected");
+        assert_eq!(selected.model_id, "deepseek-v4-pro");
+        assert!(dialog.is_current(selected));
     }
 }

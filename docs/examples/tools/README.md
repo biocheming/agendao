@@ -27,7 +27,7 @@
 - `split-imports/` 真实演示了两个独立 catalog 文件的合并
 - `directory-infer/tools/catalog.jsonc` 刻意把 `catalog` 留空，依赖 `tools/cadd/molecular_docking/protein_ligand/...` 回填
 - `partial-backfill/tools/catalog.jsonc` 只锁 `family = scoring`，把 `domain` / `subfamily` 交给目录推断
-- `catalog-only/tools/catalog.jsonc` 没有 `execution` 块，当前只能进入 `tool_catalog_search` / `tool_catalog_describe`
+- `catalog-only/tools/catalog.jsonc` 没有 `execution` 块，当前只能通过 `capability` 的 `search` / `describe` action 查看
 
 ## Minimal entry
 
@@ -72,7 +72,7 @@
   - `domain` / `family` / `subfamily` / `tags` / `provenance`
   - 用于大 catalog 下的分层治理和渐进式暴露
 - `execution`
-  - 当前是否允许 `tool_catalog_call` 走外部执行适配器真正调用
+  - 当前是否允许 `capability` 的 `call` action 走外部执行适配器真正调用
 - `arguments_schema_ref`
   - 可选参数 schema 文件；适合把大参数结构移出主清单
 
@@ -104,5 +104,5 @@
 ## What these examples do not claim
 
 - 它们不保证外部 tool 的业务参数一定合理，只保证配置层字段、相对路径和 catalog 语义是当前合法形态
-- 它们不替代 `tool_catalog_search -> tool_catalog_describe -> tool_catalog_call` 的发现/执行流程说明；运行时入口仍以 `configuration.md` 和产品文档为准
+- 它们不替代 `capability(search) -> capability(describe) -> capability(call)` 的发现/执行流程说明；运行时入口仍以 `configuration.md` 和产品文档为准
 - `catalog-only` 示例不是“半配置错误”，而是刻意演示“大 catalog 先暴露发现面、后开放执行面”的治理方式

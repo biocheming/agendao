@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use agendao_agent::{AgentInfo, AgentRegistry};
@@ -73,6 +74,7 @@ pub(crate) struct SessionSchedulerToolExecutor {
     pub(super) abort_token: CancellationToken,
     pub(super) tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub(super) execution_metadata: std::collections::HashMap<String, serde_json::Value>,
+    pub(super) capability_allowed_tools_by_agent: BTreeMap<String, Vec<String>>,
 }
 
 pub(crate) struct SessionSchedulerToolExecutorInput {
@@ -82,6 +84,7 @@ pub(crate) struct SessionSchedulerToolExecutorInput {
     pub abort_token: CancellationToken,
     pub tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub execution_metadata: std::collections::HashMap<String, serde_json::Value>,
+    pub capability_allowed_tools_by_agent: BTreeMap<String, Vec<String>>,
 }
 
 pub(super) fn resolve_effective_scheduler_choice(
@@ -89,7 +92,7 @@ pub(super) fn resolve_effective_scheduler_choice(
     request_scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     has_explicit_agent: bool,
 ) -> agendao_orchestrator::selector::SchedulerChoice {
-    command_scheduler.or(request_scheduler).unwrap_or_else(|| {
+    command_scheduler.or(request_scheduler).unwrap_or({
         if has_explicit_agent {
             agendao_orchestrator::selector::SchedulerChoice::Template {
                 template: agendao_orchestrator::templates::TemplateId::Direct,
@@ -110,6 +113,7 @@ impl SessionSchedulerToolExecutor {
             abort_token: input.abort_token,
             tool_runtime_config: input.tool_runtime_config,
             execution_metadata: input.execution_metadata,
+            capability_allowed_tools_by_agent: input.capability_allowed_tools_by_agent,
         }
     }
 
@@ -156,18 +160,70 @@ impl SessionSchedulerToolExecutor {
                 let session_id = session_id.clone();
                 async move { request_permission(state, session_id, request).await }
             }
+        })
+        .with_todo_update({
+            let state = self.state.clone();
+            move |session_id, todos| {
+                let state = state.clone();
+                async move {
+                    let todos = todos
+                        .into_iter()
+                        .map(|todo| agendao_types::TodoInfo {
+                            content: todo.content,
+                            status: todo.status,
+                            priority: todo.priority,
+                        })
+                        .collect();
+                    state.todo_manager.update(&session_id, todos).await;
+                    Ok(())
+                }
+            }
+        })
+        .with_todo_get({
+            let state = self.state.clone();
+            move |session_id| {
+                let state = state.clone();
+                async move {
+                    Ok(state
+                        .todo_manager
+                        .get(&session_id)
+                        .await
+                        .into_iter()
+                        .map(|todo| agendao_tool::TodoItemData {
+                            content: todo.content,
+                            status: todo.status,
+                            priority: todo.priority,
+                        })
+                        .collect())
+                }
+            }
+        })
+        .with_file_time_read({
+            let tracker = self.state.file_time_tracker.clone();
+            move |session_id, file_path| {
+                let tracker = tracker.clone();
+                async move { tracker.record(&session_id, &file_path) }
+            }
+        })
+        .with_file_time_assert({
+            let tracker = self.state.file_time_tracker.clone();
+            move |session_id, file_path| {
+                let tracker = tracker.clone();
+                async move { tracker.assert_unchanged(&session_id, &file_path) }
+            }
         });
         base_ctx.call_id = metadata
             .get("call_id")
             .and_then(|value| value.as_str())
             .map(str::to_string);
         base_ctx.extra = metadata.clone();
-        let inventory = self.state.tool_registry.list_ids().await;
-        let mut available_tool_ids = inventory
-            .iter()
-            .map(|tool| tool.to_ascii_lowercase())
-            .collect::<Vec<_>>();
+        let mut available_tool_ids = self
+            .capability_allowed_tools_by_agent
+            .get(agent_name)
+            .cloned()
+            .unwrap_or_default();
         available_tool_ids.sort();
+        available_tool_ids.dedup();
         let mut available_toolsets =
             agendao_skill::infer_toolsets_from_tools(available_tool_ids.iter().map(String::as_str))
                 .into_iter()
@@ -175,6 +231,10 @@ impl SessionSchedulerToolExecutor {
         available_toolsets.sort();
         base_ctx.extra.insert(
             "available_tool_ids".to_string(),
+            serde_json::json!(available_tool_ids),
+        );
+        base_ctx.extra.insert(
+            agendao_tool::tool_catalog::CAPABILITY_ALLOWED_TOOL_IDS_KEY.to_string(),
             serde_json::json!(available_tool_ids),
         );
         base_ctx.extra.insert(

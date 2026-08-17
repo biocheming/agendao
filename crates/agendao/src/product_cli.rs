@@ -75,18 +75,9 @@ struct TuiArgs {
     #[arg(long)]
     agent: Option<String>,
     /// Explicitly attach over HTTP instead of the default Direct mode.
+    /// Use `agendao serve` to control the server's port/hostname/mDNS/CORS.
     #[arg(long = "attach-url")]
     attach_url: Option<String>,
-    #[arg(long, default_value_t = 0)]
-    port: u16,
-    #[arg(long, default_value = "127.0.0.1")]
-    hostname: String,
-    #[arg(long, default_value_t = false)]
-    mdns: bool,
-    #[arg(long = "mdns-domain", default_value = "agendao.local")]
-    mdns_domain: String,
-    #[arg(long)]
-    cors: Vec<String>,
     /// Force Direct (in-process) mode. This is already the default unless
     /// `--socket` or `--attach-url` is provided.
     #[arg(long, default_value_t = false)]
@@ -278,6 +269,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 agent: args.agent,
                 attach_url: args.attach_url,
                 unix_socket_path,
+                server_password: None,
             })
             .await?;
         }
@@ -291,6 +283,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 agent: None,
                 attach_url: Some(args.url),
                 unix_socket_path: resolve_socket_path(args.socket)?,
+                server_password: args.password,
             })
             .await?;
         }
@@ -363,6 +356,7 @@ fn default_tui_request() -> TuiCommandRequest {
         agent: None,
         attach_url: None,
         unix_socket_path: None,
+        server_password: None,
     }
 }
 

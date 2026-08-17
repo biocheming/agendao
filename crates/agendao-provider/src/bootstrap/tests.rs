@@ -189,3 +189,91 @@ fn from_models_dev_model_merges_transform_and_explicit_variants() {
     assert!(variants.contains_key("custom"));
     assert!(variants.contains_key("low"));
 }
+
+#[test]
+fn authenticated_catalog_provider_registers_all_catalog_models() {
+    let mut deepseek = provider_info("deepseek", model_info("deepseek-v4-pro"));
+    deepseek.models.insert(
+        "deepseek-v4-flash".to_string(),
+        model_info("deepseek-v4-flash"),
+    );
+    let models_dev = HashMap::from([("deepseek".to_string(), deepseek)]);
+    let auth_store = HashMap::from([(
+        "deepseek".to_string(),
+        AuthInfo::Api {
+            key: "test-key".to_string(),
+        },
+    )]);
+
+    let state = ProviderBootstrapState::init(&models_dev, &BootstrapConfig::default(), &auth_store);
+    let provider = state
+        .get_provider("deepseek")
+        .expect("authenticated catalogue provider should be registered");
+
+    assert_eq!(provider.key.as_deref(), Some("test-key"));
+    assert!(provider.models.contains_key("deepseek-v4-pro"));
+    assert!(provider.models.contains_key("deepseek-v4-flash"));
+}
+
+#[test]
+fn auth_store_key_beats_config_file_api_key() {
+    let models_dev = HashMap::from([("deepseek".to_string(), provider_info("deepseek", model_info("deepseek-v4-pro")))]);
+    let config = BootstrapConfig {
+        providers: HashMap::from([(
+            "deepseek".to_string(),
+            ConfigProvider {
+                api_key: Some("stale-config-key".to_string()),
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    };
+    let auth_store = HashMap::from([(
+        "deepseek".to_string(),
+        AuthInfo::Api {
+            key: "fresh-ui-key".to_string(),
+        },
+    )]);
+
+    let state = ProviderBootstrapState::init(&models_dev, &config, &auth_store);
+    let provider = state
+        .get_provider("deepseek")
+        .expect("provider should be registered");
+    // The key the user just saved through the UI must win over a stale
+    // api_key committed in a config file.
+    assert_eq!(provider.key.as_deref(), Some("fresh-ui-key"));
+    assert_eq!(provider.source, "api");
+}
+
+#[test]
+fn env_var_key_beats_auth_store_key() {
+    let mut provider = provider_info("deepseek", model_info("deepseek-v4-pro"));
+    provider.env = vec!["DEEPSEEK_API_KEY".to_string()];
+    let models_dev = HashMap::from([("deepseek".to_string(), provider)]);
+    let auth_store = HashMap::from([(
+        "deepseek".to_string(),
+        AuthInfo::Api {
+            key: "auth-store-key".to_string(),
+        },
+    )]);
+
+    // Scoped env guard: restore the variable even if the test panics.
+    struct EnvRestore(&'static str, Option<std::ffi::OsString>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.1.clone() {
+                Some(previous) => std::env::set_var(self.0, previous),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+    let _restore = EnvRestore("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    std::env::set_var("DEEPSEEK_API_KEY", "env-key");
+
+    let state = ProviderBootstrapState::init(&models_dev, &BootstrapConfig::default(), &auth_store);
+    let registered = state
+        .get_provider("deepseek")
+        .expect("provider should be registered");
+    assert_eq!(registered.key.as_deref(), Some("env-key"));
+    assert_eq!(registered.source, "env");
+}

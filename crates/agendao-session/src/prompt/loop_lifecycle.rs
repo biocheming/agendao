@@ -1247,7 +1247,7 @@ mod cache_fingerprint_tests {
             tool_surface_hash: "tools-a".to_string(),
             tool_source_surface_hash: "tool-source-a".to_string(),
             tool_catalog_hash: "catalog-a".to_string(),
-            tool_catalog_mode: "search-facade".to_string(),
+            tool_catalog_mode: "progressive".to_string(),
             all_tool_count: 12,
             model_visible_tool_count: 3,
             provider_params_hash: "params-a".to_string(),
@@ -1269,7 +1269,7 @@ mod cache_fingerprint_tests {
             123,
         );
 
-        assert_eq!(snapshot.tool_catalog_mode, "search-facade");
+        assert_eq!(snapshot.tool_catalog_mode, "progressive");
         assert_eq!(snapshot.all_tool_count, 12);
         assert_eq!(snapshot.model_visible_tool_count, 3);
     }
@@ -1916,6 +1916,8 @@ impl SessionPrompt {
             tool_runtime_config: self.tool_runtime_config.clone(),
             config_store: input.step_ctx.config_store.clone(),
             runtime_skill_instructions,
+            todo_manager: self.todo_manager.clone(),
+            file_time_tracker: self.file_time_tracker.clone(),
         };
         let observer = SessionAgentObserver::new(
             session,
@@ -2510,8 +2512,8 @@ impl SessionPrompt {
                 crate::prompt::tools_and_output::ToolCatalogMode::FullSchema => {
                     "full-schema".to_string()
                 }
-                crate::prompt::tools_and_output::ToolCatalogMode::SearchFacade => {
-                    "search-facade".to_string()
+                crate::prompt::tools_and_output::ToolCatalogMode::Progressive => {
+                    "progressive".to_string()
                 }
             },
             all_tool_count: surface_inputs.tool_catalog_by_name.len(),
@@ -3220,7 +3222,15 @@ impl SessionPrompt {
             );
             let tool_source_surface_hash =
                 agendao_provider::cache::tool_source_surface_fingerprint(&tool_source_digests);
-            let resolved_tools = merge_tool_definitions(base_tools, extra_tools);
+            let merged_tools = merge_tool_definitions(base_tools, extra_tools);
+            let catalog_mode = crate::prompt::tools_and_output::resolve_tool_catalog_mode(
+                &merged_tools,
+                &prompt_ctx.surface_inputs.tool_catalog_by_name,
+            );
+            let resolved_tools = crate::prompt::tools_and_output::materialize_model_tool_surface(
+                &merged_tools,
+                catalog_mode,
+            );
             let cache_fingerprint = Self::cache_request_fingerprint(CacheFingerprintInput {
                 session_id: &session_id,
                 provider_id: &prompt_ctx.provider_id,
@@ -3249,7 +3259,7 @@ impl SessionPrompt {
                 resolved_tools.clone(),
                 tool_source_digests,
                 prompt_ctx.surface_inputs.tool_catalog_by_name.clone(),
-                prompt_ctx.surface_inputs.tool_catalog_mode,
+                catalog_mode,
                 prompt_ctx.surface_inputs.tool_catalog_hash.clone(),
             )
             .set_external_tool_execution_by_name(

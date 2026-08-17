@@ -40,6 +40,7 @@ pub async fn new_local_server_for_workspace(
         .await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
     Ok(state)
 }
 

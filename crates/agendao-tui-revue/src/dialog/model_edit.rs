@@ -669,6 +669,7 @@ mod tests {
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),
             provider: "openai".into(),
+            available: Some(true),
             variants: vec![],
             context_window: Some(128_000),
             max_output_tokens: None,

@@ -156,9 +156,7 @@ impl UserStateAuthority {
     /// this crate's own `tokio::fs::write` keep the inode and btime, so
     /// there the key rests on mtime + len.
     async fn state_file_metadata(&self) -> StateFileFingerprint {
-        let Some(path) = self.observed_state_path() else {
-            return None;
-        };
+        let path = self.observed_state_path()?;
         match tokio::fs::metadata(path).await {
             Ok(metadata) => Some((
                 metadata.modified().ok(),

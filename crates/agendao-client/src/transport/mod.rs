@@ -55,6 +55,29 @@ impl FrontendTransport {
         }
     }
 
+    /// Create a session on the canonical server.
+    pub async fn create_session(
+        &self,
+        request: agendao_api::CreateSessionRequest,
+    ) -> Result<agendao_api::SessionInfo> {
+        match self {
+            Self::Unix(t) => t.create_session(request).await,
+            Self::Http(t) => t.create_session(request).await,
+        }
+    }
+
+    /// Fork an existing session.
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+    ) -> Result<agendao_api::SessionInfo> {
+        match self {
+            Self::Unix(t) => t.fork_session(session_id, message_id).await,
+            Self::Http(t) => t.fork_session(session_id, message_id).await,
+        }
+    }
+
     pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
         match self {
             Self::Unix(t) => t.get_workspace_context().await,

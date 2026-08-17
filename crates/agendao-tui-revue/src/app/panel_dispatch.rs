@@ -733,7 +733,7 @@ impl AppHandler {
                             //（dialog ✓ 已反馈），兜底/双失败必须可观测。
                             use crate::dialog::clipboard::CopyOutcome;
                             match crate::dialog::clipboard::copy_with_fallback(&text) {
-                                Ok(CopyOutcome::Clipboard) => {}
+                                Ok(CopyOutcome::Clipboard) => self.export_dialog.mark_copied(),
                                 Ok(CopyOutcome::FileFallback(path)) => self.store.push_toast(
                                     &format!("Clipboard unavailable — saved to {}", path.display()),
                                     crate::store::types::ToastMsgVariant::Warning,
@@ -788,8 +788,51 @@ impl AppHandler {
                             // Server 期望 bare lifetime token
                             // (`once`/`turn`/`session`/`always`/`reject`)，
                             // 不是 `allow_*` 别名。
+                            let mode = match reply {
+                                PermissionReply::TrustWorkspace => {
+                                    Some(agendao_client::SessionPermissionMode::TrustedWorkspace)
+                                }
+                                PermissionReply::FullAccess => {
+                                    Some(agendao_client::SessionPermissionMode::UnsandboxedYolo)
+                                }
+                                _ => None,
+                            };
+                            if let Some(mode) = mode {
+                                let Some(session_id) = self.active_session.get_session_id() else {
+                                    self.store.push_toast(
+                                        "Cannot change permission mode without an active session",
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    );
+                                    return true;
+                                };
+                                match api.set_session_permission_mode(&session_id, mode) {
+                                    Ok(_) => self.store.push_toast(
+                                        match mode {
+                                            agendao_client::SessionPermissionMode::TrustedWorkspace => {
+                                                "Workspace trusted for this session"
+                                            }
+                                            agendao_client::SessionPermissionMode::UnsandboxedYolo => {
+                                                "Full access enabled for this session"
+                                            }
+                                            agendao_client::SessionPermissionMode::Default => {
+                                                "Default permission mode restored"
+                                            }
+                                        },
+                                        crate::store::types::ToastMsgVariant::Warning,
+                                    ),
+                                    Err(e) => {
+                                        self.store.push_toast(
+                                            &format!("permission mode update failed: {}", e),
+                                            crate::store::types::ToastMsgVariant::Error,
+                                        );
+                                        return true;
+                                    }
+                                }
+                            }
                             let reply_str = match reply {
-                                PermissionReply::AllowOnce => "once",
+                                PermissionReply::AllowOnce
+                                | PermissionReply::TrustWorkspace
+                                | PermissionReply::FullAccess => "once",
                                 PermissionReply::AllowTurn => "turn",
                                 PermissionReply::AllowSession => "session",
                                 PermissionReply::Deny => "reject",

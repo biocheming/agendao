@@ -5,7 +5,7 @@ import {
   normalizedAnswerValues,
   pendingCommandFromSession,
 } from "../lib/display";
-import type { PromptResponseRecord } from "../lib/interaction";
+import type { PermissionReplyChoice, PromptResponseRecord } from "../lib/interaction";
 import type { SessionRecord } from "../lib/session";
 import { useAgendaoStore } from "../store";
 
@@ -33,18 +33,34 @@ export function useInteractionReplies({
   const permissionSubmitCompletedAt = useAgendaoStore((s) => s.permissionSubmitCompletedAt);
   const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
   const selectedModel = useAgendaoStore((s) => s.selectedModel);
-  const setQuestion = useAgendaoStore((s) => s.setQuestion);
+  const applySessionRunStatus = useAgendaoStore((s) => s.applySessionRunStatus);
+  const setSessionQuestion = useAgendaoStore((s) => s.setSessionQuestion);
   const setQuestionAnswers = useAgendaoStore((s) => s.setQuestionAnswers);
   const setQuestionSubmitting = useAgendaoStore((s) => s.setQuestionSubmitting);
-  const setPermission = useAgendaoStore((s) => s.setPermission);
+  const setSessionPermission = useAgendaoStore((s) => s.setSessionPermission);
   const setPermissionSubmitting = useAgendaoStore((s) => s.setPermissionSubmitting);
   const setPermissionSubmitError = useAgendaoStore((s) => s.setPermissionSubmitError);
   const setPermissionSubmitStartedAt = useAgendaoStore((s) => s.setPermissionSubmitStartedAt);
   const setPermissionSubmitCompletedAt = useAgendaoStore((s) => s.setPermissionSubmitCompletedAt);
-  const setStreaming = useAgendaoStore((s) => s.setStreaming);
-  const setStatusLine = useAgendaoStore((s) => s.setStatusLine);
-  const setLatestRuntimeError = useAgendaoStore((s) => s.setLatestRuntimeError);
+  const setSessionLatestRuntimeError = useAgendaoStore((s) => s.setSessionLatestRuntimeError);
   const setBanner = useAgendaoStore((s) => s.setBanner);
+
+  // The overlay can show an interaction owned by a session other than the
+  // selected one; clearing the owner's view must also close the visible
+  // overlay when it is the one being displayed.
+  const clearDisplayedQuestionIf = useCallback((requestId: string) => {
+    const displayed = useAgendaoStore.getState().question;
+    if (displayed?.request_id === requestId) {
+      useAgendaoStore.setState({ question: null });
+    }
+  }, []);
+
+  const clearDisplayedPermissionIf = useCallback((permissionId: string) => {
+    const displayed = useAgendaoStore.getState().permission;
+    if (displayed?.permission_id === permissionId) {
+      useAgendaoStore.setState({ permission: null });
+    }
+  }, []);
 
   const submitQuestion = useCallback(async () => {
     if (!question) return;
@@ -57,7 +73,11 @@ export function useInteractionReplies({
         method: "POST",
         body: JSON.stringify({ answers }),
       });
-      setQuestion(null);
+      const questionSessionId = question.session_id ?? selectedSessionId;
+      if (questionSessionId) {
+        setSessionQuestion(questionSessionId, null);
+      }
+      clearDisplayedQuestionIf(question.request_id);
       setQuestionAnswers({});
       const sessionId = question.session_id ?? selectedSessionId;
       if (sessionId) {
@@ -73,15 +93,13 @@ export function useInteractionReplies({
             idempotency_key: `web-command-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           });
           if (response.status === "awaiting_user") {
-            setStreaming(false);
-            setStatusLine("awaiting_user");
+            applySessionRunStatus(sessionId, "waiting_on_user");
             if (response.pending_question_id) {
               await loadPendingQuestion(response.pending_question_id, sessionId);
             }
           } else {
-            setStreaming(true);
-            setStatusLine("running");
-            setLatestRuntimeError(null);
+            applySessionRunStatus(sessionId, "running");
+            setSessionLatestRuntimeError(sessionId, null);
           }
         }
       }
@@ -93,6 +111,7 @@ export function useInteractionReplies({
   }, [
     api,
     apiJson,
+    applySessionRunStatus,
     loadPendingQuestion,
     question,
     questionAnswers,
@@ -100,12 +119,12 @@ export function useInteractionReplies({
     selectedSessionId,
     sendPromptRequest,
     setBanner,
-    setLatestRuntimeError,
-    setQuestion,
     setQuestionAnswers,
     setQuestionSubmitting,
-    setStatusLine,
-    setStreaming,
+    setSessionLatestRuntimeError,
+    setSessionQuestion,
+
+    clearDisplayedQuestionIf,
   ]);
 
   const rejectQuestion = useCallback(async () => {
@@ -113,28 +132,61 @@ export function useInteractionReplies({
     setQuestionSubmitting(true);
     try {
       await api(`/question/${question.request_id}/reject`, { method: "POST" });
-      setQuestion(null);
+      const questionSessionId = question.session_id ?? selectedSessionId;
+      if (questionSessionId) {
+        setSessionQuestion(questionSessionId, null);
+      }
+      clearDisplayedQuestionIf(question.request_id);
       setQuestionAnswers({});
     } catch (error) {
       setBanner(`Question reject failed: ${formatError(error)}`);
     } finally {
       setQuestionSubmitting(false);
     }
-  }, [api, question, setBanner, setQuestion, setQuestionAnswers, setQuestionSubmitting]);
+  }, [
+    api,
+    question,
+    selectedSessionId,
+    setBanner,
+    setQuestionAnswers,
+    setQuestionSubmitting,
+    setSessionQuestion,
+
+    clearDisplayedQuestionIf,
+  ]);
 
   const replyPermission = useCallback(
-    async (reply: "once" | "turn" | "session" | "reject") => {
+    async (reply: PermissionReplyChoice) => {
       const currentPermission = permission;
       if (!currentPermission || permissionSubmitting) return;
+      const permissionSessionId = currentPermission.session_id ?? selectedSessionId;
       setPermissionSubmitting(true);
       setPermissionSubmitError(null);
       setPermissionSubmitStartedAt(new Date().toISOString());
       try {
+        const sessionMode =
+          reply === "trust_workspace"
+            ? "trusted_workspace"
+            : reply === "full_access"
+              ? "unsandboxed_yolo"
+              : null;
+        if (sessionMode) {
+          if (!permissionSessionId) {
+            throw new Error("Cannot change permission mode without an active session");
+          }
+          await api(`/session/${encodeURIComponent(permissionSessionId)}/permission`, {
+            method: "PATCH",
+            body: JSON.stringify({ mode: sessionMode }),
+          });
+        }
         await api(`/permission/${currentPermission.permission_id}/reply`, {
           method: "POST",
-          body: JSON.stringify({ reply }),
+          body: JSON.stringify({ reply: sessionMode ? "once" : reply }),
         });
-        setPermission(null);
+        if (permissionSessionId) {
+          setSessionPermission(permissionSessionId, null);
+        }
+        clearDisplayedPermissionIf(currentPermission.permission_id);
         setPermissionSubmitting(false);
         setPermissionSubmitCompletedAt(new Date().toISOString());
       } catch (error) {
@@ -149,12 +201,15 @@ export function useInteractionReplies({
       api,
       permission,
       permissionSubmitting,
+      selectedSessionId,
       setBanner,
-      setPermission,
       setPermissionSubmitCompletedAt,
       setPermissionSubmitError,
       setPermissionSubmitStartedAt,
       setPermissionSubmitting,
+      setSessionPermission,
+
+      clearDisplayedPermissionIf,
     ],
   );
 

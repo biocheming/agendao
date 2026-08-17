@@ -88,6 +88,7 @@ describe("useServerEventStream", () => {
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),
         onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
         queueVisibleLiveSnapshot,
         refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
         scheduleSessionRefresh: vi.fn<() => void>(),
@@ -154,6 +155,7 @@ describe("useServerEventStream", () => {
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks,
         onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
         queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
         refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
         scheduleSessionRefresh: vi.fn<() => void>(),
@@ -230,6 +232,7 @@ describe("useServerEventStream", () => {
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),
         onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
         queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
         refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
         scheduleSessionRefresh: vi.fn<() => void>(),
@@ -249,7 +252,7 @@ describe("useServerEventStream", () => {
 
     // Second connection round delivers permission.removed for the same id.
     removed = true;
-    useAgendaoStore.getState().setStatusLine("running");
+    useAgendaoStore.getState().setSessionStatusLine("session-1", "running");
     await waitFor(
       () => {
         expect(useAgendaoStore.getState().permission).toBeNull();
@@ -292,6 +295,7 @@ describe("useServerEventStream", () => {
         clearPendingSessionRefresh: vi.fn<() => void>(),
         flushPendingOutputBlocks: vi.fn<() => void>(),
         onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
         queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
         refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
         scheduleSessionRefresh: vi.fn<() => void>(),
@@ -313,6 +317,80 @@ describe("useServerEventStream", () => {
       },
       { timeout: 5000 },
     );
+
+    unmount();
+  });
+
+  it("keeps runtime state per session: another session's events do not leak into the selected one", async () => {
+    const abortError = new Error("aborted");
+    abortError.name = "AbortError";
+    const parseSSESpy = vi.spyOn(apiModule, "parseSSE").mockImplementation(async (_response, onEvent) => {
+      // session-2 finishes while session-1 (selected) is running.
+      onEvent("message", {
+        type: "session.runtime.replaced",
+        sessionID: "session-2",
+        runtime: { session_id: "session-2", run_status: "idle" },
+      });
+      // session-2 raises a permission request; it must not hijack the
+      // selected session's overlay…
+      onEvent("message", {
+        type: "permission.upsert",
+        sessionID: "session-2",
+        permission: {
+          id: "perm-s2",
+          session_id: "session-2",
+          tool: "bash",
+          permission_class: "dangerous_exec",
+          supported_lifetimes: ["once"],
+          input: { patterns: ["/bin/rm"], metadata: { command: "/bin/rm -rf /tmp/x" } },
+          message: "Run `/bin/rm -rf /tmp/x`",
+        },
+      });
+      throw abortError;
+    });
+
+    globalThis.fetch = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.signal?.aborted) {
+        throw abortError;
+      }
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    useAgendaoStore.setState({ streaming: true, statusLine: "running" });
+
+    const { unmount } = renderHook(() =>
+      useServerEventStream({
+        applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        clearPendingOutputBlockFlush: vi.fn<() => void>(),
+        clearPendingSessionRefresh: vi.fn<() => void>(),
+        flushPendingOutputBlocks: vi.fn<() => void>(),
+        onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
+        queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
+        refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
+        scheduleSessionRefresh: vi.fn<() => void>(),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(parseSSESpy).toHaveBeenCalled();
+    });
+
+    const state = useAgendaoStore.getState();
+    // session-1 keeps its own running state and shows no overlay…
+    expect(state.streaming).toBe(true);
+    expect(state.permission).toBeNull();
+    // …while session-2's view records idle + its pending permission.
+    expect(state.runtimeViews["session-2"]?.streaming).toBe(false);
+    expect(state.runtimeViews["session-2"]?.permission?.permission_id).toBe("perm-s2");
+
+    // Switching to session-2 restores its view, overlay included; the
+    // pending permission correctly marks it as awaiting the user.
+    useAgendaoStore.getState().selectSession("session-2");
+    const switched = useAgendaoStore.getState();
+    expect(switched.streaming).toBe(false);
+    expect(switched.statusLine).toBe("awaiting_user");
+    expect(switched.permission?.permission_id).toBe("perm-s2");
 
     unmount();
   });

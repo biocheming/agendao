@@ -176,6 +176,8 @@ pub struct PermissionRequest {
     // ── Extended fields from server ──
     pub permission_class: Option<String>,
     pub scope_label: Option<String>,
+    pub matcher_label: Option<String>,
+    pub grant_target_summary: Option<String>,
     pub risk_tags: Vec<String>,
     /// The resource being requested (command text, file path, URL, etc.)
     /// Extracted from `input` JSON or `message` fallback.
@@ -233,8 +235,32 @@ impl PermissionRequest {
             supported_lifetimes,
             permission_class: info.permission_class.clone(),
             scope_label: info.scope_label.clone(),
+            matcher_label: info.matcher_label.clone(),
+            grant_target_summary: info.grant_target_summary.clone(),
             risk_tags: info.risk_tags.clone(),
             resource,
+        }
+    }
+
+    fn grant_target(&self) -> Option<&str> {
+        self.grant_target_summary
+            .as_deref()
+            .or(self.scope_label.as_deref())
+            .or(self.matcher_label.as_deref())
+            .filter(|value| !value.trim().is_empty())
+    }
+
+    fn lifetime_label(&self, lifetime: &PermissionLifetime) -> String {
+        match lifetime {
+            PermissionLifetime::Once => "Allow once".to_string(),
+            PermissionLifetime::Turn => self
+                .grant_target()
+                .map(|target| format!("Allow for this turn: {target}"))
+                .unwrap_or_else(|| "Allow matching requests for this turn".to_string()),
+            PermissionLifetime::Session => self
+                .grant_target()
+                .map(|target| format!("Allow for this session: {target}"))
+                .unwrap_or_else(|| "Allow matching requests for this session".to_string()),
         }
     }
 }
@@ -387,8 +413,11 @@ impl PermissionDialog {
         }
         let req = &self.requests[0];
         let n = req.supported_lifetimes.len();
-        // Total selectable items: lifetime options + deny option
-        let total_options = n + 1;
+        // Lifetime choices + two explicit session trust modes + deny.
+        let trust_workspace_index = n;
+        let full_access_index = n + 1;
+        let deny_index = n + 2;
+        let total_options = n + 3;
         match key {
             Key::Up => {
                 self.selected_lifetime = self.selected_lifetime.saturating_sub(1);
@@ -400,14 +429,29 @@ impl PermissionDialog {
                 None
             }
             Key::Enter => {
-                // If selected index is beyond lifetimes, it's the deny option
-                if self.selected_lifetime >= n {
+                if self.selected_lifetime == deny_index {
                     let id = req.id.clone();
                     self.requests.remove(0);
                     if self.requests.is_empty() {
                         self.visible = false;
                     }
                     return Some((id, PermissionReply::Deny));
+                }
+                if self.selected_lifetime == trust_workspace_index {
+                    let id = req.id.clone();
+                    self.requests.remove(0);
+                    if self.requests.is_empty() {
+                        self.visible = false;
+                    }
+                    return Some((id, PermissionReply::TrustWorkspace));
+                }
+                if self.selected_lifetime == full_access_index {
+                    let id = req.id.clone();
+                    self.requests.remove(0);
+                    if self.requests.is_empty() {
+                        self.visible = false;
+                    }
+                    return Some((id, PermissionReply::FullAccess));
                 }
                 let reply = match req.supported_lifetimes.get(self.selected_lifetime) {
                     Some(PermissionLifetime::Once) => PermissionReply::AllowOnce,
@@ -593,11 +637,7 @@ impl PermissionDialog {
             } else {
                 "  "
             };
-            let desc = match lt {
-                PermissionLifetime::Once => "Allow this request only",
-                PermissionLifetime::Turn => "Allow for this turn",
-                PermissionLifetime::Session => "Allow for this session",
-            };
+            let desc = req.lifetime_label(lt);
             let color = if i == self.selected_lifetime {
                 colors::ACCENT_CYAN()
             } else {
@@ -607,20 +647,57 @@ impl PermissionDialog {
             height += 1;
         }
 
+        let trust_index = lifetimes.len();
+        let trust_selected = self.selected_lifetime == trust_index;
+        content = content.child_sized(
+            Text::new(format!(
+                "{}Trust workspace for this session",
+                if trust_selected { "❯ " } else { "  " }
+            ))
+            .fg(if trust_selected {
+                colors::ACCENT_CYAN()
+            } else {
+                colors::FG_SECONDARY()
+            }),
+            1,
+        );
+        height += 1;
+
+        let full_access_index = lifetimes.len() + 1;
+        let full_access_selected = self.selected_lifetime == full_access_index;
+        content = content.child_sized(
+            Text::new(format!(
+                "{}Full access for this session (no permission prompts)",
+                if full_access_selected { "❯ " } else { "  " }
+            ))
+            .fg(if full_access_selected {
+                colors::ACCENT_RED()
+            } else {
+                colors::FG_SECONDARY()
+            }),
+            1,
+        );
+        height += 1;
+
         // ── Deny option ──
-        let deny_selected = self.selected_lifetime == lifetimes.len();
+        let deny_selected = self.selected_lifetime == lifetimes.len() + 2;
         let deny_marker = if deny_selected { "❯ " } else { "  " };
         let deny_color = if deny_selected {
             colors::ACCENT_RED()
         } else {
             colors::FG_SECONDARY()
         };
-        content = content.child_sized(Text::new(format!("{}Deny", deny_marker)).fg(deny_color), 1);
+        content = content.child_sized(
+            Text::new(format!("{}Deny this request", deny_marker)).fg(deny_color),
+            1,
+        );
         height += 1;
 
         // ── Hint ──
         content = content.child_sized(
-            Text::new(" ↑↓ navigate · ↵/y/a allow · 1-3 quick allow · 0/n/d deny · Esc hide")
+            Text::new(
+                " ↑↓ navigate · ↵ select · y/a allow once · 1-3 quick allow · 0/n/d deny · Esc hide",
+            )
                 .fg(colors::FG_MUTED()),
             1,
         );
@@ -633,11 +710,13 @@ impl PermissionDialog {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionReply {
     AllowOnce,
     AllowTurn,
     AllowSession,
+    TrustWorkspace,
+    FullAccess,
     Deny,
 }
 
@@ -654,6 +733,8 @@ mod tests {
             supported_lifetimes: vec![PermissionLifetime::Once],
             permission_class: None,
             scope_label: None,
+            matcher_label: None,
+            grant_target_summary: None,
             risk_tags: vec![],
             resource: resource.into(),
         }
@@ -663,6 +744,43 @@ mod tests {
         let mut d = PermissionDialog::new();
         d.add_request(req(resource));
         d
+    }
+
+    #[test]
+    fn lifetime_labels_explain_scoped_grants() {
+        let mut request = req("cargo test");
+        request.grant_target_summary = Some("Shell commands: cargo test".into());
+
+        assert_eq!(
+            request.lifetime_label(&PermissionLifetime::Once),
+            "Allow once"
+        );
+        assert_eq!(
+            request.lifetime_label(&PermissionLifetime::Turn),
+            "Allow for this turn: Shell commands: cargo test"
+        );
+        assert_eq!(
+            request.lifetime_label(&PermissionLifetime::Session),
+            "Allow for this session: Shell commands: cargo test"
+        );
+    }
+
+    #[test]
+    fn trust_modes_are_explicit_selectable_options() {
+        let mut trust = dialog_with("cargo test");
+        assert_eq!(trust.handle_key(&Key::Down), None);
+        assert_eq!(
+            trust.handle_key(&Key::Enter),
+            Some(("p1".into(), PermissionReply::TrustWorkspace))
+        );
+
+        let mut full = dialog_with("cargo test");
+        assert_eq!(full.handle_key(&Key::Down), None);
+        assert_eq!(full.handle_key(&Key::Down), None);
+        assert_eq!(
+            full.handle_key(&Key::Enter),
+            Some(("p1".into(), PermissionReply::FullAccess))
+        );
     }
 
     // ── extract_resource 优先级链 ──

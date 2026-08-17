@@ -5,6 +5,8 @@ import {
   findLastMessage,
   metadataValue,
   resolveActiveModelRef,
+  resolveSessionAgentRef,
+  resolveSessionModelRef,
   shellQuoteCommandValue,
   splitRepeatableAnswer,
   normalizedAnswerValues,
@@ -178,6 +180,25 @@ describe("resolveActiveModelRef", () => {
 
   it("trims whitespace from selectedModel", () => {
     expect(resolveActiveModelRef(null, "  openai/gpt-4  ")).toBe("openai/gpt-4");
+  });
+});
+
+describe("session runtime identity", () => {
+  it("prefers the model recorded by the session over the global fallback", () => {
+    const session = {
+      id: "s1",
+      hints: { model_provider: "deepseek", model_id: "deepseek-v4-pro" },
+    } as SessionRecord;
+    expect(resolveSessionModelRef(session, "openai/gpt-5")).toBe(
+      "deepseek/deepseek-v4-pro",
+    );
+  });
+
+  it("uses an agent hint and falls back to an agent execution mode", () => {
+    const session = { id: "s1", hints: { agent: "review" } } as SessionRecord;
+    expect(resolveSessionAgentRef(session, "agent:build")).toBe("review");
+    expect(resolveSessionAgentRef(null, "agent:build")).toBe("build");
+    expect(resolveSessionAgentRef(null, "scheduler:native")).toBeNull();
   });
 });
 

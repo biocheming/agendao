@@ -124,13 +124,13 @@ async fn enqueue_followup_prompt(
 ) -> Result<u64> {
     let queued_count = {
         let mut guard = state.queued_followups.lock().await;
-        guard.insert(
-            session_id.to_string(),
+        let queue = guard.entry(session_id.to_string()).or_default();
+        queue.push_back(
             serde_json::to_value(&queued).map_err(|error| {
                 ApiError::BadRequest(format!("failed to queue follow-up prompt: {error}"))
             })?,
         );
-        1_u64
+        queue.len() as u64
     };
     state
         .runtime_telemetry
@@ -150,27 +150,49 @@ async fn take_followup_prompt(
 ) -> Option<QueuedFollowupPrompt> {
     let value = {
         let mut guard = state.queued_followups.lock().await;
-        guard.remove(session_id)
-    }?;
-    match serde_json::from_value(value) {
-        Ok(queued) => Some(queued),
+        guard.get_mut(session_id)?.pop_front()?
+    };
+    let queued = match serde_json::from_value(value) {
+        Ok(queued) => queued,
         Err(error) => {
             tracing::warn!(session_id, %error, "failed to decode queued follow-up prompt");
-            None
+            return None;
         }
-    }
-}
-
-async fn clear_followup_pending(state: &Arc<ServerState>, session_id: &str) {
+    };
     state
         .runtime_telemetry
         .emit_control_input_transition(
             session_id,
             ControlInputKind::Followup,
-            ControlInputPhase::Cleared,
+            ControlInputPhase::Adopted,
             chrono::Utc::now().timestamp_millis(),
         )
         .await;
+    Some(queued)
+}
+
+/// Remove every queued follow-up prompt for the session. Aborting a run drops
+/// the prompts queued behind it instead of letting a later run adopt them.
+pub(crate) async fn drain_followup_prompts(
+    state: &Arc<ServerState>,
+    session_id: &str,
+) -> usize {
+    let dropped = {
+        let mut guard = state.queued_followups.lock().await;
+        guard.remove(session_id).map_or(0, |queue| queue.len())
+    };
+    if dropped > 0 {
+        state
+            .runtime_telemetry
+            .emit_control_input_transition(
+                session_id,
+                ControlInputKind::Followup,
+                ControlInputPhase::Cleared,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await;
+    }
+    dropped
 }
 
 pub(crate) fn load_verified_external_adapter_binding(
@@ -2148,54 +2170,48 @@ async fn session_prompt_inner(
             persist_session_if_enabled(&task_state, &session_id).await;
             _idle_guard.defuse();
             set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;
-            if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
-                task_state
-                    .runtime_telemetry
-                    .emit_control_input_transition(
-                        &session_id,
-                        ControlInputKind::Followup,
-                        ControlInputPhase::Adopted,
-                        chrono::Utc::now().timestamp_millis(),
-                    )
-                    .await;
-                clear_followup_pending(&task_state, &session_id).await;
-                let state = task_state.clone();
-                let session_id_for_followup = session_id.clone();
-                let handle = tokio::runtime::Handle::current();
-                tokio::task::spawn_blocking(move || {
-                    handle.block_on(async move {
-                        state
-                            .runtime_telemetry
-                            .emit_control_input_transition(
-                                &session_id_for_followup,
-                                ControlInputKind::Followup,
-                                ControlInputPhase::Consumed,
-                                chrono::Utc::now().timestamp_millis(),
+            // A cancelled run must not silently execute prompts the user
+            // queued behind it; abort drains the queue, and a race that
+            // re-queues after cancel is still skipped here.
+            if !cancellation.is_cancelled() {
+                if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
+                    let state = task_state.clone();
+                    let session_id_for_followup = session_id.clone();
+                    let handle = tokio::runtime::Handle::current();
+                    tokio::task::spawn_blocking(move || {
+                        handle.block_on(async move {
+                            state
+                                .runtime_telemetry
+                                .emit_control_input_transition(
+                                    &session_id_for_followup,
+                                    ControlInputKind::Followup,
+                                    ControlInputPhase::Consumed,
+                                    chrono::Utc::now().timestamp_millis(),
+                                )
+                                .await;
+                            let headers = if queued.apply_plugin_config_hooks {
+                                HeaderMap::new()
+                            } else {
+                                internal_prompt_headers()
+                            };
+                            if let Err(error) = session_prompt_inner(
+                                state.clone(),
+                                headers,
+                                session_id_for_followup.clone(),
+                                queued.request,
+                                None,
                             )
-                            .await;
-                        let headers = if queued.apply_plugin_config_hooks {
-                            HeaderMap::new()
-                        } else {
-                            internal_prompt_headers()
-                        };
-                        if let Err(error) = session_prompt_inner(
-                            state.clone(),
-                            headers,
-                            session_id_for_followup.clone(),
-                            queued.request,
-                            None,
-                        )
-                        .await
-                        {
-                            tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
-                        }
+                            .await
+                            {
+                                tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
+                            }
+                        });
                     });
-                });
+                }
             }
             if let Err(error) = task_state.flush_session_to_storage(&session_id).await {
                 tracing::error!(session_id = %session_id, %error, "failed to flush session to storage");
             }
-            return;
         }
     });
 
@@ -2420,24 +2436,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn followup_queue_is_single_slot_and_tracks_runtime_count() {
+    async fn followup_queue_preserves_fifo_order_and_tracks_runtime_count() {
         let state = Arc::new(ServerState::new());
         let session_id = {
             let mut sessions = state.sessions.lock().await;
             sessions.create("project", "/tmp/project").id.clone()
         };
 
-        let queued_count = enqueue_followup_prompt(
-            &state,
-            &session_id,
-            QueuedFollowupPrompt {
-                request: prompt_request_message("first"),
-                apply_plugin_config_hooks: true,
-            },
-        )
-        .await
-        .expect("first follow-up should queue");
-        assert_eq!(queued_count, 1);
+        for (index, message) in ["first", "second", "third"].iter().enumerate() {
+            let queued_count = enqueue_followup_prompt(
+                &state,
+                &session_id,
+                QueuedFollowupPrompt {
+                    request: prompt_request_message(message),
+                    apply_plugin_config_hooks: true,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{message} should queue: {error}"));
+            assert_eq!(queued_count, index as u64 + 1);
+        }
         assert_eq!(
             state
                 .runtime_telemetry
@@ -2446,15 +2464,68 @@ mod tests {
                 .await
                 .expect("runtime state should exist")
                 .pending_followup_count,
-            1
+            3
         );
 
-        let queued = take_followup_prompt(&state, &session_id)
+        let adopted = take_followup_prompt(&state, &session_id)
             .await
-            .expect("queued follow-up should be retrievable");
-        assert_eq!(queued.request.message.as_deref(), Some("first"));
+            .expect("first queued follow-up should be adoptable");
+        assert_eq!(adopted.request.message.as_deref(), Some("first"));
+        assert_eq!(
+            state
+                .runtime_telemetry
+                .runtime_state()
+                .get(&session_id)
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            2
+        );
 
-        clear_followup_pending(&state, &session_id).await;
+        let second = take_followup_prompt(&state, &session_id)
+            .await
+            .expect("second queued follow-up should be adoptable");
+        assert_eq!(second.request.message.as_deref(), Some("second"));
+
+        let dropped = drain_followup_prompts(&state, &session_id).await;
+        assert_eq!(dropped, 1);
+        assert_eq!(
+            state
+                .runtime_telemetry
+                .runtime_state()
+                .get(&session_id)
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            0
+        );
+        assert!(take_followup_prompt(&state, &session_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn aborting_a_session_drops_queued_followups() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        for message in ["queued-one", "queued-two"] {
+            enqueue_followup_prompt(
+                &state,
+                &session_id,
+                QueuedFollowupPrompt {
+                    request: prompt_request_message(message),
+                    apply_plugin_config_hooks: true,
+                },
+            )
+            .await
+            .expect("follow-up should queue");
+        }
+
+        let response = super::super::cancel::abort_session_execution(&state, &session_id).await;
+        assert_eq!(response["dropped_queued_prompts"], serde_json::json!(2));
+        assert!(take_followup_prompt(&state, &session_id).await.is_none());
         assert_eq!(
             state
                 .runtime_telemetry

@@ -127,6 +127,48 @@ fn remote_emit_transcript(
     io::stdout().flush()
 }
 
+/// How long a non-interactive run waits for an interactive answer
+/// (permission/question) before giving up. Matches the server-side
+/// permission timeout.
+fn user_wait_timeout() -> std::time::Duration {
+    std::env::var("AGENDAO_CLI_USER_WAIT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(300))
+}
+
+#[derive(Default)]
+struct UserWaitState {
+    /// `Some` while a permission/question is pending and unanswered.
+    waiting_since: Option<std::time::Instant>,
+}
+
+impl UserWaitState {
+    fn wait_expired(&self) -> bool {
+        self.waiting_since
+            .is_some_and(|since| since.elapsed() >= user_wait_timeout())
+    }
+
+    fn remaining(&self) -> Option<std::time::Duration> {
+        self.waiting_since
+            .map(|since| user_wait_timeout().saturating_sub(since.elapsed()))
+    }
+
+    fn bail_if_expired(&self) -> anyhow::Result<()> {
+        if self.wait_expired() {
+            anyhow::bail!(
+                "timed out waiting for an interactive answer. \
+                 The run needed a permission or question answered outside this \
+                 non-interactive session; open the Web UI or `agendao tui` to \
+                 answer it and run the prompt again"
+            );
+        }
+        Ok(())
+    }
+}
+
 pub(super) async fn consume_remote_events(
     response: reqwest::Response,
     client: &reqwest::Client,
@@ -139,6 +181,7 @@ pub(super) async fn consume_remote_events(
     let mut current_data: Vec<String> = Vec::new();
     let mut semantic_state = RemoteSemanticRenderState::new();
     let mut saw_active = false;
+    let mut user_wait = UserWaitState::default();
     // Base style detected once per stream (is_terminal + ioctl); only the
     // terminal OutputBlockAppended branch refreshes the width per event via
     // `with_live_width()` so a mid-stream terminal resize re-renders
@@ -153,9 +196,20 @@ pub(super) async fn consume_remote_events(
     };
 
     loop {
-        let Some(chunk) = StreamExt::next(&mut stream).await else {
+        let chunk = match user_wait.remaining() {
+            Some(remaining) => match tokio::time::timeout(remaining, StreamExt::next(&mut stream)).await {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    user_wait.bail_if_expired()?;
+                    continue;
+                }
+            },
+            None => StreamExt::next(&mut stream).await,
+        };
+        let Some(chunk) = chunk else {
             break;
         };
+        user_wait.bail_if_expired()?;
         let chunk = chunk?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -173,6 +227,7 @@ pub(super) async fn consume_remote_events(
                     &dispatch_context,
                     &mut semantic_state,
                     &mut saw_active,
+                    &mut user_wait,
                     data,
                 )
                 .await?
@@ -194,6 +249,7 @@ pub(super) async fn consume_remote_events(
             &dispatch_context,
             &mut semantic_state,
             &mut saw_active,
+            &mut user_wait,
             current_data.join("\n"),
         )
         .await?;
@@ -218,6 +274,7 @@ async fn dispatch_remote_event(
     context: &RemoteEventContext<'_>,
     semantic_state: &mut RemoteSemanticRenderState,
     saw_active: &mut bool,
+    user_wait: &mut UserWaitState,
     data: String,
 ) -> anyhow::Result<bool> {
     let RemoteEventContext {
@@ -275,6 +332,37 @@ async fn dispatch_remote_event(
         }
         FrontendEvent::SessionError { error, .. } => {
             eprintln!("\nError: {error}");
+        }
+        FrontendEvent::PermissionUpsert {
+            session_id, ..
+        } => {
+            if user_wait.waiting_since.is_none() {
+                eprintln!(
+                    "\nSession {session_id} is waiting for a permission decision. \
+                     This non-interactive run cannot answer it; open the Web UI or run \
+                     `agendao tui -s {session_id}` to approve or deny. \
+                     Waiting up to {}s before giving up…",
+                    user_wait_timeout().as_secs()
+                );
+            }
+            user_wait.waiting_since.get_or_insert(std::time::Instant::now());
+        }
+        FrontendEvent::QuestionUpsert {
+            session_id, ..
+        } => {
+            if user_wait.waiting_since.is_none() {
+                eprintln!(
+                    "\nSession {session_id} is waiting for an answer to a question. \
+                     This non-interactive run cannot answer it; open the Web UI or run \
+                     `agendao tui -s {session_id}` to respond. \
+                     Waiting up to {}s before giving up…",
+                    user_wait_timeout().as_secs()
+                );
+            }
+            user_wait.waiting_since.get_or_insert(std::time::Instant::now());
+        }
+        FrontendEvent::PermissionRemoved { .. } | FrontendEvent::QuestionRemoved { .. } => {
+            user_wait.waiting_since = None;
         }
         FrontendEvent::SessionRuntimeReplaced { runtime, .. } => {
             if runtime.run_status == agendao_api::SessionRunStatusKind::Idle {

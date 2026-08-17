@@ -25,7 +25,7 @@ try {
     alias: {
       "@": path.join(rootDir, "src"),
     },
-    external: ["react", "react/jsx-runtime", "react-dom/server", "node:*"],
+    external: ["react", "react/jsx-runtime", "react-dom/server", "lucide-react", "node:*"],
     logLevel: "silent",
   });
 

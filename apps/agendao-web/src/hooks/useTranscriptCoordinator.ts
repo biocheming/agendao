@@ -14,6 +14,7 @@ import { isOptimisticSessionId } from "../lib/session";
 import { useAgendaoStore } from "../store";
 import { useConversationJump } from "./useConversationJump";
 import { useServerEventStream } from "./useServerEventStream";
+import { useSessionRuntimeReconcile } from "./useSessionRuntimeReconcile";
 import { useTranscriptFeedState } from "./useTranscriptFeedState";
 
 interface UseTranscriptCoordinatorOptions {
@@ -48,7 +49,7 @@ export function useTranscriptCoordinator({
   const selectedMessageIds = useAgendaoStore((s) => s.selectedMessageIds);
   const setSelectedMessageIds = useAgendaoStore((s) => s.setSelectedMessageIds);
   const setHistoryLoading = useAgendaoStore((s) => s.setHistoryLoading);
-  const setQuestion = useAgendaoStore((s) => s.setQuestion);
+  const setSessionQuestion = useAgendaoStore((s) => s.setSessionQuestion);
   const setQuestionAnswers = useAgendaoStore((s) => s.setQuestionAnswers);
   const setBanner = useAgendaoStore((s) => s.setBanner);
   const streaming = useAgendaoStore((s) => s.streaming);
@@ -98,13 +99,15 @@ export function useTranscriptCoordinator({
       const pending = (questions ?? []).find((candidate) => candidate.id === requestId);
       if (!pending) return;
       const interaction = questionInteractionFromInfo(pending);
+      const targetSessionId = sessionId ?? interaction.session_id;
+      if (!targetSessionId) return;
       if (sessionId && interaction.session_id && interaction.session_id !== sessionId) {
         return;
       }
-      setQuestion(interaction);
+      setSessionQuestion(targetSessionId, interaction);
       setQuestionAnswers({});
     },
-    [apiJson, setQuestion, setQuestionAnswers],
+    [apiJson, setSessionQuestion, setQuestionAnswers],
   );
 
   const copyMessageLink = useCallback(
@@ -395,12 +398,18 @@ export function useTranscriptCoordinator({
     };
   }, [fetchSessionHistory, rebuildFeedFromHistory, selectedSessionId, streaming]);
 
+  const { reconcileKnownStreams } = useSessionRuntimeReconcile({
+    apiJson,
+    loadPendingQuestion,
+  });
+
   useServerEventStream({
     applyLiveExecutionOutputBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
     onConfigUpdated,
+    onStreamReconnected: reconcileKnownStreams,
     queueVisibleLiveSnapshot,
     refreshExecutionActivity,
     scheduleSessionRefresh,

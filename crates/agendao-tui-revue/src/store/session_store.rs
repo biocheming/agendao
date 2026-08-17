@@ -47,9 +47,11 @@ pub struct SessionStore {
     pub cache_stats: Signal<CacheStats>,
     pub pricing: Signal<Pricing>,
     pub context_pct: Signal<u8>,
-    /// 会话最后使用的模型（assistant 消息的 `model` 字段，`provider/model` 形式）。
-    /// eager_load 从历史消息提取；context 进度条在 selected_model 未选时用它兜底。
+    /// 会话实际使用的模型（优先来自 session metadata，旧会话回退到最后一条
+    /// assistant 消息的 `model` 字段，通常为 `provider/model` 形式）。
     pub session_model: Signal<Option<String>>,
+    /// 会话实际使用的 agent；来源与 `session_model` 相同。
+    pub session_agent: Signal<Option<String>>,
     pub sidebar_trees: Signal<SidebarTrees>,
     pub mcp_lsp: Signal<McpLspInfo>,
 
@@ -95,6 +97,7 @@ impl SessionStore {
             pricing: signal(Pricing::default()),
             context_pct: signal(0),
             session_model: signal(None),
+            session_agent: signal(None),
             sidebar_trees: signal(SidebarTrees::default()),
             mcp_lsp: signal(McpLspInfo::default()),
             active_tools: signal(Vec::new()),
@@ -125,6 +128,7 @@ impl SessionStore {
         self.pricing.set(Pricing::default());
         self.context_pct.set(0);
         self.session_model.set(None);
+        self.session_agent.set(None);
         self.active_tools.update(|t| t.clear());
         self.stream_new_segments.update(|s| s.clear());
         self.diff_summary.update(|d| d.clear());
@@ -278,10 +282,21 @@ impl SessionStore {
     pub fn upsert_tool_call(&self, id: &str, name: &str, params: &str, phase: ToolPhase) {
         self.messages.update(|msgs| {
             for block in msgs.iter_mut() {
-                if let TranscriptBlock::ToolCall { id: bid, .. } = block {
-                    // NOTE: 历史上这里因绑定遮蔽是 no-op（`*phase = phase.clone()` 自赋值），
-                    // 保持既有行为；若要让 upsert 真正更新 phase，应改为 `*block_phase = phase`。
+                if let TranscriptBlock::ToolCall {
+                    id: bid,
+                    name: block_name,
+                    params: block_params,
+                    phase: block_phase,
+                } = block
+                {
                     if bid == id {
+                        if !name.is_empty() {
+                            *block_name = name.into();
+                        }
+                        if !params.is_empty() {
+                            *block_params = params.into();
+                        }
+                        *block_phase = phase;
                         return;
                     }
                 }
@@ -1204,6 +1219,8 @@ mod tests {
         s.title.set("Old Title".into());
         s.scroll_offset.set(5);
         s.transcript_cursor.set(Some(2));
+        s.session_model.set(Some("deepseek/deepseek-v4-pro".into()));
+        s.session_agent.set(Some("build".into()));
 
         s.reset_for_new_session();
 
@@ -1212,6 +1229,8 @@ mod tests {
         assert_eq!(s.title.get(), "New Session".to_string(), "title 回到初始");
         assert_eq!(s.scroll_offset.get(), 0, "scroll_offset 归零");
         assert_eq!(s.transcript_cursor.get(), None, "cursor 清空");
+        assert!(s.session_model.get().is_none(), "session model 必须清空");
+        assert!(s.session_agent.get().is_none(), "session agent 必须清空");
     }
 
     #[test]

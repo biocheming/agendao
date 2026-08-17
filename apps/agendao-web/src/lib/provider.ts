@@ -18,6 +18,7 @@ export interface ProviderModelCapabilitiesRecord {
 export interface ProviderModelRecord {
   id: string;
   name?: string;
+  available?: boolean | null;
   context_window?: number | null;
   max_output_tokens?: number | null;
   cost_per_million_input?: number | null;
@@ -177,7 +178,7 @@ export interface TestProviderConnectionResponseRecord {
 
 export function flattenProviderModels(providers: ProviderRecord[]) {
   return providers.flatMap((provider) =>
-    (provider.models ?? []).map((model) => ({
+    (provider.models ?? []).filter((model) => model.available !== false).map((model) => ({
       key: `${provider.id}/${model.id}`,
       label: `${provider.name} / ${model.name || model.id}`,
     })),

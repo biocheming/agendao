@@ -103,6 +103,54 @@ pub(crate) fn short_err(e: &str) -> String {
     }
 }
 
+/// Identity that will be used by the next prompt in the active session.
+/// An explicit CLI/picker selection overrides the identity persisted by the
+/// server for that session.
+pub(crate) fn effective_session_identity(
+    store: &AppStore,
+    session: &SessionStore,
+) -> (Option<String>, Option<String>) {
+    let model = store
+        .selected_model
+        .get()
+        .or_else(|| session.session_model.get());
+    let agent = store
+        .selected_agent
+        .get()
+        .or_else(|| session.session_agent.get());
+    (model, agent)
+}
+
+#[cfg(test)]
+mod session_identity_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_selection_precedes_restored_session_identity() {
+        let store = AppStore::new();
+        let session = SessionStore::new();
+        session
+            .session_model
+            .set(Some("deepseek/deepseek-v4-pro".into()));
+        session.session_agent.set(Some("build".into()));
+
+        assert_eq!(
+            effective_session_identity(&store, &session),
+            (
+                Some("deepseek/deepseek-v4-pro".into()),
+                Some("build".into())
+            )
+        );
+
+        store.selected_model.set(Some("openai/gpt-5".into()));
+        store.selected_agent.set(Some("plan".into()));
+        assert_eq!(
+            effective_session_identity(&store, &session),
+            (Some("openai/gpt-5".into()), Some("plan".into()))
+        );
+    }
+}
+
 pub fn run_app() -> anyhow::Result<()> {
     run_app_with_config(AppConfig::default())
 }
@@ -166,6 +214,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
                 sf_rx,
                 config.unix_socket_path.clone(),
                 config.base_url.clone(),
+                config.server_password.clone(),
             );
             None
         }
@@ -177,15 +226,17 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
             sf_rx,
             config.unix_socket_path.clone(),
             config.base_url.clone(),
+            config.server_password.clone(),
         );
         if let Some(socket_path) = config.unix_socket_path.clone() {
             Some(ApiBridge::new_unix(socket_path, rt.handle().clone()))
         } else {
-            ApiBridge::new(
+            ApiBridge::new_with_password(
                 &config
                     .base_url
                     .clone()
                     .unwrap_or_else(|| "http://127.0.0.1:3000".into()),
+                config.server_password.clone(),
                 rt.handle().clone(),
             )
             .ok()
@@ -623,9 +674,6 @@ pub(crate) struct AppHandler {
     /// U7②：可见 toast 的 (id, Rect) 列表（render 每帧重发），供点击
     /// dismiss 命中测试。栈序 = 渲染序（最新一条在最后）。
     pub(crate) toast_rects: Vec<(u64, revue::prelude::Rect)>,
-    /// U7③：status bar 🔔 角标的 Rect（render 每帧重发；无通知时 None），
-    /// 点击 → Panel::Notifications。
-    pub(crate) bell_rect: Option<revue::prelude::Rect>,
     /// U8：status bar ⏸ 待决策角标的 Rect（render 每帧重发；无待决策时
     /// None），点击 → 重新打开首个 pending permission/question。
     pub(crate) pending_rect: Option<revue::prelude::Rect>,
@@ -898,7 +946,7 @@ impl AppHandler {
                         .all
                         .into_iter()
                         .flat_map(|p| {
-                            let avail = connected.contains(&p.id);
+                            let provider_available = connected.contains(&p.id);
                             let display_name = p.name.clone();
                             let provider_id = p.id.clone();
                             p.models
@@ -909,7 +957,7 @@ impl AppHandler {
                                     model_id: m.id.clone(),
                                     display: format!("{} ({})", m.name, display_name),
                                     variants: vec![],
-                                    available: avail,
+                                    available: m.available.unwrap_or(provider_available),
                                 })
                         })
                         .collect();
@@ -1070,7 +1118,6 @@ impl AppHandler {
             provider_edit_rect: None,
             confirm_rect: None,
             toast_rects: Vec::new(),
-            bell_rect: None,
             pending_rect: None,
         }
     }
@@ -1353,13 +1400,15 @@ impl View for RootView {
                 let page_x: u16 = if sidebar_on { SIDEBAR_WIDTH + 1 } else { 0 };
                 dir_hit = Some((page_x + PAD + title_w + 2, dir_w));
 
-                if let Some(ref m) = self.store.selected_model.get() {
-                    let label = format!("· {}", m);
+                let (effective_model, effective_agent) =
+                    effective_session_identity(&self.store, &h.active_session);
+                if let Some(ref m) = effective_model {
+                    let label = format!("· Model: {}", m);
                     let w = label.chars().count() as u16 + 1;
                     header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
                 }
-                if let Some(ref a) = self.store.selected_agent.get() {
-                    let label = format!("· {}", a);
+                if let Some(ref a) = effective_agent {
+                    let label = format!("· Agent: {}", a);
                     let w = label.chars().count() as u16 + 1;
                     header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
                 }
@@ -1421,7 +1470,7 @@ impl View for RootView {
                 // tool result and assistant text stay visible: if total
                 // height exceeds the available transcript area, drop
                 // blocks from the FRONT (oldest) until the remainder
-                // fits. Without this, a long tool_catalog_search result
+                // fits. Without this, a long capability search result
                 // pushes the final assistant answer off the bottom of
                 // the screen.
                 // main_area：transcript 容器（单 child_flex）。sidebar 已拆离——它在 page 层
@@ -1889,15 +1938,6 @@ impl View for RootView {
         } else {
             ""
         };
-        // U7③：🔔 通知角标（history 条数）——常驻重发现入口，点击开
-        // 通知中心。位置 = gutter(PAD) + 前缀 display width；Rect 发布
-        // 供 keymap 命中（与 toast_rects 同批写回）。
-        let history_count = h.store.toast_history.get().len();
-        let bell_seg = if history_count > 0 {
-            format!(" 🔔{}", history_count.min(99))
-        } else {
-            String::new()
-        };
         // U8：⏸ 待决策角标（permission+question 队列合计）——Esc 仅收起
         // 后的重发现入口；点击 / Ctrl+O 回到首个 pending 请求。计数直读
         // 队列（pending_decision_count），与队列天然一致。
@@ -1918,29 +1958,18 @@ impl View for RootView {
             cursor_hint,
             nav_hint,
         );
-        let (bell_rect, pending_rect) = {
+        let pending_rect = {
             use unicode_width::UnicodeWidthStr;
             let sy = ctx.area.height.saturating_sub(1);
-            let bx = PAD + UnicodeWidthStr::width(status_prefix.as_str()) as u16;
-            let bell_rect = if bell_seg.is_empty() {
+            let px = PAD + UnicodeWidthStr::width(status_prefix.as_str()) as u16;
+            if pending_seg.is_empty() {
                 None
             } else {
-                let bw = UnicodeWidthStr::width(bell_seg.as_str()) as u16;
-                Some(revue::prelude::Rect::new(bx, sy, bw, 1))
-            };
-            let pending_rect = if pending_seg.is_empty() {
-                None
-            } else {
-                let px = bx + UnicodeWidthStr::width(bell_seg.as_str()) as u16;
                 let pw = UnicodeWidthStr::width(pending_seg.as_str()) as u16;
                 Some(revue::prelude::Rect::new(px, sy, pw, 1))
-            };
-            (bell_rect, pending_rect)
+            }
         };
-        let status_text = format!(
-            "{}{}{} q:quit ^P:cmd ?:help ",
-            status_prefix, bell_seg, pending_seg,
-        );
+        let status_text = format!("{}{} q:quit ^P:cmd ?:help ", status_prefix, pending_seg);
         let status_bar = Text::new(&status_text)
             .fg(colors::FG_MUTED())
             .bg(colors::BG_SECONDARY());
@@ -2189,7 +2218,6 @@ impl View for RootView {
             toast_rects.push((t.id, revue::prelude::Rect::new(x, y, w + 2, 3)));
         }
         self.handler.borrow_mut().toast_rects = toast_rects;
-        self.handler.borrow_mut().bell_rect = bell_rect;
         self.handler.borrow_mut().pending_rect = pending_rect;
 
         // ── Session header dir 全路径 tooltip（click-to-reveal）─────────────────────

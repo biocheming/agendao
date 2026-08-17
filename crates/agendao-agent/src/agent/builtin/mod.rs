@@ -46,9 +46,17 @@ fn base_allowlist_agent(name: &str, mode: AgentMode, allowed_tools: &[&str]) -> 
     agent
 }
 
-const READ_SEARCH_TOOLS: &[&str] = &["read", "glob", "grep", "ast_grep_search", "bash"];
+const READ_SEARCH_TOOLS: &[&str] = &[
+    "capability",
+    "read",
+    "glob",
+    "grep",
+    "ast_grep_search",
+    "bash",
+];
 
 const PRIMARY_BUILTIN_TOOLS: &[&str] = &[
+    "capability",
     "read",
     "write",
     "edit",

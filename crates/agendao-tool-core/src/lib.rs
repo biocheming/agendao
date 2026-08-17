@@ -319,7 +319,7 @@ pub fn workspace_scope_key(project_root: &str, path: &str) -> String {
             format!("workspace:/{}", relative)
         }
     } else {
-        format!("workspace:{}", path.to_string_lossy().replace('\\', "/"))
+        external_fs_scope_key(&path.to_string_lossy())
     }
 }
 
@@ -702,6 +702,128 @@ impl std::fmt::Debug for ToolContext {
             .field("directory", &self.directory)
             .field("worktree", &self.worktree)
             .finish()
+    }
+}
+
+/// Cross-call stale-file guard for read→write sequences.
+///
+/// Read-family tools record a file's mtime after reading; write tools assert
+/// the mtime is unchanged before overwriting. Paths that were never read
+/// always pass — the guard only protects reads that happened in this
+/// process, so fresh writes are never blocked. A passed assert consumes the
+/// record: after the first guarded write succeeds, writing the same file
+/// again requires a fresh read.
+#[derive(Debug, Default)]
+pub struct FileTimeTracker {
+    mtimes: std::sync::Mutex<HashMap<(String, String), std::time::SystemTime>>,
+}
+
+impl FileTimeTracker {
+    fn mtime_of(path: &str) -> Result<std::time::SystemTime, ToolError> {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| {
+                ToolError::ExecutionError(format!("Failed to stat file {path}: {error}"))
+            })
+    }
+
+    /// Record the current mtime of `path` as observed by a read tool.
+    pub fn record(&self, session_id: &str, path: &str) -> Result<(), ToolError> {
+        let mtime = Self::mtime_of(path)?;
+        self.mtimes
+            .lock()
+            .expect("file-time tracker lock poisoned")
+            .insert((session_id.to_string(), path.to_string()), mtime);
+        Ok(())
+    }
+
+    /// Fail if `path` changed on disk since it was last recorded by a read.
+    pub fn assert_unchanged(&self, session_id: &str, path: &str) -> Result<(), ToolError> {
+        let key = (session_id.to_string(), path.to_string());
+        let recorded = self
+            .mtimes
+            .lock()
+            .expect("file-time tracker lock poisoned")
+            .remove(&key);
+        let Some(recorded) = recorded else {
+            return Ok(());
+        };
+        let current = Self::mtime_of(path)?;
+        if current != recorded {
+            return Err(ToolError::ExecutionError(format!(
+                "File {path} has been modified since it was last read. Read the file again before writing."
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod file_time_tracker_tests {
+    use super::FileTimeTracker;
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("agendao_ftt_{name}_{}", std::process::id()));
+        std::fs::write(&path, b"one").unwrap();
+        path
+    }
+
+    #[test]
+    fn assert_passes_for_never_read_paths() {
+        let tracker = FileTimeTracker::default();
+        let path = temp_file("unread");
+        assert!(tracker.assert_unchanged("ses_1", path.to_str().unwrap()).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn assert_fails_when_mtime_changed_after_read() {
+        let tracker = FileTimeTracker::default();
+        let path = temp_file("stale");
+        let path_str = path.to_str().unwrap();
+        tracker.record("ses_1", path_str).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(12345))
+            .unwrap();
+        let error = tracker
+            .assert_unchanged("ses_1", path_str)
+            .expect_err("modified file must fail the guard");
+        assert!(error.to_string().contains("modified since it was last read"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn assert_passes_when_mtime_unchanged_after_read() {
+        let tracker = FileTimeTracker::default();
+        let path = temp_file("fresh");
+        let path_str = path.to_str().unwrap();
+        tracker.record("ses_1", path_str).unwrap();
+        assert!(tracker.assert_unchanged("ses_1", path_str).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn passed_assert_consumes_the_guard() {
+        let tracker = FileTimeTracker::default();
+        let path = temp_file("oneshot");
+        let path_str = path.to_str().unwrap();
+        tracker.record("ses_1", path_str).unwrap();
+        assert!(tracker.assert_unchanged("ses_1", path_str).is_ok());
+        // Guard consumed: a second write without a fresh read must not fail.
+        assert!(tracker.assert_unchanged("ses_1", path_str).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn records_are_scoped_per_session() {
+        let tracker = FileTimeTracker::default();
+        let path = temp_file("scoped");
+        let path_str = path.to_str().unwrap();
+        tracker.record("ses_1", path_str).unwrap();
+        // Another session never read the file: no guard, no failure.
+        assert!(tracker.assert_unchanged("ses_2", path_str).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 }
 

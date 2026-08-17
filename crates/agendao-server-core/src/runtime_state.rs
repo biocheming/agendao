@@ -262,9 +262,15 @@ impl RuntimeStateStore {
                     (ControlInputKind::Followup, ControlInputPhase::Queued) => {
                         s.pending_followup_count = s.pending_followup_count.saturating_add(1);
                     }
-                    (ControlInputKind::Followup, ControlInputPhase::Adopted)
-                    | (ControlInputKind::Followup, ControlInputPhase::Consumed)
-                    | (ControlInputKind::Followup, ControlInputPhase::Cleared) => {
+                    (ControlInputKind::Followup, ControlInputPhase::Adopted) => {
+                        // Adoption pops exactly one queued prompt; the rest stay.
+                        s.pending_followup_count = s.pending_followup_count.saturating_sub(1);
+                    }
+                    (ControlInputKind::Followup, ControlInputPhase::Consumed) => {
+                        // Consumption of an already-adopted prompt must not
+                        // double-decrement the queue depth.
+                    }
+                    (ControlInputKind::Followup, ControlInputPhase::Cleared) => {
                         s.pending_followup_count = 0;
                     }
                     _ => {
@@ -759,13 +765,35 @@ mod tests {
         let store = RuntimeStateStore::new();
         store.mark_running("ses_followup", None).await;
 
+        for at in 1..=3 {
+            store
+                .apply_protocol_update(
+                    "ses_followup",
+                    RuntimeProtocolUpdate::ControlInputTransition {
+                        kind: ControlInputKind::Followup,
+                        phase: ControlInputPhase::Queued,
+                        at,
+                    },
+                )
+                .await;
+        }
+        assert_eq!(
+            store
+                .get("ses_followup")
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            3
+        );
+
+        // Adopting one prompt must leave the rest queued.
         store
             .apply_protocol_update(
                 "ses_followup",
                 RuntimeProtocolUpdate::ControlInputTransition {
                     kind: ControlInputKind::Followup,
-                    phase: ControlInputPhase::Queued,
-                    at: 1,
+                    phase: ControlInputPhase::Adopted,
+                    at: 4,
                 },
             )
             .await;
@@ -775,7 +803,27 @@ mod tests {
                 .await
                 .expect("runtime state should exist")
                 .pending_followup_count,
-            1
+            2
+        );
+
+        // Consuming an already-adopted prompt must not double-decrement.
+        store
+            .apply_protocol_update(
+                "ses_followup",
+                RuntimeProtocolUpdate::ControlInputTransition {
+                    kind: ControlInputKind::Followup,
+                    phase: ControlInputPhase::Consumed,
+                    at: 5,
+                },
+            )
+            .await;
+        assert_eq!(
+            store
+                .get("ses_followup")
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            2
         );
 
         store
@@ -783,8 +831,8 @@ mod tests {
                 "ses_followup",
                 RuntimeProtocolUpdate::ControlInputTransition {
                     kind: ControlInputKind::Followup,
-                    phase: ControlInputPhase::Consumed,
-                    at: 2,
+                    phase: ControlInputPhase::Cleared,
+                    at: 6,
                 },
             )
             .await;

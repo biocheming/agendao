@@ -52,6 +52,29 @@ export function resolveActiveModelRef(
   return model || null;
 }
 
+export function resolveSessionModelRef(
+  session: SessionRecord | null,
+  fallbackModel: string,
+): string | null {
+  const hinted = session?.hints?.current_model?.trim();
+  if (hinted) return hinted;
+  const provider = session?.hints?.model_provider?.trim();
+  const model = session?.hints?.model_id?.trim();
+  if (provider && model) return `${provider}/${model}`;
+  if (model) return model;
+  return fallbackModel.trim() || null;
+}
+
+export function resolveSessionAgentRef(
+  session: SessionRecord | null,
+  fallbackMode: string,
+): string | null {
+  const hinted = session?.hints?.agent?.trim();
+  if (hinted) return hinted;
+  const [kind, id] = fallbackMode.trim().split(":", 2);
+  return kind === "agent" && id?.trim() ? id.trim() : null;
+}
+
 export function workspaceRecentModelScope(
   context: WorkspaceContextRecord | null,
 ): string | null {

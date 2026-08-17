@@ -936,7 +936,8 @@ mod tests {
             "confirm hint 未写 q"
         );
         let p = read("permission.rs");
-        assert!(p.contains("↵/y/a allow"), "permission hint 未写 a");
+        assert!(p.contains("↵ select"), "permission hint 未写 Enter");
+        assert!(p.contains("y/a allow once"), "permission hint 未写 a");
         assert!(p.contains("0/n/d deny"), "permission hint 未写 d");
     }
 }

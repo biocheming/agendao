@@ -525,7 +525,7 @@ impl PromptSurfaceInputs {
                     names.join("\n")
                 ))
             }
-            ToolCatalogMode::SearchFacade => {
+            ToolCatalogMode::Progressive => {
                 let mut families: BTreeMap<(String, String), usize> = BTreeMap::new();
                 for (tool_name, catalog) in &self.tool_catalog_by_name {
                     if agendao_tool::tool_catalog::is_tool_catalog_facade_tool(tool_name) {
@@ -580,7 +580,7 @@ impl PromptSurfaceInputs {
                     )
                 };
                 Some(format!(
-                    "## Available Execution Resources\nLarge tool catalog detected.\n\nTool flow:\n- `tool_catalog_search` finds relevant execution resources\n- `tool_catalog_describe` inspects one candidate\n- `tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`\n- `domain` / `family` / `subfamily` are catalog projections, not callable ids\n- if a governed tool result exposes an `artifact:` path, read that local file with `artifact_read` or `read`, not with `webfetch` / `browser_session`\n\nSkill flow:\n- `skills_categories` inspects available skill categories\n- `skill_search` searches skills by keyword, especially inside large categories\n- `skills_list` browses the skills inside a smaller category\n- `skill_view` loads one exact short skill name after discovery\n- `skill_view.file_path` is only for linked files such as `references/api.md`, not for category paths\n\nModel-visible bridge tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: search-facade",
+                    "## Available Execution Resources\nLarge capability catalog detected.\n\nCapability flow:\n- call `capability` with action `search` to find tools, MCP resources, and skill tools\n- use action `describe` with an exact result id to inspect its schema and effects\n- use action `call` with the exact id and arguments to execute it\n- `domain` / `family` / `subfamily` are catalog projections, not callable ids\n- visibility never grants execution permission; the selected capability still passes its own permission gate\n- if a governed result exposes an `artifact:` path, read that local file with `read`, not with network tools\n\nStable core tools: capability, bash, read, apply_patch, grep (subject to agent policy)\nModel-visible core tools: {model_visible_tool_count}\nFull catalog resources: {all_tool_count}\n{imported_summary}\n{}\n\nCatalog mode: progressive",
                     lines.join("\n")
                 ))
             }
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn large_tool_catalog_renders_search_facade_summary() {
+    fn large_tool_catalog_renders_progressive_summary() {
         let facade_tools = vec![
             ToolDefinition {
                 name: "skills_categories".to_string(),
@@ -1283,17 +1283,7 @@ mod tests {
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::CAPABILITY_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1326,7 +1316,7 @@ mod tests {
                 facade_tools,
                 vec![],
                 catalog.clone(),
-                ToolCatalogMode::SearchFacade,
+                ToolCatalogMode::Progressive,
                 json_fingerprint(&serde_json::json!(catalog)),
             );
 
@@ -1334,10 +1324,10 @@ mod tests {
 
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("Catalog mode: search-facade"));
+            .contains("Catalog mode: progressive"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("Model-visible bridge tools: 8"));
+            .contains("Model-visible core tools: 6"));
         assert!(sections
             .dynamic_system_overlay_text
             .contains("Full catalog resources: 8"));
@@ -1347,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn search_facade_summary_mentions_facade_flow() {
+    fn progressive_summary_mentions_capability_flow() {
         let facade_tools = vec![
             ToolDefinition {
                 name: "skills_categories".to_string(),
@@ -1375,17 +1365,7 @@ mod tests {
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::CAPABILITY_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1410,45 +1390,34 @@ mod tests {
                 facade_tools,
                 vec![],
                 catalog.clone(),
-                ToolCatalogMode::SearchFacade,
+                ToolCatalogMode::Progressive,
                 json_fingerprint(&serde_json::json!(catalog)),
             );
 
         let sections = inputs.assemble_sections("projection".to_string(), None, None);
 
-        assert!(sections.dynamic_system_overlay_text.contains("Tool flow:"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`tool_catalog_search` finds relevant execution resources"));
-        assert!(sections.dynamic_system_overlay_text.contains(
-            "`tool_catalog_call` executes using the exact `name` returned by `tool_catalog_search`"
-        ));
-        assert!(sections.dynamic_system_overlay_text.contains("Skill flow:"));
+            .contains("Capability flow:"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`skills_categories` inspects available skill categories"));
+            .contains("call `capability` with action `search`"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`skill_search` searches skills by keyword"));
+            .contains("use action `call` with the exact id"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`skill_view` loads one exact short skill name after discovery"));
+            .contains("read that local file with `read`"));
         assert!(sections
             .dynamic_system_overlay_text
-            .contains("`skill_view.file_path` is only for linked files"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("read that local file with `artifact_read` or `read`"));
-        assert!(sections
-            .dynamic_system_overlay_text
-            .contains("Model-visible bridge tools: 8"));
+            .contains("Model-visible core tools: 6"));
         assert!(sections
             .dynamic_system_overlay_text
             .contains("Full catalog resources: 8"));
     }
 
     #[test]
-    fn search_facade_summary_surfaces_imported_execution_split() {
+    fn progressive_summary_surfaces_imported_execution_split() {
         let facade_tools = vec![
             ToolDefinition {
                 name: "skills_categories".to_string(),
@@ -1471,17 +1440,7 @@ mod tests {
                 parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: None,
-                parameters: serde_json::json!({}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+                name: agendao_tool::tool_catalog::CAPABILITY_TOOL_ID.to_string(),
                 description: None,
                 parameters: serde_json::json!({}),
             },
@@ -1524,7 +1483,7 @@ mod tests {
                 facade_tools,
                 vec![],
                 catalog.clone(),
-                ToolCatalogMode::SearchFacade,
+                ToolCatalogMode::Progressive,
                 json_fingerprint(&serde_json::json!(catalog)),
             )
             .set_external_tool_execution_by_name(BTreeMap::from([

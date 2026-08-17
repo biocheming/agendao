@@ -55,11 +55,12 @@ function FeedScrollContainerBridge({ feedRef }: { feedRef: RefObject<HTMLDivElem
 }
 
 function FeedLoadingState() {
+  const { t } = useI18n();
   return (
     <div className="roc-panel grid gap-5">
       <div className="flex items-center gap-2 text-muted-foreground">
         <LoaderCircleIcon className="size-4 animate-spin" />
-        <span className="text-sm">Loading conversation…</span>
+        <span className="text-sm">{t("feed.loadingConversation")}</span>
       </div>
       <div className="grid gap-4">
         <div className="grid gap-3">
@@ -92,6 +93,7 @@ function HistoryBackfillState({
   historyLoading: boolean;
   onLoadEarlier: () => void;
 }) {
+  const { t } = useI18n();
   const hasHiddenMessages = hiddenCount > 0;
 
   if (!historyLoading && !hasHiddenMessages) return null;
@@ -103,10 +105,10 @@ function HistoryBackfillState({
           {historyLoading ? <LoaderCircleIcon className="size-4 animate-spin" /> : <ChevronUpIcon className="size-4" />}
         </div>
         <div className="min-w-0">
-          <div className="roc-section-label">History</div>
+          <div className="roc-section-label">{t("feed.history")}</div>
           <p className="mt-1 text-sm leading-6 text-foreground/88">
             {historyLoading
-              ? "Loading earlier turns and stitching them back into the timeline."
+              ? t("feed.loadingEarlier")
               : `Showing the latest ${visibleCount} turns first so the current narrative stays readable.`}
           </p>
         </div>
@@ -126,7 +128,11 @@ function HistoryBackfillState({
             disabled={historyLoading}
             onClick={onLoadEarlier}
           >
-            {historyLoading ? "Loading earlier…" : `Load ${Math.min(hiddenCount, LOAD_MORE_MESSAGES_STEP)} earlier`}
+            {historyLoading
+              ? t("feed.loadingEarlier")
+              : t("feed.loadEarlier", {
+                  count: Math.min(hiddenCount, LOAD_MORE_MESSAGES_STEP),
+                })}
           </Button>
         ) : null}
       </div>
@@ -221,7 +227,7 @@ export function ConversationFeedPanel({
           <ConversationEmptyState
             className="roc-panel min-h-[22rem] gap-5"
             icon={<SparklesIcon className="size-5" />}
-            title="Conversation starts here"
+            title={t("feed.emptyTitle")}
             description="Ask for code changes, debugging, or exploration. The feed will turn into a readable execution narrative instead of a raw event log."
           >
             <div className="flex max-w-3xl flex-col items-center gap-5">
@@ -229,7 +235,7 @@ export function ConversationFeedPanel({
                 <SparklesIcon className="size-5" />
               </div>
               <div className="space-y-2 text-center">
-                <h3 className="text-base font-semibold tracking-tight text-foreground">Conversation starts here</h3>
+                <h3 className="text-base font-semibold tracking-tight text-foreground">{t("feed.emptyTitle")}</h3>
                 <p className="text-sm leading-6 text-muted-foreground">
                   Ask for code changes, debugging, or exploration. The feed will turn into a readable execution narrative instead of a raw event log.
                 </p>
@@ -240,27 +246,27 @@ export function ConversationFeedPanel({
                   <div className="roc-empty-capability-icon">
                     <BrainCircuitIcon className="size-4.5" />
                   </div>
-                  <div className="roc-empty-capability-title">Multi-Model</div>
+                  <div className="roc-empty-capability-title">{t("feed.capabilityMultiModel")}</div>
                   <div className="roc-empty-capability-desc">
-                    Choose execution mode and model per task — from reasoning to fast completion
+                    {t("feed.capabilityMultiModelDesc")}
                   </div>
                 </div>
                 <div className="roc-empty-capability-card">
                   <div className="roc-empty-capability-icon">
                     <WrenchIcon className="size-4.5" />
                   </div>
-                  <div className="roc-empty-capability-title">Tool-Augmented</div>
+                  <div className="roc-empty-capability-title">{t("feed.capabilityToolAugmented")}</div>
                   <div className="roc-empty-capability-desc">
-                    File operations, terminal, web search, and code review — all integrated
+                    {t("feed.capabilityToolAugmentedDesc")}
                   </div>
                 </div>
                 <div className="roc-empty-capability-card">
                   <div className="roc-empty-capability-icon">
                     <Layers2 className="size-4.5" />
                   </div>
-                  <div className="roc-empty-capability-title">Context-Aware</div>
+                  <div className="roc-empty-capability-title">{t("feed.capabilityContextAware")}</div>
                   <div className="roc-empty-capability-desc">
-                    Session memory, workspace state, and provenance tracking across turns
+                    {t("feed.capabilityContextAwareDesc")}
                   </div>
                 </div>
               </div>
@@ -349,9 +355,9 @@ export function ConversationFeedPanel({
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <div className="roc-section-label">Live Response</div>
+                  <div className="roc-section-label">{t("feed.liveResponse")}</div>
                   <Shimmer as="span" className="text-sm text-foreground/88" duration={1.45}>
-                    AgenDao is composing the next visible block…
+                    {t("feed.composingNext")}
                   </Shimmer>
                 </div>
               </div>

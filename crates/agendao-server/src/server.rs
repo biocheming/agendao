@@ -46,6 +46,7 @@ use agendao_server_core::runtime_control::RuntimeControlRegistry;
 use agendao_server_core::runtime_events::{EventBusTelemetry, ServerBusEvent, ServerEvent};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
+const CATALOG_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// 启动阶段计时日志（可选诊断）。统一打到 `agendao::startup` target，
 /// 用 `RUST_LOG=agendao::startup=info` 即可看到各阶段耗时，默认 warn 级别零开销。
@@ -257,7 +258,8 @@ pub struct ServerState {
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
     pub(crate) steering_store: Arc<tokio::sync::Mutex<SessionSteeringQueueStore>>,
-    pub(crate) queued_followups: Arc<tokio::sync::Mutex<HashMap<String, serde_json::Value>>>,
+    pub(crate) queued_followups:
+        Arc<tokio::sync::Mutex<HashMap<String, std::collections::VecDeque<serde_json::Value>>>>,
     // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
@@ -271,6 +273,7 @@ pub struct ServerState {
     /// projector task has been spawned. The guard tracks projector lifecycle
     /// directly, independent of downstream transport subscriber count.
     pub(crate) frontend_projector_spawned: std::sync::atomic::AtomicBool,
+    catalog_refresh_loop_spawned: std::sync::atomic::AtomicBool,
     /// Observable event bus telemetry (P0-2). Tracks send volume, errors, and
     /// receiver count so operators can distinguish event backlog from other
     /// sources of CPU/memory pressure.
@@ -282,7 +285,11 @@ pub struct ServerState {
         Option<Arc<agendao_storage::ExternalAdapterReplayRepository>>,
     pub(crate) proposal_repo: Option<Arc<agendao_storage::SkillEvolutionProposalRepository>>,
     pub(crate) category_registry: Arc<agendao_config::CategoryRegistry>,
-    pub(crate) todo_manager: agendao_session::TodoManager,
+    /// Shared todo state: written by TodoWrite tool callbacks, read by the
+    /// session todos route.
+    pub(crate) todo_manager: Arc<agendao_session::TodoManager>,
+    /// Stale-file guard shared across read→write tool sequences.
+    pub(crate) file_time_tracker: Arc<agendao_tool::FileTimeTracker>,
     /// Cancellation token for the background recheck/wake loop.
     /// Cancelled on ServerState drop.
     pub(crate) recheck_cancel: tokio_util::sync::CancellationToken,
@@ -349,6 +356,8 @@ impl ServerState {
         let runtime_control = runtime_telemetry.runtime_control();
         let steering_store = Arc::new(tokio::sync::Mutex::new(SessionSteeringQueueStore::new()));
         let queued_followups = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let todo_manager = Arc::new(agendao_session::TodoManager::new());
+        let file_time_tracker = Arc::new(agendao_tool::FileTimeTracker::default());
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
             sessions: Arc::new(Mutex::new(SessionManager::new())),
@@ -364,7 +373,9 @@ impl ServerState {
                 SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
                     SessionStateManager::new(),
                 )))
-                .with_memory_authority(runtime_memory.memory_authority()),
+                .with_memory_authority(runtime_memory.memory_authority())
+                .with_todo_manager(todo_manager.clone())
+                .with_file_time_tracker(file_time_tracker.clone()),
             ),
             runtime_memory,
             runtime_telemetry,
@@ -375,6 +386,7 @@ impl ServerState {
             event_bus: tx,
             frontend_bus: frontend_tx,
             frontend_projector_spawned: std::sync::atomic::AtomicBool::new(false),
+            catalog_refresh_loop_spawned: std::sync::atomic::AtomicBool::new(false),
             event_bus_telemetry: Some(event_bus_telemetry),
             api_perf: Arc::new(ApiPerfCounters::new()),
             session_repo: None,
@@ -382,7 +394,8 @@ impl ServerState {
             external_adapter_replay_repo: None,
             proposal_repo: None,
             category_registry: Arc::new(agendao_config::CategoryRegistry::empty()),
-            todo_manager: agendao_session::TodoManager::new(),
+            todo_manager,
+            file_time_tracker,
             recheck_cancel: tokio_util::sync::CancellationToken::new(),
             dehydrated_sessions: tokio::sync::RwLock::new(std::collections::HashSet::new()),
         }
@@ -580,7 +593,9 @@ impl ServerState {
             .with_config_store(config_store.clone())
             .with_tool_runtime_config(tool_runtime_config)
             .with_memory_authority(memory_authority)
-            .with_proposal_repo(proposal_repo),
+            .with_proposal_repo(proposal_repo)
+            .with_todo_manager(state.todo_manager.clone())
+            .with_file_time_tracker(state.file_time_tracker.clone()),
         );
         state.session_repo = Some(SessionRepository::new(pool.clone()));
         state.message_repo = Some(MessageRepository::new(pool));
@@ -632,6 +647,54 @@ impl ServerState {
                 self.sessions.clone(),
             );
         }
+    }
+
+    /// Keep the shared models.dev catalogue fresh without delaying startup.
+    /// The first tick runs immediately; later hourly ticks are cheap TTL checks
+    /// and only perform network I/O once the 24-hour catalogue TTL expires.
+    pub fn ensure_catalog_refresh_loop(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self
+            .catalog_refresh_loop_spawned
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        let state = Arc::downgrade(self);
+        let cancel = self.recheck_cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(CATALOG_REFRESH_CHECK_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+
+                let Some(state) = state.upgrade() else {
+                    break;
+                };
+                let generation_before = state.catalog_authority.snapshot().await.generation;
+                let Some(result) = state.catalog_authority.refresh_if_stale().await else {
+                    continue;
+                };
+
+                if result.snapshot.generation != generation_before {
+                    state.rebuild_providers().await;
+                    crate::session_runtime::events::broadcast_config_updated(state.as_ref());
+                    tracing::info!(
+                        generation = result.snapshot.generation,
+                        "refreshed stale models.dev catalogue and rebuilt providers"
+                    );
+                } else if let Some(error) = result.error_message.as_deref() {
+                    tracing::warn!(%error, "failed to refresh stale models.dev catalogue; using cached snapshot");
+                } else {
+                    tracing::debug!(status = ?result.status, "validated models.dev catalogue freshness");
+                }
+            }
+        });
     }
 
     /// Rebuild the provider registry from the stored bootstrap config,
@@ -1418,6 +1481,7 @@ pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Re
         ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root).await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
 
     let app = routes::router()
         .layer(middleware::from_fn(server_auth_middleware))
@@ -1439,6 +1503,7 @@ pub async fn run_server_with_state(
     state: Arc<ServerState>,
 ) -> anyhow::Result<()> {
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
     let app = routes::router()
         .layer(middleware::from_fn(server_auth_middleware))
         .layer(cors_layer())
@@ -1465,6 +1530,7 @@ pub async fn run_unix_socket_only(
             .await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
 
     let unix_server =
         crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), socket_path.clone());
@@ -1488,6 +1554,7 @@ async fn run_server_with_unix_socket(
             .await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Start Unix socket server if path is provided

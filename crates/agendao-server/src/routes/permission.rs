@@ -1,6 +1,6 @@
 use agendao_permission::{
-    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime,
-    PermissionMatcherKind, Response, TimeInfo,
+    AskOutcome, Pattern, PermissionAction, PermissionEngine, PermissionInfo, PermissionLifetime,
+    PermissionMatcherKind, PermissionRule, Response, TimeInfo,
 };
 use agendao_tool::default_supported_lifetimes_for_class;
 use axum::{
@@ -67,6 +67,102 @@ const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permission_grant_t
 struct PermissionReply {
     reply: String,
     message: Option<String>,
+}
+
+/// Ensures a pending permission request can never outlive its waiting
+/// future. When the tool future is dropped before a reply arrives (run
+/// aborted, task cancelled, connection torn down), the `Drop` impl resolves
+/// the request as cancelled so the engine, waiters, runtime telemetry, and
+/// every subscribed frontend converge instead of leaving a zombie popup.
+struct PendingPermissionGuard {
+    state: Option<Arc<ServerState>>,
+    session_id: String,
+    permission_id: String,
+}
+
+impl PendingPermissionGuard {
+    fn defuse(mut self) {
+        self.state = None;
+    }
+}
+
+impl Drop for PendingPermissionGuard {
+    fn drop(&mut self) {
+        let Some(state) = self.state.take() else {
+            return;
+        };
+        let session_id = std::mem::take(&mut self.session_id);
+        let permission_id = std::mem::take(&mut self.permission_id);
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            PERMISSION_WAITERS.lock().await.remove(&permission_id);
+            PERMISSION_ENGINE.lock().await.remove_pending(&permission_id);
+            state
+                .runtime_telemetry
+                .permission_resolved(
+                    &session_id,
+                    &permission_id,
+                    "cancelled",
+                    Some("Permission request cancelled".to_string()),
+                )
+                .await;
+            crate::session_runtime::events::broadcast_session_reconcile(
+                &state,
+                &session_id,
+                crate::session_runtime::events::ReconcileReason::Permission,
+            )
+            .await;
+        });
+    }
+}
+
+/// Resolve every pending permission request owned by the session as
+/// cancelled: wake the waiting tool futures with a rejection, retire the
+/// engine entries, and broadcast resolution so all frontends dismiss their
+/// popups immediately instead of waiting for a timeout that will never run.
+pub(crate) async fn cancel_pending_permissions_for_session(
+    state: &Arc<ServerState>,
+    session_id: &str,
+) -> usize {
+    let pending_ids: Vec<String> = {
+        let engine = PERMISSION_ENGINE.lock().await;
+        engine
+            .list()
+            .into_iter()
+            .filter(|info| info.session_id == session_id)
+            .map(|info| info.id.clone())
+            .collect()
+    };
+    let count = pending_ids.len();
+    for permission_id in pending_ids {
+        if let Some(waiter) = PERMISSION_WAITERS.lock().await.remove(&permission_id) {
+            let _ = waiter.send(PermissionReply {
+                reply: "reject".to_string(),
+                message: Some("Run aborted — permission request cancelled".to_string()),
+            });
+        }
+        PERMISSION_ENGINE.lock().await.remove_pending(&permission_id);
+        state
+            .runtime_telemetry
+            .permission_resolved(
+                session_id,
+                &permission_id,
+                "cancelled",
+                Some("Run aborted — permission request cancelled".to_string()),
+            )
+            .await;
+    }
+    if count > 0 {
+        crate::session_runtime::events::broadcast_session_reconcile(
+            state,
+            session_id,
+            crate::session_runtime::events::ReconcileReason::Permission,
+        )
+        .await;
+    }
+    count
 }
 
 fn permission_request_message(request: &agendao_tool::PermissionRequest) -> String {
@@ -169,8 +265,9 @@ fn permission_matcher_label(
             let label = matcher_key
                 .strip_prefix("cmd:")
                 .unwrap_or(matcher_key)
+                .replace('/', " ")
                 .replace('+', ", ");
-            Some(format!("Command family: {label}"))
+            Some(format!("Command prefix: {label}"))
         }
         Some(PermissionMatcherKind::SemanticPattern) => {
             Some(format!("Semantic pattern: {matcher_key}"))
@@ -321,6 +418,26 @@ fn request_pattern(request: &agendao_tool::PermissionRequest) -> Option<Pattern>
     }
 }
 
+fn session_mode_auto_grants(
+    mode: agendao_types::SessionPermissionMode,
+    info: &PermissionInfo,
+) -> bool {
+    match mode {
+        agendao_types::SessionPermissionMode::Default => false,
+        agendao_types::SessionPermissionMode::UnsandboxedYolo => true,
+        agendao_types::SessionPermissionMode::TrustedWorkspace => {
+            matches!(
+                info.permission_class,
+                Some(agendao_permission::PermissionClass::InspectRead)
+                    | Some(agendao_permission::PermissionClass::WorkspaceWrite)
+            ) && info
+                .scope_key
+                .as_deref()
+                .is_some_and(|scope| scope == "workspace:/" || scope.starts_with("workspace:/"))
+        }
+    }
+}
+
 pub(crate) async fn request_permission(
     state: Arc<ServerState>,
     session_id: String,
@@ -355,10 +472,40 @@ pub(crate) async fn request_permission(
         },
     };
 
+    let session_permission = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&session_id)
+            .and_then(|session| session.record().permission.clone())
+            .unwrap_or_default()
+    };
+    if session_mode_auto_grants(session_permission.mode, &info) {
+        return Ok(());
+    }
+    let session_rules = session_permission
+        .allow
+        .iter()
+        .map(|permission| PermissionRule {
+            permission: permission.clone(),
+            pattern: "*".to_string(),
+            action: PermissionAction::Allow,
+        })
+        .chain(
+            session_permission
+                .deny
+                .iter()
+                .map(|permission| PermissionRule {
+                    permission: permission.clone(),
+                    pattern: "*".to_string(),
+                    action: PermissionAction::Deny,
+                }),
+        )
+        .collect::<Vec<_>>();
+
     // Phase 1: in-memory fast path (grant hits / rulesets) under the engine lock.
     let precheck = {
         let engine = PERMISSION_ENGINE.lock().await;
-        engine.evaluate_ask(&info, &[])
+        engine.evaluate_ask(&info, std::slice::from_ref(&session_rules))
     };
 
     let outcome = match precheck {
@@ -437,6 +584,11 @@ pub(crate) async fn request_permission(
     )
     .await;
 
+    let guard = PendingPermissionGuard {
+        state: Some(state.clone()),
+        session_id: session_id.clone(),
+        permission_id: permission_id.clone(),
+    };
     let wait_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
     PERMISSION_WAITERS.lock().await.remove(&permission_id);
 
@@ -448,6 +600,9 @@ pub(crate) async fn request_permission(
 
     match wait_result {
         Ok(Ok(PermissionReply { reply, message })) => {
+            // The reply path already retired the engine entry and emitted
+            // the resolved telemetry; the guard must not fire again.
+            guard.defuse();
             // P3: Broadcast PermissionResolved to canonical event bus
             let resolved_event =
                 agendao_server_core::runtime_events::ServerEvent::PermissionResolved {
@@ -472,6 +627,7 @@ pub(crate) async fn request_permission(
             }
         }
         Ok(Err(_)) => {
+            guard.defuse();
             let mut sessions = state.sessions.lock().await;
             if let Some(session) = sessions.get_mut(&session_id) {
                 record_permission_pending_duration(session, info.time.created);
@@ -481,7 +637,17 @@ pub(crate) async fn request_permission(
                 .lock()
                 .await
                 .remove_pending(&permission_id);
-            // Pending cleared — broadcast so frontend doesn't see stale pending.
+            // Broadcast the resolution so frontends dismiss the popup
+            // instead of keeping a dead request on screen.
+            state
+                .runtime_telemetry
+                .permission_resolved(
+                    &session_id,
+                    &permission_id,
+                    "cancelled",
+                    Some("Permission response channel closed".to_string()),
+                )
+                .await;
             crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
@@ -493,6 +659,7 @@ pub(crate) async fn request_permission(
             ))
         }
         Err(_) => {
+            guard.defuse();
             let mut sessions = state.sessions.lock().await;
             if let Some(session) = sessions.get_mut(&session_id) {
                 record_permission_pending_duration(session, info.time.created);
@@ -502,7 +669,15 @@ pub(crate) async fn request_permission(
                 .lock()
                 .await
                 .remove_pending(&permission_id);
-            // Pending cleared — broadcast so frontend doesn't see stale pending.
+            state
+                .runtime_telemetry
+                .permission_resolved(
+                    &session_id,
+                    &permission_id,
+                    "timeout",
+                    Some("Permission request timed out".to_string()),
+                )
+                .await;
             crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
@@ -626,6 +801,58 @@ mod tests {
     static TEST_PERMISSION_LOCK: Lazy<tokio::sync::Mutex<()>> =
         Lazy::new(|| tokio::sync::Mutex::new(()));
 
+    fn mode_test_info(class: agendao_permission::PermissionClass, scope: &str) -> PermissionInfo {
+        PermissionInfo {
+            id: "permission-mode-test".to_string(),
+            permission_type: "test".to_string(),
+            pattern: None,
+            permission_class: Some(class),
+            scope_key: Some(scope.to_string()),
+            matcher_kind: Some(PermissionMatcherKind::ScopeOnly),
+            matcher_key: Some(scope.to_string()),
+            origin_tool: Some("test".to_string()),
+            risk_tags: Vec::new(),
+            supported_lifetimes: vec![PermissionLifetime::Once],
+            session_id: "session-mode-test".to_string(),
+            message_id: String::new(),
+            call_id: None,
+            message: String::new(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        }
+    }
+
+    #[test]
+    fn session_permission_modes_keep_workspace_trust_bounded() {
+        use agendao_permission::PermissionClass;
+        use agendao_types::SessionPermissionMode;
+
+        let workspace_write = mode_test_info(PermissionClass::WorkspaceWrite, "workspace:/src");
+        let external_write = mode_test_info(PermissionClass::WorkspaceWrite, "fs:/var/lib");
+        let dangerous = mode_test_info(PermissionClass::DangerousExec, "cmd:cargo/clean");
+
+        assert!(session_mode_auto_grants(
+            SessionPermissionMode::TrustedWorkspace,
+            &workspace_write
+        ));
+        assert!(!session_mode_auto_grants(
+            SessionPermissionMode::TrustedWorkspace,
+            &external_write
+        ));
+        assert!(!session_mode_auto_grants(
+            SessionPermissionMode::TrustedWorkspace,
+            &dangerous
+        ));
+        assert!(session_mode_auto_grants(
+            SessionPermissionMode::UnsandboxedYolo,
+            &dangerous
+        ));
+        assert!(!session_mode_auto_grants(
+            SessionPermissionMode::Default,
+            &workspace_write
+        ));
+    }
+
     #[tokio::test]
     async fn request_permission_emits_requested_and_resolved_events() {
         let _guard = TEST_PERMISSION_LOCK.lock().await;
@@ -745,6 +972,142 @@ mod tests {
             .expect("request task join")
             .expect("permission allowed");
         PERMISSION_ENGINE.lock().await.clear_session("session-1");
+    }
+
+    async fn wait_for_pending_permission(session_id: &str) -> String {
+        loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine
+                .list()
+                .into_iter()
+                .find(|info| info.session_id == session_id)
+            {
+                return info.id.clone();
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_the_waiting_future_resolves_pending_permission() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-drop";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+        let state = Arc::new(ServerState::new());
+        let mut rx = state.event_bus.subscribe();
+
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                agendao_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_metadata("command", serde_json::json!("cargo test")),
+            )
+            .await
+        });
+
+        let permission_id = wait_for_pending_permission(SESSION_ID).await;
+
+        // Abort drops the task future exactly like a run cancellation does;
+        // the drop guard must resolve the pending request.
+        request_task.abort();
+        let _ = request_task.await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending = PERMISSION_ENGINE
+                .lock()
+                .await
+                .list()
+                .into_iter()
+                .any(|info| info.session_id == SESSION_ID);
+            let waiter_leaked = PERMISSION_WAITERS
+                .lock()
+                .await
+                .contains_key(&permission_id);
+            if (!pending && !waiter_leaked)
+                || std::time::Instant::now() > deadline
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !PERMISSION_WAITERS.lock().await.contains_key(&permission_id),
+            "waiter leaked after future drop"
+        );
+        assert!(
+            !PERMISSION_ENGINE
+                .lock()
+                .await
+                .list()
+                .into_iter()
+                .any(|info| info.session_id == SESSION_ID),
+            "engine pending leaked after future drop"
+        );
+
+        let mut saw_resolved = false;
+        while let Ok(raw) = rx.try_recv() {
+            let json: serde_json::Value =
+                serde_json::from_str(raw.json()).expect("drop lifecycle json");
+            if json["type"] == "permission.resolved"
+                && json["permissionID"] == permission_id.as_str()
+                && json["reply"] == "cancelled"
+            {
+                saw_resolved = true;
+            }
+        }
+        assert!(
+            saw_resolved,
+            "dropped future must broadcast permission.resolved(cancelled)"
+        );
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn aborting_a_session_cancels_its_pending_permissions() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-abort-perm";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+        let state = Arc::new(ServerState::new());
+
+        let state_for_request = state.clone();
+        let mut request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                agendao_tool::PermissionRequest::new("bash")
+                    .with_pattern("rm -rf /tmp/x")
+                    .with_metadata("command", serde_json::json!("rm -rf /tmp/x")),
+            )
+            .await
+        });
+
+        let permission_id = wait_for_pending_permission(SESSION_ID).await;
+
+        let cancelled =
+            cancel_pending_permissions_for_session(&state, SESSION_ID).await;
+        assert_eq!(cancelled, 1);
+        assert!(
+            !PERMISSION_ENGINE
+                .lock()
+                .await
+                .list()
+                .into_iter()
+                .any(|info| info.id == permission_id),
+            "engine pending must be retired by abort"
+        );
+
+        // The waiting future wakes with a rejection instead of hanging.
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), &mut request_task)
+            .await
+            .expect("request future should settle promptly after abort")
+            .expect("request task join");
+        assert!(outcome.is_err(), "cancelled permission must deny the tool");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 
     #[tokio::test]
@@ -1022,7 +1385,7 @@ mod tests {
         assert_eq!(rendered.matcher_key.as_deref(), Some("cmd:cargo *"));
         assert_eq!(
             rendered.matcher_label.as_deref(),
-            Some("Command family: cargo *")
+            Some("Command prefix: cargo *")
         );
         assert_eq!(
             rendered.grant_target_summary.as_deref(),

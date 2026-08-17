@@ -28,7 +28,7 @@ impl Tool for SkillViewTool {
     }
 
     fn description(&self) -> &str {
-        "Load a specific skill's full SKILL.md content or one supporting file for inspection. Use skills_categories, then skills_list, to choose the correct skill. Skill files are not execution resource ids; if you need a runnable tool, return to tool_catalog_search and use tool_catalog_call with an exact search result name."
+        "Load a specific skill's full SKILL.md content or one supporting file for inspection. Use skills_categories, then skills_list, to choose the correct skill. Skill files are not execution resource ids; if you need a runnable tool, use capability with action search and then action call with an exact result name."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -41,7 +41,7 @@ impl Tool for SkillViewTool {
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Optional supporting file path relative to the skill root, e.g. references/api.md. This is only for linked files inside the skill. Do not pass category paths like `skills/semantic-scholar/skill.md`, and do not pass skill file paths to tool_catalog_call.tool."
+                    "description": "Optional supporting file path relative to the skill root, e.g. references/api.md. This is only for linked files inside the skill. Do not pass category paths like `skills/semantic-scholar/skill.md`, and do not pass skill file paths to capability.tool."
                 }
             },
             "required": ["name"]
@@ -227,11 +227,11 @@ Use clear visual hierarchy.
     fn skill_view_description_warns_against_using_skill_files_as_tool_ids() {
         let tool = SkillViewTool;
         assert!(tool.description().contains("not execution resource ids"));
-        assert!(tool.description().contains("tool_catalog_search"));
+        assert!(tool.description().contains("capability"));
         assert!(tool.parameters()["properties"]["file_path"]["description"]
             .as_str()
             .expect("file_path description")
-            .contains("do not pass skill file paths to tool_catalog_call.tool"));
+            .contains("do not pass skill file paths to capability.tool"));
         assert!(tool.parameters()["properties"]["name"]["description"]
             .as_str()
             .expect("name description")

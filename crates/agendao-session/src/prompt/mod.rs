@@ -513,6 +513,11 @@ pub struct SessionPrompt {
     config_store: Option<Arc<agendao_config::ConfigStore>>,
     memory_authority: Option<Arc<agendao_memory::MemoryAuthority>>,
     proposal_repo: Option<Arc<agendao_storage::SkillEvolutionProposalRepository>>,
+    /// Todo state shared with the server's read path (GET /session todos).
+    /// Standalone use falls back to a private in-memory manager.
+    todo_manager: Arc<crate::TodoManager>,
+    /// Stale-file guard shared across read→write tool sequences.
+    file_time_tracker: Arc<agendao_tool::FileTimeTracker>,
     review_nudge_state: std::sync::Mutex<HashMap<String, ReviewNudgeThrottleState>>,
 }
 
@@ -2297,6 +2302,8 @@ impl SessionPrompt {
             config_store: None,
             memory_authority: None,
             proposal_repo: None,
+            todo_manager: Arc::new(crate::TodoManager::new()),
+            file_time_tracker: Arc::new(agendao_tool::FileTimeTracker::default()),
             review_nudge_state: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -2306,6 +2313,19 @@ impl SessionPrompt {
         tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     ) -> Self {
         self.tool_runtime_config = tool_runtime_config;
+        self
+    }
+
+    pub fn with_todo_manager(mut self, todo_manager: Arc<crate::TodoManager>) -> Self {
+        self.todo_manager = todo_manager;
+        self
+    }
+
+    pub fn with_file_time_tracker(
+        mut self,
+        file_time_tracker: Arc<agendao_tool::FileTimeTracker>,
+    ) -> Self {
+        self.file_time_tracker = file_time_tracker;
         self
     }
 

@@ -35,6 +35,14 @@ export interface PermissionInteractionRecord {
   patterns?: string[];
 }
 
+export type PermissionReplyChoice =
+  | "once"
+  | "turn"
+  | "session"
+  | "trust_workspace"
+  | "full_access"
+  | "reject";
+
 function defaultSupportedLifetimes(permissionClass?: string): string[] {
   switch (permissionClass) {
     case "workspace_write":

@@ -648,26 +648,10 @@ pub async fn create_default_registry_with_config(
     .await;
     register_builtin_tool(
         &registry,
-        crate::tool_catalog::ToolCatalogSearchTool::primary(),
+        crate::tool_catalog::CapabilityTool::primary(),
         "execution_resource_catalog",
-        Some("search"),
-        &["catalog", "tool", "search"],
-    )
-    .await;
-    register_builtin_tool(
-        &registry,
-        crate::tool_catalog::ToolCatalogDescribeTool::primary(),
-        "execution_resource_catalog",
-        Some("describe"),
-        &["catalog", "tool", "describe"],
-    )
-    .await;
-    register_builtin_tool(
-        &registry,
-        crate::tool_catalog::ToolCatalogCallTool::primary(),
-        "execution_resource_catalog",
-        Some("call"),
-        &["catalog", "tool", "call"],
+        Some("capability"),
+        &["catalog", "tool", "mcp", "skill", "capability"],
     )
     .await;
     register_builtin_tool(
@@ -718,11 +702,13 @@ pub async fn create_default_registry_with_config(
 }
 
 /// Facade/bridge tools that must survive `disabled_tools`. In facade mode the
-/// model can only reach other tools through `tool_catalog_*`, and can only
+/// model can only reach other tools through `capability`, and can only
 /// reach skill content through the `skills_*` discovery tools plus `skill_view` — disabling those
 /// would cut the model off from everything behind them.
 pub fn is_protected_facade_tool(name: &str) -> bool {
-    name.starts_with("tool_catalog_") || name.starts_with("skills_") || name == "skill_view"
+    name == crate::tool_catalog::CAPABILITY_TOOL_ID
+        || name.starts_with("skills_")
+        || name == "skill_view"
 }
 
 /// Removes tools listed in `disabled_tools` (exact tool id or `family/*`
@@ -950,7 +936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_default_registry_lists_canonical_tool_catalog_tools() {
+    async fn create_default_registry_lists_canonical_capability_tool() {
         let registry = create_default_registry().await;
         let schemas = registry.list_schemas().await;
         let names = schemas
@@ -958,9 +944,8 @@ mod tests {
             .map(|schema| schema.name.as_str())
             .collect::<Vec<_>>();
 
-        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID));
-        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID));
-        assert!(names.contains(&crate::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID));
+        assert!(names.contains(&crate::tool_catalog::CAPABILITY_TOOL_ID));
+        assert!(!names.iter().any(|name| name.starts_with("tool_catalog_")));
     }
 
     fn test_tool_context() -> ToolContext {
@@ -1016,7 +1001,7 @@ mod tests {
     async fn disabled_tools_cannot_remove_facade_or_bridge_tools() {
         let config = agendao_config::Config {
             disabled_tools: vec![
-                "tool_catalog_search".to_string(),
+                "capability".to_string(),
                 "skills_list".to_string(),
                 "skill_view".to_string(),
                 "skill_knowledge/*".to_string(),
@@ -1030,9 +1015,7 @@ mod tests {
         // Facade/bridge tools survive even when listed explicitly or via a
         // family wildcard covering their catalog family.
         for protected in [
-            "tool_catalog_search",
-            "tool_catalog_describe",
-            "tool_catalog_call",
+            "capability",
             "skills_categories",
             "skills_list",
             "skill_view",

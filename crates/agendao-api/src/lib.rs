@@ -48,31 +48,31 @@ pub use agendao_types::{
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy, SessionForkExplain,
     SessionForkHistoryMode, SessionInfo, SessionInsightsResponse, SessionListContract,
     SessionListHints, SessionListItem, SessionListResponse, SessionMemoryTelemetrySummary,
-    SessionOwnershipSummary, SessionRepairQuerySnapshot, SessionRepairQuerySummary,
-    SessionRevertInfo, SessionShareInfo, SessionSummaryInfo, SessionTimeInfo,
-    SessionToolRepairTelemetrySummary, SessionUsage, SessionUsageBooks, SkillArtifactCacheEntry,
-    SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
-    SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
-    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
-    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
-    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
-    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicy,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
-    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
-    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
-    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
-    SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal,
-    SkillOperationalSnapshot, SkillOperationalSourceScope, SkillRemoteInstallAction,
-    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    SkillRetirementReason, SkillRetirementReasonKind, SkillSemanticConflictDiagnostic,
-    SkillSemanticConflictKind, SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef,
-    SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState,
-    SkillWriteLedgerAction, SkillWriteLedgerEntry, ToolResultGovernanceSummary,
-    ToolTrajectoryQualitySummary,
+    SessionOwnershipSummary, SessionPermissionMode, SessionRepairQuerySnapshot,
+    SessionRepairQuerySummary, SessionRevertInfo, SessionShareInfo, SessionSummaryInfo,
+    SessionTimeInfo, SessionToolRepairTelemetrySummary, SessionUsage, SessionUsageBooks,
+    SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
+    SkillEvolutionProposalKind, SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry,
+    SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus,
+    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
+    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
+    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
+    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
+    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubNegativeEntropyResponse,
+    SkillHubPolicy, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
+    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
+    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
+    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManagedLifecycleRecord,
+    SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
+    SkillOperationalSourceScope, SkillRemoteInstallAction, SkillRemoteInstallEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
+    SkillRetirementReasonKind, SkillSemanticConflictDiagnostic, SkillSemanticConflictKind,
+    SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef, SkillSyncPlan,
+    SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState, SkillWriteLedgerAction,
+    SkillWriteLedgerEntry, ToolResultGovernanceSummary, ToolTrajectoryQualitySummary,
 };
 
 pub type SessionListTime = agendao_types::SessionTime;
@@ -949,6 +949,16 @@ pub struct UpdateSessionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSessionPermissionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SessionPermissionMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderListResponse {
     pub providers: Vec<ProviderInfo>,
     #[serde(rename = "default")]
@@ -1145,6 +1155,11 @@ pub struct ProviderModelInfo {
     pub id: String,
     pub name: String,
     pub provider: String,
+    /// Whether this exact provider/model pair is registered in the live
+    /// runtime and can be used for a prompt. `None` preserves compatibility
+    /// with older servers that only exposed provider-level connectivity.
+    #[serde(default)]
+    pub available: Option<bool>,
     #[serde(default)]
     pub variants: Vec<String>,
     #[serde(default)]

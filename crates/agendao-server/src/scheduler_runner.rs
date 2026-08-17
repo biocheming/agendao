@@ -21,7 +21,9 @@ use agendao_orchestrator::selector::{
     LockedSelection, SchedulerChoice, SelectionRequest, SelectionSource, TaskShape,
 };
 use agendao_orchestrator::templates::TemplateParameters;
+use agendao_output_blocks::{OutputBlock, ToolBlock};
 use agendao_provider::{Message, Provider, ToolDefinition};
+use agendao_server_core::runtime_events::{ServerEvent, ToolCallPhase};
 use agendao_skill::{infer_toolsets_from_tools, SkillConditions, SkillRuntimeResolver};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -94,6 +96,7 @@ struct SchedulerEventChannel(tokio::sync::mpsc::UnboundedSender<ExecutionEvent>)
 struct SchedulerAgentObserver {
     state: Arc<ServerState>,
     session_id: String,
+    assistant_message_id: String,
     tool_call_count: AtomicU64,
     error_tool_call_count: AtomicU64,
     skill_write_count: AtomicU64,
@@ -101,12 +104,221 @@ struct SchedulerAgentObserver {
 
 #[async_trait]
 impl AgentLoopObserver for SchedulerAgentObserver {
+    async fn tool_started(
+        &self,
+        _context: &AgentObservationContext<'_>,
+        call: &ToolCall,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            let assistant = session
+                .get_message_mut(&self.assistant_message_id)
+                .ok_or_else(|| {
+                    format!(
+                        "scheduler assistant message '{}' is unavailable",
+                        self.assistant_message_id
+                    )
+                })?;
+            if !assistant.parts.iter().any(|part| {
+                matches!(
+                    &part.part_type,
+                    agendao_session::PartType::ToolCall { id, .. } if id == &call.id
+                )
+            }) {
+                assistant.add_tool_call(&call.id, call.tool.as_str(), call.arguments.clone());
+            }
+            if let Some(part) = assistant.parts.iter_mut().find(|part| {
+                matches!(
+                    &part.part_type,
+                    agendao_session::PartType::ToolCall { id, .. } if id == &call.id
+                )
+            }) {
+                if let agendao_session::PartType::ToolCall { status, state, .. } =
+                    &mut part.part_type
+                {
+                    *status = agendao_session::ToolCallStatus::Running;
+                    *state = Some(agendao_session::ToolState::Running {
+                        input: call.arguments.clone(),
+                        title: None,
+                        metadata: None,
+                        time: agendao_session::RunningTime { start: now },
+                    });
+                }
+            }
+        }
+
+        self.state
+            .runtime_telemetry
+            .runtime_state()
+            .tool_started(&self.session_id, &call.id, call.tool.as_str())
+            .await;
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::ToolCallLifecycle {
+                session_id: self.session_id.clone(),
+                tool_call_id: call.id.clone(),
+                phase: ToolCallPhase::Start,
+                tool_name: Some(call.tool.as_str().to_string()),
+            },
+        );
+        let start = OutputBlock::Tool(ToolBlock::start(call.tool.as_str()));
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(
+                self.session_id.clone(),
+                &start,
+                Some(&call.id),
+                Some(agendao_session::prompt::tool_call_live_identity(
+                    &self.assistant_message_id,
+                    &call.id,
+                    agendao_types::LivePartPhase::Start,
+                )),
+            ),
+        );
+        let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
+        let running = OutputBlock::Tool(ToolBlock::running(call.tool.as_str(), arguments));
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(
+                self.session_id.clone(),
+                &running,
+                Some(&call.id),
+                Some(agendao_session::prompt::tool_call_live_identity(
+                    &self.assistant_message_id,
+                    &call.id,
+                    agendao_types::LivePartPhase::Append,
+                )),
+            ),
+        );
+        Ok(())
+    }
+
     async fn tool_finished(
         &self,
         context: &AgentObservationContext<'_>,
         call: &ToolCall,
         result: &ToolExecution,
     ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let metadata = result
+            .metadata
+            .clone()
+            .and_then(|value| value.as_object().cloned())
+            .map(|object| object.into_iter().collect::<HashMap<_, _>>())
+            .unwrap_or_default();
+        {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            let assistant = session
+                .get_message_mut(&self.assistant_message_id)
+                .ok_or_else(|| {
+                    format!(
+                        "scheduler assistant message '{}' is unavailable",
+                        self.assistant_message_id
+                    )
+                })?;
+            if let Some(part) = assistant.parts.iter_mut().find(|part| {
+                matches!(
+                    &part.part_type,
+                    agendao_session::PartType::ToolCall { id, .. } if id == &call.id
+                )
+            }) {
+                if let agendao_session::PartType::ToolCall { status, state, .. } =
+                    &mut part.part_type
+                {
+                    *status = if result.is_error {
+                        agendao_session::ToolCallStatus::Error
+                    } else {
+                        agendao_session::ToolCallStatus::Completed
+                    };
+                    *state = Some(if result.is_error {
+                        agendao_session::ToolState::Error {
+                            input: call.arguments.clone(),
+                            error: result.output.clone(),
+                            metadata: (!metadata.is_empty()).then_some(metadata.clone()),
+                            time: agendao_session::ErrorTime {
+                                start: now,
+                                end: now,
+                            },
+                        }
+                    } else {
+                        agendao_session::ToolState::Completed {
+                            input: call.arguments.clone(),
+                            output: result.output.clone(),
+                            title: result
+                                .title
+                                .clone()
+                                .unwrap_or_else(|| "Tool Result".to_string()),
+                            metadata: metadata.clone(),
+                            time: agendao_session::CompletedTime {
+                                start: now,
+                                end: now,
+                                compacted: None,
+                            },
+                            attachments: None,
+                        }
+                    });
+                }
+            }
+            assistant.add_tool_result(&call.id, &result.output, result.is_error);
+            if let Some(agendao_session::MessagePart {
+                part_type:
+                    agendao_session::PartType::ToolResult {
+                        title,
+                        metadata: part_metadata,
+                        ..
+                    },
+                ..
+            }) = assistant.parts.last_mut()
+            {
+                *title = result.title.clone();
+                *part_metadata = (!metadata.is_empty()).then_some(metadata.clone());
+            }
+        }
+
+        self.state
+            .runtime_telemetry
+            .runtime_state()
+            .tool_ended(&self.session_id, &call.id)
+            .await;
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::ToolCallLifecycle {
+                session_id: self.session_id.clone(),
+                tool_call_id: call.id.clone(),
+                phase: ToolCallPhase::Complete,
+                tool_name: Some(call.tool.as_str().to_string()),
+            },
+        );
+        let detail = match result.title.as_deref() {
+            Some(title) if !title.trim().is_empty() => format!("{title}\n{}", result.output),
+            _ => result.output.clone(),
+        };
+        let block = if result.is_error {
+            OutputBlock::Tool(ToolBlock::error(call.tool.as_str(), detail))
+        } else {
+            OutputBlock::Tool(ToolBlock::done(call.tool.as_str(), Some(detail)))
+        };
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(
+                self.session_id.clone(),
+                &block,
+                Some(&call.id),
+                Some(agendao_session::prompt::tool_result_live_identity(
+                    &self.assistant_message_id,
+                    &call.id,
+                    agendao_types::LivePartPhase::End,
+                )),
+            ),
+        );
+
         self.tool_call_count.fetch_add(1, Ordering::Relaxed);
         if result.is_error {
             self.error_tool_call_count.fetch_add(1, Ordering::Relaxed);
@@ -309,15 +521,17 @@ impl AgentLoopObserver for SchedulerAgentObserver {
     }
 }
 
+type SchedulerSkillWriteMetadata<'a> = (
+    &'static str,
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<agendao_types::SkillGuardReport>,
+);
+
 fn scheduler_skill_write_metadata(
     result: &ToolExecution,
-) -> Option<(
-    &'static str,
-    &str,
-    Option<&str>,
-    Option<&str>,
-    Option<agendao_types::SkillGuardReport>,
-)> {
+) -> Option<SchedulerSkillWriteMetadata<'_>> {
     let metadata = result.metadata.as_ref()?.as_object()?;
     let action = match metadata.get("action")?.as_str()? {
         "created" | "create" => "create",
@@ -359,7 +573,15 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     let policy = build_policy(&config, &catalog, limits.clone(), &runtime_budget);
     let task = classify_task(&input.goal);
     let primary = primary_agent(&agents, input.primary_agent.as_ref())?;
-    let parameters = template_parameters(&catalog, &agents, primary, limits, &input.goal, &task);
+    let parameters = template_parameters(
+        &catalog,
+        &agents,
+        primary,
+        limits,
+        &input.goal,
+        &task,
+        &tool_definitions,
+    );
     let workspace_summary = workspace_summary(&input.state, &input.directory).await?;
     let rejected_blueprint_fingerprints =
         load_rejected_blueprints(&input.state, &input.session_id).await?;
@@ -392,10 +614,16 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
 
     catalog = materialize_generated_agents(&catalog, &selection.generated_agents)
         .map_err(|error| error.to_string())?;
-    hydrate_selected_skills(&input.state, selection.blueprint.blueprint(), &mut catalog)?;
-    let blueprint =
-        ValidatedBlueprint::new(selection.blueprint.blueprint().clone(), &catalog, &policy)
-            .map_err(|error| error.to_string())?;
+    let mut selected_blueprint = selection.blueprint.blueprint().clone();
+    bound_blueprint_tool_surfaces(
+        &mut selected_blueprint,
+        &catalog,
+        &input.goal,
+        &tool_definitions,
+    );
+    hydrate_selected_skills(&input.state, &selected_blueprint, &mut catalog)?;
+    let blueprint = ValidatedBlueprint::new(selected_blueprint, &catalog, &policy)
+        .map_err(|error| error.to_string())?;
     persist_blueprint_lock(
         &input.state,
         &input.session_id,
@@ -426,11 +654,25 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         input.state.clone(),
         SessionSchedulerToolExecutorInput {
             session_id: input.session_id.clone(),
-            message_id: input.assistant_message_id,
+            message_id: input.assistant_message_id.clone(),
             directory: input.directory.clone(),
             abort_token: input.cancellation.clone(),
             tool_runtime_config: agendao_tool::ToolRuntimeConfig::from_config(&config),
             execution_metadata: input.execution_metadata,
+            capability_allowed_tools_by_agent: catalog
+                .agents
+                .iter()
+                .map(|(agent_id, agent)| {
+                    (
+                        agent_id.as_str().to_string(),
+                        agent
+                            .available_tools
+                            .iter()
+                            .map(|tool| tool.as_str().to_string())
+                            .collect(),
+                    )
+                })
+                .collect(),
         },
     );
     let evaluator = ModelEvaluatorBackend::new(
@@ -455,6 +697,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     let agent_observer = SchedulerAgentObserver {
         state: input.state.clone(),
         session_id: input.session_id.clone(),
+        assistant_message_id: input.assistant_message_id.clone(),
         tool_call_count: AtomicU64::new(0),
         error_tool_call_count: AtomicU64::new(0),
         skill_write_count: AtomicU64::new(0),
@@ -970,6 +1213,7 @@ fn template_parameters(
     limits: ExecutionLimits,
     goal: &str,
     task: &TaskShape,
+    tool_definitions: &[ToolDefinition],
 ) -> TemplateParameters {
     let planning_agent = agents
         .get("plan")
@@ -981,7 +1225,7 @@ fn template_parameters(
         })
         .map(|agent| AgentId::new(agent.name.clone()));
     let collaborators = semantic_collaborators(agents, goal, task);
-    let agent_tools = std::iter::once(primary_agent.clone())
+    let full_agent_tools = std::iter::once(primary_agent.clone())
         .chain(planning_agent.iter().cloned())
         .chain(collaborators.iter().cloned())
         .filter_map(|id| {
@@ -991,7 +1235,24 @@ fn template_parameters(
                 .map(|agent| (id, agent.available_tools.clone()))
         })
         .collect::<BTreeMap<_, _>>();
-    let agent_skills = semantic_skills(catalog, goal, task, &agent_tools);
+    let agent_skills = semantic_skills(catalog, goal, task, &full_agent_tools);
+    let agent_tools = full_agent_tools
+        .iter()
+        .map(|(agent, tools)| {
+            let skills = agent_skills.get(agent).cloned().unwrap_or_default();
+            (
+                agent.clone(),
+                progressive_scheduler_tool_surface(
+                    catalog,
+                    tools,
+                    &skills,
+                    goal,
+                    tool_definitions,
+                    None,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let agent_max_steps = agent_tools
         .keys()
         .filter_map(|id| {
@@ -1018,6 +1279,148 @@ fn template_parameters(
             include_artifact_refs: true,
         },
     }
+}
+
+fn progressive_scheduler_tool_surface(
+    catalog: &SchedulerCatalog,
+    allowed: &BTreeSet<ToolId>,
+    skills: &BTreeSet<SkillId>,
+    goal: &str,
+    definitions: &[ToolDefinition],
+    pinned: Option<&BTreeSet<ToolId>>,
+) -> BTreeSet<ToolId> {
+    const MAX_TOOLS: usize = 16;
+    const MAX_SCHEMA_BYTES: usize = 32 * 1024;
+    const CORE: &[&str] = &["capability", "bash", "read", "apply_patch", "grep"];
+    const COMMON: &[&str] = &[
+        "glob",
+        "ls",
+        "edit",
+        "write",
+        "lsp",
+        "todoread",
+        "todowrite",
+        "batch",
+        "question",
+        "websearch",
+        "webfetch",
+        "skill_view",
+    ];
+
+    let schema_bytes = definitions
+        .iter()
+        .map(|definition| {
+            (
+                definition.name.as_str(),
+                definition.name.len()
+                    + definition
+                        .description
+                        .as_deref()
+                        .map(str::len)
+                        .unwrap_or_default()
+                    + serde_json::to_vec(&definition.parameters)
+                        .map(|value| value.len())
+                        .unwrap_or_default(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut required = skills
+        .iter()
+        .filter_map(|skill| catalog.skills.get(skill))
+        .flat_map(|skill| skill.requires_tools.iter().cloned())
+        .filter(|tool| allowed.contains(tool))
+        .collect::<BTreeSet<_>>();
+    let normalized_goal = goal.to_ascii_lowercase();
+    let goal_terms = semantic_terms(&normalized_goal);
+    let mut ranked = allowed
+        .iter()
+        .filter(|tool| !CORE.contains(&tool.as_str()) && !required.contains(*tool))
+        .map(|tool| {
+            let name = tool.as_str().to_ascii_lowercase();
+            let score = i32::from(normalized_goal.contains(&name)) * 20
+                + goal_terms
+                    .iter()
+                    .filter(|term| name.contains(term.as_str()) || term.contains(&name))
+                    .count() as i32
+                    * 4
+                + COMMON
+                    .iter()
+                    .position(|common| *common == name)
+                    .map(|index| 12_i32.saturating_sub(index as i32))
+                    .unwrap_or_default();
+            (score, tool.clone())
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut candidates = CORE
+        .iter()
+        .map(|name| ToolId::from(*name))
+        .filter(|tool| allowed.contains(tool))
+        .collect::<Vec<_>>();
+    candidates.extend(std::mem::take(&mut required));
+    candidates.extend(
+        pinned
+            .into_iter()
+            .flat_map(|tools| tools.iter().filter(|tool| allowed.contains(*tool)).cloned()),
+    );
+    candidates.extend(ranked.into_iter().map(|(_, tool)| tool));
+
+    let mut selected = BTreeSet::new();
+    let mut bytes = 0usize;
+    for tool in candidates {
+        if selected.contains(&tool) || selected.len() >= MAX_TOOLS {
+            continue;
+        }
+        let next = schema_bytes.get(tool.as_str()).copied().unwrap_or_default();
+        if !selected.is_empty() && bytes.saturating_add(next) > MAX_SCHEMA_BYTES {
+            continue;
+        }
+        bytes = bytes.saturating_add(next);
+        selected.insert(tool);
+    }
+    selected
+}
+
+fn bound_blueprint_tool_surfaces(
+    blueprint: &mut SchedulerBlueprint,
+    catalog: &SchedulerCatalog,
+    goal: &str,
+    definitions: &[ToolDefinition],
+) {
+    fn visit(
+        nodes: &mut BTreeMap<
+            agendao_orchestrator::blueprint::NodeId,
+            agendao_orchestrator::blueprint::NodeSpec,
+        >,
+        catalog: &SchedulerCatalog,
+        goal: &str,
+        definitions: &[ToolDefinition],
+    ) {
+        for node in nodes.values_mut() {
+            match node {
+                agendao_orchestrator::blueprint::NodeSpec::Agent(agent) => {
+                    let Some(agent_catalog) = catalog.agents.get(&agent.agent) else {
+                        continue;
+                    };
+                    agent.tools = progressive_scheduler_tool_surface(
+                        catalog,
+                        &agent_catalog.available_tools,
+                        &agent.skills,
+                        goal,
+                        definitions,
+                        Some(&agent.tools),
+                    );
+                }
+                agendao_orchestrator::blueprint::NodeSpec::Loop(loop_node) => {
+                    visit(&mut loop_node.body.nodes, catalog, goal, definitions);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    visit(&mut blueprint.nodes, catalog, goal, definitions);
 }
 
 fn semantic_skills(
@@ -1788,9 +2191,25 @@ mod tests {
             MemoryAuthority::new(user_state, resolved_context).with_repository(repository),
         )));
         let state = Arc::new(state);
+        let (session_id, assistant_message_id) = {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.create(
+                "scheduler-memory-project",
+                workspace.path().to_string_lossy(),
+            );
+            let session_id = session.id.clone();
+            let assistant_message_id = sessions
+                .get_mut(&session_id)
+                .expect("created scheduler session")
+                .add_assistant_message()
+                .id
+                .clone();
+            (session_id, assistant_message_id)
+        };
         let observer = SchedulerAgentObserver {
             state: state.clone(),
-            session_id: "scheduler-memory-session".to_string(),
+            session_id: session_id.clone(),
+            assistant_message_id: assistant_message_id.clone(),
             tool_call_count: AtomicU64::new(0),
             error_tool_call_count: AtomicU64::new(0),
             skill_write_count: AtomicU64::new(0),
@@ -1817,6 +2236,10 @@ mod tests {
         };
 
         observer
+            .tool_started(&context, &call)
+            .await
+            .expect("tool start must be persisted");
+        observer
             .tool_finished(&context, &call, &result)
             .await
             .expect("memory ingestion must not fail the observer");
@@ -1832,6 +2255,27 @@ mod tests {
         }));
         assert_eq!(observer.tool_call_count.load(Ordering::Relaxed), 1);
         assert_eq!(observer.skill_write_count.load(Ordering::Relaxed), 1);
+        let sessions = state.sessions.lock().await;
+        let assistant = sessions
+            .get(&session_id)
+            .and_then(|session| session.get_message(&assistant_message_id))
+            .expect("scheduler assistant message");
+        assert!(assistant.parts.iter().any(|part| matches!(
+            &part.part_type,
+            agendao_session::PartType::ToolCall {
+                id,
+                status: agendao_session::ToolCallStatus::Completed,
+                ..
+            } if id == "tool-call-1"
+        )));
+        assert!(assistant.parts.iter().any(|part| matches!(
+            &part.part_type,
+            agendao_session::PartType::ToolResult {
+                tool_call_id,
+                content,
+                ..
+            } if tool_call_id == "tool-call-1" && content == "SCHEDULER_MEMORY_EVIDENCE"
+        )));
     }
 
     #[test]
@@ -1847,6 +2291,49 @@ mod tests {
             classify_task("implement a credential rotation workflow"),
             TaskShape::default()
         );
+    }
+
+    #[test]
+    fn progressive_scheduler_surface_bounds_hundreds_of_tools_and_keeps_core() {
+        let state = ServerState::new();
+        let config = agendao_config::Config::default();
+        let agents = AgentRegistry::from_config(&config);
+        let catalog = build_catalog(&state, &config, &agents, &[]).unwrap();
+        let mut names = vec!["capability", "bash", "read", "apply_patch", "grep"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        names.extend((0..300).map(|index| format!("mcp_tool_{index:03}")));
+        let allowed = names.iter().cloned().map(ToolId::new).collect();
+        let definitions = names
+            .iter()
+            .map(|name| ToolDefinition {
+                name: name.clone(),
+                description: Some("synthetic MCP capability".to_string()),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}}
+                }),
+            })
+            .collect::<Vec<_>>();
+
+        let selected = progressive_scheduler_tool_surface(
+            &catalog,
+            &allowed,
+            &BTreeSet::new(),
+            "use mcp_tool_299",
+            &definitions,
+            None,
+        );
+
+        assert!(selected.len() <= 16);
+        for core in ["capability", "bash", "read", "apply_patch", "grep"] {
+            assert!(
+                selected.contains(&ToolId::from(core)),
+                "missing core {core}"
+            );
+        }
+        assert!(selected.contains(&ToolId::from("mcp_tool_299")));
     }
 
     #[test]
@@ -1899,6 +2386,7 @@ mod tests {
                 simple: true,
                 ..TaskShape::default()
             },
+            &definitions,
         );
         let blueprint = agendao_orchestrator::templates::build_template(
             agendao_orchestrator::templates::TemplateId::Direct,
@@ -1935,6 +2423,7 @@ mod tests {
                 simple: true,
                 ..TaskShape::default()
             },
+            &[],
         );
         let generated = GeneratedAgentSpec {
             id: AgentId::from("auth-reviewer"),
@@ -2197,6 +2686,7 @@ mod tests {
             limits,
             "全面并行审计项目架构和性能",
             &task,
+            &definitions,
         );
 
         for template in [

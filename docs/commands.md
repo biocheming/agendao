@@ -307,6 +307,7 @@ agendao models --refresh
 
 - `agendao models --refresh` 会主动请求 `https://models.dev/api.json` 并更新本地 provider/model catalog
 - 在交互式会话里，对应的斜杠命令是 `/models refresh`
+- AgenDao 会缓存目录；距离上次刷新尝试超过 24 小时后，CLI 启动或常驻 server 的后台检查会自动刷新。刷新失败时继续使用已有快照
 
 ---
 

@@ -23,7 +23,19 @@ pub struct ApiBridge {
 impl ApiBridge {
     /// Create an HTTP-based bridge (connects to external server).
     pub fn new(base_url: &str, handle: tokio::runtime::Handle) -> anyhow::Result<Self> {
-        let client = Arc::new(AsyncApiClient::new(base_url.to_string()));
+        Self::new_with_password(base_url, None, handle)
+    }
+
+    /// Create an HTTP-based bridge authenticated with the server password.
+    pub fn new_with_password(
+        base_url: &str,
+        server_password: Option<String>,
+        handle: tokio::runtime::Handle,
+    ) -> anyhow::Result<Self> {
+        let client = Arc::new(AsyncApiClient::new_with_password(
+            base_url.to_string(),
+            server_password,
+        ));
         Ok(Self {
             client,
             local: None,
@@ -1567,6 +1579,24 @@ impl ApiBridge {
             return self.block_on(unix.reply_permission(permission_id, reply, msg));
         }
         self.block_on(self.client.reply_permission(permission_id, reply, msg))
+    }
+
+    pub fn set_session_permission_mode(
+        &self,
+        session_id: &str,
+        mode: agendao_client::SessionPermissionMode,
+    ) -> anyhow::Result<agendao_client::SessionInfo> {
+        if let Some(ref ls) = self.local {
+            return self.block_on(agendao_server::local_set_session_permission_mode(
+                Arc::clone(ls),
+                session_id,
+                mode,
+            ));
+        }
+        if let Some(ref unix) = self.unix {
+            return self.block_on(unix.set_session_permission_mode(session_id, mode));
+        }
+        self.block_on(self.client.set_session_permission_mode(session_id, mode))
     }
 
     pub fn get_session_todos(

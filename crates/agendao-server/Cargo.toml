@@ -21,6 +21,7 @@ agendao-agent = { path = "../agendao-agent" }
 agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-multimodal = { path = "../agendao-multimodal" }
 agendao-orchestrator = { path = "../agendao-orchestrator" }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-state = { path = "../agendao-state" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }

@@ -27,6 +27,9 @@ pub struct AppConfig {
     pub session_id: Option<String>,
     pub initial_prompt: Option<String>,
     pub working_dir: Option<PathBuf>,
+    /// Bearer password for HTTP attach mode (`agendao attach -p` or
+    /// `AGENDAO_SERVER_PASSWORD`). None for local Direct/socket modes.
+    pub server_password: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -41,6 +44,7 @@ impl Default for AppConfig {
             session_id: env_str("AGENDAO_TUI_SESSION"),
             initial_prompt: env_str("AGENDAO_TUI_PROMPT"),
             working_dir: env_str("AGENDAO_TUI_DIR").map(PathBuf::from),
+            server_password: env_str("AGENDAO_SERVER_PASSWORD"),
         }
     }
 }

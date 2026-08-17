@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -16,14 +16,10 @@ use crate::{
     ToolSchemaSourceKind,
 };
 
-pub const TOOL_CATALOG_SEARCH_TOOL_ID: &str = "tool_catalog_search";
-pub const TOOL_CATALOG_DESCRIBE_TOOL_ID: &str = "tool_catalog_describe";
-pub const TOOL_CATALOG_CALL_TOOL_ID: &str = "tool_catalog_call";
-pub const TOOL_CATALOG_FACADE_TOOL_IDS: &[&str] = &[
-    TOOL_CATALOG_SEARCH_TOOL_ID,
-    TOOL_CATALOG_DESCRIBE_TOOL_ID,
-    TOOL_CATALOG_CALL_TOOL_ID,
-];
+pub const CAPABILITY_TOOL_ID: &str = "capability";
+pub const CAPABILITY_ALLOWED_TOOL_IDS_KEY: &str = "capability_allowed_tool_ids";
+pub const CORE_MODEL_TOOL_IDS: &[&str] =
+    &[CAPABILITY_TOOL_ID, "bash", "read", "apply_patch", "grep"];
 
 #[derive(Debug, Clone)]
 struct CatalogEntry {
@@ -47,21 +43,52 @@ struct CatalogEntryScore {
 }
 
 pub fn is_tool_catalog_facade_tool(name: &str) -> bool {
-    TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
+    name == CAPABILITY_TOOL_ID
 }
 
 pub fn is_model_visible_tool_catalog_facade_tool(name: &str) -> bool {
-    TOOL_CATALOG_FACADE_TOOL_IDS.contains(&name)
+    name == CAPABILITY_TOOL_ID
 }
 
-pub struct ToolCatalogSearchTool;
+pub fn is_core_model_tool(name: &str) -> bool {
+    CORE_MODEL_TOOL_IDS.contains(&name)
+}
 
-pub struct ToolCatalogDescribeTool;
-
-pub struct ToolCatalogCallTool;
+pub struct CapabilityTool;
 
 #[derive(Debug, Deserialize)]
-struct ToolCatalogSearchInput {
+#[serde(rename_all = "snake_case")]
+enum CapabilityAction {
+    Search,
+    Describe,
+    Call,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilityInput {
+    action: CapabilityAction,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    subfamily: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default = "default_offset")]
+    offset: usize,
+    #[serde(default)]
+    arguments: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilitySearchInput {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
@@ -79,12 +106,12 @@ struct ToolCatalogSearchInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct ToolCatalogDescribeInput {
+struct CapabilityDescribeInput {
     tool: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ToolCatalogCallInput {
+struct CapabilityCallInput {
     tool: String,
     #[serde(default)]
     arguments: serde_json::Value,
@@ -104,68 +131,91 @@ fn looks_like_skill_file_or_catalog_path(name: &str) -> bool {
     name.contains(':') || name.contains('/')
 }
 
-impl ToolCatalogSearchTool {
+impl CapabilityTool {
     pub const fn primary() -> Self {
         Self
     }
 }
 
-impl ToolCatalogDescribeTool {
-    pub const fn primary() -> Self {
-        Self
-    }
-}
-
-impl ToolCatalogCallTool {
-    pub const fn primary() -> Self {
-        Self
-    }
-}
-
-fn tool_catalog_search_parameters() -> serde_json::Value {
+fn capability_parameters() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["search", "describe", "call"],
+                "description": "Search the local capability catalog, describe one exact result, or call it."
+            },
+            "tool": {
+                "type": "string",
+                "description": "Exact tool or MCP capability id returned by search; required for describe and call."
+            },
             "query": { "type": "string" },
             "domain": { "type": "string" },
             "family": { "type": "string" },
             "subfamily": { "type": "string" },
             "tag": { "type": "string" },
             "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 8 },
-            "offset": { "type": "integer", "minimum": 0, "default": 0 }
-        }
-    })
-}
-
-fn tool_catalog_describe_parameters() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "tool": {
-                "type": "string",
-                "description": "Exact tool name from tool_catalog_search results"
-            }
-        },
-        "required": ["tool"]
-    })
-}
-
-fn tool_catalog_call_parameters() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "tool": { "type": "string" },
+            "offset": { "type": "integer", "minimum": 0, "default": 0 },
             "arguments": { "type": "object", "additionalProperties": true }
         },
-        "required": ["tool", "arguments"]
+        "required": ["action"],
+        "additionalProperties": false
     })
 }
 
-async fn execute_tool_catalog_search(
+fn required_capability_tool(tool: Option<String>, action: &str) -> Result<String, ToolError> {
+    tool.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ToolError::InvalidArguments(format!(
+                "tool is required for capability action `{action}`"
+            ))
+        })
+}
+
+async fn execute_capability(
     args: serde_json::Value,
     ctx: ToolContext,
 ) -> Result<ToolResult, ToolError> {
-    let input: ToolCatalogSearchInput = serde_json::from_value(args)
+    let input: CapabilityInput = serde_json::from_value(args)
+        .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+    match input.action {
+        CapabilityAction::Search => {
+            execute_capability_search(
+                serde_json::json!({
+                    "query": input.query,
+                    "domain": input.domain,
+                    "family": input.family,
+                    "subfamily": input.subfamily,
+                    "tag": input.tag,
+                    "limit": input.limit,
+                    "offset": input.offset,
+                }),
+                ctx,
+            )
+            .await
+        }
+        CapabilityAction::Describe => {
+            let tool = required_capability_tool(input.tool, "describe")?;
+            execute_capability_describe(serde_json::json!({"tool": tool}), ctx).await
+        }
+        CapabilityAction::Call => {
+            let tool = required_capability_tool(input.tool, "call")?;
+            execute_capability_call(
+                serde_json::json!({"tool": tool, "arguments": input.arguments}),
+                ctx,
+            )
+            .await
+        }
+    }
+}
+
+async fn execute_capability_search(
+    args: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let input: CapabilitySearchInput = serde_json::from_value(args)
         .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
     let mut entries = collect_catalog_entries(&ctx).await?;
     let limit = input.limit.clamp(1, MAX_LIMIT);
@@ -249,17 +299,17 @@ async fn execute_tool_catalog_search(
         .with_metadata("total_matches", serde_json::json!(total_matches)))
 }
 
-async fn execute_tool_catalog_describe(
+async fn execute_capability_describe(
     args: serde_json::Value,
     ctx: ToolContext,
 ) -> Result<ToolResult, ToolError> {
-    let input: ToolCatalogDescribeInput = serde_json::from_value(args)
+    let input: CapabilityDescribeInput = serde_json::from_value(args)
         .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
     let entries = collect_catalog_entries(&ctx).await?;
     let Some(entry) = entries.into_iter().find(|entry| entry.name == input.tool) else {
         return Err(ToolError::InvalidArguments(format!(
             "execution resource `{}` not found; use {} first",
-            input.tool, TOOL_CATALOG_SEARCH_TOOL_ID
+            input.tool, CAPABILITY_TOOL_ID
         )));
     };
 
@@ -269,16 +319,22 @@ async fn execute_tool_catalog_describe(
     Ok(ToolResult::simple("Execution resource detail", output).with_metadata("resource", resource))
 }
 
-async fn execute_tool_catalog_call(
+async fn execute_capability_call(
     args: serde_json::Value,
     ctx: ToolContext,
 ) -> Result<ToolResult, ToolError> {
-    let input: ToolCatalogCallInput = serde_json::from_value(args)
+    let input: CapabilityCallInput = serde_json::from_value(args)
         .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
     if is_tool_catalog_facade_tool(&input.tool) {
         return Err(ToolError::InvalidArguments(
-            "tool_catalog_call cannot target catalog facade tools".to_string(),
+            "capability cannot target itself".to_string(),
         ));
+    }
+    if !capability_target_is_allowed(&ctx, &input.tool) {
+        return Err(ToolError::PermissionDenied(format!(
+            "capability target `{}` is outside the active agent policy",
+            input.tool
+        )));
     }
 
     if let Some(registry) = ctx.registry.clone() {
@@ -312,7 +368,7 @@ async fn execute_tool_catalog_call(
     };
     if looks_like_skill_file_or_catalog_path(&input.tool) {
         return Err(ToolError::InvalidArguments(format!(
-            "execution resource `{}` not found. This looks like a skill file or catalog path, not an execution resource id. Use `skill_view(name, file_path)` to inspect skill-owned files, or call `tool_catalog_search` and pass the exact `results[].name` into `tool_catalog_call`.",
+            "execution resource `{}` not found. This looks like a skill file or catalog path, not an execution resource id. Use `skill_view(name, file_path)` to inspect skill-owned files, or call `capability` with action `search` and pass the exact `results[].name` into action `call`.",
             input.tool
         )));
     }
@@ -331,17 +387,17 @@ async fn execute_tool_catalog_call(
 }
 
 #[async_trait]
-impl Tool for ToolCatalogSearchTool {
+impl Tool for CapabilityTool {
     fn id(&self) -> &str {
-        TOOL_CATALOG_SEARCH_TOOL_ID
+        CAPABILITY_TOOL_ID
     }
 
     fn description(&self) -> &str {
-        "Search the execution resource catalog by name, description, domain, family, or tag. Use this first when the tool catalog is large."
+        "Discover and use tools, MCP capabilities, and imported execution resources without loading every schema into model context. Search first, describe an exact result when needed, then call it."
     }
 
     fn parameters(&self) -> serde_json::Value {
-        tool_catalog_search_parameters()
+        capability_parameters()
     }
 
     async fn execute(
@@ -349,53 +405,7 @@ impl Tool for ToolCatalogSearchTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        execute_tool_catalog_search(args, ctx).await
-    }
-}
-
-#[async_trait]
-impl Tool for ToolCatalogDescribeTool {
-    fn id(&self) -> &str {
-        TOOL_CATALOG_DESCRIBE_TOOL_ID
-    }
-
-    fn description(&self) -> &str {
-        "Describe one execution resource in detail, including schema, catalog metadata, and whether it is executable."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        tool_catalog_describe_parameters()
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        execute_tool_catalog_describe(args, ctx).await
-    }
-}
-
-#[async_trait]
-impl Tool for ToolCatalogCallTool {
-    fn id(&self) -> &str {
-        TOOL_CATALOG_CALL_TOOL_ID
-    }
-
-    fn description(&self) -> &str {
-        "Call an execution resource returned by tool_catalog_search after inspecting it with tool_catalog_describe."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        tool_catalog_call_parameters()
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        execute_tool_catalog_call(args, ctx).await
+        execute_capability(args, ctx).await
     }
 }
 
@@ -405,6 +415,9 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
     if let Some(registry) = ctx.registry.clone() {
         for id in registry.list_ids().await {
             if is_tool_catalog_facade_tool(&id) || id == "invalid" {
+                continue;
+            }
+            if !capability_target_is_allowed(ctx, &id) {
                 continue;
             }
             let Some(tool) = registry.get(&id).await else {
@@ -431,6 +444,9 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
             if entries.contains_key(&tool_name) {
                 continue;
             }
+            if !capability_target_is_allowed(ctx, &tool_name) {
+                continue;
+            }
             entries.insert(
                 tool_name.clone(),
                 external_catalog_entry(tool_name, &config),
@@ -439,6 +455,24 @@ async fn collect_catalog_entries(ctx: &ToolContext) -> Result<Vec<CatalogEntry>,
     }
 
     Ok(entries.into_values().collect())
+}
+
+fn capability_allowed_tool_ids(ctx: &ToolContext) -> Option<HashSet<&str>> {
+    ctx.extra
+        .get(CAPABILITY_ALLOWED_TOOL_IDS_KEY)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        })
+}
+
+fn capability_target_is_allowed(ctx: &ToolContext, tool: &str) -> bool {
+    capability_allowed_tool_ids(ctx)
+        .map(|allowed| allowed.contains(tool))
+        .unwrap_or(false)
 }
 
 fn load_external_catalogs(
@@ -1003,19 +1037,33 @@ mod tests {
 
     async fn test_tool_context_with_registry(tools: Vec<CatalogTestTool>) -> ToolContext {
         let registry = Arc::new(ToolRegistry::new());
+        let allowed = tools.iter().map(|tool| tool.id).collect::<Vec<_>>();
         for tool in tools {
             registry.register(tool).await;
         }
         let config_store = Arc::new(agendao_config::ConfigStore::new(
             agendao_config::Config::default(),
         ));
-        ToolContext::new(
+        let mut context = ToolContext::new(
             "ses_tool_catalog".to_string(),
             "msg_tool_catalog".to_string(),
             ".".to_string(),
         )
         .with_registry(registry)
-        .with_config_store(config_store)
+        .with_config_store(config_store);
+        context.extra.insert(
+            CAPABILITY_ALLOWED_TOOL_IDS_KEY.to_string(),
+            serde_json::json!(allowed),
+        );
+        context
+    }
+
+    fn allow_capability_targets(mut context: ToolContext, targets: &[&str]) -> ToolContext {
+        context.extra.insert(
+            CAPABILITY_ALLOWED_TOOL_IDS_KEY.to_string(),
+            serde_json::json!(targets),
+        );
+        context
     }
 
     struct TestDir {
@@ -1084,8 +1132,11 @@ mod tests {
         ])
         .await;
 
-        let result = ToolCatalogSearchTool::primary()
-            .execute(serde_json::json!({"query": "dock", "limit": 10}), ctx)
+        let result = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({"action": "search", "query": "dock", "limit": 10}),
+                ctx,
+            )
             .await
             .expect("search should succeed");
         let names = result.metadata["results"]
@@ -1124,9 +1175,9 @@ mod tests {
         ])
         .await;
 
-        let result = ToolCatalogSearchTool::primary()
+        let result = CapabilityTool::primary()
             .execute(
-                serde_json::json!({"family": "docking", "limit": 1, "offset": 1}),
+                serde_json::json!({"action": "search", "family": "docking", "limit": 1, "offset": 1}),
                 ctx,
             )
             .await
@@ -1164,8 +1215,11 @@ mod tests {
         }])
         .await;
 
-        let result = ToolCatalogDescribeTool::primary()
-            .execute(serde_json::json!({"tool": "dock_pose"}), ctx)
+        let result = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({"action": "describe", "tool": "dock_pose"}),
+                ctx,
+            )
             .await
             .expect("describe should succeed");
         let resource = result.metadata["resource"]
@@ -1190,7 +1244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_catalog_call_executes_registry_tool_when_present() {
+    async fn capability_call_executes_registry_tool_when_present() {
         let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
             id: "dock_pose",
             description: "Protein-ligand docking",
@@ -1203,9 +1257,9 @@ mod tests {
         }])
         .await;
 
-        let result = ToolCatalogCallTool::primary()
+        let result = CapabilityTool::primary()
             .execute(
-                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
+                serde_json::json!({"action": "call", "tool": "dock_pose", "arguments": {"query": "x"}}),
                 ctx,
             )
             .await
@@ -1215,7 +1269,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_catalog_call_rejects_catalog_only_external_tool() {
+    async fn capability_cannot_discover_or_call_targets_outside_agent_policy() {
+        let mut ctx = test_tool_context_with_registry(vec![CatalogTestTool {
+            id: "dangerous_hidden_tool",
+            description: "must remain hidden",
+            catalog: None,
+        }])
+        .await;
+        ctx.extra.insert(
+            CAPABILITY_ALLOWED_TOOL_IDS_KEY.to_string(),
+            serde_json::json!(["read"]),
+        );
+
+        let search = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({"action": "search", "query": "dangerous_hidden_tool"}),
+                ctx.clone(),
+            )
+            .await
+            .expect("filtered search should succeed");
+        assert_eq!(search.metadata["count"], serde_json::json!(0));
+
+        let error = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({
+                    "action": "call",
+                    "tool": "dangerous_hidden_tool",
+                    "arguments": {}
+                }),
+                ctx,
+            )
+            .await
+            .expect_err("guessed hidden tool id must remain denied");
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn capability_call_rejects_catalog_only_external_tool() {
         let temp = TestDir::new("agendao_tool_catalog_catalog_only");
         let config_dir = temp.path.join(".agendao");
         let tools_dir = config_dir.join("tools");
@@ -1238,16 +1328,19 @@ mod tests {
         .expect("catalog");
 
         let store = local_config_store(&temp);
-        let ctx = ToolContext::new(
-            "ses_tool_catalog".to_string(),
-            "msg_tool_catalog".to_string(),
-            temp.path.to_string_lossy().to_string(),
-        )
-        .with_config_store(store);
+        let ctx = allow_capability_targets(
+            ToolContext::new(
+                "ses_tool_catalog".to_string(),
+                "msg_tool_catalog".to_string(),
+                temp.path.to_string_lossy().to_string(),
+            )
+            .with_config_store(store),
+            &["dock_pose"],
+        );
 
-        let error = ToolCatalogCallTool::primary()
+        let error = CapabilityTool::primary()
             .execute(
-                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "x"}}),
+                serde_json::json!({"action": "call", "tool": "dock_pose", "arguments": {"query": "x"}}),
                 ctx,
             )
             .await
@@ -1262,22 +1355,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_catalog_call_rejects_skill_file_like_identifier_with_guidance() {
-        let ctx = test_tool_context_with_registry(vec![CatalogTestTool {
-            id: "dock_pose",
-            description: "Protein-ligand docking",
-            catalog: Some(catalog_metadata(
-                "cadd",
-                "molecular_docking",
-                "protein_ligand",
-                &["pose"],
-            )),
-        }])
-        .await;
+    async fn capability_call_rejects_skill_file_like_identifier_with_guidance() {
+        let ctx = allow_capability_targets(
+            test_tool_context_with_registry(vec![CatalogTestTool {
+                id: "dock_pose",
+                description: "Protein-ligand docking",
+                catalog: Some(catalog_metadata(
+                    "cadd",
+                    "molecular_docking",
+                    "protein_ligand",
+                    &["pose"],
+                )),
+            }])
+            .await,
+            &["dock_pose", "semantic-scholar:s2_search.py"],
+        );
 
-        let error = ToolCatalogCallTool::primary()
+        let error = CapabilityTool::primary()
             .execute(
                 serde_json::json!({
+                    "action": "call",
                     "tool": "semantic-scholar:s2_search.py",
                     "arguments": {"query": "xu ximing"}
                 }),
@@ -1297,7 +1394,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_catalog_call_executes_first_supported_external_adapter() {
+    async fn capability_call_executes_first_supported_external_adapter() {
         let temp = TestDir::new("agendao_tool_catalog_external_exec");
         let config_dir = temp.path.join(".agendao");
         let tools_dir = config_dir.join("tools/cadd");
@@ -1334,17 +1431,20 @@ print(payload["query"])
         .expect("catalog");
 
         let store = local_config_store(&temp);
-        let ctx = ToolContext::new(
-            "ses_tool_catalog".to_string(),
-            "msg_tool_catalog".to_string(),
-            temp.path.to_string_lossy().to_string(),
-        )
-        .with_config_store(store)
-        .with_ask(|_request| async move { Ok(()) });
+        let ctx = allow_capability_targets(
+            ToolContext::new(
+                "ses_tool_catalog".to_string(),
+                "msg_tool_catalog".to_string(),
+                temp.path.to_string_lossy().to_string(),
+            )
+            .with_config_store(store)
+            .with_ask(|_request| async move { Ok(()) }),
+            &["dock_pose"],
+        );
 
-        let result = ToolCatalogCallTool::primary()
+        let result = CapabilityTool::primary()
             .execute(
-                serde_json::json!({"tool": "dock_pose", "arguments": {"query": "pose-ok"}}),
+                serde_json::json!({"action": "call", "tool": "dock_pose", "arguments": {"query": "pose-ok"}}),
                 ctx,
             )
             .await
@@ -1359,7 +1459,7 @@ print(payload["query"])
 
     #[tokio::test]
     async fn describe_surfaces_catalog_only_vs_executable_state() {
-        let temp = TestDir::new("agendao_tool_catalog_describe_states");
+        let temp = TestDir::new("agendao_capability_describe_states");
         let config_dir = temp.path.join(".agendao");
         let tools_dir = config_dir.join("tools/cadd");
         std::fs::create_dir_all(&tools_dir).expect("tools dir");
@@ -1385,19 +1485,28 @@ print(payload["query"])
         .expect("catalog");
 
         let store = local_config_store(&temp);
-        let ctx = ToolContext::new(
-            "ses_tool_catalog".to_string(),
-            "msg_tool_catalog".to_string(),
-            temp.path.to_string_lossy().to_string(),
-        )
-        .with_config_store(store);
+        let ctx = allow_capability_targets(
+            ToolContext::new(
+                "ses_tool_catalog".to_string(),
+                "msg_tool_catalog".to_string(),
+                temp.path.to_string_lossy().to_string(),
+            )
+            .with_config_store(store),
+            &["dock_pose", "score_pose"],
+        );
 
-        let dock = ToolCatalogDescribeTool::primary()
-            .execute(serde_json::json!({"tool": "dock_pose"}), ctx.clone())
+        let dock = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({"action": "describe", "tool": "dock_pose"}),
+                ctx.clone(),
+            )
             .await
             .expect("describe dock_pose");
-        let score = ToolCatalogDescribeTool::primary()
-            .execute(serde_json::json!({"tool": "score_pose"}), ctx)
+        let score = CapabilityTool::primary()
+            .execute(
+                serde_json::json!({"action": "describe", "tool": "score_pose"}),
+                ctx,
+            )
             .await
             .expect("describe score_pose");
 
@@ -1436,16 +1545,19 @@ print(payload["query"])
         .expect("catalog");
 
         let store = local_config_store(&temp);
-        let ctx = ToolContext::new(
-            "ses_tool_catalog".to_string(),
-            "msg_tool_catalog".to_string(),
-            temp.path.to_string_lossy().to_string(),
-        )
-        .with_config_store(store);
+        let ctx = allow_capability_targets(
+            ToolContext::new(
+                "ses_tool_catalog".to_string(),
+                "msg_tool_catalog".to_string(),
+                temp.path.to_string_lossy().to_string(),
+            )
+            .with_config_store(store),
+            &["dock_pose"],
+        );
 
-        let result = ToolCatalogSearchTool::primary()
+        let result = CapabilityTool::primary()
             .execute(
-                serde_json::json!({"family": "molecular_docking", "limit": 10}),
+                serde_json::json!({"action": "search", "family": "molecular_docking", "limit": 10}),
                 ctx,
             )
             .await

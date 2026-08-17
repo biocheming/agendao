@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/i18n/I18nProvider";
 import type { OutputBlock, ToolOutputBlock } from "../lib/history";
 import { useAgendaoStore } from "../store";
 import {
@@ -117,6 +118,7 @@ export function useExecutionActivity({
   awaitingUser = false,
   pendingPermission = false,
 }: UseExecutionActivityOptions) {
+  const { t } = useI18n();
   // Streaming-high-frequency store fields subscribed here (leaf hook) instead
   // of App, so per-SSE-event status changes don't re-render the whole tree.
   const statusLine = useAgendaoStore((s) => s.statusLine);
@@ -251,11 +253,13 @@ export function useExecutionActivity({
       pendingPermission,
       usage: telemetry?.usage,
       activeStageName: activeExecution?.label,
+      t,
     });
   }, [
     activeExecution?.label,
     awaitingUser,
     latestRuntimeError,
+    t,
     pendingPermission,
     telemetry?.runtime?.run_status,
     statusLine,

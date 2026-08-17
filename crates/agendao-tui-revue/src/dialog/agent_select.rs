@@ -22,6 +22,7 @@ pub struct AgentSelectDialog {
     pub visible: bool,
     agents: Vec<AgentEntry>,
     selected: usize,
+    current: Option<String>,
 }
 
 impl Default for AgentSelectDialog {
@@ -36,6 +37,7 @@ impl AgentSelectDialog {
             visible: false,
             agents: Vec::new(),
             selected: 0,
+            current: None,
         }
     }
 
@@ -44,8 +46,17 @@ impl AgentSelectDialog {
         self.selected = 0;
     }
 
+    pub fn set_current(&mut self, current: Option<String>) {
+        self.current = current.filter(|value| !value.trim().is_empty());
+    }
+
     pub fn open(&mut self) {
         self.visible = true;
+        if let Some(current) = self.current.as_deref() {
+            if let Some(index) = self.agents.iter().position(|agent| agent.name == current) {
+                self.selected = index;
+            }
+        }
     }
     pub fn close(&mut self) {
         self.visible = false;
@@ -123,8 +134,13 @@ impl AgentSelectDialog {
             .enumerate()
             .map(|(i, a)| {
                 let marker = if i == self.selected { "▶ " } else { "  " };
+                let current = if self.current.as_deref() == Some(a.name.as_str()) {
+                    "  [current]"
+                } else {
+                    ""
+                };
                 ListItem::Row {
-                    display: format!("{}{} — {}", marker, a.display, a.description),
+                    display: format!("{}{} — {}{}", marker, a.display, a.description, current),
                     muted: false,
                 }
             })
@@ -141,5 +157,32 @@ impl AgentSelectDialog {
             geom,
             12,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_agent_is_selected_on_open() {
+        let mut dialog = AgentSelectDialog::new();
+        dialog.set_agents(vec![
+            AgentEntry {
+                name: "plan".into(),
+                display: "Plan".into(),
+                description: String::new(),
+            },
+            AgentEntry {
+                name: "build".into(),
+                display: "Build".into(),
+                description: String::new(),
+            },
+        ]);
+        dialog.set_current(Some("build".into()));
+        dialog.open();
+
+        assert_eq!(dialog.selected, 1);
+        assert_eq!(dialog.current.as_deref(), Some("build"));
     }
 }

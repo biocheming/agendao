@@ -41,6 +41,7 @@ pub fn spawn_event_source(
     session_filter: watch::Receiver<Option<String>>,
     unix_socket: Option<String>,
     base_url: Option<String>,
+    server_password: Option<String>,
 ) -> Option<JoinHandle<()>> {
     // 1. Unix socket
     if let Some(ref path) = unix_socket {
@@ -48,10 +49,13 @@ pub fn spawn_event_source(
     }
     // 2. HTTP SSE
     if let Some(ref url) = base_url {
-        #[cfg(feature = "local-server")]
-        return http_sse::spawn_http_event_source(tx, url.clone(), None, handle, session_filter);
-        #[cfg(not(feature = "local-server"))]
-        return http_sse::spawn_http_event_source(tx, url.clone(), None, handle, session_filter);
+        return http_sse::spawn_http_event_source(
+            tx,
+            url.clone(),
+            server_password,
+            handle,
+            session_filter,
+        );
     }
     // 3. Local-direct
     #[cfg(feature = "local-server")]

@@ -2457,7 +2457,7 @@ mod tests {
                 disabled: false,
             },
             SettingsToolRow {
-                id: "tool_catalog_call".into(),
+                id: "capability".into(),
                 description: "Facade".into(),
                 family: Some("tool_catalog".into()),
                 protected: true,

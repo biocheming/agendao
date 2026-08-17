@@ -164,7 +164,7 @@ pub(crate) async fn authorize_bash_command(
     }
 
     if !parsed.patterns.is_empty() {
-        let scope_key = parsed.command_family_scope_key();
+        let scope_key = parsed.command_prefix_scope_key();
         let patterns: Vec<String> = parsed.patterns.into_iter().collect();
         let always: Vec<String> = parsed.always.into_iter().collect();
         let mut req = crate::PermissionRequest::new("bash")
@@ -494,30 +494,41 @@ pub(crate) struct ParsedCommand {
 
 #[cfg(feature = "terminal-tools")]
 pub(crate) fn command_family_scope_key(command: &str) -> Option<String> {
-    parse_bash_command(command).command_family_scope_key()
+    parse_bash_command(command).command_prefix_scope_key()
 }
 
 impl ParsedCommand {
-    pub(crate) fn command_family_scope_key(&self) -> Option<String> {
-        let mut family = self
+    pub(crate) fn command_prefix_scope_key(&self) -> Option<String> {
+        let mut prefixes = self
             .patterns
             .iter()
             .filter_map(|pattern| {
-                let head = pattern.split_whitespace().next()?.trim();
-                if head.is_empty() {
+                let words = split_shell_words(pattern);
+                let executable = words.first()?.trim();
+                if executable.is_empty() {
                     None
                 } else {
-                    Some(head.to_ascii_lowercase())
+                    let executable = std::path::Path::new(executable)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(executable)
+                        .to_ascii_lowercase();
+                    let mut prefix = executable;
+                    if let Some(argument) = words.get(1).filter(|value| !value.trim().is_empty()) {
+                        prefix.push('/');
+                        prefix.push_str(&argument.to_ascii_lowercase());
+                    }
+                    Some(prefix)
                 }
             })
             .collect::<Vec<_>>();
-        family.sort();
-        family.dedup();
+        prefixes.sort();
+        prefixes.dedup();
 
-        if family.is_empty() {
+        if prefixes.is_empty() {
             None
         } else {
-            Some(format!("cmd:{}", family.join("+")))
+            Some(format!("cmd:{}", prefixes.join("+")))
         }
     }
 }
@@ -663,11 +674,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_family_scope_key_uses_command_heads() {
+    fn command_prefix_scope_key_uses_executable_and_subcommand() {
         let parsed = parse_bash_command("cargo test && git status");
         assert_eq!(
-            parsed.command_family_scope_key().as_deref(),
-            Some("cmd:cargo+git")
+            parsed.command_prefix_scope_key().as_deref(),
+            Some("cmd:cargo/test+git/status")
+        );
+    }
+
+    #[test]
+    fn command_prefix_scope_distinguishes_destructive_subcommands() {
+        assert_ne!(
+            parse_bash_command("cargo test --workspace").command_prefix_scope_key(),
+            parse_bash_command("cargo clean").command_prefix_scope_key(),
+        );
+        assert_ne!(
+            parse_bash_command("git status --short").command_prefix_scope_key(),
+            parse_bash_command("git reset --hard").command_prefix_scope_key(),
         );
     }
 

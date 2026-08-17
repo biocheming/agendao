@@ -41,14 +41,23 @@ pub struct SessionRevert {
     pub diff: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPermissionMode {
+    #[default]
+    Default,
+    TrustedWorkspace,
+    UnsandboxedYolo,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PermissionRuleset {
     #[serde(default)]
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    #[serde(default)]
+    pub mode: SessionPermissionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

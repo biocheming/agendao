@@ -182,6 +182,9 @@ impl AppHandler {
                 self.quit_requested = true;
             }
             UiActionId::OpenModelList => {
+                let (current_model, _) =
+                    super::effective_session_identity(&self.store, &self.active_session);
+                self.model_select.set_current(current_model);
                 // F2：打开即拉 recent models 填充 "★ Recent" 区块（此前
                 // set_recent 无调用者，区块永远空——死代码）。U6⑤：拉取移
                 // 后台，dialog 即时打开（与原口径一致：失败仅 warn 不阻塞）。
@@ -204,6 +207,9 @@ impl AppHandler {
                 self.panel = Panel::ModelSelect;
             }
             UiActionId::OpenAgentList => {
+                let (_, current_agent) =
+                    super::effective_session_identity(&self.store, &self.active_session);
+                self.agent_select.set_current(current_agent);
                 self.agent_select.open();
                 self.panel = Panel::AgentSelect;
             }

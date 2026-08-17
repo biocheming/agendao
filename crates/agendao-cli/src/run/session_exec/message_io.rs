@@ -34,6 +34,18 @@ pub(super) fn build_prompt_message(input: &str, command: Option<&str>) -> String
     }
 }
 
+/// Machine-readable result for `run --format json`: one JSON object with the
+/// session id and the final text so scripts can consume it deterministically.
+pub(super) fn print_json_prompt_result(session_id: &str, text: &str) {
+    println!(
+        "{}",
+        serde_json::json!({
+            "session_id": session_id,
+            "text": text,
+        })
+    );
+}
+
 pub(super) fn print_assistant_messages(messages: &[agendao_client::MessageInfo]) {
     for msg in messages {
         if msg.role != "user" {

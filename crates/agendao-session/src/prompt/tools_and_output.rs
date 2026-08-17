@@ -76,7 +76,7 @@ pub struct ResolvedToolSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCatalogMode {
     FullSchema,
-    SearchFacade,
+    Progressive,
 }
 
 pub fn prioritize_tool_definitions(tools: &mut [ToolDefinition]) {
@@ -116,6 +116,7 @@ pub fn resolve_tool_catalog_mode(
 ) -> ToolCatalogMode {
     const LARGE_TOOL_CATALOG_THRESHOLD: usize = 24;
     const LARGE_FAMILY_THRESHOLD: usize = 6;
+    const LARGE_SCHEMA_BYTES_THRESHOLD: usize = 24 * 1024;
 
     let stable_tools = tools
         .iter()
@@ -123,7 +124,25 @@ pub fn resolve_tool_catalog_mode(
         .collect::<Vec<_>>();
 
     if stable_tools.len() >= LARGE_TOOL_CATALOG_THRESHOLD {
-        return ToolCatalogMode::SearchFacade;
+        return ToolCatalogMode::Progressive;
+    }
+
+    let schema_bytes = stable_tools
+        .iter()
+        .map(|tool| {
+            tool.name.len()
+                + tool
+                    .description
+                    .as_deref()
+                    .map(str::len)
+                    .unwrap_or_default()
+                + serde_json::to_vec(&tool.parameters)
+                    .map(|value| value.len())
+                    .unwrap_or_default()
+        })
+        .sum::<usize>();
+    if schema_bytes >= LARGE_SCHEMA_BYTES_THRESHOLD {
+        return ToolCatalogMode::Progressive;
     }
 
     let mut family_counts: HashMap<(&str, &str), usize> = HashMap::new();
@@ -140,7 +159,7 @@ pub fn resolve_tool_catalog_mode(
         .values()
         .any(|count| *count >= LARGE_FAMILY_THRESHOLD)
     {
-        ToolCatalogMode::SearchFacade
+        ToolCatalogMode::Progressive
     } else {
         ToolCatalogMode::FullSchema
     }
@@ -328,53 +347,45 @@ pub async fn resolve_tool_surface_with_mcp(
     }
 }
 
-fn materialize_model_tool_surface(
+pub(crate) fn materialize_model_tool_surface(
     tools: &[ToolDefinition],
     mode: ToolCatalogMode,
 ) -> Vec<ToolDefinition> {
     match mode {
         ToolCatalogMode::FullSchema => tools.to_vec(),
-        ToolCatalogMode::SearchFacade => {
-            let mut facade = tools
+        ToolCatalogMode::Progressive => {
+            let mut core = tools
                 .iter()
-                .filter(|tool| is_search_facade_visible_bridge_tool(&tool.name))
+                .filter(|tool| agendao_tool::tool_catalog::is_core_model_tool(&tool.name))
                 .cloned()
                 .collect::<Vec<_>>();
-            if facade.is_empty() {
-                tracing::error!("search-facade mode selected without canonical facade tools");
-                facade
+            if core
+                .iter()
+                .all(|tool| tool.name != agendao_tool::tool_catalog::CAPABILITY_TOOL_ID)
+            {
+                tracing::error!("progressive mode selected without the capability tool");
+                Vec::new()
             } else {
-                facade.sort_by(|a, b| {
-                    search_facade_visible_bridge_rank(&a.name)
-                        .cmp(&search_facade_visible_bridge_rank(&b.name))
+                core.sort_by(|a, b| {
+                    core_model_tool_rank(&a.name)
+                        .cmp(&core_model_tool_rank(&b.name))
                         .then_with(|| {
                             agendao_provider::cache::stable_tool_name_cmp(&a.name, &b.name)
                         })
                 });
-                facade
+                core
             }
         }
     }
 }
 
-fn is_search_facade_visible_bridge_tool(name: &str) -> bool {
-    agendao_tool::tool_catalog::is_model_visible_tool_catalog_facade_tool(name)
-        || matches!(
-            name,
-            "skills_categories" | "skill_search" | "skills_list" | "skill_view" | "artifact_read"
-        )
-}
-
-fn search_facade_visible_bridge_rank(name: &str) -> usize {
+fn core_model_tool_rank(name: &str) -> usize {
     match name {
-        "skills_categories" => 0,
-        "skill_search" => 1,
-        "skills_list" => 2,
-        "skill_view" => 3,
-        "artifact_read" => 4,
-        agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID => 5,
-        agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID => 6,
-        agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID => 7,
+        agendao_tool::tool_catalog::CAPABILITY_TOOL_ID => 0,
+        "bash" => 1,
+        "read" => 2,
+        "apply_patch" => 3,
+        "grep" => 4,
         _ => 100,
     }
 }
@@ -920,7 +931,7 @@ mod title_tests {
     }
 
     #[test]
-    fn large_catalog_materializes_facade_plus_skill_bridge_surface() {
+    fn large_catalog_materializes_five_core_progressive_surface() {
         let mut tools = Vec::new();
         let mut catalog_by_tool = BTreeMap::new();
         for index in 0..30 {
@@ -968,19 +979,29 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: Some("search".to_string()),
+                name: agendao_tool::tool_catalog::CAPABILITY_TOOL_ID.to_string(),
+                description: Some("capability".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: Some("describe".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "bash".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
-                description: Some("call".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "apply_patch".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "grep".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
         ]);
 
@@ -991,24 +1012,15 @@ mod title_tests {
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(mode, ToolCatalogMode::SearchFacade);
+        assert_eq!(mode, ToolCatalogMode::Progressive);
         assert_eq!(
             names,
-            vec![
-                "skills_categories",
-                "skill_search",
-                "skills_list",
-                "skill_view",
-                "artifact_read",
-                agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
-                agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
-                agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID
-            ]
+            vec!["capability", "bash", "read", "apply_patch", "grep"]
         );
     }
 
     #[test]
-    fn search_facade_mode_exposes_primary_facade_plus_skill_bridges() {
+    fn progressive_mode_exposes_five_stable_core_tools() {
         let tools = vec![
             ToolDefinition {
                 name: "dock_pose".to_string(),
@@ -1016,19 +1028,29 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: Some("search".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "capability".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: Some("describe".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "bash".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
-                description: Some("call".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "apply_patch".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "grep".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
             ToolDefinition {
                 name: "skills_categories".to_string(),
@@ -1062,7 +1084,7 @@ mod title_tests {
             },
         ];
 
-        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::SearchFacade);
+        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::Progressive);
         let names = visible
             .iter()
             .map(|tool| tool.name.as_str())
@@ -1070,21 +1092,12 @@ mod title_tests {
 
         assert_eq!(
             names,
-            vec![
-                "skills_categories",
-                "skill_search",
-                "skills_list",
-                "skill_view",
-                "artifact_read",
-                agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID,
-                agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID,
-                agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID,
-            ]
+            vec!["capability", "bash", "read", "apply_patch", "grep",]
         );
     }
 
     #[test]
-    fn search_facade_mode_keeps_execution_catalog_collapsed() {
+    fn progressive_mode_keeps_non_core_catalog_collapsed() {
         let tools = vec![
             ToolDefinition {
                 name: "skills_categories".to_string(),
@@ -1112,19 +1125,9 @@ mod title_tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
             ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-                description: Some("search".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-                description: Some("describe".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            ToolDefinition {
-                name: agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
-                description: Some("call".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
+                name: "capability".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
             },
             ToolDefinition {
                 name: "websearch".to_string(),
@@ -1138,17 +1141,13 @@ mod title_tests {
             },
         ];
 
-        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::SearchFacade);
+        let visible = materialize_model_tool_surface(&tools, ToolCatalogMode::Progressive);
         let names = visible
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>();
 
-        assert!(names.contains(&"skills_categories"));
-        assert!(names.contains(&"skill_search"));
-        assert!(names.contains(&"skills_list"));
-        assert!(names.contains(&"skill_view"));
-        assert!(names.contains(&"artifact_read"));
+        assert_eq!(names, vec!["capability"]);
         assert!(!names.contains(&"websearch"));
         assert!(!names.contains(&"webfetch"));
     }

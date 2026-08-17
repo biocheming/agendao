@@ -1,5 +1,9 @@
+import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/i18n/I18nProvider";
+import { CheckIcon } from "lucide-react";
 import type {
   PermissionInteractionRecord,
+  PermissionReplyChoice,
   QuestionAnswerValue,
   QuestionInteractionRecord,
 } from "@/lib/interaction";
@@ -16,7 +20,13 @@ interface InteractionOverlaysProps {
   onQuestionAnswerChange: (index: number, value: QuestionAnswerValue) => void;
   onRejectQuestion: () => void;
   onSubmitQuestion: () => void;
-  onReplyPermission: (reply: "once" | "turn" | "session" | "reject") => void;
+  onReplyPermission: (reply: PermissionReplyChoice) => void;
+}
+
+interface PermissionOption {
+  reply: PermissionReplyChoice;
+  label: string;
+  dangerous?: boolean;
 }
 
 function shouldCollapseValue(value: string): boolean {
@@ -81,15 +91,90 @@ export function InteractionOverlays({
 }: InteractionOverlaysProps) {
   const overlayShellClassName =
     "w-full max-w-xl max-h-[min(42rem,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-border bg-card shadow-2xl";
+  const { t } = useI18n();
+  const [selectedPermissionOption, setSelectedPermissionOption] = useState(0);
+  // "Full access" mutates the session permission mode for the whole session;
+  // require a second click so a stray click cannot flip the mode.
+  const [confirmingFullAccess, setConfirmingFullAccess] = useState(false);
+  const permissionOptionButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
+  const permissionId = permission?.permission_id;
+  const permissionTarget =
+    permission?.grant_target_summary ?? permission?.scope_label ?? permission?.scope_key;
+  const permissionOptions: PermissionOption[] = permission
+    ? [
+        ...(permission.supported_lifetimes ?? ["once"])
+          .filter((lifetime, index, lifetimes) =>
+            ["once", "turn", "session", "always"].includes(lifetime) &&
+            lifetimes.findIndex((candidate) =>
+              (candidate === "always" ? "session" : candidate) ===
+              (lifetime === "always" ? "session" : lifetime),
+            ) === index
+          )
+          .map((lifetime): PermissionOption => {
+            if (lifetime === "turn") {
+              return {
+                reply: "turn",
+                label: t("overlay.allowTurn", { target: permissionTarget ?? "" }),
+              };
+            }
+            if (lifetime === "session" || lifetime === "always") {
+              return {
+                reply: "session",
+                label: t("overlay.allowSession", { target: permissionTarget ?? "" }),
+              };
+            }
+            return { reply: "once", label: t("overlay.allowOnce") };
+          }),
+        { reply: "trust_workspace", label: t("overlay.trustWorkspace") },
+        {
+          reply: "full_access",
+          label: t("overlay.fullAccess"),
+          dangerous: true,
+        },
+        { reply: "reject", label: t("overlay.deny"), dangerous: true },
+      ]
+    : [];
+
+  useEffect(() => {
+    if (!permissionId) return;
+    setSelectedPermissionOption(0);
+    setConfirmingFullAccess(false);
+    const frame = requestAnimationFrame(() => permissionOptionButtonsRef.current[0]?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [permissionId]);
+
+  useEffect(() => {
+    if (!confirmingFullAccess) return;
+    const timer = window.setTimeout(() => setConfirmingFullAccess(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [confirmingFullAccess]);
+
+  const handlePermissionSelect = (reply: PermissionReplyChoice) => {
+    if (reply === "full_access" && !confirmingFullAccess) {
+      setConfirmingFullAccess(true);
+      return;
+    }
+    onReplyPermission(reply);
+  };
+
+  const focusPermissionOption = (index: number) => {
+    if (permissionOptions.length === 0) return;
+    const nextIndex = Math.max(0, Math.min(index, permissionOptions.length - 1));
+    setSelectedPermissionOption(nextIndex);
+    permissionOptionButtonsRef.current[nextIndex]?.focus();
+  };
 
   return (
     <>
       {question ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" data-testid="question-overlay" onClick={onRejectQuestion}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          data-testid="question-overlay"
+        >
           <section className={overlayShellClassName} data-testid="question-modal" onClick={(event) => event.stopPropagation()}>
             <div className="flex max-h-[inherit] flex-col gap-5 p-5 sm:p-6">
             <header className="flex shrink-0 items-center justify-between">
-              <h2>Question</h2>
+              <h2>{t("overlay.question")}</h2>
             </header>
             <div className="min-h-0 overflow-y-auto pr-1">
               <div className="flex flex-col gap-5">
@@ -163,7 +248,7 @@ export function InteractionOverlays({
                 disabled={questionSubmitting}
                 onClick={onRejectQuestion}
               >
-                Reject
+                {t("overlay.reject")}
               </button>
               <button
                 className="min-h-[36px] rounded-full px-5 bg-foreground border-foreground text-background text-sm font-semibold inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px"
@@ -172,7 +257,7 @@ export function InteractionOverlays({
                 disabled={questionSubmitting}
                 onClick={onSubmitQuestion}
               >
-                Submit
+                {t("overlay.submit")}
               </button>
             </footer>
             </div>
@@ -182,10 +267,33 @@ export function InteractionOverlays({
 
       {permission ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" data-testid="permission-overlay">
-          <section className={overlayShellClassName} data-testid="permission-modal" onClick={(event) => event.stopPropagation()}>
+          <section
+            className={overlayShellClassName}
+            data-testid="permission-modal"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (permissionSubmitting || permissionOptions.length === 0) return;
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                focusPermissionOption(selectedPermissionOption - 1);
+              } else if (event.key === "ArrowDown") {
+                event.preventDefault();
+                focusPermissionOption(selectedPermissionOption + 1);
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                focusPermissionOption(0);
+              } else if (event.key === "End") {
+                event.preventDefault();
+                focusPermissionOption(permissionOptions.length - 1);
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                handlePermissionSelect(permissionOptions[selectedPermissionOption].reply);
+              }
+            }}
+          >
             <div className="flex max-h-[inherit] flex-col gap-5 p-5 sm:p-6">
             <header className="flex shrink-0 items-center justify-between">
-              <h2>Permission</h2>
+              <h2>{t("overlay.permission")}</h2>
             </header>
             <div className="min-h-0 overflow-y-auto pr-1">
               <div className="flex flex-col gap-5">
@@ -280,47 +388,57 @@ export function InteractionOverlays({
               </dl>
               </div>
             </div>
-            <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border pt-3">
-              <button
-                className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
-                type="button"
-                data-testid="permission-reject"
-                disabled={permissionSubmitting}
-                onClick={() => onReplyPermission("reject")}
-              >
-                Reject
-              </button>
-              {permission.supported_lifetimes?.includes("turn") ? (
+            <p
+              className="shrink-0 text-xs leading-5 text-muted-foreground"
+              data-testid="permission-timeout-hint"
+            >
+              {t("overlay.timeoutHint")}
+            </p>
+            <footer
+              className="grid shrink-0 gap-1.5 border-t border-border pt-3"
+              role="radiogroup"
+              aria-label="Permission choices"
+            >
+              {permissionOptions.map((option, index) => {
+                const selected = index === selectedPermissionOption;
+                return (
                 <button
-                  className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
+                  key={option.reply}
+                  ref={(button) => {
+                    permissionOptionButtonsRef.current[index] = button;
+                  }}
+                  className={`grid min-h-[38px] w-full grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                    selected
+                      ? option.dangerous
+                        ? "border-(--ds-error)/55 bg-(--ds-error)/10 text-(--ds-error)"
+                        : "border-foreground/45 bg-accent text-foreground"
+                      : "border-border/55 bg-card/70 text-foreground hover:bg-accent/70"
+                  }`}
                   type="button"
-                  data-testid="permission-turn"
+                  role="radio"
+                  aria-checked={selected}
+                  tabIndex={selected ? 0 : -1}
+                  data-testid={`permission-${option.reply.replaceAll("_", "-")}`}
                   disabled={permissionSubmitting}
-                  onClick={() => onReplyPermission("turn")}
+                  onFocus={() => setSelectedPermissionOption(index)}
+                  onClick={() => handlePermissionSelect(option.reply)}
                 >
-                  Allow Turn
+                  <span
+                    className={`flex size-4 items-center justify-center rounded-full border ${
+                      selected ? "border-current" : "border-border"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {selected ? <CheckIcon className="size-3" strokeWidth={2.5} /> : null}
+                  </span>
+                  <span className="min-w-0 break-words">
+                    {option.reply === "full_access" && confirmingFullAccess
+                      ? t("overlay.fullAccessConfirm")
+                      : option.label}
+                  </span>
                 </button>
-              ) : null}
-              {permission.supported_lifetimes?.includes("session") ? (
-                <button
-                  className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
-                  type="button"
-                  data-testid="permission-session"
-                  disabled={permissionSubmitting}
-                  onClick={() => onReplyPermission("session")}
-                >
-                  Allow Session
-                </button>
-              ) : null}
-              <button
-                className="min-h-[36px] rounded-full px-5 bg-foreground border-foreground text-background text-sm font-semibold inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px"
-                type="button"
-                data-testid="permission-once"
-                disabled={permissionSubmitting}
-                onClick={() => onReplyPermission("once")}
-              >
-                Allow Once
-              </button>
+                );
+              })}
             </footer>
             </div>
           </section>

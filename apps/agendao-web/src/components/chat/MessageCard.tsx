@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n/I18nProvider";
 import { StructuredDataView } from "@/components/execution/StructuredDataView";
 import { cn } from "@/lib/utils";
 import {
@@ -282,12 +283,13 @@ function DisclosureCard({
 }
 
 function ReasoningBlock({ message }: { message: FeedBlock<"reasoning"> }) {
+  const { t } = useI18n();
   const text = message.text;
   return (
     <DisclosureCard
       icon={<BrainCircuitIcon className="size-4" />}
-      label="THINKING"
-      title="Thinking"
+      label={t("common.thinking")}
+      title={t("common.thinking")}
       summary={excerptText(text, 132) || "Collapsed by default so the visible response keeps its reading pace."}
       blockMeta={{
         kind: message.kind,
@@ -302,6 +304,7 @@ function ReasoningBlock({ message }: { message: FeedBlock<"reasoning"> }) {
 }
 
 function StatusBlock({ message }: { message: StatusOutputBlock }) {
+  const { t } = useI18n();
   if (isSyntheticCompactionMessage(message as FeedMessage)) {
     const { statusLine, detailLine } = syntheticCompactionLines(message as FeedBlock<"status">);
     return (
@@ -327,7 +330,7 @@ function StatusBlock({ message }: { message: StatusOutputBlock }) {
   }
 
   const isError = message.tone === "error";
-  const title = message.title?.trim() || (isError ? "Runtime error" : "System update");
+  const title = message.title?.trim() || (isError ? t("message.runtimeError") : t("message.systemUpdate"));
   const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
   const hasDetail = Boolean(message.text?.trim() || message.fields?.length);
 
@@ -412,6 +415,7 @@ function InfoBlock({ message }: { message: MultimodalInfoOutputBlock }) {
 }
 
 function ToolBlock({ message, active }: { message: ToolOutputBlock; active: boolean }) {
+  const { t } = useI18n();
   // P2-3: tool presentation is centralized in lib/toolPresentation.ts.
   // Memoized per message object identity — during streaming only the updated
   // card re-runs these (the memoized MessageCard skips unchanged messages).
@@ -431,7 +435,11 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
     const isResult = partKind === "tool_result";
     const { previewText, previewKind, previewTruncated } = toolDisplayPreview(message);
     return {
-      label: isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL",
+      label: isRunning
+            ? t("message.toolRunning")
+            : isResult
+              ? t("message.toolResult")
+              : t("message.tool"),
       iconColor: isRunning ? "text-(--ds-fire)" : isResult ? "text-(--ds-ok)" : "",
       summary: toolDisplaySummary(message),
       toolTitle: toolActivityLabel(toolDisplayRawLabelKey(message)),
@@ -441,7 +449,7 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
       previewTruncated,
       plainDetail: toolPlainDetail(message),
     };
-  }, [message]);
+  }, [message, t]);
 
   const hasStructuredObject =
     message.structured !== null &&
@@ -492,7 +500,7 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
               <>
                 <StructuredText value={previewText} className="text-muted-foreground" />
                 {previewTruncated ? (
-                  <p className="text-[11px] leading-5 text-muted-foreground">Preview truncated.</p>
+                  <p className="text-[11px] leading-5 text-muted-foreground">{t("message.previewTruncated")}</p>
                 ) : null}
               </>
             )}
@@ -520,6 +528,7 @@ export const MessageCard = memo(function MessageCard({
   onToggleSelected,
   onNavigateStage,
 }: MessageCardProps) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const displayText = useMemo(
     () => (message.text ?? "").trimEnd(),
@@ -669,7 +678,7 @@ export const MessageCard = memo(function MessageCard({
                         onClick={() => void onEditAndResend?.(message)}
                       >
                         <CornerUpLeftIcon className="size-3.5" />
-                        <span>Revise & resend</span>
+                        <span>{t("message.reviseResend")}</span>
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="top">
@@ -695,14 +704,14 @@ export const MessageCard = memo(function MessageCard({
                         variant="ghost"
                         size="icon"
                         className="roc-action roc-action-compact h-7 w-7 rounded-full text-muted-foreground hover:text-foreground"
-                        title="Copy message link"
+                        title={t("message.copyLink")}
                         onClick={() => void onCopyMessageLink(message)}
                       >
                         <InfoIcon className="size-3.5" />
-                        <span className="sr-only">Copy message link</span>
+                        <span className="sr-only">{t("message.copyLink")}</span>
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">Copy message link</TooltipContent>
+                    <TooltipContent side="top">{t("message.copyLink")}</TooltipContent>
                   </Tooltip>
                 ) : null}
                 <Tooltip>
@@ -712,15 +721,15 @@ export const MessageCard = memo(function MessageCard({
                       variant="ghost"
                       size="icon"
                       className="roc-action roc-action-compact h-7 w-7 rounded-full text-muted-foreground hover:text-foreground"
-                      title={copied ? "Copied" : "Copy message"}
+                      title={copied ? t("message.copied") : t("message.copyMessage")}
                       onClick={handleCopy}
                     >
                       {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
-                      <span className="sr-only">{copied ? "Copied" : "Copy message"}</span>
+                      <span className="sr-only">{copied ? t("message.copied") : t("message.copyMessage")}</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    {copied ? "Copied" : "Copy message"}
+                    {copied ? t("message.copied") : t("message.copyMessage")}
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>

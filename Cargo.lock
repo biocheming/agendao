@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agendao"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-cli",
  "agendao-client",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-agent"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-permission",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-api"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-multimodal",
  "agendao-orchestrator",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-cli"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-agent",
  "agendao-api",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-cli-core"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-client",
  "anyhow",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-client"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-api",
  "agendao-config",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-command"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-output-blocks",
  "agendao-permission",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-command-render"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-command",
  "agendao-output-blocks",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-config"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-types",
  "agendao-util",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-core"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "chrono",
  "hex",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-execution-types"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-core",
  "agendao-provider",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-grep"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "regex",
  "serde",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-launcher"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "anyhow",
  "dirs",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-lsp"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-core",
  "lsp-types",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-mcp"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-core",
  "agendao-util",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-memory"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-runtime-context",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-multimodal"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-provider",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-orchestrator"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-execution-types",
@@ -302,14 +302,14 @@ dependencies = [
 
 [[package]]
 name = "agendao-output-blocks"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "agendao-permission"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-plugin",
  "dirs",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-plugin"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-provider"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-types",
  "agendao-util",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-runtime-context"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-state",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-agent",
  "agendao-api",
@@ -394,6 +394,7 @@ dependencies = [
  "agendao-memory",
  "agendao-multimodal",
  "agendao-orchestrator",
+ "agendao-output-blocks",
  "agendao-permission",
  "agendao-plugin",
  "agendao-provider",
@@ -435,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server-core"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-api",
  "agendao-command-render",
@@ -453,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server-pty"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "chrono",
  "portable-pty",
@@ -466,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-session"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -507,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-session-core"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-types",
  "chrono",
@@ -519,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-skill"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-types",
@@ -540,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-state"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-util",
@@ -553,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-storage"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-types",
  "agendao-util",
@@ -571,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -609,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool-core"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-lsp",
@@ -626,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool-web"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "agendao-tool-core",
@@ -651,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tui-revue"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-client",
  "agendao-command",
@@ -685,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-types"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-util",
  "chrono",
@@ -698,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-util"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "chrono",
  "dirs",
@@ -711,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-voice"
-version = "2026.6.10"
+version = "2026.8.17"
 dependencies = [
  "agendao-config",
  "anyhow",

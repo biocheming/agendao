@@ -20,7 +20,25 @@ export interface BuildRunTailSummaryOptions {
   pendingPermission?: boolean;
   usage?: RunTailUsageRecord | null;
   activeStageName?: string | null;
+  /** Translator for display titles; defaults to the canonical English text. */
+  t?: (key: string) => string;
 }
+
+const RUN_TAIL_TITLE_FALLBACKS: Record<string, string> = {
+  "runTail.error": "Run failed",
+  "runTail.waitingPermission": "Waiting for permission",
+  "runTail.waitingUser": "Waiting for user input",
+  "runTail.complete": "Run complete",
+  "runTail.runIdle": "Run idle",
+  "runTail.idle": "Session idle",
+  "runTail.running": "Running",
+  "runTail.retrying": "Retrying",
+  "runTail.compacting": "Compacting",
+  "runTail.cancelling": "Cancelling",
+  "runTail.reconnecting": "Reconnecting stream",
+  "runTail.ready": "Session ready",
+  "runTail.status": "Session status",
+};
 
 function normalizeStatus(value?: string | null) {
   return value?.trim().toLowerCase() || "";
@@ -39,7 +57,10 @@ export function buildRunTailSummary({
   pendingPermission = false,
   usage = null,
   activeStageName = null,
+  t,
 }: BuildRunTailSummaryOptions): RunTailSummary {
+  const title = (key: string) =>
+    t ? t(key) : (RUN_TAIL_TITLE_FALLBACKS[key] ?? key);
   const normalizedRuntimeStatus = normalizeStatus(runtimeStatus);
   const normalizedStatusLine = normalizeStatus(statusLine);
   const effectiveStatus =
@@ -50,7 +71,7 @@ export function buildRunTailSummary({
   if (latestRuntimeError) {
     return {
       status: "error",
-      title: "Run failed",
+      title: title("runTail.error"),
       detail: latestRuntimeError,
       tone: "danger",
     };
@@ -59,7 +80,7 @@ export function buildRunTailSummary({
   if (pendingPermission) {
     return {
       status: "awaiting_permission",
-      title: "Waiting for permission",
+      title: title("runTail.waitingPermission"),
       detail: "Permission approval is required before execution continues.",
       tone: "warning",
     };
@@ -68,7 +89,7 @@ export function buildRunTailSummary({
   if (awaitingUser) {
     return {
       status: "awaiting_user",
-      title: "Waiting for user input",
+      title: title("runTail.waitingUser"),
       detail: "Question response is required before execution continues.",
       tone: "warning",
     };
@@ -77,7 +98,7 @@ export function buildRunTailSummary({
   if (effectiveStatus === "error") {
     return {
       status: "error",
-      title: "Run failed",
+      title: title("runTail.error"),
       detail: "Execution ended with an error.",
       tone: "danger",
     };
@@ -86,7 +107,7 @@ export function buildRunTailSummary({
   if (effectiveStatus === "complete") {
     return {
       status: "complete",
-      title: "Run complete",
+      title: title("runTail.complete"),
       detail: usageSummary(usage) ?? "Execution completed.",
       tone: "success",
     };
@@ -96,14 +117,14 @@ export function buildRunTailSummary({
     if (usage) {
       return {
         status: "idle",
-        title: "Run idle",
+        title: title("runTail.runIdle"),
         detail: usageSummary(usage),
         tone: "success",
       };
     }
     return {
       status: "idle",
-      title: "Session idle",
+      title: title("runTail.idle"),
       detail: "No active execution.",
       tone: "neutral",
     };
@@ -112,7 +133,7 @@ export function buildRunTailSummary({
   if (effectiveStatus === "running") {
     return {
       status: "running",
-      title: "Running",
+      title: title("runTail.running"),
       detail: activeStageName
         ? `Current stage: ${activeStageName}`
         : "Execution activity is streaming.",
@@ -123,7 +144,7 @@ export function buildRunTailSummary({
   if (effectiveStatus === "retrying") {
     return {
       status: "retrying",
-      title: "Retrying",
+      title: title("runTail.retrying"),
       detail: "Waiting for automatic retry.",
       tone: "warning",
     };
@@ -132,7 +153,7 @@ export function buildRunTailSummary({
   if (effectiveStatus === "compacting") {
     return {
       status: "compacting",
-      title: "Compacting",
+      title: title("runTail.compacting"),
       detail: "Preparing a smaller context window.",
       tone: "warning",
     };
@@ -141,15 +162,27 @@ export function buildRunTailSummary({
   if (effectiveStatus === "reconnecting") {
     return {
       status: "reconnecting",
-      title: "Reconnecting stream",
+      title: title("runTail.reconnecting"),
       detail: "Waiting for the event stream to resume.",
+      tone: "warning",
+    };
+  }
+
+  if (effectiveStatus === "cancelling") {
+    return {
+      status: "cancelling",
+      title: title("runTail.cancelling"),
+      detail: activeStageName,
       tone: "warning",
     };
   }
 
   return {
     status: effectiveStatus || "ready",
-    title: effectiveStatus === "ready" || !effectiveStatus ? "Session ready" : "Session status",
+    title:
+      effectiveStatus === "ready" || !effectiveStatus
+        ? title("runTail.ready")
+        : title("runTail.status"),
     detail: effectiveStatus === "ready" || !effectiveStatus ? "No active execution." : null,
     tone: "neutral",
   };

@@ -31,9 +31,9 @@ fn format_disallowed_tool_message(
     tool_name: &str,
     allowed_tools: &std::collections::HashSet<String>,
 ) -> String {
-    if allowed_tools.contains(agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID) {
+    if allowed_tools.contains(agendao_tool::tool_catalog::CAPABILITY_TOOL_ID) {
         format!(
-            "Tool `{}` is not allowed in this session. This session is using search-facade exposure: call `tool_catalog_search` to find the execution resource, `tool_catalog_describe` to inspect it, then `tool_catalog_call` with the exact `name` from search results.",
+            "Tool `{}` is not directly exposed in this session. Call `capability` with action `search`, optionally action `describe`, then action `call` with the exact result id.",
             tool_name
         )
     } else {
@@ -55,6 +55,8 @@ pub(super) struct SessionToolBackend {
     pub(super) tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub(super) config_store: Option<Arc<agendao_config::ConfigStore>>,
     pub(super) runtime_skill_instructions: Option<serde_json::Value>,
+    pub(super) todo_manager: Arc<crate::TodoManager>,
+    pub(super) file_time_tracker: Arc<agendao_tool::FileTimeTracker>,
 }
 
 #[async_trait]
@@ -68,7 +70,7 @@ impl ToolBackend for SessionToolBackend {
         if !self.allowed_tools.contains(tool_name) {
             let catalog_call_allowed = self
                 .allowed_tools
-                .contains(agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID)
+                .contains(agendao_tool::tool_catalog::CAPABILITY_TOOL_ID)
                 && self.tool_registry.get(tool_name).await.is_some();
             if !catalog_call_allowed {
                 return Ok(ToolExecution {
@@ -119,6 +121,60 @@ impl ToolBackend for SessionToolBackend {
             context = context.with_publish_bus(move |event_type, properties| {
                 let hook = hook.clone();
                 async move { hook(event_type, properties).await }
+            });
+        }
+        {
+            let todo_manager = self.todo_manager.clone();
+            context = context.with_todo_update(move |session_id, todos| {
+                let todo_manager = todo_manager.clone();
+                async move {
+                    todo_manager
+                        .update(
+                            &session_id,
+                            todos
+                                .into_iter()
+                                .map(|todo| crate::TodoInfo {
+                                    content: todo.content,
+                                    status: todo.status,
+                                    priority: todo.priority,
+                                })
+                                .collect(),
+                        )
+                        .await;
+                    Ok(())
+                }
+            });
+        }
+        {
+            let todo_manager = self.todo_manager.clone();
+            context = context.with_todo_get(move |session_id| {
+                let todo_manager = todo_manager.clone();
+                async move {
+                    Ok(todo_manager
+                        .get(&session_id)
+                        .await
+                        .into_iter()
+                        .map(|todo| agendao_tool::TodoItemData {
+                            content: todo.content,
+                            status: todo.status,
+                            priority: todo.priority,
+                        })
+                        .collect())
+                }
+            });
+        }
+        {
+            let tracker = self.file_time_tracker.clone();
+            context = context.with_file_time_read(move |session_id, file_path| {
+                let tracker = tracker.clone();
+                async move { tracker.record(&session_id, &file_path) }
+            });
+        }
+        {
+            let tracker = self.file_time_tracker.clone();
+            context = context.with_file_time_assert(move |session_id, file_path| {
+                let tracker = tracker.clone();
+                async move { tracker.assert_unchanged(&session_id, &file_path) }
             });
         }
 
@@ -459,7 +515,7 @@ impl SessionAgentState<'_> {
                 "type": "tool_call.lifecycle",
                 "sessionID": self.session.id,
                 "toolCallId": call.id,
-                "phase": "complete",
+                "phase": "start",
                 "toolName": name,
             }));
         }
@@ -725,29 +781,22 @@ impl AgentLoopObserver for SessionAgentObserver<'_> {
 #[cfg(test)]
 mod tests {
     use super::{format_disallowed_tool_message, SessionAgentObserver};
-    use agendao_orchestrator::agent_loop::{AgentLoopObserver, AssistantTurn};
+    use agendao_orchestrator::agent_loop::{AgentLoopObserver, AssistantTurn, ToolCall};
     use agendao_orchestrator::blueprint::AgentId;
     use agendao_orchestrator::context::Usage;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
     #[test]
-    fn disallowed_tool_message_points_search_facade_sessions_back_to_catalog_flow() {
+    fn disallowed_tool_message_points_progressive_sessions_back_to_capability_flow() {
         let allowed = std::collections::HashSet::from([
-            "skills_categories".to_string(),
-            "skill_search".to_string(),
-            "skills_list".to_string(),
-            "skill_view".to_string(),
-            agendao_tool::tool_catalog::TOOL_CATALOG_SEARCH_TOOL_ID.to_string(),
-            agendao_tool::tool_catalog::TOOL_CATALOG_DESCRIBE_TOOL_ID.to_string(),
-            agendao_tool::tool_catalog::TOOL_CATALOG_CALL_TOOL_ID.to_string(),
+            agendao_tool::tool_catalog::CAPABILITY_TOOL_ID.to_string(),
         ]);
 
         let message = format_disallowed_tool_message("bash", &allowed);
-        assert!(message.contains("search-facade exposure"));
-        assert!(message.contains("tool_catalog_search"));
-        assert!(message.contains("tool_catalog_call"));
-        assert!(message.contains("exact `name` from search results"));
+        assert!(message.contains("not directly exposed"));
+        assert!(message.contains("`capability`"));
+        assert!(message.contains("action `call`"));
     }
 
     #[test]
@@ -809,5 +858,46 @@ mod tests {
                 && full.text == "final answer"
                 && end.phase == agendao_output_blocks::MessagePhase::End
         ));
+    }
+
+    #[tokio::test]
+    async fn tool_started_broadcasts_start_lifecycle_phase() {
+        let mut session = crate::Session::new("ses_1", ".");
+        let assistant_index = session.messages.len();
+        session.add_assistant_message();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_hook = captured.clone();
+        let event_hook: super::EventBroadcastHook = Arc::new(move |event| {
+            captured_hook.lock().expect("capture event").push(event);
+        });
+        let observer = SessionAgentObserver::new(
+            &mut session,
+            assistant_index,
+            None,
+            Some(&event_hook),
+            None,
+            crate::tool_result_governance::ToolResultBudget::default(),
+        );
+        let agent = AgentId::new("agent");
+
+        observer
+            .tool_started(
+                &agendao_orchestrator::agent_loop::AgentObservationContext {
+                    node_path: "root",
+                    agent: &agent,
+                },
+                &ToolCall {
+                    id: "call-1".to_string(),
+                    tool: agendao_orchestrator::blueprint::ToolId::new("bash"),
+                    arguments: serde_json::json!({"command": "cargo test"}),
+                },
+            )
+            .await
+            .expect("record tool start");
+
+        let events = captured.lock().expect("read events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "tool_call.lifecycle");
+        assert_eq!(events[0]["phase"], "start");
     }
 }

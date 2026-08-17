@@ -44,7 +44,7 @@ use crate::{
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
     SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
     SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    ToolListEntry, UpdateSessionRequest,
+    ToolListEntry, UpdateSessionPermissionRequest, UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -226,6 +226,24 @@ impl AsyncApiClient {
         };
         let resp = self.client.patch(&url).json(&req).send().await?;
         Self::json_ok(resp, "update session title").await
+    }
+
+    pub async fn set_session_permission_mode(
+        &self,
+        session_id: &str,
+        mode: crate::SessionPermissionMode,
+    ) -> anyhow::Result<SessionInfo> {
+        let url = server_url(
+            &self.base_url,
+            &format!("/session/{}/permission", session_id),
+        );
+        let request = UpdateSessionPermissionRequest {
+            allow: None,
+            deny: None,
+            mode: Some(mode),
+        };
+        let response = self.client.patch(&url).json(&request).send().await?;
+        Self::json_ok(response, "update session permission mode").await
     }
 
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {

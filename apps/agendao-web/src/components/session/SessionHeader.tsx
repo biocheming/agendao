@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "@/i18n/I18nProvider";
 import { ChevronDownIcon } from "lucide-react";
 import type { BreadcrumbProvenance, SessionBreadcrumb } from "../../hooks/useSchedulerNavigation";
 import { ProvenanceTrail } from "../chat/ProvenanceTrail";
@@ -10,7 +11,7 @@ interface SessionHeaderProps {
   workspaceLabel?: string | null;
   usageSummary?: string | null;
   usageTitle?: string | null;
-  modeLabel?: string | null;
+  agentLabel?: string | null;
   modelLabel?: string | null;
   activeStageId: string | null;
   currentWorkspaceReference?: string | null;
@@ -28,7 +29,7 @@ export function SessionHeader({
   subtitle = null,
   usageSummary = null,
   usageTitle = null,
-  modeLabel = null,
+  agentLabel = null,
   modelLabel = null,
   activeStageId,
   currentWorkspaceReference = null,
@@ -40,11 +41,18 @@ export function SessionHeader({
   onNavigateProvenanceStage,
   onNavigateProvenanceToolCall,
 }: SessionHeaderProps) {
+  const { t } = useI18n();
   const showTrace = breadcrumbs.length > 1 || Boolean(provenance);
   const secondaryMeta = subtitle?.trim() || null;
-  const modeModelSummary = [modeLabel?.trim(), modelLabel?.trim()].filter(Boolean).join(" · ") || null;
+  const sessionRuntimeSummary =
+    [
+      modelLabel?.trim() ? `${t("header.modelLabel")}: ${modelLabel.trim()}` : null,
+      agentLabel?.trim() ? `${t("header.agentLabel")}: ${agentLabel.trim()}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || null;
   const [traceExpanded, setTraceExpanded] = useState(false);
-  const hasMetaRow = Boolean(secondaryMeta) || Boolean(modeModelSummary) || showTrace;
+  const hasMetaRow = Boolean(secondaryMeta) || Boolean(sessionRuntimeSummary) || showTrace;
 
   return (
     <header className="roc-session-header grid gap-1" data-testid="session-header">
@@ -79,9 +87,12 @@ export function SessionHeader({
                 {secondaryMeta}
               </span>
             ) : null}
-            {modeModelSummary ? (
-              <span className="hidden max-w-[24rem] shrink-0 truncate lg:inline" title={modeModelSummary}>
-                {modeModelSummary}
+            {sessionRuntimeSummary ? (
+              <span
+                className="min-w-0 max-w-[55%] truncate sm:max-w-[24rem] lg:max-w-[32rem]"
+                title={sessionRuntimeSummary}
+              >
+                {sessionRuntimeSummary}
               </span>
             ) : null}
           </div>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { InteractionOverlays } from "../src/components/InteractionOverlays";
+import { InteractionOverlays } from "../src/components/overlays/InteractionOverlays";
 
 const html = renderToStaticMarkup(
   React.createElement(InteractionOverlays, {
@@ -41,3 +41,8 @@ assert.match(html, /2026-05-17T10:00:02Z/);
 assert.match(html, /Shell commands: cargo/);
 assert.match(html, /Command family: cargo \*/);
 assert.match(html, /dangerous_exec/);
+assert.match(html, /Allow this request only/);
+assert.match(html, /Allow for this turn: Shell commands: cargo/);
+assert.match(html, /Trust workspace for this session/);
+assert.match(html, /Full access for this session \(no permission prompts\)/);
+assert.match(html, /Deny this request/);

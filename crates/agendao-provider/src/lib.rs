@@ -38,7 +38,7 @@ pub use cache::*;
 pub use catalog::{
     default_catalog_metadata_path, default_catalog_snapshot_path, default_model_catalog_authority,
     metadata_path_for_snapshot, CatalogMetadata, CatalogRefreshResult, CatalogRefreshStatus,
-    CatalogSnapshot, ModelCatalogAuthority,
+    CatalogSnapshot, ModelCatalogAuthority, DEFAULT_CATALOG_REFRESH_INTERVAL,
 };
 pub use custom_fetch::*;
 pub use descriptor::*;

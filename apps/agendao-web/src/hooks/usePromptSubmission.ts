@@ -46,9 +46,10 @@ export function usePromptSubmission({
   const showThinking = useAgendaoStore((s) => s.showThinking);
   const setComposer = useAgendaoStore((s) => s.setComposer);
   const setAttachments = useAgendaoStore((s) => s.setAttachments);
-  const setStreaming = useAgendaoStore((s) => s.setStreaming);
-  const setStatusLine = useAgendaoStore((s) => s.setStatusLine);
-  const setLatestRuntimeError = useAgendaoStore((s) => s.setLatestRuntimeError);
+  const applySessionRunStatus = useAgendaoStore((s) => s.applySessionRunStatus);
+  const setSessionStreaming = useAgendaoStore((s) => s.setSessionStreaming);
+  const setSessionStatusLine = useAgendaoStore((s) => s.setSessionStatusLine);
+  const setSessionLatestRuntimeError = useAgendaoStore((s) => s.setSessionLatestRuntimeError);
   const setBanner = useAgendaoStore((s) => s.setBanner);
 
   const sendPromptRequest = useCallback(
@@ -102,9 +103,9 @@ export function usePromptSubmission({
       setMessages((current) => [...current, optimisticMessage]);
       setComposer("");
       clearComposerNotice();
-      setStreaming(true);
-      setStatusLine("running");
-      setLatestRuntimeError(null);
+      setSessionStreaming(sessionId, true);
+      setSessionStatusLine(sessionId, "running");
+      setSessionLatestRuntimeError(sessionId, null);
 
       try {
         const payload: Record<string, unknown> = { command: submission.command };
@@ -117,17 +118,15 @@ export function usePromptSubmission({
         }
         const response = await sendCommandRequest(sessionId, payload);
         if (response.status === "awaiting_user") {
-          setStreaming(false);
-          setStatusLine("awaiting_user");
+          applySessionRunStatus(sessionId, "waiting_on_user");
           if (response.pending_question_id) {
             await loadPendingQuestion(response.pending_question_id, sessionId);
           }
         } else if (response.status === "queued") {
-          setStreaming(true);
-          setStatusLine("running");
+          applySessionRunStatus(sessionId, "running");
         } else {
-          setStreaming(false);
-          setStatusLine("ready");
+          setSessionStreaming(sessionId, false);
+          setSessionStatusLine(sessionId, "ready");
         }
       } catch (error) {
         setMessages((current) =>
@@ -142,9 +141,9 @@ export function usePromptSubmission({
           ),
         );
         setBanner(`Command failed: ${formatError(error)}`);
-        setStreaming(false);
-        setStatusLine("error");
-        setLatestRuntimeError(formatError(error));
+        setSessionStreaming(sessionId, false);
+        setSessionStatusLine(sessionId, "error");
+        setSessionLatestRuntimeError(sessionId, formatError(error));
       }
 
       try {
@@ -154,6 +153,7 @@ export function usePromptSubmission({
       }
     },
     [
+      applySessionRunStatus,
       clearComposerNotice,
       createSession,
       loadPendingQuestion,
@@ -165,10 +165,10 @@ export function usePromptSubmission({
       sendCommandRequest,
       setBanner,
       setComposer,
-      setLatestRuntimeError,
+      setSessionLatestRuntimeError,
+      setSessionStatusLine,
+      setSessionStreaming,
       setMessages,
-      setStatusLine,
-      setStreaming,
       showThinking,
     ],
   );
@@ -230,9 +230,9 @@ export function usePromptSubmission({
       setComposer("");
       setAttachments([]);
       clearComposerNotice();
-      setStreaming(true);
-      setStatusLine("running");
-      setLatestRuntimeError(null);
+      setSessionStreaming(sessionId, true);
+      setSessionStatusLine(sessionId, "running");
+      setSessionLatestRuntimeError(sessionId, null);
 
       try {
         const payload: Record<string, unknown> = {
@@ -250,8 +250,7 @@ export function usePromptSubmission({
 
         const response = await sendPromptRequest(sessionId, payload);
         if (response.status === "awaiting_user") {
-          setStreaming(false);
-          setStatusLine("awaiting_user");
+          applySessionRunStatus(sessionId, "waiting_on_user");
           if (response.pending_question_id) {
             await loadPendingQuestion(response.pending_question_id, sessionId);
           }
@@ -269,9 +268,9 @@ export function usePromptSubmission({
           ),
         );
         setBanner(`Prompt failed: ${formatError(error)}`);
-        setStreaming(false);
-        setStatusLine("error");
-        setLatestRuntimeError(formatError(error));
+        setSessionStreaming(sessionId, false);
+        setSessionStatusLine(sessionId, "error");
+        setSessionLatestRuntimeError(sessionId, formatError(error));
       }
 
       try {
@@ -281,6 +280,7 @@ export function usePromptSubmission({
       }
     },
     [
+      applySessionRunStatus,
       attachments,
       clearComposerNotice,
       composer,
@@ -296,10 +296,10 @@ export function usePromptSubmission({
       setAttachments,
       setBanner,
       setComposer,
-      setLatestRuntimeError,
+      setSessionLatestRuntimeError,
+      setSessionStatusLine,
+      setSessionStreaming,
       setMessages,
-      setStatusLine,
-      setStreaming,
       showThinking,
       slashCommands,
       streaming,
@@ -311,15 +311,30 @@ export function usePromptSubmission({
     if (!selectedSessionId || !streaming) return;
 
     setBanner(null);
-    setStatusLine("cancelling");
+    setSessionStatusLine(selectedSessionId, "cancelling");
 
     try {
-      await apiJson(`/session/${selectedSessionId}/abort`, { method: "POST" });
+      const response = await apiJson<{ dropped_queued_prompts?: number } | null>(
+        `/session/${selectedSessionId}/abort`,
+        { method: "POST" },
+      );
+      const dropped = Number(response?.dropped_queued_prompts ?? 0);
+      if (dropped > 0) {
+        setBanner(
+          `Stopped run — dropped ${dropped} queued prompt${dropped === 1 ? "" : "s"}`,
+        );
+      }
     } catch (error) {
       setBanner(`Failed to stop session: ${formatError(error)}`);
-      setStatusLine("running");
+      setSessionStatusLine(selectedSessionId, "running");
     }
-  }, [apiJson, selectedSessionId, setBanner, setStatusLine, streaming]);
+  }, [
+    apiJson,
+    selectedSessionId,
+    setBanner,
+    setSessionStatusLine,
+    streaming,
+  ]);
 
   return {
     sendPromptRequest,

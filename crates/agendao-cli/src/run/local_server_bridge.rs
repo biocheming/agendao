@@ -25,6 +25,7 @@ pub(super) async fn create_local_server_state(
             .await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
     Ok(state)
 }
 

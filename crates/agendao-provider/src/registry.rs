@@ -23,6 +23,7 @@ impl ModelsRegistry {
     }
 
     pub async fn get(&self) -> ModelsData {
+        let _ = self.authority.refresh_if_stale().await;
         self.authority.data().await
     }
 

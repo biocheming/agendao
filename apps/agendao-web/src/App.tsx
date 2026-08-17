@@ -25,6 +25,8 @@ import {
   pushRecentModel,
   readRuntimeBudgetNumber,
   resolveActiveModelRef,
+  resolveSessionAgentRef,
+  resolveSessionModelRef,
   workspaceRecentModelScope,
   type PromptPart,
 } from "./lib/display";
@@ -193,6 +195,14 @@ export default function App() {
   const activeModelRef = useMemo(
     () => resolveActiveModelRef(currentSession, selectedModel),
     [currentSession, selectedModel],
+  );
+  const sessionModelRef = useMemo(
+    () => resolveSessionModelRef(currentSession, selectedModel),
+    [currentSession, selectedModel],
+  );
+  const sessionAgentRef = useMemo(
+    () => resolveSessionAgentRef(currentSession, selectedMode),
+    [currentSession, selectedMode],
   );
   const activeProviderModel = useMemo(() => {
     if (!activeModelRef) return null;
@@ -722,8 +732,8 @@ export default function App() {
                 subtitle={currentSession?.directory || null}
                 usageSummary={executionActivity.runTailSummary.title}
                 usageTitle={executionActivity.runTailSummary.detail}
-                modeLabel={selectedMode || null}
-                modelLabel={selectedModel || null}
+                agentLabel={sessionAgentRef}
+                modelLabel={sessionModelRef}
                 activeStageId={schedulerNavigation.activeStageId}
                 currentWorkspaceReference={workspaceBasePath || resolvedWorkspaceRootPath || null}
                 breadcrumbs={schedulerNavigation.sessionBreadcrumbs}

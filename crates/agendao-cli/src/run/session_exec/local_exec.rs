@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::cli::RunOutputFormat;
 use crate::run::local_server_bridge;
 
 use super::message_io::{build_prompt_message, print_assistant_messages};
@@ -18,6 +19,7 @@ pub(in crate::run) struct LocalPromptRequest<'a> {
     pub variant: Option<&'a str>,
     pub title: Option<&'a str>,
     pub directory: &'a str,
+    pub format: RunOutputFormat,
 }
 
 pub(in crate::run) async fn run_cli_prompt_local(
@@ -36,6 +38,7 @@ pub(in crate::run) async fn run_cli_prompt_local(
         variant,
         title,
         directory,
+        format,
     } = request;
     let session_id =
         resolve_local_session(state, continue_last, session, fork, title, directory).await?;
@@ -69,13 +72,13 @@ pub(in crate::run) async fn run_cli_prompt_local(
     .await?;
 
     if response.status == "awaiting_user" {
+        let question = response
+            .pending_question_id
+            .as_deref()
+            .map(|id| format!(" (question {id})"))
+            .unwrap_or_default();
         anyhow::bail!(
-            "prompt is awaiting user input{}",
-            response
-                .pending_question_id
-                .as_deref()
-                .map(|id| format!(" ({id})"))
-                .unwrap_or_default()
+            "this prompt needs interactive input{question} and cannot be answered in              non-interactive mode. Open the Web UI or run `agendao tui -s {session_id}`              to answer it, then retry"
         );
     }
 
@@ -99,7 +102,12 @@ pub(in crate::run) async fn run_cli_prompt_local(
     if let Some(error) = completed.error.as_deref() {
         anyhow::bail!("prompt execution failed: {error}");
     }
-    print_assistant_messages(std::slice::from_ref(&completed));
+    match format {
+        RunOutputFormat::Json => println!("{}", serde_json::to_string(&completed)?),
+        RunOutputFormat::Default => {
+            print_assistant_messages(std::slice::from_ref(&completed));
+        }
+    }
     Ok(())
 }
 

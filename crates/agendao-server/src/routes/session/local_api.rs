@@ -8,7 +8,7 @@ use axum::Json;
 use crate::routes::session::messages::ListMessagesQuery;
 use crate::routes::session::prompt::SessionPromptRequest;
 use crate::routes::session::session_crud::{
-    CreateSessionRequest, ForkSessionRequest, ListSessionsQuery,
+    CreateSessionRequest, ForkSessionRequest, ListSessionsQuery, PermissionRulesetInput,
 };
 use crate::ServerState;
 
@@ -43,6 +43,25 @@ pub async fn local_get_session(
         super::session_crud::get_session(State(state), Path(session_id.to_string()))
             .await
             .map_err(api_error)?;
+    Ok(session)
+}
+
+pub async fn local_set_session_permission_mode(
+    state: Arc<ServerState>,
+    session_id: &str,
+    mode: agendao_types::SessionPermissionMode,
+) -> anyhow::Result<agendao_types::SessionInfo> {
+    let Json(session) = super::session_crud::set_session_permission(
+        State(state),
+        Path(session_id.to_string()),
+        Json(PermissionRulesetInput {
+            allow: None,
+            deny: None,
+            mode: Some(mode),
+        }),
+    )
+    .await
+    .map_err(api_error)?;
     Ok(session)
 }
 

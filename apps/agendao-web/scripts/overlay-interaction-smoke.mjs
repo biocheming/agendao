@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocket as UndiciWebSocket } from "undici";
@@ -11,6 +11,7 @@ const WEB_URL = new URL("/web/", `${BASE_URL}/`).toString();
 const CHROME_BIN = process.env.CHROME_BIN ?? "google-chrome";
 const CHROME_PORT = Number.parseInt(process.env.AGENDAO_CHROME_PORT ?? "9228", 10);
 const TIMEOUT_MS = Number.parseInt(process.env.AGENDAO_SMOKE_TIMEOUT_MS ?? "30000", 10);
+const SCREENSHOT_PATH = process.env.AGENDAO_SMOKE_SCREENSHOT_PATH ?? "";
 
 const trackerInitScript = `
 (() => {
@@ -250,6 +251,30 @@ async function click(client, selector) {
   }
 }
 
+async function pressKey(client, key, code, windowsVirtualKeyCode) {
+  await client.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key,
+    code,
+    windowsVirtualKeyCode,
+  });
+  await client.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key,
+    code,
+    windowsVirtualKeyCode,
+  });
+}
+
+async function captureScreenshot(client, filepath) {
+  if (!filepath) return;
+  const result = await client.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  await writeFile(filepath, Buffer.from(result.data, "base64"));
+}
+
 async function ensureWorkspaceSelected(client) {
   const hasWorkspace = await evaluate(
     client,
@@ -307,15 +332,17 @@ async function activeSessionId(client) {
 }
 
 async function ensureActiveSession(client) {
-  let sessionId = await activeSessionId(client);
-  if (sessionId) return sessionId;
+  const previousSessionId = await activeSessionId(client);
   await click(client, "[data-testid='session-new']");
   await waitForExpression(
     client,
     "(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.endsWith('/session') && entry.method === 'POST')",
   );
-  await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]'))");
-  sessionId = await activeSessionId(client);
+  await waitForExpression(
+    client,
+    `${JSON.stringify(previousSessionId)} !== (document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]')?.dataset.sessionId ?? null)`,
+  );
+  const sessionId = await activeSessionId(client);
   assert(sessionId, "failed to activate a session for overlay smoke");
   return sessionId;
 }
@@ -359,9 +386,21 @@ async function injectPermission(sessionId, supportedLifetimes, suffix) {
 async function run() {
   const { chrome, userDataDir, stderr } = await launchChrome();
   let client = null;
+  const runtimeErrors = [];
 
   try {
     client = await createPageClient();
+    client.on("Runtime.exceptionThrown", (params) => {
+      runtimeErrors.push(params.exceptionDetails?.text ?? "Uncaught browser exception");
+    });
+    client.on("Runtime.consoleAPICalled", (params) => {
+      if (params.type === "error") {
+        runtimeErrors.push(
+          params.args?.map((argument) => argument.value ?? argument.description ?? "").join(" ") ||
+            "Browser console error",
+        );
+      }
+    });
     await ensureSessionRoute(client, `overlay-smoke-${Date.now()}`);
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"composer-input\"]'))");
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"session-sidebar\"]'))");
@@ -409,13 +448,79 @@ async function run() {
       "!document.querySelector('[data-testid=\"permission-overlay\"]') || Boolean(document.querySelector('[data-testid=\"permission-submit-completed\"]'))",
     );
 
+    await injectPermission(sessionId, ["once", "turn", "session"], "keyboard-trust");
+    await waitForExpression(
+      client,
+      "document.querySelectorAll('[data-testid=\"permission-modal\"] [role=\"radio\"]').length === 6",
+    );
+    const permissionLabels = await evaluate(
+      client,
+      "Array.from(document.querySelectorAll('[data-testid=\"permission-modal\"] [role=\"radio\"]')).map((element) => element.textContent.trim())",
+    );
+    assert(permissionLabels.includes("Trust workspace for this session"), "workspace trust option is missing");
+    assert(
+      permissionLabels.includes("Full access for this session (no permission prompts)"),
+      "full access option is missing",
+    );
+    await captureScreenshot(client, SCREENSHOT_PATH);
+    await pressKey(client, "ArrowDown", "ArrowDown", 40);
+    await pressKey(client, "ArrowDown", "ArrowDown", 40);
+    await pressKey(client, "ArrowDown", "ArrowDown", 40);
+    await waitForExpression(
+      client,
+      "document.activeElement?.dataset.testid === 'permission-trust-workspace' && document.activeElement?.getAttribute('aria-checked') === 'true'",
+    );
+    await pressKey(client, "Enter", "Enter", 13);
+    await waitForExpression(
+      client,
+      `(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.endsWith('/session/${sessionId}/permission') && entry.method === 'PATCH')`,
+    );
+    await waitForOverlayFetch(client, "permission", 5);
+    await waitForExpression(client, "!document.querySelector('[data-testid=\"permission-overlay\"]')");
+    let updatedSession = await fetchJson(`${BASE_URL}/session/${sessionId}`);
+    assert(
+      updatedSession.permission?.mode === "trusted_workspace",
+      `expected trusted_workspace mode, got ${updatedSession.permission?.mode}`,
+    );
+
+    await injectPermission(sessionId, ["once", "turn", "session"], "full-access");
+    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"permission-full-access\"]'))");
+    await client.send("Emulation.setDeviceMetricsOverride", {
+      width: 390,
+      height: 844,
+      deviceScaleFactor: 1,
+      mobile: true,
+    });
+    await waitForExpression(
+      client,
+      "(() => { const rect = document.querySelector('[data-testid=\"permission-modal\"]')?.getBoundingClientRect(); return Boolean(rect && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight); })()",
+    );
+    await captureScreenshot(
+      client,
+      SCREENSHOT_PATH ? SCREENSHOT_PATH.replace(/\.png$/i, "-mobile.png") : "",
+    );
+    await click(client, "[data-testid='permission-full-access']");
+    await waitForOverlayFetch(client, "permission", 6);
+    await waitForExpression(client, "!document.querySelector('[data-testid=\"permission-overlay\"]')");
+    updatedSession = await fetchJson(`${BASE_URL}/session/${sessionId}`);
+    assert(
+      updatedSession.permission?.mode === "unsandboxed_yolo",
+      `expected unsandboxed_yolo mode, got ${updatedSession.permission?.mode}`,
+    );
+    assert(runtimeErrors.length === 0, `browser errors: ${runtimeErrors.join(" | ")}`);
+
     console.log("overlay interaction smoke passed");
   } finally {
     if (client) {
       client.close();
     }
     await terminateProcess(chrome);
-    await rm(userDataDir, { recursive: true, force: true });
+    await rm(userDataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
     if (stderr()) {
       // no-op on success
     }

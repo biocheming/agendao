@@ -20,12 +20,25 @@ impl ProviderBootstrapState {
         config: &BootstrapConfig,
         auth_store: &HashMap<String, AuthInfo>,
     ) -> Self {
+        // Keep the bundled providers available by default, and materialize any
+        // catalogue provider that the user explicitly configured/authenticated.
+        // A saved API key should make that provider's models.dev catalogue
+        // usable without requiring one ModelConfig entry per advertised model.
         let mut database: HashMap<String, ProviderState> = models_dev
             .iter()
-            .filter(|(id, _)| matches!(id.as_str(), "openai" | "anthropic"))
+            .filter(|(id, _)| {
+                matches!(id.as_str(), "openai" | "anthropic")
+                    || config.providers.contains_key(*id)
+                    || auth_store.contains_key(*id)
+            })
             .map(|(id, provider)| (id.clone(), from_models_dev_provider(provider)))
             .collect();
 
+        // Key precedence (last applied wins): config file < auth store (the
+        // Web/TUI "connect provider" flow) < environment variables. A stale
+        // `api_key` in a config file must never silently override a key the
+        // user just saved through the UI, while injected env vars remain the
+        // strongest deployment-level override.
         let disabled = &config.disabled_providers;
         let enabled = &config.enabled_providers;
 
@@ -91,31 +104,24 @@ impl ProviderBootstrapState {
             database.insert(provider_id.clone(), parsed);
         }
 
-        for (provider_id, provider) in &database {
-            if disabled.contains(provider_id) {
-                continue;
+        for (provider_id, cfg_provider) in &config.providers {
+            let mut patch = ProviderPatch {
+                source: Some("config".to_string()),
+                ..Default::default()
+            };
+            if let Some(env) = &cfg_provider.env {
+                patch.env = Some(env.clone());
             }
-            let api_key = provider
-                .env
-                .iter()
-                .find_map(|name| std::env::var(name).ok());
-            if let Some(_key) = api_key {
-                let key_val = if provider.env.len() == 1 {
-                    std::env::var(&provider.env[0]).ok()
-                } else {
-                    None
-                };
-                merge_provider(
-                    &mut providers,
-                    &database,
-                    provider_id,
-                    ProviderPatch {
-                        source: Some("env".to_string()),
-                        key: key_val,
-                        ..Default::default()
-                    },
-                );
+            if let Some(name) = &cfg_provider.name {
+                patch.name = Some(name.clone());
             }
+            if let Some(api_key) = &cfg_provider.api_key {
+                patch.key = Some(api_key.clone());
+            }
+            if let Some(options) = &cfg_provider.options {
+                patch.options = Some(options.clone());
+            }
+            merge_provider(&mut providers, &database, provider_id, patch);
         }
 
         for (provider_id, auth) in auth_store {
@@ -141,24 +147,31 @@ impl ProviderBootstrapState {
             }
         }
 
-        for (provider_id, cfg_provider) in &config.providers {
-            let mut patch = ProviderPatch {
-                source: Some("config".to_string()),
-                ..Default::default()
-            };
-            if let Some(env) = &cfg_provider.env {
-                patch.env = Some(env.clone());
+        for (provider_id, provider) in &database {
+            if disabled.contains(provider_id) {
+                continue;
             }
-            if let Some(name) = &cfg_provider.name {
-                patch.name = Some(name.clone());
+            let api_key = provider
+                .env
+                .iter()
+                .find_map(|name| std::env::var(name).ok());
+            if let Some(_key) = api_key {
+                let key_val = if provider.env.len() == 1 {
+                    std::env::var(&provider.env[0]).ok()
+                } else {
+                    None
+                };
+                merge_provider(
+                    &mut providers,
+                    &database,
+                    provider_id,
+                    ProviderPatch {
+                        source: Some("env".to_string()),
+                        key: key_val,
+                        ..Default::default()
+                    },
+                );
             }
-            if let Some(api_key) = &cfg_provider.api_key {
-                patch.key = Some(api_key.clone());
-            }
-            if let Some(options) = &cfg_provider.options {
-                patch.options = Some(options.clone());
-            }
-            merge_provider(&mut providers, &database, provider_id, patch);
         }
 
         let is_provider_allowed = |provider_id: &str| -> bool {

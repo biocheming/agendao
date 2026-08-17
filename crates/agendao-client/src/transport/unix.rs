@@ -516,6 +516,18 @@ impl UnixSocketTransport {
         .await
     }
 
+    pub async fn set_session_permission_mode(
+        &self,
+        session_id: &str,
+        mode: crate::SessionPermissionMode,
+    ) -> Result<SessionInfo> {
+        self.send_request(
+            "set_session_permission_mode",
+            serde_json::json!({ "session_id": session_id, "mode": mode }),
+        )
+        .await
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         self.send_request(
             "delete_session",

@@ -161,6 +161,10 @@ pub struct ModelInfo {
     pub id: String,
     pub name: String,
     pub provider: String,
+    /// True only when this exact provider/model pair exists in the live
+    /// runtime registry. Catalogue visibility and provider authentication do
+    /// not by themselves make every advertised model callable.
+    pub available: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,6 +402,7 @@ pub(crate) fn catalog_model_info(
         id: model.id.clone(),
         name: model.name.clone(),
         provider: provider_id.to_string(),
+        available: false,
         variants,
         context_window: Some(model.limit.context),
         max_output_tokens: Some(model.limit.output),
@@ -415,6 +420,7 @@ pub(crate) fn runtime_model_info(
         id: model.id.clone(),
         name: model.name.clone(),
         provider: model.provider.clone(),
+        available: true,
         variants,
         context_window: Some(model.context_window),
         max_output_tokens: Some(model.max_output_tokens),
@@ -437,6 +443,7 @@ pub(crate) fn configured_model_info(
             .clone()
             .unwrap_or_else(|| model_id.clone()),
         provider: provider_id.to_string(),
+        available: false,
         variants,
         context_window: config_context_window(configured_model),
         max_output_tokens: config_max_output_tokens(configured_model),
@@ -475,6 +482,7 @@ fn merge_catalog_model_info(existing: &mut ModelInfo, incoming: ModelInfo) {
 }
 
 fn merge_runtime_model_info(existing: &mut ModelInfo, incoming: ModelInfo) {
+    existing.available = true;
     existing.name = incoming.name;
     if !incoming.variants.is_empty() {
         existing.variants = incoming.variants;
@@ -1031,7 +1039,8 @@ pub(crate) async fn list_providers(
         .filter_map(|provider| {
             provider
                 .models
-                .first()
+                .iter()
+                .find(|model| model.available)
                 .map(|model| (provider.id.clone(), model.id.clone()))
         })
         .collect();
@@ -1982,7 +1991,7 @@ mod tests {
         configured_provider_to_descriptor_candidate, connect_draft_from_custom_query,
         connect_draft_from_known_provider, connect_protocol_profile, npm_to_protocol,
         provider_descriptor_response, resolve_known_provider_matches, KnownProviderEntry,
-        ProviderConnectDraftMode, CONNECT_PROTOCOL_OPTIONS,
+        ModelInfo, ProviderConnectDraftMode, CONNECT_PROTOCOL_OPTIONS,
     };
     use agendao_config::ProviderConfig;
 
@@ -2238,5 +2247,40 @@ mod tests {
             .descriptor_candidate_error
             .as_deref()
             .is_some_and(|error| error.contains("invalid provider profile combination")));
+    }
+
+    #[test]
+    fn runtime_model_merge_marks_only_the_exact_model_available() {
+        let model = |id: &str, available: bool| ModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "deepseek".to_string(),
+            available,
+            variants: Vec::new(),
+            context_window: None,
+            max_output_tokens: None,
+            cost_per_million_input: None,
+            cost_per_million_output: None,
+            capabilities: None,
+        };
+        let mut models = std::collections::HashMap::from([(
+            "deepseek".to_string(),
+            std::collections::HashMap::from([
+                (
+                    "deepseek-v4-flash".to_string(),
+                    model("deepseek-v4-flash", false),
+                ),
+                (
+                    "deepseek-v4-pro".to_string(),
+                    model("deepseek-v4-pro", false),
+                ),
+            ]),
+        )]);
+
+        super::upsert_runtime_model_info(&mut models, "deepseek", model("deepseek-v4-flash", true));
+
+        let deepseek = &models["deepseek"];
+        assert!(deepseek["deepseek-v4-flash"].available);
+        assert!(!deepseek["deepseek-v4-pro"].available);
     }
 }

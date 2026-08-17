@@ -15,6 +15,7 @@ use crate::CliRuntimeContext;
 use model_state::{cli_resolve_show_thinking, cli_save_recent_model_ref};
 use session_exec::{
     cli_session_directory, run_cli_prompt_local, run_cli_prompt_transport, LocalPromptRequest,
+    TransportPromptRequest,
 };
 
 pub(super) async fn run_non_interactive(
@@ -142,6 +143,7 @@ pub(super) async fn run_non_interactive(
                 variant: variant.as_deref(),
                 title: title.as_deref(),
                 directory: &cli_session_directory(&working_dir),
+                format,
             },
         )
         .await?;
@@ -156,11 +158,19 @@ pub(super) async fn run_non_interactive(
             run_cli_prompt_transport(
                 transport,
                 &input,
-                command.as_deref(),
-                model.as_deref(),
-                requested_agent.as_deref(),
-                scheduler.clone(),
-                variant.as_deref(),
+                TransportPromptRequest {
+                    command: command.as_deref(),
+                    continue_last,
+                    session: session.as_deref(),
+                    fork,
+                    model: model.as_deref(),
+                    agent: requested_agent.as_deref(),
+                    scheduler: scheduler.clone(),
+                    variant: variant.as_deref(),
+                    title: title.as_deref(),
+                    directory: &cli_session_directory(&working_dir),
+                    format,
+                },
             )
             .await?;
             return Ok(());

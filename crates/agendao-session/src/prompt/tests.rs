@@ -1882,8 +1882,8 @@ fn shell_exec_uses_bash_login_invocation() {
 
 #[tokio::test]
 async fn resolve_tools_with_mcp_registry_includes_mcp_tools() {
-    // 空注册表:工具总数低于 SearchFacade 门面阈值(24),MCP 工具直接出现在模型面。
-    // (create_default_registry 会触发门面化,MCP 工具改经 tool_catalog_call 调用。)
+    // 空注册表:工具总数低于 Progressive 门面阈值(24),MCP 工具直接出现在模型面。
+    // create_default_registry 触发门面化后，MCP 工具改经 capability 的 call action 调用。
     let tool_registry = agendao_tool::ToolRegistry::new();
     let mcp_registry = agendao_mcp::McpToolRegistry::new();
     mcp_registry

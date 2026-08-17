@@ -48,6 +48,18 @@ pub(super) async fn abort_session_execution(
         .await
         .clear_turn(session_id);
 
+    // Stop means stop for the whole session: prompts queued behind the
+    // running turn are dropped instead of being auto-executed by a later run.
+    let dropped_queued_prompts =
+        super::prompt::drain_followup_prompts(state, session_id).await;
+
+    // Pending permissions must resolve now: their waiting futures are about
+    // to be dropped, and their 300s timeout lives inside those futures —
+    // without this the popups would hang on every frontend until restart.
+    let cancelled_permissions =
+        crate::routes::permission::cancel_pending_permissions_for_session(state, session_id)
+            .await;
+
     let mut prompt_running = false;
     let scheduler_running = state
         .runtime_telemetry
@@ -78,11 +90,15 @@ pub(super) async fn abort_session_execution(
         serde_json::json!({
             "aborted": true,
             "target": "run",
+            "dropped_queued_prompts": dropped_queued_prompts,
+            "cancelled_pending_permissions": cancelled_permissions,
         })
     } else {
         serde_json::json!({
             "aborted": false,
             "target": serde_json::Value::Null,
+            "dropped_queued_prompts": dropped_queued_prompts,
+            "cancelled_pending_permissions": cancelled_permissions,
         })
     }
 }

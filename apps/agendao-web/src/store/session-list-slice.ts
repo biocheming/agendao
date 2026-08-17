@@ -13,6 +13,11 @@ export function createSessionListSlice(
   | "selectSession"
   | "setDeletingSessions"
 > {
+  const selectSessionId = (id: string | null) => {
+    set({ selectedSessionId: id });
+    get().syncRuntimeViewForSelection(id);
+  };
+
   return {
     sessions: [],
     selectedSessionId: null,
@@ -20,8 +25,8 @@ export function createSessionListSlice(
 
     setSessions: (sessions) => set({ sessions: resolveSetState(sessions, get().sessions) }),
     setSelectedSessionId: (selectedSessionId) =>
-      set({ selectedSessionId: resolveSetState(selectedSessionId, get().selectedSessionId) }),
-    selectSession: (id) => set({ selectedSessionId: id }),
+      selectSessionId(resolveSetState(selectedSessionId, get().selectedSessionId)),
+    selectSession: (id) => selectSessionId(id),
     setDeletingSessions: (deletingSessions) =>
       set({ deletingSessions: resolveSetState(deletingSessions, get().deletingSessions) }),
   };

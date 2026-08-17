@@ -1,24 +1,79 @@
-//! 金 — OSC52 剪贴板写入。
+//! 金 — 系统剪贴板写入，OSC52 作为非确认式回退。
 //!
 //! 终端剪贴板的事实标准：发送 `OSC 52 ; c ; <base64> ST` 转义序列。
 //! 这是**非显示序列**——只设置剪贴板选区，不改动任何屏幕 cell。因此从
 //! revue 事件回调里直接写 `io::stdout()`、与帧刷新交错也是安全的：即便
 //! 序列插在两帧输出之间，终端处理它时不会破坏画面（金律：成形不漂移）。
 //!
-//! 覆盖范围：现代本机终端（iTerm2/WezTerm/kitty/Alacritty/Windows Terminal）
-//! 以及 `set-clipboard on` 的 tmux。不支持 OSC52 的终端会静默忽略，不影响
-//! 其余功能；OSC52 写入本身失败时走 `copy_with_fallback` 的临时文件兜底
-//! （U18①：写临时文件 + toast 给路径，复制意图不无声丢失）。
+//! 优先使用桌面环境的剪贴板命令，因为它们的退出状态可以确认写入结果。
+//! OSC52 只表示序列成功写到终端，终端仍可能因策略而忽略它，因此该路径
+//! 总是同时写临时文件并由调用方显示路径，不能误报成“已复制”。
 
 use base64::Engine;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
-/// 把 `text` 写入终端剪贴板（OSC52，剪贴板选区 `c`）。
-///
-/// 返回 `io::Result` 以便调用方在写入失败时 toast 报错，而非静默吞错
-/// （道纪：回流写入路径必须有可观测出口）。
+fn run_clipboard_command(program: &str, args: &[&str], text: &str) -> io::Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "clipboard stdin unavailable"))?
+        .write_all(text.as_bytes())?;
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{program} exited with status {status}"
+        )))
+    }
+}
+
+fn try_native_clipboard(text: &str) -> io::Result<()> {
+    let mut candidates: Vec<(&str, &[&str])> = Vec::new();
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        candidates.push(("wl-copy", &[]));
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        candidates.push(("xclip", &["-selection", "clipboard"]));
+        candidates.push(("xsel", &["--clipboard", "--input"]));
+    }
+    if cfg!(target_os = "macos") {
+        candidates.push(("pbcopy", &[]));
+    }
+    if cfg!(target_os = "windows") {
+        candidates.push(("clip.exe", &[]));
+    }
+
+    let mut last_error = None;
+    for (program, args) in candidates {
+        match run_clipboard_command(program, args, text) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "no supported native clipboard command is available",
+        )
+    }))
+}
+
+/// Write to a native system clipboard and only return success after the
+/// clipboard command confirms the operation.
 pub fn copy(text: &str) -> io::Result<()> {
+    try_native_clipboard(text)
+}
+
+fn send_osc52(text: &str) -> io::Result<()> {
     let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     let mut out = io::stdout().lock();
     // OSC52 = ESC ] 52 ; <选区=c=clipboard> ; <base64> BEL
@@ -28,10 +83,10 @@ pub fn copy(text: &str) -> io::Result<()> {
 
 /// `copy_with_fallback` 的回流判别（U18①）。
 pub enum CopyOutcome {
-    /// OSC52 写入成功——文本已进终端剪贴板。
+    /// A native clipboard command confirmed the write.
     Clipboard,
-    /// OSC52 写失败（stdout 断/重定向等）——已兜底写临时文件，路径给
-    /// toast，用户仍可取回本次复制内容（复制意图不无声丢失）。
+    /// Native clipboard confirmation was unavailable. An OSC52 request may
+    /// also have been emitted, but the file is the recoverable source of truth.
     FileFallback(PathBuf),
 }
 
@@ -49,21 +104,26 @@ fn write_fallback(text: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// OSC52 优先，失败兜底写临时文件（U18①）。
-///
-/// 双层失败（OSC52 写失败 + 文件也写失败）才返回 Err，错误消息携带两层
-/// 原因；单层失败返回 `FileFallback`，调用方 toast 路径（Warning 而非
-/// Error——复制目的以另一种形式达成了）。
+/// Prefer a confirmed native clipboard write. If that is unavailable, emit
+/// OSC52 for terminals that accept it and always persist a file fallback.
 pub fn copy_with_fallback(text: &str) -> io::Result<CopyOutcome> {
     match copy(text) {
         Ok(()) => Ok(CopyOutcome::Clipboard),
-        Err(osc_err) => match write_fallback(text) {
-            Ok(path) => Ok(CopyOutcome::FileFallback(path)),
-            Err(fs_err) => Err(io::Error::new(
-                fs_err.kind(),
-                format!("OSC52 write failed ({osc_err}); file fallback failed ({fs_err})"),
-            )),
-        },
+        Err(native_err) => {
+            let osc_error = send_osc52(text).err();
+            match write_fallback(text) {
+                Ok(path) => Ok(CopyOutcome::FileFallback(path)),
+                Err(fs_err) => Err(io::Error::new(
+                    fs_err.kind(),
+                    format!(
+                        "native clipboard failed ({native_err}); OSC52 {}; file fallback failed ({fs_err})",
+                        osc_error
+                            .map(|error| format!("failed ({error})"))
+                            .unwrap_or_else(|| "was sent without confirmation".to_string())
+                    ),
+                )),
+            }
+        }
     }
 }
 
@@ -94,13 +154,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// U18①：正常环境 OSC52 写入成功 → Clipboard 臂（测试环境 stdout
-    /// 可写，走不到兜底；兜底臂由 write_fallback_roundtrip 覆盖）。
     #[test]
-    fn copy_with_fallback_ok_is_clipboard() {
-        assert!(matches!(
-            copy_with_fallback("hello").unwrap(),
-            CopyOutcome::Clipboard
-        ));
+    fn missing_native_command_is_reported() {
+        let error =
+            run_clipboard_command("agendao-definitely-missing-clipboard-command", &[], "hello")
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

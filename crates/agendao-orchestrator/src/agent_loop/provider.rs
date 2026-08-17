@@ -59,7 +59,7 @@ impl ModelBackend for ProviderModelBackend {
         let system = String::from_utf8(request.prompt.stable.to_vec()).map_err(|error| {
             ModelBackendError::message(format!("stable prompt is not UTF-8: {error}"))
         })?;
-        let tools: Vec<ToolDefinition> = request
+        let mut tools: Vec<ToolDefinition> = request
             .tools
             .iter()
             .filter_map(|id| self.tools.get(id).cloned())
@@ -69,6 +69,11 @@ impl ModelBackend for ProviderModelBackend {
                 "model request references a tool without a schema",
             ));
         }
+        tools.sort_by(|left, right| {
+            model_tool_rank(&left.name)
+                .cmp(&model_tool_rank(&right.name))
+                .then_with(|| left.name.cmp(&right.name))
+        });
         let route = self
             .routes
             .get(&request.agent)
@@ -122,6 +127,17 @@ impl ModelBackend for ProviderModelBackend {
             compiled.model_id.as_str(),
         )
         .await
+    }
+}
+
+fn model_tool_rank(name: &str) -> usize {
+    match name {
+        "capability" => 0,
+        "bash" => 1,
+        "read" => 2,
+        "apply_patch" => 3,
+        "grep" => 4,
+        _ => 100,
     }
 }
 

@@ -48,6 +48,32 @@ export function resolveSetState<T>(value: SetStateFn<T>, current: T): T {
 
 export type RuntimeSurfaceKey = "sessionEvents" | "inspectItems" | "queueItems";
 
+export type NoticeTone = "info" | "success" | "warning" | "error";
+
+export interface AppNotice {
+  id: number;
+  tone: NoticeTone;
+  message: string;
+  at: number;
+}
+
+/** Per-session live runtime state mirrored from the event stream. */
+export interface SessionRuntimeView {
+  streaming: boolean;
+  statusLine: string;
+  latestRuntimeError: string | null;
+  question: QuestionInteractionRecord | null;
+  permission: PermissionInteractionRecord | null;
+}
+
+export const DEFAULT_SESSION_RUNTIME_VIEW: SessionRuntimeView = {
+  streaming: false,
+  statusLine: "ready",
+  latestRuntimeError: null,
+  question: null,
+  permission: null,
+};
+
 export interface SessionRuntimeSurface {
   banner: string | null;
   sessionEvents: AuxiliaryOutputBlock[];
@@ -96,7 +122,11 @@ export interface AgendaoState {
   setLeftSidebarOpen: (open: SetStateFn<boolean>) => void;
   setRightSidebarOpen: (open: SetStateFn<boolean>) => void;
   setTerminalOpen: (open: SetStateFn<boolean>) => void;
-  setBanner: (message: SetStateFn<string | null>) => void;
+  notices: AppNotice[];
+  /** Push (or clear with null) a notice; tone inferred from the message. */
+  setBanner: (message: SetStateFn<string | null>, tone?: NoticeTone) => void;
+  pushNotice: (message: string, tone?: NoticeTone) => void;
+  dismissNotice: (id: number) => void;
   clearBanner: () => void;
 
   // === Session List ===
@@ -123,11 +153,16 @@ export interface AgendaoState {
   clearComposer: () => void;
 
   // === Streaming / Runtime ===
+  // `streaming`/`statusLine`/`question`/`permission`/`latestRuntimeError`
+  // are the view of the *selected* session; `runtimeViews` keeps the live
+  // state of every session so switching (or an SSE reconnect) can restore
+  // the correct view instead of leaking one session's runtime into another.
   streaming: boolean;
   statusLine: string;
   latestRuntimeError: string | null;
   question: QuestionInteractionRecord | null;
   permission: PermissionInteractionRecord | null;
+  runtimeViews: Record<string, SessionRuntimeView>;
   questionAnswers: Record<number, QuestionAnswerValue>;
   questionSubmitting: boolean;
   permissionSubmitting: boolean;
@@ -135,11 +170,26 @@ export interface AgendaoState {
   permissionSubmitStartedAt: string | null;
   permissionSubmitCompletedAt: string | null;
 
-  setStreaming: (value: SetStateFn<boolean>) => void;
-  setStatusLine: (line: SetStateFn<string>) => void;
-  setLatestRuntimeError: (error: SetStateFn<string | null>) => void;
-  setQuestion: (q: SetStateFn<QuestionInteractionRecord | null>) => void;
-  setPermission: (p: SetStateFn<PermissionInteractionRecord | null>) => void;
+  setSessionStreaming: (sessionId: string, value: SetStateFn<boolean>) => void;
+  setSessionStatusLine: (sessionId: string, line: SetStateFn<string>) => void;
+  setSessionLatestRuntimeError: (
+    sessionId: string,
+    error: SetStateFn<string | null>,
+  ) => void;
+  setSessionQuestion: (
+    sessionId: string,
+    q: SetStateFn<QuestionInteractionRecord | null>,
+  ) => void;
+  setSessionPermission: (
+    sessionId: string,
+    p: SetStateFn<PermissionInteractionRecord | null>,
+  ) => void;
+  /** Map a server `run_status` onto the session's streaming/status view. */
+  applySessionRunStatus: (sessionId: string, rawStatus: string) => void;
+  /** Re-derive the top-level runtime view after the selection changed. */
+  syncRuntimeViewForSelection: (sessionId: string | null) => void;
+  /** Drop every runtime entry for a session (used when deleting it). */
+  clearSessionRuntimeState: (sessionId: string) => void;
   setQuestionAnswers: (answers: SetStateFn<Record<number, QuestionAnswerValue>>) => void;
   setQuestionSubmitting: (value: SetStateFn<boolean>) => void;
   setPermissionSubmitting: (value: SetStateFn<boolean>) => void;

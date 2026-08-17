@@ -18,6 +18,7 @@ pub struct TuiCommandRequest {
     pub agent: Option<String>,
     pub attach_url: Option<String>,
     pub unix_socket_path: Option<String>,
+    pub server_password: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +189,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         agent,
         attach_url,
         unix_socket_path,
+        server_password,
     } = request;
 
     if fork && session.is_none() {
@@ -221,6 +223,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         unix_socket_path: unix_socket_path.clone(),
         local_direct: use_direct && local_server.is_some(),
         local_server,
+        server_password,
     };
     let mode = if use_direct {
         "Direct"
@@ -252,6 +255,7 @@ async fn create_local_server_state(
         .await?,
     );
     state.ensure_frontend_projector();
+    state.ensure_catalog_refresh_loop();
     Ok(state)
 }
 

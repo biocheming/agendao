@@ -1,4 +1,7 @@
-use crate::models::{ModelsData, ProviderInfo as ModelsProviderInfo, MODELS_DEV_URL};
+use crate::models::{
+    ModelInfo as ModelsDataModelInfo, ModelLimit, ModelsData,
+    ProviderInfo as ModelsProviderInfo, MODELS_DEV_URL,
+};
 use once_cell::sync::Lazy;
 use reqwest::header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH, PRAGMA};
 use serde::{Deserialize, Serialize};
@@ -6,9 +9,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 const CATALOG_USER_AGENT: &str = "agendao-rust";
+pub const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CatalogMetadata {
@@ -135,6 +140,33 @@ impl ModelCatalogAuthority {
         self.refresh_locked(current, force).await
     }
 
+    /// Refresh the catalogue when its last attempt is at least 24 hours old.
+    ///
+    /// `None` means the cached snapshot is still inside the TTL. Failed
+    /// attempts retain the cached data and advance `last_refresh_at`, avoiding
+    /// a network retry on every provider-facing request while offline.
+    pub async fn refresh_if_stale(&self) -> Option<CatalogRefreshResult> {
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(current) = self.snapshot.read().await.as_ref() {
+            if !catalog_refresh_due(&current.metadata, now, DEFAULT_CATALOG_REFRESH_INTERVAL) {
+                return None;
+            }
+        }
+
+        let _guard = self.refresh_lock.lock().await;
+        let current = match self.snapshot.read().await.clone() {
+            Some(snapshot) => Some(snapshot),
+            None => self.load_cached_snapshot().await.map(Arc::new),
+        };
+        if current.as_ref().is_some_and(|snapshot| {
+            !catalog_refresh_due(&snapshot.metadata, now, DEFAULT_CATALOG_REFRESH_INTERVAL)
+        }) {
+            return None;
+        }
+
+        Some(self.refresh_locked(current, false).await)
+    }
+
     async fn refresh_locked(
         &self,
         current: Option<Arc<CatalogSnapshot>>,
@@ -166,6 +198,7 @@ impl ModelCatalogAuthority {
                 // one accepted full clone (refreshes are rare, user-triggered).
                 let mut snapshot = (*current).clone();
                 snapshot.metadata.last_refresh_at = Some(now);
+                snapshot.metadata.last_success_at = Some(now);
                 if snapshot.metadata.source_url.is_empty() {
                     snapshot.metadata.source_url = url.clone();
                 }
@@ -267,6 +300,23 @@ impl ModelCatalogAuthority {
             }
         };
 
+        let mut result = result;
+        if result.status == CatalogRefreshStatus::FallbackCached {
+            let mut snapshot = (*result.snapshot).clone();
+            snapshot.metadata.last_refresh_at = Some(now);
+            if snapshot.metadata.source_url.is_empty() {
+                snapshot.metadata.source_url = url;
+            }
+            if let Err(error) = self.write_metadata(&snapshot.metadata).await {
+                tracing::debug!(
+                    path = %self.metadata_path.display(),
+                    error = %error,
+                    "Failed to write models catalogue refresh-attempt metadata"
+                );
+            }
+            result.snapshot = Arc::new(snapshot);
+        }
+
         self.store_snapshot(result.snapshot.clone()).await;
         result
     }
@@ -278,10 +328,16 @@ impl ModelCatalogAuthority {
     }
 
     async fn load_cached_snapshot(&self) -> Option<CatalogSnapshot> {
-        let raw = tokio::fs::read_to_string(&self.snapshot_path).await.ok()?;
+        let raw = match tokio::fs::read_to_string(&self.snapshot_path).await {
+            Ok(raw) => raw,
+            // First run on an offline machine: fall back to the built-in
+            // seed catalogue so bundled providers stay usable; the next
+            // successful refresh replaces it wholesale.
+            Err(_) => return Some(self.seed_snapshot()),
+        };
         let data = parse_models_data(&raw).unwrap_or_default();
         if data.is_empty() {
-            return None;
+            return Some(self.seed_snapshot());
         }
 
         let metadata = match tokio::fs::read_to_string(&self.metadata_path).await {
@@ -298,6 +354,16 @@ impl ModelCatalogAuthority {
         };
 
         Some(self.allocate_snapshot(data, metadata))
+    }
+
+    fn seed_snapshot(&self) -> CatalogSnapshot {
+        self.allocate_snapshot(
+            seed_catalog(),
+            CatalogMetadata {
+                source_url: SEED_CATALOG_SOURCE_URL.to_string(),
+                ..CatalogMetadata::default()
+            },
+        )
     }
 
     fn allocate_snapshot(&self, data: ModelsData, metadata: CatalogMetadata) -> CatalogSnapshot {
@@ -363,6 +429,89 @@ pub fn metadata_path_for_snapshot(snapshot_path: &Path) -> PathBuf {
     parent.join(format!("{stem}.meta.json"))
 }
 
+const SEED_CATALOG_SOURCE_URL: &str = "seed://builtin";
+
+fn seed_model(
+    models: &mut HashMap<String, ModelsDataModelInfo>,
+    id: &str,
+    name: &str,
+    context: u64,
+    output: u64,
+    reasoning: bool,
+) {
+    models.insert(
+        id.to_string(),
+        ModelsDataModelInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            reasoning,
+            tool_call: true,
+            attachment: true,
+            temperature: true,
+            limit: ModelLimit {
+                context,
+                input: None,
+                output,
+            },
+            family: None,
+            release_date: None,
+            interleaved: None,
+            cost: None,
+            modalities: None,
+            experimental: None,
+            status: None,
+            options: HashMap::new(),
+            headers: None,
+            provider: None,
+            variants: None,
+        },
+    );
+}
+
+/// Minimal built-in catalogue for offline first runs: bundled providers with
+/// their env var names and a couple of evergreen models. Pricing and the
+/// full model list arrive with the first successful models.dev refresh.
+fn seed_catalog() -> ModelsData {
+    let mut openai_models: HashMap<String, ModelsDataModelInfo> = HashMap::new();
+    seed_model(&mut openai_models, "gpt-5", "GPT-5", 400_000, 128_000, true);
+    seed_model(&mut openai_models, "gpt-5-mini", "GPT-5 mini", 400_000, 128_000, true);
+
+    let mut anthropic_models: HashMap<String, ModelsDataModelInfo> = HashMap::new();
+    seed_model(
+        &mut anthropic_models,
+        "claude-sonnet-4",
+        "Claude Sonnet 4",
+        200_000,
+        64_000,
+        true,
+    );
+
+    let mut data = HashMap::new();
+    data.insert(
+        "openai".to_string(),
+        ModelsProviderInfo {
+            api: Some("https://api.openai.com/v1".to_string()),
+            name: "OpenAI".to_string(),
+            env: vec!["OPENAI_API_KEY".to_string()],
+            id: "openai".to_string(),
+            npm: None,
+            models: openai_models,
+        },
+    );
+    data.insert(
+        "anthropic".to_string(),
+        ModelsProviderInfo {
+            api: Some("https://api.anthropic.com/v1".to_string()),
+            name: "Anthropic".to_string(),
+            env: vec!["ANTHROPIC_API_KEY".to_string()],
+            id: "anthropic".to_string(),
+            npm: None,
+            models: anthropic_models,
+        },
+    );
+    data
+}
+
 pub(crate) fn load_default_catalog_data_sync() -> ModelsData {
     let Ok(raw) = std::fs::read_to_string(default_catalog_snapshot_path()) else {
         return HashMap::new();
@@ -400,6 +549,14 @@ fn parse_models_data(raw: &str) -> Option<ModelsData> {
     Some(data)
 }
 
+fn catalog_refresh_due(metadata: &CatalogMetadata, now_ms: i64, max_age: Duration) -> bool {
+    let Some(last_refresh_at) = metadata.last_refresh_at else {
+        return true;
+    };
+    let max_age_ms = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
+    now_ms.saturating_sub(last_refresh_at) >= max_age_ms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,10 +578,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_snapshot_returns_none_for_missing_file() {
+    async fn cached_snapshot_falls_back_to_seed_catalog_for_missing_file() {
         let path = temp_snapshot_path("missing.snapshot.json");
         let authority = ModelCatalogAuthority::with_snapshot_path(path);
-        assert!(authority.load_cached_snapshot().await.is_none());
+        // Offline first run: the built-in seed keeps bundled providers
+        // usable instead of an empty catalogue.
+        let snapshot = authority
+            .load_cached_snapshot()
+            .await
+            .expect("seed snapshot");
+        assert_eq!(snapshot.metadata.source_url, SEED_CATALOG_SOURCE_URL);
+        assert!(snapshot.data.contains_key("openai"));
+        assert!(snapshot.data.contains_key("anthropic"));
+        assert!(snapshot.data["openai"]
+            .models
+            .contains_key("gpt-5"));
+        // Seed data is immediately due for a real refresh.
+        assert!(catalog_refresh_due(
+            &snapshot.metadata,
+            1_000,
+            DEFAULT_CATALOG_REFRESH_INTERVAL
+        ));
     }
 
     #[tokio::test]
@@ -449,5 +623,30 @@ mod tests {
             .await
             .expect("cached snapshot");
         assert!(snapshot.data.contains_key("openai"));
+    }
+
+    #[test]
+    fn catalogue_refresh_becomes_due_at_24_hours() {
+        let now = 2_000_000_000_i64;
+        let mut metadata = CatalogMetadata::default();
+        assert!(catalog_refresh_due(
+            &metadata,
+            now,
+            DEFAULT_CATALOG_REFRESH_INTERVAL
+        ));
+
+        metadata.last_refresh_at = Some(now - (24 * 60 * 60 * 1_000) + 1);
+        assert!(!catalog_refresh_due(
+            &metadata,
+            now,
+            DEFAULT_CATALOG_REFRESH_INTERVAL
+        ));
+
+        metadata.last_refresh_at = Some(now - (24 * 60 * 60 * 1_000));
+        assert!(catalog_refresh_due(
+            &metadata,
+            now,
+            DEFAULT_CATALOG_REFRESH_INTERVAL
+        ));
     }
 }

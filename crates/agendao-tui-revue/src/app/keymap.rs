@@ -629,6 +629,10 @@ impl AppHandler {
     pub(crate) fn handle(&mut self, event: &Event) -> bool {
         match event {
             Event::Tick => {
+                let deferred_prompt_action =
+                    self.prompt.flush_deferred_enter(std::time::Instant::now());
+                let deferred_prompt_changed =
+                    deferred_prompt_action.is_some_and(|action| self.apply_prompt_action(action));
                 // 光标闪烁节拍：相位翻转时强制重绘（blink_visible 半周期 600ms@50ms/tick）。
                 self.blink_tick = self.blink_tick.wrapping_add(1);
                 let blink_flipped = crate::widget::blink::blink_visible(self.blink_tick)
@@ -676,7 +680,7 @@ impl AppHandler {
                     .update(|t| t.retain(|m| m.expires_at == 0 || m.expires_at > now_ms));
                 let toasts_changed = self.store.toasts.get().len() != prev_toast_count;
                 let events = self.event_bus.drain();
-                let mut changed = toasts_changed;
+                let mut changed = toasts_changed || deferred_prompt_changed;
 
                 // ── 水：drain 本地发送回执（dispatch 后台 task 投递）──
                 // 与服务端 FrontendEvent 严格分离（见 dispatch_outcome.rs）。
@@ -1127,6 +1131,7 @@ impl AppHandler {
                     if let Some(ref api) = self.api {
                         if let Some(ref sid) = self.active_session.session_id.get() {
                             if let Ok(info) = api.get_session(sid) {
+                                apply_session_identity(&self.active_session, &info);
                                 if self.active_session.title.get() != info.title {
                                     self.active_session.title.set(info.title);
                                     changed = true;
@@ -1149,6 +1154,29 @@ impl AppHandler {
                     || self.interrupt_pending
             }
             Event::Key(key) => {
+                // Some terminal/tmux paste paths do not preserve bracketed
+                // paste and arrive as a rapid sequence of ordinary key events.
+                // Observe that sequence while the plain composer owns input:
+                // embedded Enter keys must never submit a partial line. An
+                // explicit slash panel retains immediate Enter/Tab completion,
+                // and modified Enter keeps its keybinding semantics below.
+                let unmodified_paste_key =
+                    !(key.ctrl || key.alt || (key.shift && matches!(key.key, Key::Enter)));
+                let plain_prompt_input = self.panel == Panel::None
+                    && !self.permission_dialog.visible
+                    && !self.question_dialog.visible
+                    && !self.prompt.text().trim_start().starts_with('/')
+                    && !self.settings_edit.active
+                    && !matches!(self.store.route.get(), Route::Settings);
+                if unmodified_paste_key
+                    && plain_prompt_input
+                    && self
+                        .prompt
+                        .intercept_unbracketed_paste_key(&key.key, std::time::Instant::now())
+                {
+                    self.refresh_slash_popup();
+                    return true;
+                }
                 // Ctrl+B → toggle sidebar, Ctrl+P → command palette。
                 // 仅无 panel 且不在 Settings 表单编辑时接管全局：弹窗/表单
                 // 里的 Ctrl 组合键归焦点文本字段（readline 编辑，见下方
@@ -1291,15 +1319,6 @@ impl AppHandler {
                         {
                             self.store.dismiss_toast(*id);
                             return true;
-                        }
-                        // ── U7③ status bar 🔔 角标 → 通知中心 ──
-                        if let Some(r) = self.bell_rect {
-                            if r.contains(m.x, m.y) {
-                                self.close_all_panels();
-                                self.notification_dialog.open();
-                                self.panel = Panel::Notifications;
-                                return true;
-                            }
                         }
                         // ── U8 status bar ⏸ 角标 → 重开首个待决策项 ──
                         if let Some(r) = self.pending_rect {
@@ -2252,23 +2271,8 @@ impl AppHandler {
         }
 
         // ── Normal prompt input ──
-        let consumed = match self.prompt.handle_key(key) {
-            PromptAction::Submit(text) => {
-                if text.starts_with('/') {
-                    self.sync_slash_from_text(&text);
-                    self.prompt.clear();
-                    return true;
-                }
-                self.dispatch(text);
-                return true;
-            }
-            PromptAction::SubmitShell(cmd) => {
-                self.dispatch_shell(cmd);
-                return true;
-            }
-            PromptAction::Consumed => true,
-            PromptAction::None => false,
-        };
+        let prompt_action = self.prompt.handle_key(key);
+        let consumed = self.apply_prompt_action(prompt_action);
 
         // ── Slash popup 同步（U3：query 派生自输入框首 token，单点权威）──
         self.refresh_slash_popup();
@@ -2359,6 +2363,26 @@ impl AppHandler {
                 false
             }
             _ => false,
+        }
+    }
+
+    fn apply_prompt_action(&mut self, action: PromptAction) -> bool {
+        match action {
+            PromptAction::Submit(text) => {
+                if text.starts_with('/') {
+                    self.sync_slash_from_text(&text);
+                    self.prompt.clear();
+                } else {
+                    self.dispatch(text);
+                }
+                true
+            }
+            PromptAction::SubmitShell(cmd) => {
+                self.dispatch_shell(cmd);
+                true
+            }
+            PromptAction::Consumed => true,
+            PromptAction::None => false,
         }
     }
 
@@ -2673,6 +2697,7 @@ impl AppHandler {
         let mut ctx_tokens: u64 = 0;
         match data.info {
             Ok(info) => {
+                apply_session_identity(&self.active_session, &info);
                 self.active_session.title.set(info.title);
                 if let Some(t) = info.telemetry {
                     let u = t.usage;
@@ -3894,6 +3919,7 @@ pub(crate) fn eager_load_session_messages(
     // 已用 LLM 生成真实 title 入库（ensure_default_session_title），但无回流通道，
     // 这里从权威（get_session）拉取同步，闭合状态所有权（阴面唯一真相 → 阳面渲染）。
     if let Ok(info) = api.get_session(session_id) {
+        apply_session_identity(active_session, &info);
         active_session.title.set(info.title);
     }
     // 一次性播种 todo 列表（土律·第四条单点权威）：打开/切换会话时从权威
@@ -3933,7 +3959,7 @@ pub(crate) fn apply_loaded_todos(
 }
 
 /// 历史消息路由进 transcript blocks（U6③ 抽出，同上）：先清后灌；
-/// 结束置 session_model（context 进度条 fallback）。run_status 复位
+/// 结束以最后一条有值的 assistant identity 补齐旧会话 metadata。run_status 复位
 /// 由调用方决定（同步启动路径复位；异步回执不抢状态机）。
 pub(crate) fn apply_loaded_messages(
     active_session: &crate::store::session_store::SessionStore,
@@ -3944,11 +3970,17 @@ pub(crate) fn apply_loaded_messages(
     // 记录最后一个带 model 的 assistant 消息（context 进度条的
     // model fallback——会话自己用过的模型比全局 selected_model 更准）。
     let mut last_model: Option<String> = None;
+    let mut last_agent: Option<String> = None;
     for msg in msgs {
         if msg.role == "assistant" {
             if let Some(ref m) = msg.model {
                 if !m.trim().is_empty() {
                     last_model = Some(m.clone());
+                }
+            }
+            if let Some(ref a) = msg.agent {
+                if !a.trim().is_empty() {
+                    last_agent = Some(a.clone());
                 }
             }
         }
@@ -4026,7 +4058,45 @@ pub(crate) fn apply_loaded_messages(
             }
         }
     }
-    active_session.session_model.set(last_model);
+    if active_session.session_model.get().is_none() {
+        if let Some(model) = last_model {
+            active_session.session_model.set(Some(model));
+        }
+    }
+    if active_session.session_agent.get().is_none() {
+        if let Some(agent) = last_agent {
+            active_session.session_agent.set(Some(agent));
+        }
+    }
+}
+
+/// Restore the server-resolved identity persisted on the session. This is
+/// authoritative for current sessions; message fields only provide a fallback
+/// for sessions created before these metadata keys existed.
+pub(crate) fn apply_session_identity(
+    active_session: &crate::store::session_store::SessionStore,
+    info: &agendao_client::SessionInfo,
+) {
+    let Some(metadata) = info.metadata.as_ref() else {
+        return;
+    };
+    let string_value = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if let (Some(provider), Some(model)) =
+        (string_value("model_provider"), string_value("model_id"))
+    {
+        active_session
+            .session_model
+            .set(Some(format!("{provider}/{model}")));
+    }
+    if let Some(agent) = string_value("agent") {
+        active_session.session_agent.set(Some(agent.to_string()));
+    }
 }
 
 #[cfg(test)]
@@ -4197,6 +4267,57 @@ mod tests {
             questions: Ok(vec![]),
             permissions: Ok(vec![]),
         }
+    }
+
+    #[test]
+    fn session_open_restores_effective_model_and_agent_from_metadata() {
+        let mut h = mk_handler();
+        let mut data = sample_open_data("identity session");
+        let info = data.info.as_mut().expect("sample info");
+        info.metadata = Some(std::collections::HashMap::from([
+            ("model_provider".into(), serde_json::json!("deepseek")),
+            ("model_id".into(), serde_json::json!("deepseek-v4-pro")),
+            ("agent".into(), serde_json::json!("build")),
+        ]));
+
+        h.apply_session_open("s", data);
+
+        assert_eq!(
+            h.active_session.session_model.get().as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+        assert_eq!(
+            h.active_session.session_agent.get().as_deref(),
+            Some("build")
+        );
+    }
+
+    #[test]
+    fn historical_assistant_identity_is_used_only_as_metadata_fallback() {
+        let session = crate::store::session_store::SessionStore::new();
+        let message: agendao_client::MessageInfo = serde_json::from_value(serde_json::json!({
+            "id": "m1",
+            "session_id": "s1",
+            "role": "assistant",
+            "created_at": 1,
+            "model": "deepseek/deepseek-v4-pro",
+            "agent": "build",
+            "parts": []
+        }))
+        .expect("message fixture");
+
+        apply_loaded_messages(&session, vec![message.clone()]);
+        assert_eq!(
+            session.session_model.get().as_deref(),
+            Some("deepseek/deepseek-v4-pro")
+        );
+        assert_eq!(session.session_agent.get().as_deref(), Some("build"));
+
+        session.session_model.set(Some("openai/gpt-5".into()));
+        session.session_agent.set(Some("plan".into()));
+        apply_loaded_messages(&session, vec![message]);
+        assert_eq!(session.session_model.get().as_deref(), Some("openai/gpt-5"));
+        assert_eq!(session.session_agent.get().as_deref(), Some("plan"));
     }
 
     /// echo 模式（无 bridge）：本地部分即时完成，且不残留 loading 指示。
@@ -4623,27 +4744,6 @@ mod tests {
         );
     }
 
-    /// U7③：🔔 角标点击 → 通知中心打开；Esc 关闭回 None。
-    #[test]
-    fn bell_click_opens_notifications() {
-        let mut h = mk_handler();
-        h.store
-            .push_toast("hello", crate::store::types::ToastMsgVariant::Info);
-        h.bell_rect = Some(revue::prelude::Rect::new(10, 24, 5, 1));
-        let ev = Event::Mouse(MouseEvent::new(
-            11,
-            24,
-            MouseEventKind::Down(MouseButton::Left),
-        ));
-        assert!(h.handle(&ev), "铃铛点击被消费");
-        assert!(h.notification_dialog.is_open(), "通知中心打开");
-        assert!(matches!(h.panel, Panel::Notifications));
-        // Esc（panel 打开时全局 Esc → close_all_panels）。
-        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
-        assert!(!h.notification_dialog.is_open(), "Esc 关闭");
-        assert!(matches!(h.panel, Panel::None));
-    }
-
     /// U7③：/notifications slash → OpenNotifications 打开通知中心。
     #[test]
     fn slash_open_notifications() {
@@ -4664,9 +4764,25 @@ mod tests {
             supported_lifetimes: vec![crate::dialog::PermissionLifetime::Once],
             permission_class: None,
             scope_label: None,
+            matcher_label: None,
+            grant_target_summary: None,
             risk_tags: vec![],
             resource: "cargo test".into(),
         }
+    }
+
+    #[test]
+    fn permission_enter_bypasses_prompt_paste_interception() {
+        let mut h = mk_handler();
+        h.permission_dialog.add_request(mk_permission_req("p1"));
+
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(
+            h.permission_dialog.pending_count(),
+            0,
+            "Enter must reach the visible permission dialog"
+        );
+        assert!(!h.permission_dialog.visible);
     }
 
     fn mk_question_req(id: &str) -> crate::dialog::QuestionRequest {
@@ -4816,9 +4932,16 @@ mod tests {
         // Ctrl+Enter → 换行
         assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Enter))));
         assert_eq!(h.prompt.text(), "hi\n\n\n");
-        // 裸 Enter → 发送（echo 模式无 api，prompt 清空即提交语义发生）
+        // 裸 Enter → 暂存到空闲 tick，给已排队的粘贴字符一次判定机会；
+        // tick 后仍按发送语义清空（echo 模式无 api）。
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
-        assert_eq!(h.prompt.text(), "", "裸 Enter 应提交并清空输入框");
+        assert_eq!(h.prompt.text(), "hi\n\n\n");
+        let action = h
+            .prompt
+            .flush_deferred_enter(std::time::Instant::now() + std::time::Duration::from_millis(100))
+            .expect("idle tick resolves Enter");
+        assert!(h.apply_prompt_action(action));
+        assert_eq!(h.prompt.text(), "", "裸 Enter 应在空闲 tick 提交");
     }
 
     /// U1：Event::Paste 进 prompt——多行保留、CRLF 归一、不产生逐键回显。
@@ -4827,6 +4950,28 @@ mod tests {
         let mut h = mk_handler();
         assert!(h.handle(&Event::Paste("line1\r\nline2 中文".to_string())));
         assert_eq!(h.prompt.text(), "line1\nline2 中文");
+    }
+
+    #[test]
+    fn unbracketed_paste_continuation_accepts_shifted_text_keys() {
+        use revue::event::KeyEvent;
+
+        let mut h = mk_handler();
+        for c in "line-one".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+        h.handle(&Event::Key(KeyEvent::new(Key::Enter)));
+        h.handle(&Event::Key(KeyEvent {
+            key: Key::Char('P'),
+            ctrl: false,
+            alt: false,
+            shift: true,
+        }));
+        for c in "ASTE-LINE-TWO".chars() {
+            h.handle(&Event::Key(KeyEvent::new(Key::Char(c))));
+        }
+
+        assert_eq!(h.prompt.text(), "line-one\nPASTE-LINE-TWO");
     }
 
     /// U1：粘贴引入 slash token 时 popup 同步打开（与逐字输入同口径）。
@@ -5149,6 +5294,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             provider: "p1".into(),
+            available: Some(true),
             variants: vec![],
             context_window: Some(128_000),
             max_output_tokens: None,
@@ -5374,7 +5520,7 @@ mod tests {
         // `t` 键同权威：protected（facade/bridge）行被拦截并 toast 说明原因。
         h.store
             .settings_tools
-            .set(vec![tool("tool_catalog_call", "tool_catalog", true)]);
+            .set(vec![tool("capability", "tool_catalog", true)]);
         h.store.settings_tools_selected.set(1);
         assert!(h.handle_settings_key(&Key::Char('t')));
         let toasts = h.store.toasts.get();

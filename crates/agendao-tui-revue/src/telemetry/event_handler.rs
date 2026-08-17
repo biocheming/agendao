@@ -198,6 +198,11 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 agendao_server_core::runtime_events::ToolCallPhase::Start => ToolPhase::Starting,
                 agendao_server_core::runtime_events::ToolCallPhase::Complete => ToolPhase::Done,
             };
+            // Tool lifecycle is itself authoritative evidence that a tool ran.
+            // Keep it in the transcript as well as the sidebar active-tool set;
+            // some provider paths do not emit a parallel OutputBlock::Tool start,
+            // which previously made the entire tool invocation invisible.
+            session.upsert_tool_call(tool_call_id, tool_name, "", tp);
             session.set_active_tool(tool_call_id, tool_name, tp);
             Some(session_id.clone())
         }
@@ -567,6 +572,35 @@ mod tests {
                 assert!(diff.is_none());
             }
             _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn tool_lifecycle_event_creates_and_completes_transcript_block() {
+        use agendao_server_core::runtime_events::ToolCallPhase;
+
+        let session = SessionStore::new();
+        let event = |phase| FrontendEvent::ToolCallUpsert {
+            session_id: "s1".into(),
+            tool_call_id: "call-1".into(),
+            tool_name: "bash".into(),
+            phase,
+        };
+
+        apply_frontend_event(&event(ToolCallPhase::Start), &session);
+        apply_frontend_event(&event(ToolCallPhase::Complete), &session);
+
+        let messages = session.messages.get();
+        assert_eq!(messages.len(), 1, "one lifecycle must produce one block");
+        match &messages[0] {
+            TranscriptBlock::ToolCall {
+                id, name, phase, ..
+            } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(name, "bash");
+                assert_eq!(*phase, ToolPhase::Done);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 

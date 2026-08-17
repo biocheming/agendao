@@ -52,10 +52,33 @@ pub struct PromptInput {
     /// 故 prompt 的 undo 语义由本层以快照持有（每次变更一记，粒度可预期）。
     undo_stack: Vec<(String, (usize, usize))>,
     redo_stack: Vec<(String, (usize, usize))>,
+    /// Some terminals and tmux paste paths emit clipboard contents as a rapid
+    /// sequence of ordinary key events instead of one bracketed-paste event.
+    /// Track that sequence locally so embedded newlines remain editor input
+    /// rather than becoming prompt submissions.
+    paste_burst: PasteBurst,
 }
 
 /// undo 栈上限（防长会话内存无界；到达上限丢最老快照）。
 const UNDO_STACK_CAP: usize = 128;
+
+// Revue emits an idle Tick after roughly 50ms. Deferring a bare Enter for less
+// than that lets already-queued clipboard keys prove that it was an embedded
+// newline, without using machine-dependent per-key timing heuristics.
+const PASTE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(40);
+
+#[derive(Default)]
+struct PasteBurst {
+    pending_enter_at: Option<std::time::Instant>,
+    active: bool,
+    last_activity_at: Option<std::time::Instant>,
+}
+
+impl PasteBurst {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
 
 fn default_history_path() -> std::path::PathBuf {
     // 输入历史统一收在 agendao_home（~/.agendao,土律·单点权威）。
@@ -116,6 +139,7 @@ impl PromptInput {
             placeholder: "Ask anything...".into(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            paste_burst: PasteBurst::default(),
         }
     }
 
@@ -224,7 +248,7 @@ impl PromptInput {
         }
 
         match key {
-            Key::Enter => {
+            Key::Enter | Key::Char('\n' | '\r') => {
                 let text = self.editor.text().trim().to_string();
                 if !text.is_empty() {
                     self.history.push(text.clone());
@@ -282,6 +306,71 @@ impl PromptInput {
         }
     }
 
+    /// Intercept an unbracketed clipboard stream before panel and submit-key
+    /// routing. A bare Enter is held until an idle Tick. If another text key is
+    /// already queued, the held Enter is an embedded paste newline; otherwise
+    /// [`flush_deferred_enter`](Self::flush_deferred_enter) submits it after the
+    /// input queue becomes idle.
+    pub(crate) fn intercept_unbracketed_paste_key(
+        &mut self,
+        key: &Key,
+        now: std::time::Instant,
+    ) -> bool {
+        match key {
+            Key::Enter | Key::Char('\n' | '\r') => {
+                if self.paste_burst.active {
+                    self.insert_newline();
+                    self.paste_burst.last_activity_at = Some(now);
+                    return true;
+                }
+                if self.paste_burst.pending_enter_at.take().is_some() {
+                    // Two queued newlines: materialize both and enter paste
+                    // mode so subsequent blank/trailing lines stay editable.
+                    self.insert_newline();
+                    self.insert_newline();
+                    self.paste_burst.active = true;
+                    self.paste_burst.last_activity_at = Some(now);
+                    return true;
+                }
+                self.paste_burst.pending_enter_at = Some(now);
+                true
+            }
+            Key::Char(_) => {
+                if self.paste_burst.pending_enter_at.take().is_some() {
+                    self.insert_newline();
+                    self.paste_burst.active = true;
+                }
+                if self.paste_burst.active {
+                    self.paste_burst.last_activity_at = Some(now);
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Resolve a deferred bare Enter once the input queue has been idle long
+    /// enough. The returned action is routed through the same submit authority
+    /// as an ordinary prompt key.
+    pub(crate) fn flush_deferred_enter(&mut self, now: std::time::Instant) -> Option<PromptAction> {
+        if self.paste_burst.active
+            && self
+                .paste_burst
+                .last_activity_at
+                .is_some_and(|last| now.saturating_duration_since(last) >= PASTE_IDLE_TIMEOUT)
+        {
+            self.paste_burst.active = false;
+            self.paste_burst.last_activity_at = None;
+        }
+
+        let pending_at = self.paste_burst.pending_enter_at?;
+        if now.saturating_duration_since(pending_at) < PASTE_IDLE_TIMEOUT {
+            return None;
+        }
+        self.paste_burst.pending_enter_at = None;
+        Some(self.handle_key(&Key::Enter))
+    }
+
     /// Shift+Enter / Ctrl+Enter 换行（Enter 发送语义不变——keymap 单点路由）。
     pub fn insert_newline(&mut self) {
         self.focused = true;
@@ -322,6 +411,7 @@ impl PromptInput {
         if normalized.is_empty() {
             return;
         }
+        self.paste_burst.reset();
         self.focused = true;
         self.snapshot_undo();
         self.editor.insert_str(&normalized);
@@ -622,6 +712,107 @@ mod tests {
         assert_eq!(p.text(), "hello\nworld\n!");
         assert!(p.is_focused());
         assert_eq!(p.visible_height_for(80), 3);
+    }
+
+    fn route_unbracketed_key(
+        prompt: &mut PromptInput,
+        key: Key,
+        at: std::time::Instant,
+    ) -> PromptAction {
+        if prompt.intercept_unbracketed_paste_key(&key, at) {
+            PromptAction::Consumed
+        } else {
+            prompt.handle_key(&key)
+        }
+    }
+
+    #[test]
+    fn rapid_unbracketed_multiline_paste_never_submits_partial_lines() {
+        let mut prompt = PromptInput::new();
+        let start = std::time::Instant::now();
+        let mut offset_us = 0;
+        let mut route = |key| {
+            offset_us += 100;
+            route_unbracketed_key(
+                &mut prompt,
+                key,
+                start + std::time::Duration::from_micros(offset_us),
+            )
+        };
+
+        for key in [
+            Key::Char('o'),
+            Key::Char('n'),
+            Key::Char('e'),
+            Key::Char('\n'),
+            Key::Char('t'),
+            Key::Char('w'),
+            Key::Char('o'),
+            Key::Char('\r'),
+            Key::Char('三'),
+        ] {
+            assert!(
+                !matches!(route(key), PromptAction::Submit(_)),
+                "paste stream must stay inside the editor"
+            );
+        }
+        assert_eq!(prompt.text(), "one\ntwo\n三");
+    }
+
+    #[test]
+    fn unbracketed_paste_preserves_single_char_blank_and_trailing_lines() {
+        let mut prompt = PromptInput::new();
+        let start = std::time::Instant::now();
+        let mut offset_us = 0;
+        for key in [
+            Key::Char('{'),
+            Key::Char('\n'),
+            Key::Char('\n'),
+            Key::Char('}'),
+            Key::Char('\n'),
+        ] {
+            offset_us += 100;
+            let action = route_unbracketed_key(
+                &mut prompt,
+                key,
+                start + std::time::Duration::from_micros(offset_us),
+            );
+            assert!(!matches!(action, PromptAction::Submit(_)));
+        }
+        assert_eq!(prompt.text(), "{\n\n}\n");
+    }
+
+    #[test]
+    fn ordinary_enter_after_human_speed_typing_still_submits() {
+        let mut prompt = PromptInput::new();
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            route_unbracketed_key(&mut prompt, Key::Char('o'), start),
+            PromptAction::Consumed
+        ));
+        assert!(matches!(
+            route_unbracketed_key(
+                &mut prompt,
+                Key::Char('k'),
+                start + std::time::Duration::from_millis(80),
+            ),
+            PromptAction::Consumed
+        ));
+        assert!(matches!(
+            route_unbracketed_key(
+                &mut prompt,
+                Key::Enter,
+                start + std::time::Duration::from_millis(160),
+            ),
+            PromptAction::Consumed
+        ));
+        match prompt
+            .flush_deferred_enter(start + std::time::Duration::from_millis(240))
+            .expect("idle tick should resolve bare Enter")
+        {
+            PromptAction::Submit(text) => assert_eq!(text, "ok"),
+            _ => panic!("ordinary bare Enter must submit after one idle tick"),
+        }
     }
 
     #[test]

@@ -61,6 +61,23 @@ impl HttpTransport {
         self.client.list_sessions(None, Some(100)).await
     }
 
+    pub async fn create_session(
+        &self,
+        request: agendao_api::CreateSessionRequest,
+    ) -> Result<agendao_api::SessionInfo> {
+        self.client
+            .create_session(request.scheduler, request.directory)
+            .await
+    }
+
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+    ) -> Result<agendao_api::SessionInfo> {
+        self.client.fork_session(session_id, message_id).await
+    }
+
     pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
         self.client.get_workspace_context().await
     }

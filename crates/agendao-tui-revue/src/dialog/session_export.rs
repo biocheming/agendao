@@ -52,13 +52,14 @@ impl SessionExportDialog {
                 self.close();
                 None
             }
-            Key::Char('c') => {
-                self.copied = true;
-                Some(ExportAction::Copy(self.messages_text.clone()))
-            }
+            Key::Char('c') => Some(ExportAction::Copy(self.messages_text.clone())),
             Key::Char('s') => Some(ExportAction::Share(self.session_id.clone())),
             _ => None,
         }
+    }
+
+    pub fn mark_copied(&mut self) {
+        self.copied = true;
     }
 
     pub fn render(&self, ctx: &mut RenderContext, geom: backdrop::PromptGeom) {

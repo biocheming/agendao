@@ -680,7 +680,9 @@ export function ComposerPanel({
     const used = new Set<string>();
     for (const recent of recentModels) {
       const provider = providers.find((item) => item.id === recent.provider);
-      const model = provider?.models?.find((item) => item.id === recent.model);
+      const model = provider?.models?.find(
+        (item) => item.id === recent.model && item.available !== false,
+      );
       if (!provider || !model) continue;
       const key = `${provider.id}/${model.id}`;
       if (used.has(key)) continue;
@@ -1106,6 +1108,7 @@ export function ComposerPanel({
                                     {(provider.models ?? [])
                                       .filter(
                                         (model) =>
+                                          model.available !== false &&
                                           !recentModelKeys.has(`${provider.id}/${model.id}`),
                                       )
                                       .map((model) => {
