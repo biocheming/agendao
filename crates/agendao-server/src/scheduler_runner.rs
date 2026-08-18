@@ -100,6 +100,67 @@ struct SchedulerAgentObserver {
     tool_call_count: AtomicU64,
     error_tool_call_count: AtomicU64,
     skill_write_count: AtomicU64,
+    /// Per-step tool tally flushed as ONE ToolBatchCompleted seam at the
+    /// step boundary — the server-side batch fact source for the task
+    /// ledger on the scheduler path (the session-layer summary is only
+    /// written by the direct path).
+    step_tallies: std::sync::Mutex<StepToolTallies>,
+}
+
+#[derive(Default)]
+struct StepToolTally {
+    tools_used: Vec<String>,
+    success_count: u32,
+    error_count: u32,
+    error_tools: Vec<String>,
+}
+
+#[derive(Default)]
+struct StepToolTallies {
+    by_node: HashMap<String, StepToolTally>,
+}
+
+impl StepToolTallies {
+    fn begin(&mut self, node_path: &str) {
+        self.by_node
+            .insert(node_path.to_string(), StepToolTally::default());
+    }
+
+    fn record(&mut self, node_path: &str, tool: &str, is_error: bool) {
+        let tally = self.by_node.entry(node_path.to_string()).or_default();
+        tally.tools_used.push(tool.to_string());
+        if is_error {
+            tally.error_count += 1;
+            tally.error_tools.push(tool.to_string());
+        } else {
+            tally.success_count += 1;
+        }
+    }
+
+    fn finish(&mut self, node_path: &str) -> StepToolTally {
+        self.by_node.remove(node_path).unwrap_or_default()
+    }
+}
+
+#[derive(Clone)]
+struct SchedulerEvaluatorScope {
+    goal_generation: u64,
+    covered_criteria: Vec<String>,
+}
+
+fn scheduler_evaluator_prompt(goal: &str, criteria: &[String]) -> String {
+    let criteria_text = if criteria.is_empty() {
+        "(no explicit acceptance criteria)".to_string()
+    } else {
+        criteria
+            .iter()
+            .map(|criterion| format!("- {criterion}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "Judge whether the candidate fully satisfies the original goal and every listed acceptance criterion.\n\nOriginal goal:\n{goal}\n\nAcceptance criteria:\n{criteria_text}"
+    )
 }
 
 #[async_trait]
@@ -204,6 +265,13 @@ impl AgentLoopObserver for SchedulerAgentObserver {
         result: &ToolExecution,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().timestamp_millis();
+        {
+            let mut tallies = self
+                .step_tallies
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tallies.record(context.node_path, call.tool.as_str(), result.is_error);
+        }
         let metadata = result
             .metadata
             .clone()
@@ -378,6 +446,71 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn step_started(
+        &self,
+        context: &AgentObservationContext<'_>,
+        _step: u32,
+    ) -> Result<(), String> {
+        let mut tallies = self
+            .step_tallies
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tallies.begin(context.node_path);
+        Ok(())
+    }
+
+    async fn step_finished(
+        &self,
+        context: &AgentObservationContext<'_>,
+        _step: u32,
+        _usage: &Usage,
+    ) -> Result<(), String> {
+        let tally = {
+            let mut tallies = self
+                .step_tallies
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tallies.finish(context.node_path)
+        };
+        if tally.tools_used.is_empty() {
+            return Ok(());
+        }
+        let goal_status = if tally.error_count == 0 {
+            agendao_types::repair::ToolBatchGoalStatus::Advanced
+        } else if tally.success_count == 0 {
+            agendao_types::repair::ToolBatchGoalStatus::Blocked
+        } else {
+            agendao_types::repair::ToolBatchGoalStatus::Mixed
+        };
+        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+            &self.state,
+            &self.session_id,
+            agendao_types::task_ledger::TaskLedgerSeamFact::ToolBatchCompleted {
+                summary: agendao_types::repair::ToolBatchSummary {
+                    tools_used: tally.tools_used,
+                    success_count: tally.success_count,
+                    error_count: tally.error_count,
+                    error_kinds: tally
+                        .error_tools
+                        .into_iter()
+                        .map(|tool| format!("{tool}:error"))
+                        .collect(),
+                    goal_status,
+                    blocked_by: Vec::new(),
+                    artifacts_created: Vec::new(),
+                    pending_follow_up: Vec::new(),
+                    // A failed call is an observation, not proof that a
+                    // question remains unresolved after the next model step.
+                    unresolved_items: Vec::new(),
+                    recommended_next_step: None,
+                    repair_events: Vec::new(),
+                },
+            },
+        )
+        .await;
         Ok(())
     }
 
@@ -675,14 +808,35 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
                 .collect(),
         },
     );
+    let evaluator_ledger =
+        crate::session_runtime::task_ledger::task_ledger_snapshot(&input.state, &input.session_id)
+            .await
+            .unwrap_or_else(|_| {
+                agendao_types::task_ledger::SessionTaskLedger::empty(&input.session_id)
+            });
+    let evaluator_scope = SchedulerEvaluatorScope {
+        goal_generation: evaluator_ledger.goal_generation,
+        covered_criteria: evaluator_ledger
+            .goal
+            .as_ref()
+            .map(|goal| goal.acceptance_criteria.clone())
+            .unwrap_or_default(),
+    };
+    // The evaluator reviews the goal the LEDGER carries — the same source
+    // the checkpoint's generation/criteria come from. Reviewing input.goal
+    // while stamping ledger generations produces evidence about a goal the
+    // ledger may no longer hold (preset or mid-run rewritten).
+    let evaluator_goal_text = evaluator_ledger
+        .goal
+        .as_ref()
+        .map(|goal| goal.statement.clone())
+        .unwrap_or_else(|| input.goal.clone());
+    let evaluator_prompt =
+        scheduler_evaluator_prompt(&evaluator_goal_text, &evaluator_scope.covered_criteria);
     let evaluator = ModelEvaluatorBackend::new(
         input.provider,
         input.request,
-        BTreeMap::from([(
-            EvaluatorId::from("quality"),
-            "Judge whether the candidate fully satisfies the original goal and its constraints."
-                .to_string(),
-        )]),
+        BTreeMap::from([(EvaluatorId::from("quality"), evaluator_prompt)]),
     );
     let capabilities = WorkspaceCapabilityHost::new(input.directory.clone().into())?;
     let cancellation = CancellationFlag::default();
@@ -701,6 +855,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         tool_call_count: AtomicU64::new(0),
         error_tool_call_count: AtomicU64::new(0),
         skill_write_count: AtomicU64::new(0),
+        step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
     };
     let used_skill_names = selected_skill_tool_surfaces(blueprint.blueprint())
         .keys()
@@ -710,6 +865,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         input.state.clone(),
         input.session_id.clone(),
         event_rx,
+        evaluator_scope,
     ));
     let execution = SchedulerEngine::new(
         &model,
@@ -797,6 +953,7 @@ async fn project_scheduler_events(
     state: Arc<ServerState>,
     session_id: String,
     mut events: tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
+    evaluator_scope: SchedulerEvaluatorScope,
 ) {
     use agendao_server_core::runtime_control::{ExecutionPatch, FieldUpdate};
 
@@ -858,6 +1015,21 @@ async fn project_scheduler_events(
                 let metadata = node_metadata.entry(path.clone()).or_default();
                 metadata.insert("path".to_string(), serde_json::json!(&path));
                 metadata.insert("evaluation".to_string(), serde_json::json!(outcome));
+                // Task-governance seam: a passed evaluation gate is
+                // current-generation evidence (criterion mapping stays
+                // explicit — the evaluator validates the node, not named
+                // acceptance criteria).
+                crate::session_runtime::task_ledger_reducer::dispatch_seam(
+                    &state,
+                    &session_id,
+                    agendao_types::task_ledger::TaskLedgerSeamFact::EvaluatorGateCompleted {
+                        node_path: path.clone(),
+                        // `outcome` is already the &str projection above.
+                        passed: outcome == "pass",
+                        goal_generation: evaluator_scope.goal_generation,
+                    },
+                )
+                .await;
                 state
                     .runtime_telemetry
                     .update_scheduler_node(
@@ -2157,6 +2329,36 @@ fn tool_effect(tool: &str) -> EffectClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduler_step_tallies_are_isolated_by_node_path() {
+        let mut tallies = StepToolTallies::default();
+        tallies.begin("root/left");
+        tallies.begin("root/right");
+        tallies.record("root/left", "bash", true);
+        tallies.record("root/right", "read", false);
+
+        let left = tallies.finish("root/left");
+        assert_eq!(left.tools_used, vec!["bash"]);
+        assert_eq!(left.error_count, 1);
+        let right = tallies.finish("root/right");
+        assert_eq!(right.tools_used, vec!["read"]);
+        assert_eq!(right.success_count, 1);
+    }
+
+    #[test]
+    fn scheduler_evaluator_prompt_names_goal_and_every_criterion() {
+        let prompt = scheduler_evaluator_prompt(
+            "ship median",
+            &[
+                "three tests pass".to_string(),
+                "empty input errors".to_string(),
+            ],
+        );
+        assert!(prompt.contains("Original goal:\nship median"));
+        assert!(prompt.contains("- three tests pass"));
+        assert!(prompt.contains("- empty input errors"));
+    }
     use crate::session_runtime::memory::RuntimeMemoryAuthority;
     use agendao_config::ConfigStore;
     use agendao_memory::MemoryAuthority;
@@ -2213,6 +2415,7 @@ mod tests {
             tool_call_count: AtomicU64::new(0),
             error_tool_call_count: AtomicU64::new(0),
             skill_write_count: AtomicU64::new(0),
+            step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
         };
         let agent = AgentId::from("worker");
         let context = AgentObservationContext {

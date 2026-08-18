@@ -2047,17 +2047,6 @@ async fn session_prompt_inner(
                 },
             )
             .await;
-            task_state
-                .runtime_telemetry
-                .finish_scheduler_run(&session_id)
-                .await;
-            if task_reserved_run.is_some() {
-                task_state
-                    .prompt_runner
-                    .release_reserved_session_run(&session_id)
-                    .await;
-            }
-
             session = task_state
                 .sessions
                 .lock()
@@ -2210,9 +2199,17 @@ async fn session_prompt_inner(
                         .await;
                     }
                 }
-                if !cancellation.is_cancelled() {
-                    // Normal end: complete on clean typed evidence, else the
-                    // gate report below carries the finding.
+                // Keep the scheduler cancellation token registered until the
+                // final assistant message and last batch are authoritative.
+                // Only then verify the workspace and earn completion.
+                let verification =
+                    crate::session_runtime::task_ledger_reducer::verify_goal_criteria(
+                        &task_state,
+                        &session_id,
+                        cancellation.clone(),
+                    )
+                    .await;
+                if verification.allows_final_commit() && !cancellation.is_cancelled() {
                     crate::session_runtime::task_ledger_reducer::dispatch_seam(
                         &task_state,
                         &session_id,
@@ -2254,6 +2251,20 @@ async fn session_prompt_inner(
                         );
                     }
                 }
+            }
+
+            // The response, final batch, verifier, completion/interrupt seam,
+            // and delivery report are now settled. Retire the cancellation
+            // authority only after that full run lifecycle has closed.
+            task_state
+                .runtime_telemetry
+                .finish_scheduler_run(&session_id)
+                .await;
+            if task_reserved_run.is_some() {
+                task_state
+                    .prompt_runner
+                    .release_reserved_session_run(&session_id)
+                    .await;
             }
 
             broadcast_session_reconcile(

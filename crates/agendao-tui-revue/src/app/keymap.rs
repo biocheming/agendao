@@ -1204,6 +1204,13 @@ impl AppHandler {
                                 return true;
                             }
                         }
+                        Key::Char('t') => {
+                            // Phase 5：Ctrl+T → Task State 面板（会话任务
+                            // 治理账本只读视图；无账本时显示 opt-in 提示）。
+                            self.task_state_dialog.open();
+                            self.panel = Panel::TaskState;
+                            return true;
+                        }
                         Key::Char('p') => {
                             // U3：palette 与 prompt 单点耦合——空输入框补 "/"
                             // 开补全；已有 "/" 开头文本则同步 popup；有草稿时
@@ -5150,6 +5157,20 @@ mod tests {
         h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('p'))));
         assert_eq!(h.prompt.text(), "draft", "草稿不得被 palette 覆盖");
         assert_eq!(h.panel, Panel::None);
+    }
+
+    #[test]
+    fn ctrl_t_opens_task_state_and_escape_closes_it() {
+        let mut h = mk_handler();
+
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('t')))));
+        assert_eq!(h.panel, Panel::TaskState);
+        assert!(h.task_state_dialog.visible);
+        assert!(h.panel_owns_wheel());
+
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert_eq!(h.panel, Panel::None);
+        assert!(!h.task_state_dialog.visible);
     }
 
     /// U1：ModelSelect 打开时粘贴进过滤 query。

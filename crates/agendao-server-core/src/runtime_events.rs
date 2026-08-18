@@ -137,6 +137,7 @@ pub struct DiffEntry {
 /// full transport × event coverage matrix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // event bus clones; boxing hot-path events costs more than the size spread
 pub enum ServerEvent {
     #[serde(rename = "output_block")]
     OutputBlock {

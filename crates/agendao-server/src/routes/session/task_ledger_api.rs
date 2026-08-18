@@ -52,6 +52,7 @@ pub(crate) async fn patch_task_ledger(
     Path(id): Path<String>,
     Json(req): Json<TaskLedgerPatchRequest>,
 ) -> Result<Json<TaskLedgerWriteResponse>> {
+    crate::session_runtime::task_ledger::validate_external_op(&req.op)?;
     let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, req.op).await?;
     Ok(Json(TaskLedgerWriteResponse {
         ledger,
@@ -86,21 +87,17 @@ pub(crate) async fn add_task_ledger_checkpoint(
             "checkpoint claim must not be empty".into(),
         ));
     }
-    let (ledger, cause) = apply_task_ledger_op(
-        &state,
-        &id,
-        req.expected_revision,
-        TaskLedgerOp::AddCheckpoint {
-            claim: req.claim,
-            verifier: req.verifier,
-            coverage: req.coverage,
-            covered_criteria: req.covered_criteria,
-            evidence_artifact_ids: req.evidence_artifact_ids,
-            source_stage_id: req.source_stage_id,
-            supersedes: req.supersedes,
-        },
-    )
-    .await?;
+    let op = TaskLedgerOp::AddCheckpoint {
+        claim: req.claim,
+        verifier: req.verifier,
+        coverage: req.coverage,
+        covered_criteria: req.covered_criteria,
+        evidence_artifact_ids: req.evidence_artifact_ids,
+        source_stage_id: req.source_stage_id,
+        supersedes: req.supersedes,
+    };
+    crate::session_runtime::task_ledger::validate_external_op(&op)?;
+    let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, op).await?;
     Ok(Json(TaskLedgerWriteResponse {
         ledger,
         cause,
@@ -156,24 +153,76 @@ pub(crate) async fn close_task_ledger_open(
     Path((id, open_id)): Path<(String, String)>,
     Json(req): Json<CloseOpenRequest>,
 ) -> Result<Json<TaskLedgerWriteResponse>> {
-    let (ledger, cause) = apply_task_ledger_op(
-        &state,
-        &id,
-        req.expected_revision,
-        TaskLedgerOp::CloseOpenWithCheckpoint {
-            open_id,
-            claim: req.claim,
-            verifier: req.verifier,
-            coverage: req.coverage,
-            covered_criteria: req.covered_criteria,
-            evidence_artifact_ids: req.evidence_artifact_ids,
-            source_stage_id: req.source_stage_id,
-        },
-    )
-    .await?;
+    let op = TaskLedgerOp::CloseOpenWithCheckpoint {
+        open_id,
+        claim: req.claim,
+        verifier: req.verifier,
+        coverage: req.coverage,
+        covered_criteria: req.covered_criteria,
+        evidence_artifact_ids: req.evidence_artifact_ids,
+        source_stage_id: req.source_stage_id,
+    };
+    crate::session_runtime::task_ledger::validate_external_op(&op)?;
+    let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, op).await?;
     Ok(Json(TaskLedgerWriteResponse {
         ledger,
         cause,
         metadata_key: TASK_LEDGER_METADATA_KEY,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agendao_types::task_ledger::VerifierRef;
+
+    fn checkpoint_op(verifier: VerifierRef) -> TaskLedgerOp {
+        TaskLedgerOp::AddCheckpoint {
+            claim: "c".to_string(),
+            verifier,
+            coverage: VerificationCoverage {
+                scope: "s".to_string(),
+            },
+            covered_criteria: vec![],
+            evidence_artifact_ids: vec![],
+            source_stage_id: None,
+            supersedes: None,
+        }
+    }
+
+    #[test]
+    fn external_transports_cannot_submit_machine_verifiers() {
+        // Forging criterion evidence over the wire must be impossible:
+        // deterministic-check and evaluator verifiers are seam-internal.
+        for verifier in [
+            VerifierRef::DeterministicCheck {
+                description: "x".to_string(),
+            },
+            VerifierRef::Evaluator {
+                name: "y".to_string(),
+            },
+        ] {
+            let err =
+                crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(verifier))
+                    .expect_err("machine verifier must be rejected");
+            assert!(err.to_string().contains("cannot be"), "{err}");
+        }
+        // Explicit user confirmation remains the legitimate external path.
+        assert!(
+            crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(
+                VerifierRef::UserConfirmation {
+                    actor: "u".to_string()
+                }
+            ))
+            .is_ok()
+        );
+        // Non-checkpoint ops are untouched.
+        assert!(crate::session_runtime::task_ledger::validate_external_op(
+            &TaskLedgerOp::SetNext {
+                statement: "n".to_string(),
+                actor: None,
+            }
+        )
+        .is_ok());
+    }
 }

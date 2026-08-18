@@ -373,6 +373,8 @@ async fn handle_apply_task_ledger_op(
             message: "Invalid params".to_string(),
         }
     })?;
+    crate::session_runtime::task_ledger::validate_external_op(&req.op)
+        .map_err(|e| to_rpc_error_from_api(&e))?;
     let (ledger, cause) = crate::session_runtime::task_ledger::apply_task_ledger_op(
         state,
         &req.session_id,

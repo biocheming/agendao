@@ -94,7 +94,7 @@ class PermissionWatcher(threading.Thread):
                 if sid not in allowed:
                     continue
                 try:
-                    http("POST", f"/permission/{pid}/reply", {"reply": "turn"}, timeout=5)
+                    http("POST", f"/permission/{pid}/reply", {"reply": "once"}, timeout=5)
                     # Mark seen ONLY after success so a transient failure is
                     # retried on the next poll instead of being dropped.
                     seen.add(pid)
@@ -121,6 +121,13 @@ TASKS = {
             "空列表报错三种情况；运行测试并确认全部通过。"
         ),
         "ledger_goal": "median shipped with 3 passing stdlib tests",
+        "ledger_acceptance": ["unittest discover passes 3 cases"],
+        "ledger_checks": [
+            {
+                "criterion": "unittest discover passes 3 cases",
+                "command": "python3 -m unittest discover -s tests -v",
+            }
+        ],
         "ledger_next": "implement median in stats.py",
         "fixture": {
             "README.md": "# Task fixture\n\nA tiny stats library under construction.\n",
@@ -152,7 +159,8 @@ def create_ledger(session_id, task):
                 "op": "create",
                 "goal": {
                     "statement": task["ledger_goal"],
-                    "acceptance_criteria": ["unittest discover passes 3 cases"],
+                    "acceptance_criteria": task["ledger_acceptance"],
+                    "criterion_checks": task.get("ledger_checks", []),
                     "set_by": "user",
                     "set_at": int(time.time() * 1000),
                 },
@@ -177,9 +185,12 @@ def run_one(binary, model, task_name, task, group, seed, workroot):
     if group == "ledger":
         create_ledger(session_id, task)
 
-    message = task["prompt"]
+    workspace_instruction = (
+        f"只在当前会话工作目录 {directory} 内工作；不要搜索、读取或修改该目录之外的路径。"
+    )
+    message = workspace_instruction + task["prompt"]
     if group == "skill":
-        message = task["skill_prefix"] + task["prompt"]
+        message = workspace_instruction + task["skill_prefix"] + task["prompt"]
 
     started = time.time()
     command = [
@@ -245,6 +256,17 @@ def run_one(binary, model, task_name, task, group, seed, workroot):
     telemetry = detail.get("telemetry") or {}
     usage = telemetry.get("usage") or {}
     repair = telemetry.get("tool_repair_summary") or {}
+    checkpoints = [
+        {
+            "id": checkpoint.get("id"),
+            "goal_generation": checkpoint.get("goal_generation"),
+            "covered_criteria": checkpoint.get("covered_criteria", []),
+            "verifier": checkpoint.get("verifier"),
+            "coverage": checkpoint.get("coverage"),
+            "superseded_by": checkpoint.get("superseded_by"),
+        }
+        for checkpoint in ledger.get("verified", [])
+    ]
     record = {
         # Binding evidence: exactly one session in the fixture directory
         # (the prepared one) and it carries run messages.
@@ -261,6 +283,11 @@ def run_one(binary, model, task_name, task, group, seed, workroot):
         "verify_tail": verify_output,
         "ledger_revision": ledger.get("revision", 0),
         "ledger_status": ledger.get("status"),
+        "ledger_goal_generation": ledger.get("goal_generation"),
+        "ledger_checkpoints": checkpoints,
+        "native_ledger_completed": (
+            ledger.get("status") == "completed" if group == "ledger" else None
+        ),
         "ledger_open": len(
             [q for q in ledger.get("open", []) if not q.get("closed_by_checkpoint_id")]
         ),
@@ -315,6 +342,16 @@ def summarize(records):
                 1
                 for r in items
                 if r["exit_code"] == 0 and not r["verify_ok"] and r.get("ledger_open", 0) == 0
+            ),
+            "unsafe_native_completions": sum(
+                1
+                for r in items
+                if r.get("native_ledger_completed") and not r.get("verify_ok")
+            ),
+            "native_ledger_completion_rate": (
+                round(sum(1 for r in items if r.get("native_ledger_completed")) / n, 3)
+                if group == "ledger"
+                else None
             ),
             # Isolation contract violations — any non-zero count invalidates
             # the arm's data.

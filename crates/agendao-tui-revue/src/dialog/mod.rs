@@ -23,6 +23,7 @@ pub mod session_list;
 pub mod session_rename;
 pub mod skill_list;
 pub mod skill_proposal;
+pub mod task_state;
 
 pub use agent_select::{AgentEntry, AgentSelectDialog};
 pub use confirm::ConfirmDialog;
@@ -48,3 +49,4 @@ pub use session_list::{SessionEntry, SessionListAction, SessionListDialog};
 pub use session_rename::SessionRenameDialog;
 pub use skill_list::{SkillEntry, SkillListAction, SkillListDialog};
 pub use skill_proposal::{SkillProposalAction, SkillProposalDialog, SkillProposalEntry};
+pub use task_state::TaskStateDialog;

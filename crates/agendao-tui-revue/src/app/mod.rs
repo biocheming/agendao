@@ -58,6 +58,7 @@ use crate::dialog::{
     ModelEditDialog, ModelSelectDialog, PermissionDialog, PluginEditDialog, ProviderEditDialog,
     QuestionDialog, RecoveryListDialog, SessionExportDialog, SessionForkDialog, SessionListDialog,
     SessionRenameDialog, SkillListDialog, SkillProposalDialog, StashDialog, StashEntry,
+    TaskStateDialog,
 };
 use crate::input::{PromptInput, SlashPopup};
 use crate::screen::{build_render_units, transcript_total_height};
@@ -408,6 +409,7 @@ pub(crate) enum Panel {
     Export,
     Confirm,
     Help,
+    TaskState,
     SkillList,
     SkillProposal,
     McpList,
@@ -499,6 +501,7 @@ pub(crate) struct AppHandler {
     /// close，回 None 即可。解决时 `mem::replace` 取出即复位，不跨轮悬空。
     pub(crate) confirm_return: Panel,
     pub(crate) help: HelpDialog,
+    pub(crate) task_state_dialog: TaskStateDialog,
     pub(crate) skill_list: SkillListDialog,
     pub(crate) skill_proposal: SkillProposalDialog,
     pub(crate) mcp_list: McpListDialog,
@@ -1061,6 +1064,7 @@ impl AppHandler {
             pending_confirm: None,
             confirm_return: Panel::None,
             help: HelpDialog::new(),
+            task_state_dialog: TaskStateDialog::new(),
             skill_list: SkillListDialog::new(),
             skill_proposal: SkillProposalDialog::new(),
             mcp_list: McpListDialog::new(),
@@ -1883,6 +1887,7 @@ impl View for RootView {
             Panel::Export => "export",
             Panel::Confirm => "confirm",
             Panel::Help => "help",
+            Panel::TaskState => "taskState",
             Panel::SkillList => "skills",
             Panel::SkillProposal => "proposals",
             Panel::McpList => "mcps",
@@ -2143,6 +2148,10 @@ impl View for RootView {
                 confirm_rect = h.confirm_dialog.render(ctx, geom);
             }
             Panel::Help => h.help.render(ctx, geom),
+            Panel::TaskState => {
+                let ledger = h.active_session.task_ledger.get();
+                h.task_state_dialog.render(ctx, geom, ledger.as_deref());
+            }
             Panel::SkillList => h.skill_list.render(ctx, geom),
             Panel::SkillProposal => h.skill_proposal.render(ctx, geom),
             Panel::McpList => h.mcp_list.render(ctx, geom),

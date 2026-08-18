@@ -137,6 +137,20 @@ impl StallWindows {
         }
     }
 
+    /// Test-only: how many frames the session's window currently holds.
+    #[cfg(test)]
+    pub fn frame_count(&self, session_id: &str) -> usize {
+        self.windows
+            .lock()
+            .map(|windows| {
+                windows
+                    .get(session_id)
+                    .map(|window| window.frames.len())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
     pub fn forget(&self, session_id: &str) {
         if let Ok(mut windows) = self.windows.lock() {
             windows.remove(session_id);
@@ -270,6 +284,23 @@ mod tests {
         assert!(observations
             .iter()
             .all(|observation| !matches!(observation, StallObservation::NextUnchanged { .. })));
+    }
+
+    #[test]
+    fn noop_seam_frames_record_without_revision() {
+        // The scheduler success batch (Advanced, nothing unresolved, no
+        // recommended next) reduces to zero ops; the observation window
+        // must still see it — "nothing changed" IS the observation.
+        let mut window = StallWindow::default();
+        let ledger = ledger_with(TaskLedgerStatus::Active, "n", 1, 0);
+        for _ in 0..2 {
+            let out = window.push_frame(&ledger);
+            assert!(out.is_empty(), "partial window observes nothing");
+        }
+        let out = window.push_frame(&ledger);
+        assert!(out
+            .iter()
+            .any(|observation| matches!(observation, StallObservation::NextUnchanged { .. })));
     }
 
     #[test]

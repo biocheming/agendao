@@ -100,10 +100,7 @@ impl PlannerBackend for ModelPlannerBackend {
         let content = response
             .choices
             .first()
-            .and_then(|choice| match &choice.message.content {
-                Content::Text(text) => Some(text.as_str()),
-                Content::Parts(parts) => parts.iter().find_map(|part| part.text.as_deref()),
-            })
+            .and_then(|choice| visible_text_content(&choice.message.content))
             .ok_or_else(|| "planner returned no decision".to_string())?;
         serde_json::from_str(content.trim())
             .map_err(|error| format!("invalid planner decision: {error}"))
@@ -199,6 +196,23 @@ impl ModelEvaluatorBackend {
     }
 }
 
+fn visible_text_content(content: &Content) -> Option<String> {
+    // Multi-part responses (segmented JSON, split PASS markers) must not be
+    // truncated at the first text part — concatenate all visible text.
+    match content {
+        Content::Text(text) => Some(text.clone()),
+        Content::Parts(parts) => {
+            let joined = parts
+                .iter()
+                .filter(|part| part.content_type == "text")
+                .filter_map(|part| part.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
+            (!joined.is_empty()).then_some(joined)
+        }
+    }
+}
+
 #[async_trait]
 impl EvaluatorBackend for ModelEvaluatorBackend {
     async fn evaluate(
@@ -226,10 +240,7 @@ impl EvaluatorBackend for ModelEvaluatorBackend {
         let text = response
             .choices
             .first()
-            .and_then(|choice| match &choice.message.content {
-                Content::Text(text) => Some(text.as_str()),
-                Content::Parts(parts) => parts.iter().find_map(|part| part.text.as_deref()),
-            })
+            .and_then(|choice| visible_text_content(&choice.message.content))
             .unwrap_or_default()
             .trim()
             .to_ascii_uppercase();
@@ -238,6 +249,12 @@ impl EvaluatorBackend for ModelEvaluatorBackend {
             "FAIL" => Evaluation::Fail,
             _ => Evaluation::Indeterminate,
         };
+        tracing::debug!(
+            evaluator = evaluator.as_str(),
+            visible_response = %text,
+            verdict = ?evaluation,
+            "scheduler evaluator classified visible response"
+        );
         let usage = response.usage.map_or_else(Default::default, |usage| {
             agendao_orchestrator::context::Usage {
                 input_tokens: usage.prompt_tokens,
@@ -249,5 +266,29 @@ impl EvaluatorBackend for ModelEvaluatorBackend {
             }
         });
         Ok(EvaluationOutcome { evaluation, usage })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_text_content;
+    use agendao_provider::{Content, ContentPart};
+
+    #[test]
+    fn visible_text_content_skips_reasoning_parts() {
+        let content = Content::Parts(vec![
+            ContentPart::reasoning("internal analysis"),
+            ContentPart::text("PASS"),
+        ]);
+        assert_eq!(visible_text_content(&content), Some("PASS".to_string()));
+    }
+
+    #[test]
+    fn visible_text_content_accepts_plain_text_and_rejects_reasoning_only() {
+        let plain = Content::Text("PASS".to_string());
+        assert_eq!(visible_text_content(&plain), Some("PASS".to_string()));
+
+        let reasoning_only = Content::Parts(vec![ContentPart::reasoning("PASS")]);
+        assert_eq!(visible_text_content(&reasoning_only), None);
     }
 }

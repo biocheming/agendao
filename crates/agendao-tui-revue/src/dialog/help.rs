@@ -43,6 +43,7 @@ pub const KEYBINDINGS: &[HelpEntry] = {
         Binding("Tab", "Autocomplete / next foldable block"),
         Binding("Ctrl+B", "Toggle sidebar"),
         Binding("Ctrl+P", "Command palette"),
+        Binding("Ctrl+T", "Task state (governance ledger)"),
         Section("─ Transcript (cursor) ─"),
         Binding("j/k · Tab/S-Tab", "Cursor next/prev foldable block"),
         Binding("Space", "Toggle fold at cursor (prompt empty)"),

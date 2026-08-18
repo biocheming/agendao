@@ -87,6 +87,38 @@ pub(crate) fn cause_for_seam(
         | agendao_types::task_ledger::TaskLedgerSeamFact::InteractionResolved { .. } => {
             TaskLedgerCause::StatusChanged
         }
+        agendao_types::task_ledger::TaskLedgerSeamFact::EvaluatorGateCompleted { .. } => {
+            TaskLedgerCause::CheckpointAdded
+        }
+    }
+}
+
+/// External transports (HTTP, Unix JSON-RPC) may only submit checkpoints
+/// whose verifier is an explicit `UserConfirmation`. Machine verifier types
+/// (`DeterministicCheck`, `Evaluator`) are reserved for server-internal
+/// seams: allowing them over the wire would let any client forge criterion
+/// coverage without ever executing a check.
+pub(crate) fn validate_external_op(op: &TaskLedgerOp) -> Result<(), ApiError> {
+    let machine_verifier = |verifier: &agendao_types::task_ledger::VerifierRef| {
+        !matches!(
+            verifier,
+            agendao_types::task_ledger::VerifierRef::UserConfirmation { .. }
+        )
+    };
+    match op {
+        TaskLedgerOp::AddCheckpoint { verifier, .. }
+        | TaskLedgerOp::CloseOpenWithCheckpoint { verifier, .. } => {
+            if machine_verifier(verifier) {
+                return Err(ApiError::BadRequest(
+                    "machine verifier types (deterministic_check/evaluator) cannot be \
+                     submitted over the wire; use user_confirmation or let the server's \
+                     seams produce them"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -184,6 +216,7 @@ mod tests {
         TaskGoal {
             statement: statement.to_string(),
             acceptance_criteria: vec!["tests pass".to_string()],
+            criterion_checks: vec![],
             set_by: TaskLedgerActor::User,
             set_at: 1_000,
         }

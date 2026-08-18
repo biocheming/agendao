@@ -1,6 +1,6 @@
 # J-space 启发的任务治理落地计划
 
-状态：Phase 1 完成；Phase 2 契约+权威完成（含两轮审阅修复）；Phase 3–5 核心落地（缺口见 §3bis）；Phase 6 harness 通过隔离/绑定验证，待正式运行；尚未启用默认路由
+状态：Phase 1–2 完成；Phase 3 大部分完成（verifier 已落地并经 P1 加固：外部不可伪造、执行隔离、诚实 open、停滞窗口不再饿死；剩恢复类指标会话级验证）；Phase 4 v1 完成；Phase 5 完成；Phase 6 部分完成（原生完成链探针通过；完整矩阵未跑）。默认路由保持关闭
 
 日期：2026-08-18
 
@@ -601,6 +601,124 @@ python3 scripts/task_governance_ab.py --base-url http://127.0.0.1:3989 \
   --binary <agendao> --model deepseek/deepseek-chat --seeds 5
 ```
 
+### 2026-08-18 收尾轮：剩余 seam/面板/首批正式 A/B
+
+1. **调度路径 ToolBatchCompleted 事实源**：`SchedulerAgentObserver.step_tally`
+   （step_started 清零、tool_finished 累计），`step_finished` 聚合整步为一条
+   ToolBatchSummary 派发 seam——turn 边界即 batch 边界。并行节点按 node path 隔离
+   tally；单次工具失败只作为 batch 事实，不自动制造永久 Open。
+2. **evaluator gate seam**：`ExecutionEvent::Evaluated(Pass)` →
+   `EvaluatorGateCompleted` → 当前代 checkpoint（verifier=scheduler-engine；
+   evaluator prompt 包含真实 Goal 与 criteria）。2026-08-18 正式批次发现 model judge
+   存在假阳性，因此 evaluator checkpoint 已在类型层禁止覆盖具名验收项：它是审阅
+   证据，不是完成证据；具名 criterion 仍需 deterministic check 或用户确认。
+3. **TUI Task State 面板**：`Ctrl+T` 全量只读视图 + help 登记 + panel dispatch；
+   数据经 `apply_task_ledger_snapshot`（session 匹配 + revision 防回退）。
+
+**早期 A/B 批次（已由后续审计推翻其“原生完成”解释）**：
+
+| 组 | verify | 均耗时 | 均token | 均成本$ | ledger |
+|---|---|---|---|---|---|
+| control | 5/5 | 22.7s | 60,636 | 0.00089 | — |
+| skill | 5/5 | 29.6s | 74,482 | 0.00153 | — |
+| ledger | 5/5 | 17.8s | 53,277 | 0.00070 | rev 8–13，每 seed 1 条 evaluator checkpoint（gen1） |
+
+上述任务/耗时数据可留作历史样本，但当时 harness 曾在运行后补写 ledger，且 evaluator
+checkpoint 没有可靠 criterion 证据，因此不能证明 native completion。
+
+**审计后正式批次**（`/tmp/task-governance-ab-native-formal.jsonl`，修改 completion
+资格前的安全性探测；deepseek/deepseek-chat，median-tests，3×5 seed）：
+
+| 组 | 独立 verify | 均耗时 | 均 token | 均成本$ | native completion |
+|---|---|---|---|---|---|
+| control | 5/5 | 17.4s | 47,733 | 0.000781 | n/a |
+| skill | 5/5 | 29.8s | 90,420 | 0.002059 | n/a |
+| ledger | 4/5 | 28.3s | 55,801 | 0.000968 | 3/5 |
+
+全部 `binding_violations=0`，但 ledger seed 1 出现 **native completed + 独立 verify
+失败**：agent 越出临时 workspace，在另一份既有 benchmark 目录完成了相似任务，model
+evaluator 仍给出 PASS。该批次的 `unsafe_native_completions=1`，直接否决“model judge
+可覆盖具名 criterion”的假设。修复后 evaluator checkpoint 的 `covered_criteria` 固定为空，
+完成门保持 active 并报告 missing criterion；harness 同时改为逐请求 permission、显式 workspace
+约束，并直接记录 checkpoint generation/verifier/coverage。修复后 ledger 单 seed 安全探针：
+独立 verify 1/1、`unsafe_native_completions=0`、ledger 保持 active（没有确定性 criterion
+证据时不自动完成）。
+
+**边界**：单任务类型、单模型、5 seed；恢复/压缩指标与其余 7 类任务未跑；确定性
+criterion verifier 已接入（final-response seam 内执行，cancellation 感知）。因此 Phase 6 只有安全性否证结果，没有达到默认
+启用门槛，默认路由必须保持关闭。
+
+### 2026-08-18 确定性 criterion verifier 落地（Phase 3 收口件）
+
+**实现**：`TaskGoal.criterion_checks`（用户经 authority API 绑定具名验收项 →
+shell 命令；域层验证 criterion 必须在 acceptance_criteria 内）；`verify_goal_criteria`
+在 final-response seam 前于会话工作区执行检查——exit 0 是唯一能产生 criterion
+覆盖证据的自动化路径（model judge 永远不能，假阳性批次已否证）；通过时回填
+covered checkpoint。**open question 不自动关闭**（P1 修复轮移除——检查证明的是
+绑定的验收项，不是每个问题被解决；问题经显式 CloseOpenWithCheckpoint +
+user_confirmation 关闭）；任一失败零提交，gate 如实报告缺口。
+
+**过程中发现并修复的生产死锁**：verifier 提交段曾持 sessions 锁 await
+`persist_session_if_enabled`，而 `flush_session_to_storage` 内部重锁同一 tokio
+Mutex——自死锁卡死整服务器（/session 列表挂起）。单测未暴露：无 storage 的
+`ServerState::new()` 在锁前早退（测试/生产分叉）。修复：锁内写 metadata+广播，
+先 drop 锁再 persist（dispatch_seam 早已是此顺序）。另发现一次重建静默失败导致
+探针误跑旧二进制——已按二进制 mtime 核验后重试。
+
+**修复后原生完成链探针**（deepseek/deepseek-chat，ledger 单 seed）：exit 0、
+独立 verify 通过、`native_ledger_completed=True`（rev 13；唯一 checkpoint 为服务端
+确定性检查：covered_criteria 命中验收项、verifier=unittest 命令、coverage=exit 0
+in workspace），binding 零违规、服务器无挂起。harness 已移除事后补写 stopgap——
+证据全部原生产生。
+
+### 2026-08-18 P1 修复轮（外部审查四项）
+
+1. **外部伪造证据封死（P1-1）**：HTTP PATCH/checkpoint/close 与 Unix
+   `apply_task_ledger_op` 统一经 `validate_external_op`——机器 verifier 类型
+   （deterministic_check/evaluator）不可经传输层提交，外部仅 `user_confirmation`。
+   机器证据只能由服务端 seam 产生（criterion verifier / Evaluated 事件）。
+   回归测试钉死拒绝路径与合法路径。
+2. **执行加固（P1-2）**：stdout/stderr → null（退出码是唯一信号，输出不可灌爆
+   内存）；独立进程组 + kill_on_drop；超时对整组 SIGKILL（libc kill(-pgid)），
+   不再依赖 future drop。信任模型显式化：criterion_checks 由用户经 authority API
+   绑定，绑定即授权（等价于用户自己在工作区执行）。完整沙箱（网络/文件系统隔离）仍为已知边界：
+   criterion 命令以服务器进程身份在会话工作区执行，网络与文件系统不受限。
+3. **诚实 open 语义（P1-3）**：criterion 检查通过**不再**自动关闭 open question
+   ——检查证明的是绑定的验收项，不是每个问题都被解决。问题只能经自身类型化
+   证据关闭（显式 CloseOpenWithCheckpoint + user_confirmation）。完成门因残余
+   open 诚实阻断；测试覆盖"自动关→阻断→显式关→完成"全链。
+4. **空 ops seam 进停滞窗（P1-4）**：调度成功批次（Advanced/无 unresolved/无
+   recommended next）reducer 为空 ops，此前直接 return——停滞窗口饿死。现在
+   空 ops 仍记录观察帧（不加 revision、不广播，无历史污染），"没有变化"本身
+   就是观察。回归测试钉死三帧不变 Next 触发。
+
+验证：server 330（含 4 项新回归）全过；fmt/clippy 干净。
+
+### 2026-08-18 外部复审轮修复（2×P1 + 3×P2）
+
+1. **Windows 构建（P1）**：verifier 进程执行拆为平台实现——Unix 进程组 +
+   `kill(-pgid)` 整组终止；Windows `cmd /C` + kill_on_drop（完整树治理需
+   Job Object，记录为后续项）。bash 不再硬编码于公共路径。
+2. **Stop 取消 verifier（P1）**：scheduler token 保留到最终 assistant message、最后
+   batch、verifier 与 Complete/Interrupt seam 全部落定之后；verifier 以显式
+   `NotRequired/Passed/Failed/Cancelled` 结果约束调用方，失败或取消不得进入 Complete。
+   `select!` 优先 cancellation，并在最后一个检查结束后及证据事务加锁后再次检查 token；
+   timeout/cancel 统一终止并 reap。回归测试在子进程实际运行后取消，5s 内返回且零提交。
+3. **no-op seam allowlist（P2）**：仅 ToolBatchCompleted/RunStarted 的空 ops
+   进停滞窗口；stale evaluator/未知 interaction/未挣得 completion/重复 interrupt
+   不再制造假停滞帧。dispatch 级路由测试钉死。
+4. **计划矛盾（P2）**：三处过时表述（verifier 未接入/自动关 open×2）已修正。
+5. **evaluator 旧伤（P2）**：分段文本拼接（不再截断于首个 text part）；
+   审查目标改用 ledger 当前 goal（与 checkpoint 的 generation/criteria 同源，
+   input.goal 仅作回退）。
+
+复审补充：`FinalResponseCommitted` 只在最终 assistant message 已写入 session 且最后
+ToolBatchCompleted 已归约后触发；Windows verifier 测试命令按平台选择，不再以
+`true`/`false`/`sleep` 假定 Unix shell。
+
+验证：server 333 全过；fmt/clippy/tsc 干净；Windows target 在本机无工具链，
+平台分支以 cfg 隔离并由 unix 侧全量测试覆盖（下述边界如实记录）。
+
 ## 4. 预计代码落点
 
 | 模块 | 预计职责 |
@@ -693,7 +811,7 @@ python3 scripts/task_governance_ab.py --base-url http://127.0.0.1:3989 \
 | --- | --- | --- |
 | 1 | 可选 J-space skill 安装与实验基线 | 完成（2026-08-18 smoke A/B：control 25s / skill-on 27s，两组任务均 3/3 测试通过；skill-on 经 skills_list/skill_view 官方路径加载，control 转录零 j-space 引用；权限全程走正常请求-应答，无绕过） |
 | 2 | SessionTaskLedger typed authority | 完成（2026-08-18：提交级全局不变量、goal generation、current/non-superseded evidence gate、interaction 侧门封闭；server metadata 单一真值 + CAS/fork/delete；HTTP + Unix JSON-RPC + typed event） |
-| 3 | Semantic seam、compaction、recovery | 核心完成（交互/AwaitingUser、条件性 Complete、Interrupt 幂等已接通并实测 rev1→11）；剩余缺口见 §3bis（调度路径 batch 事实源、evaluator seam） |
-| 4 | 停滞检测与受控重新规划 | v1 完成（观察与记录；自动重规划仍以 Phase 6 证据为门） |
-| 5 | Web/TUI Task State | Web 完成（含 generation-aware evidence 与 uncovered 展示）；TUI 头部 Next 和 HTTP/Direct/Unix 启动/切换对账完成，完整面板记入 backlog |
-| 6 | 多运行 A/B 与默认策略决策 | harness 基础链路和可得指标采集完成；正式任务矩阵、不可得指标采集与多 seed 运行未完成，不具备默认启用结论 |
+| 3 | Semantic seam、compaction、recovery | 大部分完成：seam/交互/中断链路已通；确定性 criterion verifier 已落地并经 P1 加固（外部不可伪造、平台拆分、cancellation 感知、诚实 open、停滞窗不饿死），原生完成链实测通过；剩恢复类指标的会话级验证 |
+| 4 | 停滞检测与受控重新规划 | v1 完成（检测与记录）；完整目标未完成——自动重规划待 Phase 6 充分证据启用 |
+| 5 | Web/TUI Task State | 完成（Web TaskStateCard 含代际过滤/未覆盖项；TUI Ctrl+T 全量面板 + 头部 Next + 启动/切换对账 + session/revision 双守卫） |
+| 6 | 多运行 A/B 与默认策略决策 | 部分完成：median-tests×3×5 批次 + 原生完成链单点探针通过；verifier 权威/执行加固已落（见收尾记录）；完整任务矩阵与恢复类指标未跑，默认启用维持关闭 |

@@ -180,8 +180,23 @@ pub struct TaskGoal {
     pub statement: String,
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
+    /// Deterministic checks bound to named criteria. The command runs in
+    /// the session workspace at the final-response seam; exit 0 is the
+    /// only thing that can produce criterion-covering evidence (model
+    /// judges never can). Set by the user through the authority API — the
+    /// explicit opt-in that makes server-side execution legitimate.
+    #[serde(default)]
+    pub criterion_checks: Vec<CriterionCheck>,
     pub set_by: TaskLedgerActor,
     pub set_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CriterionCheck {
+    /// Must match an entry in `acceptance_criteria` verbatim.
+    pub criterion: String,
+    /// Shell command; exit 0 = the criterion is met.
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -546,6 +561,27 @@ fn next_sequential_id(existing: &[String], prefix: &str) -> String {
     format!("{prefix}{next:02}")
 }
 
+fn validate_goal(goal: &TaskGoal) -> Result<(), TaskLedgerError> {
+    if !non_empty(&goal.statement) {
+        return Err(TaskLedgerError::EmptyGoalStatement);
+    }
+    for check in &goal.criterion_checks {
+        if !non_empty(&check.command) {
+            return Err(TaskLedgerError::EmptyStatement);
+        }
+        if !goal
+            .acceptance_criteria
+            .iter()
+            .any(|c| c == &check.criterion)
+        {
+            return Err(TaskLedgerError::UnknownAcceptanceCriterion {
+                criterion: check.criterion.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validated_verifier(verifier: &VerifierRef) -> Result<(), TaskLedgerError> {
     let detail = match verifier {
         VerifierRef::Evaluator { name } => name,
@@ -741,9 +777,7 @@ fn apply_op(
             if ledger.revision != 0 || ledger.goal.is_some() {
                 return Err(TaskLedgerError::AlreadyCreated);
             }
-            if !non_empty(&goal.statement) {
-                return Err(TaskLedgerError::EmptyGoalStatement);
-            }
+            validate_goal(&goal)?;
             if !non_empty(&next_statement) {
                 return Err(TaskLedgerError::EmptyStatement);
             }
@@ -759,9 +793,7 @@ fn apply_op(
         }
         TaskLedgerOp::SetGoal { goal } => {
             ensure_created(ledger)?;
-            if !non_empty(&goal.statement) {
-                return Err(TaskLedgerError::EmptyGoalStatement);
-            }
+            validate_goal(&goal)?;
             ledger.goal = Some(goal);
             ledger.goal_generation = ledger.goal_generation.saturating_add(1).max(1);
             ledger.uncovered_criteria.clear();
@@ -1138,6 +1170,17 @@ pub enum TaskLedgerSeamFact {
         kind: AwaitingInteractionKind,
         interaction_id: String,
     },
+    /// A scheduler evaluation gate finished. A pass is current-generation
+    /// evidence (criterion coverage still requires an explicit mapping —
+    /// the evaluator validates the node, not named acceptance criteria).
+    EvaluatorGateCompleted {
+        node_path: String,
+        passed: bool,
+        /// Goal generation actually presented to the evaluator. The reducer
+        /// rejects the evidence if the ledger changed meanwhile. A model
+        /// evaluator cannot itself cover named acceptance criteria.
+        goal_generation: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,6 +1195,7 @@ mod tests {
         TaskGoal {
             statement: statement.to_string(),
             acceptance_criteria: vec!["all tests pass".to_string()],
+            criterion_checks: vec![],
             set_by: TaskLedgerActor::User,
             set_at: 1_000,
         }

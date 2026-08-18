@@ -28,6 +28,7 @@ impl AppHandler {
                 | Panel::Notifications
                 | Panel::Stash
                 | Panel::Fork
+                | Panel::TaskState
         )
     }
 
@@ -363,6 +364,15 @@ impl AppHandler {
             Panel::Help => {
                 self.help.handle_key(key);
                 if !self.help.visible {
+                    self.panel = Panel::None;
+                }
+                return true;
+            }
+            Panel::TaskState => {
+                let ledger = self.active_session.task_ledger.get();
+                let item_count = self.task_state_dialog.item_count(ledger.as_deref());
+                self.task_state_dialog.handle_key(key, item_count);
+                if !self.task_state_dialog.visible {
                     self.panel = Panel::None;
                 }
                 return true;
