@@ -15,6 +15,7 @@ pub mod scheduler_capabilities;
 pub(crate) mod scheduler_runner;
 pub mod server;
 pub(crate) mod session_runtime;
+#[cfg(unix)]
 pub mod unix_socket; // Phase 5: Unix Socket 传输层
 pub mod web;
 pub mod worktree;
@@ -31,6 +32,7 @@ pub use server::*;
 pub use session_runtime::local_frontend::{
     spawn_local_frontend_events, spawn_local_session_events,
 };
+#[cfg(unix)]
 pub use unix_socket::*;
 pub use web::*;
 pub use worktree::*;

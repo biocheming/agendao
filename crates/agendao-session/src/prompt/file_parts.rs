@@ -99,6 +99,22 @@ impl SessionPrompt {
                 }
 
                 if !text_chunks.is_empty() {
+                    let provenance = agendao_types::ExternalContentProvenance::untrusted(
+                        agendao_types::ExternalContentSourceKind::Mcp,
+                        format!("{client_name}/{uri}"),
+                        chrono::Utc::now().timestamp_millis(),
+                    );
+                    let entry = serde_json::to_value(provenance).unwrap_or_default();
+                    msg.metadata
+                        .entry(agendao_types::EXTERNAL_CONTENT_PROVENANCE_METADATA_KEY.to_string())
+                        .and_modify(|value| {
+                            if let Some(items) = value.as_array_mut() {
+                                items.push(entry.clone());
+                            } else {
+                                *value = serde_json::json!([value.clone(), entry.clone()]);
+                            }
+                        })
+                        .or_insert_with(|| serde_json::json!([entry]));
                     msg.add_text(SystemPrompt::mcp_resource_reminder(
                         filename,
                         &uri,

@@ -191,9 +191,19 @@ export async function api(path: string, options: RequestInit = {}): Promise<Resp
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(apiUrl(path), { ...options, headers, signal });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new ApiHttpError(response.status, await response.text());
   }
   return response;
+}
+
+export class ApiHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiHttpError";
+    this.status = status;
+  }
 }
 
 export async function apiJson<T>(path: string, options: RequestInit = {}): Promise<T> {

@@ -166,12 +166,13 @@ pub struct AwaitingInteractionRef {
     pub interaction_id: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskLedgerActor {
     User,
     Model,
     Evaluator,
+    #[default]
     System,
 }
 
@@ -206,6 +207,13 @@ pub struct CoreConstraint {
     /// At most two entries are live at once; the rest are parked and reloaded
     /// on demand.
     pub live: bool,
+    /// Provenance is stored by the authority rather than inferred from the
+    /// surface that happens to render the constraint. Legacy snapshots use
+    /// system/zero through serde defaults.
+    #[serde(default)]
+    pub set_by: TaskLedgerActor,
+    #[serde(default)]
+    pub set_at: i64,
 }
 
 /// What established a checkpoint. Only evaluators, deterministic checks, or
@@ -333,11 +341,15 @@ pub enum TaskLedgerOp {
         /// When true the entry joins the live set (displacing nothing);
         /// when the live set is full it is parked with an error instead.
         live: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<TaskLedgerActor>,
     },
     SwapCoreLive {
         /// 1-based live slot (1 or 2).
         slot: u8,
         statement: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<TaskLedgerActor>,
     },
     AddCheckpoint {
         claim: String,
@@ -799,7 +811,11 @@ fn apply_op(
             ledger.uncovered_criteria.clear();
             Ok(())
         }
-        TaskLedgerOp::AddCore { statement, live } => {
+        TaskLedgerOp::AddCore {
+            statement,
+            live,
+            actor,
+        } => {
             ensure_created(ledger)?;
             if !non_empty(&statement) {
                 return Err(TaskLedgerError::EmptyStatement);
@@ -819,10 +835,16 @@ fn apply_op(
                 id,
                 statement,
                 live,
+                set_by: actor.unwrap_or(TaskLedgerActor::System),
+                set_at: now_ms,
             });
             Ok(())
         }
-        TaskLedgerOp::SwapCoreLive { slot, statement } => {
+        TaskLedgerOp::SwapCoreLive {
+            slot,
+            statement,
+            actor,
+        } => {
             ensure_created(ledger)?;
             if !non_empty(&statement) {
                 return Err(TaskLedgerError::EmptyStatement);
@@ -853,6 +875,8 @@ fn apply_op(
                 Some(position) => {
                     let mut entry = ledger.core.remove(position);
                     entry.live = true;
+                    entry.set_by = actor.unwrap_or(TaskLedgerActor::System);
+                    entry.set_at = now_ms;
                     entry
                 }
                 None => {
@@ -868,6 +892,8 @@ fn apply_op(
                         id,
                         statement,
                         live: true,
+                        set_by: actor.unwrap_or(TaskLedgerActor::System),
+                        set_at: now_ms,
                     }
                 }
             };
@@ -1636,6 +1662,7 @@ mod tests {
                 TaskLedgerOp::AddCore {
                     statement: "preserve API".into(),
                     live: true,
+                    actor: None,
                 },
                 2_000,
             )
@@ -1646,6 +1673,7 @@ mod tests {
                 TaskLedgerOp::AddCore {
                     statement: "stdlib only".into(),
                     live: true,
+                    actor: None,
                 },
                 3_000,
             )
@@ -1656,6 +1684,7 @@ mod tests {
                 TaskLedgerOp::AddCore {
                     statement: "third".into(),
                     live: true,
+                    actor: None,
                 },
                 4_000,
             )
@@ -1668,6 +1697,7 @@ mod tests {
                 TaskLedgerOp::AddCore {
                     statement: "third".into(),
                     live: false,
+                    actor: None,
                 },
                 4_000,
             )
@@ -1679,6 +1709,7 @@ mod tests {
                 TaskLedgerOp::SwapCoreLive {
                     slot: 1,
                     statement: "third".into(),
+                    actor: Some(TaskLedgerActor::User),
                 },
                 5_000,
             )
@@ -1689,6 +1720,8 @@ mod tests {
             .map(|entry| entry.statement.clone())
             .collect();
         assert_eq!(live, vec!["third".to_string(), "stdlib only".to_string()]);
+        assert_eq!(ledger.live_core()[0].set_by, TaskLedgerActor::User);
+        assert_eq!(ledger.live_core()[0].set_at, 5_000);
         assert_eq!(ledger.core.len(), 3, "history retained");
         let err = ledger
             .apply(
@@ -1696,6 +1729,7 @@ mod tests {
                 TaskLedgerOp::SwapCoreLive {
                     slot: 3,
                     statement: "x".into(),
+                    actor: None,
                 },
                 6_000,
             )

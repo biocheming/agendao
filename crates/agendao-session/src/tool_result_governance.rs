@@ -329,6 +329,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_governance_preserves_external_provenance_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provenance = agendao_types::ExternalContentProvenance::untrusted(
+            agendao_types::ExternalContentSourceKind::Web,
+            "https://example.test/data",
+            42,
+        );
+        let mut metadata = HashMap::from([(
+            agendao_types::EXTERNAL_CONTENT_PROVENANCE_METADATA_KEY.to_string(),
+            serde_json::to_value(&provenance).expect("serialize provenance"),
+        )]);
+        let budget = ToolResultBudget {
+            max_single_chars: 8,
+            max_batch_chars: 32,
+            preview_chars: 4,
+        };
+
+        let governed = govern_tool_result_output(
+            "session-external",
+            "call-external",
+            "external payload".to_string(),
+            &mut metadata,
+            dir.path(),
+            budget,
+        )
+        .await;
+
+        assert!(governed.degraded);
+        assert!(governed.artifact_path.is_some());
+        assert!(metadata.contains_key("tool_result_artifact_path"));
+        assert_eq!(
+            agendao_types::ExternalContentProvenance::from_metadata(&metadata),
+            Some(provenance)
+        );
+    }
+
+    #[tokio::test]
     async fn large_batch_governs_largest_results_first_without_reordering() {
         let dir = tempfile::tempdir().expect("tempdir");
         let batch = vec![

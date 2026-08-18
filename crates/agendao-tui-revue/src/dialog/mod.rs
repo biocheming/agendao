@@ -49,4 +49,4 @@ pub use session_list::{SessionEntry, SessionListAction, SessionListDialog};
 pub use session_rename::SessionRenameDialog;
 pub use skill_list::{SkillEntry, SkillListAction, SkillListDialog};
 pub use skill_proposal::{SkillProposalAction, SkillProposalDialog, SkillProposalEntry};
-pub use task_state::TaskStateDialog;
+pub use task_state::{TaskStateAction, TaskStateDialog};

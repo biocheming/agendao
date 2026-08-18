@@ -863,9 +863,32 @@ pub(crate) struct ResolvedPromptRequestConfig {
 
 pub(crate) fn apply_scheduler_selection_session_metadata(
     session: &mut agendao_session::Session,
-    _resolved: &ResolvedPromptRequestConfig,
+    resolved: &ResolvedPromptRequestConfig,
 ) {
-    session.insert_metadata("scheduler_selection_source", serde_json::json!("request"));
+    prepare_scheduler_blueprint_lock(session, &resolved.scheduler_choice);
+}
+
+fn prepare_scheduler_blueprint_lock(
+    session: &mut agendao_session::Session,
+    choice: &agendao_orchestrator::selector::SchedulerChoice,
+) {
+    if !matches!(
+        choice,
+        agendao_orchestrator::selector::SchedulerChoice::Auto
+    ) {
+        clear_scheduler_blueprint_lock(session);
+    }
+}
+
+fn clear_scheduler_blueprint_lock(session: &mut agendao_session::Session) {
+    for key in [
+        crate::scheduler_runner::BLUEPRINT_LOCK_METADATA_KEY,
+        crate::scheduler_runner::BLUEPRINT_FINGERPRINT_METADATA_KEY,
+        crate::scheduler_runner::SELECTION_SOURCE_METADATA_KEY,
+        crate::scheduler_runner::GENERATED_AGENTS_METADATA_KEY,
+    ] {
+        session.remove_metadata(key);
+    }
 }
 
 pub(super) fn resolve_request_model_inputs(
@@ -985,6 +1008,54 @@ pub(crate) async fn resolve_prompt_request_config(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    fn session_with_blueprint_lock() -> agendao_session::Session {
+        let mut session = agendao_session::Session::new("project", "/tmp/project");
+        for key in [
+            crate::scheduler_runner::BLUEPRINT_LOCK_METADATA_KEY,
+            crate::scheduler_runner::BLUEPRINT_FINGERPRINT_METADATA_KEY,
+            crate::scheduler_runner::SELECTION_SOURCE_METADATA_KEY,
+            crate::scheduler_runner::GENERATED_AGENTS_METADATA_KEY,
+        ] {
+            session.insert_metadata(key, serde_json::json!("locked"));
+        }
+        session
+    }
+
+    #[test]
+    fn auto_request_preserves_the_previous_blueprint_lock() {
+        let mut session = session_with_blueprint_lock();
+        prepare_scheduler_blueprint_lock(
+            &mut session,
+            &agendao_orchestrator::selector::SchedulerChoice::Auto,
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(crate::scheduler_runner::SELECTION_SOURCE_METADATA_KEY),
+            Some(&serde_json::json!("locked"))
+        );
+    }
+
+    #[test]
+    fn explicit_request_clears_the_previous_blueprint_lock() {
+        let mut session = session_with_blueprint_lock();
+        prepare_scheduler_blueprint_lock(
+            &mut session,
+            &agendao_orchestrator::selector::SchedulerChoice::Template {
+                template: agendao_orchestrator::templates::TemplateId::Direct,
+            },
+        );
+        for key in [
+            crate::scheduler_runner::BLUEPRINT_LOCK_METADATA_KEY,
+            crate::scheduler_runner::BLUEPRINT_FINGERPRINT_METADATA_KEY,
+            crate::scheduler_runner::SELECTION_SOURCE_METADATA_KEY,
+            crate::scheduler_runner::GENERATED_AGENTS_METADATA_KEY,
+        ] {
+            assert!(!session.record().metadata.contains_key(key));
+        }
+    }
 
     #[test]
     fn scheduler_context_hydrate_only_allows_packet_anchors() {

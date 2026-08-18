@@ -12,7 +12,7 @@ use agendao_types::{
     MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
     SessionContinuityCompactionSummary, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
     SessionContinuityLimits, SessionContinuityMemoryAnchor, SessionContinuityPacket,
-    SessionContinuityTurn, SessionMessage,
+    SessionContinuityTaskLedger, SessionContinuityTurn, SessionMessage,
 };
 use agendao_util::util::format::truncate_chars;
 use axum::{
@@ -453,10 +453,22 @@ pub(super) fn build_scheduler_session_context_packet(
     let eligible_message_count = count_scheduler_context_messages(session);
     let latest_compaction_summary = latest_compaction_summary(session);
     let working_ledger = build_scheduler_working_ledger(session, &exact_recent_tail);
+    let task_ledger = session
+        .record()
+        .metadata
+        .get(agendao_types::task_ledger::TASK_LEDGER_METADATA_KEY)
+        .and_then(|value| {
+            serde_json::from_value::<agendao_types::task_ledger::SessionTaskLedger>(value.clone())
+                .ok()
+        })
+        .filter(|ledger| ledger.revision > 0)
+        .as_ref()
+        .map(SessionContinuityTaskLedger::from);
 
     if exact_recent_tail.is_empty()
         && memory_anchors.is_empty()
         && working_ledger.is_empty()
+        && task_ledger.is_none()
         && latest_compaction_summary.is_none()
     {
         return None;
@@ -470,6 +482,7 @@ pub(super) fn build_scheduler_session_context_packet(
         exact_recent_tail,
         memory_anchors,
         working_ledger,
+        task_ledger,
         latest_compaction_summary,
         limits: Some(SessionContinuityLimits {
             recent_tail_messages: SCHEDULER_RECENT_TAIL_MESSAGES,
@@ -1446,6 +1459,24 @@ pub(super) async fn create_scheduler_user_message(
                 .metadata
                 .insert("recovery_action".to_string(), serde_json::json!(action));
         }
+        if let Some(revision) = recovery.ledger_revision {
+            user_message.metadata.insert(
+                "recovery_ledger_revision".to_string(),
+                serde_json::json!(revision),
+            );
+            user_message.metadata.insert(
+                "recovery_checkpoint_ids".to_string(),
+                serde_json::json!(&recovery.checkpoint_ids),
+            );
+            user_message.metadata.insert(
+                "recovery_open_ids".to_string(),
+                serde_json::json!(&recovery.open_ids),
+            );
+            user_message.metadata.insert(
+                "recovery_next_statement".to_string(),
+                serde_json::json!(&recovery.next_statement),
+            );
+        }
     }
 
     Ok(user_message.id.clone())
@@ -1483,6 +1514,27 @@ pub(crate) async fn session_prompt_with_verified_ingress(
     verified: VerifiedSessionIngress,
 ) -> Result<Json<serde_json::Value>> {
     session_prompt_inner(state, headers, id, req, Some(verified)).await
+}
+
+async fn commit_scheduler_input_and_start_ledger_run(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    session: &mut agendao_session::Session,
+) {
+    // The session-map value must contain the new user turn before a seam
+    // mutates ledger metadata through that same authority. Refreshing from a
+    // pre-prompt map value would erase the request recovery needs after abort.
+    state.sessions.lock().await.update(session.clone());
+    crate::session_runtime::task_ledger_reducer::dispatch_seam(
+        state,
+        session_id,
+        agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted,
+    )
+    .await;
+    let sessions = state.sessions.lock().await;
+    if let Some(fresh) = sessions.get(session_id) {
+        *session = fresh.clone();
+    }
 }
 
 async fn session_prompt_inner(
@@ -1958,22 +2010,9 @@ async fn session_prompt_inner(
             // Task-governance seam: run started. A resumed (previously
             // interrupted) ledger flips back to active here, before the
             // projection below snapshots the status for this run.
-            {
-                crate::session_runtime::task_ledger_reducer::dispatch_seam(
-                    &task_state,
-                    &session_id,
-                    agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted,
-                )
+            commit_scheduler_input_and_start_ledger_run(&task_state, &session_id, &mut session)
                 .await;
-                // The dispatch wrote through the map; refresh the local
-                // clone so the later `update(session.clone())` cannot
-                // revert the committed revision (Interrupted → Active).
-                {
-                    let sessions = task_state.sessions.lock().await;
-                    if let Some(fresh) = sessions.get(&session_id) {
-                        session = fresh.clone();
-                    }
-                }
+            {
                 let sessions = task_state.sessions.lock().await;
                 if let Some(session) = sessions.get(&session_id) {
                     if let Some(projection) =
@@ -2380,6 +2419,76 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn run_started_refresh_preserves_the_new_user_message_for_recovery() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+        crate::session_runtime::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            0,
+            agendao_types::task_ledger::TaskLedgerOp::Create {
+                goal: agendao_types::task_ledger::TaskGoal {
+                    statement: "finish after recovery".to_string(),
+                    acceptance_criteria: vec![],
+                    criterion_checks: vec![],
+                    set_by: agendao_types::task_ledger::TaskLedgerActor::User,
+                    set_at: 1,
+                },
+                next_statement: "run the task".to_string(),
+            },
+        )
+        .await
+        .expect("create ledger");
+        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+            &state,
+            &session_id,
+            agendao_types::task_ledger::TaskLedgerSeamFact::RecoveryInterrupted,
+        )
+        .await;
+
+        let mut local = state
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        local.add_user_message("original request that must survive abort");
+
+        commit_scheduler_input_and_start_ledger_run(&state, &session_id, &mut local).await;
+
+        let stored = state
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert_eq!(
+            crate::recovery::latest_user_prompt(&stored).as_deref(),
+            Some("original request that must survive abort")
+        );
+        let ledger = crate::session_runtime::task_ledger::ledger_snapshot_from_record(
+            &session_id,
+            stored
+                .record()
+                .metadata
+                .get(crate::session_runtime::task_ledger::TASK_LEDGER_METADATA_KEY),
+        );
+        assert_eq!(
+            ledger.status,
+            agendao_types::task_ledger::TaskLedgerStatus::Active
+        );
+        assert!(local
+            .messages
+            .iter()
+            .any(|message| message.get_text() == "original request that must survive abort"));
+    }
+
     #[test]
     fn scheduler_choice_defaults_to_auto_without_an_explicit_agent() {
         assert_eq!(
@@ -2659,6 +2768,81 @@ mod tests {
                 .expect("runtime state should exist")
                 .pending_followup_count,
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_clears_pending_question_and_awaiting_ledger_after_run_token_retires() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+        crate::session_runtime::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            0,
+            agendao_types::task_ledger::TaskLedgerOp::Create {
+                goal: agendao_types::task_ledger::TaskGoal {
+                    statement: "answer then resume".to_string(),
+                    acceptance_criteria: vec![],
+                    criterion_checks: vec![],
+                    set_by: agendao_types::task_ledger::TaskLedgerActor::User,
+                    set_at: 1,
+                },
+                next_statement: "wait for answer".to_string(),
+            },
+        )
+        .await
+        .expect("create ledger");
+        let (question, _waiter) = state
+            .runtime_telemetry
+            .register_question(
+                session_id.clone(),
+                vec![agendao_tool::QuestionDef {
+                    question: "continue?".to_string(),
+                    header: None,
+                    options: vec![],
+                    multiple: false,
+                }],
+            )
+            .await;
+        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+            &state,
+            &session_id,
+            agendao_types::task_ledger::TaskLedgerSeamFact::InteractionAwaiting {
+                kind: agendao_types::task_ledger::AwaitingInteractionKind::Question,
+                interaction_id: question.id,
+            },
+        )
+        .await;
+
+        let response = super::super::cancel::abort_session_execution(&state, &session_id).await;
+        assert_eq!(response["aborted"], serde_json::json!(true));
+        assert_eq!(
+            response["cancelled_pending_questions"],
+            serde_json::json!(1)
+        );
+        assert!(state
+            .runtime_telemetry
+            .list_questions_for_session(&session_id)
+            .await
+            .is_empty());
+        let ledger = crate::session_runtime::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("ledger");
+        assert_eq!(
+            ledger.status,
+            agendao_types::task_ledger::TaskLedgerStatus::Interrupted
+        );
+        assert!(ledger.awaiting_interactions.is_empty());
+        assert!(
+            ledger
+                .next
+                .as_ref()
+                .expect("pre-interrupt next")
+                .provenance
+                .pre_interrupt
         );
     }
 
@@ -2984,6 +3168,48 @@ mod tests {
             .expect("working ledger should serialize")
             .is_empty());
         assert_eq!(restored.render(), packet.render());
+    }
+
+    #[test]
+    fn scheduler_continuity_packet_carries_task_ledger_without_second_prompt_projection() {
+        let mut session = Session::new("project", "/tmp");
+        let mut ledger = agendao_types::task_ledger::SessionTaskLedger::empty(&session.id);
+        ledger
+            .apply(
+                0,
+                agendao_types::task_ledger::TaskLedgerOp::Create {
+                    goal: agendao_types::task_ledger::TaskGoal {
+                        statement: "resume the governed task".to_string(),
+                        acceptance_criteria: vec!["check passes".to_string()],
+                        criterion_checks: vec![],
+                        set_by: agendao_types::task_ledger::TaskLedgerActor::User,
+                        set_at: 1,
+                    },
+                    next_statement: "run the remaining check".to_string(),
+                },
+                2,
+            )
+            .expect("create ledger");
+        session.insert_metadata(
+            agendao_types::task_ledger::TASK_LEDGER_METADATA_KEY.to_string(),
+            serde_json::to_value(&ledger).expect("serialize ledger"),
+        );
+
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("task ledger alone should produce a continuity packet");
+        let projected = packet
+            .task_ledger
+            .as_ref()
+            .expect("typed task ledger continuity");
+        assert_eq!(projected.revision, ledger.revision);
+        assert_eq!(
+            projected.next.as_ref().map(|next| next.statement.as_str()),
+            Some("run the remaining check")
+        );
+        assert!(
+            !packet.render().contains("resume the governed task"),
+            "the continuity packet is audit metadata; live task-ledger projection has one separate injection point"
+        );
     }
 
     #[test]

@@ -57,6 +57,10 @@ pub(super) async fn abort_session_execution(
     // without this the popups would hang on every frontend until restart.
     let cancelled_permissions =
         crate::routes::permission::cancel_pending_permissions_for_session(state, session_id).await;
+    // Questions are an independent interaction registry. Clear them once
+    // even if the scheduler token has already retired; otherwise an abort at
+    // the run boundary can leave a stale awaiting-user prompt behind.
+    let cancelled_questions = cancel_questions_for_session(state.clone(), session_id).await;
 
     let mut prompt_running = false;
     let scheduler_running = state
@@ -76,15 +80,12 @@ pub(super) async fn abort_session_execution(
             .await;
     }
 
-    if scheduler_running {
-        let _ = cancel_questions_for_session(state.clone(), session_id).await;
-    }
-
-    if prompt_running {
-        let _ = cancel_questions_for_session(state.clone(), session_id).await;
-    }
-
-    if scheduler_running || prompt_running {
+    let aborted = scheduler_running
+        || prompt_running
+        || dropped_queued_prompts > 0
+        || cancelled_permissions > 0
+        || cancelled_questions > 0;
+    if aborted {
         // Task-governance seam: the user interrupted the run; the ledger
         // keeps its pre-interrupt Next with provenance marked.
         crate::session_runtime::task_ledger_reducer::dispatch_seam(
@@ -94,10 +95,11 @@ pub(super) async fn abort_session_execution(
         )
         .await;
         serde_json::json!({
-            "aborted": true,
+            "aborted": aborted,
             "target": "run",
             "dropped_queued_prompts": dropped_queued_prompts,
             "cancelled_pending_permissions": cancelled_permissions,
+            "cancelled_pending_questions": cancelled_questions,
         })
     } else {
         serde_json::json!({
@@ -105,6 +107,7 @@ pub(super) async fn abort_session_execution(
             "target": serde_json::Value::Null,
             "dropped_queued_prompts": dropped_queued_prompts,
             "cancelled_pending_permissions": cancelled_permissions,
+            "cancelled_pending_questions": cancelled_questions,
         })
     }
 }

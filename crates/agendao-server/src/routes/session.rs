@@ -24,13 +24,14 @@ use crate::ServerState;
 
 // ─── Re-exports for sibling route modules (e.g. stream.rs) ─────────────────
 pub use self::local_api::{
-    local_abort_session, local_authenticate_mcp, local_cancel_tool_call, local_compact_session,
-    local_connect_mcp, local_connect_provider, local_create_session, local_delete_mcp_config,
-    local_delete_plugin_config, local_delete_provider, local_delete_provider_model_config,
-    local_delete_session, local_disconnect_mcp, local_execute_session_recovery,
-    local_execute_shell, local_fork_session, local_get_all_providers, local_get_config,
-    local_get_config_providers, local_get_config_validation, local_get_known_providers,
-    local_get_mcp_status, local_get_multimodal_capabilities, local_get_multimodal_policy,
+    local_abort_session, local_apply_task_ledger_op, local_authenticate_mcp,
+    local_cancel_tool_call, local_compact_session, local_connect_mcp, local_connect_provider,
+    local_create_session, local_delete_mcp_config, local_delete_plugin_config,
+    local_delete_provider, local_delete_provider_model_config, local_delete_session,
+    local_disconnect_mcp, local_execute_session_recovery, local_execute_shell, local_fork_session,
+    local_get_all_providers, local_get_config, local_get_config_providers,
+    local_get_config_validation, local_get_known_providers, local_get_mcp_status,
+    local_get_multimodal_capabilities, local_get_multimodal_policy,
     local_get_provider_connect_schema, local_get_provider_descriptor,
     local_get_provider_model_config, local_get_recent_models, local_get_session,
     local_get_session_diff, local_get_session_recovery, local_get_session_runtime,

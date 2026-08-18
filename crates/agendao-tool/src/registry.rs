@@ -5,7 +5,10 @@ use tokio::sync::RwLock;
 use crate::tool_access;
 use crate::{Tool, ToolContext, ToolError, ToolRegistryAccess, ToolResult, ToolSchema};
 use agendao_plugin::{HookContext, HookEvent};
-use agendao_types::ToolCatalogMetadata;
+use agendao_types::{
+    ExternalContentProvenance, ExternalContentSourceKind, ToolCatalogMetadata,
+    EXTERNAL_CONTENT_PROVENANCE_METADATA_KEY,
+};
 
 /// Tools that should not appear in suggestion lists when a tool is not found.
 const FILTERED_FROM_SUGGESTIONS: &[&str] = &["invalid", "patch", "batch"];
@@ -216,6 +219,7 @@ impl ToolRegistry {
         };
 
         let mut args = args;
+        let source_kind = tool.source_kind();
 
         // If args is still an empty object, log a warning for diagnostics.
         if args.is_object() && args.as_object().is_some_and(|o| o.is_empty()) {
@@ -296,7 +300,7 @@ impl ToolRegistry {
             let mut hook_ctx = HookContext::new(HookEvent::ToolExecuteAfter)
                 .with_session(&ctx.session_id)
                 .with_data("tool", serde_json::json!(tool_id))
-                .with_data("args", args);
+                .with_data("args", args.clone());
             if let Some(call_id) = &ctx.call_id {
                 hook_ctx = hook_ctx.with_data("callID", serde_json::json!(call_id));
             }
@@ -322,8 +326,67 @@ impl ToolRegistry {
             }
         }
 
+        if let Ok(tool_result) = &mut result {
+            if let Some(provenance) = external_content_provenance(
+                tool_id,
+                source_kind,
+                &args,
+                chrono::Utc::now().timestamp_millis(),
+            ) {
+                tool_result.metadata.insert(
+                    EXTERNAL_CONTENT_PROVENANCE_METADATA_KEY.to_string(),
+                    serde_json::to_value(provenance).unwrap_or_default(),
+                );
+            }
+        }
+
         result
     }
+}
+
+fn external_content_provenance(
+    tool_id: &str,
+    source_kind: crate::ToolSchemaSourceKind,
+    args: &serde_json::Value,
+    fetched_at: i64,
+) -> Option<ExternalContentProvenance> {
+    let kind = match source_kind {
+        crate::ToolSchemaSourceKind::Mcp => ExternalContentSourceKind::Mcp,
+        crate::ToolSchemaSourceKind::Plugin => ExternalContentSourceKind::Plugin,
+        crate::ToolSchemaSourceKind::Dynamic => ExternalContentSourceKind::DynamicTool,
+        crate::ToolSchemaSourceKind::BuiltIn => match tool_id {
+            "webfetch" | "websearch" | "codesearch" | "github_research" | "browser_session" => {
+                ExternalContentSourceKind::Web
+            }
+            "skill_hub"
+                if matches!(
+                    args.get("action").and_then(serde_json::Value::as_str),
+                    Some(
+                        "search"
+                            | "index"
+                            | "artifact_cache"
+                            | "index_refresh"
+                            | "install_plan"
+                            | "update_plan"
+                            | "sync_plan"
+                    )
+                ) =>
+            {
+                ExternalContentSourceKind::RemoteSkill
+            }
+            _ => return None,
+        },
+    };
+    let resource_id = ["url", "uri", "query", "source_id", "locator", "path"]
+        .iter()
+        .find_map(|key| args.get(key).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(tool_id);
+    Some(ExternalContentProvenance::untrusted(
+        kind,
+        resource_id,
+        fetched_at,
+    ))
 }
 
 fn apply_tool_definition_payload(schema: &mut ToolSchema, payload: &serde_json::Value) {
@@ -1054,5 +1117,120 @@ mod default_registry_tests {
         assert!(ids.iter().any(|id| id == "shell_session"));
         #[cfg(feature = "web-tools")]
         assert!(ids.iter().any(|id| id == "browser_session"));
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct ExternalTestTool;
+
+    #[async_trait]
+    impl Tool for ExternalTestTool {
+        fn id(&self) -> &str {
+            "external_test"
+        }
+
+        fn description(&self) -> &str {
+            "Returns external test content"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        fn source_kind(&self) -> crate::ToolSchemaSourceKind {
+            crate::ToolSchemaSourceKind::Plugin
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::simple("external", "payload"))
+        }
+    }
+
+    #[test]
+    fn external_tool_sources_receive_typed_untrusted_provenance() {
+        for (source, expected) in [
+            (
+                crate::ToolSchemaSourceKind::Mcp,
+                ExternalContentSourceKind::Mcp,
+            ),
+            (
+                crate::ToolSchemaSourceKind::Plugin,
+                ExternalContentSourceKind::Plugin,
+            ),
+            (
+                crate::ToolSchemaSourceKind::Dynamic,
+                ExternalContentSourceKind::DynamicTool,
+            ),
+        ] {
+            let provenance = external_content_provenance(
+                "external_tool",
+                source,
+                &serde_json::json!({"uri": "resource/42"}),
+                99,
+            )
+            .expect("external source");
+            assert_eq!(provenance.source_kind, expected);
+            assert_eq!(provenance.resource_id, "resource/42");
+            assert!(provenance.untrusted_external);
+        }
+        assert!(external_content_provenance(
+            "read",
+            crate::ToolSchemaSourceKind::BuiltIn,
+            &serde_json::json!({"file_path": "/tmp/a"}),
+            99,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn built_in_web_and_remote_skill_reads_are_external() {
+        let web = external_content_provenance(
+            "webfetch",
+            crate::ToolSchemaSourceKind::BuiltIn,
+            &serde_json::json!({"url": "https://example.test/doc"}),
+            1,
+        )
+        .expect("web provenance");
+        assert_eq!(web.source_kind, ExternalContentSourceKind::Web);
+        let skill = external_content_provenance(
+            "skill_hub",
+            crate::ToolSchemaSourceKind::BuiltIn,
+            &serde_json::json!({"action": "search", "query": "review"}),
+            1,
+        )
+        .expect("remote skill provenance");
+        assert_eq!(skill.source_kind, ExternalContentSourceKind::RemoteSkill);
+    }
+
+    #[tokio::test]
+    async fn registry_execution_stamps_external_tool_result() {
+        let registry = ToolRegistry::new();
+        registry.register(ExternalTestTool).await;
+
+        let result = registry
+            .execute(
+                "external_test",
+                serde_json::json!({"uri": "plugin/resource"}),
+                ToolContext::new(
+                    "ses_external".to_string(),
+                    "msg_external".to_string(),
+                    ".".to_string(),
+                ),
+            )
+            .await
+            .expect("external tool should execute");
+        let provenance = ExternalContentProvenance::from_metadata(&result.metadata)
+            .expect("registry must stamp provenance");
+        assert_eq!(provenance.source_kind, ExternalContentSourceKind::Plugin);
+        assert_eq!(provenance.resource_id, "plugin/resource");
+        assert!(provenance.untrusted_external);
     }
 }

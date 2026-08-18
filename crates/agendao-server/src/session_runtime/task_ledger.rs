@@ -93,31 +93,51 @@ pub(crate) fn cause_for_seam(
     }
 }
 
-/// External transports (HTTP, Unix JSON-RPC) may only submit checkpoints
-/// whose verifier is an explicit `UserConfirmation`. Machine verifier types
-/// (`DeterministicCheck`, `Evaluator`) are reserved for server-internal
-/// seams: allowing them over the wire would let any client forge criterion
-/// coverage without ever executing a check.
+/// External transports may only assert user provenance. Model, evaluator,
+/// system, and machine-verifier identities are reserved for internal seams;
+/// otherwise any HTTP/RPC caller could forge the labels rendered by clients.
 pub(crate) fn validate_external_op(op: &TaskLedgerOp) -> Result<(), ApiError> {
-    let machine_verifier = |verifier: &agendao_types::task_ledger::VerifierRef| {
-        !matches!(
-            verifier,
-            agendao_types::task_ledger::VerifierRef::UserConfirmation { .. }
-        )
+    use agendao_types::task_ledger::{TaskLedgerActor, VerifierRef};
+
+    let validate_actor = |actor: Option<TaskLedgerActor>| {
+        if actor == Some(TaskLedgerActor::User) {
+            Ok(())
+        } else {
+            Err(ApiError::BadRequest(
+                "external task-ledger writes must use actor=user; model/evaluator/system provenance is reserved for internal seams"
+                    .to_string(),
+            ))
+        }
     };
     match op {
+        TaskLedgerOp::Create { goal, .. } | TaskLedgerOp::SetGoal { goal } => {
+            validate_actor(Some(goal.set_by))
+        }
+        TaskLedgerOp::AddCore { actor, .. }
+        | TaskLedgerOp::SwapCoreLive { actor, .. }
+        | TaskLedgerOp::SetNext { actor, .. } => validate_actor(*actor),
         TaskLedgerOp::AddCheckpoint { verifier, .. }
-        | TaskLedgerOp::CloseOpenWithCheckpoint { verifier, .. } => {
-            if machine_verifier(verifier) {
-                return Err(ApiError::BadRequest(
+        | TaskLedgerOp::CloseOpenWithCheckpoint { verifier, .. } => match verifier {
+            VerifierRef::UserConfirmation { actor } if actor == "user" => Ok(()),
+            VerifierRef::UserConfirmation { .. } => Err(ApiError::BadRequest(
+                "external user_confirmation verifier actor must be `user`".to_string(),
+            )),
+            VerifierRef::DeterministicCheck { .. } | VerifierRef::Evaluator { .. } => {
+                Err(ApiError::BadRequest(
                     "machine verifier types (deterministic_check/evaluator) cannot be \
                      submitted over the wire; use user_confirmation or let the server's \
                      seams produce them"
                         .to_string(),
-                ));
+                ))
             }
-            Ok(())
-        }
+        },
+        TaskLedgerOp::SetStatus { .. }
+        | TaskLedgerOp::ResolveInteraction { .. }
+        | TaskLedgerOp::Interrupt
+        | TaskLedgerOp::Complete { .. } => Err(ApiError::BadRequest(
+            "task-ledger lifecycle operations are reserved for internal execution seams"
+                .to_string(),
+        )),
         _ => Ok(()),
     }
 }
@@ -149,10 +169,29 @@ pub(crate) async fn apply_task_ledger_op(
     expected_revision: u64,
     op: TaskLedgerOp,
 ) -> Result<(SessionTaskLedger, TaskLedgerCause), ApiError> {
+    apply_task_ledger_op_unless_cancelled(state, session_id, expected_revision, op, None)
+        .await?
+        .ok_or_else(|| ApiError::InternalError("unguarded ledger write was cancelled".to_string()))
+}
+
+/// Apply an internal run action only if its cancellation authority is still
+/// live at the write-lock linearization point. This closes the race where a
+/// stall action observes a live token, waits for the session mutex, and then
+/// commits after Stop has already cancelled the run.
+pub(crate) async fn apply_task_ledger_op_unless_cancelled(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    expected_revision: u64,
+    op: TaskLedgerOp,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<Option<(SessionTaskLedger, TaskLedgerCause)>, ApiError> {
     let cause = cause_for_op(&op);
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     let mut sessions = state.sessions.lock().await;
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Ok(None);
+    }
     let session = sessions
         .get_mut(session_id)
         .ok_or_else(|| ApiError::SessionNotFound(session_id.to_string()))?;
@@ -160,9 +199,25 @@ pub(crate) async fn apply_task_ledger_op(
         session_id,
         session.record().metadata.get(TASK_LEDGER_METADATA_KEY),
     );
-    ledger
-        .apply(expected_revision, op, now_ms)
-        .map_err(|error| map_ledger_error(session_id, error))?;
+    if let Err(error) = ledger.apply(expected_revision, op, now_ms) {
+        if matches!(error, TaskLedgerError::RevisionConflict { .. }) {
+            let count = session
+                .record()
+                .metadata
+                .get("task_ledger_revision_conflict_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .saturating_add(1);
+            session.insert_metadata(
+                "task_ledger_revision_conflict_count".to_string(),
+                serde_json::json!(count),
+            );
+            drop(sessions);
+            crate::routes::session::session_crud::persist_session_if_enabled(state, session_id)
+                .await;
+        }
+        return Err(map_ledger_error(session_id, error));
+    }
     let snapshot = ledger.clone();
     session.insert_metadata(
         TASK_LEDGER_METADATA_KEY.to_string(),
@@ -184,7 +239,7 @@ pub(crate) async fn apply_task_ledger_op(
     drop(sessions);
 
     crate::routes::session::session_crud::persist_session_if_enabled(state, session_id).await;
-    Ok((snapshot, cause))
+    Ok(Some((snapshot, cause)))
 }
 
 #[cfg(test)]
@@ -266,6 +321,19 @@ mod tests {
         assert!(matches!(err, ApiError::RevisionConflict { .. }));
         let snapshot = task_ledger_snapshot(&state, &session_id).await.unwrap();
         assert_eq!(snapshot.revision, 1, "failed write changed nothing");
+        let sessions = state.sessions.lock().await;
+        assert_eq!(
+            sessions
+                .get(&session_id)
+                .and_then(|session| {
+                    session
+                        .record()
+                        .metadata
+                        .get("task_ledger_revision_conflict_count")
+                })
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
     }
 
     #[tokio::test]

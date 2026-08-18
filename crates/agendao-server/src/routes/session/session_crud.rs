@@ -900,7 +900,10 @@ mod tests {
         persist_session_telemetry_snapshot, MessageRole, PartType, Session, SessionForkSpec,
         SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion,
     };
-    use agendao_types::SessionForkHistoryMode;
+    use agendao_types::task_ledger::{
+        TaskGoal, TaskLedgerActor, TaskLedgerOp, VerificationCoverage, VerifierRef,
+    };
+    use agendao_types::{message_continuity_packet, SessionForkHistoryMode};
     use axum::{
         extract::{Path, Query, State},
         http::HeaderMap,
@@ -1296,6 +1299,110 @@ mod tests {
             .parts
             .iter()
             .any(|part| matches!(part.part_type, PartType::Compaction { .. })));
+    }
+
+    #[tokio::test]
+    async fn compaction_preserves_task_ledger_and_records_typed_continuity_snapshot() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp/project");
+            for index in 0..10 {
+                session.push_message(SessionMessage::user(
+                    session.id.clone(),
+                    format!("continuity message {index}"),
+                ));
+            }
+            let session_id = session.id.clone();
+            sessions.update(session);
+            session_id
+        };
+        let (created, _) = crate::session_runtime::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            0,
+            TaskLedgerOp::Create {
+                goal: TaskGoal {
+                    statement: "finish recovery fixture".to_string(),
+                    acceptance_criteria: vec!["fixture check passes".to_string()],
+                    criterion_checks: vec![],
+                    set_by: TaskLedgerActor::User,
+                    set_at: 1,
+                },
+                next_statement: "resume from the remaining assertion".to_string(),
+            },
+        )
+        .await
+        .expect("create ledger");
+        let (verified, _) = crate::session_runtime::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            created.revision,
+            TaskLedgerOp::AddCheckpoint {
+                claim: "fixture setup verified".to_string(),
+                verifier: VerifierRef::DeterministicCheck {
+                    description: "fixture check".to_string(),
+                },
+                coverage: VerificationCoverage {
+                    scope: "fixture setup".to_string(),
+                },
+                covered_criteria: vec!["fixture check passes".to_string()],
+                evidence_artifact_ids: vec![],
+                source_stage_id: None,
+                supersedes: None,
+            },
+        )
+        .await
+        .expect("checkpoint");
+        crate::session_runtime::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            verified.revision,
+            TaskLedgerOp::OpenQuestion {
+                question: "does resume keep the final assertion?".to_string(),
+                settled_by: "resume probe".to_string(),
+            },
+        )
+        .await
+        .expect("open question");
+        let before = crate::session_runtime::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("ledger before compaction");
+
+        let _ = start_compaction(
+            State(state.clone()),
+            Path(session_id.clone()),
+            Query(CompactRequest::default()),
+        )
+        .await
+        .expect("compaction route should succeed");
+
+        let after = crate::session_runtime::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("ledger after compaction");
+        assert_eq!(after, before, "compaction must not mutate ledger authority");
+
+        let sessions = state.sessions.lock().await;
+        let packet = sessions
+            .get(&session_id)
+            .and_then(|session| session.messages.last())
+            .and_then(|message| message_continuity_packet(&message.metadata))
+            .expect("compaction message should carry continuity packet");
+        let projected = packet
+            .task_ledger
+            .expect("packet should carry typed task-ledger continuity");
+        assert_eq!(projected.revision, before.revision);
+        assert_eq!(projected.goal_generation, before.goal_generation);
+        assert_eq!(
+            projected.goal.as_deref(),
+            before.goal.as_ref().map(|goal| goal.statement.as_str())
+        );
+        assert_eq!(
+            projected.next.as_ref().map(|next| next.statement.as_str()),
+            before.next.as_ref().map(|next| next.statement.as_str())
+        );
+        assert_eq!(projected.verified.len(), 1);
+        assert_eq!(projected.open.len(), 1);
     }
 
     #[tokio::test]

@@ -1525,6 +1525,7 @@ pub async fn run_server_with_state(
 }
 
 /// Start server in Unix-socket-only mode (HTTP disabled).
+#[cfg(unix)]
 pub async fn run_unix_socket_only(
     workspace_root: PathBuf,
     socket_path: String,
@@ -1542,6 +1543,16 @@ pub async fn run_unix_socket_only(
 
     tracing::info!("Unix-socket-only mode: listening on {}", socket_path);
     unix_server.serve().await
+}
+
+/// Unix domain sockets are not available on Windows. Keep the public startup
+/// surface explicit so callers receive a deterministic platform error.
+#[cfg(not(unix))]
+pub async fn run_unix_socket_only(
+    _workspace_root: PathBuf,
+    _socket_path: String,
+) -> anyhow::Result<()> {
+    anyhow::bail!("Unix-socket-only mode is unsupported on this platform")
 }
 
 async fn run_server_with_unix_socket(
@@ -1562,7 +1573,8 @@ async fn run_server_with_unix_socket(
     state.ensure_catalog_refresh_loop();
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Start Unix socket server if path is provided
+    // Start Unix socket server if path is provided.
+    #[cfg(unix)]
     let unix_task = if let Some(socket_path) = unix_socket_path {
         let unix_server =
             crate::unix_socket::UnixSocketServer::new(Arc::clone(&state), socket_path.clone());
@@ -1576,6 +1588,12 @@ async fn run_server_with_unix_socket(
 
         tracing::info!("Unix socket server listening on {}", socket_path);
         Some(task)
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    let unix_task: Option<tokio::task::JoinHandle<()>> = if unix_socket_path.is_some() {
+        anyhow::bail!("Unix socket transport is unsupported on this platform")
     } else {
         None
     };

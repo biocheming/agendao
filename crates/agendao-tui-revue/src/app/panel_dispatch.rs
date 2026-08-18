@@ -370,8 +370,68 @@ impl AppHandler {
             }
             Panel::TaskState => {
                 let ledger = self.active_session.task_ledger.get();
-                let item_count = self.task_state_dialog.item_count(ledger.as_deref());
-                self.task_state_dialog.handle_key(key, item_count);
+                if let Some(action) = self.task_state_dialog.handle_key(key, ledger.as_deref()) {
+                    match action {
+                        crate::dialog::TaskStateAction::Apply(op) => {
+                            let Some(session_id) = self.active_session.get_session_id() else {
+                                self.store.push_toast(
+                                    "No active session for Task State update",
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                                return true;
+                            };
+                            let Some(expected_revision) =
+                                ledger.as_ref().map(|value| value.revision)
+                            else {
+                                return true;
+                            };
+                            let Some(api) = self.api.as_ref() else {
+                                self.store.push_toast(
+                                    "No API bridge for Task State update",
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                                return true;
+                            };
+                            match api.apply_task_ledger_op(&session_id, expected_revision, op) {
+                                Ok(snapshot) => {
+                                    self.active_session.apply_task_ledger_snapshot(snapshot);
+                                    self.store.push_toast(
+                                        "Task state saved",
+                                        crate::store::types::ToastMsgVariant::Success,
+                                    );
+                                }
+                                Err(error) if error.to_string().contains("revision conflict") => {
+                                    if let Ok(snapshot) = api.get_task_ledger(&session_id) {
+                                        self.active_session.apply_task_ledger_snapshot(snapshot);
+                                    }
+                                    self.store.push_toast(
+                                        "Task state changed elsewhere; latest revision loaded. Review and retry.",
+                                        crate::store::types::ToastMsgVariant::Warning,
+                                    );
+                                }
+                                Err(error) => self.store.push_toast(
+                                    &format!("Task state update failed: {error}"),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                ),
+                            }
+                        }
+                        crate::dialog::TaskStateAction::NavigateEvidence(reference) => {
+                            if self
+                                .active_session
+                                .focus_transcript_reference(&reference, self.transcript_viewport_h)
+                            {
+                                self.task_state_dialog.dismiss();
+                                self.panel = Panel::None;
+                                self.layout_dirty = true;
+                            } else {
+                                self.store.push_toast(
+                                    &format!("Evidence {reference} is not present in the loaded transcript"),
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            }
+                        }
+                    }
+                }
                 if !self.task_state_dialog.visible {
                     self.panel = Panel::None;
                 }

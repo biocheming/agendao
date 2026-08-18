@@ -211,6 +211,24 @@ pub async fn local_get_task_ledger(
     Ok(ledger)
 }
 
+pub async fn local_apply_task_ledger_op(
+    state: Arc<ServerState>,
+    session_id: &str,
+    expected_revision: u64,
+    op: agendao_types::task_ledger::TaskLedgerOp,
+) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    crate::session_runtime::task_ledger::validate_external_op(&op).map_err(api_error)?;
+    let (ledger, _) = crate::session_runtime::task_ledger::apply_task_ledger_op(
+        &state,
+        session_id,
+        expected_revision,
+        op,
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(ledger)
+}
+
 pub async fn local_get_session_telemetry(
     state: Arc<ServerState>,
     session_id: &str,
@@ -1017,4 +1035,52 @@ pub async fn local_execute_session_recovery(
     .await
     .map_err(api_error)?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod task_ledger_tests {
+    use super::*;
+    use agendao_types::task_ledger::{TaskGoal, TaskLedgerActor, TaskLedgerOp};
+
+    #[tokio::test]
+    async fn local_bridge_applies_the_same_cas_authority_as_http_and_rpc() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.create("project", "/tmp");
+            let id = session.id.clone();
+            sessions.update(session);
+            id
+        };
+        let created = local_apply_task_ledger_op(
+            state.clone(),
+            &session_id,
+            0,
+            TaskLedgerOp::Create {
+                goal: TaskGoal {
+                    statement: "ship".to_string(),
+                    acceptance_criteria: vec![],
+                    criterion_checks: vec![],
+                    set_by: TaskLedgerActor::User,
+                    set_at: 1,
+                },
+                next_statement: "test".to_string(),
+            },
+        )
+        .await
+        .expect("create through local bridge");
+        let updated = local_apply_task_ledger_op(
+            state,
+            &session_id,
+            created.revision,
+            TaskLedgerOp::SetNext {
+                statement: "review".to_string(),
+                actor: Some(TaskLedgerActor::User),
+            },
+        )
+        .await
+        .expect("update through local bridge");
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.next.unwrap().statement, "review");
+    }
 }

@@ -886,6 +886,11 @@ pub struct SessionContinuityPacket {
     pub memory_anchors: Vec<SessionContinuityMemoryAnchor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_ledger: Vec<SessionContinuityLedgerEntry>,
+    /// Read-only projection of the server-authoritative task ledger at the
+    /// compaction/context boundary. This snapshot is continuity evidence,
+    /// never a restore source or a second write authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_ledger: Option<SessionContinuityTaskLedger>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continuation_dependencies: Vec<SessionContinuityDependency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -906,6 +911,7 @@ impl Default for SessionContinuityPacket {
             exact_recent_tail: Vec::new(),
             memory_anchors: Vec::new(),
             working_ledger: Vec::new(),
+            task_ledger: None,
             continuation_dependencies: Vec::new(),
             latest_compaction_summary: None,
             limits: None,
@@ -981,6 +987,22 @@ impl SessionContinuityPacket {
                     })
                 })
                 .collect::<Vec<_>>(),
+            "task_ledger": self.task_ledger.as_ref().map(|ledger| {
+                serde_json::json!({
+                    "revision": ledger.revision,
+                    "goal_generation": ledger.goal_generation,
+                    "checkpoint_ids": ledger
+                        .verified
+                        .iter()
+                        .map(|checkpoint| checkpoint.id.clone())
+                        .collect::<Vec<_>>(),
+                    "open_ids": ledger
+                        .open
+                        .iter()
+                        .map(|question| question.id.clone())
+                        .collect::<Vec<_>>(),
+                })
+            }),
             "continuation_dependencies": self
                 .continuation_dependencies
                 .iter()
@@ -1224,6 +1246,88 @@ not as a replacement for checking live files or rerunning verification when exac
             .map(|line| format!("  {line}"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+/// Bounded task-state projection carried through compaction and recovery
+/// diagnostics. It intentionally omits verifier commands and full append-only
+/// history; the live `SessionTaskLedger` in session metadata remains the sole
+/// authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityTaskLedger {
+    pub revision: u64,
+    pub goal_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verified: Vec<SessionContinuityCheckpointRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<SessionContinuityOpenRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<SessionContinuityNextRef>,
+    pub status: crate::task_ledger::TaskLedgerStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityCheckpointRef {
+    pub id: String,
+    pub goal_generation: u64,
+    pub claim: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covered_criteria: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityOpenRef {
+    pub id: String,
+    pub question: String,
+    pub settled_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityNextRef {
+    pub statement: String,
+    #[serde(default)]
+    pub pre_interrupt: bool,
+}
+
+impl From<&crate::task_ledger::SessionTaskLedger> for SessionContinuityTaskLedger {
+    fn from(ledger: &crate::task_ledger::SessionTaskLedger) -> Self {
+        Self {
+            revision: ledger.revision,
+            goal_generation: ledger.goal_generation,
+            goal: ledger.goal.as_ref().map(|goal| goal.statement.clone()),
+            acceptance_criteria: ledger
+                .goal
+                .as_ref()
+                .map(|goal| goal.acceptance_criteria.clone())
+                .unwrap_or_default(),
+            verified: crate::task_ledger::current_checkpoints(ledger)
+                .into_iter()
+                .map(|checkpoint| SessionContinuityCheckpointRef {
+                    id: checkpoint.id.clone(),
+                    goal_generation: checkpoint.goal_generation,
+                    claim: checkpoint.claim.clone(),
+                    covered_criteria: checkpoint.covered_criteria.clone(),
+                })
+                .collect(),
+            open: ledger
+                .open_questions()
+                .into_iter()
+                .map(|question| SessionContinuityOpenRef {
+                    id: question.id.clone(),
+                    question: question.question.clone(),
+                    settled_by: question.settled_by.clone(),
+                })
+                .collect(),
+            next: ledger.next.as_ref().map(|next| SessionContinuityNextRef {
+                statement: next.statement.clone(),
+                pre_interrupt: next.provenance.pre_interrupt,
+            }),
+            status: ledger.status,
+        }
     }
 }
 
@@ -1896,6 +2000,7 @@ mod continuity_packet_tests {
                 },
             ],
             working_ledger: vec![],
+            task_ledger: None,
             continuation_dependencies: vec![SessionContinuityDependency {
                 kind: SessionContinuityDependencyKind::AssistantToolCallContinuation,
                 anchor_message_id: Some("msg-a".to_string()),

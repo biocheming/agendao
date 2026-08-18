@@ -1,4 +1,4 @@
-//! Task-level stall observation (Phase 4 v1: observe and report only).
+//! Task-level stall detection and bounded replanning.
 //!
 //! The detector consumes ledger frames — typed snapshots committed at seams
 //! — never hidden reasoning or word frequencies. Suppression rules from the
@@ -10,17 +10,22 @@
 //!   establish a new baseline; a pre-interrupt `Next` that is still current
 //!   is not evidence of a stall.
 //!
-//! v1 never auto-replans: first hits become telemetry observations. Acting
-//! on them (budgeted re-planning) is gated on Phase 6 evidence.
+//! Native governance remains opt-in per session. For a governed structured or
+//! loop run, a repeated typed stall can enqueue a bounded system steering at
+//! the existing next-tool boundary. It never bypasses scheduler/tool policy.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use agendao_types::task_ledger::{SessionTaskLedger, TaskLedgerStatus};
+use agendao_types::task_ledger::{
+    SessionTaskLedger, TaskLedgerActor, TaskLedgerOp, TaskLedgerStatus,
+};
 
 use crate::ServerState;
 
 const WINDOW: usize = 3;
+const MAX_REPLAN_ATTEMPTS: u32 = 2;
+const REPLAN_DEADLINE_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StallFrame {
@@ -36,6 +41,173 @@ pub(crate) struct StallFrame {
 #[derive(Default)]
 pub struct StallWindow {
     frames: VecDeque<StallFrame>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StallPhase {
+    #[default]
+    Healthy,
+    Suspected,
+    Stalled,
+    Replanning,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub(crate) enum StallAction {
+    None,
+    Replan {
+        attempt: u32,
+        next_statement: String,
+        steering: String,
+    },
+    Block {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct StallDecision {
+    pub phase: StallPhase,
+    pub observations: Vec<StallObservation>,
+    pub replan_attempts: u32,
+    pub deadline_at_ms: i64,
+    pub action: StallAction,
+}
+
+#[derive(Default)]
+struct SessionStallControl {
+    window: StallWindow,
+    phase: StallPhase,
+    consecutive_hits: u32,
+    replan_attempts: u32,
+    deadline_at_ms: i64,
+}
+
+impl SessionStallControl {
+    fn evaluate(
+        &mut self,
+        ledger: &SessionTaskLedger,
+        run_started: bool,
+        now_ms: i64,
+        auto_replan: bool,
+        cancelled: bool,
+    ) -> StallDecision {
+        if run_started {
+            self.phase = StallPhase::Healthy;
+            self.consecutive_hits = 0;
+            self.replan_attempts = 0;
+            self.deadline_at_ms = now_ms.saturating_add(REPLAN_DEADLINE_MS);
+            let observations = self.window.record(ledger);
+            return self.decision(observations, StallAction::None);
+        }
+
+        // Fast/direct runs do not participate in the detector at all. This
+        // is stronger than merely suppressing actions: they must not surface
+        // suspected/stalled telemetry after ordinary tool calls.
+        if !auto_replan {
+            self.window.frames.clear();
+            self.phase = StallPhase::Healthy;
+            self.consecutive_hits = 0;
+            return self.decision(Vec::new(), StallAction::None);
+        }
+
+        let observations = self.window.push_frame(ledger);
+        if matches!(
+            ledger.status,
+            TaskLedgerStatus::AwaitingUser | TaskLedgerStatus::Interrupted
+        ) {
+            return self.decision(observations, StallAction::None);
+        }
+        if ledger.status == TaskLedgerStatus::Blocked {
+            self.phase = StallPhase::Blocked;
+            return self.decision(observations, StallAction::None);
+        }
+
+        let no_new_verification = observations
+            .iter()
+            .any(|observation| matches!(observation, StallObservation::NoNewVerification { .. }));
+        let repeated_direction = observations.iter().any(|observation| {
+            matches!(
+                observation,
+                StallObservation::NextUnchanged { .. } | StallObservation::OpenCountGrowing { .. }
+            )
+        });
+        let stall_evidence = no_new_verification && repeated_direction;
+        if !stall_evidence {
+            self.phase = StallPhase::Healthy;
+            self.consecutive_hits = 0;
+            return self.decision(observations, StallAction::None);
+        }
+
+        self.consecutive_hits = self.consecutive_hits.saturating_add(1);
+        if self.consecutive_hits == 1 {
+            self.phase = StallPhase::Suspected;
+            return self.decision(observations, StallAction::None);
+        }
+
+        self.phase = StallPhase::Stalled;
+        if !auto_replan || cancelled {
+            return self.decision(observations, StallAction::None);
+        }
+        if now_ms >= self.deadline_at_ms {
+            self.phase = StallPhase::Blocked;
+            return self.decision(
+                observations,
+                StallAction::Block {
+                    reason: "automatic replanning deadline exhausted".to_string(),
+                },
+            );
+        }
+        if self.replan_attempts >= MAX_REPLAN_ATTEMPTS {
+            self.phase = StallPhase::Blocked;
+            return self.decision(
+                observations,
+                StallAction::Block {
+                    reason: format!(
+                        "automatic replanning budget exhausted after {} attempts",
+                        MAX_REPLAN_ATTEMPTS
+                    ),
+                },
+            );
+        }
+
+        self.replan_attempts += 1;
+        self.phase = StallPhase::Replanning;
+        let attempt = self.replan_attempts;
+        let next_statement = format!(
+            "Replan attempt {attempt}: run one different discriminating check before repeating the prior action"
+        );
+        let steering = format!(
+            "Task governance detected repeated typed stall evidence. Replan attempt {attempt}/{MAX_REPLAN_ATTEMPTS}: change strategy now. Run a different discriminating check; then either make concrete progress or name a specific blocker. Do not repeat the previous action unchanged."
+        );
+        self.decision(
+            observations,
+            StallAction::Replan {
+                attempt,
+                next_statement,
+                steering,
+            },
+        )
+    }
+
+    fn decision(&self, observations: Vec<StallObservation>, action: StallAction) -> StallDecision {
+        StallDecision {
+            phase: self.phase,
+            observations,
+            replan_attempts: self.replan_attempts,
+            deadline_at_ms: self.deadline_at_ms,
+            action,
+        }
+    }
+
+    fn rebaseline(&mut self, ledger: &SessionTaskLedger) {
+        self.window.frames.clear();
+        let _ = self.window.push_frame(ledger);
+        self.consecutive_hits = 0;
+    }
 }
 
 impl StallWindow {
@@ -110,31 +282,52 @@ pub(crate) fn observe(frames: &VecDeque<StallFrame>) -> Vec<StallObservation> {
 /// Registry of per-session windows on the server.
 #[derive(Default)]
 pub struct StallWindows {
-    windows: std::sync::Mutex<std::collections::HashMap<String, StallWindow>>,
+    windows: std::sync::Mutex<std::collections::HashMap<String, SessionStallControl>>,
 }
 
 impl StallWindows {
     /// Record a committed seam. `run_started` implements the resume-window
     /// reset. Returns the observations worth surfacing (possibly empty).
-    pub fn record(
+    pub(crate) fn record(
         &self,
         session_id: &str,
         ledger: &SessionTaskLedger,
         run_started: bool,
-    ) -> Vec<StallObservation> {
+        now_ms: i64,
+        auto_replan: bool,
+        cancelled: bool,
+    ) -> StallDecision {
         if ledger.revision == 0 {
-            return Vec::new();
+            return StallDecision {
+                phase: StallPhase::Healthy,
+                observations: Vec::new(),
+                replan_attempts: 0,
+                deadline_at_ms: 0,
+                action: StallAction::None,
+            };
         }
         let mut windows = match self.windows.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let window = windows.entry(session_id.to_string()).or_default();
-        if run_started {
-            window.record(ledger)
-        } else {
-            window.push_frame(ledger)
-        }
+        windows.entry(session_id.to_string()).or_default().evaluate(
+            ledger,
+            run_started,
+            now_ms,
+            auto_replan,
+            cancelled,
+        )
+    }
+
+    pub(crate) fn rebaseline(&self, session_id: &str, ledger: &SessionTaskLedger) {
+        let mut windows = match self.windows.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        windows
+            .entry(session_id.to_string())
+            .or_default()
+            .rebaseline(ledger);
     }
 
     /// Test-only: how many frames the session's window currently holds.
@@ -145,7 +338,7 @@ impl StallWindows {
             .map(|windows| {
                 windows
                     .get(session_id)
-                    .map(|window| window.frames.len())
+                    .map(|control| control.window.frames.len())
                     .unwrap_or(0)
             })
             .unwrap_or(0)
@@ -163,26 +356,94 @@ pub(crate) async fn record_stall_frame(
     state: &Arc<ServerState>,
     ledger: &SessionTaskLedger,
     run_started: bool,
+    auto_replan: bool,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) {
-    let observations = state
-        .stall_windows
-        .record(&ledger.session_id, ledger, run_started);
-    if observations.is_empty() {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cancelled = cancellation.is_some_and(|token| token.is_cancelled());
+    let decision = state.stall_windows.record(
+        &ledger.session_id,
+        ledger,
+        run_started,
+        now_ms,
+        auto_replan,
+        cancelled,
+    );
+    if decision.observations.is_empty() && matches!(decision.action, StallAction::None) {
         return;
     }
-    // v1 surfaces facts only — with named rules, never a vibe.
     tracing::info!(
         session_id = %ledger.session_id,
-        observations = ?observations,
-        "task stall observation (facts only, no action taken)"
+        decision = ?decision,
+        "task stall control decision"
     );
-    let mut sessions = state.sessions.lock().await;
-    if let Some(session) = sessions.get_mut(&ledger.session_id) {
-        session.insert_metadata(
-            "stall_observation".to_string(),
-            serde_json::to_value(&observations).unwrap_or_default(),
-        );
+
+    match &decision.action {
+        StallAction::Replan {
+            next_statement,
+            steering,
+            ..
+        } if !cancellation.is_some_and(|token| token.is_cancelled()) => {
+            if let Ok(Some((snapshot, _))) =
+                super::task_ledger::apply_task_ledger_op_unless_cancelled(
+                    state,
+                    &ledger.session_id,
+                    ledger.revision,
+                    TaskLedgerOp::SetNext {
+                        statement: next_statement.clone(),
+                        actor: Some(TaskLedgerActor::System),
+                    },
+                    cancellation,
+                )
+                .await
+            {
+                state
+                    .stall_windows
+                    .rebaseline(&ledger.session_id, &snapshot);
+                if !cancellation.is_some_and(|token| token.is_cancelled()) {
+                    super::steering::enqueue_system_steering(
+                        state,
+                        &ledger.session_id,
+                        steering.clone(),
+                        "steer_replan",
+                    )
+                    .await;
+                }
+            }
+        }
+        StallAction::Block { reason }
+            if !cancellation.is_some_and(|token| token.is_cancelled()) =>
+        {
+            if let Ok(Some((_snapshot, _))) =
+                super::task_ledger::apply_task_ledger_op_unless_cancelled(
+                    state,
+                    &ledger.session_id,
+                    ledger.revision,
+                    TaskLedgerOp::SetStatus {
+                        status: TaskLedgerStatus::Blocked,
+                        awaiting: None,
+                        blocked_reason: Some(reason.clone()),
+                    },
+                    cancellation,
+                )
+                .await
+            {}
+        }
+        _ => {}
     }
+
+    {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&ledger.session_id) {
+            session.insert_metadata(
+                "stall_observation".to_string(),
+                serde_json::to_value(&decision).unwrap_or_default(),
+            );
+        }
+    }
+    // Persistence helpers re-acquire the sessions mutex.
+    crate::routes::session::session_crud::persist_session_if_enabled(state, &ledger.session_id)
+        .await;
 }
 
 #[cfg(test)]
@@ -331,5 +592,160 @@ mod tests {
         assert!(!out
             .iter()
             .any(|observation| matches!(observation, StallObservation::NoNewVerification { .. })));
+    }
+
+    #[test]
+    fn automatic_replanning_is_bounded_and_blocks_after_budget() {
+        let ledger = ledger_with(TaskLedgerStatus::Active, "same", 0, 0);
+        let mut control = SessionStallControl::default();
+        let _ = control.evaluate(&ledger, true, 0, true, false);
+        let _ = control.evaluate(&ledger, false, 1, true, false);
+        let suspected = control.evaluate(&ledger, false, 2, true, false);
+        assert_eq!(suspected.phase, StallPhase::Suspected);
+        let first = control.evaluate(&ledger, false, 3, true, false);
+        assert!(matches!(
+            first.action,
+            StallAction::Replan { attempt: 1, .. }
+        ));
+
+        let mut replanned = ledger.clone();
+        replanned.next.as_mut().unwrap().statement = "replan one".to_string();
+        control.rebaseline(&replanned);
+        for now in 4..6 {
+            let _ = control.evaluate(&replanned, false, now, true, false);
+        }
+        let second = control.evaluate(&replanned, false, 6, true, false);
+        assert!(matches!(
+            second.action,
+            StallAction::Replan { attempt: 2, .. }
+        ));
+
+        replanned.next.as_mut().unwrap().statement = "replan two".to_string();
+        control.rebaseline(&replanned);
+        for now in 8..10 {
+            let _ = control.evaluate(&replanned, false, now, true, false);
+        }
+        let exhausted = control.evaluate(&replanned, false, 10, true, false);
+        assert_eq!(exhausted.phase, StallPhase::Blocked);
+        assert!(matches!(exhausted.action, StallAction::Block { .. }));
+    }
+
+    #[test]
+    fn replan_action_respects_enablement_deadline_and_cancellation() {
+        let ledger = ledger_with(TaskLedgerStatus::Active, "same", 0, 0);
+        for (enabled, cancelled, now, expected_action) in [
+            (false, false, 3, "none"),
+            (true, true, 3, "none"),
+            (true, false, REPLAN_DEADLINE_MS, "block"),
+        ] {
+            let mut control = SessionStallControl::default();
+            let _ = control.evaluate(&ledger, true, 0, enabled, cancelled);
+            let _ = control.evaluate(&ledger, false, 1, enabled, cancelled);
+            let _ = control.evaluate(&ledger, false, 2, enabled, cancelled);
+            let decision = control.evaluate(&ledger, false, now, enabled, cancelled);
+            match expected_action {
+                "none" => assert!(matches!(decision.action, StallAction::None)),
+                "block" => assert!(matches!(decision.action, StallAction::Block { .. })),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    async fn state_with_governed_session() -> (Arc<ServerState>, String, SessionTaskLedger) {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/stall-replan").id.clone()
+        };
+        let (ledger, _) = super::super::task_ledger::apply_task_ledger_op(
+            &state,
+            &session_id,
+            0,
+            TaskLedgerOp::Create {
+                goal: agendao_types::task_ledger::TaskGoal {
+                    statement: "escape stall".to_string(),
+                    acceptance_criteria: vec![],
+                    criterion_checks: vec![],
+                    set_by: TaskLedgerActor::User,
+                    set_at: 1,
+                },
+                next_statement: "same next".to_string(),
+            },
+        )
+        .await
+        .expect("create ledger");
+        (state, session_id, ledger)
+    }
+
+    #[tokio::test]
+    async fn repeated_stall_commits_new_next_and_enqueues_one_boundary_replan() {
+        let (state, session_id, ledger) = state_with_governed_session().await;
+        let token = tokio_util::sync::CancellationToken::new();
+        record_stall_frame(&state, &ledger, true, true, Some(&token)).await;
+        for _ in 0..3 {
+            record_stall_frame(&state, &ledger, false, true, Some(&token)).await;
+        }
+        let updated = super::super::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("updated ledger");
+        assert!(updated
+            .next
+            .as_ref()
+            .expect("next")
+            .statement
+            .starts_with("Replan attempt 1:"));
+        assert_eq!(
+            state.steering_store.lock().await.pending_count(&session_id),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_never_commits_or_enqueues_replan() {
+        let (state, session_id, ledger) = state_with_governed_session().await;
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        record_stall_frame(&state, &ledger, true, true, Some(&token)).await;
+        for _ in 0..3 {
+            record_stall_frame(&state, &ledger, false, true, Some(&token)).await;
+        }
+        let unchanged = super::super::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("ledger");
+        assert_eq!(unchanged.revision, ledger.revision);
+        assert_eq!(
+            state.steering_store.lock().await.pending_count(&session_id),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_for_session_lock_prevents_replan_commit() {
+        let (state, session_id, ledger) = state_with_governed_session().await;
+        let token = tokio_util::sync::CancellationToken::new();
+        record_stall_frame(&state, &ledger, true, true, Some(&token)).await;
+        record_stall_frame(&state, &ledger, false, true, Some(&token)).await;
+        record_stall_frame(&state, &ledger, false, true, Some(&token)).await;
+
+        let guard = state.sessions.lock().await;
+        let task_state = Arc::clone(&state);
+        let task_ledger = ledger.clone();
+        let task_token = token.clone();
+        let task = tokio::spawn(async move {
+            record_stall_frame(&task_state, &task_ledger, false, true, Some(&task_token)).await;
+        });
+        tokio::task::yield_now().await;
+        token.cancel();
+        drop(guard);
+        task.await.expect("stall task");
+
+        let unchanged = super::super::task_ledger::task_ledger_snapshot(&state, &session_id)
+            .await
+            .expect("ledger");
+        assert_eq!(unchanged.revision, ledger.revision);
+        assert_eq!(
+            state.steering_store.lock().await.pending_count(&session_id),
+            0
+        );
     }
 }

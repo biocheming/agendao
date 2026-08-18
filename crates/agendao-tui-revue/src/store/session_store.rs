@@ -777,6 +777,32 @@ impl SessionStore {
         self.scroll_offset.set(new_user_offset);
     }
 
+    /// Focus a typed evidence reference already present in the transcript.
+    /// Stage ids/names and tool call/result ids share this single lookup so
+    /// Task State navigation cannot invent a second transcript index.
+    pub fn focus_transcript_reference(&self, reference: &str, viewport_h: u16) -> bool {
+        let messages = self.messages.get();
+        let position = messages.iter().position(|block| match block {
+            TranscriptBlock::UserPrompt { id, .. }
+            | TranscriptBlock::Thinking { id, .. }
+            | TranscriptBlock::ToolCall { id, .. }
+            | TranscriptBlock::ToolResult { id, .. }
+            | TranscriptBlock::SkillActivated { id, .. }
+            | TranscriptBlock::TodoList { id, .. }
+            | TranscriptBlock::AssistantMsg { id, .. }
+            | TranscriptBlock::ImageRef { id, .. }
+            | TranscriptBlock::CompactionHint { id, .. }
+            | TranscriptBlock::SystemNotice { id, .. } => id == reference,
+            TranscriptBlock::StageUpdate { id, name, .. } => id == reference || name == reference,
+        });
+        let Some(position) = position else {
+            return false;
+        };
+        self.transcript_cursor.set(Some(position));
+        self.ensure_cursor_visible(viewport_h);
+        true
+    }
+
     /// 给定块索引 `i`，若它在连续 ToolResult 组内，返回 `(组首索引, 组长度)`。
     /// 用于「单井聚合」：判断 cursor 是否落在工具结果组内，从而决定 Space 是
     /// 切该块自己的 fold 还是展开整组。组折叠阈值与 `layout_tool_result_group`
@@ -1979,5 +2005,18 @@ mod tests {
         s.ensure_cursor_visible(viewport);
         // cursor_top=0 → new_scroll_top=0（pad 饱和）→ offset=max_offset。
         assert_eq!(s.scroll_offset.get(), total - viewport);
+    }
+
+    #[test]
+    fn task_state_evidence_focus_uses_stage_id_or_name() {
+        let s = SessionStore::new();
+        s.push_user_message("u1", "before");
+        s.push_stage("stage-id", "verify/tests", "completed", None);
+        s.push_user_message("u2", "after");
+
+        assert!(s.focus_transcript_reference("verify/tests", 4));
+        assert_eq!(s.transcript_cursor.get(), Some(1));
+        assert!(s.focus_transcript_reference("stage-id", 4));
+        assert!(!s.focus_transcript_reference("missing", 4));
     }
 }

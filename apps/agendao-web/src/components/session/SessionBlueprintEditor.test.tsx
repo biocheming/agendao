@@ -40,7 +40,7 @@ describe("SessionBlueprintEditor", () => {
         selectionSource: "user",
       } as T;
     };
-    const apiJson = vi.fn(apiJsonImpl) as unknown as ApiJson;
+    const apiJson = vi.fn<typeof apiJsonImpl>(apiJsonImpl) as unknown as ApiJson;
     render(
       <SessionBlueprintEditor
         sessionId="session/a"
@@ -72,7 +72,7 @@ describe("SessionBlueprintEditor", () => {
       if (!options) return plannerView as T;
       return { rejectedFingerprint: plannerView.fingerprint } as T;
     };
-    const apiJson = vi.fn(apiJsonImpl) as unknown as ApiJson;
+    const apiJson = vi.fn<typeof apiJsonImpl>(apiJsonImpl) as unknown as ApiJson;
     render(
       <SessionBlueprintEditor
         sessionId="session-1"

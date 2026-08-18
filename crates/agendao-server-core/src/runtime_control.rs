@@ -468,8 +468,58 @@ impl RuntimeControlRegistry {
 
     pub async fn finish_scheduler_run(&self, session_id: &str) {
         self.scheduler_tokens.lock().await.remove(session_id);
-        self.finish_execution(&scheduler_execution_id(session_id))
-            .await;
+
+        // Cancellation may return from the agent loop before ToolFinished or
+        // NodeCompleted can be emitted. Retire the scheduler subtree here so
+        // an orphaned node/tool record cannot keep recovery permanently in
+        // `running` after the prompt runtime has already become idle.
+        let root_id = scheduler_execution_id(session_id);
+        let (retired_ids, changed) = {
+            let mut executions = self.executions.write().await;
+            let mut retired_ids = HashSet::from([root_id]);
+            loop {
+                let before = retired_ids.len();
+                for record in executions.values() {
+                    if record.session_id == session_id
+                        && record
+                            .parent_id
+                            .as_ref()
+                            .is_some_and(|parent| retired_ids.contains(parent))
+                    {
+                        retired_ids.insert(record.id.clone());
+                    }
+                }
+                if retired_ids.len() == before {
+                    break;
+                }
+            }
+
+            let now = now_millis();
+            let mut changed = Vec::new();
+            for id in &retired_ids {
+                let Some(record) = executions.get_mut(id) else {
+                    continue;
+                };
+                if record.status != ExecutionStatus::Done {
+                    record.status = ExecutionStatus::Done;
+                    record.waiting_on = None;
+                    record.updated_at = now;
+                    changed.push(TopologyChangeContext {
+                        session_id: record.session_id.clone(),
+                        execution_id: record.id.clone(),
+                        stage_id: record.stage_id.clone(),
+                    });
+                }
+            }
+            (retired_ids, changed)
+        };
+        self.execution_tokens
+            .lock()
+            .await
+            .retain(|id, _| !retired_ids.contains(id));
+        for context in &changed {
+            self.notify_topology_changed(context);
+        }
         // Clean up all Done records for this session to prevent unbounded growth.
         self.cleanup_done_executions(session_id).await;
     }
@@ -1110,6 +1160,57 @@ mod tests {
         assert!(token.is_cancelled());
         registry.finish_scheduler_run("ses_1").await;
         assert!(!registry.request_scheduler_cancel("ses_1").await);
+    }
+
+    #[tokio::test]
+    async fn finishing_scheduler_run_retires_active_descendants() {
+        let registry = RuntimeControlRegistry::new();
+        registry
+            .set_session_run_status("ses_1", SessionRunStatus::Busy)
+            .await;
+        registry
+            .register_scheduler_run("ses_1", CancellationToken::new(), None)
+            .await;
+        registry.register_scheduler_node("ses_1", "root/work").await;
+        let node_id = scheduler_node_execution_id("ses_1", "root/work");
+        let tool_token = CancellationToken::new();
+        registry
+            .register_tool_call_with_token(
+                "tc_sleep",
+                "ses_1",
+                "bash",
+                Some(node_id),
+                None,
+                Some(tool_token),
+            )
+            .await;
+
+        assert_eq!(
+            registry
+                .list_session_execution_topology("ses_1")
+                .await
+                .active_count,
+            4
+        );
+        assert!(registry.has_cancellation_token("tool_call:tc_sleep").await);
+
+        registry.finish_scheduler_run("ses_1").await;
+
+        let topology = registry.list_session_execution_topology("ses_1").await;
+        assert_eq!(topology.active_count, 1, "only the prompt run remains");
+        assert!(matches!(topology.roots[0].kind, ExecutionKind::PromptRun));
+        assert!(!registry.has_cancellation_token("tool_call:tc_sleep").await);
+
+        registry
+            .set_session_run_status("ses_1", SessionRunStatus::Idle)
+            .await;
+        assert_eq!(
+            registry
+                .list_session_execution_topology("ses_1")
+                .await
+                .active_count,
+            0
+        );
     }
 
     #[tokio::test]

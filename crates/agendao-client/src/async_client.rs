@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use agendao_config::{Config as AppConfig, ModelConfig};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use agendao_types::task_ledger::{SessionTaskLedger, TaskLedgerOp};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
@@ -1326,6 +1327,30 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, path);
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, action).await
+    }
+
+    pub async fn apply_task_ledger_op(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        op: TaskLedgerOp,
+    ) -> anyhow::Result<SessionTaskLedger> {
+        #[derive(serde::Deserialize)]
+        struct WriteResult {
+            ledger: SessionTaskLedger,
+        }
+
+        let result: WriteResult = self
+            .patch_json(
+                &format!("/session/{session_id}/task-ledger"),
+                "update task ledger",
+                &serde_json::json!({
+                    "expected_revision": expected_revision,
+                    "op": op,
+                }),
+            )
+            .await?;
+        Ok(result.ledger)
     }
 
     async fn get_json_query<T: serde::de::DeserializeOwned, Q: Serialize + ?Sized>(

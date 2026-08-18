@@ -5,7 +5,7 @@ use agendao_orchestrator::agent_loop::{
     ToolCall, ToolExecution,
 };
 use agendao_orchestrator::blueprint::{
-    AgentId, BlueprintName, CapabilityId, EvaluatorId, ExecutionLimits, ModelCapability,
+    AgentId, BlueprintName, CapabilityId, EvaluatorId, ExecutionLimits, ModelCapability, NodeSpec,
     OutputContract, OutputFormat, SchedulerBlueprint, SkillId, ToolId, ValidatedBlueprint,
 };
 use agendao_orchestrator::catalog::{
@@ -105,6 +105,8 @@ struct SchedulerAgentObserver {
     /// ledger on the scheduler path (the session-layer summary is only
     /// written by the direct path).
     step_tallies: std::sync::Mutex<StepToolTallies>,
+    run_cancellation: CancellationToken,
+    auto_replan: bool,
 }
 
 #[derive(Default)]
@@ -485,7 +487,7 @@ impl AgentLoopObserver for SchedulerAgentObserver {
         } else {
             agendao_types::repair::ToolBatchGoalStatus::Mixed
         };
-        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+        crate::session_runtime::task_ledger_reducer::dispatch_run_seam(
             &self.state,
             &self.session_id,
             agendao_types::task_ledger::TaskLedgerSeamFact::ToolBatchCompleted {
@@ -509,6 +511,8 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                     repair_events: Vec::new(),
                 },
             },
+            self.auto_replan,
+            &self.run_cancellation,
         )
         .await;
         Ok(())
@@ -841,6 +845,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     let capabilities = WorkspaceCapabilityHost::new(input.directory.clone().into())?;
     let cancellation = CancellationFlag::default();
     let cancellation_signal = cancellation.clone();
+    let run_cancellation = input.cancellation.clone();
     let cancellation_token = input.cancellation;
     let cancellation_task = tokio::spawn(async move {
         cancellation_token.cancelled().await;
@@ -848,6 +853,13 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     });
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_sink = SchedulerEventChannel(event_tx);
+    let auto_replan = blueprint.blueprint().nodes.len() > 2
+        || blueprint.blueprint().nodes.values().any(|node| {
+            matches!(
+                node,
+                NodeSpec::Loop(_) | NodeSpec::Parallel(_) | NodeSpec::Gate(_)
+            )
+        });
     let agent_observer = SchedulerAgentObserver {
         state: input.state.clone(),
         session_id: input.session_id.clone(),
@@ -856,6 +868,8 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         error_tool_call_count: AtomicU64::new(0),
         skill_write_count: AtomicU64::new(0),
         step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+        run_cancellation,
+        auto_replan,
     };
     let used_skill_names = selected_skill_tool_surfaces(blueprint.blueprint())
         .keys()
@@ -2416,6 +2430,8 @@ mod tests {
             error_tool_call_count: AtomicU64::new(0),
             skill_write_count: AtomicU64::new(0),
             step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+            run_cancellation: CancellationToken::new(),
+            auto_replan: false,
         };
         let agent = AgentId::from("worker");
         let context = AgentObservationContext {

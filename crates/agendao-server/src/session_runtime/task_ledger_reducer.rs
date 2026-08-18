@@ -217,6 +217,28 @@ pub(crate) async fn dispatch_seam(
     session_id: &str,
     fact: TaskLedgerSeamFact,
 ) -> Option<SessionTaskLedger> {
+    dispatch_seam_with_control(state, session_id, fact, false, None).await
+}
+
+/// Scheduler agent-loop variant: structured/loop runs may act on repeated
+/// stall evidence, and the owning cancellation token gates every action.
+pub(crate) async fn dispatch_run_seam(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    fact: TaskLedgerSeamFact,
+    auto_replan: bool,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Option<SessionTaskLedger> {
+    dispatch_seam_with_control(state, session_id, fact, auto_replan, Some(cancellation)).await
+}
+
+async fn dispatch_seam_with_control(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    fact: TaskLedgerSeamFact,
+    auto_replan: bool,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Option<SessionTaskLedger> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut sessions = state.sessions.lock().await;
     let session = sessions.get_mut(session_id)?;
@@ -242,7 +264,14 @@ pub(crate) async fn dispatch_seam(
             let run_started = matches!(fact, TaskLedgerSeamFact::RunStarted);
             let frame_ledger = snapshot.clone();
             drop(sessions);
-            super::task_ledger_stall::record_stall_frame(state, &frame_ledger, run_started).await;
+            super::task_ledger_stall::record_stall_frame(
+                state,
+                &frame_ledger,
+                run_started,
+                auto_replan,
+                cancellation,
+            )
+            .await;
         }
         return None;
     }
@@ -280,7 +309,14 @@ pub(crate) async fn dispatch_seam(
         fact,
         agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted
     );
-    super::task_ledger_stall::record_stall_frame(state, &staged, run_started).await;
+    super::task_ledger_stall::record_stall_frame(
+        state,
+        &staged,
+        run_started,
+        auto_replan,
+        cancellation,
+    )
+    .await;
     Some(staged)
 }
 
@@ -359,9 +395,9 @@ pub(crate) async fn verify_goal_criteria(
         // authorization. The verifier lives INSIDE the run lifecycle: the
         // scheduler cancellation token participates, so Stop cancels a
         // running check exactly like it cancels the run. Timeout and cancel
-        // both use the platform termination path and reap the immediate child;
-        // Unix additionally terminates the whole process group.
-        let mut child = match spawn_criterion_check(
+        // both use the platform termination path, terminate the process tree,
+        // and reap the immediate child.
+        let mut process = match spawn_criterion_check(
             &check.command,
             std::path::Path::new(&workspace_dir),
         ) {
@@ -375,10 +411,10 @@ pub(crate) async fn verify_goal_criteria(
             biased;
             _ = cancellation.cancelled() => {
                 tracing::info!(criterion = %check.criterion, "criterion check cancelled by run abort");
-                terminate_criterion_check(&mut child).await;
+                terminate_criterion_check(&mut process).await;
                 return CriterionVerificationOutcome::Cancelled;
             }
-            status = child.wait() => match status {
+            status = process.child.wait() => match status {
                 Ok(status) => status.success(),
                 Err(error) => {
                     tracing::warn!(criterion = %check.criterion, %error, "criterion check wait failed");
@@ -387,7 +423,7 @@ pub(crate) async fn verify_goal_criteria(
             },
             _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
                 tracing::warn!(criterion = %check.criterion, "criterion check timed out; terminating process tree");
-                terminate_criterion_check(&mut child).await;
+                terminate_criterion_check(&mut process).await;
                 false
             }
         };
@@ -477,15 +513,27 @@ pub(crate) async fn verify_goal_criteria(
 /// Platform-specific criterion-check process management.
 ///
 /// Unix: dedicated process group, so termination can SIGKILL the whole tree
-/// (bash -c children included). Windows: `cmd /C` with kill-on-drop; full
-/// tree governance would require Job Objects (documented follow-up in the
-/// governance plan).
+/// (bash -c children included). Windows: `cmd /C` is assigned to a Job Object
+/// with KILL_ON_JOB_CLOSE; cancellation/timeout terminates the whole job.
+#[cfg(unix)]
+struct CriterionProcess {
+    child: tokio::process::Child,
+}
+
+#[cfg(windows)]
+struct CriterionProcess {
+    child: tokio::process::Child,
+    // Closing a KILL_ON_JOB_CLOSE handle terminates any surviving
+    // descendants, including when the verifier future is dropped.
+    job: std::os::windows::io::OwnedHandle,
+}
+
 #[cfg(unix)]
 fn spawn_criterion_check(
     command: &str,
     workspace_dir: &std::path::Path,
-) -> std::io::Result<tokio::process::Child> {
-    tokio::process::Command::new("bash")
+) -> std::io::Result<CriterionProcess> {
+    let child = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(command)
         .current_dir(workspace_dir)
@@ -493,42 +541,81 @@ fn spawn_criterion_check(
         .stderr(std::process::Stdio::null())
         .process_group(0)
         .kill_on_drop(true)
-        .spawn()
+        .spawn()?;
+    Ok(CriterionProcess { child })
 }
 
 #[cfg(windows)]
 fn spawn_criterion_check(
     command: &str,
     workspace_dir: &std::path::Path,
-) -> std::io::Result<tokio::process::Child> {
+) -> std::io::Result<CriterionProcess> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
     // Exit code is the only signal; output goes to null so a chatty check
     // can never flood memory on either platform.
-    tokio::process::Command::new("cmd")
+    let child = tokio::process::Command::new("cmd")
         .args(["/C", command])
         .current_dir(workspace_dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
-        .spawn()
+        .spawn()?;
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let configured = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of!(limits).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let process_handle = child
+        .raw_handle()
+        .ok_or_else(|| std::io::Error::other("criterion child has no process handle"))?;
+    let assigned = unsafe { AssignProcessToJobObject(job.as_raw_handle(), process_handle) };
+    if assigned == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(CriterionProcess { child, job })
 }
 
 /// Terminate the whole check process tree and reap it — used by BOTH the
 /// timeout and the cancellation path so no path leaks an unreaped child.
 #[cfg(unix)]
-async fn terminate_criterion_check(child: &mut tokio::process::Child) {
-    if let Some(pgid) = child.id() {
+async fn terminate_criterion_check(process: &mut CriterionProcess) {
+    if let Some(pgid) = process.child.id() {
         // Negative pid = the whole process group (bash children included).
         unsafe {
             libc::kill(-(pgid as i32), libc::SIGKILL);
         }
     }
-    let _ = child.wait().await;
+    let _ = process.child.wait().await;
 }
 
 #[cfg(windows)]
-async fn terminate_criterion_check(child: &mut tokio::process::Child) {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+async fn terminate_criterion_check(process: &mut CriterionProcess) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+    unsafe {
+        TerminateJobObject(process.job.as_raw_handle(), 1);
+    }
+    let _ = process.child.wait().await;
 }
 
 pub(crate) fn final_delivery_gate(snapshot: &SessionTaskLedger) -> DeliveryGateReport {
@@ -555,9 +642,13 @@ pub(crate) fn render_ledger_projection(snapshot: &SessionTaskLedger) -> Option<S
         return None;
     }
     let mut lines = vec![format!(
-        "<task-ledger revision=\"{}\" status=\"{:?}\">",
+        "<task-ledger revision=\"{}\" status=\"{:?}\" authority=\"server\" writable=\"false\">",
         snapshot.revision, snapshot.status
     )];
+    lines.push(
+        "This typed block is the only task-ledger authority. Do not create or update task-ledger.txt, WORKSPACE.md, or any local mirror; make progress in the requested artifacts instead."
+            .to_string(),
+    );
     if let Some(goal) = &snapshot.goal {
         lines.push(format!("Goal: {}", goal.statement));
         if !goal.acceptance_criteria.is_empty() {
@@ -638,8 +729,8 @@ mod tests {
 
     #[cfg(windows)]
     fn long_running_check_command() -> &'static str {
-        // `for` and `ver` are cmd builtins, so killing cmd does not leave a
-        // helper process behind while Windows Job Object support is pending.
+        // `for` and `ver` are cmd builtins; the Job Object still governs the
+        // whole process tree if this fixture ever starts descendants.
         "for /L %i in (1,1,2147483647) do @ver >NUL"
     }
 
@@ -1183,9 +1274,10 @@ mod tests {
                 repair_events: vec![],
             },
         };
-        dispatch_seam(&state, &session_id, success_batch.clone()).await;
+        let token = tokio_util::sync::CancellationToken::new();
+        dispatch_run_seam(&state, &session_id, success_batch.clone(), true, &token).await;
         assert_eq!(state.stall_windows.frame_count(&session_id), 1);
-        dispatch_seam(&state, &session_id, success_batch).await;
+        dispatch_run_seam(&state, &session_id, success_batch, true, &token).await;
         assert_eq!(state.stall_windows.frame_count(&session_id), 2);
 
         // Non-progress no-ops must NOT feed the window: an unearned
@@ -1202,7 +1294,7 @@ mod tests {
                 interaction_id: "unknown".to_string(),
             },
         ] {
-            dispatch_seam(&state, &session_id, fact).await;
+            dispatch_run_seam(&state, &session_id, fact, true, &token).await;
         }
         assert_eq!(
             state.stall_windows.frame_count(&session_id),

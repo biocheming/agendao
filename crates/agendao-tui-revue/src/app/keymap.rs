@@ -1206,7 +1206,7 @@ impl AppHandler {
                         }
                         Key::Char('t') => {
                             // Phase 5：Ctrl+T → Task State 面板（会话任务
-                            // 治理账本只读视图；无账本时显示 opt-in 提示）。
+                            // 治理账本视图；写入仍通过服务端 CAS authority）。
                             self.task_state_dialog.open();
                             self.panel = Panel::TaskState;
                             return true;

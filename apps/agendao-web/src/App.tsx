@@ -723,7 +723,7 @@ export default function App() {
             </button>
           </div>
           <BannerNotice />
-          <TaskStateCard />
+          <TaskStateCard onNavigateStage={schedulerNavigation.navigateToStage} />
 
           <RuntimeSurfaceSection selectedSessionId={selectedSessionId} />
 

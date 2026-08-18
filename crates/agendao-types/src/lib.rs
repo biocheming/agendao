@@ -1,4 +1,5 @@
 pub mod config_policy;
+pub mod content_provenance;
 pub mod context_pressure;
 pub mod external_adapter;
 pub mod memory;
@@ -16,6 +17,7 @@ pub mod tool_call_layers;
 pub mod workspace_skill_artifact;
 
 pub use config_policy::*;
+pub use content_provenance::*;
 pub use context_pressure::*;
 pub use external_adapter::*;
 pub use memory::*;

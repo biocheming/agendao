@@ -804,6 +804,32 @@ impl ToolBackend for PendingTools {
     }
 }
 
+#[derive(Default)]
+struct GracefulCancellationTools {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    cleanup_completed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl ToolBackend for GracefulCancellationTools {
+    async fn execute(
+        &self,
+        _context: &AgentObservationContext<'_>,
+        _call: &ToolCall,
+    ) -> Result<ToolExecution, String> {
+        self.started.notify_one();
+        self.release.notified().await;
+        self.cleanup_completed.store(true, Ordering::Release);
+        Ok(ToolExecution {
+            output: "cancel cleanup".to_string(),
+            title: None,
+            metadata: None,
+            is_error: true,
+        })
+    }
+}
+
 struct TestEvaluator {
     pass_after: u32,
     calls: AtomicU32,
@@ -1600,6 +1626,37 @@ async fn deadline_interrupts_pending_model_and_tool_work() {
             .expect_err("deadline failure");
         assert_eq!(error, EngineError::Agent(AgentLoopError::DeadlineExceeded));
     }
+}
+
+#[tokio::test]
+async fn cancellation_gives_inflight_tool_a_cleanup_window_before_drop() {
+    let model = TestModel::default();
+    let tools = GracefulCancellationTools::default();
+    let evaluator = TestEvaluator {
+        pass_after: 1,
+        calls: AtomicU32::new(0),
+    };
+    let capabilities = TestCapabilities::default();
+    let cancellation = CancellationFlag::default();
+    let signal = cancellation.clone();
+    let engine = test_engine(&model, &tools, &evaluator, &capabilities);
+    let validated = validated(single_agent_blueprint());
+
+    let ((), result) = tokio::join!(
+        async {
+            tools.started.notified().await;
+            signal.cancel();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tools.release.notify_one();
+        },
+        engine.run(&validated, run_request("use-tool"), cancellation),
+    );
+
+    assert_eq!(
+        result.expect_err("cancelled tool run"),
+        EngineError::Agent(AgentLoopError::Cancelled)
+    );
+    assert!(tools.cleanup_completed.load(Ordering::Acquire));
 }
 
 #[test]

@@ -4,8 +4,11 @@
 //! requests; the prompt runtime consumes them at tool boundaries (§9).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use agendao_server_core::runtime_state::PendingSteeringMessageSummary;
+
+use crate::ServerState;
 
 /// Full steering message — the internal type held in the queue.
 #[derive(Debug, Clone)]
@@ -70,6 +73,42 @@ impl SessionSteeringQueueStore {
             .map(|q| q.len())
             .unwrap_or(0)
     }
+}
+
+/// Enqueue a server-authored steering input through the same queue authority
+/// used by HTTP/TUI/Web. The consumer remains the agent-loop tool boundary;
+/// callers cannot bypass normal model/tool/permission policy by using this.
+pub(crate) async fn enqueue_system_steering(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    text: String,
+    id_prefix: &str,
+) -> usize {
+    let message = PendingSteeringMessage {
+        id: format!("{id_prefix}_{}", uuid::Uuid::new_v4().simple()),
+        owner_session_id: session_id.to_string(),
+        text,
+        created_at: chrono::Utc::now().timestamp_millis(),
+        source_session_id: None,
+        deliver_at: "next_tool_boundary".to_string(),
+    };
+    let summary = message.to_summary();
+    let pending_count = {
+        let mut store = state.steering_store.lock().await;
+        store.enqueue(session_id, message);
+        store.pending_count(session_id)
+    };
+    state
+        .runtime_telemetry
+        .steering_enqueued(session_id, summary)
+        .await;
+    crate::session_runtime::events::broadcast_session_reconcile(
+        state.as_ref(),
+        session_id.to_string(),
+        agendao_server_core::runtime_events::ReconcileReason::Steering,
+    )
+    .await;
+    pending_count
 }
 
 #[cfg(test)]

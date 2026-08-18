@@ -211,18 +211,66 @@ mod tests {
         assert!(
             crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(
                 VerifierRef::UserConfirmation {
-                    actor: "u".to_string()
+                    actor: "user".to_string()
                 }
             ))
             .is_ok()
         );
-        // Non-checkpoint ops are untouched.
+        // Ordinary state writes must also carry honest external provenance.
         assert!(crate::session_runtime::task_ledger::validate_external_op(
             &TaskLedgerOp::SetNext {
                 statement: "n".to_string(),
-                actor: None,
+                actor: Some(agendao_types::task_ledger::TaskLedgerActor::User),
             }
         )
         .is_ok());
+    }
+
+    #[test]
+    fn external_transports_cannot_forge_task_state_provenance() {
+        use agendao_types::task_ledger::{
+            AwaitingInteractionKind, TaskLedgerActor, TaskLedgerStatus,
+        };
+
+        for actor in [
+            TaskLedgerActor::Model,
+            TaskLedgerActor::Evaluator,
+            TaskLedgerActor::System,
+        ] {
+            let err =
+                crate::session_runtime::task_ledger::validate_external_op(&TaskLedgerOp::SetNext {
+                    statement: "pretend this came from an internal seam".to_string(),
+                    actor: Some(actor),
+                })
+                .expect_err("external actor provenance must not be forgeable");
+            assert!(err.to_string().contains("actor=user"));
+        }
+        let err = crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(
+            VerifierRef::UserConfirmation {
+                actor: "evaluator".to_string(),
+            },
+        ))
+        .expect_err("user confirmation actor is an authority label");
+        assert!(err.to_string().contains("must be `user`"));
+
+        for op in [
+            TaskLedgerOp::SetStatus {
+                status: TaskLedgerStatus::Completed,
+                awaiting: None,
+                blocked_reason: None,
+            },
+            TaskLedgerOp::ResolveInteraction {
+                kind: AwaitingInteractionKind::Permission,
+                interaction_id: "permission-1".to_string(),
+            },
+            TaskLedgerOp::Interrupt,
+            TaskLedgerOp::Complete {
+                uncovered: vec!["claim completion without seam authority".to_string()],
+            },
+        ] {
+            let err = crate::session_runtime::task_ledger::validate_external_op(&op)
+                .expect_err("external callers cannot forge lifecycle transitions");
+            assert!(err.to_string().contains("internal execution seams"));
+        }
     }
 }

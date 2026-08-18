@@ -438,14 +438,24 @@ impl<'a> AgentLoop<'a> {
                     .tool_started(&observation, call)
                     .await
                     .map_err(AgentLoopError::Observer)?;
+                let remaining = context.budget.remaining()?;
+                let execution = self.tools.execute(&observation, call);
+                tokio::pin!(execution);
                 let output = tokio::select! {
                     _ = context.cancellation.cancelled() => {
+                        // Tool implementations receive the same run abort
+                        // signal through their runtime context. Give that
+                        // future a bounded cleanup window instead of dropping
+                        // it immediately; dropping a subprocess future before
+                        // its cancellation branch runs can orphan the process
+                        // and keep the scheduler topology permanently active.
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            &mut execution,
+                        ).await;
                         return Err(AgentLoopError::Cancelled);
                     }
-                    result = tokio::time::timeout(
-                        context.budget.remaining()?,
-                        self.tools.execute(&observation, call),
-                    ) => result
+                    result = tokio::time::timeout(remaining, &mut execution) => result
                         .map_err(|_| AgentLoopError::DeadlineExceeded)?
                         .map_err(|message| AgentLoopError::Tool {
                             tool: call.tool.as_str().to_string(),

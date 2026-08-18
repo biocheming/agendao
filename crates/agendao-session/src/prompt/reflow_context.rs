@@ -569,6 +569,7 @@ mod tests {
             ],
             memory_anchors: vec![],
             working_ledger: vec![],
+            task_ledger: None,
             continuation_dependencies: vec![SessionContinuityDependency {
                 kind: SessionContinuityDependencyKind::AssistantToolCallContinuation,
                 anchor_message_id: Some("msg-a".to_string()),

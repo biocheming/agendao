@@ -4,6 +4,7 @@ use agendao_orchestrator::{
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};

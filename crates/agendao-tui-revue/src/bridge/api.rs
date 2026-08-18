@@ -220,6 +220,40 @@ impl ApiBridge {
         self.block_on(self.get_task_ledger_async(session_id))
     }
 
+    pub async fn apply_task_ledger_op_async(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        op: agendao_types::task_ledger::TaskLedgerOp,
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+        if let Some(ref ls) = self.local {
+            return agendao_server::local_apply_task_ledger_op(
+                Arc::clone(ls),
+                session_id,
+                expected_revision,
+                op,
+            )
+            .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix
+                .apply_task_ledger_op(session_id, expected_revision, op)
+                .await;
+        }
+        self.client
+            .apply_task_ledger_op(session_id, expected_revision, op)
+            .await
+    }
+
+    pub fn apply_task_ledger_op(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        op: agendao_types::task_ledger::TaskLedgerOp,
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+        self.block_on(self.apply_task_ledger_op_async(session_id, expected_revision, op))
+    }
+
     pub async fn get_session_todos_async(
         &self,
         session_id: &str,
