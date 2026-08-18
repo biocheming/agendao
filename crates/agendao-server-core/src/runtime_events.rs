@@ -255,6 +255,13 @@ pub enum ServerEvent {
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         diff: Vec<DiffEntry>,
     },
+    #[serde(rename = "task-ledger.replaced")]
+    TaskLedgerReplaced {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        ledger: agendao_types::task_ledger::SessionTaskLedger,
+        cause: agendao_types::task_ledger::TaskLedgerCause,
+    },
     #[serde(rename = "todo.updated")]
     TodoUpdated {
         #[serde(rename = "sessionID")]
@@ -304,7 +311,8 @@ impl ServerEvent {
             | Self::ToolCallLifecycle { session_id, .. }
             | Self::TopologyChanged { session_id, .. }
             | Self::DiffUpdated { session_id, .. }
-            | Self::TodoUpdated { session_id, .. } => Some(session_id),
+            | Self::TodoUpdated { session_id, .. }
+            | Self::TaskLedgerReplaced { session_id, .. } => Some(session_id),
             Self::Usage {
                 session_id: None, ..
             }
@@ -332,6 +340,7 @@ impl ServerEvent {
             Self::TopologyChanged { .. } => "execution.topology.changed",
             Self::DiffUpdated { .. } => "diff.updated",
             Self::TodoUpdated { .. } => "todo.updated",
+            Self::TaskLedgerReplaced { .. } => "task-ledger.replaced",
         }
     }
 

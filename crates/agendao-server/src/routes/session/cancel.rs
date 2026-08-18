@@ -50,15 +50,13 @@ pub(super) async fn abort_session_execution(
 
     // Stop means stop for the whole session: prompts queued behind the
     // running turn are dropped instead of being auto-executed by a later run.
-    let dropped_queued_prompts =
-        super::prompt::drain_followup_prompts(state, session_id).await;
+    let dropped_queued_prompts = super::prompt::drain_followup_prompts(state, session_id).await;
 
     // Pending permissions must resolve now: their waiting futures are about
     // to be dropped, and their 300s timeout lives inside those futures —
     // without this the popups would hang on every frontend until restart.
     let cancelled_permissions =
-        crate::routes::permission::cancel_pending_permissions_for_session(state, session_id)
-            .await;
+        crate::routes::permission::cancel_pending_permissions_for_session(state, session_id).await;
 
     let mut prompt_running = false;
     let scheduler_running = state
@@ -87,6 +85,14 @@ pub(super) async fn abort_session_execution(
     }
 
     if scheduler_running || prompt_running {
+        // Task-governance seam: the user interrupted the run; the ledger
+        // keeps its pre-interrupt Next with provenance marked.
+        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+            state,
+            session_id,
+            agendao_types::task_ledger::TaskLedgerSeamFact::RecoveryInterrupted,
+        )
+        .await;
         serde_json::json!({
             "aborted": true,
             "target": "run",

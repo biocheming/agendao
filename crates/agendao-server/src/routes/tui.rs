@@ -64,12 +64,33 @@ pub(crate) async fn request_question_answers(
 
     crate::session_runtime::events::broadcast_server_event(&state, &created_event);
 
+    // Task-governance seam: the run now waits on this exact question.
+    crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+        &state,
+        &session_id,
+        agendao_types::task_ledger::AwaitingInteractionKind::Question,
+        &question_info.id,
+        false,
+    )
+    .await;
+
     let wait_result = tokio::time::timeout(Duration::from_secs(300), rx).await;
 
     state
         .runtime_telemetry
         .drop_question(&session_id, &question_info.id)
         .await;
+
+    // Whatever the outcome — answered, rejected, timed out, or cancelled —
+    // the wait is over; resolve the ledger interaction reference.
+    crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+        &state,
+        &session_id,
+        agendao_types::task_ledger::AwaitingInteractionKind::Question,
+        &question_info.id,
+        true,
+    )
+    .await;
 
     match wait_result {
         Ok(Ok(QuestionReply::Answers(answers))) => {

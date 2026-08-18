@@ -200,6 +200,17 @@ pub async fn local_get_session_runtime(
     Ok(runtime)
 }
 
+pub async fn local_get_task_ledger(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    let Json(ledger) =
+        super::task_ledger_api::get_task_ledger(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(ledger)
+}
+
 pub async fn local_get_session_telemetry(
     state: Arc<ServerState>,
     session_id: &str,

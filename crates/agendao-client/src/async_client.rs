@@ -1318,7 +1318,7 @@ impl AsyncApiClient {
         .await
     }
 
-    async fn get_json<T: serde::de::DeserializeOwned>(
+    pub async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         action: &str,

@@ -193,6 +193,33 @@ impl ApiBridge {
     }
 
     /// 异步变体（U6③）。
+    pub async fn get_task_ledger_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+        if let Some(ref ls) = self.local {
+            return agendao_server::local_get_task_ledger(Arc::clone(ls), session_id).await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.get_task_ledger(session_id).await;
+        }
+        let ledger = self
+            .client
+            .get_json::<agendao_types::task_ledger::SessionTaskLedger>(
+                &format!("/session/{session_id}/task-ledger"),
+                "get task ledger",
+            )
+            .await?;
+        Ok(ledger)
+    }
+
+    pub fn get_task_ledger(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+        self.block_on(self.get_task_ledger_async(session_id))
+    }
+
     pub async fn get_session_todos_async(
         &self,
         session_id: &str,

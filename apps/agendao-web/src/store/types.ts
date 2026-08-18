@@ -17,6 +17,7 @@ import type {
   QuestionInteractionRecord,
 } from "../lib/interaction";
 import type { WorkspacePanelTab } from "../components/workspace/WorkspacePanel";
+import type { SessionTaskLedger } from "../lib/taskLedger";
 import type { AuxiliaryOutputBlock } from "../lib/history";
 import type {
   BreadcrumbProvenance,
@@ -222,6 +223,14 @@ export interface AgendaoState {
   } | null;
   previewStageId: string | null;
   sessionBreadcrumbs: SessionBreadcrumb[];
+
+  // === Task Ledger ===
+  taskLedgers: Record<string, SessionTaskLedger>;
+  setTaskLedger: (
+    sessionId: string,
+    ledger: SessionTaskLedger | null | ((prev: SessionTaskLedger | null) => SessionTaskLedger | null),
+  ) => void;
+  clearTaskLedger: (sessionId: string) => void;
 
   setRuntimeSurfaceBySession: (value: SetStateFn<Record<string, SessionRuntimeSurface>>) => void;
   setActiveStageContext: (value: SetStateFn<AgendaoState["activeStageContext"]>) => void;

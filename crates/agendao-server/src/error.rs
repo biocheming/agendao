@@ -19,6 +19,13 @@ pub enum ApiError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Revision conflict on {resource}: expected {expected}, current {actual}")]
+    RevisionConflict {
+        resource: String,
+        expected: u64,
+        actual: u64,
+    },
+
     #[error("Provider error: {0}")]
     ProviderError(String),
 
@@ -38,6 +45,18 @@ impl IntoResponse for ApiError {
                 "session_not_found",
             ),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, "not_found"),
+            ApiError::RevisionConflict {
+                resource,
+                expected,
+                actual,
+            } => (
+                StatusCode::CONFLICT,
+                format!(
+                    "Revision conflict on {resource}: expected {expected}, current {actual}. \
+                     Re-read the snapshot and retry against the new revision."
+                ),
+                "revision_conflict",
+            ),
             ApiError::PermissionDenied(msg) => (
                 StatusCode::FORBIDDEN,
                 format!("Permission denied: {}", msg),

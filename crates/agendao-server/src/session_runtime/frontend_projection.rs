@@ -228,6 +228,15 @@ pub(crate) async fn project_server_event(
 
         // ── Global config changes: pass through to all frontends ────────
         ServerEvent::ConfigUpdated => vec![FrontendEvent::ConfigUpdated],
+        ServerEvent::TaskLedgerReplaced {
+            session_id,
+            ledger,
+            cause,
+        } => vec![FrontendEvent::TaskLedgerReplaced {
+            session_id: session_id.clone(),
+            ledger: ledger.clone(),
+            cause: cause.clone(),
+        }],
     }
 }
 

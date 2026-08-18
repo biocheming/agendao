@@ -197,13 +197,15 @@ pub(super) async fn consume_remote_events(
 
     loop {
         let chunk = match user_wait.remaining() {
-            Some(remaining) => match tokio::time::timeout(remaining, StreamExt::next(&mut stream)).await {
-                Ok(chunk) => chunk,
-                Err(_) => {
-                    user_wait.bail_if_expired()?;
-                    continue;
+            Some(remaining) => {
+                match tokio::time::timeout(remaining, StreamExt::next(&mut stream)).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        user_wait.bail_if_expired()?;
+                        continue;
+                    }
                 }
-            },
+            }
             None => StreamExt::next(&mut stream).await,
         };
         let Some(chunk) = chunk else {
@@ -333,9 +335,7 @@ async fn dispatch_remote_event(
         FrontendEvent::SessionError { error, .. } => {
             eprintln!("\nError: {error}");
         }
-        FrontendEvent::PermissionUpsert {
-            session_id, ..
-        } => {
+        FrontendEvent::PermissionUpsert { session_id, .. } => {
             if user_wait.waiting_since.is_none() {
                 eprintln!(
                     "\nSession {session_id} is waiting for a permission decision. \
@@ -345,11 +345,11 @@ async fn dispatch_remote_event(
                     user_wait_timeout().as_secs()
                 );
             }
-            user_wait.waiting_since.get_or_insert(std::time::Instant::now());
+            user_wait
+                .waiting_since
+                .get_or_insert(std::time::Instant::now());
         }
-        FrontendEvent::QuestionUpsert {
-            session_id, ..
-        } => {
+        FrontendEvent::QuestionUpsert { session_id, .. } => {
             if user_wait.waiting_since.is_none() {
                 eprintln!(
                     "\nSession {session_id} is waiting for an answer to a question. \
@@ -359,7 +359,9 @@ async fn dispatch_remote_event(
                     user_wait_timeout().as_secs()
                 );
             }
-            user_wait.waiting_since.get_or_insert(std::time::Instant::now());
+            user_wait
+                .waiting_since
+                .get_or_insert(std::time::Instant::now());
         }
         FrontendEvent::PermissionRemoved { .. } | FrontendEvent::QuestionRemoved { .. } => {
             user_wait.waiting_since = None;

@@ -44,6 +44,7 @@ export function useSessionCoordinator({
   const deletingSessions = useAgendaoStore((s) => s.deletingSessions);
   const setDeletingSessions = useAgendaoStore((s) => s.setDeletingSessions);
   const clearSessionRuntimeState = useAgendaoStore((s) => s.clearSessionRuntimeState);
+  const clearTaskLedger = useAgendaoStore((s) => s.clearTaskLedger);
   const setBanner = useAgendaoStore((s) => s.setBanner);
   const routeInitializedRef = useRef(false);
   const routeSyncSourceRef = useRef<"app" | "browser">("app");
@@ -287,6 +288,7 @@ export function useSessionCoordinator({
 
         for (const sessionId of deleteRoots) {
           clearSessionRuntimeState(sessionId);
+          clearTaskLedger(sessionId);
         }
 
         const currentStillExists =
@@ -311,6 +313,7 @@ export function useSessionCoordinator({
     [
       api,
       clearSessionRuntimeState,
+      clearTaskLedger,
       currentWorkspacePath,
       currentWorkspaceSummaryPath,
       deletingSessions,

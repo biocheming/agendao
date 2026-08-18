@@ -17,7 +17,7 @@ mod project;
 mod provider;
 #[cfg(feature = "pty")]
 mod pty;
-mod session;
+pub(crate) mod session;
 pub(crate) use session::{scheduler_host_tool_definitions, SessionSchedulerToolExecutor};
 mod skill_catalog;
 mod skill_hub;

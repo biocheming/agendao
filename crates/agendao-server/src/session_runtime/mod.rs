@@ -6,6 +6,9 @@ pub(crate) mod memory;
 pub(crate) mod projection_authority;
 pub(crate) mod recheck_loop;
 pub(crate) mod steering;
+pub(crate) mod task_ledger;
+pub(crate) mod task_ledger_reducer;
+pub mod task_ledger_stall;
 pub(crate) mod telemetry;
 
 use std::sync::Arc;

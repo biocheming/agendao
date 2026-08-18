@@ -370,6 +370,20 @@ pub(super) fn event_passes_subscription_caps(
         | ServerEvent::DiffUpdated { .. }
         | ServerEvent::TodoUpdated { .. }
         | ServerEvent::ControlInputTransition { .. } => true,
+        // The ledger is auditable governance state, not reasoning: live tiers
+        // get every committed replacement; final-only tiers keep the status
+        // boundaries (awaiting_user / blocked / interrupted / completed) so a
+        // non-interactive consumer still learns when the task needs it.
+        ServerEvent::TaskLedgerReplaced { ledger, .. } => {
+            !caps.final_only
+                || matches!(
+                    ledger.status,
+                    agendao_types::task_ledger::TaskLedgerStatus::AwaitingUser
+                        | agendao_types::task_ledger::TaskLedgerStatus::Blocked
+                        | agendao_types::task_ledger::TaskLedgerStatus::Interrupted
+                        | agendao_types::task_ledger::TaskLedgerStatus::Completed
+                )
+        }
     }
 }
 

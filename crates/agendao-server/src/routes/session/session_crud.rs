@@ -353,7 +353,7 @@ pub(super) async fn persist_sessions_if_enabled(state: &Arc<ServerState>) {
 /// 的调用点应使用本函数，避免全量 `sync_sessions_to_storage` 的写放大
 /// （clone + 序列化 + 全量 flush 所有 session）。错误处理语义与
 /// `persist_sessions_if_enabled` 一致：记录日志、不向调用方传播。
-pub(super) async fn persist_session_if_enabled(state: &Arc<ServerState>, session_id: &str) {
+pub(crate) async fn persist_session_if_enabled(state: &Arc<ServerState>, session_id: &str) {
     if let Err(err) = state.flush_session_to_storage(session_id).await {
         tracing::error!("failed to sync session to storage: {}", err);
     }
@@ -675,6 +675,9 @@ pub(super) async fn delete_session(
         .set_session_run_status(&id, SessionRunStatus::Idle)
         .await;
     state.runtime_telemetry.clear_session_runtime(&id).await;
+    // Stall observation windows are server-memory state keyed by session;
+    // deleting the session must drop them too.
+    state.stall_windows.forget(&id);
     // 删除需要全量 sync 清理库中已不存在的 session/message 行。
     persist_sessions_if_enabled(&state).await;
     Ok(Json(serde_json::json!({ "deleted": true })))

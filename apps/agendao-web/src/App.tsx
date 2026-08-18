@@ -12,6 +12,7 @@ import { SessionHeader } from "./components/session/SessionHeader";
 import { DeferredTerminalPanel } from "./components/terminal/DeferredTerminalPanel";
 import { InteractionOverlays } from "./components/overlays/InteractionOverlays";
 import { BannerNotice } from "./components/chat/BannerNotice";
+import { TaskStateCard } from "./components/session/TaskStateCard";
 import {
   RuntimeSurfaceSection,
 } from "./components/execution/RuntimeSurfaceSection";
@@ -722,6 +723,7 @@ export default function App() {
             </button>
           </div>
           <BannerNotice />
+          <TaskStateCard />
 
           <RuntimeSurfaceSection selectedSessionId={selectedSessionId} />
 

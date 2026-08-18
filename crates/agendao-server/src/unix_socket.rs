@@ -244,6 +244,8 @@ async fn handle_request(
         "get_session_info" => handle_get_session_info(request.params, state).await,
         "get_session_runtime" => handle_get_session_runtime(request.params, state).await,
         "get_session_todos" => handle_get_session_todos(request.params, state).await,
+        "get_task_ledger" => handle_get_task_ledger(request.params, state).await,
+        "apply_task_ledger_op" => handle_apply_task_ledger_op(request.params, state).await,
         "get_config" => handle_get_config(state).await,
         "patch_config" => handle_patch_config(request.params, state).await,
         "put_disabled_config" => handle_put_disabled_config(request.params, state).await,
@@ -326,6 +328,74 @@ async fn handle_request(
             error: Some(error),
             id: request.id,
         },
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TaskLedgerSessionParams {
+    session_id: String,
+}
+
+async fn handle_get_task_ledger(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let req: TaskLedgerSessionParams = serde_json::from_value(params).map_err(|e| {
+        tracing::warn!("JSON-RPC invalid params: {}", e);
+        JsonRpcError {
+            code: -32602,
+            message: "Invalid params".to_string(),
+        }
+    })?;
+    let snapshot =
+        crate::session_runtime::task_ledger::task_ledger_snapshot(state, &req.session_id)
+            .await
+            .map_err(|e| to_rpc_error_from_api(&e))?;
+    serde_json::to_value(snapshot)
+        .map_err(|e| to_rpc_error_from_api(&crate::error::ApiError::InternalError(e.to_string())))
+}
+
+#[derive(serde::Deserialize)]
+struct ApplyTaskLedgerOpParams {
+    session_id: String,
+    expected_revision: u64,
+    op: agendao_types::task_ledger::TaskLedgerOp,
+}
+
+async fn handle_apply_task_ledger_op(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let req: ApplyTaskLedgerOpParams = serde_json::from_value(params).map_err(|e| {
+        tracing::warn!("JSON-RPC invalid params: {}", e);
+        JsonRpcError {
+            code: -32602,
+            message: "Invalid params".to_string(),
+        }
+    })?;
+    let (ledger, cause) = crate::session_runtime::task_ledger::apply_task_ledger_op(
+        state,
+        &req.session_id,
+        req.expected_revision,
+        req.op,
+    )
+    .await
+    .map_err(|e| to_rpc_error_from_api(&e))?;
+    serde_json::to_value(serde_json::json!({ "ledger": ledger, "cause": cause }))
+        .map_err(|e| to_rpc_error_from_api(&crate::error::ApiError::InternalError(e.to_string())))
+}
+
+fn to_rpc_error_from_api(error: &crate::error::ApiError) -> JsonRpcError {
+    JsonRpcError {
+        code: match error {
+            crate::error::ApiError::SessionNotFound(_) | crate::error::ApiError::NotFound(_) => {
+                -32001
+            }
+            crate::error::ApiError::RevisionConflict { .. } => -32009,
+            crate::error::ApiError::PermissionDenied(_) => -32003,
+            _ => -32000,
+        },
+        message: error.to_string(),
     }
 }
 

@@ -12,6 +12,7 @@ pub(crate) fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::DiffReplaced { session_id, .. }
         | FrontendEvent::TodoReplaced { session_id, .. }
         | FrontendEvent::SessionError { session_id, .. }
+        | FrontendEvent::TaskLedgerReplaced { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }
@@ -53,6 +54,16 @@ pub(crate) fn frontend_event_passes_subscription_caps(
         | FrontendEvent::DiffReplaced { .. }
         | FrontendEvent::TodoReplaced { .. }
         | FrontendEvent::SessionError { .. } => true,
+        FrontendEvent::TaskLedgerReplaced { ledger, .. } => {
+            !caps.final_only
+                || matches!(
+                    ledger.status,
+                    agendao_types::task_ledger::TaskLedgerStatus::AwaitingUser
+                        | agendao_types::task_ledger::TaskLedgerStatus::Blocked
+                        | agendao_types::task_ledger::TaskLedgerStatus::Interrupted
+                        | agendao_types::task_ledger::TaskLedgerStatus::Completed
+                )
+        }
         FrontendEvent::ConfigUpdated => true,
     }
 }

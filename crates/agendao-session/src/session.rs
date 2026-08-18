@@ -425,6 +425,18 @@ impl Session {
             SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
             Self::serialize_context_kind(SessionContextKind::ExplicitFullHistoryFork),
         );
+        // The task ledger rides with the fork: the child starts from the
+        // parent's committed governance snapshot (the authority rebinds the
+        // session id when the snapshot is read).
+        if let Some(ledger) = parent_record
+            .metadata
+            .get(agendao_types::task_ledger::TASK_LEDGER_METADATA_KEY)
+        {
+            metadata.insert(
+                agendao_types::task_ledger::TASK_LEDGER_METADATA_KEY.to_string(),
+                ledger.clone(),
+            );
+        }
 
         Self {
             inner: SessionRecord {

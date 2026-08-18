@@ -2667,12 +2667,13 @@ impl AppHandler {
         let handle = api.handle().clone();
         handle.spawn(async move {
             // 各 fetch 独立成败（messages 挂了不拖垮 title/usage 播种）。
-            let (info, messages, todos, questions, permissions) = tokio::join!(
+            let (info, messages, todos, questions, permissions, task_ledger) = tokio::join!(
                 api.get_session_async(&sid),
                 api.get_messages_async(&sid),
                 api.get_session_todos_async(&sid),
                 api.list_questions_async(),
                 api.list_permissions_async(),
+                api.get_task_ledger_async(&sid),
             );
             let data = app_op::SessionOpenData {
                 info: info.map_err(|e| e.to_string()),
@@ -2680,6 +2681,7 @@ impl AppHandler {
                 todos: todos.map_err(|e| e.to_string()),
                 questions: questions.map_err(|e| e.to_string()),
                 permissions: permissions.map_err(|e| e.to_string()),
+                task_ledger: task_ledger.map_err(|e| e.to_string()),
             };
             let _ = tx.send(app_op::AppOpOutcome::SessionLoaded {
                 session_id: sid,
@@ -2692,6 +2694,11 @@ impl AppHandler {
     /// 尾段同一语义——title/usage 播种、todos、历史消息路由、pending
     /// question/permission catch-up、context 进度条播种。
     fn apply_session_open(&mut self, session_id: &str, data: app_op::SessionOpenData) {
+        // Task ledger catch-up（水律·回流）：打开会话即对账一次；404/空账本
+        // 视为无治理（None），乱序旧 revision 由防回退守卫丢弃。
+        if let Ok(ledger) = data.task_ledger {
+            self.active_session.apply_task_ledger_snapshot(ledger);
+        }
         // 播种 usage（水律·回流）：`GET /session/{id}` 的 `telemetry.usage`
         //（持久化累计 token/成本），底部信息条不等下一次投影。
         let mut ctx_tokens: u64 = 0;
@@ -3928,6 +3935,9 @@ pub(crate) fn eager_load_session_messages(
     if let Ok(todos) = api.get_session_todos(session_id) {
         apply_loaded_todos(active_session, todos);
     }
+    if let Ok(ledger) = api.get_task_ledger(session_id) {
+        active_session.apply_task_ledger_snapshot(ledger);
+    }
     match api.get_messages(session_id) {
         Ok(msgs) => {
             apply_loaded_messages(active_session, msgs);
@@ -4266,6 +4276,7 @@ mod tests {
             todos: Ok(vec![]),
             questions: Ok(vec![]),
             permissions: Ok(vec![]),
+            task_ledger: Ok(agendao_types::task_ledger::SessionTaskLedger::empty("s")),
         }
     }
 

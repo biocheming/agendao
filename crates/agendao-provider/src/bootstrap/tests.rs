@@ -217,7 +217,10 @@ fn authenticated_catalog_provider_registers_all_catalog_models() {
 
 #[test]
 fn auth_store_key_beats_config_file_api_key() {
-    let models_dev = HashMap::from([("deepseek".to_string(), provider_info("deepseek", model_info("deepseek-v4-pro")))]);
+    let models_dev = HashMap::from([(
+        "deepseek".to_string(),
+        provider_info("deepseek", model_info("deepseek-v4-pro")),
+    )]);
     let config = BootstrapConfig {
         providers: HashMap::from([(
             "deepseek".to_string(),

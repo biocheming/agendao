@@ -125,11 +125,9 @@ async fn enqueue_followup_prompt(
     let queued_count = {
         let mut guard = state.queued_followups.lock().await;
         let queue = guard.entry(session_id.to_string()).or_default();
-        queue.push_back(
-            serde_json::to_value(&queued).map_err(|error| {
-                ApiError::BadRequest(format!("failed to queue follow-up prompt: {error}"))
-            })?,
-        );
+        queue.push_back(serde_json::to_value(&queued).map_err(|error| {
+            ApiError::BadRequest(format!("failed to queue follow-up prompt: {error}"))
+        })?);
         queue.len() as u64
     };
     state
@@ -173,10 +171,7 @@ async fn take_followup_prompt(
 
 /// Remove every queued follow-up prompt for the session. Aborting a run drops
 /// the prompts queued behind it instead of letting a later run adopt them.
-pub(crate) async fn drain_followup_prompts(
-    state: &Arc<ServerState>,
-    session_id: &str,
-) -> usize {
+pub(crate) async fn drain_followup_prompts(state: &Arc<ServerState>, session_id: &str) -> usize {
     let dropped = {
         let mut guard = state.queued_followups.lock().await;
         guard.remove(session_id).map_or(0, |queue| queue.len())
@@ -1943,7 +1938,7 @@ async fn session_prompt_inner(
             if let Some(explain) = task_multimodal_explain.as_ref() {
                 annotate_last_user_message_multimodal_metadata(&mut session, explain);
             }
-            let conversation_seed =
+            let mut conversation_seed =
                 match agendao_session::prompt::replay_provider_messages(&session.messages) {
                     Ok(messages) => messages,
                     Err(error) => {
@@ -1960,6 +1955,48 @@ async fn session_prompt_inner(
                         return;
                     }
                 };
+            // Task-governance seam: run started. A resumed (previously
+            // interrupted) ledger flips back to active here, before the
+            // projection below snapshots the status for this run.
+            {
+                crate::session_runtime::task_ledger_reducer::dispatch_seam(
+                    &task_state,
+                    &session_id,
+                    agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted,
+                )
+                .await;
+                // The dispatch wrote through the map; refresh the local
+                // clone so the later `update(session.clone())` cannot
+                // revert the committed revision (Interrupted → Active).
+                {
+                    let sessions = task_state.sessions.lock().await;
+                    if let Some(fresh) = sessions.get(&session_id) {
+                        session = fresh.clone();
+                    }
+                }
+                let sessions = task_state.sessions.lock().await;
+                if let Some(session) = sessions.get(&session_id) {
+                    if let Some(projection) =
+                        crate::session_runtime::task_ledger_reducer::render_ledger_projection(
+                            &crate::session_runtime::task_ledger::ledger_snapshot_from_record(
+                                &session_id,
+                                session.record().metadata.get(
+                                    crate::session_runtime::task_ledger::TASK_LEDGER_METADATA_KEY,
+                                ),
+                            ),
+                        )
+                    {
+                        // Single prompt injection point: the ledger rides the
+                        // conversation seed as a typed context block.
+                        conversation_seed.push(agendao_provider::Message {
+                            role: agendao_provider::Role::User,
+                            content: agendao_provider::Content::Text(projection),
+                            cache_control: None,
+                            provider_options: None,
+                        });
+                    }
+                }
+            }
             let assistant_message_id = session.add_assistant_message().id.clone();
             let directory = session.record().directory.clone();
             task_state.sessions.lock().await.update(session.clone());
@@ -2143,6 +2180,82 @@ async fn session_prompt_inner(
                 .await;
             persist_session_telemetry_metadata(&task_state, &mut session).await;
             task_state.sessions.lock().await.update(session);
+
+            // Task-governance seams at run end — run against the CURRENT
+            // session record (the scheduler wrote through the map during the
+            // run; the local above is stale for metadata), and only after the
+            // final update so nothing later overwrites the gate report.
+            {
+                let last_batch = {
+                    let sessions = task_state.sessions.lock().await;
+                    sessions.get(&session_id).and_then(|record| {
+                        record
+                            .record()
+                            .metadata
+                            .get("latest_tool_batch_summary")
+                            .cloned()
+                    })
+                };
+                if let Some(value) = last_batch {
+                    if let Ok(summary) =
+                        serde_json::from_value::<agendao_types::repair::ToolBatchSummary>(value)
+                    {
+                        crate::session_runtime::task_ledger_reducer::dispatch_seam(
+                            &task_state,
+                            &session_id,
+                            agendao_types::task_ledger::TaskLedgerSeamFact::ToolBatchCompleted {
+                                summary,
+                            },
+                        )
+                        .await;
+                    }
+                }
+                if !cancellation.is_cancelled() {
+                    // Normal end: complete on clean typed evidence, else the
+                    // gate report below carries the finding.
+                    crate::session_runtime::task_ledger_reducer::dispatch_seam(
+                        &task_state,
+                        &session_id,
+                        agendao_types::task_ledger::TaskLedgerSeamFact::FinalResponseCommitted,
+                    )
+                    .await;
+                }
+                let ledger_snapshot = crate::session_runtime::task_ledger::task_ledger_snapshot(
+                    &task_state,
+                    &session_id,
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    agendao_types::task_ledger::SessionTaskLedger::empty(&session_id)
+                });
+                if cancellation.is_cancelled() {
+                    crate::session_runtime::task_ledger_reducer::dispatch_seam(
+                        &task_state,
+                        &session_id,
+                        agendao_types::task_ledger::TaskLedgerSeamFact::RecoveryInterrupted,
+                    )
+                    .await;
+                } else if ledger_snapshot.revision > 0 {
+                    // Typed final-delivery gate: report, never rewrite.
+                    let report = crate::session_runtime::task_ledger_reducer::final_delivery_gate(
+                        &ledger_snapshot,
+                    );
+                    let mut sessions = task_state.sessions.lock().await;
+                    if let Some(record) = sessions.get_mut(&session_id) {
+                        record.insert_metadata(
+                            "delivery_gate_report".to_string(),
+                            serde_json::json!({
+                                "open_questions": report.open_questions_outstanding,
+                                "no_verified_checkpoints": report.no_verified_checkpoints,
+                                "missing_acceptance_criteria": report.missing_acceptance_criteria,
+                                "uncovered_criteria": report.uncovered_criteria,
+                                "checked_at": chrono::Utc::now().timestamp_millis(),
+                            }),
+                        );
+                    }
+                }
+            }
+
             broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),

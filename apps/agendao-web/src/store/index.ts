@@ -5,6 +5,7 @@ import { createUiSlice } from "./ui-slice";
 import { createSessionListSlice } from "./session-list-slice";
 import { createComposerSlice } from "./composer-slice";
 import { createStreamingSlice } from "./streaming-slice";
+import { createTaskLedgerSlice } from "./task-ledger-slice";
 import { createTranscriptFeedSlice } from "./transcript-feed-slice";
 import { createRuntimeNavigationSlice } from "./runtime-navigation-slice";
 import { createWorkspaceSlice } from "./workspace-slice";
@@ -15,6 +16,7 @@ export const useAgendaoStore = create<AgendaoState>((set, get) => ({
   ...createSessionListSlice(set, get),
   ...createComposerSlice(set, get),
   ...createStreamingSlice(set, get),
+  ...createTaskLedgerSlice(set, get),
   ...createTranscriptFeedSlice(set, get),
   ...createRuntimeNavigationSlice(set, get),
   ...createWorkspaceSlice(set, get),

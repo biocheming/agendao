@@ -763,8 +763,7 @@ mod file_time_tracker_tests {
     use super::FileTimeTracker;
 
     fn temp_file(name: &str) -> std::path::PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("agendao_ftt_{name}_{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("agendao_ftt_{name}_{}", std::process::id()));
         std::fs::write(&path, b"one").unwrap();
         path
     }
@@ -773,7 +772,9 @@ mod file_time_tracker_tests {
     fn assert_passes_for_never_read_paths() {
         let tracker = FileTimeTracker::default();
         let path = temp_file("unread");
-        assert!(tracker.assert_unchanged("ses_1", path.to_str().unwrap()).is_ok());
+        assert!(tracker
+            .assert_unchanged("ses_1", path.to_str().unwrap())
+            .is_ok());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -789,7 +790,9 @@ mod file_time_tracker_tests {
         let error = tracker
             .assert_unchanged("ses_1", path_str)
             .expect_err("modified file must fail the guard");
-        assert!(error.to_string().contains("modified since it was last read"));
+        assert!(error
+            .to_string()
+            .contains("modified since it was last read"));
         let _ = std::fs::remove_file(&path);
     }
 

@@ -98,7 +98,10 @@ impl Drop for PendingPermissionGuard {
         };
         handle.spawn(async move {
             PERMISSION_WAITERS.lock().await.remove(&permission_id);
-            PERMISSION_ENGINE.lock().await.remove_pending(&permission_id);
+            PERMISSION_ENGINE
+                .lock()
+                .await
+                .remove_pending(&permission_id);
             state
                 .runtime_telemetry
                 .permission_resolved(
@@ -108,6 +111,14 @@ impl Drop for PendingPermissionGuard {
                     Some("Permission request cancelled".to_string()),
                 )
                 .await;
+            crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+                &state,
+                &session_id,
+                agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+                &permission_id,
+                true,
+            )
+            .await;
             crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
@@ -143,7 +154,10 @@ pub(crate) async fn cancel_pending_permissions_for_session(
                 message: Some("Run aborted — permission request cancelled".to_string()),
             });
         }
-        PERMISSION_ENGINE.lock().await.remove_pending(&permission_id);
+        PERMISSION_ENGINE
+            .lock()
+            .await
+            .remove_pending(&permission_id);
         state
             .runtime_telemetry
             .permission_resolved(
@@ -153,6 +167,14 @@ pub(crate) async fn cancel_pending_permissions_for_session(
                 Some("Run aborted — permission request cancelled".to_string()),
             )
             .await;
+        crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+            state,
+            session_id,
+            agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+            &permission_id,
+            true,
+        )
+        .await;
     }
     if count > 0 {
         crate::session_runtime::events::broadcast_session_reconcile(
@@ -584,6 +606,16 @@ pub(crate) async fn request_permission(
     )
     .await;
 
+    // Task-governance seam: the run now waits on this exact permission.
+    crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+        &state,
+        &session_id,
+        agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+        &permission_id,
+        false,
+    )
+    .await;
+
     let guard = PendingPermissionGuard {
         state: Some(state.clone()),
         session_id: session_id.clone(),
@@ -648,6 +680,14 @@ pub(crate) async fn request_permission(
                     Some("Permission response channel closed".to_string()),
                 )
                 .await;
+            crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+                &state,
+                &session_id,
+                agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+                &permission_id,
+                true,
+            )
+            .await;
             crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
@@ -678,6 +718,14 @@ pub(crate) async fn request_permission(
                     Some("Permission request timed out".to_string()),
                 )
                 .await;
+            crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+                &state,
+                &session_id,
+                agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+                &permission_id,
+                true,
+            )
+            .await;
             crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
@@ -780,6 +828,16 @@ pub(crate) async fn reply_permission(
         .runtime_telemetry
         .permission_resolved(&session_id, &id, &req.reply, req.message.clone())
         .await;
+
+    // Task-governance seam: the wait is over; resume the ledger.
+    crate::session_runtime::task_ledger_reducer::dispatch_interaction(
+        &state,
+        &session_id,
+        agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+        &id,
+        true,
+    )
+    .await;
 
     // Push session.updated so frontend refresh path triggers (plan §8 path D).
     crate::session_runtime::events::broadcast_session_reconcile(
@@ -1024,13 +1082,8 @@ mod tests {
                 .list()
                 .into_iter()
                 .any(|info| info.session_id == SESSION_ID);
-            let waiter_leaked = PERMISSION_WAITERS
-                .lock()
-                .await
-                .contains_key(&permission_id);
-            if (!pending && !waiter_leaked)
-                || std::time::Instant::now() > deadline
-            {
+            let waiter_leaked = PERMISSION_WAITERS.lock().await.contains_key(&permission_id);
+            if (!pending && !waiter_leaked) || std::time::Instant::now() > deadline {
                 break;
             }
             tokio::task::yield_now().await;
@@ -1088,8 +1141,7 @@ mod tests {
 
         let permission_id = wait_for_pending_permission(SESSION_ID).await;
 
-        let cancelled =
-            cancel_pending_permissions_for_session(&state, SESSION_ID).await;
+        let cancelled = cancel_pending_permissions_for_session(&state, SESSION_ID).await;
         assert_eq!(cancelled, 1);
         assert!(
             !PERMISSION_ENGINE

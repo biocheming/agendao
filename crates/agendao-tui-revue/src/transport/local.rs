@@ -23,6 +23,7 @@ fn event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::ToolCallUpsert { session_id, .. }
         | FrontendEvent::DiffReplaced { session_id, .. }
         | FrontendEvent::TodoReplaced { session_id, .. }
+        | FrontendEvent::TaskLedgerReplaced { session_id, .. }
         | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,

@@ -656,3 +656,71 @@ fn empty_disabled_list_leaves_catalog_untouched() {
         .collect();
     assert!(names.contains(&"web-search".to_string()));
 }
+
+#[test]
+fn disabled_skill_runtime_catalog_matches_absent_baseline() {
+    // Phase 1c invariant (j-space governance plan): a skill that is disabled
+    // (or simply not selected) must leave the runtime-facing skill catalog
+    // byte-equivalent to the catalog of a workspace where it was never
+    // installed. Skill content only ever reaches a prompt through an explicit
+    // skill_view call; installation alone must not alter the surface.
+    let dir = tempdir().unwrap();
+    let skill_dir = dir.path().join(".agendao/skills/jspace-phase1c-probe");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        r#"---
+name: jspace-phase1c-probe
+description: "Workspace governance experiment skill"
+---
+
+# J-Space
+
+Experimental entry.
+"#,
+    )
+    .unwrap();
+
+    // Baseline: the same workspace without the skill directory. All three
+    // authorities use the same constructor and config shape so that root
+    // discovery (workspace, bundled, global) is identical across arms; the
+    // only variable is the skill's presence and its disabled flag.
+    let baseline_dir = tempdir().unwrap();
+    let empty_config = || {
+        std::sync::Arc::new(Config {
+            skills: Some(SkillsConfig::default()),
+            ..Default::default()
+        })
+    };
+    let disabled_config = || {
+        std::sync::Arc::new(Config {
+            skills: Some(SkillsConfig {
+                disabled: vec!["jspace-phase1c-probe".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+
+    let enabled = SkillAuthority::with_config(dir.path(), Some(empty_config()));
+    let disabled = SkillAuthority::with_config(dir.path(), Some(disabled_config()));
+    let baseline = SkillAuthority::with_config(baseline_dir.path(), Some(empty_config()));
+
+    let names_of = |authority: &SkillAuthority| -> Vec<String> {
+        let mut names: Vec<String> = authority
+            .list_skill_catalog(None)
+            .unwrap()
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect();
+        names.sort();
+        names
+    };
+
+    let enabled_names = names_of(&enabled);
+    assert!(enabled_names.contains(&"jspace-phase1c-probe".to_string()));
+
+    // Disabled must equal the never-installed baseline exactly: no residual
+    // entry, no extra filtering side effects.
+    assert_eq!(names_of(&disabled), names_of(&baseline));
+}

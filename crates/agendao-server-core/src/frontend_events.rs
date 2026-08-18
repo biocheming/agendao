@@ -149,6 +149,16 @@ pub enum FrontendEvent {
         todos: Vec<agendao_types::TodoInfo>,
     },
 
+    // ── Task ledger ──────────────────────────────────────────────────
+    /// The session task ledger was committed at a new revision.
+    #[serde(rename = "task-ledger.replaced")]
+    TaskLedgerReplaced {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        ledger: agendao_types::task_ledger::SessionTaskLedger,
+        cause: agendao_types::task_ledger::TaskLedgerCause,
+    },
+
     // ── Config ───────────────────────────────────────────────────────────
     /// Global configuration has changed — frontends should reload
     /// config-derived state (providers, modes, settings). Global event with

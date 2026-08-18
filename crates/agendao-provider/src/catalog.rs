@@ -1,6 +1,6 @@
 use crate::models::{
-    ModelInfo as ModelsDataModelInfo, ModelLimit, ModelsData,
-    ProviderInfo as ModelsProviderInfo, MODELS_DEV_URL,
+    ModelInfo as ModelsDataModelInfo, ModelLimit, ModelsData, ProviderInfo as ModelsProviderInfo,
+    MODELS_DEV_URL,
 };
 use once_cell::sync::Lazy;
 use reqwest::header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH, PRAGMA};
@@ -474,7 +474,14 @@ fn seed_model(
 fn seed_catalog() -> ModelsData {
     let mut openai_models: HashMap<String, ModelsDataModelInfo> = HashMap::new();
     seed_model(&mut openai_models, "gpt-5", "GPT-5", 400_000, 128_000, true);
-    seed_model(&mut openai_models, "gpt-5-mini", "GPT-5 mini", 400_000, 128_000, true);
+    seed_model(
+        &mut openai_models,
+        "gpt-5-mini",
+        "GPT-5 mini",
+        400_000,
+        128_000,
+        true,
+    );
 
     let mut anthropic_models: HashMap<String, ModelsDataModelInfo> = HashMap::new();
     seed_model(
@@ -590,9 +597,7 @@ mod tests {
         assert_eq!(snapshot.metadata.source_url, SEED_CATALOG_SOURCE_URL);
         assert!(snapshot.data.contains_key("openai"));
         assert!(snapshot.data.contains_key("anthropic"));
-        assert!(snapshot.data["openai"]
-            .models
-            .contains_key("gpt-5"));
+        assert!(snapshot.data["openai"].models.contains_key("gpt-5"));
         // Seed data is immediately due for a real refresh.
         assert!(catalog_refresh_due(
             &snapshot.metadata,

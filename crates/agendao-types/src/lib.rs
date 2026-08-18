@@ -10,6 +10,7 @@ pub mod repair;
 pub mod session;
 pub mod session_artifact;
 pub mod skill;
+pub mod task_ledger;
 pub mod todo;
 pub mod tool_call_layers;
 pub mod workspace_skill_artifact;

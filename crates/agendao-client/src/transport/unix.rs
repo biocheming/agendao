@@ -11,6 +11,7 @@ use agendao_api::{
 use agendao_config::Config;
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use agendao_types::task_ledger::SessionTaskLedger;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -135,6 +136,14 @@ impl UnixSocketTransport {
     pub async fn get_session_runtime(&self, session_id: &str) -> Result<SessionRuntimeState> {
         self.send_request(
             "get_session_runtime",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
+    pub async fn get_task_ledger(&self, session_id: &str) -> Result<SessionTaskLedger> {
+        self.send_request(
+            "get_task_ledger",
             serde_json::json!({ "session_id": session_id }),
         )
         .await

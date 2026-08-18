@@ -39,6 +39,20 @@ export function useSessionRuntimeReconcile({
         const store = useAgendaoStore.getState();
         store.applySessionRunStatus(sessionId, String(runtime.run_status ?? "idle"));
 
+        // Task governance snapshot rides the same reconciliation so ledger
+        // state converges after switches, reconnects, and tab refocus —
+        // one reconcile entry, no second mechanism.
+        try {
+          const ledger = await apiJson<Record<string, unknown>>(
+            `/session/${encodeURIComponent(sessionId)}/task-ledger`,
+          );
+          useAgendaoStore
+            .getState()
+            .setTaskLedger(sessionId, ledger as never);
+        } catch {
+          // Ledger unreachable; the event stream will correct the view.
+        }
+
         const pendingPermissionId = runtime.pending_permission?.permission_id;
         if (pendingPermissionId) {
           try {

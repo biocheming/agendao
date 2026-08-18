@@ -8,8 +8,9 @@ pub(crate) mod prompt;
 mod recovery;
 mod repair;
 mod scheduler;
-mod session_crud;
+pub(crate) mod session_crud;
 mod steering;
+mod task_ledger_api;
 mod telemetry;
 
 use std::sync::Arc;
@@ -34,7 +35,7 @@ pub use self::local_api::{
     local_get_provider_model_config, local_get_recent_models, local_get_session,
     local_get_session_diff, local_get_session_recovery, local_get_session_runtime,
     local_get_session_status, local_get_session_telemetry, local_get_session_todos,
-    local_get_skill_detail, local_get_workspace_context, local_list_agents,
+    local_get_skill_detail, local_get_task_ledger, local_get_workspace_context, local_list_agents,
     local_list_execution_modes, local_list_messages, local_list_permissions, local_list_plugins,
     local_list_questions, local_list_sessions, local_list_skill_proposals, local_list_skills,
     local_list_tools, local_manage_skill, local_patch_config, local_preflight_multimodal,
@@ -86,6 +87,22 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
                 .delete(delete_session),
         )
         .route("/{id}/runtime", get(get_session_runtime))
+        .route(
+            "/{id}/task-ledger",
+            get(task_ledger_api::get_task_ledger).patch(task_ledger_api::patch_task_ledger),
+        )
+        .route(
+            "/{id}/task-ledger/checkpoint",
+            post(task_ledger_api::add_task_ledger_checkpoint),
+        )
+        .route(
+            "/{id}/task-ledger/open",
+            post(task_ledger_api::add_task_ledger_open),
+        )
+        .route(
+            "/{id}/task-ledger/open/{open_id}/close",
+            post(task_ledger_api::close_task_ledger_open),
+        )
         .route(
             "/{id}/blueprint",
             get(get_session_blueprint)

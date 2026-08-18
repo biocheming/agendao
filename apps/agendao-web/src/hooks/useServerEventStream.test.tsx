@@ -321,6 +321,61 @@ describe("useServerEventStream", () => {
     unmount();
   });
 
+  it("tracks task-ledger replacements per session", async () => {
+    const abortError = new Error("aborted");
+    abortError.name = "AbortError";
+    const parseSSESpy = vi.spyOn(apiModule, "parseSSE").mockImplementation(async (_response, onEvent) => {
+      onEvent("message", {
+        type: "task-ledger.replaced",
+        sessionID: "session-9",
+        ledger: {
+          session_id: "session-9",
+          revision: 4,
+          status: "awaiting_user",
+          goal: { statement: "ship median" },
+          core: [],
+          verified: [],
+          open: [],
+          next: { statement: "approve bash", provenance: { actor: "model", pre_interrupt: false } },
+          updated_at: 1,
+        },
+        cause: "status_changed",
+      });
+      throw abortError;
+    });
+
+    globalThis.fetch = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.signal?.aborted) {
+        throw abortError;
+      }
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    const { unmount } = renderHook(() =>
+      useServerEventStream({
+        applyLiveExecutionOutputBlock: vi.fn<(block: unknown, sessionId: string) => void>(),
+        clearPendingOutputBlockFlush: vi.fn<() => void>(),
+        clearPendingSessionRefresh: vi.fn<() => void>(),
+        flushPendingOutputBlocks: vi.fn<() => void>(),
+        onConfigUpdated: vi.fn<() => void>(),
+        onStreamReconnected: vi.fn<() => void>(),
+        queueVisibleLiveSnapshot: vi.fn<(sessionId: string, block: unknown) => void>(),
+        refreshExecutionActivity: vi.fn<(sessionId: string) => void>(),
+        scheduleSessionRefresh: vi.fn<() => void>(),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(parseSSESpy).toHaveBeenCalled();
+    });
+    const ledger = useAgendaoStore.getState().taskLedgers["session-9"];
+    expect(ledger?.revision).toBe(4);
+    expect(ledger?.status).toBe("awaiting_user");
+    expect(ledger?.next?.statement).toBe("approve bash");
+
+    unmount();
+  });
+
   it("keeps runtime state per session: another session's events do not leak into the selected one", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";

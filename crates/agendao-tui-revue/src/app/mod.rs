@@ -1412,6 +1412,22 @@ impl View for RootView {
                     let w = label.chars().count() as u16 + 1;
                     header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
                 }
+                // Task-governance line: the ledger's single Next, when a
+                // ledger exists. Typed fields only; absent for ungoverned
+                // sessions so the header stays unchanged by default.
+                if let Some(ledger) = h.active_session.task_ledger.get() {
+                    if ledger.revision > 0 {
+                        if let Some(next) = ledger.next.as_ref() {
+                            let mut label = format!("· Next: {}", next.statement);
+                            // 窄终端防溢出：截到 34 chars（含前缀）。
+                            if label.chars().count() > 34 {
+                                label = label.chars().take(33).collect::<String>() + "…";
+                            }
+                            let w = label.chars().count() as u16 + 1;
+                            header = header.child_sized(Text::new(label).fg(colors::FG_MUTED()), w);
+                        }
+                    }
+                }
                 // Run status indicator pinned to the right via a flex spacer.
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
                     RunStatus::Running => (Some(" ● Running".to_string()), colors::ACCENT_GREEN()),

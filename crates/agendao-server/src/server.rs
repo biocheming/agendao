@@ -260,6 +260,8 @@ pub struct ServerState {
     pub(crate) steering_store: Arc<tokio::sync::Mutex<SessionSteeringQueueStore>>,
     pub(crate) queued_followups:
         Arc<tokio::sync::Mutex<HashMap<String, std::collections::VecDeque<serde_json::Value>>>>,
+    /// Task-governance stall observation windows (server memory only).
+    pub(crate) stall_windows: Arc<crate::session_runtime::task_ledger_stall::StallWindows>,
     // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
@@ -381,6 +383,9 @@ impl ServerState {
             runtime_telemetry,
             steering_store,
             queued_followups,
+            stall_windows: Arc::new(
+                crate::session_runtime::task_ledger_stall::StallWindows::default(),
+            ),
             runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,

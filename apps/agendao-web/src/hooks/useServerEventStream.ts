@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { apiUrl, parseSSE, serverPasswordAuthHeaders } from "../lib/api";
 import type { OutputBlock } from "../lib/history";
+import type { SessionTaskLedger } from "../lib/taskLedger";
 import { shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
 import {
   permissionInteractionFromEvent,
@@ -106,6 +107,20 @@ export function useServerEventStream({
 
       if (type === "config.updated") {
         onConfigUpdated();
+        return;
+      }
+
+      // Canonical ledger replacement: tracked for every session so the
+      // task-state view survives switches and reconnects.
+      if (type === "task-ledger.replaced" && eventSessionId) {
+        const incoming = event.ledger as SessionTaskLedger;
+        const existing = store.taskLedgers[eventSessionId];
+        if (!existing || incoming.revision >= existing.revision) {
+          store.setTaskLedger(eventSessionId, incoming);
+        }
+        if (eventSessionId === selectedSessionId) {
+          scheduleSessionRefresh();
+        }
         return;
       }
 
