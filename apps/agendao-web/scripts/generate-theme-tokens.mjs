@@ -85,13 +85,6 @@ function tsContent(palettes) {
   }
   lines.push("};");
   lines.push("");
-  lines.push("export const THEME_BASE_TOKENS: Record<AgendaoThemeId, { bgPrimary: string; fgPrimary: string; fgMuted: string; border: string }> = {");
-  for (const id of themeIds) {
-    const f = palettes[id];
-    lines.push(`  "${id}": { bgPrimary: "${f.bg_primary}", fgPrimary: "${f.fg_primary}", fgMuted: "${f.fg_muted}", border: "${f.border}" },`);
-  }
-  lines.push("};");
-  lines.push("");
   lines.push("// Web 全局主题 → 五行 token 取色映射：cobalt 取 TUI 默认暗色，亮色主题取天青。");
   lines.push("export const WEB_THEME_TOKEN_SOURCE: Record<string, AgendaoThemeId> = {");
   lines.push('  daylight: "tianqing",');

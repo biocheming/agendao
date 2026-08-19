@@ -82,33 +82,6 @@ export function cacheBustSummaryStatusLabel(
     : CONTEXT_CLOSURE_STATUS_LABELS.cache_unexplained;
 }
 
-export function promptSurfaceEvidenceFromTelemetry(
-  telemetry: unknown,
-): PromptSurfaceEvidenceRecord | null {
-  if (!isRecord(telemetry)) return null;
-  const evidence = telemetry.prompt_surface_evidence;
-  if (!isRecord(evidence)) return null;
-  return {
-    severity:
-      typeof evidence.severity === "string" ? evidence.severity : null,
-    reason: typeof evidence.reason === "string" ? evidence.reason : null,
-    changed_fields: Array.isArray(evidence.changed_fields)
-      ? evidence.changed_fields.filter(
-          (value): value is string => typeof value === "string",
-        )
-      : null,
-    stable_prefix_change:
-      typeof evidence.stable_prefix_change === "boolean"
-        ? evidence.stable_prefix_change
-        : null,
-    dynamic_overlay_reasons: Array.isArray(evidence.dynamic_overlay_reasons)
-      ? evidence.dynamic_overlay_reasons.filter(
-          (value): value is string => typeof value === "string",
-        )
-      : null,
-  };
-}
-
 export function cacheSemanticsFromTelemetry(
   telemetry: unknown,
 ): CacheSemanticsRecord | null {

@@ -21,5 +21,3 @@ export const useAgendaoStore = create<AgendaoState>((set, get) => ({
   ...createRuntimeNavigationSlice(set, get),
   ...createWorkspaceSlice(set, get),
 }));
-
-export type { AgendaoState, PromptPart, StoreGet, StoreSet } from "./types";

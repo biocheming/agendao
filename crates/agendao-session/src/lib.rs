@@ -20,7 +20,6 @@ pub mod summary;
 pub mod system;
 pub mod telemetry;
 pub mod todo;
-pub mod tool_result_governance;
 
 #[cfg(feature = "orchestrator")]
 pub use compaction::*;
@@ -39,7 +38,6 @@ pub use summary::*;
 pub use system::*;
 pub use telemetry::*;
 pub use todo::*;
-pub use tool_result_governance::*;
 
 pub use agendao_types::SessionTime as SessionListTime;
 pub use agendao_types::{

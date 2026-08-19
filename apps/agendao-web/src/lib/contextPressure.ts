@@ -32,10 +32,6 @@ export function contextUsagePercent(used?: number | null, limit?: number | null)
   return Math.round((used / limit) * 100);
 }
 
-export function isLiveStageStatus(status?: string | null): boolean {
-  return status === "running" || status === "waiting" || status === "retrying" || status === "blocked" || status === "cancelling";
-}
-
 export function currentContextTokensFromSources(
   usageContextTokens?: number | null,
   activeStageContextTokens?: number | null,

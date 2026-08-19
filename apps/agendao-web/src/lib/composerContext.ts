@@ -373,12 +373,6 @@ export function clipboardImageFiles(items: Iterable<DataTransferItem>): File[] {
     .filter((file): file is File => file !== null);
 }
 
-export async function readClipboardImagePromptParts(
-  items: Iterable<DataTransferItem>,
-): Promise<FilePromptPart[]> {
-  return readFilesAsPromptParts(clipboardImageFiles(items));
-}
-
 export function droppedFiles(dataTransfer: DataTransfer): File[] {
   return Array.from(dataTransfer.files ?? []);
 }

@@ -60,13 +60,6 @@ export const THEME_SEMANTIC_TOKENS: Record<AgendaoThemeId, Record<SemanticToken,
   },
 };
 
-export const THEME_BASE_TOKENS: Record<AgendaoThemeId, { bgPrimary: string; fgPrimary: string; fgMuted: string; border: string }> = {
-  "tokyo-night": { bgPrimary: "#1a1b26", fgPrimary: "#c0caf5", fgMuted: "#565f89", border: "#3b4261" },
-  "tokyo-night-light": { bgPrimary: "#d5d6db", fgPrimary: "#343b58", fgMuted: "#9699a3", border: "#a8abbd" },
-  "tianqing": { bgPrimary: "#f2efe6", fgPrimary: "#2e3238", fgMuted: "#8b8f88", border: "#c9c2b0" },
-  "qianli": { bgPrimary: "#121a1c", fgPrimary: "#d8dfd3", fgMuted: "#5d6f6a", border: "#2c3e42" },
-};
-
 // Web 全局主题 → 五行 token 取色映射：cobalt 取 TUI 默认暗色，亮色主题取天青。
 export const WEB_THEME_TOKEN_SOURCE: Record<string, AgendaoThemeId> = {
   daylight: "tianqing",

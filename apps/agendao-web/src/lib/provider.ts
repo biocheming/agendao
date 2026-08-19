@@ -131,10 +131,6 @@ export interface ManagedModelOverrideInfoRecord {
   experimental?: boolean | null;
 }
 
-export interface ManagedProviderListResponseRecord {
-  providers: ManagedProviderInfoRecord[];
-}
-
 export interface ProviderProfileDescriptorViewRecord {
   provider_id: string;
   npm: string;

@@ -7,7 +7,6 @@
 pub mod actions;
 #[cfg(feature = "block-projection")]
 pub mod block_projection;
-#[path = "../../agendao-command-render/src/branding.rs"]
 pub mod branding;
 #[cfg(feature = "terminal-ui")]
 pub mod cli_markdown;
@@ -24,26 +23,19 @@ pub mod cli_spinner;
 #[cfg(feature = "terminal-ui")]
 pub mod cli_style;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/governance_fixtures.rs"]
 pub mod governance_fixtures;
 #[cfg(test)]
 mod governance_tests;
 pub mod interactive;
-#[path = "../../agendao-command-render/src/live_semantic_consumer.rs"]
 pub mod live_semantic_consumer;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/output_blocks.rs"]
 pub mod output_blocks;
-#[path = "../../agendao-command-render/src/run_status_labels.rs"]
 pub mod run_status_labels;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/terminal_presentation.rs"]
 pub mod terminal_presentation;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/terminal_segment_display.rs"]
 pub mod terminal_segment_display;
 #[cfg(feature = "terminal-ui")]
-#[path = "../../agendao-command-render/src/terminal_tool_block_display.rs"]
 pub mod terminal_tool_block_display;
 pub use actions::{
     ui_command_argument_kind, UiActionId, UiCommandArgumentKind, UiCommandCategory, UiCommandSpec,

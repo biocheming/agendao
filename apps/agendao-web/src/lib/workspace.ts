@@ -1,5 +1,3 @@
-import type { FeedMessage } from "./history";
-
 export interface FileTreeNodeRecord {
   name: string;
   path: string;
@@ -60,8 +58,6 @@ export interface UploadFilesResponseRecord {
 export interface DirectoryCreateResponseRecord {
   path: string;
 }
-
-export type WorkspaceFeedMessage = Pick<FeedMessage, "title" | "text">;
 
 interface RawFileTreeNodeRecord {
   name: string;

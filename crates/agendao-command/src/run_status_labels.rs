@@ -27,12 +27,7 @@ pub fn canonical_run_status_labels(status: &str) -> RunStatusLabels {
             title: "Waiting on tool",
             badge: "WAITING ON TOOL",
         },
-        "complete" => RunStatusLabels {
-            slug: "complete",
-            title: "Run complete",
-            badge: "COMPLETE",
-        },
-        "completed" => RunStatusLabels {
+        "complete" | "completed" => RunStatusLabels {
             slug: "complete",
             title: "Run complete",
             badge: "COMPLETE",
@@ -42,12 +37,7 @@ pub fn canonical_run_status_labels(status: &str) -> RunStatusLabels {
             title: "Session idle",
             badge: "IDLE",
         },
-        "error" => RunStatusLabels {
-            slug: "error",
-            title: "Run failed",
-            badge: "ERROR",
-        },
-        "failed" => RunStatusLabels {
+        "error" | "failed" => RunStatusLabels {
             slug: "error",
             title: "Run failed",
             badge: "ERROR",

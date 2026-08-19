@@ -105,29 +105,6 @@ function cacheExplainabilityRecord(
   };
 }
 
-function compactionContinuityRecord(
-  value: unknown,
-): SessionCompactionContinuityInspectionRecord | null {
-  if (!isRecord(value)) return null;
-  const source = readString(value.source);
-  const hasWorkingLedger = readBoolean(value.has_working_ledger);
-  const hasMemoryAnchors = readBoolean(value.has_memory_anchors);
-  if (!source || hasWorkingLedger == null || hasMemoryAnchors == null) {
-    return null;
-  }
-  return {
-    source,
-    summary_message_id: readString(value.summary_message_id),
-    summary_text: readString(value.summary_text),
-    eligible_message_count: readNumber(value.eligible_message_count),
-    exact_recent_tail_count: readNumber(value.exact_recent_tail_count),
-    omitted_older_turns: readNumber(value.omitted_older_turns),
-    has_working_ledger: hasWorkingLedger,
-    has_memory_anchors: hasMemoryAnchors,
-    recall_policy: readString(value.recall_policy),
-  };
-}
-
 export function contextClosureContractFromTelemetry(
   telemetry: unknown,
 ): SessionContextClosureContractRecord | null {
@@ -145,13 +122,6 @@ export function contextClosureContractFromTelemetry(
     compaction_boundary: compactionBoundary,
     cache_explainability: cacheExplainability,
   };
-}
-
-export function compactionContinuityFromTelemetry(
-  telemetry: unknown,
-): SessionCompactionContinuityInspectionRecord | null {
-  if (!isRecord(telemetry)) return null;
-  return compactionContinuityRecord(telemetry.compaction_continuity);
 }
 
 export function contextClosureGovernanceStatusLabel(value: string | null | undefined) {
@@ -197,5 +167,3 @@ export function contextClosureCoarseDiagnosticLabel(
 ) {
   return generatedContextClosureCoarseDiagnosticLabel(contract);
 }
-
-export const contextClosureCacheDiagnosticLabel = contextClosureCoarseDiagnosticLabel;

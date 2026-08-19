@@ -86,22 +86,17 @@ pub(crate) struct PromptReflowContext {
 
 /// Projection of `MemoryRetrievalPacket` for reflow explanation.
 ///
-/// This view preserves every field that `render_memory_prefetch_reminder()`
-/// currently reads from `MemoryRetrievalPacket`, so that the Phase 5
-/// migration to `PromptReflowContext` is lossless.
+/// This view keeps the memory data used by the reflow diagnostics summary
+/// and hydrate authorization surface.
 #[derive(Debug, Clone)]
 pub(crate) struct PromptReflowMemoryView {
     /// Whether this is a snapshot (frozen) or live prefetch.
     pub(crate) is_snapshot: bool,
 
-    /// The recall query that produced this packet.
-    pub(crate) query: Option<String>,
-
     /// Number of recalled items.
     pub(crate) item_count: usize,
 
-    /// Per-item detail: every field that the current reminder renderer
-    /// reads from `MemoryRecallView` / `MemoryCardView`.
+    /// Recalled items shown in the diagnostics summary.
     pub(crate) items: Vec<PromptReflowMemoryItem>,
 
     /// Memory record IDs that are authorized for `scheduler_memory_hydrate`.
@@ -110,17 +105,10 @@ pub(crate) struct PromptReflowMemoryView {
 
 /// A single recalled memory item projected for reflow explanation.
 ///
-/// Mirrors the fields of `MemoryRecallView` and `MemoryCardView` that
-/// `render_memory_prefetch_reminder()` currently consumes.
+/// Contains the identity fields needed by the diagnostics summary.
 #[derive(Debug, Clone)]
 pub(crate) struct PromptReflowMemoryItem {
     pub(crate) title: String,
-    pub(crate) summary: String,
-    pub(crate) why_recalled: String,
-    pub(crate) evidence_summary: Option<String>,
-    pub(crate) kind: String,
-    pub(crate) validation_status: String,
-    pub(crate) last_validated_at: Option<i64>,
     pub(crate) record_id: String,
 }
 
@@ -241,24 +229,16 @@ impl PromptReflowMemoryView {
     /// Project a `MemoryRetrievalPacket` into the reflow memory view.
     ///
     /// This is the same field mapping that `PromptReflowContext::build()`
-    /// uses internally; exposed here so that `render_memory_prefetch_reminder`
-    /// can delegate without constructing the full context.
+    /// uses internally.
     pub(crate) fn from_packet(packet: &MemoryRetrievalPacket) -> Self {
         Self {
             is_snapshot: packet.snapshot,
-            query: packet.query.clone(),
             item_count: packet.items.len(),
             items: packet
                 .items
                 .iter()
                 .map(|item| PromptReflowMemoryItem {
                     title: item.card.title.clone(),
-                    summary: item.card.summary.clone(),
-                    why_recalled: item.why_recalled.clone(),
-                    evidence_summary: item.evidence_summary.clone(),
-                    kind: format!("{:?}", item.card.kind),
-                    validation_status: format!("{:?}", item.card.validation_status),
-                    last_validated_at: item.card.last_validated_at,
                     record_id: item.card.id.0.clone(),
                 })
                 .collect(),
@@ -268,48 +248,6 @@ impl PromptReflowMemoryView {
                 .map(|item| item.card.id.0.clone())
                 .collect(),
         }
-    }
-}
-
-// ── Rendering: memory reminder (lossless from render_memory_prefetch_reminder) ─
-
-impl PromptReflowMemoryView {
-    /// Render the memory prefetch reminder in the same format as
-    /// `SessionPrompt::render_memory_prefetch_reminder()`.
-    ///
-    /// The output is byte-equivalent to the legacy path so that
-    /// Commit 2's reminder regression tests hold.
-    pub(crate) fn render_reminder(&self) -> Option<String> {
-        if self.items.is_empty() {
-            return None;
-        }
-
-        let mut lines = vec!["Turn Memory Recall:".to_string()];
-        if let Some(query) = self
-            .query
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push(format!("- query: {}", query.trim()));
-        }
-        for item in &self.items {
-            // kind / validation_status are stored as their Debug representation
-            // (e.g. "Lesson", "Passed") — use {} to avoid quoting.
-            lines.push(format!(
-                "- {} [{} / {}]",
-                item.title, item.kind, item.validation_status
-            ));
-            lines.push(format!("  why: {}", item.why_recalled));
-            lines.push(format!("  summary: {}", item.summary));
-            if let Some(ref evidence) = item.evidence_summary {
-                lines.push(format!("  evidence: {}", evidence));
-            }
-            if let Some(last_validated_at) = item.last_validated_at {
-                lines.push(format!("  last_validated_at: {}", last_validated_at));
-            }
-        }
-
-        Some(lines.join("\n"))
     }
 }
 
@@ -601,21 +539,9 @@ mod tests {
 
         let mem = ctx.memory.expect("memory view should exist");
         assert!(!mem.is_snapshot);
-        assert_eq!(mem.query.as_deref(), Some("relevant patterns"));
         assert_eq!(mem.item_count, 2);
         assert_eq!(mem.items.len(), 2);
-        // Per-item detail preserved for lossless reminder migration.
         assert_eq!(mem.items[0].title, "Use ArcSwap for config");
-        assert_eq!(mem.items[0].summary, "Config reads should be lock-free");
-        assert_eq!(
-            mem.items[0].why_recalled,
-            "matches current refactoring task"
-        );
-        assert_eq!(
-            mem.items[0].evidence_summary.as_deref(),
-            Some("session-42 evidence")
-        );
-        assert!(mem.items[0].last_validated_at.is_some());
         assert_eq!(mem.hydrate_record_ids, vec!["rec-1", "rec-2"]);
 
         assert!(ctx.continuity.is_none());

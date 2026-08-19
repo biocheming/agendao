@@ -1,17 +1,6 @@
 import { hasDisplayContract, type OutputField, type ToolOutputBlock } from "./history";
 import { isSkillToolName } from "./toolLabels";
 
-export function toolDisplayTitle(block: ToolOutputBlock): string {
-  const header = block.display?.header?.trim();
-  if (header) {
-    if (!/^[A-Za-z0-9._:-]+$/.test(header)) {
-      return header;
-    }
-    return header;
-  }
-  return block.title?.trim() ?? block.name?.trim() ?? block.kind;
-}
-
 export function toolDisplayRawLabelKey(block: ToolOutputBlock): string {
   return block.display?.header?.trim()
     ?? block.title?.trim()

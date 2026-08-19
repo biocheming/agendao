@@ -1,21 +1,11 @@
-pub mod compaction_helpers;
 mod file_parts;
-pub(crate) mod hooks;
 pub mod ingress;
 mod ingress_metadata;
-mod loop_lifecycle;
 mod message_building;
 pub(crate) mod reflow_context;
-mod runtime_step;
-pub mod sanitizer_contract;
-pub mod shell;
-mod skill_reflection;
-pub mod surface_authority;
 mod surface_contract;
 #[cfg(test)]
 mod tests;
-mod tool_calls;
-mod tool_execution;
 pub mod tools_and_output;
 
 // ── Metadata Key Observability Registry (AgenDao §10, P2.2) ──────────
@@ -23,20 +13,26 @@ pub mod tools_and_output;
 // Each key MUST have a writer, reader, and displayer.  "只写不读" is a
 // governance violation.  This table is the single audit reference.
 //
+// The retired direct prompt loop (loop_lifecycle and its pressure/boundary
+// governance chain) used to write several of these keys; those writers were
+// removed with the scheduler-native migration.  Keys whose writers are gone
+// are kept read-only: they may still appear in sessions persisted by older
+// builds, and readers/displayer fallbacks handle their absence.
+//
 // Key                                    | Writer(s)                     | Reader(s)                        | Displayer(s)                 | Fallback
 // ---------------------------------------|-------------------------------|----------------------------------|------------------------------|----------
-// prompt_surface_state_snapshot           | loop_lifecycle                | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no snapshot in sidecar
-// prompt_surface_evidence                | loop_lifecycle                | session_artifact, cache_semantics| TUI status panels, API       | missing → "surface changed"
+// prompt_surface_state_snapshot           | (retired; legacy sessions)    | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no snapshot in sidecar
+// prompt_surface_evidence                | (retired; legacy sessions)    | session_artifact, cache_semantics| TUI status panels, API       | missing → "surface changed"
 // context_compaction_record              | message_building (compaction) | session_artifact, telemetry      | TUI/Web diagnostics          | missing → no compaction visible
 // context_compaction_continuity_packet   | message_building (compaction) | message_building (filter),       | TUI/Web diagnostics,         | missing/invalid → reject compacted view
 //                                        |                               | session_artifact, scheduler      | scheduler hydrate            |
-// context_compaction_lifecycle_summary   | loop_lifecycle (compaction)   | session_artifact, telemetry,     | TUI status/input pipeline,   | missing → no lifecycle display
+// context_compaction_lifecycle_summary   | (retired; legacy sessions)    | session_artifact, telemetry,     | TUI status/input pipeline,   | missing → no lifecycle display
 //                                        |                               | TUI (input_pipeline, status)     | API                          |
-// context_pressure_governance_summary    | loop_lifecycle (pressure)     | session_artifact, telemetry,     | TUI status panels, API       | missing → no pressure display
+// context_pressure_governance_summary    | (retired; legacy sessions)    | session_artifact, telemetry,     | TUI status panels, API       | missing → no pressure display
 //                                        |                               | server session_runtime           |                              |
-// context_lightweight_trim_summary       | message_building (trim)       | session_artifact                | TUI/Web diagnostics          | missing → no trim visible
-// request_boundary_hygiene_summary       | loop_lifecycle                | session_artifact, telemetry      | TUI/Web diagnostics, API     | missing → no boundary hygiene visible
-// pending_sanitizer_stage               | server (resume/continue)      | loop_lifecycle (consume-on-read) | internal only               | missing → defaults to PreRequest
+// context_lightweight_trim_summary       | (retired; legacy sessions)    | session_artifact                | TUI/Web diagnostics          | missing → no trim visible
+// request_boundary_hygiene_summary       | (retired; legacy sessions)    | session_artifact, telemetry      | TUI/Web diagnostics, API     | missing → no boundary hygiene visible
+// pending_sanitizer_stage               | server (resume/continue)      | scheduler (consume-on-read)      | internal only               | missing → defaults to PreRequest
 //
 // "Consume-on-read" keys (like pending_sanitizer_stage) are removed from
 // metadata after first read — they are transient lifecycle signals, not
@@ -149,10 +145,6 @@ pub fn render_session_reflow_diagnostics_summary(session: &Session) -> Option<St
     Some(ctx.render_summary())
 }
 
-pub use compaction_helpers::{should_compact, trigger_compaction};
-pub(crate) use hooks::{
-    apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
-};
 pub use ingress::{
     external_adapter_event_to_ingress_turn, normalize_ingress_source, stabilize_ingress_turns,
     ExternalAdapterIngressMappingError, IngressAttachmentRef, IngressSource,
@@ -161,20 +153,13 @@ pub use ingress::{
     INGRESS_POLICY_SCHEDULER_METADATA_ONLY, INGRESS_POLICY_UNSPECIFIED,
 };
 use reflow_context::PromptReflowContext;
-#[cfg(test)]
-pub(crate) use shell::resolve_shell_invocation;
-pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
 use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
-    compose_session_title_source, create_structured_output_tool, extract_structured_output,
-    generate_session_title, generate_session_title_for_session, generate_session_title_llm,
-    merge_external_tool_catalogs, merge_tool_definitions, prioritize_tool_definitions,
-    resolve_tool_surface, resolve_tool_surface_with_mcp, resolve_tools, resolve_tools_with_mcp,
-    resolve_tools_with_mcp_registry, sanitize_session_title_source,
-    structured_output_system_prompt, ResolvedTool, ResolvedToolSurface, StructuredOutputConfig,
+    compose_session_title_source, generate_session_title, generate_session_title_for_session,
+    generate_session_title_llm, sanitize_session_title_source,
 };
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -182,45 +167,21 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use agendao_execution_types::CompiledExecutionRequest;
 use agendao_output_blocks::OutputBlock;
-use agendao_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
-use agendao_skill::{
-    infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority,
-};
-use agendao_types::SkillRuntimeCompositionHintKind;
+use agendao_provider::cache::CacheEvidenceSummary;
+use agendao_skill::SkillGovernanceAuthority;
 use agendao_types::{
-    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text_len,
-    ContextCompactionAssessmentSummary, ContextCompactionBackoffSummary,
-    ContextCompactionDecisionTrace, ContextCompactionInstalledDiagnostics,
-    ContextCompactionLifecycleStatus, ContextCompactionLifecycleSummary, ContextCompactionSummary,
-    ContextPressureGovernanceStatus, ContextPressureGovernanceSummary, LightweightTrimSummary,
+    message_latest_compaction_summary, tool_call_replay_text_len,
+    ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
+    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
     MemoryRetrievalPacket, PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind,
     SessionCacheBoundarySummary, SessionCacheEvidenceExplain, SessionCacheSemanticsBasis,
     SessionCacheSemanticsSummary, SessionCacheSeverity, SessionCompactionContinuityInspection,
     SessionContextExplain, SessionContinuityPacket,
 };
 
-use crate::instruction::{InstructionLoader, InstructionSource};
-use crate::system::SystemPrompt;
-use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager, ToolState};
+use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager};
 
-// 流式期 session 快照节流间隔。每次触发都会对完整会话做 clone 并驱动
-// 持久化 worker,1.1M token 会话下 120ms 意味着每秒 8 次数 MB 级深拷贝;
-// 提高到 1s 后上屏流式输出(走独立的 output_block 通道,不受此节流)不受影响,
-// 仅降低 session 状态镜像/落库频率。终态(每步结束/循环结束)仍强制 emit。
-const STREAM_UPDATE_INTERVAL_MS: u64 = 1000;
-
-/// Returns `true` when the finish reason indicates the conversation turn is
-/// complete (i.e. not a tool-use continuation or unknown state).
-fn is_terminal_finish(reason: Option<&str>) -> bool {
-    !matches!(
-        reason,
-        None | Some("tool-calls") | Some("tool_calls") | Some("unknown")
-    )
-}
-
-#[derive(Debug, Clone)]
 pub struct PromptInput {
     pub session_id: String,
     pub message_id: Option<String>,
@@ -278,17 +239,6 @@ impl PartInput {
 
 struct PromptState {
     cancel_token: CancellationToken,
-}
-
-#[derive(Debug, Clone)]
-struct StreamToolState {
-    name: String,
-    raw_input: String,
-    input: serde_json::Value,
-    status: crate::ToolCallStatus,
-    state: crate::ToolState,
-    emitted_output_start: bool,
-    emitted_output_detail: Option<String>,
 }
 
 pub type SessionUpdateHook = Arc<dyn Fn(&Session) + Send + Sync + 'static>;
@@ -463,32 +413,6 @@ pub type SteeringBoundaryHook = Arc<
         + Sync,
 >;
 
-#[derive(Clone)]
-pub struct PromptRequestContext {
-    pub provider: Arc<dyn Provider>,
-    // Cross-crate callers may supply surface mutations only through the
-    // authority-owned input contract, not by hand-writing raw prompt pieces.
-    pub surface_inputs: surface_authority::PromptSurfaceInputs,
-    pub compiled_request: CompiledExecutionRequest,
-    pub hooks: PromptHooks,
-}
-
-impl PromptRequestContext {
-    pub fn new(
-        provider: Arc<dyn Provider>,
-        surface_inputs: surface_authority::PromptSurfaceInputs,
-        compiled_request: CompiledExecutionRequest,
-        hooks: PromptHooks,
-    ) -> Self {
-        Self {
-            provider,
-            surface_inputs,
-            compiled_request,
-            hooks,
-        }
-    }
-}
-
 /// Session prompt surface authority.
 ///
 /// # Prompt surface construction pipeline (AgenDao 土律)
@@ -537,14 +461,6 @@ pub struct RuntimeReviewNudge {
     pub error_tool_call_count: usize,
     pub skill_write_count: usize,
     pub used_skill_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CompletedToolMemoryObservation {
-    call_id: String,
-    tool_name: String,
-    output: String,
-    is_error: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -606,44 +522,6 @@ impl RuntimeReviewNudge {
             used_skill_names,
         }
     }
-}
-
-fn completed_tool_memory_observations(session: &Session) -> Vec<CompletedToolMemoryObservation> {
-    let turn_start = session
-        .messages
-        .iter()
-        .rposition(|message| message.role == MessageRole::User)
-        .unwrap_or(0);
-
-    session
-        .messages
-        .iter()
-        .skip(turn_start)
-        .flat_map(|message| message.parts.iter())
-        .filter_map(|part| {
-            let PartType::ToolCall {
-                id, name, state, ..
-            } = &part.part_type
-            else {
-                return None;
-            };
-            match state.as_ref()? {
-                ToolState::Completed { output, .. } => Some(CompletedToolMemoryObservation {
-                    call_id: id.clone(),
-                    tool_name: name.clone(),
-                    output: output.clone(),
-                    is_error: false,
-                }),
-                ToolState::Error { error, .. } => Some(CompletedToolMemoryObservation {
-                    call_id: id.clone(),
-                    tool_name: name.clone(),
-                    output: error.clone(),
-                    is_error: true,
-                }),
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 fn session_review_scope_key(session: &Session) -> String {
@@ -946,23 +824,6 @@ fn persist_context_pressure_governance_summary(
     }
 }
 
-fn persist_lightweight_trim_summary(
-    session: &mut Session,
-    summary: Option<&LightweightTrimSummary>,
-) {
-    match summary.and_then(|value| serde_json::to_value(value).ok()) {
-        Some(value) => {
-            session.insert_metadata(
-                CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY.to_string(),
-                value,
-            );
-        }
-        None => {
-            session.remove_metadata(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY);
-        }
-    }
-}
-
 fn persist_context_compaction_lifecycle_summary(
     session: &mut Session,
     summary: &ContextCompactionLifecycleSummary,
@@ -972,15 +833,6 @@ fn persist_context_compaction_lifecycle_summary(
             CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY.to_string(),
             value,
         );
-    }
-}
-
-fn emit_context_compaction_lifecycle(
-    hook: Option<&CompactionLifecycleHook>,
-    summary: &ContextCompactionLifecycleSummary,
-) {
-    if let Some(hook) = hook {
-        hook(summary.clone());
     }
 }
 
@@ -1068,491 +920,6 @@ pub(super) fn install_compaction_lifecycle_summary(
     lifecycle: &mut ContextCompactionLifecycleSummary,
 ) {
     lifecycle.installed = Some(installed_compaction_diagnostics(session));
-}
-
-fn should_block_pre_dispatch_governance(
-    reason: &str,
-    request_pressure_percent: Option<u64>,
-    live_pressure_percent: Option<u64>,
-) -> bool {
-    matches!(
-        reason,
-        "usage_overflow"
-            | "live_context_overflow"
-            | "request_view_overflow"
-            | "session_content_overflow"
-            | "request_body_too_large"
-    ) || request_pressure_percent
-        .map(|percent| percent >= agendao_types::CONTEXT_PRESSURE_CRITICAL_PERCENT)
-        .unwrap_or(false)
-        || live_pressure_percent
-            .map(|percent| percent >= agendao_types::CONTEXT_PRESSURE_CRITICAL_PERCENT)
-            .unwrap_or(false)
-}
-
-fn request_view_metrics_for_governance(
-    session: &Session,
-    fallback_request_context_tokens: Option<u64>,
-    fallback_body_chars: Option<usize>,
-) -> (Option<u64>, Option<usize>) {
-    let explain = explain_session_context(session, None);
-    (
-        explain
-            .api_view_estimated_input_tokens
-            .or(fallback_request_context_tokens),
-        explain.api_view_body_chars.or(fallback_body_chars),
-    )
-}
-
-fn context_compaction_assessment_summary(
-    assessment: &message_building::CompactionAssessment,
-) -> ContextCompactionAssessmentSummary {
-    ContextCompactionAssessmentSummary {
-        reason: assessment.reason.to_string(),
-        limit_tokens: assessment.limit_tokens,
-        body_chars: assessment.body_chars,
-    }
-}
-
-fn context_compaction_decision_trace(
-    path: &str,
-    mode: &str,
-    reason: Option<&str>,
-    assessment: Option<&message_building::CompactionAssessment>,
-    backoff: Option<ContextCompactionBackoffSummary>,
-    lightweight_trim: Option<LightweightTrimSummary>,
-) -> ContextCompactionDecisionTrace {
-    ContextCompactionDecisionTrace {
-        path: path.to_string(),
-        mode: mode.to_string(),
-        reason: reason.map(str::to_string),
-        assessment: assessment.map(context_compaction_assessment_summary),
-        backoff,
-        lightweight_trim,
-    }
-}
-
-// 参数即产出的 ContextPressureGovernanceSummary 各字段（另含两个由字段派生
-// 的百分比），聚合参数结构体等于重复定义产出结构体，故保留平铺签名。
-#[allow(clippy::too_many_arguments)]
-fn context_pressure_governance_summary(
-    trigger: &str,
-    phase: &str,
-    status: ContextPressureGovernanceStatus,
-    reason: Option<&str>,
-    request_context_tokens: Option<u64>,
-    live_context_tokens: Option<u64>,
-    limit_tokens: Option<u64>,
-    body_chars: Option<usize>,
-    compaction_attempted: bool,
-    compaction_succeeded: bool,
-    blocking: bool,
-    lightweight_trim: Option<LightweightTrimSummary>,
-    decision_trace: Option<ContextCompactionDecisionTrace>,
-) -> ContextPressureGovernanceSummary {
-    ContextPressureGovernanceSummary {
-        trigger: trigger.to_string(),
-        phase: phase.to_string(),
-        status,
-        reason: reason.map(str::to_string),
-        request_context_tokens,
-        live_context_tokens,
-        limit_tokens,
-        body_chars,
-        request_pressure_percent: request_context_tokens
-            .zip(limit_tokens)
-            .and_then(|(used, limit)| context_usage_percent(used, limit)),
-        live_pressure_percent: live_context_tokens
-            .zip(limit_tokens)
-            .and_then(|(used, limit)| context_usage_percent(used, limit)),
-        compaction_attempted,
-        compaction_succeeded,
-        blocking,
-        lightweight_trim,
-        decision_trace,
-    }
-}
-
-pub fn assess_request_view_context_governance(
-    provider: &dyn agendao_provider::Provider,
-    model_id: &str,
-    max_output_tokens: Option<u64>,
-    config_store: Option<&agendao_config::ConfigStore>,
-    options: ContextGovernanceAssessment<'_>,
-) -> ContextPressureGovernanceSummary {
-    let ContextGovernanceAssessment {
-        trigger,
-        phase,
-        compaction_attempted,
-        compaction_succeeded,
-        usage,
-    } = options;
-    let ContextUsageSnapshot {
-        live_context_tokens,
-        request_context_tokens,
-        request_body_chars,
-    } = usage;
-    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
-    let assessment = SessionPrompt::assess_compaction(
-        &[],
-        &[],
-        provider,
-        model_id,
-        max_output_tokens,
-        &compaction_config,
-        usage,
-    );
-
-    match assessment {
-        Some(assessment) => {
-            let blocking = compaction_attempted
-                && should_block_pre_dispatch_governance(
-                    assessment.reason,
-                    request_context_tokens
-                        .zip(assessment.limit_tokens)
-                        .and_then(|(used, limit)| context_usage_percent(used, limit)),
-                    live_context_tokens
-                        .zip(assessment.limit_tokens)
-                        .and_then(|(used, limit)| context_usage_percent(used, limit)),
-                );
-            context_pressure_governance_summary(
-                trigger,
-                phase,
-                if blocking {
-                    ContextPressureGovernanceStatus::Blocked
-                } else if compaction_attempted && compaction_succeeded {
-                    ContextPressureGovernanceStatus::Compacted
-                } else {
-                    ContextPressureGovernanceStatus::Deferred
-                },
-                Some(assessment.reason),
-                request_context_tokens,
-                live_context_tokens,
-                assessment.limit_tokens,
-                assessment.body_chars.or(request_body_chars),
-                compaction_attempted,
-                compaction_succeeded,
-                blocking,
-                None,
-                Some(context_compaction_decision_trace(
-                    phase,
-                    "assessment",
-                    Some(assessment.reason),
-                    Some(&assessment),
-                    None,
-                    None,
-                )),
-            )
-        }
-        None => context_pressure_governance_summary(
-            trigger,
-            phase,
-            if compaction_attempted && compaction_succeeded {
-                ContextPressureGovernanceStatus::Compacted
-            } else {
-                ContextPressureGovernanceStatus::Ready
-            },
-            None,
-            request_context_tokens,
-            live_context_tokens,
-            None,
-            request_body_chars,
-            compaction_attempted,
-            compaction_succeeded,
-            false,
-            None,
-            None,
-        ),
-    }
-}
-
-pub fn govern_pre_dispatch_session_context(
-    session: &mut Session,
-    provider: &dyn agendao_provider::Provider,
-    model_id: &str,
-    max_output_tokens: Option<u64>,
-    config_store: Option<&agendao_config::ConfigStore>,
-    options: PreDispatchContextGovernance<'_>,
-) -> ContextPressureGovernanceOutcome {
-    let PreDispatchContextGovernance {
-        focus,
-        trigger,
-        phase,
-        usage,
-        update_hook,
-        compaction_lifecycle_hook,
-    } = options;
-    let ContextUsageSnapshot {
-        live_context_tokens,
-        request_context_tokens,
-        request_body_chars,
-    } = usage;
-    let live_context_tokens =
-        live_context_tokens.or_else(|| estimate_current_context_tokens(&session.record().messages));
-    if !session.context_kind().owns_prompt_continuity() {
-        let summary = context_pressure_governance_summary(
-            trigger,
-            phase,
-            ContextPressureGovernanceStatus::Ready,
-            None,
-            request_context_tokens,
-            live_context_tokens,
-            None,
-            request_body_chars,
-            false,
-            false,
-            false,
-            None,
-            None,
-        );
-        persist_context_pressure_governance_summary(session, &summary);
-        persist_lightweight_trim_summary(session, None);
-        return ContextPressureGovernanceOutcome::Proceed(summary);
-    }
-
-    let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
-    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
-    if let Some(trim_summary) = SessionPrompt::apply_lightweight_tool_result_trim(session) {
-        let live_context_tokens =
-            estimate_current_context_tokens(&session.record().messages).or(live_context_tokens);
-        let summary = context_pressure_governance_summary(
-            trigger,
-            phase,
-            ContextPressureGovernanceStatus::Compacted,
-            Some("lightweight_tool_result_trim"),
-            request_context_tokens,
-            live_context_tokens,
-            None,
-            request_body_chars,
-            true,
-            true,
-            false,
-            Some(trim_summary.clone()),
-            Some(context_compaction_decision_trace(
-                phase,
-                "lightweight_trim",
-                Some("lightweight_tool_result_trim"),
-                None,
-                None,
-                Some(trim_summary.clone()),
-            )),
-        );
-        persist_context_pressure_governance_summary(session, &summary);
-        persist_lightweight_trim_summary(session, Some(&trim_summary));
-        return ContextPressureGovernanceOutcome::Proceed(summary);
-    }
-    persist_lightweight_trim_summary(session, None);
-    let Some(assessment) = SessionPrompt::assess_compaction(
-        &filtered,
-        &session.record().messages,
-        provider,
-        model_id,
-        max_output_tokens,
-        &compaction_config,
-        ContextUsageSnapshot::new(
-            live_context_tokens,
-            request_context_tokens,
-            request_body_chars,
-        ),
-    ) else {
-        let backoff = SessionPrompt::auto_compaction_backoff_summary(&session.record().messages);
-        let summary = context_pressure_governance_summary(
-            trigger,
-            phase,
-            if backoff.is_some() {
-                ContextPressureGovernanceStatus::Deferred
-            } else {
-                ContextPressureGovernanceStatus::Ready
-            },
-            backoff.as_ref().map(|_| "auto_compaction_backoff"),
-            request_context_tokens,
-            live_context_tokens,
-            None,
-            request_body_chars,
-            false,
-            false,
-            false,
-            None,
-            backoff.clone().map(|summary| {
-                context_compaction_decision_trace(
-                    phase,
-                    "auto_compaction_backoff",
-                    Some("auto_compaction_backoff"),
-                    None,
-                    Some(summary),
-                    None,
-                )
-            }),
-        );
-        persist_context_pressure_governance_summary(session, &summary);
-        return ContextPressureGovernanceOutcome::Proceed(summary);
-    };
-
-    let force_compaction = SessionPrompt::should_force_compaction_for_reason(assessment.reason);
-    let started = context_compaction_lifecycle_summary(
-        trigger,
-        Some(phase),
-        Some(assessment.reason),
-        ContextCompactionLifecycleStatus::Started,
-        force_compaction,
-        ContextUsageSnapshot::new(
-            live_context_tokens,
-            request_context_tokens,
-            assessment.body_chars.or(request_body_chars),
-        ),
-        assessment.limit_tokens,
-    );
-    persist_context_compaction_lifecycle_summary(session, &started);
-    session.start_compacting();
-    SessionPrompt::emit_session_update(update_hook, session);
-    emit_context_compaction_lifecycle(compaction_lifecycle_hook, &started);
-    let record = SessionPrompt::build_compaction_record(
-        trigger,
-        Some(phase),
-        Some(assessment.reason),
-        force_compaction,
-        ContextUsageSnapshot::new(
-            live_context_tokens,
-            request_context_tokens,
-            assessment.body_chars.or(request_body_chars),
-        ),
-        assessment.limit_tokens,
-    );
-    let compacted = SessionPrompt::trigger_compaction_with_record(
-        session,
-        &filtered,
-        focus,
-        Some(record),
-        force_compaction,
-    )
-    .is_some();
-    let mut lifecycle = started.clone();
-    lifecycle.status = if compacted {
-        ContextCompactionLifecycleStatus::Installed
-    } else {
-        ContextCompactionLifecycleStatus::Failed
-    };
-    if compacted {
-        install_compaction_lifecycle_summary(session, &mut lifecycle);
-    }
-    persist_context_compaction_lifecycle_summary(session, &lifecycle);
-    session.finish_compacting();
-    SessionPrompt::emit_session_update(update_hook, session);
-    emit_context_compaction_lifecycle(compaction_lifecycle_hook, &lifecycle);
-
-    let (request_context_tokens, request_body_chars, live_context_tokens, reassessment) =
-        if compacted {
-            let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
-            let live_context_tokens =
-                estimate_current_context_tokens(&session.record().messages).or(live_context_tokens);
-            let (request_context_tokens, request_body_chars) = request_view_metrics_for_governance(
-                session,
-                request_context_tokens,
-                request_body_chars,
-            );
-            let reassessment = SessionPrompt::assess_compaction(
-                &filtered,
-                &session.record().messages,
-                provider,
-                model_id,
-                max_output_tokens,
-                &compaction_config,
-                ContextUsageSnapshot::new(
-                    live_context_tokens,
-                    request_context_tokens,
-                    request_body_chars,
-                ),
-            );
-            (
-                request_context_tokens,
-                request_body_chars,
-                live_context_tokens,
-                reassessment,
-            )
-        } else {
-            (
-                request_context_tokens,
-                request_body_chars,
-                live_context_tokens,
-                Some(assessment.clone()),
-            )
-        };
-
-    let summary = if let Some(assessment) = reassessment {
-        let blocking = should_block_pre_dispatch_governance(
-            assessment.reason,
-            request_context_tokens
-                .zip(assessment.limit_tokens)
-                .and_then(|(used, limit)| context_usage_percent(used, limit)),
-            live_context_tokens
-                .zip(assessment.limit_tokens)
-                .and_then(|(used, limit)| context_usage_percent(used, limit)),
-        );
-        context_pressure_governance_summary(
-            trigger,
-            phase,
-            if blocking {
-                ContextPressureGovernanceStatus::Blocked
-            } else if compacted {
-                ContextPressureGovernanceStatus::Compacted
-            } else {
-                ContextPressureGovernanceStatus::Deferred
-            },
-            Some(assessment.reason),
-            request_context_tokens,
-            live_context_tokens,
-            assessment.limit_tokens,
-            assessment.body_chars.or(request_body_chars),
-            true,
-            compacted,
-            blocking,
-            None,
-            Some(context_compaction_decision_trace(
-                phase,
-                if compacted {
-                    "full_compaction"
-                } else if blocking {
-                    "blocked_after_compaction_attempt"
-                } else {
-                    "deferred_after_compaction_attempt"
-                },
-                Some(assessment.reason),
-                Some(&assessment),
-                None,
-                None,
-            )),
-        )
-    } else {
-        context_pressure_governance_summary(
-            trigger,
-            phase,
-            ContextPressureGovernanceStatus::Compacted,
-            Some(assessment.reason),
-            request_context_tokens,
-            live_context_tokens,
-            assessment.limit_tokens,
-            assessment.body_chars.or(request_body_chars),
-            true,
-            true,
-            false,
-            None,
-            Some(context_compaction_decision_trace(
-                phase,
-                "full_compaction",
-                Some(assessment.reason),
-                Some(&assessment),
-                None,
-                None,
-            )),
-        )
-    };
-    persist_context_pressure_governance_summary(session, &summary);
-
-    if summary.blocking {
-        ContextPressureGovernanceOutcome::Blocked(summary)
-    } else {
-        ContextPressureGovernanceOutcome::Proceed(summary)
-    }
 }
 
 pub fn estimate_current_context_tokens(messages: &[SessionMessage]) -> Option<u64> {
@@ -2012,286 +1379,7 @@ fn metadata_usage_u64(message: &SessionMessage, key: &str) -> Option<u64> {
         .and_then(|value| value.as_u64())
 }
 
-type StreamToolResultEntry = (
-    String,
-    String,
-    bool,
-    Option<String>,
-    Option<HashMap<String, serde_json::Value>>,
-    Option<Vec<serde_json::Value>>,
-);
-
-fn tool_progress_detail(
-    input: &serde_json::Value,
-    raw: Option<&str>,
-    status: &crate::ToolCallStatus,
-) -> Option<String> {
-    if let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) {
-        return Some(raw.to_string());
-    }
-
-    match status {
-        crate::ToolCallStatus::Pending | crate::ToolCallStatus::Running => {
-            if input.is_null() {
-                return None;
-            }
-            if let Some(obj) = input.as_object() {
-                if obj.is_empty() {
-                    return None;
-                }
-            }
-            if let Some(arr) = input.as_array() {
-                if arr.is_empty() {
-                    return None;
-                }
-            }
-            if let Some(text) = input.as_str() {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                return Some(trimmed.to_string());
-            }
-            Some(input.to_string())
-        }
-        crate::ToolCallStatus::Completed | crate::ToolCallStatus::Error => None,
-    }
-}
-
-fn tool_result_detail(title: Option<&str>, content: &str) -> Option<String> {
-    match title.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(title) => Some(format!("{title}: {content}")),
-        None if content.trim().is_empty() => None,
-        None => Some(content.to_string()),
-    }
-}
-
 impl SessionPrompt {
-    async fn apply_runtime_workspace_context(&self, session: &mut Session) -> anyhow::Result<()> {
-        let project_dir = std::path::PathBuf::from(&session.directory);
-        let config_instructions = self
-            .config_store
-            .as_ref()
-            .map(|store| store.config().instructions.clone())
-            .unwrap_or_default();
-        let mut loader = InstructionLoader::new();
-        let instructions = loader.load_all(&project_dir, &config_instructions).await;
-        let workspace_directory =
-            (!session.directory.trim().is_empty()).then(|| session.directory.clone());
-
-        let runtime_instruction_sources = instructions
-            .iter()
-            .filter_map(|instruction| {
-                let path = std::path::PathBuf::from(&instruction.path);
-                match instruction.source {
-                    InstructionSource::AgentsMd => {
-                        if path.starts_with(&project_dir) {
-                            Some(RuntimeInstructionSource {
-                                path,
-                                content: instruction.content.clone(),
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if runtime_instruction_sources.is_empty() {
-            session.remove_metadata("runtime_skill_instructions");
-        } else {
-            session.insert_metadata(
-                "runtime_skill_instructions",
-                serde_json::to_value(&runtime_instruction_sources)?,
-            );
-        }
-
-        let Some(user_msg) = session
-            .messages_mut()
-            .iter_mut()
-            .rfind(|message| matches!(message.role, MessageRole::User))
-        else {
-            return Ok(());
-        };
-
-        if !instructions.is_empty() {
-            let merged = InstructionLoader::merge_instructions(&instructions);
-            if !merged.trim().is_empty() {
-                user_msg.add_text(SystemPrompt::system_reminder(&merged));
-            }
-            if let Some(reminder) = self.render_runtime_skill_composition_reminder(
-                workspace_directory.as_deref(),
-                &project_dir,
-                &runtime_instruction_sources,
-            ) {
-                user_msg.add_text(SystemPrompt::system_reminder(&reminder));
-            }
-            let loaded_paths = instructions
-                .iter()
-                .map(|instruction| instruction.path.clone())
-                .collect::<std::collections::HashSet<_>>();
-            Self::store_loaded_instruction_paths(user_msg, loaded_paths);
-        }
-
-        Ok(())
-    }
-
-    fn render_runtime_skill_composition_reminder(
-        &self,
-        workspace_directory: Option<&str>,
-        project_dir: &std::path::Path,
-        runtime_instruction_sources: &[RuntimeInstructionSource],
-    ) -> Option<String> {
-        if runtime_instruction_sources.is_empty() {
-            return None;
-        }
-        let governance = self.skill_governance_for_workspace(workspace_directory)?;
-
-        let skill_names = infer_runtime_skill_names(project_dir, runtime_instruction_sources);
-        if skill_names.is_empty() {
-            return None;
-        }
-
-        let hints = governance.runtime_skill_composition_hints(&skill_names);
-        if hints.is_empty() {
-            return None;
-        }
-
-        let mut lines = vec![
-            "Runtime Skill Governance:".to_string(),
-            "- The following hints come from accepted composition relationships and active capability groups.".to_string(),
-        ];
-        for hint in hints {
-            let label = match hint.kind {
-                SkillRuntimeCompositionHintKind::PreferCanonicalSkill => "prefer canonical",
-                SkillRuntimeCompositionHintKind::ComplementaryBundle => "keep complementary",
-            };
-            lines.push(format!("- {label}: {}", hint.summary));
-        }
-        Some(lines.join("\n"))
-    }
-
-    fn apply_runtime_memory_prefetch(
-        session: &mut Session,
-        packet: Option<&MemoryRetrievalPacket>,
-    ) -> anyhow::Result<()> {
-        let Some(user_msg) = session
-            .messages_mut()
-            .iter_mut()
-            .rfind(|message| matches!(message.role, MessageRole::User))
-        else {
-            return Ok(());
-        };
-
-        let Some(packet) = packet else {
-            user_msg.metadata.remove("memory_prefetch_packet");
-            return Ok(());
-        };
-
-        user_msg.metadata.insert(
-            "memory_prefetch_packet".to_string(),
-            serde_json::to_value(packet)?,
-        );
-        if let Some(reminder) = Self::render_memory_prefetch_reminder(packet) {
-            user_msg.add_text(SystemPrompt::system_reminder(&reminder));
-        }
-
-        Ok(())
-    }
-
-    fn render_memory_prefetch_reminder(packet: &MemoryRetrievalPacket) -> Option<String> {
-        // Reflow authority path: build the shared explanation context, then
-        // render the memory reminder from its memory projection. Packet
-        // semantics remain unchanged; only the reader surface is unified.
-        PromptReflowContext::build("", Some(packet), None, false, false, None, None)
-            .memory
-            .as_ref()
-            .and_then(|view| view.render_reminder())
-    }
-
-    fn text_from_prompt_parts(parts: &[PartInput]) -> String {
-        parts
-            .iter()
-            .filter_map(|p| match p {
-                PartInput::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn truncate_debug_text(value: &str, max_chars: usize) -> String {
-        if value.chars().count() <= max_chars {
-            return value.to_string();
-        }
-        let mut out = value.chars().take(max_chars).collect::<String>();
-        out.push_str("...[truncated]");
-        out
-    }
-
-    fn annotate_latest_user_message(
-        session: &mut Session,
-        input: &PromptInput,
-        system_prompt: Option<&str>,
-    ) {
-        let Some(user_msg) = session
-            .messages_mut()
-            .iter_mut()
-            .rfind(|m| matches!(m.role, MessageRole::User))
-        else {
-            return;
-        };
-
-        if let Some(agent) = input.agent.as_deref() {
-            user_msg
-                .metadata
-                .insert("resolved_agent".to_string(), serde_json::json!(agent));
-        }
-
-        if let Some(system) = system_prompt {
-            user_msg.metadata.insert(
-                "resolved_system_prompt".to_string(),
-                serde_json::json!(Self::truncate_debug_text(system, 8000)),
-            );
-            user_msg.metadata.insert(
-                "resolved_system_prompt_applied".to_string(),
-                serde_json::json!(true),
-            );
-        } else if input.agent.is_some() {
-            user_msg.metadata.insert(
-                "resolved_system_prompt_applied".to_string(),
-                serde_json::json!(false),
-            );
-        }
-
-        let user_prompt = Self::text_from_prompt_parts(&input.parts);
-        if !user_prompt.is_empty() {
-            user_msg.metadata.insert(
-                "resolved_user_prompt".to_string(),
-                serde_json::json!(Self::truncate_debug_text(&user_prompt, 8000)),
-            );
-        }
-    }
-
-    fn maybe_append_runtime_skill_save_suggestion(session: &mut Session, turn_start_index: usize) {
-        if !turn_looks_skillworthy(session, turn_start_index)
-            || turn_used_skill_manage(session, turn_start_index)
-        {
-            return;
-        }
-
-        let note = session.add_assistant_message();
-        note.metadata.insert(
-            "runtime_hint".to_string(),
-            serde_json::json!(HiddenRuntimeHint::SkillSaveSuggestion.as_str()),
-        );
-        note.add_text(
-            "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`. Copy this JSON shape and fill in the values when you are ready: {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"one-line summary\",\"methodology\":{\"when_to_use\":[\"...\"],\"core_steps\":[{\"title\":\"...\",\"action\":\"...\",\"outcome\":\"...\"}],\"success_criteria\":[\"...\"],\"validation\":[\"...\"]}}. If you already wrote the full markdown body, use {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"one-line summary\",\"body\":\"# Skill...\"} instead. Use `skill_manage` when you are ready to save it.",
-        );
-    }
-
     pub fn new(session_state: Arc<RwLock<SessionStateManager>>) -> Self {
         Self {
             state: Arc::new(Mutex::new(HashMap::new())),
@@ -2340,34 +1428,6 @@ impl SessionPrompt {
     ) -> Self {
         self.memory_authority = Some(memory_authority);
         self
-    }
-
-    async fn ingest_completed_turn_tool_observations(&self, session: &Session) {
-        let Some(memory) = self.memory_authority.as_deref() else {
-            return;
-        };
-
-        for observation in completed_tool_memory_observations(session) {
-            if let Err(error) = memory
-                .ingest_tool_result_observation(&agendao_memory::ToolMemoryObservation {
-                    session_id: &session.id,
-                    tool_call_id: &observation.call_id,
-                    tool_name: &observation.tool_name,
-                    stage_id: None,
-                    output: &observation.output,
-                    is_error: observation.is_error,
-                })
-                .await
-            {
-                tracing::warn!(
-                    session_id = %session.id,
-                    tool_call_id = %observation.call_id,
-                    tool_name = %observation.tool_name,
-                    %error,
-                    "failed to persist completed tool result in memory"
-                );
-            }
-        }
     }
 
     pub fn with_proposal_repo(
@@ -2891,11 +1951,6 @@ impl SessionPrompt {
         Some(token)
     }
 
-    async fn resume(&self, session_id: &str) -> Option<CancellationToken> {
-        let state = self.state.lock().await;
-        state.get(session_id).map(|s| s.cancel_token.clone())
-    }
-
     pub async fn is_running(&self, session_id: &str) -> bool {
         let state = self.state.lock().await;
         state.contains_key(session_id)
@@ -2919,283 +1974,6 @@ impl SessionPrompt {
         let mut session_state = self.session_state.write().await;
         session_state.set_idle(session_id);
     }
-
-    pub async fn prompt(
-        &self,
-        input: PromptInput,
-        session: &mut Session,
-        provider: Arc<dyn Provider>,
-        system_prompt: Option<String>,
-        tools: Vec<ToolDefinition>,
-        compiled_request: CompiledExecutionRequest,
-    ) -> anyhow::Result<()> {
-        let surface_inputs = surface_authority::PromptSurfaceInputs::builder(
-            input.session_id.clone(),
-            compiled_request.clone(),
-        )
-        .set_base_system_prompt(system_prompt)
-        .set_tool_surface(
-            tools,
-            Vec::new(),
-            BTreeMap::new(),
-            tools_and_output::ToolCatalogMode::FullSchema,
-            agendao_provider::cache::json_fingerprint(&serde_json::json!({})),
-        );
-        self.prompt_with_update_hook(
-            input,
-            session,
-            PromptRequestContext::new(
-                provider,
-                surface_inputs,
-                compiled_request,
-                PromptHooks::default(),
-            ),
-        )
-        .await
-    }
-}
-
-fn turn_looks_complex(session: &Session, turn_start_index: usize) -> bool {
-    let slice = session.messages.get(turn_start_index..).unwrap_or(&[]);
-    let assistant_count = slice
-        .iter()
-        .filter(|message| matches!(message.role, MessageRole::Assistant))
-        .count();
-    let tool_result_count = slice
-        .iter()
-        .flat_map(|message| message.parts.iter())
-        .filter(|part| matches!(part.part_type, PartType::ToolResult { .. }))
-        .count();
-    assistant_count >= 2 || tool_result_count >= 3
-}
-
-#[derive(Default)]
-struct TurnSkillSignals {
-    assistant_count: usize,
-    user_count: usize,
-    tool_result_count: usize,
-    tool_names: HashSet<String>,
-    has_error_signal: bool,
-    has_validation_signal: bool,
-    has_mutation_signal: bool,
-}
-
-fn turn_looks_skillworthy(session: &Session, turn_start_index: usize) -> bool {
-    if !turn_looks_complex(session, turn_start_index) {
-        return false;
-    }
-
-    let signals = collect_turn_skill_signals(session, turn_start_index);
-    let tool_kind_count = signals.tool_names.len();
-
-    let has_edit_then_validate = signals.has_mutation_signal && signals.has_validation_signal;
-    let has_error_recovery_pattern = signals.has_error_signal
-        && (signals.has_validation_signal
-            || (signals.has_mutation_signal && signals.assistant_count >= 2));
-    let has_user_guided_refinement =
-        signals.user_count >= 2 && tool_kind_count >= 2 && signals.tool_result_count >= 3;
-    let has_diverse_execution_flow =
-        signals.has_mutation_signal && tool_kind_count >= 2 && signals.tool_result_count >= 3;
-
-    has_edit_then_validate
-        || has_error_recovery_pattern
-        || has_user_guided_refinement
-        || has_diverse_execution_flow
-}
-
-fn collect_turn_skill_signals(session: &Session, turn_start_index: usize) -> TurnSkillSignals {
-    let mut signals = TurnSkillSignals::default();
-
-    for message in session.messages.get(turn_start_index..).unwrap_or(&[]) {
-        match message.role {
-            MessageRole::Assistant => signals.assistant_count += 1,
-            MessageRole::User => signals.user_count += 1,
-            _ => {}
-        }
-
-        for part in &message.parts {
-            match &part.part_type {
-                PartType::ToolCall {
-                    name,
-                    input,
-                    status,
-                    state,
-                    ..
-                } => {
-                    signals.tool_names.insert(name.clone());
-                    signals.has_mutation_signal |= tool_is_mutation(name);
-                    signals.has_validation_signal |= tool_is_validation(name, input);
-                    signals.has_error_signal |= matches!(status, crate::ToolCallStatus::Error)
-                        || matches!(state, Some(crate::ToolState::Error { .. }));
-                }
-                PartType::ToolResult { is_error, .. } => {
-                    signals.tool_result_count += 1;
-                    signals.has_error_signal |= *is_error;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    signals
-}
-
-fn tool_is_mutation(name: &str) -> bool {
-    matches!(
-        name,
-        "edit" | "write" | "apply_patch" | "ast_grep_replace" | "skill_manage"
-    )
-}
-
-fn tool_is_validation(name: &str, input: &serde_json::Value) -> bool {
-    if tool_name_looks_validation(name) {
-        return true;
-    }
-
-    if name != "bash" {
-        return false;
-    }
-
-    let command = input
-        .get("command")
-        .or_else(|| input.get("cmd"))
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-
-    bash_command_looks_validation(command)
-}
-
-fn tool_name_looks_validation(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-
-    validation_word_matches(&lower)
-        || lower
-            .split(|ch: char| !(ch.is_ascii_alphanumeric()))
-            .filter(|token| !token.is_empty())
-            .any(validation_word_matches)
-}
-
-fn bash_command_looks_validation(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
-
-    if [
-        "--dry-run",
-        "--check",
-        "--verify",
-        "--validate",
-        "--validation",
-        "--audit",
-        "--probe",
-        "--health-check",
-        "--smoke-test",
-    ]
-    .iter()
-    .any(|flag| lower.contains(flag))
-    {
-        return true;
-    }
-
-    let words: Vec<&str> = lower
-        .split_whitespace()
-        .map(trim_shell_word)
-        .filter(|word| !word.is_empty())
-        .collect();
-
-    let Some(exec_index) = words.iter().position(|word| !is_shell_wrapper_word(word)) else {
-        return false;
-    };
-
-    let executable = words[exec_index];
-    if validation_word_matches(executable) {
-        return true;
-    }
-
-    if shell_output_emitter_word(executable) {
-        return false;
-    }
-
-    words[exec_index + 1..]
-        .iter()
-        .any(|word| validation_word_matches(word))
-}
-
-fn trim_shell_word(word: &str) -> &str {
-    word.trim_matches(|ch: char| {
-        matches!(
-            ch,
-            '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
-        )
-    })
-}
-
-fn is_shell_wrapper_word(word: &str) -> bool {
-    matches!(word, "env" | "command" | "sudo" | "time")
-        || (word.contains('=')
-            && !word.starts_with('-')
-            && word
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_'))
-}
-
-fn shell_output_emitter_word(word: &str) -> bool {
-    matches!(
-        word,
-        "echo"
-            | "printf"
-            | "cat"
-            | "sed"
-            | "awk"
-            | "jq"
-            | "yq"
-            | "rg"
-            | "grep"
-            | "ls"
-            | "find"
-            | "pwd"
-            | "which"
-    )
-}
-
-fn validation_word_matches(word: &str) -> bool {
-    matches!(
-        word,
-        "test"
-            | "tests"
-            | "check"
-            | "checks"
-            | "verify"
-            | "verified"
-            | "validate"
-            | "validation"
-            | "audit"
-            | "probe"
-            | "lint"
-            | "diagnostic"
-            | "diagnostics"
-            | "doctor"
-            | "healthcheck"
-            | "health-check"
-            | "smoketest"
-            | "smoke-test"
-            | "selftest"
-            | "self-test"
-    )
-}
-
-fn turn_used_skill_manage(session: &Session, turn_start_index: usize) -> bool {
-    session
-        .messages
-        .get(turn_start_index..)
-        .unwrap_or(&[])
-        .iter()
-        .flat_map(|message| message.parts.iter())
-        .any(|part| {
-            matches!(
-                &part.part_type,
-                PartType::ToolCall { name, .. } if name == "skill_manage"
-            )
-        })
 }
 
 impl Default for SessionPrompt {

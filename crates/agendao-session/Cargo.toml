@@ -15,7 +15,6 @@ agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-storage = { path = "../agendao-storage" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-orchestrator = { path = "../agendao-orchestrator", optional = true }
-agendao-session-core = { path = "../agendao-session-core" }
 agendao-skill = { path = "../agendao-skill" }
 agendao-tool = { path = "../agendao-tool" }
 agendao-mcp = { path = "../agendao-mcp" }

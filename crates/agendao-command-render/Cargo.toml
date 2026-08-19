@@ -7,15 +7,10 @@ license.workspace = true
 
 [features]
 default = ["terminal-ui", "block-projection"]
-terminal-ui = ["agendao-command/terminal-ui", "dep:crossterm"]
+terminal-ui = ["agendao-command/terminal-ui"]
 runtime-hooks = ["terminal-ui", "agendao-command/runtime-hooks"]
 block-projection = ["terminal-ui", "agendao-command/block-projection"]
 
 [dependencies]
 agendao-command = { path = "../agendao-command", default-features = false }
 agendao-output-blocks = { path = "../agendao-output-blocks" }
-agendao-types = { path = "../agendao-types" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-unicode-width = "0.1"
-crossterm = { version = "0.29", optional = true }

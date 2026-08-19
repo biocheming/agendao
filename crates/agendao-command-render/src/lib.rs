@@ -1,6 +1,6 @@
 #[cfg(feature = "block-projection")]
 pub use agendao_command::block_projection;
-pub mod branding;
+pub use agendao_command::branding;
 #[cfg(feature = "terminal-ui")]
 pub use agendao_command::cli_markdown;
 #[cfg(feature = "terminal-ui")]
@@ -8,15 +8,15 @@ pub use agendao_command::cli_panel;
 #[cfg(feature = "terminal-ui")]
 pub use agendao_command::cli_style;
 #[cfg(feature = "terminal-ui")]
-pub mod governance_fixtures;
-pub mod live_semantic_consumer;
+pub use agendao_command::governance_fixtures;
+pub use agendao_command::live_semantic_consumer;
 #[cfg(feature = "terminal-ui")]
-pub mod output_blocks;
-pub mod run_status_labels;
+pub use agendao_command::output_blocks;
+pub use agendao_command::run_status_labels;
 #[cfg(feature = "terminal-ui")]
-pub mod terminal_presentation;
+pub use agendao_command::terminal_presentation;
 #[cfg(feature = "terminal-ui")]
-pub mod terminal_segment_display;
+pub use agendao_command::terminal_segment_display;
 #[cfg(feature = "terminal-ui")]
-pub mod terminal_tool_block_display;
+pub use agendao_command::terminal_tool_block_display;
 pub use agendao_output_blocks as output_blocks_model;

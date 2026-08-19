@@ -147,11 +147,6 @@ version = "2026.8.17"
 dependencies = [
  "agendao-command",
  "agendao-output-blocks",
- "agendao-types",
- "crossterm 0.29.0",
- "serde",
- "serde_json",
- "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -480,7 +475,6 @@ dependencies = [
  "agendao-output-blocks",
  "agendao-plugin",
  "agendao-provider",
- "agendao-session-core",
  "agendao-skill",
  "agendao-storage",
  "agendao-tool",
@@ -504,18 +498,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "agendao-session-core"
-version = "2026.8.17"
-dependencies = [
- "agendao-types",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
  "uuid",
 ]
 
@@ -709,18 +691,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "walkdir",
-]
-
-[[package]]
-name = "agendao-voice"
-version = "2026.8.17"
-dependencies = [
- "agendao-config",
- "anyhow",
- "base64",
- "tracing",
- "uuid",
- "which",
 ]
 
 [[package]]

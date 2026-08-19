@@ -131,8 +131,7 @@ sequenceDiagram
 | 模块 | 功能 |
 |------|------|
 | `agendao-provider` | OpenAI Responses、OpenAI Chat Completions、Anthropic Messages；传输与 connect timeout；auth.json（0600）；模型 catalog 缓存 |
-| `agendao-session` | prompt loop 生命周期；工具面（Progressive capability 门面化）；instruction 加载（~/.agendao/AGENTS.md 优先）；**遗忘**：compaction 压缩上下文 |
-| `agendao-session-core` | session 实体与不变量 |
+| `agendao-session` | scheduler-native prompt/session 生命周期；工具面（Progressive capability 门面化）；instruction 加载（~/.agendao/AGENTS.md 优先）；**遗忘**：compaction 压缩上下文 |
 | `agendao-orchestrator` | 唯一 SchedulerBlueprint validator/selector/engine、唯一 AgentLoop、typed execution events |
 | `agendao-tool` | 内置工具 registry（bash/read/edit/skill_manage 等）；启停过滤（含门面豁免） |
 | `agendao-tool-core` | Tool trait 与 schema |
@@ -143,9 +142,7 @@ sequenceDiagram
 | `agendao-permission` | 权限规则集（bash 命令解析、~/ 展开） |
 | `agendao-lsp` | LSP 集成 |
 | `agendao-grep` | ripgrep 封装 |
-| `agendao-multimodal` | 附件/图像能力与 explain |
-| `agendao-voice` | 语音输入 |
-| `agendao-watcher` | **已 parked**（无消费者，保留参考） |
+| `agendao-multimodal` | 附件/图像/语音能力与 explain；Web 端录音通过 MediaRecorder 接入 |
 
 ### 木 · 训练与生长
 
@@ -153,7 +150,7 @@ sequenceDiagram
 |------|------|
 | `agendao-skill` | skill 发现（agendao_home 优先）；治理十二局（composition/audit/distribution/sync/relationships/evolution/semantic/index/store/write/guard/mod）；hub 搜索/安装；演化提案与语义冲突；启停过滤 |
 | `agendao-command` | 斜杠命令注册/解析/渲染；内置命令（init/review/commit/test/autoresearch 系列）；interactive 提示（自 command-runtime 迁回） |
-| `agendao-command-render` | 终端渲染（terminal presentation/live semantic consumer） |
+| `agendao-command-render` | `agendao-command` 的终端渲染兼容 facade（terminal presentation/live semantic consumer） |
 
 ### 水 · 记忆与遗忘
 

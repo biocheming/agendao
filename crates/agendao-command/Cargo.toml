@@ -3,8 +3,8 @@ name = "agendao-command"
 version.workspace = true
 edition = "2021"
 
-# Used by the shared `#[path]` output_blocks module; cargo-machete cannot
-# resolve dependency usage through source files outside this crate directory.
+# The output-block model is re-exported by the compatibility render facade;
+# cargo-machete cannot infer that usage through the facade crate.
 [package.metadata.cargo-machete]
 ignored = ["agendao-output-blocks"]
 
