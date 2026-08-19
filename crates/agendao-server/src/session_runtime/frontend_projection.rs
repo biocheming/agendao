@@ -234,7 +234,7 @@ pub(crate) async fn project_server_event(
             cause,
         } => vec![FrontendEvent::TaskLedgerReplaced {
             session_id: session_id.clone(),
-            ledger: ledger.clone(),
+            ledger: agendao_types::task_ledger::SessionTaskLedgerView::from(ledger),
             cause: cause.clone(),
         }],
     }
@@ -528,6 +528,58 @@ mod tests {
 
     fn test_sessions() -> Arc<Mutex<agendao_session::SessionManager>> {
         Arc::new(Mutex::new(agendao_session::SessionManager::new()))
+    }
+
+    #[tokio::test]
+    async fn task_ledger_event_projects_frontend_rendering_state() {
+        use agendao_types::task_ledger::{
+            SessionTaskLedger, TaskGoal, TaskLedgerActor, TaskLedgerCause, TaskLedgerOp,
+        };
+
+        let mut ledger = SessionTaskLedger::empty("ses_ledger");
+        ledger
+            .apply_batch(
+                0,
+                vec![
+                    TaskLedgerOp::Create {
+                        goal: TaskGoal {
+                            statement: "ship".to_string(),
+                            acceptance_criteria: vec!["tests pass".to_string()],
+                            criterion_checks: vec![],
+                            set_by: TaskLedgerActor::User,
+                            set_at: 1,
+                        },
+                        next_statement: "test".to_string(),
+                    },
+                    TaskLedgerOp::AddCore {
+                        statement: "preserve API".to_string(),
+                        live: true,
+                        actor: Some(TaskLedgerActor::System),
+                    },
+                    TaskLedgerOp::OpenQuestion {
+                        question: "mobile checked?".to_string(),
+                        settled_by: "manual review".to_string(),
+                    },
+                ],
+                1,
+            )
+            .unwrap();
+        let event = ServerEvent::TaskLedgerReplaced {
+            session_id: "ses_ledger".to_string(),
+            ledger,
+            cause: TaskLedgerCause::Created,
+        };
+
+        let projected = project_server_event(&test_telemetry(), &test_sessions(), &event).await;
+        let FrontendEvent::TaskLedgerReplaced { ledger, .. } = &projected[0] else {
+            panic!("expected task-ledger replacement")
+        };
+        assert_eq!(ledger.projection.live_core[0].id, "core-01");
+        assert_eq!(ledger.projection.open_questions[0].id, "open-01");
+        assert_eq!(
+            ledger.projection.missing_acceptance_criteria,
+            vec!["tests pass"]
+        );
     }
 
     // ── OutputBlock passthrough ────────────────────────────────────────

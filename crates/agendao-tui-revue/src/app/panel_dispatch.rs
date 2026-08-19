@@ -10,6 +10,10 @@ use crate::dialog::PermissionReply;
 use agendao_command::UiActionId;
 use revue::event::{Key, KeyEvent};
 
+fn is_revision_conflict(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("revision conflict")
+}
+
 impl AppHandler {
     /// U17③：当前 panel 是否拥有滚轮（↑↓ 语义的列表类弹窗）。表单/确认类
     /// 不在列——它们的滚轮维持原行为（滚背后 transcript，如权限弹窗长文
@@ -400,7 +404,7 @@ impl AppHandler {
                                         crate::store::types::ToastMsgVariant::Success,
                                     );
                                 }
-                                Err(error) if error.to_string().contains("revision conflict") => {
+                                Err(error) if is_revision_conflict(&error.to_string()) => {
                                     if let Ok(snapshot) = api.get_task_ledger(&session_id) {
                                         self.active_session.apply_task_ledger_snapshot(snapshot);
                                     }
@@ -1045,5 +1049,19 @@ impl AppHandler {
             Panel::Slash => false,
             _ => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_revision_conflict;
+
+    #[test]
+    fn revision_conflict_matching_is_case_insensitive() {
+        assert!(is_revision_conflict(
+            "Revision conflict on task-ledger: expected 2, current 3"
+        ));
+        assert!(is_revision_conflict("revision conflict"));
+        assert!(!is_revision_conflict("permission denied"));
     }
 }

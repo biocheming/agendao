@@ -22,10 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/i18n/I18nProvider";
 import { ApiHttpError, apiJson } from "@/lib/api";
 import {
-  activeCheckpoints,
-  openQuestions,
   type SessionTaskLedger,
-  type TaskLedgerVerifier,
   type TaskLedgerWriteResponse,
 } from "@/lib/taskLedger";
 import { useAgendaoStore } from "@/store";
@@ -49,14 +46,6 @@ function lines(value: string): string[] {
     .split("\n")
     .map((entry) => entry.trim())
     .filter(Boolean);
-}
-
-function verifierLabel(verifier: TaskLedgerVerifier): string {
-  if ("evaluator" in verifier) return `evaluator:${verifier.evaluator.name}`;
-  if ("deterministic_check" in verifier) {
-    return `check:${verifier.deterministic_check.description}`;
-  }
-  return `user:${verifier.user_confirmation.actor}`;
 }
 
 function isRevisionConflict(error: unknown): boolean {
@@ -91,10 +80,10 @@ export function TaskStateCard({ onNavigateStage }: TaskStateCardProps) {
 
   if (!ledger || ledger.revision === 0 || !ledger.goal || !selectedSessionId) return null;
 
-  const open = openQuestions(ledger);
-  const verified = activeCheckpoints(ledger);
+  const open = ledger.projection.open_questions;
+  const verified = ledger.projection.current_checkpoints;
   const latest = verified[verified.length - 1];
-  const liveCore = ledger.core.filter((entry) => entry.live);
+  const live = ledger.projection.live_core;
 
   const openEditor = (target: EditTarget) => {
     setEditTarget(target);
@@ -106,7 +95,7 @@ export function TaskStateCard({ onNavigateStage }: TaskStateCardProps) {
       setPrimary(ledger.next?.statement ?? "");
       setSecondary("");
     } else if (target.kind === "core") {
-      setPrimary(target.slot ? liveCore[target.slot - 1]?.statement ?? "" : "");
+      setPrimary(target.slot ? live[target.slot - 1]?.statement ?? "" : "");
       setSecondary("");
     } else {
       setPrimary("");
@@ -266,13 +255,13 @@ export function TaskStateCard({ onNavigateStage }: TaskStateCardProps) {
             <section>
               <div className="flex items-center justify-between">
                 <p className="text-muted-foreground">{t("taskLedger.core")}</p>
-                {liveCore.length < 2 ? (
+                {live.length < 2 ? (
                   <Button variant="ghost" size="icon-xs" onClick={() => openEditor({ kind: "core" })} title={t("taskLedger.addCore")}>
                     <PlusIcon />
                   </Button>
                 ) : null}
               </div>
-              {liveCore.map((entry, index) => (
+              {live.map((entry, index) => (
                 <div key={entry.id} className="flex items-start gap-2 pl-3">
                   <p className="min-w-0 flex-1 break-words">
                     {entry.id} · {entry.statement}
@@ -313,7 +302,7 @@ export function TaskStateCard({ onNavigateStage }: TaskStateCardProps) {
                     {latest.claim}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {verifierLabel(latest.verifier)} · {latest.coverage.scope}
+                    {latest.verifier_label} · {latest.coverage.scope}
                   </p>
                   <div className="mt-1 flex flex-wrap gap-1">
                     {latest.source_stage_id && onNavigateStage ? (
@@ -336,6 +325,16 @@ export function TaskStateCard({ onNavigateStage }: TaskStateCardProps) {
               <div className="text-(--ds-warning,currentColor)" data-testid="task-state-uncovered">
                 <p>{t("taskLedger.uncovered")}</p>
                 <ul className="list-disc pl-5">{ledger.uncovered_criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+              </div>
+            ) : null}
+            {ledger.projection.missing_acceptance_criteria.length ? (
+              <div className="text-(--ds-warning,currentColor)" data-testid="task-state-missing-evidence">
+                <p>{t("taskLedger.missingEvidence")}</p>
+                <ul className="list-disc pl-5">
+                  {ledger.projection.missing_acceptance_criteria.map((criterion) => (
+                    <li key={criterion}>{criterion}</li>
+                  ))}
+                </ul>
               </div>
             ) : null}
           </div>

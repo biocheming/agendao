@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::{Path as FsPath, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,9 +53,23 @@ use super::messages::{
 };
 use super::scheduler::{apply_scheduler_selection_session_metadata, resolve_prompt_request_config};
 use super::session_crud::{
-    persist_session_if_enabled, resolved_session_directory, set_session_run_status, IdleGuard,
+    persist_session_if_enabled, persist_session_record_if_enabled, resolved_session_directory,
+    set_session_run_status, IdleGuard,
 };
 use super::telemetry::persist_session_telemetry_metadata;
+
+mod command_args;
+mod live_web_ingress;
+use command_args::{
+    flatten as flatten_argument_values, hydrate as hydrate_scheduler_command_arguments,
+    missing_required as missing_required_command_fields,
+    normalize_field_key as normalize_command_field_key, parse as parse_command_argument_map,
+};
+use live_web_ingress::{
+    drain as drain_live_web_ingress_batch, resolve as resolve_live_web_ingress_batch,
+    stage as stage_live_web_ingress_batch, Stage as LiveWebIngressBatchStage,
+    BATCH_WINDOW_MS as LIVE_WEB_INGRESS_BATCH_WINDOW_MS,
+};
 
 #[derive(Debug, Clone)]
 struct ResolvedPromptPayload {
@@ -66,8 +82,6 @@ struct ResolvedPromptPayload {
     pending_raw_arguments: Option<String>,
 }
 
-const LIVE_WEB_INGRESS_BATCH_METADATA_KEY: &str = "live_web_ingress_batch";
-const LIVE_WEB_INGRESS_BATCH_WINDOW_MS: i64 = 250;
 pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
     "verified_external_adapter_binding";
 
@@ -75,28 +89,6 @@ pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
 pub(crate) struct VerifiedSessionIngress {
     pub ingress: agendao_session::prompt::IngressTurnEnvelope,
     pub external_adapter_binding: Option<ExternalAdapterResolvedBinding>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LiveWebIngressBatch {
-    owner_turn_id: String,
-    opened_at_ms: i64,
-    items: Vec<LiveWebIngressBatchItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LiveWebIngressBatchItem {
-    ingress: agendao_session::prompt::IngressTurnEnvelope,
-    parts: Vec<agendao_session::prompt::PartInput>,
-}
-
-enum LiveWebIngressBatchStage {
-    Bypass,
-    Leader {
-        owner_turn_id: String,
-        reservation: CancellationToken,
-    },
-    Follower,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -709,185 +701,6 @@ fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn normalize_command_field_key(key: &str) -> String {
-    key.trim()
-        .trim_start_matches('-')
-        .replace('_', "-")
-        .to_ascii_lowercase()
-}
-
-fn tokenize_command_arguments(raw_arguments: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escape = false;
-
-    for ch in raw_arguments.chars() {
-        if escape {
-            current.push(ch);
-            escape = false;
-            continue;
-        }
-
-        match ch {
-            '\\' => escape = true,
-            '"' | '\'' => {
-                if quote == Some(ch) {
-                    quote = None;
-                } else if quote.is_none() {
-                    quote = Some(ch);
-                } else {
-                    current.push(ch);
-                }
-            }
-            _ if ch.is_whitespace() && quote.is_none() => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-
-    tokens
-}
-
-fn shell_quote_command_value(value: &str) -> String {
-    if value.is_empty() {
-        return "\"\"".to_string();
-    }
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | '*' | ':'))
-    {
-        return value.to_string();
-    }
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn parse_command_argument_map(
-    raw_arguments: Option<&str>,
-    fields: &[CommandArgumentField],
-) -> std::collections::HashMap<String, Vec<String>> {
-    let mut values = std::collections::HashMap::<String, Vec<String>>::new();
-    let Some(raw_arguments) = raw_arguments.filter(|value| !value.trim().is_empty()) else {
-        return values;
-    };
-
-    let field_map = fields
-        .iter()
-        .map(|field| (normalize_command_field_key(&field.key), field))
-        .collect::<std::collections::HashMap<_, _>>();
-    let tokens = tokenize_command_arguments(raw_arguments);
-    let mut index = 0;
-
-    while index < tokens.len() {
-        let token = &tokens[index];
-        if !token.starts_with("--") {
-            index += 1;
-            continue;
-        }
-
-        let key = normalize_command_field_key(token.trim_start_matches("--"));
-        let Some(field) = field_map.get(&key) else {
-            index += 1;
-            continue;
-        };
-
-        let mut captured = Vec::new();
-        let mut cursor = index + 1;
-
-        while cursor < tokens.len() && !tokens[cursor].starts_with("--") {
-            captured.push(tokens[cursor].clone());
-            cursor += 1;
-            if !field.repeatable && !matches!(field.kind, CommandArgumentKind::GlobList) {
-                break;
-            }
-        }
-
-        if matches!(field.kind, CommandArgumentKind::Boolean) && captured.is_empty() {
-            captured.push("true".to_string());
-        }
-
-        if !captured.is_empty() {
-            values.entry(key).or_default().extend(captured);
-        }
-        index = cursor.max(index + 1);
-    }
-
-    values
-}
-
-fn flatten_argument_values(
-    fields: &[CommandArgumentField],
-    arguments: &std::collections::HashMap<String, Vec<String>>,
-) -> Vec<String> {
-    let mut result = Vec::new();
-    for field in fields {
-        let key = normalize_command_field_key(&field.key);
-        if let Some(values) = arguments.get(&key) {
-            result.extend(values.iter().cloned());
-        }
-    }
-    result
-}
-
-fn build_raw_arguments_from_map(
-    fields: &[CommandArgumentField],
-    arguments: &std::collections::HashMap<String, Vec<String>>,
-) -> String {
-    let mut parts = Vec::new();
-
-    for field in fields {
-        let key = normalize_command_field_key(&field.key);
-        let Some(values) = arguments.get(&key) else {
-            continue;
-        };
-        let values = values
-            .iter()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if values.is_empty() {
-            continue;
-        }
-        parts.push(format!("--{}", field.key));
-        parts.extend(values.into_iter().map(shell_quote_command_value));
-    }
-
-    parts.join(" ")
-}
-
-fn hydrate_scheduler_command_arguments(
-    raw_arguments: &str,
-    fields: &[CommandArgumentField],
-) -> Result<(std::collections::HashMap<String, Vec<String>>, String)> {
-    let parsed_arguments = parse_command_argument_map(Some(raw_arguments), fields);
-    let hydrated_raw = build_raw_arguments_from_map(fields, &parsed_arguments);
-    Ok((parsed_arguments, hydrated_raw))
-}
-
-fn missing_required_command_fields(
-    fields: &[CommandArgumentField],
-    parsed_arguments: &std::collections::HashMap<String, Vec<String>>,
-) -> Vec<CommandArgumentField> {
-    fields
-        .iter()
-        .filter(|field| field.required)
-        .filter(|field| {
-            let key = normalize_command_field_key(&field.key);
-            parsed_arguments
-                .get(&key)
-                .is_none_or(|values| values.iter().all(|value| value.trim().is_empty()))
-        })
-        .cloned()
-        .collect()
-}
-
 fn command_question_for_field(
     command: &Command,
     field: &CommandArgumentField,
@@ -1126,274 +939,6 @@ fn ingress_source_from_request(value: Option<&str>) -> agendao_session::prompt::
     agendao_session::prompt::normalize_ingress_source(value)
 }
 
-fn supports_live_web_ingress_batch(ingress: &agendao_session::prompt::IngressTurnEnvelope) -> bool {
-    matches!(ingress.source, agendao_session::prompt::IngressSource::Web)
-        && ingress.context_key.as_deref() == Some("session_prompt")
-        && ingress.command.is_none()
-}
-
-fn load_live_web_ingress_batch(session: &agendao_session::Session) -> Option<LiveWebIngressBatch> {
-    session
-        .metadata
-        .get(LIVE_WEB_INGRESS_BATCH_METADATA_KEY)
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
-}
-
-fn store_live_web_ingress_batch(
-    session: &mut agendao_session::Session,
-    batch: &LiveWebIngressBatch,
-) -> bool {
-    match serde_json::to_value(batch) {
-        Ok(value) => {
-            session.insert_metadata(LIVE_WEB_INGRESS_BATCH_METADATA_KEY.to_string(), value);
-            true
-        }
-        Err(error) => {
-            tracing::warn!(%error, "failed to serialize live web ingress batch");
-            false
-        }
-    }
-}
-
-fn clear_live_web_ingress_batch(session: &mut agendao_session::Session) {
-    session.remove_metadata(LIVE_WEB_INGRESS_BATCH_METADATA_KEY);
-}
-
-fn stale_live_web_ingress_batch(batch: &LiveWebIngressBatch, now_ms: i64) -> bool {
-    now_ms.saturating_sub(batch.opened_at_ms) > LIVE_WEB_INGRESS_BATCH_WINDOW_MS
-}
-
-fn matching_live_web_ingress_batch(
-    batch: &LiveWebIngressBatch,
-    ingress: &agendao_session::prompt::IngressTurnEnvelope,
-) -> bool {
-    batch
-        .items
-        .first()
-        .map(|first| {
-            first.ingress.session_id == ingress.session_id
-                && first.ingress.source == ingress.source
-                && first.ingress.context_key == ingress.context_key
-                && first.ingress.command == ingress.command
-        })
-        .unwrap_or(false)
-}
-
-fn append_live_web_ingress_batch_if_present(
-    session: &mut agendao_session::Session,
-    ingress: agendao_session::prompt::IngressTurnEnvelope,
-    parts: Vec<agendao_session::prompt::PartInput>,
-    now_ms: i64,
-) -> bool {
-    if !supports_live_web_ingress_batch(&ingress) {
-        return false;
-    }
-
-    let item = LiveWebIngressBatchItem { ingress, parts };
-    let batch = load_live_web_ingress_batch(session)
-        .filter(|batch| !stale_live_web_ingress_batch(batch, now_ms));
-    if batch.is_none() {
-        clear_live_web_ingress_batch(session);
-    }
-
-    if let Some(mut batch) = batch {
-        if matching_live_web_ingress_batch(&batch, &item.ingress) {
-            batch.items.push(item);
-            return store_live_web_ingress_batch(session, &batch);
-        }
-        clear_live_web_ingress_batch(session);
-    }
-
-    false
-}
-
-fn open_live_web_ingress_batch(
-    session: &mut agendao_session::Session,
-    ingress: agendao_session::prompt::IngressTurnEnvelope,
-    parts: Vec<agendao_session::prompt::PartInput>,
-    now_ms: i64,
-) -> Option<String> {
-    if !supports_live_web_ingress_batch(&ingress) {
-        return None;
-    }
-
-    let item = LiveWebIngressBatchItem { ingress, parts };
-    clear_live_web_ingress_batch(session);
-
-    let owner_turn_id = item.ingress.turn_id.clone();
-    let batch = LiveWebIngressBatch {
-        owner_turn_id: owner_turn_id.clone(),
-        opened_at_ms: now_ms,
-        items: vec![item],
-    };
-    if store_live_web_ingress_batch(session, &batch) {
-        Some(owner_turn_id)
-    } else {
-        None
-    }
-}
-
-fn drain_live_web_ingress_batch(
-    session: &mut agendao_session::Session,
-    owner_turn_id: &str,
-) -> Option<LiveWebIngressBatch> {
-    let batch = load_live_web_ingress_batch(session)?;
-    if batch.owner_turn_id != owner_turn_id {
-        return None;
-    }
-    clear_live_web_ingress_batch(session);
-    Some(batch)
-}
-
-fn resolve_live_web_ingress_batch(
-    batch: LiveWebIngressBatch,
-) -> Option<(
-    agendao_session::prompt::IngressTurnEnvelope,
-    Vec<agendao_session::prompt::PartInput>,
-)> {
-    let mut items = batch.items;
-    items.sort_by(|left, right| {
-        left.ingress
-            .received_at_ms
-            .cmp(&right.ingress.received_at_ms)
-            .then_with(|| left.ingress.turn_id.cmp(&right.ingress.turn_id))
-    });
-
-    // `stabilize_ingress_turns()` only owns ingress-local merge semantics
-    // (shadow text, metadata, dedupe markers). Authoritative prompt content is
-    // rebuilt from `PartInput` below, not from `user_intent_text`.
-    let stabilized = agendao_session::prompt::stabilize_ingress_turns(
-        items.iter().map(|item| item.ingress.clone()).collect(),
-    );
-    if stabilized.len() != 1 {
-        tracing::warn!(
-            item_count = items.len(),
-            stabilized_count = stabilized.len(),
-            "live web ingress batch did not stabilize to a single turn"
-        );
-        return None;
-    }
-
-    let mut seen_idempotency_keys = std::collections::HashSet::new();
-    let mut merged_parts = Vec::new();
-    for item in items {
-        let duplicate = item
-            .ingress
-            .idempotency_key
-            .as_deref()
-            .map(|key| {
-                let scoped = format!(
-                    "{}:{:?}:{}",
-                    item.ingress.session_id, item.ingress.source, key
-                );
-                !seen_idempotency_keys.insert(scoped)
-            })
-            .unwrap_or(false);
-        if duplicate {
-            continue;
-        }
-        merged_parts.extend(item.parts);
-    }
-
-    stabilized
-        .into_iter()
-        .next()
-        .map(|ingress| (ingress, merged_parts))
-}
-
-async fn stage_live_web_ingress_batch(
-    state: &Arc<ServerState>,
-    session_id: &str,
-    ingress: &agendao_session::prompt::IngressTurnEnvelope,
-    parts: &[agendao_session::prompt::PartInput],
-) -> Result<LiveWebIngressBatchStage> {
-    if !supports_live_web_ingress_batch(ingress) {
-        return Ok(LiveWebIngressBatchStage::Bypass);
-    }
-
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    {
-        let mut sessions = state.sessions.lock().await;
-        let Some(mut session) = sessions.get(session_id).cloned() else {
-            return Err(ApiError::SessionNotFound(session_id.to_string()));
-        };
-        if append_live_web_ingress_batch_if_present(
-            &mut session,
-            ingress.clone(),
-            parts.to_vec(),
-            now_ms,
-        ) {
-            sessions.update(session);
-            return Ok(LiveWebIngressBatchStage::Follower);
-        }
-        sessions.update(session);
-    }
-
-    let reservation = match state.prompt_runner.reserve_session_run(session_id).await {
-        Ok(token) => token,
-        Err(error) => {
-            let mut sessions = state.sessions.lock().await;
-            let Some(mut session) = sessions.get(session_id).cloned() else {
-                return Err(ApiError::SessionNotFound(session_id.to_string()));
-            };
-            if append_live_web_ingress_batch_if_present(
-                &mut session,
-                ingress.clone(),
-                parts.to_vec(),
-                now_ms,
-            ) {
-                sessions.update(session);
-                return Ok(LiveWebIngressBatchStage::Follower);
-            }
-            return Err(ApiError::BadRequest(error.to_string()));
-        }
-    };
-
-    let mut sessions = state.sessions.lock().await;
-    let Some(mut session) = sessions.get(session_id).cloned() else {
-        drop(sessions);
-        state
-            .prompt_runner
-            .release_reserved_session_run(session_id)
-            .await;
-        return Err(ApiError::SessionNotFound(session_id.to_string()));
-    };
-
-    if append_live_web_ingress_batch_if_present(
-        &mut session,
-        ingress.clone(),
-        parts.to_vec(),
-        now_ms,
-    ) {
-        sessions.update(session);
-        drop(sessions);
-        state
-            .prompt_runner
-            .release_reserved_session_run(session_id)
-            .await;
-        return Ok(LiveWebIngressBatchStage::Follower);
-    }
-
-    let Some(owner_turn_id) =
-        open_live_web_ingress_batch(&mut session, ingress.clone(), parts.to_vec(), now_ms)
-    else {
-        sessions.update(session);
-        drop(sessions);
-        state
-            .prompt_runner
-            .release_reserved_session_run(session_id)
-            .await;
-        return Ok(LiveWebIngressBatchStage::Bypass);
-    };
-
-    sessions.update(session);
-    Ok(LiveWebIngressBatchStage::Leader {
-        owner_turn_id,
-        reservation,
-    })
-}
-
 pub(super) struct SchedulerUserMessageContext<'a> {
     pub(super) display_prompt_text: &'a str,
     pub(super) resolved_user_prompt: &'a str,
@@ -1516,6 +1061,15 @@ pub(crate) async fn session_prompt_with_verified_ingress(
     session_prompt_inner(state, headers, id, req, Some(verified)).await
 }
 
+fn boxed_session_prompt_inner(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    id: String,
+    req: SessionPromptRequest,
+) -> Pin<Box<dyn Future<Output = Result<Json<serde_json::Value>>> + Send>> {
+    Box::pin(session_prompt_inner(state, headers, id, req, None))
+}
+
 async fn commit_scheduler_input_and_start_ledger_run(
     state: &Arc<ServerState>,
     session_id: &str,
@@ -1531,6 +1085,10 @@ async fn commit_scheduler_input_and_start_ledger_run(
         agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted,
     )
     .await;
+    // The user turn is now authoritative. Persist one full snapshot at the
+    // run boundary; later governance seams write only the session row until
+    // the final assistant snapshot is flushed.
+    persist_session_if_enabled(state, session_id).await;
     let sessions = state.sessions.lock().await;
     if let Some(fresh) = sessions.get(session_id) {
         *session = fresh.clone();
@@ -1650,7 +1208,7 @@ async fn session_prompt_inner(
                         ReconcileReason::StatusChange,
                     )
                     .await;
-                    persist_session_if_enabled(&state, &id).await;
+                    persist_session_record_if_enabled(&state, &id).await;
                     return Ok(Json(serde_json::json!({
                         "status": "awaiting_user",
                         "session_id": id,
@@ -1684,7 +1242,7 @@ async fn session_prompt_inner(
         }
         broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange)
             .await;
-        persist_session_if_enabled(&state, &id).await;
+        persist_session_record_if_enabled(&state, &id).await;
         return Ok(Json(serde_json::json!({
             "status": "accepted",
             "ok": true,
@@ -1841,10 +1399,9 @@ async fn session_prompt_inner(
     if pending_command_cleared {
         broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange)
             .await;
-        persist_session_if_enabled(&state, &id).await;
     }
-    if persisted_external_adapter_binding {
-        persist_session_if_enabled(&state, &id).await;
+    if pending_command_cleared || persisted_external_adapter_binding {
+        persist_session_record_if_enabled(&state, &id).await;
     }
     let output_block_hook: Option<agendao_session::prompt::OutputBlockHook> =
         Some(server_output_block_hook(task_state.clone()));
@@ -1930,12 +1487,6 @@ async fn session_prompt_inner(
             serde_json::to_value(&task_scheduler_choice).unwrap_or(serde_json::Value::Null),
         );
         apply_scheduler_selection_session_metadata(&mut session, &request_config);
-        if let Some(recovery) = task_recovery.as_ref() {
-            if let Some(action) = recovery.action.as_ref() {
-                session.insert_metadata("last_recovery_action", serde_json::json!(action));
-            }
-        }
-
         let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
         let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
@@ -2209,37 +1760,14 @@ async fn session_prompt_inner(
             persist_session_telemetry_metadata(&task_state, &mut session).await;
             task_state.sessions.lock().await.update(session);
 
-            // Task-governance seams at run end — run against the CURRENT
-            // session record (the scheduler wrote through the map during the
-            // run; the local above is stale for metadata), and only after the
-            // final update so nothing later overwrites the gate report.
+            // Task-governance seams at run end run only after the final
+            // session update so nothing later overwrites the gate report.
+            // ToolBatchCompleted is dispatched by the scheduler observer at
+            // each step boundary; do not replay the direct prompt path's
+            // latest_tool_batch_summary metadata here.
             {
-                let last_batch = {
-                    let sessions = task_state.sessions.lock().await;
-                    sessions.get(&session_id).and_then(|record| {
-                        record
-                            .record()
-                            .metadata
-                            .get("latest_tool_batch_summary")
-                            .cloned()
-                    })
-                };
-                if let Some(value) = last_batch {
-                    if let Ok(summary) =
-                        serde_json::from_value::<agendao_types::repair::ToolBatchSummary>(value)
-                    {
-                        crate::session_runtime::task_ledger_reducer::dispatch_seam(
-                            &task_state,
-                            &session_id,
-                            agendao_types::task_ledger::TaskLedgerSeamFact::ToolBatchCompleted {
-                                summary,
-                            },
-                        )
-                        .await;
-                    }
-                }
                 // Keep the scheduler cancellation token registered until the
-                // final assistant message and last batch are authoritative.
+                // final assistant message and scheduler step seams are authoritative.
                 // Only then verify the workspace and earn completion.
                 let verification =
                     crate::session_runtime::task_ledger_reducer::verify_goal_criteria(
@@ -2292,7 +1820,7 @@ async fn session_prompt_inner(
                 }
             }
 
-            // The response, final batch, verifier, completion/interrupt seam,
+            // The response, scheduler step seams, verifier, completion/interrupt seam,
             // and delivery report are now settled. Retire the cancellation
             // authority only after that full run lifecycle has closed.
             task_state
@@ -2340,40 +1868,33 @@ async fn session_prompt_inner(
                 if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
                     let state = task_state.clone();
                     let session_id_for_followup = session_id.clone();
-                    let handle = tokio::runtime::Handle::current();
-                    tokio::task::spawn_blocking(move || {
-                        handle.block_on(async move {
-                            state
-                                .runtime_telemetry
-                                .emit_control_input_transition(
-                                    &session_id_for_followup,
-                                    ControlInputKind::Followup,
-                                    ControlInputPhase::Consumed,
-                                    chrono::Utc::now().timestamp_millis(),
-                                )
-                                .await;
-                            let headers = if queued.apply_plugin_config_hooks {
-                                HeaderMap::new()
-                            } else {
-                                internal_prompt_headers()
-                            };
-                            if let Err(error) = session_prompt_inner(
-                                state.clone(),
-                                headers,
-                                session_id_for_followup.clone(),
-                                queued.request,
-                                None,
+                    tokio::spawn(async move {
+                        state
+                            .runtime_telemetry
+                            .emit_control_input_transition(
+                                &session_id_for_followup,
+                                ControlInputKind::Followup,
+                                ControlInputPhase::Consumed,
+                                chrono::Utc::now().timestamp_millis(),
                             )
-                            .await
-                            {
-                                tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
-                            }
-                        });
+                            .await;
+                        let headers = if queued.apply_plugin_config_hooks {
+                            HeaderMap::new()
+                        } else {
+                            internal_prompt_headers()
+                        };
+                        if let Err(error) = boxed_session_prompt_inner(
+                            state.clone(),
+                            headers,
+                            session_id_for_followup.clone(),
+                            queued.request,
+                        )
+                        .await
+                        {
+                            tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
+                        }
                     });
                 }
-            }
-            if let Err(error) = task_state.flush_session_to_storage(&session_id).await {
-                tracing::error!(session_id = %session_id, %error, "failed to flush session to storage");
             }
         }
     });
@@ -2870,7 +2391,7 @@ mod tests {
         second.received_at_ms = now_ms + 10;
         second.stabilized_at_ms = now_ms + 10;
 
-        let owner = open_live_web_ingress_batch(
+        let owner = live_web_ingress::open(
             &mut session,
             first,
             vec![agendao_session::prompt::PartInput::Text {
@@ -2879,7 +2400,7 @@ mod tests {
             now_ms,
         )
         .expect("leader batch should open");
-        assert!(append_live_web_ingress_batch_if_present(
+        assert!(live_web_ingress::append_if_present(
             &mut session,
             second,
             vec![agendao_session::prompt::PartInput::Text {
@@ -2919,7 +2440,7 @@ mod tests {
         );
         ingress.command = Some("new".to_string());
 
-        assert!(!append_live_web_ingress_batch_if_present(
+        assert!(!live_web_ingress::append_if_present(
             &mut session,
             ingress.clone(),
             vec![agendao_session::prompt::PartInput::Text {
@@ -2927,7 +2448,7 @@ mod tests {
             }],
             now_ms,
         ));
-        assert!(open_live_web_ingress_batch(
+        assert!(live_web_ingress::open(
             &mut session,
             ingress,
             vec![agendao_session::prompt::PartInput::Text {

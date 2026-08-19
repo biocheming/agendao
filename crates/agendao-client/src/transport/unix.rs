@@ -11,7 +11,7 @@ use agendao_api::{
 use agendao_config::Config;
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
-use agendao_types::task_ledger::{SessionTaskLedger, TaskLedgerOp};
+use agendao_types::task_ledger::{SessionTaskLedger, SessionTaskLedgerView, TaskLedgerOp};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -142,6 +142,12 @@ impl UnixSocketTransport {
     }
 
     pub async fn get_task_ledger(&self, session_id: &str) -> Result<SessionTaskLedger> {
+        self.get_task_ledger_view(session_id)
+            .await
+            .map(|view| view.ledger)
+    }
+
+    pub async fn get_task_ledger_view(&self, session_id: &str) -> Result<SessionTaskLedgerView> {
         self.send_request(
             "get_task_ledger",
             serde_json::json!({ "session_id": session_id }),
@@ -155,9 +161,20 @@ impl UnixSocketTransport {
         expected_revision: u64,
         op: TaskLedgerOp,
     ) -> Result<SessionTaskLedger> {
+        self.apply_task_ledger_op_view(session_id, expected_revision, op)
+            .await
+            .map(|view| view.ledger)
+    }
+
+    pub async fn apply_task_ledger_op_view(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        op: TaskLedgerOp,
+    ) -> Result<SessionTaskLedgerView> {
         #[derive(Deserialize)]
         struct WriteResult {
-            ledger: SessionTaskLedger,
+            ledger: SessionTaskLedgerView,
         }
 
         let result: WriteResult = self

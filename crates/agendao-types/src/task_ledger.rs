@@ -99,19 +99,7 @@ impl SessionTaskLedger {
         op: TaskLedgerOp,
         now_ms: i64,
     ) -> Result<u64, TaskLedgerError> {
-        if self.revision != expected_revision {
-            return Err(TaskLedgerError::RevisionConflict {
-                expected: expected_revision,
-                actual: self.revision,
-            });
-        }
-        let mut staged = self.clone();
-        apply_op(&mut staged, op, now_ms)?;
-        validate_snapshot(&staged)?;
-        staged.revision = self.revision + 1;
-        staged.updated_at = now_ms;
-        *self = staged;
-        Ok(self.revision)
+        self.apply_batch(expected_revision, vec![op], now_ms)
     }
 
     /// Apply a seam's candidate set as ONE committed write: all ops validate
@@ -287,6 +275,83 @@ pub struct OpenQuestion {
 impl OpenQuestion {
     pub fn is_open(&self) -> bool {
         self.closed_by_checkpoint_id.is_none()
+    }
+}
+
+/// Transport-only rendering projection. The raw ledger remains the sole
+/// persisted authority; this view is rebuilt at API/event boundaries. The
+/// projection describes derived UI state only: it does not authorize writes,
+/// create evidence, or prove that an acceptance criterion is satisfied.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskLedgerProjection {
+    #[serde(default)]
+    pub live_core: Vec<CoreConstraint>,
+    #[serde(default)]
+    pub open_questions: Vec<OpenQuestion>,
+    #[serde(default)]
+    pub current_checkpoints: Vec<TaskLedgerCheckpointProjection>,
+    #[serde(default)]
+    pub missing_acceptance_criteria: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskLedgerCheckpointProjection {
+    #[serde(flatten)]
+    pub checkpoint: VerifiedCheckpoint,
+    pub verifier_label: String,
+}
+
+/// Backward-compatible wire view: raw ledger fields stay at the top level,
+/// while frontends consume the server-derived `projection` field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionTaskLedgerView {
+    #[serde(flatten)]
+    pub ledger: SessionTaskLedger,
+    #[serde(default)]
+    pub projection: TaskLedgerProjection,
+}
+
+impl From<&SessionTaskLedger> for TaskLedgerProjection {
+    fn from(ledger: &SessionTaskLedger) -> Self {
+        Self {
+            live_core: ledger.live_core().into_iter().cloned().collect(),
+            open_questions: ledger.open_questions().into_iter().cloned().collect(),
+            current_checkpoints: current_checkpoints(ledger)
+                .into_iter()
+                .map(|checkpoint| TaskLedgerCheckpointProjection {
+                    verifier_label: checkpoint.verifier.describe(),
+                    checkpoint: checkpoint.clone(),
+                })
+                .collect(),
+            missing_acceptance_criteria: missing_acceptance_criteria(
+                ledger,
+                &ledger.uncovered_criteria,
+            ),
+        }
+    }
+}
+
+impl From<&SessionTaskLedger> for SessionTaskLedgerView {
+    fn from(ledger: &SessionTaskLedger) -> Self {
+        Self {
+            ledger: ledger.clone(),
+            projection: TaskLedgerProjection::from(ledger),
+        }
+    }
+}
+
+impl From<SessionTaskLedger> for SessionTaskLedgerView {
+    fn from(ledger: SessionTaskLedger) -> Self {
+        let projection = TaskLedgerProjection::from(&ledger);
+        Self { ledger, projection }
+    }
+}
+
+impl std::ops::Deref for SessionTaskLedgerView {
+    type Target = SessionTaskLedger;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ledger
     }
 }
 
@@ -562,9 +627,9 @@ fn non_empty(value: &str) -> bool {
     !value.trim().is_empty()
 }
 
-fn next_sequential_id(existing: &[String], prefix: &str) -> String {
+fn next_sequential_id<'a>(existing: impl IntoIterator<Item = &'a str>, prefix: &str) -> String {
     let next = existing
-        .iter()
+        .into_iter()
         .filter_map(|id| id.strip_prefix(prefix))
         .filter_map(|tail| tail.parse::<u32>().ok())
         .max()
@@ -823,14 +888,7 @@ fn apply_op(
             if live && ledger.live_core().len() >= 2 {
                 return Err(TaskLedgerError::LiveSetFull);
             }
-            let id = next_sequential_id(
-                &ledger
-                    .core
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect::<Vec<_>>(),
-                "core-",
-            );
+            let id = next_sequential_id(ledger.core.iter().map(|entry| entry.id.as_str()), "core-");
             ledger.core.push(CoreConstraint {
                 id,
                 statement,
@@ -881,11 +939,7 @@ fn apply_op(
                 }
                 None => {
                     let id = next_sequential_id(
-                        &ledger
-                            .core
-                            .iter()
-                            .map(|entry| entry.id.clone())
-                            .collect::<Vec<_>>(),
+                        ledger.core.iter().map(|entry| entry.id.as_str()),
                         "core-",
                     );
                     CoreConstraint {
@@ -919,11 +973,10 @@ fn apply_op(
                 .acceptance_criteria;
             validate_criteria_references(criteria, &covered_criteria)?;
             let id = next_sequential_id(
-                &ledger
+                ledger
                     .verified
                     .iter()
-                    .map(|checkpoint| checkpoint.id.clone())
-                    .collect::<Vec<_>>(),
+                    .map(|checkpoint| checkpoint.id.as_str()),
                 "chk-",
             );
             if let Some(superseded_id) = supersedes.as_deref() {
@@ -968,11 +1021,7 @@ fn apply_op(
                 return Err(TaskLedgerError::EmptySettledBy);
             }
             let id = next_sequential_id(
-                &ledger
-                    .open
-                    .iter()
-                    .map(|question| question.id.clone())
-                    .collect::<Vec<_>>(),
+                ledger.open.iter().map(|question| question.id.as_str()),
                 "open-",
             );
             ledger.open.push(OpenQuestion {
@@ -1012,11 +1061,10 @@ fn apply_op(
                 return Err(TaskLedgerError::OpenQuestionAlreadyClosed { open_id });
             }
             let checkpoint_id = next_sequential_id(
-                &ledger
+                ledger
                     .verified
                     .iter()
-                    .map(|checkpoint| checkpoint.id.clone())
-                    .collect::<Vec<_>>(),
+                    .map(|checkpoint| checkpoint.id.as_str()),
                 "chk-",
             );
             ledger.verified.push(VerifiedCheckpoint {
@@ -1256,6 +1304,51 @@ mod tests {
             source_stage_id: None,
             supersedes: None,
         }
+    }
+
+    #[test]
+    fn transport_view_projects_rendering_state_and_preserves_wire_compatibility() {
+        let mut ledger = created();
+        ledger
+            .apply_batch(
+                1,
+                vec![
+                    TaskLedgerOp::AddCore {
+                        statement: "preserve API compatibility".to_string(),
+                        live: true,
+                        actor: Some(TaskLedgerActor::System),
+                    },
+                    TaskLedgerOp::OpenQuestion {
+                        question: "does the old client still decode?".to_string(),
+                        settled_by: "serde compatibility test".to_string(),
+                    },
+                    checkpoint_op("transport view generated"),
+                ],
+                2_000,
+            )
+            .unwrap();
+
+        let view = SessionTaskLedgerView::from(&ledger);
+        assert_eq!(view.projection.live_core[0].id, "core-01");
+        assert_eq!(view.projection.open_questions[0].id, "open-01");
+        assert_eq!(
+            view.projection.current_checkpoints[0].checkpoint.id,
+            "chk-01"
+        );
+        assert_eq!(
+            view.projection.current_checkpoints[0].verifier_label,
+            "check:python3 -m unittest discover"
+        );
+        assert_eq!(
+            view.projection.missing_acceptance_criteria,
+            vec!["all tests pass"]
+        );
+
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["session_id"], "ses_test");
+        assert!(value.get("projection").is_some());
+        let old_client: SessionTaskLedger = serde_json::from_value(value).unwrap();
+        assert_eq!(old_client, ledger);
     }
 
     #[test]

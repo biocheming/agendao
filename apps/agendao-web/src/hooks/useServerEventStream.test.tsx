@@ -338,6 +338,12 @@ describe("useServerEventStream", () => {
           open: [],
           next: { statement: "approve bash", provenance: { actor: "model", pre_interrupt: false } },
           updated_at: 1,
+          projection: {
+            live_core: [],
+            open_questions: [],
+            current_checkpoints: [],
+            missing_acceptance_criteria: ["approval recorded"],
+          },
         },
         cause: "status_changed",
       });
@@ -372,6 +378,7 @@ describe("useServerEventStream", () => {
     expect(ledger?.revision).toBe(4);
     expect(ledger?.status).toBe("awaiting_user");
     expect(ledger?.next?.statement).toBe("approve bash");
+    expect(ledger?.projection.missing_acceptance_criteria).toEqual(["approval recorded"]);
 
     unmount();
   });

@@ -351,8 +351,10 @@ async fn handle_get_task_ledger(
         crate::session_runtime::task_ledger::task_ledger_snapshot(state, &req.session_id)
             .await
             .map_err(|e| to_rpc_error_from_api(&e))?;
-    serde_json::to_value(snapshot)
-        .map_err(|e| to_rpc_error_from_api(&crate::error::ApiError::InternalError(e.to_string())))
+    serde_json::to_value(agendao_types::task_ledger::SessionTaskLedgerView::from(
+        snapshot,
+    ))
+    .map_err(|e| to_rpc_error_from_api(&crate::error::ApiError::InternalError(e.to_string())))
 }
 
 #[derive(serde::Deserialize)]
@@ -383,8 +385,10 @@ async fn handle_apply_task_ledger_op(
     )
     .await
     .map_err(|e| to_rpc_error_from_api(&e))?;
-    serde_json::to_value(serde_json::json!({ "ledger": ledger, "cause": cause }))
-        .map_err(|e| to_rpc_error_from_api(&crate::error::ApiError::InternalError(e.to_string())))
+    Ok(serde_json::json!({
+        "ledger": agendao_types::task_ledger::SessionTaskLedgerView::from(ledger),
+        "cause": cause
+    }))
 }
 
 fn to_rpc_error_from_api(error: &crate::error::ApiError) -> JsonRpcError {

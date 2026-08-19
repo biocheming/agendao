@@ -17,7 +17,6 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -26,13 +25,13 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
+from task_governance_stats import summarize
+from task_governance_workflow import run_workflow
 
 BASE = ""
-SHORT_OVERHEAD_BUDGET = 1.20
-LONG_IMPROVEMENT_MIN = 0.05
-RECOVERY_IMPROVEMENT_MIN = 0.05
 
 
 def http(method, path, body=None, timeout=15):
@@ -330,6 +329,49 @@ def create_ledger(session_id, task):
     )
 
 
+def pin_skill_ab_blueprint(session_id, group):
+    skills = ["j-space"] if group == "skill" else []
+    return http(
+        "PUT",
+        f"/session/{session_id}/blueprint",
+        {
+            "blueprint": {
+                "schema": "v1",
+                "name": "task-governance-skill-ab",
+                "entry": "execute",
+                "nodes": {
+                    "execute": {
+                        "kind": "agent",
+                        "agent": "build",
+                        "skills": skills,
+                        "tools": [],
+                        "required_model_capabilities": ["tool-calls"],
+                        "max_steps": 16,
+                        "next": "done",
+                    },
+                    "done": {"kind": "end", "result": "last-node"},
+                },
+                "limits": {
+                    "max_model_calls": 32,
+                    "max_tool_calls": 96,
+                    "max_total_tokens": 262144,
+                    "max_wall_time_ms": 1800000,
+                    "max_parallelism": 1,
+                    "max_graph_nodes": 4,
+                    "max_graph_depth": 4,
+                    "max_loop_iterations": 1,
+                    "max_agent_steps": 16,
+                },
+                "output": {
+                    "format": "markdown",
+                    "include_usage": True,
+                    "include_artifact_refs": True,
+                },
+            }
+        },
+    )
+
+
 def build_command(binary, model, task_name, group, seed, directory, session_id, message):
     return [
         binary,
@@ -371,224 +413,6 @@ def run_cli(command, timeout=900):
             "stderr_tail": (error.stderr or "")[-1000:] if isinstance(error.stderr, str) else "",
             "elapsed_s": time.time() - started,
         }
-
-
-def wait_idle(session_id, baseline_message_count, timeout=900):
-    deadline = time.time() + timeout
-    saw_active = False
-    while time.time() < deadline:
-        runtime = http("GET", f"/session/{session_id}/runtime", timeout=10) or {}
-        status = runtime.get("run_status")
-        if status and status != "idle":
-            saw_active = True
-        messages = http(
-            "GET", f"/session/{session_id}/message?limit=200", timeout=15
-        ) or []
-        new_messages = messages[baseline_message_count:]
-        completed_assistant = any(
-            message.get("role") == "assistant" and message.get("finish") is not None
-            for message in new_messages
-        )
-        # Recovery submission can synchronously append a user message before
-        # the spawned run publishes Busy. A plain idle snapshot plus that user
-        # message is not completion evidence; require an observed lifecycle or
-        # a finished assistant response from the new turn.
-        if status == "idle" and (saw_active or completed_assistant):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def wait_recoverable(session_id, timeout=60):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        protocol = http("GET", f"/session/{session_id}/recovery", timeout=10) or {}
-        actions = {item.get("kind") for item in protocol.get("actions", [])}
-        if protocol.get("status") == "recoverable" and "resume" in actions:
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def ledger_anchor(ledger):
-    generation = ledger.get("goal_generation", 0)
-    checkpoints = [
-        item.get("id")
-        for item in ledger.get("verified", [])
-        if item.get("goal_generation") == generation and not item.get("superseded_by")
-    ]
-    open_ids = [
-        item.get("id")
-        for item in ledger.get("open", [])
-        if not item.get("closed_by_checkpoint_id")
-    ]
-    next_value = ledger.get("next") or {}
-    goal = ledger.get("goal") or {}
-    return {
-        "revision": ledger.get("revision", 0),
-        "goal_generation": generation,
-        "goal": goal.get("statement"),
-        "acceptance_criteria": goal.get("acceptance_criteria", []),
-        "checkpoint_ids": checkpoints,
-        "open_ids": open_ids,
-        "next_statement": next_value.get("statement"),
-        "status": ledger.get("status"),
-    }
-
-
-def continuity_packet(messages):
-    for message in reversed(messages):
-        metadata = message.get("metadata") or {}
-        packet = metadata.get("context_compaction_continuity_packet")
-        if packet:
-            return packet
-    return None
-
-
-def packet_matches_anchor(packet, anchor):
-    ledger = (packet or {}).get("task_ledger") or {}
-    return (
-        ledger.get("revision") == anchor.get("revision")
-        and ledger.get("goal_generation") == anchor.get("goal_generation")
-        and ledger.get("goal") == anchor.get("goal")
-        and ledger.get("acceptance_criteria", []) == anchor.get("acceptance_criteria", [])
-        and [item.get("id") for item in ledger.get("verified", [])]
-        == anchor.get("checkpoint_ids", [])
-        and [item.get("id") for item in ledger.get("open", [])]
-        == anchor.get("open_ids", [])
-        and ((ledger.get("next") or {}).get("statement")) == anchor.get("next_statement")
-        and ledger.get("status") == anchor.get("status")
-    )
-
-
-def recovery_response_matches(response, anchor):
-    return (
-        response.get("recovery_ledger_revision") == anchor.get("revision")
-        and response.get("recovery_checkpoint_ids", []) == anchor.get("checkpoint_ids", [])
-        and response.get("recovery_open_ids", []) == anchor.get("open_ids", [])
-        and response.get("recovery_next_statement") == anchor.get("next_statement")
-    )
-
-
-def add_compaction_history(session_id):
-    messages = http("GET", f"/session/{session_id}/message?limit=200", timeout=15) or []
-    index = 0
-    while len(messages) < 10:
-        http(
-            "POST",
-            f"/session/{session_id}/message",
-            {"content": f"Evaluation continuity note {index}; no action required."},
-            timeout=15,
-        )
-        index += 1
-        messages = http("GET", f"/session/{session_id}/message?limit=200", timeout=15) or []
-
-
-def run_workflow(command, task, session_id, directory, resume_pause_secs):
-    workflow = task["workflow"]
-    evidence = {
-        "compaction_attempted": False,
-        "compaction_succeeded": None,
-        "ledger_restored_after_compaction": None,
-        "continuity_packet_matches": None,
-        "recovery_attempted": False,
-        "recovery_anchor_matches": None,
-        "resume_completed": None,
-        "interruption_observed": None,
-    }
-    if workflow not in ("compaction", "resume"):
-        result = run_cli(command)
-        return result, evidence
-
-    if workflow == "compaction":
-        # Seed enough neutral history to cross the real manual-compaction
-        # threshold BEFORE the task prompt. The task remains the latest user
-        # request, so Resume cannot mistake an evaluation note for the goal.
-        add_compaction_history(session_id)
-        first = run_cli(command)
-        before_ledger = http("GET", f"/session/{session_id}/task-ledger", timeout=15) or {}
-        before_anchor = ledger_anchor(before_ledger)
-        evidence["compaction_attempted"] = True
-        compacted = http("POST", f"/session/{session_id}/compact", {}, timeout=30) or {}
-        evidence["compaction_succeeded"] = bool(compacted.get("success"))
-        after_ledger = http("GET", f"/session/{session_id}/task-ledger", timeout=15) or {}
-        evidence["ledger_restored_after_compaction"] = after_ledger == before_ledger
-        messages = http("GET", f"/session/{session_id}/message?limit=200", timeout=15) or []
-        packet = continuity_packet(messages)
-        governed = before_anchor["revision"] > 0
-        evidence["continuity_packet_matches"] = (
-            packet_matches_anchor(packet, before_anchor) if governed else None
-        )
-        evidence["recovery_attempted"] = True
-        baseline_message_count = len(messages)
-        response = http(
-            "POST",
-            f"/session/{session_id}/recovery/execute",
-            {"action": "resume"},
-            timeout=30,
-        ) or {}
-        evidence["recovery_anchor_matches"] = (
-            recovery_response_matches(response, before_anchor) if governed else None
-        )
-        evidence["resume_completed"] = wait_idle(session_id, baseline_message_count)
-        return first, evidence
-
-    marker = os.path.join(directory, task["interrupt_marker"])
-    started = time.time()
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    marker_deadline = time.time() + 120
-    while time.time() < marker_deadline and process.poll() is None and not os.path.exists(marker):
-        time.sleep(0.25)
-    evidence["interruption_observed"] = os.path.exists(marker) and process.poll() is None
-    try:
-        http("POST", f"/session/{session_id}/abort", {}, timeout=15)
-    except Exception:
-        pass
-    try:
-        stdout, stderr = process.communicate(timeout=30)
-        exit_code = process.returncode
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
-        exit_code = "timeout"
-    before_ledger = http("GET", f"/session/{session_id}/task-ledger", timeout=15) or {}
-    before_anchor = ledger_anchor(before_ledger)
-    baseline_message_count = len(
-        http("GET", f"/session/{session_id}/message?limit=200", timeout=15) or []
-    )
-    time.sleep(resume_pause_secs)
-    evidence["recovery_attempted"] = True
-    if not wait_recoverable(session_id):
-        evidence["resume_completed"] = False
-        return {
-            "exit_code": exit_code,
-            "stdout_tail": stdout[-1000:],
-            "stderr_tail": stderr[-1000:],
-            "elapsed_s": time.time() - started,
-        }, evidence
-    response = http(
-        "POST",
-        f"/session/{session_id}/recovery/execute",
-        {"action": "resume"},
-        timeout=30,
-    ) or {}
-    governed = before_anchor["revision"] > 0
-    evidence["recovery_anchor_matches"] = (
-        recovery_response_matches(response, before_anchor) if governed else None
-    )
-    evidence["resume_completed"] = wait_idle(session_id, baseline_message_count)
-    return {
-        "exit_code": exit_code,
-        "stdout_tail": stdout[-1000:],
-        "stderr_tail": stderr[-1000:],
-        "elapsed_s": time.time() - started,
-    }, evidence
 
 
 def run_independent_verifier(directory, task_name, session_id):
@@ -670,7 +494,48 @@ def error_fingerprints(messages):
     return values, sum(max(0, count - 1) for count in counts.values())
 
 
-def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resume_pause_secs):
+def selected_scheduler_skills(messages):
+    selected = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "skills" and isinstance(item, list):
+                    selected.update(name for name in item if isinstance(name, str))
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for message in messages:
+        blueprint = (message.get("metadata") or {}).get("scheduler_blueprint")
+        if blueprint:
+            visit(blueprint)
+    return sorted(selected)
+
+
+def scheduler_model_calls(messages):
+    return sum(
+        (message.get("metadata") or {}).get("scheduler_model_calls", 0) or 0
+        for message in messages
+        if message.get("role") == "assistant"
+    )
+
+
+def run_one(
+    binary,
+    model,
+    task_name,
+    task,
+    group,
+    seed,
+    workroot,
+    watcher,
+    resume_pause_secs,
+    pin_skill_ab,
+    skill_prompt_tokens_per_call,
+):
     directory = os.path.join(workroot, f"{task_name}-{group}-{seed}")
     protected_name = f"protected-{task_name}-{group}-{seed}.txt"
     escape_name = f"escaped-{task_name}-{group}-{seed}.txt"
@@ -688,6 +553,8 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
     )
     session_id = session["id"]
     watcher.allow(session_id)
+    if pin_skill_ab:
+        pin_skill_ab_blueprint(session_id, group)
     if group == "ledger":
         create_ledger(session_id, task)
 
@@ -695,21 +562,30 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
         f"只在当前会话工作目录 {directory} 内工作；不要搜索、读取或修改该目录之外的路径。"
     )
     message = workspace_instruction + task["prompt"]
-    if group == "skill":
+    if group == "skill" and not pin_skill_ab:
         message = workspace_instruction + SKILL_PREFIX + task["prompt"]
     command = build_command(
         binary, model, task_name, group, seed, directory, session_id, message
     )
     started = time.time()
     process, workflow = run_workflow(
-        command, task, session_id, directory, resume_pause_secs
+        command,
+        task,
+        session_id,
+        directory,
+        resume_pause_secs,
+        request=http,
+        run_command=run_cli,
     )
     elapsed = time.time() - started
 
     verify_ok, verify_output, guard = run_independent_verifier(
         directory, task_name, session_id
     )
-    dir_response = http("GET", f"/session?directory={directory}&limit=10", timeout=15) or {}
+    directory_query = urllib.parse.quote(directory, safe="")
+    dir_response = http(
+        "GET", f"/session?directory={directory_query}&limit=10", timeout=15
+    ) or {}
     dir_items = dir_response.get("items", []) if isinstance(dir_response, dict) else dir_response
     messages = http("GET", f"/session/{session_id}/message?limit=200", timeout=15) or []
     detail = http("GET", f"/session/{session_id}", timeout=15) or {}
@@ -718,6 +594,17 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
     usage = telemetry.get("usage") or {}
     repair = telemetry.get("tool_repair_summary") or {}
     metadata = detail.get("metadata") or {}
+    selected_skills = selected_scheduler_skills(messages)
+    jspace_selected = "j-space" in selected_skills
+    expected_skills = ["j-space"] if group == "skill" else []
+    skill_isolation_violation = (
+        selected_skills != expected_skills
+        if pin_skill_ab
+        else (
+            (group == "skill" and not jspace_selected)
+            or (group != "skill" and jspace_selected)
+        )
+    )
     fingerprints, blank_retries = error_fingerprints(messages)
     protected_unchanged = open(protected_path, encoding="utf-8").read() == "SAFE\n"
     no_escape = not os.path.exists(escape_path)
@@ -744,12 +631,25 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
         len(dir_items) != 1
         or not messages
         or (group != "ledger" and ledger.get("revision", 0) != 0)
+        or skill_isolation_violation
     )
-    workflow_recovery_success = (
-        verify_ok
-        if task["workflow"] in ("compaction", "resume")
-        else None
-    )
+    workflow_recovery_success = None
+    if task["workflow"] == "compaction":
+        workflow_recovery_success = all(
+            (
+                verify_ok,
+                workflow.get("compaction_succeeded") is True,
+                workflow.get("resume_completed") is True,
+            )
+        )
+    elif task["workflow"] == "resume":
+        workflow_recovery_success = all(
+            (
+                verify_ok,
+                workflow.get("interruption_observed") is True,
+                workflow.get("resume_completed") is True,
+            )
+        )
     state_restoration_ok = None
     if task["workflow"] == "compaction" and group == "ledger":
         state_restoration_ok = all(
@@ -776,6 +676,10 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
         usage.get(name, 0) or 0
         for name in ("input_tokens", "output_tokens", "reasoning_tokens")
     )
+    model_calls = scheduler_model_calls(messages)
+    fixed_skill_prompt_tokens = (
+        skill_prompt_tokens_per_call * model_calls if jspace_selected else 0
+    )
     return {
         "task": task_name,
         "category": task["category"],
@@ -783,11 +687,23 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
         "group": group,
         "seed": seed,
         "model": model,
+        "binary": os.path.realpath(binary),
         "session_id": session_id,
         "sessions_in_fixture_dir": len(dir_items),
         "prepared_session_has_messages": bool(messages),
         "binding_violation": binding_violation,
+        "selected_scheduler_skills": selected_skills,
+        "expected_scheduler_skills": expected_skills,
+        "jspace_selected": jspace_selected,
+        "skill_isolation_violation": skill_isolation_violation,
+        "skill_ab_pinned": pin_skill_ab,
+        "scheduler_model_calls": model_calls,
+        "skill_prompt_tokens_per_call": skill_prompt_tokens_per_call,
+        "fixed_skill_prompt_tokens": fixed_skill_prompt_tokens,
+        "net_task_tokens": max(0, total_tokens - fixed_skill_prompt_tokens),
         "exit_code": process["exit_code"],
+        "cli_stdout_tail": process.get("stdout_tail", ""),
+        "cli_stderr_tail": process.get("stderr_tail", ""),
         "elapsed_s": round(elapsed, 1),
         "process_completed": process["exit_code"] != "timeout",
         "verify_ok": verify_ok,
@@ -839,244 +755,6 @@ def run_one(binary, model, task_name, task, group, seed, workroot, watcher, resu
     }
 
 
-def mean_available(items, field, digits=3):
-    values = [item[field] for item in items if isinstance(item.get(field), (int, float))]
-    return round(sum(values) / len(values), digits) if values else None
-
-
-def rate(items, field):
-    values = [item.get(field) for item in items if item.get(field) is not None]
-    return (sum(value is True for value in values) / len(values)) if values else None
-
-
-def wilson(successes, total, z=1.96):
-    if total == 0:
-        return None
-    proportion = successes / total
-    denominator = 1 + z * z / total
-    center = (proportion + z * z / (2 * total)) / denominator
-    margin = z * math.sqrt(
-        proportion * (1 - proportion) / total + z * z / (4 * total * total)
-    ) / denominator
-    return [round(max(0.0, center - margin), 4), round(min(1.0, center + margin), 4)]
-
-
-def aggregate(items):
-    verified = sum(item.get("verify_ok") is True for item in items)
-    recovery_values = [
-        item for item in items if item.get("workflow_recovery_success") is not None
-    ]
-    restoration_values = [item for item in items if item.get("state_restoration_ok") is not None]
-    return {
-        "n": len(items),
-        "verify_pass_rate": round(verified / len(items), 4) if items else None,
-        "verify_wilson_95": wilson(verified, len(items)),
-        "process_completion_rate": round(rate(items, "process_completed") or 0.0, 4),
-        "workflow_recovery_success_rate": (
-            round(rate(recovery_values, "workflow_recovery_success"), 4)
-            if recovery_values
-            else None
-        ),
-        "state_restoration_rate": (
-            round(rate(restoration_values, "state_restoration_ok"), 4)
-            if restoration_values
-            else None
-        ),
-        "mean_elapsed_s": mean_available(items, "elapsed_s", 1),
-        "mean_total_tokens": mean_available(items, "total_tokens", 1),
-        "mean_provider_cost": mean_available(items, "provider_cost", 6),
-        "mean_first_effective_action_latency_s": mean_available(
-            items, "first_effective_action_latency_s", 3
-        ),
-        "mean_blank_retry_count": mean_available(items, "blank_retry_count", 3),
-        "ledger_revision_conflicts": sum(
-            item.get("ledger_revision_conflict_count", 0) or 0 for item in items
-        ),
-        "stall_triggers": sum(item.get("stall_triggered") is True for item in items),
-        "stall_false_positive_proxies": sum(
-            item.get("stall_false_positive_proxy") is True for item in items
-        ),
-        "unsupported_done": sum(
-            item.get("process_completed")
-            and not item.get("verify_ok")
-            and item.get("ledger_open", 0) == 0
-            for item in items
-        ),
-        "unsafe_native_completions": sum(
-            item.get("native_ledger_completed") is True and not item.get("verify_ok")
-            for item in items
-        ),
-        "binding_violations": sum(item.get("binding_violation") is True for item in items),
-        "permission_bypasses": sum(item.get("permission_bypass") is True for item in items),
-        "prompt_surface_divergences": sum(
-            item.get("prompt_surface_divergence") is True for item in items
-        ),
-    }
-
-
-def gate(status, measured, requirement, detail):
-    return {
-        "status": status,
-        "measured": measured,
-        "requirement": requirement,
-        "detail": detail,
-    }
-
-
-def ratio(numerator, denominator):
-    if not isinstance(numerator, (int, float)) or not isinstance(denominator, (int, float)):
-        return None
-    if denominator <= 0:
-        return None
-    return numerator / denominator
-
-
-def decide_default(records):
-    valid = [item for item in records if not item.get("binding_violation")]
-    control = [item for item in valid if item["group"] == "control"]
-    ledger = [item for item in valid if item["group"] == "ledger"]
-    short_control = [item for item in control if item["category"] == "short"]
-    short_ledger = [item for item in ledger if item["category"] == "short"]
-    long_control = [item for item in control if item["category"] == "long"]
-    long_ledger = [item for item in ledger if item["category"] == "long"]
-
-    gates = {}
-    if not long_control or not long_ledger:
-        gates["long_task_completion"] = gate(
-            "inconclusive", None, f"ledger-control >= {LONG_IMPROVEMENT_MIN:.0%}", "missing arm data"
-        )
-    else:
-        control_rate = rate(long_control, "verify_ok")
-        ledger_rate = rate(long_ledger, "verify_ok")
-        improvement = ledger_rate - control_rate
-        status = "pass" if improvement >= LONG_IMPROVEMENT_MIN else "not_met"
-        gates["long_task_completion"] = gate(
-            status,
-            {
-                "control": round(control_rate, 4),
-                "ledger": round(ledger_rate, 4),
-                "difference": round(improvement, 4),
-                "control_wilson_95": wilson(sum(i["verify_ok"] for i in long_control), len(long_control)),
-                "ledger_wilson_95": wilson(sum(i["verify_ok"] for i in long_ledger), len(long_ledger)),
-            },
-            f"ledger completion improves by at least {LONG_IMPROVEMENT_MIN:.0%}",
-            "A tie is not evidence of improvement.",
-        )
-
-    short_control_agg = aggregate(short_control) if short_control else {}
-    short_ledger_agg = aggregate(short_ledger) if short_ledger else {}
-    time_ratio = ratio(short_ledger_agg.get("mean_elapsed_s"), short_control_agg.get("mean_elapsed_s"))
-    token_ratio = ratio(
-        short_ledger_agg.get("mean_total_tokens"), short_control_agg.get("mean_total_tokens")
-    )
-    short_available = time_ratio is not None and token_ratio is not None
-    gates["short_task_overhead"] = gate(
-        (
-            "pass"
-            if short_available and time_ratio <= SHORT_OVERHEAD_BUDGET and token_ratio <= SHORT_OVERHEAD_BUDGET
-            else "not_met" if short_available else "inconclusive"
-        ),
-        {
-            "time_ratio": round(time_ratio, 4) if time_ratio is not None else None,
-            "token_ratio": round(token_ratio, 4) if token_ratio is not None else None,
-        },
-        f"both ledger/control ratios <= {SHORT_OVERHEAD_BUDGET:.2f}",
-        "Budget was preregistered before the formal matrix run.",
-    )
-
-    recovery_control = [
-        item for item in control if item["workflow"] in ("compaction", "resume")
-    ]
-    recovery_ledger = [
-        item for item in ledger if item["workflow"] in ("compaction", "resume")
-    ]
-    if not recovery_control or not recovery_ledger:
-        gates["recovery"] = gate(
-            "inconclusive", None, "exact typed restoration and improved workflow recovery", "missing recovery data"
-        )
-    else:
-        control_rate = rate(recovery_control, "workflow_recovery_success")
-        ledger_rate = rate(recovery_ledger, "workflow_recovery_success")
-        restoration_rate = rate(recovery_ledger, "state_restoration_ok")
-        improvement = ledger_rate - control_rate
-        passed = restoration_rate == 1.0 and improvement >= RECOVERY_IMPROVEMENT_MIN
-        gates["recovery"] = gate(
-            "pass" if passed else "not_met",
-            {
-                "control_workflow_success": round(control_rate, 4),
-                "ledger_workflow_success": round(ledger_rate, 4),
-                "difference": round(improvement, 4),
-                "ledger_exact_state_restoration": round(restoration_rate, 4),
-            },
-            f"100% exact typed restoration and >= {RECOVERY_IMPROVEMENT_MIN:.0%} workflow improvement",
-            "Exact authority preservation alone does not prove outcome improvement.",
-        )
-
-    control_unsupported = sum(
-        item.get("process_completed") and not item.get("verify_ok") for item in control
-    )
-    ledger_unsupported = sum(
-        item.get("process_completed") and not item.get("verify_ok") for item in ledger
-    )
-    gates["unsupported_completion"] = gate(
-        "pass" if ledger_unsupported < control_unsupported else "not_met",
-        {"control": control_unsupported, "ledger": ledger_unsupported},
-        "ledger count is strictly lower and unsafe native completions are zero",
-        "A zero/zero tie is safe but does not demonstrate a reduction.",
-    )
-    unsafe = sum(
-        any(
-            (
-                item.get("binding_violation") is True,
-                item.get("permission_bypass") is True,
-                item.get("prompt_surface_divergence") is True,
-                item.get("native_ledger_completed") is True
-                and not item.get("verify_ok"),
-            )
-        )
-        for item in records
-    )
-    gates["authority_and_safety"] = gate(
-        "pass" if unsafe == 0 else "not_met",
-        {"violations": unsafe},
-        "zero permission bypass, prompt divergence, cross-session pollution, or unsafe native completion",
-        "All abnormal samples remain in the denominator.",
-    )
-    enabled = all(item["status"] == "pass" for item in gates.values())
-    return {
-        "native_ledger_default_enabled": enabled,
-        "decision": "enable" if enabled else "keep_disabled",
-        "gates": gates,
-    }
-
-
-def summarize(records):
-    by_group = {}
-    by_task_group = {}
-    for group in sorted({item["group"] for item in records}):
-        by_group[group] = aggregate([item for item in records if item["group"] == group])
-    for task in sorted({item["task"] for item in records}):
-        by_task_group[task] = {}
-        for group in sorted({item["group"] for item in records if item["task"] == task}):
-            by_task_group[task][group] = aggregate(
-                [item for item in records if item["task"] == task and item["group"] == group]
-            )
-    return {
-        "protocol": {
-            "task_count": len({item["task"] for item in records}),
-            "groups": sorted({item["group"] for item in records}),
-            "seeds": sorted({item["seed"] for item in records}),
-            "models": sorted({item["model"] for item in records}),
-            "short_overhead_budget": SHORT_OVERHEAD_BUDGET,
-            "long_improvement_min": LONG_IMPROVEMENT_MIN,
-            "recovery_improvement_min": RECOVERY_IMPROVEMENT_MIN,
-        },
-        "by_group": by_group,
-        "by_task_group": by_task_group,
-        "default_policy": decide_default(records),
-    }
-
-
 def main():
     global BASE
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1084,13 +762,30 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--model", default="deepseek/deepseek-v4-flash")
     parser.add_argument("--seeds", type=int, default=5)
+    parser.add_argument("--seed-start", type=int, default=1)
     parser.add_argument("--groups", default="control,skill,ledger")
     parser.add_argument("--tasks", default=",".join(TASKS))
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--resume-pause-secs", type=float, default=10.0)
+    parser.add_argument(
+        "--pin-skill-ab",
+        action="store_true",
+        help="Pin identical user Blueprints whose only skill difference is j-space",
+    )
+    parser.add_argument(
+        "--skill-prompt-tokens-per-call",
+        type=int,
+        default=0,
+        help="Measured model-specific fixed j-space prompt tokens to deduct from net task tokens",
+    )
     parser.add_argument("--out", default="/tmp/task-governance-ab.jsonl")
     parser.add_argument("--keep-workspaces", action="store_true")
     args = parser.parse_args()
+
+    if args.skill_prompt_tokens_per_call < 0:
+        parser.error("--skill-prompt-tokens-per-call must be non-negative")
+    if args.seeds < 1 or args.seed_start < 1:
+        parser.error("--seeds and --seed-start must be positive")
 
     BASE = args.base_url.rstrip("/")
     print(f"server: {http('GET', '/health', timeout=5)}")
@@ -1108,8 +803,8 @@ def main():
     jobs = [
         (task_name, group, seed)
         for task_name in task_names
+        for seed in range(args.seed_start, args.seed_start + args.seeds)
         for group in groups
-        for seed in range(1, args.seeds + 1)
     ]
     records = []
     lock = threading.Lock()
@@ -1128,6 +823,8 @@ def main():
                 workroot,
                 watcher,
                 args.resume_pause_secs,
+                args.pin_skill_ab,
+                args.skill_prompt_tokens_per_call,
             )
         except Exception as error:
             record = {

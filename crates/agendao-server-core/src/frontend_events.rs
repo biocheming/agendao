@@ -150,12 +150,13 @@ pub enum FrontendEvent {
     },
 
     // ── Task ledger ──────────────────────────────────────────────────
-    /// The session task ledger was committed at a new revision.
+    /// The session task ledger was committed at a new revision. `ledger`
+    /// carries the raw authority plus the server-derived rendering projection.
     #[serde(rename = "task-ledger.replaced")]
     TaskLedgerReplaced {
         #[serde(rename = "sessionID")]
         session_id: String,
-        ledger: agendao_types::task_ledger::SessionTaskLedger,
+        ledger: agendao_types::task_ledger::SessionTaskLedgerView,
         cause: agendao_types::task_ledger::TaskLedgerCause,
     },
 

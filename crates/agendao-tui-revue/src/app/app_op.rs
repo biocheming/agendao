@@ -96,7 +96,7 @@ pub struct SessionOpenData {
     pub todos: Result<Vec<agendao_client::ApiTodoItem>, String>,
     pub questions: Result<Vec<agendao_client::QuestionInfo>, String>,
     pub permissions: Result<Vec<agendao_client::PermissionRequestInfo>, String>,
-    pub task_ledger: Result<agendao_types::task_ledger::SessionTaskLedger, String>,
+    pub task_ledger: Result<agendao_types::task_ledger::SessionTaskLedgerView, String>,
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。

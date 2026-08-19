@@ -359,6 +359,14 @@ pub(crate) async fn persist_session_if_enabled(state: &Arc<ServerState>, session
     }
 }
 
+/// Persist session-row fields only. Use this for metadata/status mutations
+/// that cannot add, edit, or remove messages.
+pub(crate) async fn persist_session_record_if_enabled(state: &Arc<ServerState>, session_id: &str) {
+    if let Err(err) = state.flush_session_record_to_storage(session_id).await {
+        tracing::error!("failed to sync session record to storage: {}", err);
+    }
+}
+
 pub(crate) fn resolved_session_directory(raw: &str, workspace_root: &FsPath) -> String {
     let trimmed = raw.trim();
     let candidate = if trimmed.is_empty() || trimmed == "." {
@@ -563,7 +571,7 @@ pub(super) async fn create_session(
     // 增量持久化：只 flush 新建的这一个 session，避免全量 sync（create 慢根因
     // ——全量 clone+flush 全部 sessions 实测 ≈1.4s）。create 不删除 session，
     // stale 清理在此冗余；其他 session 未变更，重复 flush 冗余。
-    if let Err(err) = state.sync_session_to_storage(&session).await {
+    if let Err(err) = state.flush_session_to_storage(&session.id).await {
         tracing::error!("failed to sync new session to storage: {}", err);
     }
     Ok(Json(session_to_info(&session)))
@@ -654,7 +662,7 @@ pub(super) async fn update_session(
     }
     let info = session_to_info(session);
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -783,7 +791,7 @@ pub(super) async fn share_session(
         .share(&id, share_url.clone())
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(SessionShareInfo { url: share_url }))
 }
 
@@ -796,7 +804,7 @@ pub(super) async fn unshare_session(
         .unshare(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(serde_json::json!({ "unshared": true })))
 }
 
@@ -818,7 +826,7 @@ pub(super) async fn archive_session(
         session_to_info(session)
     };
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -837,7 +845,7 @@ pub(super) async fn set_session_title(
     let info = session_to_info(&updated);
     drop(sessions);
     broadcast_session_reconcile(state.as_ref(), &id, ReconcileReason::MetadataChange).await;
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -866,7 +874,7 @@ pub(super) async fn set_session_permission(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1530,7 +1538,7 @@ pub(super) async fn set_session_summary(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1557,7 +1565,7 @@ pub(super) async fn session_revert(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 
@@ -1571,7 +1579,7 @@ pub(super) async fn clear_session_revert(
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
     let info = session_to_info(&updated);
     drop(sessions);
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(info))
 }
 

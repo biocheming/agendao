@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use agendao_types::task_ledger::{
-    SessionTaskLedger, TaskLedgerCause, TaskLedgerOp, VerificationCoverage, VerifierRef,
+    SessionTaskLedgerView, TaskLedgerCause, TaskLedgerOp, VerificationCoverage, VerifierRef,
 };
 
 use crate::error::ApiError;
@@ -29,9 +29,9 @@ fn non_empty(value: &str) -> bool {
 pub(crate) async fn get_task_ledger(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
-) -> Result<Json<SessionTaskLedger>> {
+) -> Result<Json<SessionTaskLedgerView>> {
     let snapshot = task_ledger_snapshot(&state, &id).await?;
-    Ok(Json(snapshot))
+    Ok(Json(SessionTaskLedgerView::from(snapshot)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,7 +42,7 @@ pub(crate) struct TaskLedgerPatchRequest {
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct TaskLedgerWriteResponse {
-    pub ledger: SessionTaskLedger,
+    pub ledger: SessionTaskLedgerView,
     pub cause: TaskLedgerCause,
     pub metadata_key: &'static str,
 }
@@ -55,7 +55,7 @@ pub(crate) async fn patch_task_ledger(
     crate::session_runtime::task_ledger::validate_external_op(&req.op)?;
     let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, req.op).await?;
     Ok(Json(TaskLedgerWriteResponse {
-        ledger,
+        ledger: SessionTaskLedgerView::from(ledger),
         cause,
         metadata_key: TASK_LEDGER_METADATA_KEY,
     }))
@@ -77,17 +77,16 @@ pub(crate) struct CheckpointRequest {
     pub supersedes: Option<String>,
 }
 
-pub(crate) async fn add_task_ledger_checkpoint(
-    State(state): State<Arc<ServerState>>,
-    Path(id): Path<String>,
-    Json(req): Json<CheckpointRequest>,
-) -> Result<Json<TaskLedgerWriteResponse>> {
+/// Translate the legacy checkpoint payload into the canonical typed operation.
+/// The adapter owns only wire-shape compatibility; validation and persistence
+/// remain exclusively in `validate_external_op` and `apply_task_ledger_op`.
+fn checkpoint_operation(req: CheckpointRequest) -> Result<TaskLedgerOp> {
     if !non_empty(&req.claim) {
         return Err(ApiError::BadRequest(
             "checkpoint claim must not be empty".into(),
         ));
     }
-    let op = TaskLedgerOp::AddCheckpoint {
+    Ok(TaskLedgerOp::AddCheckpoint {
         claim: req.claim,
         verifier: req.verifier,
         coverage: req.coverage,
@@ -95,11 +94,23 @@ pub(crate) async fn add_task_ledger_checkpoint(
         evidence_artifact_ids: req.evidence_artifact_ids,
         source_stage_id: req.source_stage_id,
         supersedes: req.supersedes,
-    };
+    })
+}
+
+/// Compatibility endpoint for older integrations. New clients may use the
+/// generic PATCH operation, but this route remains a thin adapter to the same
+/// authority and is intentionally retained until a versioned API can remove it.
+pub(crate) async fn add_task_ledger_checkpoint(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    Json(req): Json<CheckpointRequest>,
+) -> Result<Json<TaskLedgerWriteResponse>> {
+    let expected_revision = req.expected_revision;
+    let op = checkpoint_operation(req)?;
     crate::session_runtime::task_ledger::validate_external_op(&op)?;
-    let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, op).await?;
+    let (ledger, cause) = apply_task_ledger_op(&state, &id, expected_revision, op).await?;
     Ok(Json(TaskLedgerWriteResponse {
-        ledger,
+        ledger: SessionTaskLedgerView::from(ledger),
         cause,
         metadata_key: TASK_LEDGER_METADATA_KEY,
     }))
@@ -128,7 +139,7 @@ pub(crate) async fn add_task_ledger_open(
     )
     .await?;
     Ok(Json(TaskLedgerWriteResponse {
-        ledger,
+        ledger: SessionTaskLedgerView::from(ledger),
         cause,
         metadata_key: TASK_LEDGER_METADATA_KEY,
     }))
@@ -165,7 +176,7 @@ pub(crate) async fn close_task_ledger_open(
     crate::session_runtime::task_ledger::validate_external_op(&op)?;
     let (ledger, cause) = apply_task_ledger_op(&state, &id, req.expected_revision, op).await?;
     Ok(Json(TaskLedgerWriteResponse {
-        ledger,
+        ledger: SessionTaskLedgerView::from(ledger),
         cause,
         metadata_key: TASK_LEDGER_METADATA_KEY,
     }))
@@ -176,7 +187,7 @@ mod tests {
     use super::*;
     use agendao_types::task_ledger::VerifierRef;
 
-    fn checkpoint_op(verifier: VerifierRef) -> TaskLedgerOp {
+    fn test_checkpoint_op(verifier: VerifierRef) -> TaskLedgerOp {
         TaskLedgerOp::AddCheckpoint {
             claim: "c".to_string(),
             verifier,
@@ -202,14 +213,15 @@ mod tests {
                 name: "y".to_string(),
             },
         ] {
-            let err =
-                crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(verifier))
-                    .expect_err("machine verifier must be rejected");
+            let err = crate::session_runtime::task_ledger::validate_external_op(
+                &test_checkpoint_op(verifier),
+            )
+            .expect_err("machine verifier must be rejected");
             assert!(err.to_string().contains("cannot be"), "{err}");
         }
         // Explicit user confirmation remains the legitimate external path.
         assert!(
-            crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(
+            crate::session_runtime::task_ledger::validate_external_op(&test_checkpoint_op(
                 VerifierRef::UserConfirmation {
                     actor: "user".to_string()
                 }
@@ -245,7 +257,7 @@ mod tests {
                 .expect_err("external actor provenance must not be forgeable");
             assert!(err.to_string().contains("actor=user"));
         }
-        let err = crate::session_runtime::task_ledger::validate_external_op(&checkpoint_op(
+        let err = crate::session_runtime::task_ledger::validate_external_op(&test_checkpoint_op(
             VerifierRef::UserConfirmation {
                 actor: "evaluator".to_string(),
             },
@@ -272,5 +284,40 @@ mod tests {
                 .expect_err("external callers cannot forge lifecycle transitions");
             assert!(err.to_string().contains("internal execution seams"));
         }
+    }
+
+    #[test]
+    fn legacy_checkpoint_payload_maps_to_canonical_add_checkpoint_op() {
+        let request = CheckpointRequest {
+            expected_revision: 4,
+            claim: "tests pass".to_string(),
+            verifier: VerifierRef::UserConfirmation {
+                actor: "user".to_string(),
+            },
+            coverage: VerificationCoverage {
+                scope: "workspace".to_string(),
+            },
+            covered_criteria: vec!["criterion".to_string()],
+            evidence_artifact_ids: vec!["artifact".to_string()],
+            source_stage_id: Some("stage".to_string()),
+            supersedes: Some("old-checkpoint".to_string()),
+        };
+        let operation = checkpoint_operation(request).expect("valid compatibility payload");
+        assert_eq!(
+            operation,
+            TaskLedgerOp::AddCheckpoint {
+                claim: "tests pass".to_string(),
+                verifier: VerifierRef::UserConfirmation {
+                    actor: "user".to_string(),
+                },
+                coverage: VerificationCoverage {
+                    scope: "workspace".to_string(),
+                },
+                covered_criteria: vec!["criterion".to_string()],
+                evidence_artifact_ids: vec!["artifact".to_string()],
+                source_stage_id: Some("stage".to_string()),
+                supersedes: Some("old-checkpoint".to_string()),
+            }
+        );
     }
 }

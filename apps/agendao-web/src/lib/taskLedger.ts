@@ -14,6 +14,40 @@ export type TaskLedgerVerifier =
   | { deterministic_check: { description: string } }
   | { user_confirmation: { actor: string } };
 
+export interface TaskLedgerCoreConstraint {
+  id: string;
+  statement: string;
+  live: boolean;
+  set_by?: TaskLedgerActor;
+  set_at?: number;
+}
+
+export interface TaskLedgerCheckpoint {
+  id: string;
+  claim: string;
+  verifier: TaskLedgerVerifier;
+  coverage: { scope: string };
+  goal_generation?: number;
+  covered_criteria?: string[];
+  evidence_artifact_ids?: string[];
+  source_stage_id?: string | null;
+  superseded_by?: string | null;
+}
+
+export interface TaskLedgerOpenQuestion {
+  id: string;
+  question: string;
+  settled_by: string;
+  closed_by_checkpoint_id?: string | null;
+}
+
+export interface TaskLedgerProjection {
+  live_core: TaskLedgerCoreConstraint[];
+  open_questions: TaskLedgerOpenQuestion[];
+  current_checkpoints: Array<TaskLedgerCheckpoint & { verifier_label: string }>;
+  missing_acceptance_criteria: string[];
+}
+
 export interface SessionTaskLedger {
   session_id: string;
   revision: number;
@@ -25,30 +59,9 @@ export interface SessionTaskLedger {
     set_by: TaskLedgerActor;
     set_at: number;
   } | null;
-  core: Array<{
-    id: string;
-    statement: string;
-    live: boolean;
-    set_by?: TaskLedgerActor;
-    set_at?: number;
-  }>;
-  verified: Array<{
-    id: string;
-    claim: string;
-    verifier: TaskLedgerVerifier;
-    coverage: { scope: string };
-    goal_generation?: number;
-    covered_criteria?: string[];
-    evidence_artifact_ids?: string[];
-    source_stage_id?: string | null;
-    superseded_by?: string | null;
-  }>;
-  open: Array<{
-    id: string;
-    question: string;
-    settled_by: string;
-    closed_by_checkpoint_id?: string | null;
-  }>;
+  core: TaskLedgerCoreConstraint[];
+  verified: TaskLedgerCheckpoint[];
+  open: TaskLedgerOpenQuestion[];
   next: {
     statement: string;
     provenance: { actor: TaskLedgerActor; pre_interrupt: boolean; set_at?: number };
@@ -58,22 +71,11 @@ export interface SessionTaskLedger {
   blocked_reason?: string | null;
   uncovered_criteria?: string[];
   updated_at: number;
+  projection: TaskLedgerProjection;
 }
 
 export interface TaskLedgerWriteResponse {
   ledger: SessionTaskLedger;
   cause: string;
   metadata_key: string;
-}
-
-export function openQuestions(ledger: SessionTaskLedger) {
-  return ledger.open.filter((question) => !question.closed_by_checkpoint_id);
-}
-
-export function activeCheckpoints(ledger: SessionTaskLedger) {
-  return ledger.verified.filter(
-    (checkpoint) =>
-      !checkpoint.superseded_by &&
-      (checkpoint.goal_generation ?? 0) === (ledger.goal_generation ?? 0),
-  );
 }

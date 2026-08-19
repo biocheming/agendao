@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use agendao_config::{Config as AppConfig, ModelConfig};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
-use agendao_types::task_ledger::{SessionTaskLedger, TaskLedgerOp};
+use agendao_types::task_ledger::{SessionTaskLedger, SessionTaskLedgerView, TaskLedgerOp};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
@@ -1335,9 +1335,20 @@ impl AsyncApiClient {
         expected_revision: u64,
         op: TaskLedgerOp,
     ) -> anyhow::Result<SessionTaskLedger> {
+        self.apply_task_ledger_op_view(session_id, expected_revision, op)
+            .await
+            .map(|view| view.ledger)
+    }
+
+    pub async fn apply_task_ledger_op_view(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        op: TaskLedgerOp,
+    ) -> anyhow::Result<SessionTaskLedgerView> {
         #[derive(serde::Deserialize)]
         struct WriteResult {
-            ledger: SessionTaskLedger,
+            ledger: SessionTaskLedgerView,
         }
 
         let result: WriteResult = self

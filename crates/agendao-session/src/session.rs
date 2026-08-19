@@ -789,13 +789,6 @@ impl Session {
             .find(|m| matches!(m.role, MessageRole::User))
     }
 
-    pub fn last_owner_local_user_message(&self) -> Option<&SessionMessage> {
-        self.inner.messages.iter().rev().find(|message| {
-            matches!(message.role, MessageRole::User)
-                && !Self::is_imported_fork_history_message(message)
-        })
-    }
-
     /// Get the last assistant message
     pub fn last_assistant_message(&self) -> Option<&SessionMessage> {
         self.inner
@@ -1611,6 +1604,12 @@ impl SessionManager {
         self.sessions.values().map(Arc::as_ref).collect()
     }
 
+    /// Snapshot shared handles without cloning each session's messages and
+    /// metadata. Writers remain isolated through `Arc::make_mut`.
+    pub fn list_shared(&self) -> Vec<Arc<Session>> {
+        self.sessions.values().cloned().collect()
+    }
+
     /// List sessions with filters
     pub fn list_filtered(&self, filter: SessionFilter) -> Vec<&Session> {
         self.sessions
@@ -2210,7 +2209,6 @@ mod tests {
             SessionForkLifecycleScope::ForkPromptSurface
         );
         assert!(forked.is_imported_fork_history_message_id(&forked.record().messages[0].id));
-        assert!(forked.last_owner_local_user_message().is_none());
         assert_eq!(
             forked
                 .last_owner_local_assistant_message()

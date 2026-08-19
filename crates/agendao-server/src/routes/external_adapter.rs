@@ -844,7 +844,7 @@ async fn provision_generic_webhook_session(
     // 增量持久化：只 flush 刚 provision 的这一个 session（新建，无删除，
     // 无需全量 sync 的 stale 清理）。错误语义不变：持久化失败则请求失败。
     state
-        .sync_session_to_storage(&session)
+        .flush_session_to_storage(&session.id)
         .await
         .map_err(|error| {
             ApiError::InternalError(format!(

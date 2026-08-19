@@ -14,6 +14,7 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::Weak;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
@@ -300,6 +301,7 @@ pub struct ServerState {
     /// 闸门处按需回填并移出集合；flush 路径对仍 dehydrated 的会话只写 session
     /// 行、绝不动 messages（防止空内存镜像删光库存消息）。
     pub(crate) dehydrated_sessions: tokio::sync::RwLock<std::collections::HashSet<String>>,
+    session_persist_gates: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 impl Drop for ServerState {
@@ -403,7 +405,19 @@ impl ServerState {
             file_time_tracker,
             recheck_cancel: tokio_util::sync::CancellationToken::new(),
             dehydrated_sessions: tokio::sync::RwLock::new(std::collections::HashSet::new()),
+            session_persist_gates: Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn session_persist_gate(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.session_persist_gates.lock().await;
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = gates.get(session_id).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(session_id.to_string(), Arc::downgrade(&gate));
+        gate
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -787,38 +801,62 @@ impl ServerState {
     }
 
     /// Flush a single session (and its messages) to storage inside a transaction.
-    /// Used after prompt ends — avoids scanning all sessions.
+    /// The shared Arc is an immutable snapshot; unlike the old path this does
+    /// not clone the Session or round-trip it through serde before the write.
+    /// Used at message/run boundaries — avoids scanning all sessions.
     pub async fn flush_session_to_storage(&self, session_id: &str) -> anyhow::Result<()> {
         let Some(session_repo) = &self.session_repo else {
             return Ok(());
         };
-
+        let gate = self.session_persist_gate(session_id).await;
+        let _persist_guard = gate.lock().await;
         let session = {
             let manager = self.sessions.lock().await;
-            manager.get(session_id).cloned()
+            manager.get_shared(session_id)
         };
 
         let Some(session) = session else {
             return Ok(());
         };
 
-        let stored: agendao_types::Session =
-            serde_json::from_value(serde_json::to_value(&session)?)?;
-        let mut persisted = stored.clone();
-        let messages = std::mem::take(&mut persisted.messages);
+        let record = session.record();
 
         // 懒加载守卫：会话消息体未水合时，内存里的空消息列表不是真相——
         // 只 upsert session 行（rename/用量等元数据变更照写），**绝不进入
         // flush_with_messages 的 delete-stale 分支**（否则库存消息被清空）。
         if self.dehydrated_sessions.read().await.contains(session_id) {
-            session_repo.upsert(&persisted).await?;
+            session_repo.upsert(record).await?;
             return Ok(());
         }
 
         session_repo
-            .flush_with_messages(&persisted, &messages)
+            .flush_with_messages(record, &record.messages)
             .await?;
-        self.runtime_memory.ingest_session_record(&stored).await?;
+        self.runtime_memory.ingest_session_record(record).await?;
+
+        Ok(())
+    }
+
+    /// Persist session-row state without rewriting its message collection.
+    ///
+    /// Governance seams only mutate metadata/status fields. Keeping those
+    /// commits durable via a row upsert avoids serializing and upserting every
+    /// historical message several times during one run.
+    pub async fn flush_session_record_to_storage(&self, session_id: &str) -> anyhow::Result<()> {
+        let Some(session_repo) = &self.session_repo else {
+            return Ok(());
+        };
+        let gate = self.session_persist_gate(session_id).await;
+        let _persist_guard = gate.lock().await;
+        let session = {
+            let manager = self.sessions.lock().await;
+            manager.get_shared(session_id)
+        };
+        let Some(session) = session else {
+            return Ok(());
+        };
+
+        session_repo.upsert(session.record()).await?;
 
         Ok(())
     }
@@ -829,9 +867,9 @@ impl ServerState {
             return Ok(());
         };
 
-        let snapshot: Vec<agendao_session::Session> = {
+        let snapshot: Vec<Arc<agendao_session::Session>> = {
             let manager = self.sessions.lock().await;
-            manager.list().into_iter().cloned().collect()
+            manager.list_shared()
         };
 
         // Clean up sessions that were deleted in-memory but still persisted.
@@ -847,62 +885,21 @@ impl ServerState {
 
         // Flush each session transactionally (upsert session + messages + delete stale).
         for session in snapshot {
-            let stored_session: agendao_types::Session =
-                serde_json::from_value(serde_json::to_value(&session)?)?;
-            let mut persisted_session = stored_session.clone();
-            let stored_messages = std::mem::take(&mut persisted_session.messages);
+            let record = session.record();
 
             // 懒加载守卫：dehydrated 会话的内存消息为空——只写 session 行，
             // 跳过 messages 的 upsert/delete-stale（防库存消息被空镜像清掉）。
-            if self
-                .dehydrated_sessions
-                .read()
-                .await
-                .contains(&stored_session.id)
-            {
-                session_repo.upsert(&persisted_session).await?;
+            if self.dehydrated_sessions.read().await.contains(&record.id) {
+                session_repo.upsert(record).await?;
                 continue;
             }
 
             session_repo
-                .flush_with_messages(&persisted_session, &stored_messages)
+                .flush_with_messages(record, &record.messages)
                 .await?;
-            self.runtime_memory
-                .ingest_session_record(&stored_session)
-                .await?;
+            self.runtime_memory.ingest_session_record(record).await?;
         }
 
-        Ok(())
-    }
-
-    /// 增量持久化：只 flush 指定的单个 session。
-    ///
-    /// `sync_sessions_to_storage` 是全量同步——clone + 序列化 + DB upsert +
-    /// telemetry/memory ingest **全部** sessions。sessions 数量大时它是
-    /// 单点变更路径的主要耗时（实测 121 sessions ≈ 1.4s，几乎全部花在
-    /// 重复 flush 未变更的 session 上）。只新增/变更单个 session、不删除
-    /// 任何 session 时，stale 清理与其他 session 的重复 flush 都是冗余。
-    /// 调用方持有 session 引用时用本函数（如 `create_session`）；只有
-    /// session id 时用 `flush_session_to_storage`（另带懒加载守卫）。
-    /// 全量 `sync_sessions_to_storage` 仍保留给删除/启动恢复等需要
-    /// stale 清理的路径。
-    pub async fn sync_session_to_storage(
-        &self,
-        session: &agendao_session::Session,
-    ) -> anyhow::Result<()> {
-        let Some(session_repo) = &self.session_repo else {
-            return Ok(());
-        };
-        let stored_session: agendao_types::Session =
-            serde_json::from_value(serde_json::to_value(session)?)?;
-        let mut persisted_session = stored_session.clone();
-        let stored_messages = std::mem::take(&mut persisted_session.messages);
-        session_repo
-            .flush_with_messages(&persisted_session, &stored_messages)
-            .await?;
-        self.runtime_memory
-            .ingest_session_record(&stored_session)
-            .await?;
         Ok(())
     }
 }
@@ -1621,6 +1618,73 @@ async fn run_server_with_unix_socket(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[tokio::test]
+    async fn record_only_flush_persists_metadata_without_rewriting_messages() {
+        let db = Database::in_memory().await.expect("in-memory database");
+        let mut state = ServerState::new();
+        state.session_repo = Some(SessionRepository::new(db.pool().clone()));
+        state.message_repo = Some(MessageRepository::new(db.pool().clone()));
+
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp");
+            let id = session.id.clone();
+            session.push_message(agendao_types::SessionMessage::user(id.clone(), "first"));
+            sessions.update(session);
+            id
+        };
+        state
+            .flush_session_to_storage(&session_id)
+            .await
+            .expect("initial full flush");
+
+        {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.get_mut(&session_id).expect("session");
+            session.insert_metadata("task_ledger", serde_json::json!({ "revision": 2 }));
+            session.push_message(agendao_types::SessionMessage::assistant(session_id.clone()));
+        }
+        state
+            .flush_session_record_to_storage(&session_id)
+            .await
+            .expect("record-only flush");
+
+        let stored = state
+            .session_repo
+            .as_ref()
+            .expect("session repository")
+            .get(&session_id)
+            .await
+            .expect("read session")
+            .expect("stored session");
+        assert_eq!(stored.metadata["task_ledger"]["revision"], 2);
+        let messages = state
+            .message_repo
+            .as_ref()
+            .expect("message repository")
+            .list_for_session(&session_id)
+            .await
+            .expect("read messages");
+        assert_eq!(
+            messages.len(),
+            1,
+            "record-only flush must not touch messages"
+        );
+
+        state
+            .flush_session_to_storage(&session_id)
+            .await
+            .expect("final full flush");
+        let messages = state
+            .message_repo
+            .as_ref()
+            .expect("message repository")
+            .list_for_session(&session_id)
+            .await
+            .expect("read messages");
+        assert_eq!(messages.len(), 2);
+    }
 
     #[tokio::test]
     async fn server_startup_rejects_invalid_workspace_config() {

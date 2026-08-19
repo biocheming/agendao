@@ -4283,7 +4283,9 @@ mod tests {
             todos: Ok(vec![]),
             questions: Ok(vec![]),
             permissions: Ok(vec![]),
-            task_ledger: Ok(agendao_types::task_ledger::SessionTaskLedger::empty("s")),
+            task_ledger: Ok(agendao_types::task_ledger::SessionTaskLedgerView::from(
+                agendao_types::task_ledger::SessionTaskLedger::empty("s"),
+            )),
         }
     }
 

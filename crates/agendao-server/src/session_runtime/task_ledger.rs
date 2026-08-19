@@ -160,6 +160,34 @@ pub(crate) fn cause_for_op(op: &TaskLedgerOp) -> TaskLedgerCause {
     }
 }
 
+/// Commit an already-validated ledger snapshot to the in-memory session and
+/// publish its canonical replacement event. Callers must hold the sessions
+/// write lock so revision order and event order stay identical; persistence
+/// remains a separate step after that lock is released.
+pub(crate) fn commit_snapshot_in_memory(
+    state: &ServerState,
+    session_id: &str,
+    session: &mut agendao_session::Session,
+    snapshot: &SessionTaskLedger,
+    cause: TaskLedgerCause,
+) -> Result<(), ApiError> {
+    session.insert_metadata(
+        TASK_LEDGER_METADATA_KEY.to_string(),
+        serde_json::to_value(snapshot).map_err(|error| {
+            ApiError::InternalError(format!("failed to serialize task ledger: {error}"))
+        })?,
+    );
+    crate::session_runtime::events::broadcast_server_event(
+        state,
+        &agendao_server_core::runtime_events::ServerEvent::TaskLedgerReplaced {
+            session_id: session_id.to_string(),
+            ledger: snapshot.clone(),
+            cause,
+        },
+    );
+    Ok(())
+}
+
 /// Validate + commit one operation under CAS, persist, and broadcast the
 /// replacement event. The session write lock serializes concurrent writers;
 /// a stale `expected_revision` loses cleanly instead of overwriting.
@@ -213,32 +241,22 @@ pub(crate) async fn apply_task_ledger_op_unless_cancelled(
                 serde_json::json!(count),
             );
             drop(sessions);
-            crate::routes::session::session_crud::persist_session_if_enabled(state, session_id)
-                .await;
+            crate::routes::session::session_crud::persist_session_record_if_enabled(
+                state, session_id,
+            )
+            .await;
         }
         return Err(map_ledger_error(session_id, error));
     }
     let snapshot = ledger.clone();
-    session.insert_metadata(
-        TASK_LEDGER_METADATA_KEY.to_string(),
-        serde_json::to_value(&snapshot).map_err(|error| {
-            ApiError::InternalError(format!("failed to serialize task ledger: {error}"))
-        })?,
-    );
     // Broadcast BEFORE releasing the lock and before the (slower) persist:
     // with the write lock held, concurrent applies serialize, so events
     // leave in revision order and no rev2 can overtake rev1 on the bus.
-    crate::session_runtime::events::broadcast_server_event(
-        state,
-        &agendao_server_core::runtime_events::ServerEvent::TaskLedgerReplaced {
-            session_id: session_id.to_string(),
-            ledger: snapshot.clone(),
-            cause: cause.clone(),
-        },
-    );
+    commit_snapshot_in_memory(state, session_id, session, &snapshot, cause.clone())?;
     drop(sessions);
 
-    crate::routes::session::session_crud::persist_session_if_enabled(state, session_id).await;
+    crate::routes::session::session_crud::persist_session_record_if_enabled(state, session_id)
+        .await;
     Ok(Some((snapshot, cause)))
 }
 

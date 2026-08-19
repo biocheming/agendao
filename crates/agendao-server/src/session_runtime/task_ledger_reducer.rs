@@ -286,25 +286,25 @@ async fn dispatch_seam_with_control(
         );
         return None;
     }
-    let value = serde_json::to_value(&staged).ok()?;
-    session.insert_metadata(
-        super::task_ledger::TASK_LEDGER_METADATA_KEY.to_string(),
-        value,
-    );
     // Broadcast under the write lock (see authority): revision order on the
     // bus matches commit order.
     let cause = super::task_ledger::cause_for_seam(&fact);
-    crate::session_runtime::events::broadcast_server_event(
-        state,
-        &agendao_server_core::runtime_events::ServerEvent::TaskLedgerReplaced {
-            session_id: session_id.to_string(),
-            ledger: staged.clone(),
-            cause,
-        },
-    );
+    super::task_ledger::commit_snapshot_in_memory(state, session_id, session, &staged, cause)
+        .ok()?;
     drop(sessions);
 
-    crate::routes::session::session_crud::persist_session_if_enabled(state, session_id).await;
+    // Run-start and final-response commits are followed by one required full
+    // snapshot at the prompt boundary; avoid an intermediate row-only write.
+    let defer_persistence = matches!(
+        fact,
+        TaskLedgerSeamFact::RunStarted
+            | TaskLedgerSeamFact::FinalResponseCommitted
+            | TaskLedgerSeamFact::RecoveryInterrupted
+    );
+    if !defer_persistence {
+        crate::routes::session::session_crud::persist_session_record_if_enabled(state, session_id)
+            .await;
+    }
     let run_started = matches!(
         fact,
         agendao_types::task_ledger::TaskLedgerSeamFact::RunStarted
@@ -485,28 +485,25 @@ pub(crate) async fn verify_goal_criteria(
     if staged.apply_batch(revision, ops, now_ms).is_err() {
         return CriterionVerificationOutcome::Failed;
     }
-    let Ok(value) = serde_json::to_value(&staged) else {
-        return CriterionVerificationOutcome::Failed;
-    };
-    session.insert_metadata(
-        super::task_ledger::TASK_LEDGER_METADATA_KEY.to_string(),
-        value,
-    );
     // Broadcast under the lock (revision order == event order), then drop
-    // the guard BEFORE persisting: flush_session_to_storage re-acquires the
-    // sessions mutex, so persisting under the lock self-deadlocks the
-    // server (bit once in production; invisible in unit tests because
+    // the guard BEFORE persisting: persistence re-acquires the sessions
+    // mutex, so persisting under the lock self-deadlocks the
+    // server (hit once in production; invisible in unit tests because
     // storage-less ServerState::new() early-returns before the lock).
-    crate::session_runtime::events::broadcast_server_event(
+    if super::task_ledger::commit_snapshot_in_memory(
         state,
-        &agendao_server_core::runtime_events::ServerEvent::TaskLedgerReplaced {
-            session_id: session_id.to_string(),
-            ledger: staged.clone(),
-            cause: TaskLedgerCause::CheckpointAdded,
-        },
-    );
+        session_id,
+        session,
+        &staged,
+        TaskLedgerCause::CheckpointAdded,
+    )
+    .is_err()
+    {
+        return CriterionVerificationOutcome::Failed;
+    }
     drop(sessions);
-    crate::routes::session::session_crud::persist_session_if_enabled(state, session_id).await;
+    crate::routes::session::session_crud::persist_session_record_if_enabled(state, session_id)
+        .await;
     CriterionVerificationOutcome::Passed
 }
 

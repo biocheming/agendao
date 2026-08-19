@@ -56,7 +56,8 @@ pub struct SessionStore {
     pub mcp_lsp: Signal<McpLspInfo>,
     /// Task-governance ledger snapshot (Phase 5 renders it; the event
     /// handler is the only writer).
-    pub task_ledger: Signal<Option<std::sync::Arc<agendao_types::task_ledger::SessionTaskLedger>>>,
+    pub task_ledger:
+        Signal<Option<std::sync::Arc<agendao_types::task_ledger::SessionTaskLedgerView>>>,
 
     /// 流式分段的待决集合：`kind:id` 在 `start` 时登记，`full` 时取出。
     /// 见 `apply_assistant_snapshot` 的两种线上 `full` 形态说明。不参与渲染，
@@ -145,7 +146,7 @@ impl SessionStore {
     /// delayed fetch or out-of-order event cannot roll the UI backward.
     pub fn apply_task_ledger_snapshot(
         &self,
-        ledger: agendao_types::task_ledger::SessionTaskLedger,
+        ledger: agendao_types::task_ledger::SessionTaskLedgerView,
     ) -> bool {
         if self.session_id.get().as_deref() != Some(ledger.session_id.as_str())
             || ledger.revision == 0
@@ -1107,12 +1108,14 @@ mod tests {
     fn reset_for_new_session_clears_task_ledger() {
         let store = SessionStore::new();
         store.task_ledger.set(Some(std::sync::Arc::new(
-            agendao_types::task_ledger::SessionTaskLedger {
-                session_id: "ses_t".into(),
-                revision: 7,
-                status: agendao_types::task_ledger::TaskLedgerStatus::Active,
-                ..agendao_types::task_ledger::SessionTaskLedger::empty("ses_t")
-            },
+            agendao_types::task_ledger::SessionTaskLedgerView::from(
+                agendao_types::task_ledger::SessionTaskLedger {
+                    session_id: "ses_t".into(),
+                    revision: 7,
+                    status: agendao_types::task_ledger::TaskLedgerStatus::Active,
+                    ..agendao_types::task_ledger::SessionTaskLedger::empty("ses_t")
+                },
+            ),
         )));
         assert!(store.task_ledger.get().is_some());
         store.reset_for_new_session();
@@ -1128,14 +1131,14 @@ mod tests {
         store.set_session_id("ses_active");
         let mut wrong = agendao_types::task_ledger::SessionTaskLedger::empty("ses_other");
         wrong.revision = 3;
-        assert!(!store.apply_task_ledger_snapshot(wrong));
+        assert!(!store.apply_task_ledger_snapshot(wrong.into()));
 
         let mut current = agendao_types::task_ledger::SessionTaskLedger::empty("ses_active");
         current.revision = 4;
-        assert!(store.apply_task_ledger_snapshot(current));
+        assert!(store.apply_task_ledger_snapshot(current.into()));
         let mut stale = agendao_types::task_ledger::SessionTaskLedger::empty("ses_active");
         stale.revision = 2;
-        assert!(!store.apply_task_ledger_snapshot(stale));
+        assert!(!store.apply_task_ledger_snapshot(stale.into()));
         assert_eq!(store.task_ledger.get().unwrap().revision, 4);
     }
 

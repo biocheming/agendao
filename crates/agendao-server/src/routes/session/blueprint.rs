@@ -14,7 +14,7 @@ use crate::scheduler_runner::{
 };
 use crate::ServerState;
 
-use super::session_crud::persist_session_if_enabled;
+use super::session_crud::persist_session_record_if_enabled;
 
 pub(super) async fn get_session_blueprint(
     State(state): State<Arc<ServerState>>,
@@ -101,7 +101,7 @@ pub(super) async fn set_session_blueprint(
         );
         session.insert_metadata(GENERATED_AGENTS_METADATA_KEY, serde_json::json!([]));
     }
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(view))
 }
 
@@ -154,7 +154,7 @@ pub(super) async fn reject_session_blueprint(
         session.remove_metadata(GENERATED_AGENTS_METADATA_KEY);
         fingerprint
     };
-    persist_session_if_enabled(&state, &id).await;
+    persist_session_record_if_enabled(&state, &id).await;
     Ok(Json(RejectSessionBlueprintResponse {
         rejected_fingerprint,
     }))

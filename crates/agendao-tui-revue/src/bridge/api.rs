@@ -196,16 +196,16 @@ impl ApiBridge {
     pub async fn get_task_ledger_async(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
         if let Some(ref ls) = self.local {
-            return agendao_server::local_get_task_ledger(Arc::clone(ls), session_id).await;
+            return agendao_server::local_get_task_ledger_view(Arc::clone(ls), session_id).await;
         }
         if let Some(ref unix) = self.unix {
-            return unix.get_task_ledger(session_id).await;
+            return unix.get_task_ledger_view(session_id).await;
         }
         let ledger = self
             .client
-            .get_json::<agendao_types::task_ledger::SessionTaskLedger>(
+            .get_json::<agendao_types::task_ledger::SessionTaskLedgerView>(
                 &format!("/session/{session_id}/task-ledger"),
                 "get task ledger",
             )
@@ -216,7 +216,7 @@ impl ApiBridge {
     pub fn get_task_ledger(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
         self.block_on(self.get_task_ledger_async(session_id))
     }
 
@@ -225,9 +225,9 @@ impl ApiBridge {
         session_id: &str,
         expected_revision: u64,
         op: agendao_types::task_ledger::TaskLedgerOp,
-    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
         if let Some(ref ls) = self.local {
-            return agendao_server::local_apply_task_ledger_op(
+            return agendao_server::local_apply_task_ledger_op_view(
                 Arc::clone(ls),
                 session_id,
                 expected_revision,
@@ -237,11 +237,11 @@ impl ApiBridge {
         }
         if let Some(ref unix) = self.unix {
             return unix
-                .apply_task_ledger_op(session_id, expected_revision, op)
+                .apply_task_ledger_op_view(session_id, expected_revision, op)
                 .await;
         }
         self.client
-            .apply_task_ledger_op(session_id, expected_revision, op)
+            .apply_task_ledger_op_view(session_id, expected_revision, op)
             .await
     }
 
@@ -250,7 +250,7 @@ impl ApiBridge {
         session_id: &str,
         expected_revision: u64,
         op: agendao_types::task_ledger::TaskLedgerOp,
-    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
         self.block_on(self.apply_task_ledger_op_async(session_id, expected_revision, op))
     }
 

@@ -204,6 +204,15 @@ pub async fn local_get_task_ledger(
     state: Arc<ServerState>,
     session_id: &str,
 ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    local_get_task_ledger_view(state, session_id)
+        .await
+        .map(|view| view.ledger)
+}
+
+pub async fn local_get_task_ledger_view(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
     let Json(ledger) =
         super::task_ledger_api::get_task_ledger(State(state), Path(session_id.to_string()))
             .await
@@ -217,6 +226,17 @@ pub async fn local_apply_task_ledger_op(
     expected_revision: u64,
     op: agendao_types::task_ledger::TaskLedgerOp,
 ) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedger> {
+    local_apply_task_ledger_op_view(state, session_id, expected_revision, op)
+        .await
+        .map(|view| view.ledger)
+}
+
+pub async fn local_apply_task_ledger_op_view(
+    state: Arc<ServerState>,
+    session_id: &str,
+    expected_revision: u64,
+    op: agendao_types::task_ledger::TaskLedgerOp,
+) -> anyhow::Result<agendao_types::task_ledger::SessionTaskLedgerView> {
     crate::session_runtime::task_ledger::validate_external_op(&op).map_err(api_error)?;
     let (ledger, _) = crate::session_runtime::task_ledger::apply_task_ledger_op(
         &state,
@@ -226,7 +246,9 @@ pub async fn local_apply_task_ledger_op(
     )
     .await
     .map_err(api_error)?;
-    Ok(ledger)
+    Ok(agendao_types::task_ledger::SessionTaskLedgerView::from(
+        ledger,
+    ))
 }
 
 pub async fn local_get_session_telemetry(
@@ -1070,7 +1092,7 @@ mod task_ledger_tests {
         .await
         .expect("create through local bridge");
         let updated = local_apply_task_ledger_op(
-            state,
+            state.clone(),
             &session_id,
             created.revision,
             TaskLedgerOp::SetNext {
@@ -1082,5 +1104,10 @@ mod task_ledger_tests {
         .expect("update through local bridge");
         assert_eq!(updated.revision, 2);
         assert_eq!(updated.next.unwrap().statement, "review");
+
+        let view = local_get_task_ledger_view(state, &session_id)
+            .await
+            .expect("read projected local ledger");
+        assert!(view.projection.live_core.is_empty());
     }
 }

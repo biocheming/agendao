@@ -29,8 +29,6 @@ const REPLAN_DEADLINE_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StallFrame {
-    pub revision: u64,
-    pub status: TaskLedgerStatus,
     pub next_statement: Option<String>,
     pub verified_count: usize,
     pub open_count: usize,
@@ -149,7 +147,7 @@ impl SessionStallControl {
         }
 
         self.phase = StallPhase::Stalled;
-        if !auto_replan || cancelled {
+        if cancelled {
             return self.decision(observations, StallAction::None);
         }
         if now_ms >= self.deadline_at_ms {
@@ -226,8 +224,6 @@ impl StallWindow {
             return Vec::new();
         }
         self.frames.push_back(StallFrame {
-            revision: ledger.revision,
-            status: ledger.status,
             next_statement: ledger.next.as_ref().map(|next| next.statement.clone()),
             verified_count: ledger.verified.len(),
             open_count: ledger.open_questions().len(),
@@ -378,6 +374,17 @@ pub(crate) async fn record_stall_frame(
         "task stall control decision"
     );
 
+    {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&ledger.session_id) {
+            session.insert_metadata(
+                "stall_observation".to_string(),
+                serde_json::to_value(&decision).unwrap_or_default(),
+            );
+        }
+    }
+
+    let mut action_persisted = false;
     match &decision.action {
         StallAction::Replan {
             next_statement,
@@ -397,6 +404,7 @@ pub(crate) async fn record_stall_frame(
                 )
                 .await
             {
+                action_persisted = true;
                 state
                     .stall_windows
                     .rebaseline(&ledger.session_id, &snapshot);
@@ -427,23 +435,22 @@ pub(crate) async fn record_stall_frame(
                     cancellation,
                 )
                 .await
-            {}
+            {
+                action_persisted = true;
+            }
         }
         _ => {}
     }
 
-    {
-        let mut sessions = state.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&ledger.session_id) {
-            session.insert_metadata(
-                "stall_observation".to_string(),
-                serde_json::to_value(&decision).unwrap_or_default(),
-            );
-        }
-    }
-    // Persistence helpers re-acquire the sessions mutex.
-    crate::routes::session::session_crud::persist_session_if_enabled(state, &ledger.session_id)
+    // A committed action already persisted the row after its ledger mutation;
+    // only no-op/cancelled/conflicted decisions need a standalone metadata flush.
+    if !action_persisted {
+        crate::routes::session::session_crud::persist_session_record_if_enabled(
+            state,
+            &ledger.session_id,
+        )
         .await;
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,30 @@ vi.mock("@/lib/api", async (importOriginal) => {
 const apiJsonMock = vi.mocked(apiJson);
 
 function ledger(revision = 3): SessionTaskLedger {
+  const core = [
+    { id: "core-01", statement: "Preserve API", live: true, set_by: "system" as const, set_at: 1 },
+  ];
+  const verified = [
+    {
+      id: "chk-01",
+      claim: "Unit tests passed",
+      verifier: { deterministic_check: { description: "cargo test" } },
+      coverage: { scope: "unit tests" },
+      goal_generation: 1,
+      covered_criteria: ["tests pass"],
+      evidence_artifact_ids: ["/repo/test-output.txt"],
+      source_stage_id: "verify/tests",
+      superseded_by: null,
+    },
+  ];
+  const open = [
+    {
+      id: "open-01",
+      question: "Was the UI checked?",
+      settled_by: "manual review",
+      closed_by_checkpoint_id: null,
+    },
+  ];
   return {
     session_id: "session-1",
     revision,
@@ -26,30 +50,9 @@ function ledger(revision = 3): SessionTaskLedger {
       set_by: "model",
       set_at: 1,
     },
-    core: [
-      { id: "core-01", statement: "Preserve API", live: true, set_by: "system", set_at: 1 },
-    ],
-    verified: [
-      {
-        id: "chk-01",
-        claim: "Unit tests passed",
-        verifier: { deterministic_check: { description: "cargo test" } },
-        coverage: { scope: "unit tests" },
-        goal_generation: 1,
-        covered_criteria: ["tests pass"],
-        evidence_artifact_ids: ["/repo/test-output.txt"],
-        source_stage_id: "verify/tests",
-        superseded_by: null,
-      },
-    ],
-    open: [
-      {
-        id: "open-01",
-        question: "Was the UI checked?",
-        settled_by: "manual review",
-        closed_by_checkpoint_id: null,
-      },
-    ],
+    core,
+    verified,
+    open,
     next: {
       statement: "Review UI",
       provenance: { actor: "model", pre_interrupt: false, set_at: 1 },
@@ -59,6 +62,15 @@ function ledger(revision = 3): SessionTaskLedger {
     blocked_reason: null,
     uncovered_criteria: [],
     updated_at: 1,
+    projection: {
+      live_core: core,
+      open_questions: open,
+      current_checkpoints: verified.map((checkpoint) => ({
+        ...checkpoint,
+        verifier_label: "check:cargo test",
+      })),
+      missing_acceptance_criteria: [],
+    },
   };
 }
 
@@ -157,5 +169,16 @@ describe("TaskStateCard", () => {
     expect(useAgendaoStore.getState().selectedFilePath).toBe("/repo/test-output.txt");
     expect(useAgendaoStore.getState().workspacePanelTab).toBe("files");
     expect(useAgendaoStore.getState().rightSidebarOpen).toBe(true);
+  });
+
+  it("renders server-projected missing acceptance evidence", () => {
+    const snapshot = ledger();
+    snapshot.projection.missing_acceptance_criteria = ["mobile review passes"];
+    useAgendaoStore.setState({ taskLedgers: { "session-1": snapshot } });
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByTestId("task-state-missing-evidence")).toHaveTextContent(
+      "mobile review passes",
+    );
   });
 });

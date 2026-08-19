@@ -7,8 +7,8 @@
 use crate::dialog::backdrop::{self, ListDialogHeading, ListItem, PromptGeom};
 use crate::theme::colors;
 use agendao_types::task_ledger::{
-    current_checkpoints, missing_acceptance_criteria, SessionTaskLedger, TaskGoal, TaskLedgerActor,
-    TaskLedgerOp, VerificationCoverage, VerifierRef,
+    SessionTaskLedgerView, TaskGoal, TaskLedgerActor, TaskLedgerOp, VerificationCoverage,
+    VerifierRef,
 };
 use revue::prelude::*;
 
@@ -81,7 +81,7 @@ impl TaskStateDialog {
     pub fn handle_key(
         &mut self,
         key: &revue::event::Key,
-        ledger: Option<&SessionTaskLedger>,
+        ledger: Option<&SessionTaskLedgerView>,
     ) -> Option<TaskStateAction> {
         if self.editor.is_some() {
             return self.handle_editor_key(key, ledger);
@@ -122,7 +122,7 @@ impl TaskStateDialog {
         None
     }
 
-    fn open_row_editor(&mut self, action: RowAction, ledger: Option<&SessionTaskLedger>) {
+    fn open_row_editor(&mut self, action: RowAction, ledger: Option<&SessionTaskLedgerView>) {
         let Some(ledger) = ledger else { return };
         match action {
             RowAction::EditGoal => {
@@ -150,10 +150,9 @@ impl TaskStateDialog {
             }
             RowAction::EditCore { slot } => {
                 let statement = ledger
-                    .core
-                    .iter()
-                    .filter(|entry| entry.live)
-                    .nth(slot.saturating_sub(1) as usize)
+                    .projection
+                    .live_core
+                    .get(slot.saturating_sub(1) as usize)
                     .map(|entry| entry.statement.as_str())
                     .unwrap_or_default();
                 self.open_core_editor(Some(slot), statement);
@@ -184,7 +183,7 @@ impl TaskStateDialog {
     fn handle_editor_key(
         &mut self,
         key: &revue::event::Key,
-        ledger: Option<&SessionTaskLedger>,
+        ledger: Option<&SessionTaskLedgerView>,
     ) -> Option<TaskStateAction> {
         match key {
             revue::event::Key::Escape => {
@@ -214,7 +213,7 @@ impl TaskStateDialog {
         None
     }
 
-    fn finish_editor(&mut self, ledger: Option<&SessionTaskLedger>) -> Option<TaskStateAction> {
+    fn finish_editor(&mut self, ledger: Option<&SessionTaskLedgerView>) -> Option<TaskStateAction> {
         let ledger = ledger?;
         let editor = self.editor.as_ref()?;
         let primary = editor.primary.text().trim().to_string();
@@ -287,7 +286,7 @@ impl TaskStateDialog {
         &self,
         ctx: &mut RenderContext,
         geom: PromptGeom,
-        ledger: Option<&SessionTaskLedger>,
+        ledger: Option<&SessionTaskLedgerView>,
     ) {
         if !self.visible {
             return;
@@ -397,7 +396,7 @@ fn wrapped_rows(
         .collect()
 }
 
-fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
+fn task_state_rows(ledger: Option<&SessionTaskLedgerView>) -> Vec<TaskStateRow> {
     let mut rows = Vec::new();
     let Some(ledger) = ledger else {
         return vec![row(
@@ -439,7 +438,7 @@ fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
             Some(RowAction::EditNext),
         ));
     }
-    for (index, entry) in ledger.core.iter().filter(|entry| entry.live).enumerate() {
+    for (index, entry) in ledger.projection.live_core.iter().enumerate() {
         rows.extend(wrapped_rows(
             &format!("{}: ", entry.id),
             &format!("{}  [by {:?}]", entry.statement, entry.set_by),
@@ -449,11 +448,7 @@ fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
             }),
         ));
     }
-    for question in ledger
-        .open
-        .iter()
-        .filter(|question| question.closed_by_checkpoint_id.is_none())
-    {
+    for question in &ledger.projection.open_questions {
         rows.extend(wrapped_rows(
             &format!("{}: ", question.id),
             &format!(
@@ -466,14 +461,13 @@ fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
             }),
         ));
     }
-    for checkpoint in current_checkpoints(ledger).into_iter().rev().take(6) {
+    for projected in ledger.projection.current_checkpoints.iter().rev().take(6) {
+        let checkpoint = &projected.checkpoint;
         rows.extend(wrapped_rows(
             &format!("{}: ", checkpoint.id),
             &format!(
                 "{} — by {}, scope: {}",
-                checkpoint.claim,
-                checkpoint.verifier.describe(),
-                checkpoint.coverage.scope
+                checkpoint.claim, projected.verifier_label, checkpoint.coverage.scope
             ),
             false,
             None,
@@ -497,13 +491,8 @@ fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
     for criterion in &ledger.uncovered_criteria {
         rows.extend(wrapped_rows("! uncovered: ", criterion, false, None));
     }
-    for criterion in missing_acceptance_criteria(ledger, &ledger.uncovered_criteria) {
-        rows.extend(wrapped_rows(
-            "? missing evidence: ",
-            &criterion,
-            false,
-            None,
-        ));
+    for criterion in &ledger.projection.missing_acceptance_criteria {
+        rows.extend(wrapped_rows("? missing evidence: ", criterion, false, None));
     }
     rows
 }
@@ -511,7 +500,7 @@ fn task_state_rows(ledger: Option<&SessionTaskLedger>) -> Vec<TaskStateRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agendao_types::task_ledger::{OpenQuestion, TaskLedgerStatus};
+    use agendao_types::task_ledger::{OpenQuestion, SessionTaskLedger, TaskLedgerStatus};
 
     fn ledger() -> SessionTaskLedger {
         let mut ledger = SessionTaskLedger::empty("ses_task");
@@ -549,7 +538,8 @@ mod tests {
         let mut ledger = ledger();
         ledger.status = TaskLedgerStatus::Completed;
         ledger.uncovered_criteria = vec!["documented".to_string()];
-        let rows = task_state_rows(Some(&ledger));
+        let view = SessionTaskLedgerView::from(ledger);
+        let rows = task_state_rows(Some(&view));
         let displays = displays(&rows);
         assert!(displays
             .iter()
@@ -572,6 +562,7 @@ mod tests {
             opened_at: 1,
             closed_by_checkpoint_id: None,
         });
+        let view = SessionTaskLedgerView::from(ledger);
         let mut dialog = TaskStateDialog::new();
         dialog.open();
         dialog.open_close_editor("open-01".to_string());
@@ -579,7 +570,7 @@ mod tests {
         editor.primary = revue::widget::Input::new().value("reviewed");
         editor.secondary = revue::widget::Input::new().value("desktop");
         let action = dialog
-            .handle_key(&revue::event::Key::Enter, Some(&ledger))
+            .handle_key(&revue::event::Key::Enter, Some(&view))
             .expect("submit action");
         assert!(matches!(
             action,
@@ -613,7 +604,8 @@ mod tests {
                 superseded_by: None,
                 created_at: 1,
             });
-        let rows = task_state_rows(Some(&ledger));
+        let view = SessionTaskLedgerView::from(ledger);
+        let rows = task_state_rows(Some(&view));
         let evidence_index = rows
             .iter()
             .position(|row| matches!(row.action, Some(RowAction::Evidence(_))))
@@ -622,7 +614,7 @@ mod tests {
         dialog.open();
         dialog.selected = evidence_index;
         assert_eq!(
-            dialog.handle_key(&revue::event::Key::Enter, Some(&ledger)),
+            dialog.handle_key(&revue::event::Key::Enter, Some(&view)),
             Some(TaskStateAction::NavigateEvidence("stage-1".to_string()))
         );
     }
