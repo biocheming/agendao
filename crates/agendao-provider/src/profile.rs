@@ -30,6 +30,17 @@ impl std::fmt::Display for ProviderProfileError {
 
 impl std::error::Error for ProviderProfileError {}
 
+impl ProviderProfileError {
+    /// Field name when the error is `MissingField`; used by callers to
+    /// distinguish "no profile declared at all" from a partial declaration.
+    pub fn missing_field(&self) -> Option<&str> {
+        match self {
+            Self::MissingField(field) => Some(field),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderApiFamily {
     OpenAiCompatible,
@@ -181,7 +192,15 @@ impl ProviderProfileResolver {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| default_npm_for_provider_id(provider_id));
-        Self::try_resolve_with_npm(provider_id, npm, &options)
+        Self::try_resolve_with_npm(provider_id, npm, &options).or_else(|error| {
+            legacy_default_profile_fallback(
+                provider_id,
+                npm,
+                &options,
+                config_provider_has_credentials(provider),
+                error,
+            )
+        })
     }
 
     pub fn resolve_with_options(
@@ -421,6 +440,77 @@ pub(crate) fn default_npm_for_provider_id(provider_id: &str) -> &'static str {
         "openai" => "@ai-sdk/openai",
         _ => "@ai-sdk/openai-compatible",
     }
+}
+
+/// Default wire profile for a supported SDK npm. Mirrors the table the
+/// connect flow writes (`connect_protocol_profile` in agendao-server): the
+/// npm package already pins the protocol family, so the profile values are
+/// a faithful mapping, not a guess.
+pub(crate) fn default_profile_for_npm(npm: &str) -> Option<Value> {
+    let (api_style, api_shape, usage_shape) = match npm.trim() {
+        "@ai-sdk/openai" => (
+            "openai-compatible",
+            "responses",
+            "openai-cached-tokens",
+        ),
+        "@ai-sdk/openai-compatible" => (
+            "openai-compatible",
+            "chat-completions",
+            "openai-cached-tokens",
+        ),
+        "@ai-sdk/anthropic" => (
+            "anthropic-compatible",
+            "messages",
+            "anthropic-read-write",
+        ),
+        _ => return None,
+    };
+    Some(serde_json::json!({
+        "api_style": api_style,
+        "api_shape": api_shape,
+        "transport": "bearer",
+        "usage_shape": usage_shape,
+    }))
+}
+
+/// Retry resolution with an npm-derived default profile for credentialed
+/// legacy providers that predate the explicit `provider_profile` requirement
+/// (opencode-style `options.baseURL`/`options.apiKey` configs). Keyless
+/// unknown providers keep the original fail-closed behavior.
+pub(crate) fn legacy_default_profile_fallback(
+    provider_id: &str,
+    npm: &str,
+    options: &HashMap<String, Value>,
+    has_credentials: bool,
+    error: ProviderProfileError,
+) -> Result<ProviderProfile, ProviderProfileError> {
+    if error.missing_field() != Some("provider_profile") || !has_credentials {
+        return Err(error);
+    }
+    let default = default_profile_for_npm(npm).ok_or_else(|| error.clone())?;
+    let mut options = options.clone();
+    options.insert("provider_profile".to_string(), default);
+    let resolved = ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options);
+    if resolved.is_ok() {
+        tracing::info!(
+            provider = provider_id,
+            npm = %npm,
+            "applied npm-derived default provider profile (legacy config)"
+        );
+    }
+    resolved
+}
+
+fn config_provider_has_credentials(provider: &ConfigProvider) -> bool {
+    provider
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+        || provider.options.as_ref().is_some_and(|options| {
+            ["apiKey", "apikey", "api_key"]
+                .iter()
+                .any(|key| option_string(options, key).is_some())
+        })
 }
 
 pub(crate) fn resolve_npm_for_provider(provider_id: &str, provider: &ProviderState) -> String {
@@ -805,5 +895,31 @@ mod tests {
         let error = ProviderProfileResolver::try_resolve_with_options("bad", &invalid_combination)
             .unwrap_err();
         assert!(matches!(error, ProviderProfileError::InvalidCombination(_)));
+    }
+
+    #[test]
+    fn legacy_config_provider_resolves_with_npm_derived_default_profile() {
+        // opencode-era ConfigProvider: credentials inline in options, no
+        // profile fields — try_resolve_config_provider (descriptor/artifact
+        // paths) must apply the same legacy fallback as bootstrap.
+        let provider = ConfigProvider {
+            options: Some(HashMap::from([
+                (
+                    "baseURL".to_string(),
+                    serde_json::json!("https://open.bigmodel.cn/api/coding/paas/v4"),
+                ),
+                ("apiKey".to_string(), serde_json::json!("legacy-key")),
+            ])),
+            ..Default::default()
+        };
+
+        let profile =
+            ProviderProfileResolver::try_resolve_config_provider("zhipuai-coding-plan", &provider)
+                .expect("legacy config provider should resolve via fallback");
+        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
+
+        // Keyless config provider without profile keeps failing closed.
+        let keyless = ConfigProvider::default();
+        assert!(ProviderProfileResolver::try_resolve_config_provider("mystery", &keyless).is_err());
     }
 }

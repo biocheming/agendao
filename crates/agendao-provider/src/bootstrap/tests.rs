@@ -280,3 +280,54 @@ fn env_var_key_beats_auth_store_key() {
     assert_eq!(registered.key.as_deref(), Some("env-key"));
     assert_eq!(registered.source, "env");
 }
+
+#[test]
+fn legacy_options_config_provider_materializes_all_models() {
+    // Regression (9d2fd32): opencode-era options.baseURL/apiKey providers
+    // failed profile validation and were skipped entirely. With the
+    // npm-derived default profile fallback they must materialize with the
+    // full catalogue plus config-declared models.
+    let mut zhipu = provider_info("zhipuai-coding-plan", model_info("glm-4.5-air"));
+    for id in ["glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo", "glm-4.6v"] {
+        zhipu.models.insert(id.to_string(), model_info(id));
+    }
+    zhipu.npm = Some("@ai-sdk/openai-compatible".to_string());
+    let models_dev = HashMap::from([("zhipuai-coding-plan".to_string(), zhipu)]);
+
+    let mut options = HashMap::new();
+    options.insert(
+        "baseURL".to_string(),
+        serde_json::json!("https://open.bigmodel.cn/api/coding/paas/v4"),
+    );
+    options.insert("apiKey".to_string(), serde_json::json!("legacy-key"));
+    let config = BootstrapConfig {
+        providers: HashMap::from([(
+            "zhipuai-coding-plan".to_string(),
+            ConfigProvider {
+                options: Some(options),
+                models: Some(HashMap::from([(
+                    "GLM-5.1".to_string(),
+                    ConfigModel {
+                        name: Some("GLM-5.1".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let state = ProviderBootstrapState::init(&models_dev, &config, &HashMap::new());
+    let provider = state
+        .get_provider("zhipuai-coding-plan")
+        .expect("legacy config provider should materialize");
+    assert_eq!(provider.models.len(), 7, "6 catalogue + 1 config model");
+
+    let concrete = create_concrete_provider("zhipuai-coding-plan", provider)
+        .expect("concrete provider should exist");
+    let runtime_models = concrete.models();
+    let runtime_ids: Vec<&str> = runtime_models.iter().map(|m| m.id.as_str()).collect();
+    assert!(runtime_ids.contains(&"GLM-5.1"), "config model must survive: {runtime_ids:?}");
+    assert!(runtime_ids.contains(&"glm-5.1"), "catalogue model must survive: {runtime_ids:?}");
+}

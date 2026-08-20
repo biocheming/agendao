@@ -43,14 +43,19 @@ fn provider_secret(provider: &ProviderState, fallback_env: &[&str]) -> Option<St
                 .find_map(|name| std::env::var(name).ok())
                 .filter(|key| !key.trim().is_empty())
         })
+        // legacy opencode-style configs keep the key inline in options
+        .or_else(|| option_string(&provider.options, &["apiKey", "apikey", "api_key"]))
         .or_else(|| env_any(fallback_env))
 }
 
 fn provider_base_url(provider: &ProviderState) -> Option<String> {
-    provider
-        .models
-        .values()
-        .find_map(|model| (!model.api.url.trim().is_empty()).then(|| model.api.url.clone()))
+    // An explicit options baseURL (legacy style) wins over catalog/model
+    // derived URLs — it is the endpoint the user actually configured.
+    option_string(&provider.options, &["baseURL", "baseUrl", "base_url"]).or_else(|| {
+        provider.models.values().find_map(|model| {
+            (!model.api.url.trim().is_empty()).then(|| model.api.url.clone())
+        })
+    })
 }
 
 fn default_secret_env_for_provider(
@@ -91,6 +96,18 @@ fn parse_bool_text(raw: &str) -> Option<bool> {
     }
     if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
         return Some(false);
+    }
+    None
+}
+
+fn option_string(options: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(serde_json::Value::String(value)) = options.get(*key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
     }
     None
 }
@@ -271,10 +288,13 @@ fn provider_config_for_adapter(
     provider: &ProviderState,
     profile: &ProviderProfile,
     adapter: ProviderRuntimeAdapter,
+    base_options: &HashMap<String, serde_json::Value>,
 ) -> Option<ProviderConfig> {
     let fallback_env = default_secret_env_for_provider(provider_id, adapter);
     let headers = collect_provider_headers(provider);
-    let mut options = provider.options.clone();
+    // base_options carries the (possibly fallback-synthesized) provider_profile —
+    // the runtime request path re-resolves the profile from these options.
+    let mut options = base_options.clone();
     options.insert(
         "npm".to_string(),
         serde_json::Value::String(profile.npm.clone()),
@@ -297,15 +317,65 @@ fn provider_config_for_adapter(
     })
 }
 
+/// Resolve the provider profile, falling back to an npm-derived default
+/// profile for legacy/credentialed providers that predate the explicit
+/// `options.provider_profile` requirement (opencode-style `options.baseURL`/
+/// `options.apiKey` configs, authenticated catalogue providers). Keyless
+/// unknown providers keep the original fail-closed behavior.
+///
+/// Returns the profile **and the effective options map** — the fallback
+/// profile is persisted into those options so the runtime request path
+/// (`protocols::openai` re-resolves from `ProviderConfig.options`) sees the
+/// same profile instead of failing with missing provider_profile.
+fn resolve_profile_with_legacy_fallback(
+    provider_id: &str,
+    provider: &ProviderState,
+    npm: &str,
+) -> Result<
+    (
+        crate::profile::ProviderProfile,
+        HashMap<String, serde_json::Value>,
+    ),
+    crate::profile::ProviderProfileError,
+> {
+    match ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &provider.options) {
+        Ok(profile) => Ok((profile, provider.options.clone())),
+        Err(error @ crate::profile::ProviderProfileError::MissingField(_))
+            if error.missing_field() == Some("provider_profile")
+                && has_legacy_credentials(provider) =>
+        {
+            let default = crate::profile::default_profile_for_npm(npm).ok_or_else(|| {
+                tracing::warn!(
+                    provider = provider_id,
+                    npm = %npm,
+                    "no default profile for npm, keeping provider closed"
+                );
+                error.clone()
+            })?;
+            let mut options = provider.options.clone();
+            options.insert("provider_profile".to_string(), default);
+            ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options).map(|profile| {
+                tracing::info!(
+                    provider = provider_id,
+                    npm = %npm,
+                    "applied npm-derived default provider profile (legacy config)"
+                );
+                (profile, options)
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(feature = "http-transport")]
 fn create_protocol_provider(
     provider_id: &str,
     provider: &ProviderState,
 ) -> Option<Arc<dyn RuntimeProvider>> {
     let npm = resolve_npm_for_provider(provider_id, provider);
-    let provider_profile =
-        match ProviderProfileResolver::try_resolve_with_npm(provider_id, &npm, &provider.options) {
-            Ok(profile) => profile,
+    let (provider_profile, runtime_options) =
+        match resolve_profile_with_legacy_fallback(provider_id, provider, &npm) {
+            Ok(resolved) => resolved,
             Err(error) => {
                 tracing::warn!(
                     provider = provider_id,
@@ -316,8 +386,13 @@ fn create_protocol_provider(
             }
         };
     let adapter = ProviderRuntimeAdapter::from_profile(&provider_profile);
-    let mut config =
-        provider_config_for_adapter(provider_id, provider, &provider_profile, adapter)?;
+    let mut config = provider_config_for_adapter(
+        provider_id,
+        provider,
+        &provider_profile,
+        adapter,
+        &runtime_options,
+    )?;
 
     let runtime_config = build_runtime_config(&config.options);
     config.options.insert(
@@ -361,6 +436,15 @@ fn create_protocol_provider(
     _provider: &ProviderState,
 ) -> Option<Arc<dyn RuntimeProvider>> {
     None
+}
+
+/// A provider counts as legacy/credentialed when it carries a key (auth
+/// store, config api_key, or inline options credential). Keyless unknown
+/// providers keep failing closed — the default-profile fallback is only
+/// for endpoints the user actually wired up.
+fn has_legacy_credentials(provider: &ProviderState) -> bool {
+    provider.key.as_deref().is_some_and(|key| !key.trim().is_empty())
+        || option_string(&provider.options, &["apiKey", "apikey", "api_key"]).is_some()
 }
 
 pub(super) fn create_concrete_provider(
@@ -505,6 +589,124 @@ mod tests {
     use super::*;
     use crate::ProviderApiShape;
 
+    fn legacy_provider_state(id: &str) -> ProviderState {
+        // opencode-era shape: endpoint + key inline in options, no profile
+        // fields anywhere — the config style that regressed in 9d2fd32.
+        let mut options = HashMap::new();
+        options.insert(
+            "baseURL".to_string(),
+            serde_json::Value::String("https://open.bigmodel.cn/api/coding/paas/v4".into()),
+        );
+        options.insert(
+            "apiKey".to_string(),
+            serde_json::Value::String("legacy-key".into()),
+        );
+
+        ProviderState {
+            id: id.to_string(),
+            name: id.to_string(),
+            source: "config".to_string(),
+            env: Vec::new(),
+            key: None,
+            options,
+            models: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn legacy_options_provider_gets_npm_derived_default_profile() {
+        let provider = legacy_provider_state("zhipuai-coding-plan");
+        let concrete =
+            create_concrete_provider("zhipuai-coding-plan", &provider)
+                .expect("legacy provider with inline key must materialize");
+        assert_eq!(concrete.id(), "zhipuai-coding-plan");
+    }
+
+    #[test]
+    fn legacy_options_key_and_base_url_flow_into_provider_config() {
+        let provider = legacy_provider_state("zhipuai-coding-plan");
+        let npm = resolve_npm_for_provider("zhipuai-coding-plan", &provider);
+        let (profile, options) =
+            resolve_profile_with_legacy_fallback("zhipuai-coding-plan", &provider, &npm)
+                .expect("fallback profile should resolve");
+        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
+        let adapter = ProviderRuntimeAdapter::from_profile(&profile);
+        let config = provider_config_for_adapter(
+            "zhipuai-coding-plan",
+            &provider,
+            &profile,
+            adapter,
+            &options,
+        )
+        .expect("config should resolve");
+        assert_eq!(config.base_url, "https://open.bigmodel.cn/api/coding/paas/v4");
+        assert_eq!(config.api_key, "legacy-key");
+    }
+
+    #[test]
+    fn anthropic_npm_legacy_provider_derives_messages_profile() {
+        // Catalogue + auth-store providers (e.g. kimi-for-coding) resolve
+        // npm from the catalogue; the derived profile must follow the npm.
+        let mut provider = legacy_provider_state("kimi-for-coding");
+        provider.options.remove("baseURL");
+        provider.options.remove("apiKey");
+        provider.key = Some("auth-store-key".into());
+        provider.options.insert(
+            "npm".to_string(),
+            serde_json::Value::String("@ai-sdk/anthropic".into()),
+        );
+        let npm = resolve_npm_for_provider("kimi-for-coding", &provider);
+        let (profile, _) =
+            resolve_profile_with_legacy_fallback("kimi-for-coding", &provider, &npm)
+                .expect("npm-derived fallback should resolve");
+        assert_eq!(profile.api_shape, ProviderApiShape::AnthropicMessages);
+    }
+
+    #[test]
+    fn keyless_unknown_provider_still_fails_closed() {
+        let mut provider = legacy_provider_state("mystery");
+        provider.options.remove("apiKey");
+        let npm = resolve_npm_for_provider("mystery", &provider);
+        let resolved = resolve_profile_with_legacy_fallback("mystery", &provider, &npm);
+        assert!(
+            resolved.is_err(),
+            "keyless custom provider without profile must not register"
+        );
+    }
+
+    #[test]
+    fn legacy_fallback_profile_persists_into_runtime_config_options() {
+        // 回归：请求路径（protocols::openai provider_api_shape）从
+        // ProviderConfig.options 重新解析 profile——兜底 profile 必须持久化
+        // 进 options，否则发消息时报 "missing provider profile field"。
+        let provider = legacy_provider_state("zhipuai-coding-plan");
+        let npm = resolve_npm_for_provider("zhipuai-coding-plan", &provider);
+        let (profile, options) =
+            resolve_profile_with_legacy_fallback("zhipuai-coding-plan", &provider, &npm)
+                .expect("fallback should resolve");
+        let adapter = ProviderRuntimeAdapter::from_profile(&profile);
+        let config = provider_config_for_adapter(
+            "zhipuai-coding-plan",
+            &provider,
+            &profile,
+            adapter,
+            &options,
+        )
+        .expect("config should resolve");
+
+        // 请求路径同款解析：try_resolve_with_options 读 config.options。
+        let request_path_profile =
+            ProviderProfileResolver::try_resolve_with_options(
+                "zhipuai-coding-plan",
+                &config.options,
+            )
+            .expect("request-path resolution must succeed with persisted profile");
+        assert_eq!(
+            request_path_profile.api_shape,
+            ProviderApiShape::ChatCompletions
+        );
+    }
+
     fn provider_state_with_profile(api_shape: &str) -> ProviderState {
         let mut options = HashMap::new();
         options.insert(
@@ -535,8 +737,14 @@ mod tests {
             .expect("profile should resolve");
         let adapter = ProviderRuntimeAdapter::from_profile(&profile);
 
-        let config = provider_config_for_adapter("my-custom", &provider, &profile, adapter)
-            .expect("config should resolve");
+        let config = provider_config_for_adapter(
+            "my-custom",
+            &provider,
+            &profile,
+            adapter,
+            &provider.options,
+        )
+        .expect("config should resolve");
 
         assert_eq!(profile.api_shape, ProviderApiShape::Responses);
         assert_eq!(adapter, ProviderRuntimeAdapter::OpenAiCompatible);
@@ -556,8 +764,14 @@ mod tests {
             .expect("profile should resolve");
         let adapter = ProviderRuntimeAdapter::from_profile(&profile);
 
-        let config = provider_config_for_adapter("my-custom", &provider, &profile, adapter)
-            .expect("config should resolve");
+        let config = provider_config_for_adapter(
+            "my-custom",
+            &provider,
+            &profile,
+            adapter,
+            &provider.options,
+        )
+        .expect("config should resolve");
 
         assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
         assert_eq!(

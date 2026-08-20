@@ -907,8 +907,9 @@ pub(crate) async fn list_providers(
 
     let mut provider_names: HashMap<String, String> = HashMap::new();
     let mut provider_models: HashMap<String, HashMap<String, ModelInfo>> = HashMap::new();
-    // base_url 映射:从 config.provider[id].base_url 读取(由 step 2 的同一循环填)。
-    // 阴面记账(土律):server 端唯一权威;Some=用户/catalog 显式配,None=SDK-managed。
+    // base_url 映射:config.provider[id].base_url 显式配置优先(由 step 2 用
+    // `insert` 覆盖),catalog api URL 兜底(由 step 1 `or_insert_with` 填)——
+    // 目录 provider 的默认端点对用户可见/可编辑,不再是 "(not set)" 黑洞。
     let mut provider_base_urls: HashMap<String, String> = HashMap::new();
     // protocol 映射:从 config profile + catalog npm 解析为三种 wire protocol。
     // 阴面同 base_url;configured 优先,catalog 兜底(由 step 1/2 两端各自填,
@@ -923,6 +924,17 @@ pub(crate) async fn list_providers(
         provider_names
             .entry(provider_id.clone())
             .or_insert_with(|| provider_display_name(provider_id, &provider.name));
+        // base_url 从 catalog info.api 兜底填入(显示/编辑预填用);step 2 的
+        // config 显式配置会用 `insert` 覆盖此值。
+        if let Some(api) = provider
+            .api
+            .as_deref()
+            .filter(|url| !url.trim().is_empty())
+        {
+            provider_base_urls
+                .entry(provider_id.clone())
+                .or_insert_with(|| api.to_string());
+        }
         // protocol 从 catalog info.npm 反推填入(catalog 作为兜底,step 2 的
         // config 端再覆盖优先级更高的);`or_insert_with` 保证幂等。
         provider_protocols
@@ -955,11 +967,10 @@ pub(crate) async fn list_providers(
                     .entry(provider_id.clone())
                     .or_insert_with(|| provider_display_name(provider_id, provider_id));
             }
-            // base_url 填入(土律单点):config 显式配的优先;catalog 来源不带 base_url。
+            // base_url 填入(土律单点):config 显式配置 `insert` 覆盖 step 1 的
+            // catalog api 兜底——用户配置的端点优先于目录默认值。
             if let Some(base) = provider.base_url.as_ref().filter(|s| !s.is_empty()) {
-                provider_base_urls
-                    .entry(provider_id.clone())
-                    .or_insert_with(|| base.clone());
+                provider_base_urls.insert(provider_id.clone(), base.clone());
             }
             // protocol 填入(土律单点·config override):用户/管理面显式配的 npm 优先,
             // 用 `insert` 直接覆盖 step 1 的 catalog 兜底值——与 KnownProviderEntry
@@ -1994,6 +2005,76 @@ mod tests {
         ModelInfo, ProviderConnectDraftMode, CONNECT_PROTOCOL_OPTIONS,
     };
     use agendao_config::ProviderConfig;
+
+    #[tokio::test]
+    async fn list_providers_fills_base_url_from_catalog_with_config_override() {
+        use axum::extract::State;
+        use std::collections::HashMap;
+
+        // 最小目录：一个带 config 覆盖的 provider + 一个纯目录 provider。
+        let catalog = serde_json::json!({
+            "zhipuai-coding-plan": {
+                "id": "zhipuai-coding-plan",
+                "name": "Zhipu AI Coding Plan",
+                "api": "https://open.bigmodel.cn/api/coding/paas/v4",
+                "npm": "@ai-sdk/openai-compatible",
+                "env": [],
+                "models": {}
+            },
+            "acme-cat": {
+                "id": "acme-cat",
+                "name": "Acme Catalog",
+                "api": "https://api.acme.dev/v1",
+                "npm": "@ai-sdk/openai-compatible",
+                "env": [],
+                "models": {}
+            }
+        });
+        let dir = std::env::temp_dir().join(format!(
+            "agendao-test-cat-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&dir, catalog.to_string()).expect("write test catalog");
+
+        let mut state = crate::ServerState::new();
+        state.catalog_authority = std::sync::Arc::new(
+            agendao_provider::ModelCatalogAuthority::with_snapshot_path(dir.clone()),
+        );
+        // config 显式 base_url 必须覆盖目录 api 兜底。
+        state.config_store = std::sync::Arc::new(agendao_config::ConfigStore::new(
+            agendao_config::Config {
+                provider: Some(HashMap::from([(
+                    "zhipuai-coding-plan".to_string(),
+                    ProviderConfig {
+                        base_url: Some("https://config-override.example/v1".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        ));
+        let state = std::sync::Arc::new(state);
+
+        let axum::Json(resp) =
+            super::list_providers(State(state)).await;
+        let find = |id: &str| {
+            resp.all
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap_or_else(|| panic!("provider {id} missing"))
+        };
+        assert_eq!(
+            find("acme-cat").base_url.as_deref(),
+            Some("https://api.acme.dev/v1"),
+            "catalog api URL 应作为 base_url 兜底下发"
+        );
+        assert_eq!(
+            find("zhipuai-coding-plan").base_url.as_deref(),
+            Some("https://config-override.example/v1"),
+            "config 显式 base_url 必须覆盖目录兜底"
+        );
+        let _ = std::fs::remove_file(&dir);
+    }
 
     fn provider(
         id: &str,
