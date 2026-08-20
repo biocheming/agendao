@@ -266,13 +266,17 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 ## Internal Topology
 
 - `crates/agendao` - the product distribution shell and the only formal distribution entry
-- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` - three frontend surfaces over the same runtime authority
+- `crates/agendao-cli` / `crates/agendao-tui-revue` / `apps/agendao-web` - three frontend surfaces over the same runtime authority
 - `crates/agendao-server` - HTTP, SSE, and runtime control; the cross-frontend observability and scheduling surface
 - `crates/agendao-session` - the session domain model, prompt-surface organization, and context continuity; the heaviest earth-and-water layer
 - `crates/agendao-orchestrator` - scheduler and orchestration authority; the fire-and-earth core
 - `crates/agendao-provider` - provider profiles, transport, descriptors, and cache; the boundary around prompt-surface and usage semantics
 - `crates/agendao-skill` - skill authority, hub, distribution, and guard
 - `crates/agendao-memory` - memory validation, retrieval, conflict handling, and promotion; the layer that turns output into reusable return-flow
+
+Compatibility is promised at the distributed binaries, documented CLI and HTTP APIs, and
+persisted wire schemas. Workspace Rust crates are internal implementation boundaries and do not
+promise a stable external Rust API.
 
 More detail: [docs/README.md](docs/README.md)
 
@@ -283,7 +287,7 @@ More detail: [docs/README.md](docs/README.md)
 ```bash
 cargo fmt --all
 cargo check
-cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui
+cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui-revue
 ```
 
 Release versioning:

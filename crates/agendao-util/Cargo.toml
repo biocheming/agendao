@@ -6,13 +6,4 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["fs", "io-util", "sync", "time"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
-walkdir = "2"
-chrono = { workspace = true }
-glob = { workspace = true }
 dirs = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

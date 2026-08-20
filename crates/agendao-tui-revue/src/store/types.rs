@@ -312,20 +312,6 @@ pub struct TokenUsage {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub writes: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Pricing {
-    pub input_per_1k: f64,
-    pub output_per_1k: f64,
-    pub total: f64,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct SidebarTrees {
     pub session_nodes: Vec<TreeNode>,
     pub workspace_nodes: Vec<TreeNode>,

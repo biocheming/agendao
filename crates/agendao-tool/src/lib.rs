@@ -19,6 +19,7 @@ pub mod glob_tool;
 pub mod grep_tool;
 pub mod invalid;
 pub mod ls;
+#[cfg(feature = "lsp")]
 pub mod lsp_tool;
 pub mod multiedit;
 pub mod path_guard;

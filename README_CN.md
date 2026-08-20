@@ -265,13 +265,16 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 ## 内部世界
 
 - `crates/agendao` — 产品分发壳，唯一正式分发入口
-- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 三张前端读面，共享同一运行时 authority
+- `crates/agendao-cli` / `crates/agendao-tui-revue` / `apps/agendao-web` — 三张前端读面，共享同一运行时 authority
 - `crates/agendao-server` — HTTP、SSE、runtime control，承担跨端观测与调度读面
 - `crates/agendao-session` — session 领域模型、提示面组织、上下文连续性，是土与水最重的一层
 - `crates/agendao-orchestrator` — scheduler / orchestration authority，是火与土的中枢
 - `crates/agendao-provider` — provider profile、transport、descriptor、cache，负责 prompt surface 与 usage 语义的边界
 - `crates/agendao-skill` — skill authority、hub、distribution、guard
 - `crates/agendao-memory` — 记忆的验证、检索、冲突与晋升，负责把输出沉淀成可回流之水
+
+兼容性承诺覆盖正式发布的二进制、文档化的 CLI 与 HTTP API，以及持久化 wire schema。
+workspace 内的 Rust crate 属于内部实现边界，不承诺稳定的外部 Rust API。
 
 更多细目：[docs/README.md](docs/README.md)
 
@@ -282,7 +285,7 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000
 ```bash
 cargo fmt --all
 cargo check
-cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui
+cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui-revue
 ```
 
 版本发布：

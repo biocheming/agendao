@@ -220,9 +220,6 @@ pub mod colors {
     pub fn BG_SURFACE() -> Color {
         current_palette().bg_surface
     }
-    pub fn SURFACE_RAISED() -> Color {
-        current_palette().surface_raised
-    }
     pub fn SURFACE_SELECTED() -> Color {
         current_palette().surface_selected
     }
@@ -266,9 +263,6 @@ pub mod colors {
     }
     pub fn ACCENT_BLUE() -> Color {
         current_palette().accent_blue
-    }
-    pub fn ACCENT_ORANGE() -> Color {
-        current_palette().accent_orange
     }
     pub fn NORD_ORANGE() -> Color {
         current_palette().nord_orange

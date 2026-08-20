@@ -7,7 +7,6 @@
 pub mod actions;
 #[cfg(feature = "block-projection")]
 pub mod block_projection;
-pub mod branding;
 #[cfg(feature = "terminal-ui")]
 pub mod cli_markdown;
 #[cfg(feature = "terminal-ui")]

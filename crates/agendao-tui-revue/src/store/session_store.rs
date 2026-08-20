@@ -44,8 +44,6 @@ pub struct SessionStore {
 
     // ── 水：遥测（Sidebar 各面板独立消费）──
     pub token_usage: Signal<TokenUsage>,
-    pub cache_stats: Signal<CacheStats>,
-    pub pricing: Signal<Pricing>,
     pub context_pct: Signal<u8>,
     /// 上下文窗口分母（token）。两条写入路径同口径：投影事件
     /// `ContextCompactionSummary.limit_tokens`（权威）与 `apply_session_open`
@@ -105,8 +103,6 @@ impl SessionStore {
             unread_seen_len: signal(0),
             transcript_cursor: signal(None),
             token_usage: signal(TokenUsage::default()),
-            cache_stats: signal(CacheStats::default()),
-            pricing: signal(Pricing::default()),
             context_pct: signal(0),
             context_limit: signal(None),
             session_model: signal(None),
@@ -140,8 +136,6 @@ impl SessionStore {
         self.unread_seen_len.set(0);
         self.transcript_cursor.set(None);
         self.token_usage.set(TokenUsage::default());
-        self.cache_stats.set(CacheStats::default());
-        self.pricing.set(Pricing::default());
         self.context_pct.set(0);
         self.context_limit.set(None);
         self.session_model.set(None);
@@ -210,12 +204,6 @@ impl SessionStore {
                     }
                 }
             }
-        });
-    }
-
-    pub fn remove_user_message(&self, id: &str) {
-        self.messages.update(|msgs| {
-            msgs.retain(|b| !matches!(b, TranscriptBlock::UserPrompt { id: bid, .. } if bid == id));
         });
     }
 
@@ -559,22 +547,6 @@ impl SessionStore {
         self.token_usage.set(usage);
     }
 
-    pub fn set_cache_stats(&self, hits: u64, misses: u64, writes: u64) {
-        self.cache_stats.set(CacheStats {
-            hits,
-            misses,
-            writes,
-        });
-    }
-
-    pub fn set_pricing(&self, input_per_1k: f64, output_per_1k: f64) {
-        self.pricing.set(Pricing {
-            input_per_1k,
-            output_per_1k,
-            total: 0.0,
-        });
-    }
-
     pub fn set_context_pct(&self, pct: u8) {
         self.context_pct.set(pct.min(100));
     }
@@ -644,11 +616,6 @@ impl SessionStore {
                 started_at,
             });
         });
-    }
-
-    pub fn remove_active_tool(&self, id: &str) {
-        self.active_tools
-            .update(|tools| tools.retain(|t| t.id != id));
     }
 
     // ── 木：输入附面（附件）──
@@ -1104,10 +1071,11 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
 ///   - 累积快照：incoming 以 existing 为前缀 → 追加增量（等价于取 incoming 替换）。
 ///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
 ///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接（仅追加尾部）。
+///
 /// Reasonix 自动跟随口径：紧跟其后的非 thinking 块落地 = 思考流结束——
 /// 未被用户接管的尾部 Thinking 自动收起（Folded）。用户折叠/展开过
 /// （user_overridden）则尊重用户选择不动。
-fn close_trailing_thinking(msgs: &mut Vec<TranscriptBlock>) {
+fn close_trailing_thinking(msgs: &mut [TranscriptBlock]) {
     if let Some(TranscriptBlock::Thinking {
         fold,
         user_overridden,

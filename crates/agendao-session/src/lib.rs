@@ -9,7 +9,6 @@ pub mod message_v2;
 #[cfg(feature = "orchestrator")]
 pub mod prompt;
 pub mod repair_query;
-pub mod retry;
 pub mod revert;
 pub mod session;
 mod session_fork_metadata;
@@ -29,7 +28,6 @@ pub use message_v2::*;
 #[cfg(feature = "orchestrator")]
 pub use prompt::*;
 pub use repair_query::*;
-pub use retry::*;
 pub use revert::*;
 pub use session::*;
 pub use status::*;

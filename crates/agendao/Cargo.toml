@@ -10,6 +10,8 @@ default-run = "agendao"
 default = ["product-shell"]
 product-shell = [
     "dep:agendao-cli",
+    # LSP stays out of the product until server startup owns and injects an
+    # LspClientRegistry. Enabling the compile-time feature alone is not a runtime connection.
     "agendao-cli/run-core",
     "agendao-cli/run-remote-stream",
     "agendao-cli/local-server",

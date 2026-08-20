@@ -287,7 +287,7 @@ AgenDao 把所有用户级数据统一收在一个目录：
 |------|------|
 | 默认 | 核心功能集 |
 
-如需调整产品装配层或发布入口，检查 `crates/agendao/Cargo.toml`；如需调整 `run` 命令与管理命令行为，检查 `crates/agendao-cli/Cargo.toml`；如需调整终端界面行为，检查 `crates/agendao-tui/Cargo.toml`。
+如需调整产品装配层或发布入口，检查 `crates/agendao/Cargo.toml`；如需调整 `run` 命令与管理命令行为，检查 `crates/agendao-cli/Cargo.toml`；如需调整终端界面行为，检查 `crates/agendao-tui-revue/Cargo.toml`。
 
 ---
 

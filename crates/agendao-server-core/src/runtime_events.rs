@@ -898,10 +898,9 @@ mod lifecycle_tests {
     use super::*;
 
     // ── ReconcileReason wire contract ────────────────────────────────────
-    // These strings are the wire protocol between server and all three
-    // frontends. Changing any of them breaks CLI/TUI/Web source-string
-    // matching. The CLI-side counterpart is cli_session_update_requires_refresh
-    // in session_projection.rs.
+    // These strings are the server's stable event-source vocabulary.
+    // No frontend currently string-matches these values; they are kept
+    // stable so diagnostics and telemetry consumers can rely on them.
 
     #[test]
     fn reconcile_reason_wire_strings_are_stable() {

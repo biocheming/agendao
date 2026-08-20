@@ -29,7 +29,6 @@ struct Subscription {
 pub struct Bus {
     next_id: Arc<RwLock<u64>>,
     subscribers: Arc<RwLock<HashMap<String, Vec<Subscription>>>>,
-    wildcard_subscribers: Arc<RwLock<Vec<Subscription>>>,
     tx: broadcast::Sender<BusEvent>,
 }
 
@@ -39,7 +38,6 @@ impl Bus {
         Self {
             next_id: Arc::new(RwLock::new(0)),
             subscribers: Arc::new(RwLock::new(HashMap::new())),
-            wildcard_subscribers: Arc::new(RwLock::new(Vec::new())),
             tx,
         }
     }
@@ -65,11 +63,6 @@ impl Bus {
             for sub in subs {
                 (sub.callback)(def.event_type, properties.clone());
             }
-        }
-
-        let wildcard = self.wildcard_subscribers.read().await;
-        for sub in wildcard.iter() {
-            (sub.callback)(def.event_type, properties.clone());
         }
     }
 
@@ -100,30 +93,6 @@ impl Bus {
         if let Some(subs) = subscribers.get_mut(event_type) {
             subs.retain(|s| s.id != id);
         }
-    }
-
-    pub async fn subscribe_all<F>(&self, callback: F) -> u64
-    where
-        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
-    {
-        let id = {
-            let mut next = self.next_id.write().await;
-            *next += 1;
-            *next
-        };
-
-        let mut wildcard = self.wildcard_subscribers.write().await;
-        wildcard.push(Subscription {
-            id,
-            callback: Box::new(callback),
-        });
-
-        id
-    }
-
-    pub async fn unsubscribe_all(&self, id: u64) {
-        let mut wildcard = self.wildcard_subscribers.write().await;
-        wildcard.retain(|s| s.id != id);
     }
 
     pub fn subscribe_channel(&self) -> broadcast::Receiver<BusEvent> {

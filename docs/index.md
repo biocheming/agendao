@@ -11,7 +11,7 @@ AgenDao 是一个用 Rust 编写的本地编码智能体运行时。它把终端
 如果你不是来看历史，而是想知道“这套系统当前的正式能力边界”，先抓四条：
 
 - **统一 authority**
-  - `agendao` 是产品分发入口；`agendao-cli` 提供非交互命令面与管理命令，`agendao-tui` 提供终端界面，`agendao-web` 提供浏览器界面，`agendao-server` 负责 authority 和正式读写面；副作用和读模型都应回到唯一 owner。
+  - `agendao` 是产品分发入口；`agendao-cli` 提供非交互命令面与管理命令，`agendao-tui-revue` 提供终端界面，`agendao-web` 提供浏览器界面，`agendao-server` 负责 authority 和正式读写面；副作用和读模型都应回到唯一 owner。
 - **长回合稳定性**
   - replay authority、tool repair、tool-result governance、permission/steering、prompt surface、context closure 和 cache diagnostics 已经进入正式运行面。
 - **连续性与沉淀**

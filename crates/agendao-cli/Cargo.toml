@@ -20,7 +20,7 @@ db = ["session-db", "proposal-db", "memory-db"]
 session-db = ["dep:agendao-storage"]
 proposal-db = ["dep:agendao-storage"]
 memory-db = ["dep:agendao-storage"]
-lsp = ["dep:agendao-lsp"]
+lsp = ["dep:agendao-lsp", "agendao-tool/lsp"]
 memory = ["dep:agendao-memory"]
 
 [dependencies]

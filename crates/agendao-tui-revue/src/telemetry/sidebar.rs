@@ -7,11 +7,11 @@
 //!（会话树是导航，不参与 tab 切换）。下划线轨道：整行暗 -，active 处亮 ━（轨道感）。
 
 use crate::store::types::{
-    ActiveTool, CacheStats, McpLspInfo, Pricing, SidebarTrees, TokenUsage, ToolPhase, TreeIntent,
+    ActiveTool, McpLspInfo, SidebarTrees, TokenUsage, ToolPhase, TreeIntent,
     TreeNode as SidebarNode,
 };
 use crate::theme::colors;
-use crate::theme::fmt_tokens;
+use crate::theme::{fmt_cost, fmt_tokens};
 use revue::prelude::*;
 
 /// Sidebar 构建器（unit struct——渲染走 build 关联函数，无实例状态）。
@@ -55,13 +55,13 @@ impl SessionSidebar {
     ///   - `tab_y` = tab 符号行绝对 y(点击切 tab 命中)
     ///   - `nav_hits` = session tree 里 NavigateSession 行的 (绝对 y, session_id)
     ///     列表(点击打开会话命中)。渲染与命中同源(金律·成形语法唯一)。
-    // 渲染入口：聚合 sidebar 所需的全部遥测数据源（token/cache/价格/树/MCP/
-    // 工具/tab 状态），各源类型异构、来自不同子系统，平铺传参最直白。
+    // 渲染入口：聚合 sidebar 所需的全部遥测数据源（token[含 cache/成本]/
+    // 树/MCP/工具/tab 状态），各源类型异构、来自不同子系统，平铺传参最直白。
+    // cache 与价格不再单独传参——token_usage 是遥测唯一权威（土律），
+    // Cache tab 读 cache_read/miss/write，Price tab 读累计 total_cost。
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         token: &TokenUsage,
-        cache: &CacheStats,
-        price: &Pricing,
         ctx_pct: u8,
         ctx_limit: Option<u64>,
         trees: &SidebarTrees,
@@ -75,7 +75,7 @@ impl SessionSidebar {
         let (logo_view, logo_h) = Self::logo();
         let (tab_view, tab_h) = Self::tab_bar(active_tab);
         let (detail_view, detail_h) =
-            Self::detail(active_tab, token, cache, price, ctx_pct, ctx_limit, mcp, tools);
+            Self::detail(active_tab, token, ctx_pct, ctx_limit, mcp, tools);
         let session_header = Text::new("▣ Session Tree")
             .fg(colors::FG_SECONDARY())
             .bold();
@@ -89,8 +89,13 @@ impl SessionSidebar {
         // 命中区必须同口径裁剪——否则屏幕外的「幽灵」session 行会盖住 user_bar
         // （⚙ 点击被 open_session 拦截）乃至整列底部区域（金律：渲染/命中同一份展平）。
         let graph_visible = viewport_height.saturating_sub(graph_start_y + 1) as usize;
-        let (graph, nav_hits) =
-            Self::session_graph(trees, graph_start_y, active_session_id, graph_visible, running_sessions);
+        let (graph, nav_hits) = Self::session_graph(
+            trees,
+            graph_start_y,
+            active_session_id,
+            graph_visible,
+            running_sessions,
+        );
 
         // gap(0) + 显式空行 child：每处间距独立可控（土律：编排单点）。
         // 紧贴（0 行）：轨道↔详情、Session Tree↔分隔、分隔↔graph；其余 1 行。
@@ -169,14 +174,13 @@ impl SessionSidebar {
 
     // ── 选中 tab 详情（标题 + -字段: 值，紧凑）──
 
-    /// active tab 详情：标题（FG_SECONDARY bold）+ 字段行（` -字段: 值` FG_MUTED）。
+    /// active tab 详情：标题（FG-secondary bold）+ 字段行（` -字段: 值` FG_MUTED）。
     /// 顺序：0 Token / 1 Cache / 2 Context / 3 Tools / 4 MCP / 5 Price。
-    #[allow(clippy::too_many_arguments)]
+    /// Cache 与 Price 的数据源是 token_usage 单一权威（土律）：cache_read/
+    /// miss/write 与累计 total_cost 都由 set_token_usage 同一写入路径维护。
     fn detail(
         active: usize,
         token: &TokenUsage,
-        cache: &CacheStats,
-        price: &Pricing,
         ctx_pct: u8,
         ctx_limit: Option<u64>,
         mcp: &McpLspInfo,
@@ -197,9 +201,9 @@ impl SessionSidebar {
                 let s = vstack()
                     .gap(0)
                     .child_sized(title("Cache"), 1)
-                    .child_sized(Self::field("Hits", &cache.hits.to_string()), 1)
-                    .child_sized(Self::field("Misses", &cache.misses.to_string()), 1)
-                    .child_sized(Self::field("Writes", &cache.writes.to_string()), 1);
+                    .child_sized(Self::field("Read", &fmt_tokens(token.cache_read)), 1)
+                    .child_sized(Self::field("Miss", &fmt_tokens(token.cache_miss)), 1)
+                    .child_sized(Self::field("Write", &fmt_tokens(token.cache_write)), 1);
                 (s, 4)
             }
             2 => {
@@ -210,9 +214,7 @@ impl SessionSidebar {
                 } else {
                     "-".to_string()
                 };
-                let window = ctx_limit
-                    .map(fmt_tokens)
-                    .unwrap_or_else(|| "-".to_string());
+                let window = ctx_limit.map(fmt_tokens).unwrap_or_else(|| "-".to_string());
                 let s = vstack()
                     .gap(0)
                     .child_sized(title("Context"), 1)
@@ -260,15 +262,8 @@ impl SessionSidebar {
                 let s = vstack()
                     .gap(0)
                     .child_sized(title("Price"), 1)
-                    .child_sized(
-                        Self::field("In", &format!("${:.4}/1k", price.input_per_1k)),
-                        1,
-                    )
-                    .child_sized(
-                        Self::field("Out", &format!("${:.4}/1k", price.output_per_1k)),
-                        1,
-                    );
-                (s, 3)
+                    .child_sized(Self::field("Total", &fmt_cost(token.total_cost)), 1);
+                (s, 2)
             }
         }
     }
@@ -482,8 +477,6 @@ mod tests {
     fn gear_render_position_matches_hit_formula() {
         let (sidebar, _tab_y, _hits) = SessionSidebar::build(
             &TokenUsage::default(),
-            &CacheStats::default(),
-            &Pricing::default(),
             0,
             None,
             &SidebarTrees::default(),
@@ -527,8 +520,6 @@ mod tests {
     fn gear_position_inside_page_hstack() {
         let (sidebar, _tab_y, _hits) = SessionSidebar::build(
             &TokenUsage::default(),
-            &CacheStats::default(),
-            &Pricing::default(),
             0,
             None,
             &SidebarTrees::default(),
@@ -592,14 +583,10 @@ mod tests {
             workspace_nodes: vec![],
         };
         let token = TokenUsage::default();
-        let cache = CacheStats::default();
-        let price = Pricing::default();
         let mcp = McpLspInfo::default();
         // active_tab=0 → detail_h=4 → graph_start_y = 16 + 4 = 20。
         let (_stack, _tab_y, hits) = SessionSidebar::build(
             &token,
-            &cache,
-            &price,
             0,
             None,
             &trees,
@@ -636,8 +623,6 @@ mod tests {
         };
         let (_s, _t, hits) = SessionSidebar::build(
             &TokenUsage::default(),
-            &CacheStats::default(),
-            &Pricing::default(),
             0,
             None,
             &trees,
@@ -662,13 +647,9 @@ mod tests {
     fn session_tree_no_hits_when_empty() {
         let trees = SidebarTrees::default();
         let token = TokenUsage::default();
-        let cache = CacheStats::default();
-        let price = Pricing::default();
         let mcp = McpLspInfo::default();
         let (_stack, _tab_y, hits) = SessionSidebar::build(
             &token,
-            &cache,
-            &price,
             0,
             None,
             &trees,
@@ -693,8 +674,6 @@ mod tests {
         };
         let (sidebar, _tab_y, _hits) = SessionSidebar::build(
             &token,
-            &CacheStats::default(),
-            &Pricing::default(),
             42,
             Some(200_000),
             &SidebarTrees::default(),
@@ -728,8 +707,6 @@ mod tests {
         // revue 渲染只写有字形的 cell，复用会与上一帧叠加出残影。
         let (sidebar_unknown, _, _) = SessionSidebar::build(
             &token,
-            &CacheStats::default(),
-            &Pricing::default(),
             42,
             None,
             &SidebarTrees::default(),
@@ -759,6 +736,56 @@ mod tests {
             "未知分母应显示 `-`，实际: {window_row:?}"
         );
         assert!(!window_row.contains("200.0k"));
+    }
+
+    #[test]
+    fn cache_and_price_tabs_render_cumulative_usage() {
+        let token = TokenUsage {
+            cache_read: 12_345,
+            cache_miss: 678,
+            cache_write: 90,
+            total_cost: 1.2345,
+            ..Default::default()
+        };
+        let render_tab = |active_tab| {
+            let (sidebar, _, _) = SessionSidebar::build(
+                &token,
+                0,
+                None,
+                &SidebarTrees::default(),
+                &McpLspInfo::default(),
+                &[],
+                active_tab,
+                None,
+                40,
+                &std::collections::HashSet::new(),
+            );
+            let width = crate::app::SIDEBAR_WIDTH;
+            let mut buffer = Buffer::new(width, 40);
+            let mut context = RenderContext::new(&mut buffer, Rect::new(0, 0, width, 40));
+            sidebar.render(&mut context);
+            (0..40)
+                .map(|y| {
+                    (0..width)
+                        .filter_map(|x| buffer.get(x, y).map(|cell| cell.symbol))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let cache = render_tab(1);
+        assert!(cache.contains("Read"));
+        assert!(cache.contains("12.3k"));
+        assert!(cache.contains("Miss"));
+        assert!(cache.contains("678"));
+        assert!(cache.contains("Write"));
+        assert!(cache.contains("90"));
+
+        let price = render_tab(5);
+        assert!(price.contains("Total"));
+        assert!(price.contains("$1.23"));
+        assert!(!price.contains("$1.2345"));
     }
 
     /// 对照：无空行 child——A@y0，B@y2（A:1 + gap:1）。

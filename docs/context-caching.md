@@ -209,9 +209,9 @@ Cache medium change · prefix changed before the stable boundary
 - `crates/agendao-provider/src/cache.rs`
 - `crates/agendao-provider/src/transform/normalize.rs`
 - `crates/agendao-session/src/prompt/message_building.rs`
-- `crates/agendao-session/src/prompt/loop_lifecycle.rs`
-- `crates/agendao-orchestrator/src/runtime/policy.rs`
-- `crates/agendao-orchestrator/src/runtime/loop_impl.rs`
-- `crates/agendao-cli/src/run/session_projection.rs`
-- `crates/agendao-tui/src/components/sidebar.rs`
+- `crates/agendao-session/src/prompt/reflow_context.rs`（memory/continuity reflow diagnostics）
+- `crates/agendao-orchestrator/src/policy.rs`
+- `crates/agendao-orchestrator/src/agent_loop/loop_impl.rs`
+- `crates/agendao-server/src/session_runtime/frontend_projection.rs`
+- `crates/agendao-tui-revue/src/telemetry/sidebar.rs`
 - `apps/agendao-web/src/lib/cacheDiagnostics.ts`

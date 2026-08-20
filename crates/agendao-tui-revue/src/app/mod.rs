@@ -1345,8 +1345,6 @@ impl View for RootView {
         let mut sidebar_nav_hits: Vec<crate::telemetry::sidebar::SidebarNavHit> = Vec::new();
         if sidebar_on {
             let token = h.active_session.token_usage.get();
-            let cache = h.active_session.cache_stats.get();
-            let price = h.active_session.pricing.get();
             let ctx_pct = h.active_session.context_pct.get();
             let ctx_limit = h.active_session.context_limit.get();
             let trees = h.active_session.sidebar_trees.read(); // 零拷贝读 guard
@@ -1356,8 +1354,6 @@ impl View for RootView {
             let running_sessions = h.store.session_running.get();
             let (content, tab_y, nav_hits) = crate::telemetry::SessionSidebar::build(
                 &token,
-                &cache,
-                &price,
                 ctx_pct,
                 ctx_limit,
                 &trees,
@@ -2584,12 +2580,12 @@ mod stale_hint_tests {
     #[test]
     fn below_threshold_is_empty() {
         assert_eq!(stale_hint_text(0, Some("Bash")), "");
-        assert_eq!(stale_hint_text(RUNNING_STALE_SECS as u64 - 1, None), "");
+        assert_eq!(stale_hint_text(RUNNING_STALE_SECS - 1, None), "");
     }
 
     #[test]
     fn names_the_stalled_tool_at_threshold() {
-        let s = stale_hint_text(RUNNING_STALE_SECS as u64, Some("WebSearch"));
+        let s = stale_hint_text(RUNNING_STALE_SECS, Some("WebSearch"));
         assert!(
             s.contains("stalled on WebSearch?"),
             "应点名工具，实际: {s}"

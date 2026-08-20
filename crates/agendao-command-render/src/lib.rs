@@ -1,6 +1,5 @@
 #[cfg(feature = "block-projection")]
 pub use agendao_command::block_projection;
-pub use agendao_command::branding;
 #[cfg(feature = "terminal-ui")]
 pub use agendao_command::cli_markdown;
 #[cfg(feature = "terminal-ui")]

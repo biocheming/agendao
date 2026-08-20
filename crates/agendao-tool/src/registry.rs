@@ -685,6 +685,7 @@ pub async fn create_default_registry_with_config(
         &["skill", "manage", "catalog"],
     )
     .await;
+    #[cfg(feature = "lsp")]
     register_builtin_tool(
         &registry,
         crate::lsp_tool::LspTool,
@@ -1009,6 +1010,20 @@ mod tests {
 
         assert!(names.contains(&crate::tool_catalog::CAPABILITY_TOOL_ID));
         assert!(!names.iter().any(|name| name.starts_with("tool_catalog_")));
+    }
+
+    #[cfg(not(feature = "lsp"))]
+    #[tokio::test]
+    async fn create_default_registry_omits_lsp_when_feature_is_disabled() {
+        let registry = create_default_registry().await;
+        assert!(registry.get("lsp").await.is_none());
+    }
+
+    #[cfg(feature = "lsp")]
+    #[tokio::test]
+    async fn create_default_registry_includes_lsp_when_feature_is_enabled() {
+        let registry = create_default_registry().await;
+        assert!(registry.get("lsp").await.is_some());
     }
 
     fn test_tool_context() -> ToolContext {

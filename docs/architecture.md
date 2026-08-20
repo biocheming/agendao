@@ -16,7 +16,7 @@ graph TB
 
     subgraph 收敛["⚙️ 金 · 同源与收敛（唯一 authority）"]
         SERVER["agendao-server (+core)<br/>routes / 事件总线 / frontend 投影"]
-        LOCAL["agendao-server-local (+pty)<br/>直连适配 / PTY"]
+        LOCAL["agendao-server (+pty)<br/>直连适配 / PTY"]
         CLIENT["agendao-client<br/>传输选择（HTTP/SSE/WS/socket）"]
     end
 
@@ -166,7 +166,7 @@ sequenceDiagram
 |------|------|
 | `agendao-server` | 全部 HTTP/WS/SSE routes；事件总线；frontend 投影（ServerEvent→FrontendEvent）；worktree（白名单校验）；PTY WS（Origin 校验） |
 | `agendao-server-core` | server 共享状态/事件类型 |
-| `agendao-server-local` | 直连适配（local_* API：session/skills/MCP/config……） |
+| `agendao-server`（routes/session/local_api.rs）+ `agendao-server-pty` | 直连适配（local_* API：session/skills/MCP/config……）；PTY 独立成 crate |
 | `agendao-server-pty` | PTY spawn |
 | `agendao-client` | 传输选择器（HTTP/SSE/WS/unix socket） |
 
