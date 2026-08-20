@@ -45,6 +45,11 @@ pub struct AppStore {
     // 土：可用会话列表（SessionList dialog 消费）
     pub session_list: Signal<Vec<SessionListItem>>,
 
+    /// 多会话运行点（Reasonix TabBar running dot 口径）：running 中的
+    /// session_id 集合，SessionRuntimeReplaced 事件维护——Session Tree
+    /// 行尾 ● 标记并行运行。
+    pub session_running: Signal<std::collections::HashSet<String>>,
+
     // 土：Toast 队列（ToastLayer 消费）
     pub toasts: Signal<Vec<ToastMsg>>,
     /// toast id 分配器（Rc<Cell>：AppStore Clone 后仍共享同一计数序列，
@@ -155,6 +160,7 @@ impl AppStore {
             selected_agent: signal(None),
             selected_mode: signal(None),
             session_list: signal(Vec::new()),
+            session_running: signal(std::collections::HashSet::new()),
             toasts: signal(Vec::new()),
             toast_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
             toast_history: signal(Vec::new()),
@@ -204,6 +210,16 @@ impl AppStore {
     }
 
     pub fn push_toast(&self, text: &str, variant: ToastMsgVariant) {
+        self.push_toast_action(text, variant, None)
+    }
+
+    /// ⑥ 带动作的 toast（Reasonix actionLabel 口径）：行尾 chip，点击执行。
+    pub fn push_toast_action(
+        &self,
+        text: &str,
+        variant: ToastMsgVariant,
+        action: Option<crate::store::types::ToastActionKind>,
+    ) {
         // Auto-expire toasts after 4 seconds of wall clock so the prompt
         // area doesn't stay obscured by a "Switched to model" banner
         // forever. The render loop checks `expires_at <= now()` and
@@ -220,6 +236,7 @@ impl AppStore {
             id,
             text: text.into(),
             variant,
+            action,
             expires_at,
             created_at: now_ms,
         };

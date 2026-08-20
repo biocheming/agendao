@@ -74,7 +74,13 @@ pub(crate) fn tool_result_hint(
 pub fn block_accent(block: &TranscriptBlock) -> revue::prelude::Color {
     use crate::theme::colors;
     match block {
-        TranscriptBlock::UserPrompt { .. } => colors::E_TEAL(),
+        TranscriptBlock::UserPrompt { failed, .. } => {
+            if *failed {
+                colors::ACCENT_RED()
+            } else {
+                colors::E_TEAL()
+            }
+        }
         TranscriptBlock::AssistantMsg { .. } => colors::ACCENT_BLUE(),
         TranscriptBlock::Thinking { .. } => colors::FG_MUTED(),
         TranscriptBlock::ToolCall { .. } => colors::NORD_ORANGE(),
@@ -753,9 +759,17 @@ pub(crate) fn layout_block_ctx(
         // ── User Prompt ──
         // height 随行累加。修正：原 transcript_block_height 在 Truncated
         // total≤3 时返回 total+1（多 1 行空白），现以 view 实际行数为准。
-        TranscriptBlock::UserPrompt { content, fold, .. } => {
+        TranscriptBlock::UserPrompt {
+            content,
+            fold,
+            failed,
+            ..
+        } => {
             use crate::store::types::FoldState;
             let total = content.lines().count();
+            // ⑤ Reasonix msg--user-failed：失败消息首行行首 ✕ 红标（高度
+            // 不变——前缀并入首行文本，折叠/截断形态照常生效）。
+            let failed_prefix = if *failed { "✕ " } else { "" };
             // 符号归一（Gemini 第三轮）：去 ▸/▾ 折叠箭头 + You chip。引导符 ❯
             // 在 app 层统一加；折叠用文字 hint（无箭头字符污染）。纯文本裸奔——
             // 背景与全屏一致（block_bg 已返回 None）。
@@ -772,9 +786,14 @@ pub(crate) fn layout_block_ctx(
             };
             let first_line = body_text.lines().next().unwrap_or("");
             let rest: Vec<&str> = body_text.lines().skip(1).collect();
+            let first_color = if *failed {
+                colors::ACCENT_RED()
+            } else {
+                colors::FG_PRIMARY()
+            };
 
             let mut stack = vstack().gap(0).child_sized(
-                Text::new(first_line.to_string()).fg(colors::FG_PRIMARY()),
+                Text::new(format!("{failed_prefix}{first_line}")).fg(first_color),
                 1,
             );
             let mut height = 1u16;
@@ -935,10 +954,13 @@ pub(crate) fn layout_block_ctx(
         // ── Tool Call ──
         // 符号归一（Gemini 第三轮）：去 ⏺ 状态点。引导符 ┊ 在 app 层统一加。
         // 执行状态改由 name 色变表达：执行中 muted（闪烁时隐入背景呼吸）/ Done 琥珀。
+        // Reasonix ToolCard 口径：运行中 params 即"接收中的参数"，显示已收
+        // 字符量（防长参数被误判卡死）；终态固化耗时徽标。
         TranscriptBlock::ToolCall {
             name,
             params,
             phase,
+            duration,
             ..
         } => {
             use crate::widget::blink::blink_visible;
@@ -957,6 +979,19 @@ pub(crate) fn layout_block_ctx(
             } else {
                 name.clone()
             };
+            let tail = match phase {
+                ToolPhase::Starting | ToolPhase::Running => {
+                    // 接收中：params 是已到达的参数预览，量级即进度。
+                    format!(
+                        " · recv {}",
+                        crate::store::types::format_chars(params.chars().count())
+                    )
+                }
+                ToolPhase::Done => match duration {
+                    Some(d) => format!(" · {}", crate::store::types::format_elapsed(*d)),
+                    None => String::new(),
+                },
+            };
             let params_disp = if params.is_empty() {
                 String::new()
             } else if params.len() > 40 {
@@ -974,7 +1009,7 @@ pub(crate) fn layout_block_ctx(
                             name_display.chars().count() as u16,
                         )
                         .child_flex(
-                            Text::new(format!(" {}", params_disp)).fg(colors::FG_MUTED()),
+                            Text::new(format!(" {}{}", params_disp, tail)).fg(colors::FG_MUTED()),
                             1.0,
                         ),
                 ),
@@ -1334,6 +1369,7 @@ mod layout_tests {
             content: "word".into(),
             fold: FoldState::Folded,
             duration_ms: 0,
+            user_overridden: false,
         };
         let blocks: Vec<_> = (0..5).map(|_| mk()).collect();
         let g = layout_thinking_group(&blocks, 0, None);
@@ -1355,6 +1391,7 @@ mod layout_tests {
             content: "思考第一行\n思考第二行".into(),
             fold,
             duration_ms: 0,
+            user_overridden: false,
         };
         for fold in [FoldState::Folded, FoldState::Truncated, FoldState::Expanded] {
             let b = mk(fold.clone());
@@ -1372,6 +1409,7 @@ mod layout_tests {
             id: "u".into(),
             content: "a\nb\nc".into(),
             fold: FoldState::Folded,
+            failed: false,
         };
         assert_eq!(blk(b).height, 1);
     }
@@ -1383,6 +1421,7 @@ mod layout_tests {
             id: "u".into(),
             content: "a\nb".into(),
             fold: FoldState::Truncated,
+            failed: false,
         };
         assert_eq!(blk(b).height, 2);
     }
@@ -1394,6 +1433,7 @@ mod layout_tests {
             id: "u".into(),
             content: "a\nb\nc\nd\ne".into(),
             fold: FoldState::Truncated,
+            failed: false,
         };
         assert_eq!(blk(b).height, 5);
     }
@@ -1408,6 +1448,7 @@ mod layout_tests {
             id: "u".into(),
             content: "a\nb\nc".into(),
             fold: FoldState::Expanded,
+            failed: false,
         };
         assert_eq!(blk(b).height, 3);
     }
@@ -1420,12 +1461,16 @@ mod layout_tests {
             name: "read".into(),
             params: "{\"path\":\"x\"}".into(),
             phase: ToolPhase::Done,
+            started_at: std::time::Instant::now(),
+            duration: None,
         };
         let empty = TranscriptBlock::ToolCall {
             id: "t".into(),
             name: "read".into(),
             params: String::new(),
             phase: ToolPhase::Done,
+            started_at: std::time::Instant::now(),
+            duration: None,
         };
         assert_eq!(blk(with_params).height, 1);
         assert_eq!(blk(empty).height, 1);
@@ -1512,6 +1557,7 @@ mod layout_tests {
             content: "a b c".into(),
             fold: FoldState::Folded,
             duration_ms: 0,
+            user_overridden: false,
         };
         assert_eq!(blk(b).height, 1);
     }
@@ -1655,6 +1701,7 @@ mod layout_tests {
                 id: format!("u{}", turn),
                 content: format!("question turn {}", turn),
                 fold: FoldState::Expanded,
+                failed: false,
             });
             v.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{}", turn),
@@ -1666,6 +1713,8 @@ mod layout_tests {
                 name: "read".into(),
                 params: "{}".into(),
                 phase: ToolPhase::Done,
+                started_at: std::time::Instant::now(),
+                duration: None,
             });
             // 连续 ToolResult → 触发聚合井
             v.push(TranscriptBlock::ToolResult {
@@ -1769,6 +1818,7 @@ mod layout_tests {
                 id: format!("u{i}"),
                 content: format!("question {i}"),
                 fold: FoldState::Expanded,
+                failed: false,
             });
             msgs.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{i}"),

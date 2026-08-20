@@ -156,7 +156,7 @@ impl AppHandler {
                     if let Some(sid) = self.active_session.get_session_id() {
                         if let Some(ref api) = self.api {
                             let _ = api.abort_session(&sid);
-                            self.active_session.run_status.set(RunStatus::Idle);
+                            self.active_session.set_run_status(RunStatus::Idle);
                             self.store.push_toast(
                                 "Session aborted",
                                 crate::store::types::ToastMsgVariant::Info,
@@ -455,7 +455,7 @@ impl AppHandler {
                 } else if let Some(sid) = self.active_session.get_session_id() {
                     if let Some(api) = self.api.clone() {
                         self.compact_in_flight = true;
-                        self.active_session.run_status.set(RunStatus::Sending);
+                        self.active_session.set_run_status(RunStatus::Sending);
                         let tx = self.app_ops.sender();
                         let handle = api.handle().clone();
                         handle.spawn(async move {

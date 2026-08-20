@@ -47,6 +47,11 @@ pub struct SessionStore {
     pub cache_stats: Signal<CacheStats>,
     pub pricing: Signal<Pricing>,
     pub context_pct: Signal<u8>,
+    /// 上下文窗口分母（token）。两条写入路径同口径：投影事件
+    /// `ContextCompactionSummary.limit_tokens`（权威）与 `apply_session_open`
+    /// 从 provider 模型元数据 `context_window` 播种。None = 分母未知
+    /// （sidebar Window 显示 `-`，info strip 不拼 `/limit` 尾）。
+    pub context_limit: Signal<Option<u64>>,
     /// 会话实际使用的模型（优先来自 session metadata，旧会话回退到最后一条
     /// assistant 消息的 `model` 字段，通常为 `provider/model` 形式）。
     pub session_model: Signal<Option<String>>,
@@ -72,6 +77,9 @@ pub struct SessionStore {
 
     // ── 火：运行时 ──
     pub active_tools: Signal<Vec<ActiveTool>>,
+    /// 本次运行的起点（Reasonix "Working Ns" 模式）：进入运行态置位、
+    /// 回 Idle/WaitingUser/Error 清零。None = 未在运行。
+    pub running_since: Signal<Option<std::time::Instant>>,
 
     // ── 木：输入附面（文本/history 的唯一权威是 `input::PromptInput`；
     //    此处只承载待发附件，由 keymap 写入、RootView 附件条渲染消费）──
@@ -100,12 +108,14 @@ impl SessionStore {
             cache_stats: signal(CacheStats::default()),
             pricing: signal(Pricing::default()),
             context_pct: signal(0),
+            context_limit: signal(None),
             session_model: signal(None),
             session_agent: signal(None),
             sidebar_trees: signal(SidebarTrees::default()),
             mcp_lsp: signal(McpLspInfo::default()),
             task_ledger: Signal::new(None),
             active_tools: signal(Vec::new()),
+            running_since: signal(None),
             attachments: signal(Vec::new()),
             stream_new_segments: signal(std::collections::HashSet::new()),
             diff_summary: signal(Vec::new()),
@@ -123,7 +133,7 @@ impl SessionStore {
         self.task_ledger.set(None);
         self.session_id.set(None);
         self.title.set(String::from("New Session"));
-        self.run_status.set(RunStatus::Idle);
+        self.set_run_status(RunStatus::Idle);
         self.messages.update(|m| m.clear());
         self.scroll_offset.set(0);
         self.scroll_anchor_last_h.set(0);
@@ -133,6 +143,7 @@ impl SessionStore {
         self.cache_stats.set(CacheStats::default());
         self.pricing.set(Pricing::default());
         self.context_pct.set(0);
+        self.context_limit.set(None);
         self.session_model.set(None);
         self.session_agent.set(None);
         self.active_tools.update(|t| t.clear());
@@ -170,10 +181,12 @@ impl SessionStore {
     /// Append a user message block.
     pub fn push_user_message(&self, id: &str, content: &str) {
         self.messages.update(|msgs| {
+            close_trailing_thinking(msgs);
             msgs.push(TranscriptBlock::UserPrompt {
                 id: id.into(),
                 content: content.into(),
                 fold: FoldState::Truncated,
+                failed: false,
             })
         });
     }
@@ -183,6 +196,23 @@ impl SessionStore {
     /// 按 id 精确匹配；未命中（已被事件流覆盖等）则 no-op，幂等。与
     /// `push_user_message` 对称，闭合"push 即承诺 remove"的生命周期 —— 不留
     /// 一条"幽灵 user prompt"误导用户以为已发送。
+    /// 发送失败打标（Reasonix msg--user-failed）：保留原文 + failed 标记。
+    pub fn mark_user_message_failed(&self, id: &str) {
+        self.messages.update(|msgs| {
+            for block in msgs.iter_mut() {
+                if let TranscriptBlock::UserPrompt {
+                    id: bid, failed, ..
+                } = block
+                {
+                    if bid == id {
+                        *failed = true;
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
     pub fn remove_user_message(&self, id: &str) {
         self.messages.update(|msgs| {
             msgs.retain(|b| !matches!(b, TranscriptBlock::UserPrompt { id: bid, .. } if bid == id));
@@ -195,11 +225,14 @@ impl SessionStore {
             Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
                 content.push_str(text);
             }
-            _ => msgs.push(TranscriptBlock::AssistantMsg {
-                id: block_id.into(),
-                content: text.into(),
-                fold: FoldState::Truncated,
-            }),
+            _ => {
+                close_trailing_thinking(msgs);
+                msgs.push(TranscriptBlock::AssistantMsg {
+                    id: block_id.into(),
+                    content: text.into(),
+                    fold: FoldState::Truncated,
+                })
+            }
         });
     }
 
@@ -272,11 +305,13 @@ impl SessionStore {
                     return;
                 }
             }
+            close_trailing_thinking(msgs);
             msgs.push(TranscriptBlock::Thinking {
                 id: id.into(),
                 content: text.into(),
                 fold: FoldState::Truncated,
                 duration_ms: 0,
+                user_overridden: false,
             });
         });
     }
@@ -299,17 +334,24 @@ impl SessionStore {
                     return;
                 }
             }
+            close_trailing_thinking(msgs);
             msgs.push(TranscriptBlock::Thinking {
                 id: id.into(),
                 content: text.into(),
                 fold: FoldState::Truncated,
                 duration_ms: 0,
+                user_overridden: false,
             });
         });
     }
 
     /// Append or update a tool call.
+    ///
+    /// 计时口径（Reasonix ToolCard elapsed/duration 模式）：首次插入记
+    /// `started_at`；进入终态（Done）的那一刻固化 `duration`——之后如果
+    /// 再收到同 id 的事件（重放/补发）不重算。
     pub fn upsert_tool_call(&self, id: &str, name: &str, params: &str, phase: ToolPhase) {
+        let now = std::time::Instant::now();
         self.messages.update(|msgs| {
             for block in msgs.iter_mut() {
                 if let TranscriptBlock::ToolCall {
@@ -317,6 +359,8 @@ impl SessionStore {
                     name: block_name,
                     params: block_params,
                     phase: block_phase,
+                    started_at,
+                    duration,
                 } = block
                 {
                     if bid == id {
@@ -326,16 +370,22 @@ impl SessionStore {
                         if !params.is_empty() {
                             *block_params = params.into();
                         }
+                        if phase == ToolPhase::Done && *block_phase != ToolPhase::Done {
+                            *duration = Some(now - *started_at);
+                        }
                         *block_phase = phase;
                         return;
                     }
                 }
             }
+            close_trailing_thinking(msgs);
             msgs.push(TranscriptBlock::ToolCall {
                 id: id.into(),
                 name: name.into(),
                 params: params.into(),
                 phase,
+                started_at: now,
+                duration: None,
             });
         });
     }
@@ -383,7 +433,10 @@ impl SessionStore {
                 .rposition(|b| matches!(b, TranscriptBlock::ToolCall { id: bid, .. } if bid == id));
             match pos {
                 Some(i) => msgs.insert(i + 1, block),
-                None => msgs.push(block),
+                None => {
+                    close_trailing_thinking(msgs);
+                    msgs.push(block);
+                }
             }
         });
     }
@@ -479,15 +532,23 @@ impl SessionStore {
     pub fn toggle_fold(&self, block_idx: usize) {
         // Cycle through FoldState: Folded → Truncated → Expanded → Folded.
         let mut new_msgs: Vec<TranscriptBlock> = self.messages.get();
-        if let Some(
-            TranscriptBlock::UserPrompt { fold, .. }
-            | TranscriptBlock::Thinking { fold, .. }
-            | TranscriptBlock::ToolResult { fold, .. }
-            | TranscriptBlock::TodoList { fold, .. }
-            | TranscriptBlock::AssistantMsg { fold, .. },
-        ) = new_msgs.get_mut(block_idx)
-        {
-            *fold = fold.next();
+        match new_msgs.get_mut(block_idx) {
+            Some(TranscriptBlock::UserPrompt { fold, .. })
+            | Some(TranscriptBlock::ToolResult { fold, .. })
+            | Some(TranscriptBlock::TodoList { fold, .. })
+            | Some(TranscriptBlock::AssistantMsg { fold, .. }) => {
+                *fold = fold.next();
+            }
+            // 手动操作接管：此后自动跟随（流结束自动收起）不再动此块。
+            Some(TranscriptBlock::Thinking {
+                fold,
+                user_overridden,
+                ..
+            }) => {
+                *fold = fold.next();
+                *user_overridden = true;
+            }
+            _ => {}
         }
         self.messages.set(new_msgs);
     }
@@ -518,6 +579,12 @@ impl SessionStore {
         self.context_pct.set(pct.min(100));
     }
 
+    /// 分母写入口（与 set_context_pct 配对）：0 视作未知归 None——
+    /// 投影与播种两条路径都不该把 0 当真实窗口大小展示。
+    pub fn set_context_limit(&self, limit: Option<u64>) {
+        self.context_limit.set(limit.filter(|l| *l > 0));
+    }
+
     pub fn set_mcp_lsp(&self, mcp_connected: usize, mcp_total: usize, lsp_active: Vec<String>) {
         self.mcp_lsp.set(McpLspInfo {
             mcp_connected,
@@ -543,13 +610,38 @@ impl SessionStore {
 
     // ── 火：运行时 ──
 
+    /// run_status 唯一写入口（土律·单点权威）：所有状态迁移经此，
+    /// 同步维护 `running_since` 计时锚点——运行态显示总耗时（Reasonix
+    /// "Working Ns" 模式）依赖它；重复的运行态事件不重置计时。
+    pub fn set_run_status(&self, status: RunStatus) {
+        let running = matches!(
+            status,
+            RunStatus::Running | RunStatus::Compacting | RunStatus::Sending
+        );
+        if running {
+            if self.running_since.get().is_none() {
+                self.running_since.set(Some(std::time::Instant::now()));
+            }
+        } else {
+            self.running_since.set(None);
+        }
+        self.run_status.set(status);
+    }
+
     pub fn set_active_tool(&self, id: &str, name: &str, phase: ToolPhase) {
         self.active_tools.update(|tools| {
+            // 同一工具的 phase 推进保留最初起点，工具耗时才是真实执行时长。
+            let started_at = tools
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.started_at)
+                .unwrap_or_else(std::time::Instant::now);
             tools.retain(|t| t.id != id);
             tools.push(ActiveTool {
                 id: id.into(),
                 name: name.into(),
                 phase,
+                started_at,
             });
         });
     }
@@ -1012,6 +1104,22 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
 ///   - 累积快照：incoming 以 existing 为前缀 → 追加增量（等价于取 incoming 替换）。
 ///   - 重复/陈旧快照：existing 以 incoming 为前缀 → 保留 existing（去重）。
 ///   - 逐 chunk 片段：无前缀关系 → 去重叠后拼接（仅追加尾部）。
+/// Reasonix 自动跟随口径：紧跟其后的非 thinking 块落地 = 思考流结束——
+/// 未被用户接管的尾部 Thinking 自动收起（Folded）。用户折叠/展开过
+/// （user_overridden）则尊重用户选择不动。
+fn close_trailing_thinking(msgs: &mut Vec<TranscriptBlock>) {
+    if let Some(TranscriptBlock::Thinking {
+        fold,
+        user_overridden,
+        ..
+    }) = msgs.last_mut()
+    {
+        if !*user_overridden {
+            *fold = FoldState::Folded;
+        }
+    }
+}
+
 fn merge_snapshot_text_in_place(existing: &mut String, incoming: &str) {
     if incoming.is_empty() {
         return;
@@ -1664,6 +1772,22 @@ mod tests {
         assert_eq!(s.context_pct.get(), 100);
     }
 
+    /// 分母归一：0 与 None 同归 None（0 不是真实窗口大小）；正值原样保留。
+    /// reset_for_new_session 清 None——新会话不携带旧会话的窗口口径。
+    #[test]
+    fn context_limit_normalizes_zero_and_resets() {
+        let s = SessionStore::new();
+        s.set_context_limit(Some(0));
+        assert_eq!(s.context_limit.get(), None, "0 归一为未知");
+        s.set_context_limit(Some(200_000));
+        assert_eq!(s.context_limit.get(), Some(200_000));
+        s.set_context_limit(None);
+        assert_eq!(s.context_limit.get(), None);
+        s.set_context_limit(Some(128_000));
+        s.reset_for_new_session();
+        assert_eq!(s.context_limit.get(), None, "reset 清分母");
+    }
+
     /// `transcript_to_text` 是 export/copy 共用的唯一序列化权威——
     /// User / Assistant / Tool / Result 四种 block 都要正确序列化，
     /// 顺序与 messages 一致；未支持 block（如 Thinking）跳过不产生空行。
@@ -1776,6 +1900,7 @@ mod tests {
                     id: "1".into(),
                     content: "hi".into(),
                     fold: FoldState::Expanded,
+                failed: false,
                 },
                 "User: hi",
             ),
@@ -1793,6 +1918,8 @@ mod tests {
                     name: "Bash".into(),
                     params: "ls".into(),
                     phase: ToolPhase::Done,
+                    started_at: std::time::Instant::now(),
+                    duration: None,
                 },
                 "Tool: Bash(ls)",
             ),
@@ -1813,6 +1940,7 @@ mod tests {
                     content: "hmm".into(),
                     fold: FoldState::Expanded,
                     duration_ms: 0,
+            user_overridden: false,
                 },
                 "Thinking: hmm",
             ),
@@ -2021,5 +2149,149 @@ mod tests {
         assert_eq!(s.transcript_cursor.get(), Some(1));
         assert!(s.focus_transcript_reference("stage-id", 4));
         assert!(!s.focus_transcript_reference("missing", 4));
+    }
+
+    #[test]
+    fn run_status_transitions_maintain_running_since_anchor() {
+        let s = SessionStore::new();
+        assert!(s.running_since.get().is_none(), "Idle 起点为空");
+        s.set_run_status(RunStatus::Running);
+        let anchor = s.running_since.get().expect("Running 置位计时锚点");
+        // 重复运行态事件（Question/Permission 恢复等）不得重置计时。
+        s.set_run_status(RunStatus::Running);
+        s.set_run_status(RunStatus::Compacting);
+        assert_eq!(
+            s.running_since.get(),
+            Some(anchor),
+            "运行态之间的迁移共享同一起点"
+        );
+        s.set_run_status(RunStatus::WaitingUser);
+        assert!(s.running_since.get().is_none(), "等待用户清零");
+        s.set_run_status(RunStatus::Running);
+        assert!(s.running_since.get().is_some_and(|t| t >= anchor), "重新运行重新起表");
+    }
+
+    #[test]
+    fn active_tool_phase_updates_preserve_started_at() {
+        let s = SessionStore::new();
+        s.set_active_tool("t1", "bash", ToolPhase::Starting);
+        let started = s
+            .active_tools
+            .get()
+            .iter()
+            .find(|t| t.id == "t1")
+            .unwrap()
+            .started_at;
+        s.set_active_tool("t1", "bash", ToolPhase::Running);
+        let tools = s.active_tools.get();
+        let after = tools.iter().find(|t| t.id == "t1").unwrap();
+        assert_eq!(after.started_at, started, "phase 推进不重置工具起点");
+        assert_eq!(after.phase, ToolPhase::Running);
+    }
+
+    #[test]
+    fn failed_user_message_stays_marked_not_removed() {
+        // ⑤ Reasonix msg--user-failed：失败打标保留，不回收。
+        let s = SessionStore::new();
+        s.push_user_message("m1", "hello");
+        s.mark_user_message_failed("m1");
+        let msgs = s.messages.get();
+        let Some(TranscriptBlock::UserPrompt { failed, content, .. }) =
+            msgs.iter().find(|b| matches!(b, TranscriptBlock::UserPrompt { id, .. } if id == "m1"))
+        else {
+            panic!("失败消息必须保留在 transcript");
+        };
+        assert!(*failed, "失败标记置位");
+        assert_eq!(content, "hello", "原文不丢");
+    }
+
+    #[test]
+    fn thinking_auto_follows_until_user_overrides() {
+        // Reasonix 自动跟随：思考流结束（后续非 thinking 块落地）自动收起；
+        // 用户折叠/展开过则尊重用户，不再自动。
+        let s = SessionStore::new();
+        s.push_thinking("r1", "step one...");
+        assert_eq!(
+            fold_of_thinking(&s, "r1"),
+            Some(FoldState::Truncated),
+            "流式思考默认 3 行预览（自动跟随展开态）"
+        );
+        // assistant 消息落地 = 思考结束 → 自动收起
+        s.push_assistant_delta("m1", "answer");
+        assert_eq!(
+            fold_of_thinking(&s, "r1"),
+            Some(FoldState::Folded),
+            "未接管时思考流结束自动收起"
+        );
+        // 用户接管：重新展开后再来新思考流，用户块不再被动
+        s.toggle_fold(idx_of_thinking(&s, "r1")); // Folded→Truncated（user_overridden=true）
+        s.push_thinking("r2", "second thought");
+        s.push_assistant_delta("m2", "answer2");
+        assert_eq!(
+            fold_of_thinking(&s, "r1"),
+            Some(FoldState::Truncated),
+            "用户展开过的块不被自动收起"
+        );
+        assert_eq!(
+            fold_of_thinking(&s, "r2"),
+            Some(FoldState::Folded),
+            "未接管的 r2 仍自动收起"
+        );
+    }
+
+    fn fold_of_thinking(s: &SessionStore, id: &str) -> Option<FoldState> {
+        s.messages.get().iter().find_map(|b| {
+            if let TranscriptBlock::Thinking { id: bid, fold, .. } = b {
+                (bid == id).then_some(fold.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn idx_of_thinking(s: &SessionStore, id: &str) -> usize {
+        s.messages
+            .get()
+            .iter()
+            .position(|b| matches!(b, TranscriptBlock::Thinking { id: bid, .. } if bid == id))
+            .unwrap()
+    }
+
+    #[test]
+    fn tool_call_duration_freezes_on_done_and_started_at_preserved() {
+        let s = SessionStore::new();
+        s.upsert_tool_call("t9", "bash", "", ToolPhase::Starting);
+        s.upsert_tool_call("t9", "bash", "ls -la", ToolPhase::Running);
+        s.upsert_tool_call("t9", "bash", "", ToolPhase::Done);
+        let msgs = s.messages.get();
+        let Some(TranscriptBlock::ToolCall { started_at, duration, phase, .. }) =
+            msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
+        else {
+            panic!("tool call block missing");
+        };
+        assert_eq!(*phase, ToolPhase::Done);
+        assert!(duration.is_some(), "终态必须固化耗时");
+        // Done 之后同 id 再来事件（重放）不重算 duration。
+        let frozen = *duration;
+        s.upsert_tool_call("t9", "bash", "", ToolPhase::Done);
+        let msgs = s.messages.get();
+        let Some(TranscriptBlock::ToolCall { duration: after, .. }) =
+            msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
+        else {
+            panic!()
+        };
+        assert_eq!(*after, frozen);
+        let _ = started_at;
+    }
+
+    #[test]
+    fn format_elapsed_uses_compact_tiers() {
+        use crate::store::types::format_elapsed;
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(45)), "45s");
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(151)), "2m31s");
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(3600 + 240)),
+            "1h04m"
+        );
     }
 }

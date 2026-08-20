@@ -63,17 +63,19 @@ impl SessionSidebar {
         cache: &CacheStats,
         price: &Pricing,
         ctx_pct: u8,
+        ctx_limit: Option<u64>,
         trees: &SidebarTrees,
         mcp: &McpLspInfo,
         tools: &[ActiveTool],
         active_tab: usize,
         active_session_id: Option<&str>,
         viewport_height: u16,
+        running_sessions: &std::collections::HashSet<String>,
     ) -> (revue::widget::Stack, u16, Vec<SidebarNavHit>) {
         let (logo_view, logo_h) = Self::logo();
         let (tab_view, tab_h) = Self::tab_bar(active_tab);
         let (detail_view, detail_h) =
-            Self::detail(active_tab, token, cache, price, ctx_pct, mcp, tools);
+            Self::detail(active_tab, token, cache, price, ctx_pct, ctx_limit, mcp, tools);
         let session_header = Text::new("▣ Session Tree")
             .fg(colors::FG_SECONDARY())
             .bold();
@@ -88,7 +90,7 @@ impl SessionSidebar {
         // （⚙ 点击被 open_session 拦截）乃至整列底部区域（金律：渲染/命中同一份展平）。
         let graph_visible = viewport_height.saturating_sub(graph_start_y + 1) as usize;
         let (graph, nav_hits) =
-            Self::session_graph(trees, graph_start_y, active_session_id, graph_visible);
+            Self::session_graph(trees, graph_start_y, active_session_id, graph_visible, running_sessions);
 
         // gap(0) + 显式空行 child：每处间距独立可控（土律：编排单点）。
         // 紧贴（0 行）：轨道↔详情、Session Tree↔分隔、分隔↔graph；其余 1 行。
@@ -169,12 +171,14 @@ impl SessionSidebar {
 
     /// active tab 详情：标题（FG_SECONDARY bold）+ 字段行（` -字段: 值` FG_MUTED）。
     /// 顺序：0 Token / 1 Cache / 2 Context / 3 Tools / 4 MCP / 5 Price。
+    #[allow(clippy::too_many_arguments)]
     fn detail(
         active: usize,
         token: &TokenUsage,
         cache: &CacheStats,
         price: &Pricing,
         ctx_pct: u8,
+        ctx_limit: Option<u64>,
         mcp: &McpLspInfo,
         tools: &[ActiveTool],
     ) -> (revue::widget::Stack, u16) {
@@ -199,12 +203,24 @@ impl SessionSidebar {
                 (s, 4)
             }
             2 => {
+                // 分母（窗口大小）与绝对值并列——只看百分比无法决策
+                // 何时 /compact（水律：回流数据是下一轮执行依据）。
+                let used_abs = if token.context_tokens > 0 {
+                    fmt_tokens(token.context_tokens)
+                } else {
+                    "-".to_string()
+                };
+                let window = ctx_limit
+                    .map(fmt_tokens)
+                    .unwrap_or_else(|| "-".to_string());
                 let s = vstack()
                     .gap(0)
                     .child_sized(title("Context"), 1)
-                    .child_sized(Self::field("Used", &format!("{}%", ctx_pct)), 1)
+                    .child_sized(Self::field("Used", &used_abs), 1)
+                    .child_sized(Self::field("Window", &window), 1)
+                    .child_sized(Self::field("Pct", &format!("{}%", ctx_pct)), 1)
                     .child_sized(Self::meter_bar(ctx_pct), 1);
-                (s, 3)
+                (s, 5)
             }
             3 => {
                 let running = tools
@@ -292,10 +308,16 @@ impl SessionSidebar {
         graph_start_y: u16,
         active_session_id: Option<&str>,
         visible_rows: usize,
+        running_sessions: &std::collections::HashSet<String>,
     ) -> (revue::widget::Stack, Vec<SidebarNavHit>) {
         let mut flat: Vec<FlatRow> = Vec::new();
         if !trees.session_nodes.is_empty() {
-            Self::flatten_nodes(&trees.session_nodes, &mut flat, active_session_id);
+            Self::flatten_nodes(
+                &trees.session_nodes,
+                &mut flat,
+                active_session_id,
+                running_sessions,
+            );
         }
         flat.truncate(30.min(visible_rows));
 
@@ -348,6 +370,7 @@ impl SessionSidebar {
         nodes: &[SidebarNode],
         rows: &mut Vec<FlatRow>,
         active_session_id: Option<&str>,
+        running_sessions: &std::collections::HashSet<String>,
     ) {
         for n in nodes {
             if rows.len() >= 30 {
@@ -363,7 +386,12 @@ impl SessionSidebar {
             } else {
                 "  "
             };
-            let label = format!("{}{}{}", indent, icon, n.label);
+            // ④ Reasonix TabBar running dot：并行运行的会话行尾 ●（绿）。
+            let running_dot = match &n.intent {
+                Some(TreeIntent::NavigateSession(id)) if running_sessions.contains(id) => " ●",
+                _ => "",
+            };
+            let label = format!("{}{}{}{}", indent, icon, n.label, running_dot);
             let color = match &n.intent {
                 Some(TreeIntent::NavigateSession(id)) if active_session_id == Some(id.as_str()) => {
                     colors::E_AMBER()
@@ -380,7 +408,7 @@ impl SessionSidebar {
                 has_children: !n.children.is_empty(),
             });
             if n.expanded {
-                Self::flatten_nodes(&n.children, rows, active_session_id);
+                Self::flatten_nodes(&n.children, rows, active_session_id, running_sessions);
             }
         }
     }
@@ -457,12 +485,14 @@ mod tests {
             &CacheStats::default(),
             &Pricing::default(),
             0,
+            None,
             &SidebarTrees::default(),
             &McpLspInfo::default(),
             &[],
             0,
             None,
             24,
+            &std::collections::HashSet::new(),
         );
         let (w, h) = (crate::app::SIDEBAR_WIDTH as usize, 24u16);
         let mut buf = Buffer::new(w as u16, h);
@@ -500,12 +530,14 @@ mod tests {
             &CacheStats::default(),
             &Pricing::default(),
             0,
+            None,
             &SidebarTrees::default(),
             &McpLspInfo::default(),
             &[],
             0,
             None,
             24,
+            &std::collections::HashSet::new(),
         );
         let h: u16 = 24;
         let page = hstack()
@@ -564,8 +596,20 @@ mod tests {
         let price = Pricing::default();
         let mcp = McpLspInfo::default();
         // active_tab=0 → detail_h=4 → graph_start_y = 16 + 4 = 20。
-        let (_stack, _tab_y, hits) =
-            SessionSidebar::build(&token, &cache, &price, 0, &trees, &mcp, &[], 0, None, 40);
+        let (_stack, _tab_y, hits) = SessionSidebar::build(
+            &token,
+            &cache,
+            &price,
+            0,
+            None,
+            &trees,
+            &mcp,
+            &[],
+            0,
+            None,
+            40,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(hits.len(), 2, "both nodes carry NavigateSession intent");
         assert_eq!(hits[0].session_id, "sess-root");
         assert_eq!(hits[0].y, 20, "root row at graph_start_y");
@@ -595,12 +639,14 @@ mod tests {
             &CacheStats::default(),
             &Pricing::default(),
             0,
+            None,
             &trees,
             &McpLspInfo::default(),
             &[],
             0,
             None,
             24,
+            &std::collections::HashSet::new(),
         );
         // active_tab=0 → detail_h=4 → graph_start_y=20；user_bar 行=23。
         assert!(
@@ -619,9 +665,100 @@ mod tests {
         let cache = CacheStats::default();
         let price = Pricing::default();
         let mcp = McpLspInfo::default();
-        let (_stack, _tab_y, hits) =
-            SessionSidebar::build(&token, &cache, &price, 0, &trees, &mcp, &[], 0, None, 40);
+        let (_stack, _tab_y, hits) = SessionSidebar::build(
+            &token,
+            &cache,
+            &price,
+            0,
+            None,
+            &trees,
+            &mcp,
+            &[],
+            0,
+            None,
+            40,
+            &std::collections::HashSet::new(),
+        );
         assert!(hits.is_empty());
+    }
+
+    /// Context tab（active_tab=2）渲染分母三件套：绝对值 / Window / Pct。
+    /// detail_h 由 3 → 5，graph_start_y 随之下移 2——真实渲染逐 cell 找
+    /// 字段行，防"高度改了行没画"或"行画了位置漂移"两类回归。
+    #[test]
+    fn context_tab_shows_absolute_window_and_pct() {
+        let token = TokenUsage {
+            context_tokens: 85_000,
+            ..Default::default()
+        };
+        let (sidebar, _tab_y, _hits) = SessionSidebar::build(
+            &token,
+            &CacheStats::default(),
+            &Pricing::default(),
+            42,
+            Some(200_000),
+            &SidebarTrees::default(),
+            &McpLspInfo::default(),
+            &[],
+            2, // Context tab
+            None,
+            40,
+            &std::collections::HashSet::new(),
+        );
+        let w = crate::app::SIDEBAR_WIDTH;
+        let mut buf = Buffer::new(w, 40);
+        let area = Rect::new(0, 0, w, 40);
+        let mut ctx = RenderContext::new(&mut buf, area);
+        sidebar.render(&mut ctx);
+        let rendered: Vec<String> = (0..40)
+            .map(|y| {
+                (0..w)
+                    .filter_map(|x| buf.get(x, y).map(|c| c.symbol))
+                    .collect::<String>()
+            })
+            .collect();
+        let find_line = |frag: &str| rendered.iter().position(|l| l.contains(frag));
+        assert!(find_line("Used").is_some_and(|y| rendered[y].contains("85.0k")));
+        assert!(
+            find_line("Window").is_some_and(|y| rendered[y].contains("200.0k")),
+            "Window 行应含分母 200.0k"
+        );
+        assert!(find_line("Pct").is_some_and(|y| rendered[y].contains("42%")));
+        // 未知分母 → Window 显示 `-`，不显示假 0。用干净 buffer：
+        // revue 渲染只写有字形的 cell，复用会与上一帧叠加出残影。
+        let (sidebar_unknown, _, _) = SessionSidebar::build(
+            &token,
+            &CacheStats::default(),
+            &Pricing::default(),
+            42,
+            None,
+            &SidebarTrees::default(),
+            &McpLspInfo::default(),
+            &[],
+            2,
+            None,
+            40,
+            &std::collections::HashSet::new(),
+        );
+        let mut buf2 = Buffer::new(w, 40);
+        let mut ctx2 = RenderContext::new(&mut buf2, area);
+        sidebar_unknown.render(&mut ctx2);
+        let rendered_unknown: Vec<String> = (0..40)
+            .map(|y| {
+                (0..w)
+                    .filter_map(|x| buf2.get(x, y).map(|c| c.symbol))
+                    .collect::<String>()
+            })
+            .collect();
+        let window_row = rendered_unknown
+            .iter()
+            .find(|l| l.contains("Window"))
+            .expect("Window 行应存在");
+        assert!(
+            window_row.trim_end().ends_with('-'),
+            "未知分母应显示 `-`，实际: {window_row:?}"
+        );
+        assert!(!window_row.contains("200.0k"));
     }
 
     /// 对照：无空行 child——A@y0，B@y2（A:1 + gap:1）。

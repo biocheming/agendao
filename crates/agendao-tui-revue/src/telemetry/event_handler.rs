@@ -30,7 +30,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 // Blocked/Sleeping 是 session 级静置，不算运行。
                 _ => RunStatus::Idle,
             };
-            session.run_status.set(status);
+            session.set_run_status(status);
             Some(session_id.clone())
         }
 
@@ -96,7 +96,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         Some("end") => {
                             // `end` carries no new text; just mark the loop
                             // as idle so the prompt bar reactivates.
-                            session.run_status.set(RunStatus::Idle);
+                            session.set_run_status(RunStatus::Idle);
                         }
                         Some("start") => {
                             // 新段开始：下一条同 id 的 full 追加为新片段
@@ -208,19 +208,19 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
         }
 
         FrontendEvent::QuestionUpsert { session_id, .. } => {
-            session.run_status.set(RunStatus::WaitingUser);
+            session.set_run_status(RunStatus::WaitingUser);
             Some(session_id.clone())
         }
         FrontendEvent::QuestionRemoved { session_id, .. } => {
-            session.run_status.set(RunStatus::Running);
+            session.set_run_status(RunStatus::Running);
             Some(session_id.clone())
         }
         FrontendEvent::PermissionUpsert { session_id, .. } => {
-            session.run_status.set(RunStatus::WaitingUser);
+            session.set_run_status(RunStatus::WaitingUser);
             Some(session_id.clone())
         }
         FrontendEvent::PermissionRemoved { session_id, .. } => {
-            session.run_status.set(RunStatus::Running);
+            session.set_run_status(RunStatus::Running);
             Some(session_id.clone())
         }
 
@@ -259,6 +259,8 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         session.set_context_pct(pct);
                     }
                 }
+                // 分母不再算完 pct 即弃（水律：回流数据是 /compact 决策依据）。
+                session.set_context_limit(cs.limit_tokens);
             }
             Some(session_id.clone())
         }

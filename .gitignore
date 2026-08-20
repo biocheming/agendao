@@ -30,3 +30,11 @@ apps/agendao-web/.cache/
 # Python cache
 __pycache__/
 *.pyc
+
+.agents/
+.agents/*
+.codex/
+.codex/*
+.codegraph
+.codegraph/*
+

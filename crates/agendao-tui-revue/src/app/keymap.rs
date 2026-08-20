@@ -699,7 +699,7 @@ impl AppHandler {
                     match oc {
                         dispatch_outcome::DispatchOutcome::Sent { status, .. } => {
                             if status == "queued" || status == "awaiting_user" {
-                                self.active_session.run_status.set(RunStatus::Running);
+                                self.active_session.set_run_status(RunStatus::Running);
                             }
                             // U10：server 口径的排队回执 → 计数，prompt hint
                             // 显示 "Queued (n)"（计数直读 server status，不猜）。
@@ -720,7 +720,7 @@ impl AppHandler {
                                 // 状态机比回执更新，不抢（防迟到回执误清新一轮的状态；
                                 // 新一轮只可能由本 session 再次 dispatch 发起，其
                                 // Running 事件随即到达，即使撞上也会自愈）。
-                                self.active_session.run_status.set(RunStatus::Idle);
+                                self.active_session.set_run_status(RunStatus::Idle);
                             }
                             // status 其他值且事件流已接管：等服务端 FrontendEvent 经
                             // event_bus 驱动状态机，此处不抢。
@@ -736,29 +736,33 @@ impl AppHandler {
                             prompt_text,
                             ..
                         } => {
-                            // 回收乐观消息（生命周期对称：push ↔ remove），不留
-                            // "幽灵 user prompt"误导用户以为已发送。
-                            self.active_session.remove_user_message(user_msg_id);
+                            // ⑤ Reasonix msg--user-failed：失败消息**原地打标保留**
+                            // （✕ 引导符红标）而非回收——原文在屏、上下文不丢，
+                            // Ctrl+R 重试语义不变。notice/toast 继续说明原因。
+                            self.active_session.mark_user_message_failed(user_msg_id);
+                            let friendly =
+                                crate::store::types::friendly_error(&format!("Send failed: {error}"));
                             self.active_session.push_notice(
                                 &format!("err-{}", ts_now()),
-                                &format!("Failed to send: {}", error),
+                                &friendly,
                             );
                             self.active_session
                                 .run_status
                                 .set(RunStatus::Error(error.clone()));
-                            // U10：一键重试——留存原文，toast 指路 Ctrl+R。
-                            // 裸 'r' 不可用：prompt 独占字母键，会抢正常输入。
-                            // 空 prompt_text（shell 失败）= 不可重试，不指路。
+                            // U10+⑥：一键重试——留存原文；toast 携带 ↻ Retry
+                            // 动作 chip（点击即重发，与 Ctrl+R 同源）。
+                            // 空 prompt_text（shell 失败）= 不可重试，无动作。
                             if prompt_text.is_empty() {
                                 self.store.push_toast(
-                                    &format!("Send failed: {}", error),
+                                    &friendly,
                                     crate::store::types::ToastMsgVariant::Error,
                                 );
                             } else {
                                 self.last_failed_prompt = Some(prompt_text.clone());
-                                self.store.push_toast(
-                                    &format!("Send failed: {} — Ctrl+R to retry", error),
+                                self.store.push_toast_action(
+                                    &format!("{friendly} — Ctrl+R"),
                                     crate::store::types::ToastMsgVariant::Error,
+                                    Some(crate::store::types::ToastActionKind::RetryLastPrompt),
                                 );
                             }
                             changed = true;
@@ -767,7 +771,7 @@ impl AppHandler {
                             // shell 命令已排队：复位 run_status，补渲染与后端
                             // `execute_shell` handler 落库一致的 assistant 行。
                             if matches!(self.active_session.run_status.get(), RunStatus::Sending) {
-                                self.active_session.run_status.set(RunStatus::Idle);
+                                self.active_session.set_run_status(RunStatus::Idle);
                             }
                             let block_id = format!("shell-q-{}", ts_now());
                             self.active_session.push_assistant_delta(
@@ -861,7 +865,7 @@ impl AppHandler {
                                             RunStatus::Sending
                                         )
                                     {
-                                        self.active_session.run_status.set(RunStatus::Idle);
+                                        self.active_session.set_run_status(RunStatus::Idle);
                                     }
                                     self.store.push_toast(
                                         &format!("Compact failed: {}", e),
@@ -1105,6 +1109,34 @@ impl AppHandler {
                             }
                             changed = true;
                         }
+                        FrontendEvent::SessionRuntimeReplaced { .. } => {
+                            // ④ 多会话运行点：先记全局运行表（Session Tree ●），
+                            // 再走常规路径更新 active session。
+                            if let FrontendEvent::SessionRuntimeReplaced {
+                                session_id,
+                                runtime,
+                            } = fe
+                            {
+                                let running = matches!(
+                                    runtime.run_status,
+                                    agendao_client::SessionRunStatusKind::Running
+                                        | agendao_client::SessionRunStatusKind::WaitingOnTool
+                                        | agendao_client::SessionRunStatusKind::Cancelling
+                                        | agendao_client::SessionRunStatusKind::Compacting
+                                );
+                                self.store.session_running.update(|set| {
+                                    if running {
+                                        set.insert(session_id.clone());
+                                    } else {
+                                        set.remove(session_id);
+                                    }
+                                });
+                            }
+                            if apply_frontend_event(fe, &self.active_session).is_some() {
+                                self.transcript_dirty = true;
+                                changed = true;
+                            }
+                        }
                         _ => {
                             if apply_frontend_event(fe, &self.active_session).is_some() {
                                 self.transcript_dirty = true;
@@ -1209,6 +1241,44 @@ impl AppHandler {
                             // 治理账本视图；写入仍通过服务端 CAS authority）。
                             self.task_state_dialog.open();
                             self.panel = Panel::TaskState;
+                            return true;
+                        }
+                        Key::Char('d') => {
+                            // U3②：Ctrl+D → diff 明细键盘入口（此前只有
+                            // 角标点击）。有改动才 toggle；无改动诚实提示，
+                            // 不开空面板（与 set_diff_summary 空集收起同口径）。
+                            let diffs = self.active_session.diff_summary.get();
+                            if diffs.is_empty() {
+                                self.store.push_toast(
+                                    "No file changes this turn",
+                                    crate::store::types::ToastMsgVariant::Info,
+                                );
+                            } else {
+                                self.active_session.toggle_diff_detail();
+                                let open = self.active_session.diff_detail_open.get();
+                                self.store.push_toast(
+                                    if open {
+                                        "Diff detail open — Ctrl+D to close"
+                                    } else {
+                                        "Diff detail closed"
+                                    },
+                                    crate::store::types::ToastMsgVariant::Info,
+                                );
+                            }
+                            return true;
+                        }
+                        Key::Char('f') => {
+                            // U5：Ctrl+F → transcript 搜索条。仅 Session
+                            // 路由（Home 无 transcript 可搜）；搜索态下
+                            // 字符不落 prompt（panel_dispatch Search 分支
+                            // 消化）。
+                            if matches!(
+                                self.store.route.get(),
+                                crate::app::Route::Session { .. }
+                            ) {
+                                self.search_bar.open();
+                                self.panel = Panel::Search;
+                            }
                             return true;
                         }
                         Key::Char('p') => {
@@ -1324,7 +1394,17 @@ impl AppHandler {
                             .rev()
                             .find(|(_, r)| r.contains(m.x, m.y))
                         {
+                            // ⑥ action chip：携带动作的 toast 点击=执行动作
+                            //（执行后 dismiss；动作不可用时退化为 dismiss）。
+                            let action = self.store.toasts.get().iter()
+                                .find(|t| t.id == *id)
+                                .and_then(|t| t.action);
                             self.store.dismiss_toast(*id);
+                            if let Some(crate::store::types::ToastActionKind::RetryLastPrompt) = action {
+                                if let Some(text) = self.last_failed_prompt.take() {
+                                    self.dispatch(text);
+                                }
+                            }
                             return true;
                         }
                         // ── U8 status bar ⏸ 角标 → 重开首个待决策项 ──
@@ -2342,7 +2422,7 @@ impl AppHandler {
                             false
                         };
                         if aborted {
-                            self.active_session.run_status.set(RunStatus::Idle);
+                            self.active_session.set_run_status(RunStatus::Idle);
                             self.store.push_toast(
                                 "⏹ Session interrupted",
                                 crate::store::types::ToastMsgVariant::Info,
@@ -2574,7 +2654,7 @@ impl AppHandler {
         // 顺带清未读计数。
         self.active_session.scroll_to_bottom();
         if let Some(ref api) = self.api {
-            self.active_session.run_status.set(RunStatus::Sending);
+            self.active_session.set_run_status(RunStatus::Sending);
             self.layout_dirty = true;
             // Pull the user's current selections from the store so the
             // backend uses the model/agent/mode picked in the dialogs
@@ -2588,7 +2668,7 @@ impl AppHandler {
                 match resolve_execution_mode(mode.as_deref(), self.store.selected_agent.get()) {
                     Ok(selection) => selection,
                     Err(error) => {
-                        self.active_session.run_status.set(RunStatus::Error(error));
+                        self.active_session.set_run_status(RunStatus::Error(error));
                         return;
                     }
                 };
@@ -2628,7 +2708,7 @@ impl AppHandler {
             // Echo mode (no API) — respond immediately
             self.active_session
                 .push_assistant_delta(&format!("echo-{}", ts_now()), &format!("[echo] {}", text));
-            self.active_session.run_status.set(RunStatus::Idle);
+            self.active_session.set_run_status(RunStatus::Idle);
             self.store.navigate(Route::Session {
                 session_id: "echo".into(),
             });
@@ -2786,6 +2866,8 @@ impl AppHandler {
                     if let Some(limit) = limit.filter(|l| *l > 0) {
                         let pct = ((ctx_tokens as f64 / limit as f64) * 100.0).min(100.0) as u8;
                         self.active_session.set_context_pct(pct);
+                        // 播种路径也写分母（投影事件到达后由权威覆盖）。
+                        self.active_session.set_context_limit(Some(limit));
                     }
                 }
             }
@@ -2901,7 +2983,7 @@ impl AppHandler {
         self.active_session
             .push_user_message(&mid, &format!("$ {}", cmd));
         if let Some(ref api) = self.api {
-            self.active_session.run_status.set(RunStatus::Sending);
+            self.active_session.set_run_status(RunStatus::Sending);
             self.layout_dirty = true;
             let api_c = api.clone();
             let tx = self.dispatch_outcomes.sender();
@@ -3948,7 +4030,7 @@ pub(crate) fn eager_load_session_messages(
     match api.get_messages(session_id) {
         Ok(msgs) => {
             apply_loaded_messages(active_session, msgs);
-            active_session.run_status.set(RunStatus::Idle);
+            active_session.set_run_status(RunStatus::Idle);
         }
         Err(e) => {
             tracing::warn!(%session_id, %e, "failed to load session messages");
@@ -5175,6 +5257,90 @@ mod tests {
         assert!(!h.task_state_dialog.visible);
     }
 
+    /// U3②：Ctrl+D toggle diff 明细——有改动开/关 + toast，无改动诚实
+    /// 提示不开空面板（与鼠标角标点击同语义，键盘/鼠标双入口一权威）。
+    #[test]
+    fn ctrl_d_toggles_diff_detail() {
+        use crate::store::types::DiffStat;
+        let mut h = mk_handler();
+
+        // 无改动：toast 提示，不 toggle。
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('d')))));
+        assert!(!h.active_session.diff_detail_open.get());
+
+        // 有改动：开 → toast "open"。
+        h.active_session.set_diff_summary(vec![DiffStat {
+            path: "src/main.rs".into(),
+            additions: 3,
+            deletions: 1,
+        }]);
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('d')))));
+        assert!(h.active_session.diff_detail_open.get());
+
+        // 再按：关。
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('d')))));
+        assert!(!h.active_session.diff_detail_open.get());
+    }
+
+    /// U5：Ctrl+F 全链路——Session 路由开搜索条、字符进 query 不落
+    /// prompt、Enter 跳转命中块（cursor + 滚动）、Esc 关闭回 None。
+    #[test]
+    fn ctrl_f_search_flow_jumps_and_closes() {
+        use crate::store::types::{FoldState, TranscriptBlock};
+        let mut h = mk_handler();
+        h.store.navigate(Route::Session {
+            session_id: "s1".into(),
+        });
+        h.active_session.messages.set(vec![
+            TranscriptBlock::UserPrompt {
+                id: "u1".into(),
+                content: "fix the login bug".into(),
+                fold: FoldState::Truncated,
+                failed: false,
+            },
+            TranscriptBlock::AssistantMsg {
+                id: "a1".into(),
+                content: "Login flow fixed".into(),
+                fold: FoldState::Truncated,
+            },
+        ]);
+
+        // Ctrl+F 开搜索条。
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('f')))));
+        assert_eq!(h.panel, Panel::Search);
+        assert!(h.search_bar.is_open());
+
+        // 字符进 query，不落 prompt（木律：搜索词是旁路临时态）。
+        for c in "login".chars() {
+            assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char(c)))));
+        }
+        assert_eq!(h.search_bar.query, "login");
+        assert_eq!(h.prompt.text(), "");
+        assert_eq!(h.search_bar.matches, vec![0, 1]);
+
+        // Enter → 跳下一个命中（首跳选中第 1 块，cursor 落块）。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(0));
+        // 再 Enter → 第 2 块。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(1));
+
+        // Esc → 关闭回 None；cursor 留在最后跳转块（继续 j/k 浏览）。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Escape))));
+        assert_eq!(h.panel, Panel::None);
+        assert!(!h.search_bar.is_open());
+        assert_eq!(h.active_session.transcript_cursor.get(), Some(1));
+    }
+
+    /// U5：Home 路由 Ctrl+F 不开搜索条（无 transcript 可搜）。
+    #[test]
+    fn ctrl_f_ignored_on_home_route() {
+        let mut h = mk_handler();
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Char('f')))));
+        assert_eq!(h.panel, Panel::None);
+        assert!(!h.search_bar.is_open());
+    }
+
     /// U1：ModelSelect 打开时粘贴进过滤 query。
     #[test]
     fn paste_into_model_select_query() {
@@ -5348,6 +5514,131 @@ mod tests {
             .settings_category
             .set(SettingsCategory::ModelSettings);
         h.store.providers.set(providers);
+    }
+
+    #[test]
+    fn full_flow_click_provider_tab_then_m_opens_add_model_dialog() {
+        use crate::store::types::SettingsFocusPane;
+        let mut h = mk_handler();
+        goto_model_settings(&mut h, vec![provider("p1", vec![])]);
+        // 用户点击 provider 行（Providers 栏 x∈[56,84)，首行 y=3）。
+        let ev = Event::Mouse(MouseEvent::new(
+            60,
+            3,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
+        assert!(h.handle(&ev));
+        assert_eq!(
+            h.store.settings_selected_provider.get().as_deref(),
+            Some("p1")
+        );
+        assert_eq!(
+            h.store.settings_focus_pane.get(),
+            SettingsFocusPane::Providers
+        );
+        // 按 Tab：Providers → Details。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Tab))));
+        assert_eq!(
+            h.store.settings_focus_pane.get(),
+            SettingsFocusPane::Details,
+            "Tab 后焦点应在 Details"
+        );
+        // 按 m：应弹出 ModelEditDialog。
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('m')))));
+        assert!(h.model_edit_dialog.is_open(), "dialog 应打开");
+    }
+
+    #[test]
+    fn m_with_focus_on_providers_silently_lands_in_hidden_prompt() {
+        use crate::store::types::SettingsFocusPane;
+        let mut h = mk_handler();
+        goto_model_settings(&mut h, vec![provider("p1", vec![])]);
+        h.store.settings_selected_provider.set(Some("p1".into()));
+        // 焦点停在 Providers 栏（用户以为已在 Details）。
+        h.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('m'))));
+        assert!(
+            !h.model_edit_dialog.is_open(),
+            "focus=Providers 时对话框不应打开"
+        );
+        // 'm' 落到了隐藏的 prompt 输入缓冲（Settings 屏不渲染 prompt → 用户看不到）。
+        assert_eq!(h.prompt.text(), "m", "m 被隐藏 prompt 吞掉");
+    }
+
+    #[test]
+    fn m_with_details_focus_but_no_selected_provider_is_silent_noop() {
+        use crate::store::types::SettingsFocusPane;
+        let mut h = mk_handler();
+        goto_model_settings(&mut h, vec![provider("p1", vec![])]);
+        // 焦点在 Details 但没有选中 provider。
+        h.store.settings_selected_provider.set(None);
+        h.store.settings_focus_pane.set(SettingsFocusPane::Details);
+        let consumed = h.handle(&Event::Key(KeyEvent::new(Key::Char('m'))));
+        assert!(consumed, "按键被吞掉");
+        assert!(!h.model_edit_dialog.is_open(), "但对话框没打开——静默失败");
+    }
+
+    #[test]
+    fn click_inside_details_pane_blank_area_does_not_focus_it() {
+        use crate::store::types::SettingsFocusPane;
+        let mut h = mk_handler();
+        goto_model_settings(&mut h, vec![provider("p1", vec![])]);
+        h.terminal_w = 100;
+        // 点击 provider 行 → 选中 + 焦点=Providers。
+        let ev = Event::Mouse(MouseEvent::new(
+            60,
+            3,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
+        assert!(h.handle(&ev));
+        // 点击 Details 栏内部（x3≈86 含 sidebar 偏移，y=10 详情区，无 model 行）。
+        let ev = Event::Mouse(MouseEvent::new(
+            90,
+            10,
+            MouseEventKind::Down(MouseButton::Left),
+        ));
+        h.handle(&ev);
+        assert_eq!(
+            h.store.settings_focus_pane.get(),
+            SettingsFocusPane::Providers,
+            "点击 Details 栏空白区不会把焦点移过去（新 provider 无 model 行可点）"
+        );
+        // 此时按 m → 无反应。
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('m'))));
+        assert!(!h.model_edit_dialog.is_open());
+    }
+
+    #[test]
+    fn provider_snapshot_refresh_rebuilds_model_select_entries() {
+        use crate::dialog::ModelDialogOutcome;
+        // 回归：添加 model 后 refresh 必须同帧重建 /models 对话框，
+        // 否则新 model 要重启才可见（set_models 曾只在启动 init 调用）。
+        let mut h = mk_handler();
+        let resp = agendao_client::FullProviderListResponse {
+            all: vec![provider("p1", vec![model("glm-5.3"), model("glm-5.1")])],
+            connected: vec!["p1".into()],
+            default_model: Default::default(),
+        };
+        h.apply_provider_snapshot(resp);
+        assert_eq!(
+            h.store.settings_selected_provider.get().as_deref(),
+            Some("p1")
+        );
+
+        h.model_select.open();
+        for c in "glm-5.3".chars() {
+            h.model_select.handle_key(&Key::Char(c));
+        }
+        match h.model_select.handle_key(&Key::Enter) {
+            ModelDialogOutcome::Selected(m) => {
+                assert_eq!(m.model_id, "glm-5.3");
+                assert_eq!(m.provider, "p1");
+            }
+            ModelDialogOutcome::Notice(reason) => {
+                panic!("expected Selected, got Notice: {}", reason)
+            }
+            ModelDialogOutcome::None => panic!("expected Selected, got None"),
+        }
     }
 
     #[test]
@@ -5784,7 +6075,7 @@ mod tests {
     fn queued_receipt_increments_counter() {
         let mut h = mk_handler();
         h.active_session.set_session_id("s");
-        h.active_session.run_status.set(RunStatus::Sending);
+        h.active_session.set_run_status(RunStatus::Sending);
         let tx = h.dispatch_outcomes.sender();
         tx.send(dispatch_outcome::DispatchOutcome::Sent {
             session_id: "s".into(),
@@ -5810,7 +6101,7 @@ mod tests {
         let mut h = mk_handler();
         h.active_session.set_session_id("s");
         h.queued_prompts = 3;
-        h.active_session.run_status.set(RunStatus::Idle);
+        h.active_session.set_run_status(RunStatus::Idle);
         h.handle(&Event::Tick);
         assert_eq!(h.queued_prompts, 0);
     }
@@ -5920,7 +6211,8 @@ mod tests {
         assert!(
             msgs.iter().any(|m| matches!(
                 m,
-                crate::store::types::TranscriptBlock::UserPrompt { content, .. }
+                crate::store::types::TranscriptBlock::UserPrompt { content, ..
+        }
                     if content == "retry me"
             )),
             "重试把原文作为 user 消息乐观上屏（无 api 时 echo 路径还会补一条 \

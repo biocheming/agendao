@@ -705,6 +705,42 @@ impl AppHandler {
                 }
                 return true;
             }
+            Panel::Search => {
+                // U5：搜索条自维 query——字符/Backspace 在此消化（不进
+                // prompt），Enter/Up/N 跳转经 transcript_cursor 现成机制
+                // （块高亮 + 滚动跟随），Esc 关闭并清高亮。
+                use crate::input::search_bar::SearchKeyOutcome;
+                match self.search_bar.handle_key(key) {
+                    SearchKeyOutcome::Next => {
+                        if let Some(block) = self.search_bar.advance(true) {
+                            self.active_session
+                                .transcript_cursor
+                                .set(Some(block));
+                            self.active_session
+                                .ensure_cursor_visible(self.transcript_viewport_h);
+                        }
+                    }
+                    SearchKeyOutcome::Prev => {
+                        if let Some(block) = self.search_bar.advance(false) {
+                            self.active_session
+                                .transcript_cursor
+                                .set(Some(block));
+                            self.active_session
+                                .ensure_cursor_visible(self.transcript_viewport_h);
+                        }
+                    }
+                    SearchKeyOutcome::Close => {
+                        // 关闭即弃：cursor 留在最后跳转块（继续 j/k 浏览），
+                        // 高亮由 cursor 机制自然维持——不做额外清理。
+                        self.panel = Panel::None;
+                    }
+                    SearchKeyOutcome::Consumed => {
+                        self.search_bar.update_matches(&self.active_session);
+                    }
+                    SearchKeyOutcome::Pass => return false,
+                }
+                return true;
+            }
             Panel::ModelEdit => {
                 if let Some(action) = self.model_edit_dialog.handle_key(key) {
                     match action {
@@ -1047,6 +1083,12 @@ impl AppHandler {
             Panel::SkillList => self.skill_list.paste_query(text),
             // Slash popup 是输入框的视图（U3）：粘贴贯穿给 prompt。
             Panel::Slash => false,
+            // U5：搜索条粘贴进 query（与 ModelSelect 过滤同体验）。
+            Panel::Search => {
+                self.search_bar.query.push_str(text);
+                self.search_bar.update_matches(&self.active_session);
+                true
+            }
             _ => true,
         }
     }

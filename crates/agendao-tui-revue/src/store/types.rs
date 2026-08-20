@@ -76,18 +76,29 @@ pub enum TranscriptBlock {
         id: String,
         content: String,
         fold: FoldState,
+        /// Reasonix msg--user-failed 口径：发送失败的消息**原地打标保留**
+        /// （✕ 引导符 + 红），不再回收——用户不丢上下文，Ctrl+R 重试。
+        failed: bool,
     },
     Thinking {
         id: String,
         content: String,
         fold: FoldState,
         duration_ms: u64,
+        /// Reasonix userOverridden 口径：用户手动折叠/展开过该块后，
+        /// 自动跟随（流结束自动收起）不再作用于此块。
+        user_overridden: bool,
     },
     ToolCall {
         id: String,
         name: String,
         params: String,
         phase: ToolPhase,
+        /// 首次出现时间：Done 时固化为 `duration`（Reasonix ToolCard
+        /// duration 徽标口径），Running 期间配合 params 长度显示接收量。
+        started_at: std::time::Instant,
+        /// 终态耗时（Done/error 固化）；重放/旧块可能为 None（不显示）。
+        duration: Option<std::time::Duration>,
     },
     ToolResult {
         id: String,
@@ -349,6 +360,33 @@ pub struct ActiveTool {
     pub id: String,
     pub name: String,
     pub phase: ToolPhase,
+    /// 首次进入该工具的时间点（phase 推进不重置）——状态栏/头部
+    /// 工具耗时 chip 的锚点（Reasonix ToolCard elapsed 模式）。
+    pub started_at: std::time::Instant,
+}
+
+/// 紧凑耗时：`45s` / `2m31s` / `1h04m`（Reasonix format.ts 分级口径）。
+pub fn format_elapsed(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m{}s", s / 60, s % 60)
+    } else {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
+/// 紧凑字符量：`87` / `2.3k` / `1.2M`（接收中指示用，Reasonix "receiving
+/// args (Xk chars)" 口径——长参数流式接收时用户能看到进度，不误判卡死）。
+pub fn format_chars(n: usize) -> String {
+    if n < 1000 {
+        format!("{n}")
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
 }
 
 // ── 木：输入类型 ──
@@ -374,6 +412,42 @@ pub enum AttachmentKind {
 
 // ── 金：Toast ──
 
+/// ⑥ Reasonix toast actionLabel 口径：toast 可携带一个动作（TUI 用枚举
+/// 数据驱动而非闭包——点击命中后由 keymap 单点执行）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastActionKind {
+    /// 重发最近失败的 prompt（与 Ctrl+R 同源，Failed 回执留存原文）。
+    RetryLastPrompt,
+}
+
+impl ToastActionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RetryLastPrompt => "↻ Retry",
+        }
+    }
+}
+
+/// ⑥ Reasonix inboxError 错误码→文案表口径：常见错误翻译成可行动的
+/// 中文提示（保留原文尾部，不丢技术细节）。集中单点，UI 各处共用。
+pub fn friendly_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    let hint = if lower.contains("401") || lower.contains("unauthorized") || lower.contains("身份验证失败") {
+        "API key 无效或过期——Settings 里检查该 provider 的 key"
+    } else if lower.contains("404") || lower.contains("not found") {
+        "端点路径不存在——协议与 Base URL 组合不对（如 Anthropic 协议会拼 /messages）"
+    } else if lower.contains("429") || lower.contains("余额不足") || lower.contains("rate limit") {
+        "限流或余额不足——稍后重试或检查账户额度"
+    } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("超时") {
+        "网络超时——检查代理/镜像或稍后重试"
+    } else if lower.contains("connection refused") || lower.contains("dns") {
+        "无法连接服务端——检查网络/代理设置"
+    } else {
+        return raw.to_string();
+    };
+    format!("{}（{}）", hint, raw)
+}
+
 #[derive(Clone, Debug)]
 pub struct ToastMsg {
     /// 单调递增 id（AppStore 计数器分配）——dismiss/命中测试按 id 定位，
@@ -381,6 +455,8 @@ pub struct ToastMsg {
     pub id: u64,
     pub text: String,
     pub variant: ToastMsgVariant,
+    /// 可选动作（⑥）：渲染层行尾 chip，点击执行（keymap 单点）。
+    pub action: Option<ToastActionKind>,
     /// Wall-clock deadline (millis since UNIX epoch) after which the
     /// toast should be considered expired. The renderer reads
     /// `expires_at` and skips rendering if the deadline passed —
@@ -835,7 +911,23 @@ mod tests {
         }
     }
 
+        #[test]
+    fn friendly_error_maps_common_codes_and_passes_through_unknown() {
+        assert!(friendly_error("HTTP 401 Unauthorized").contains("API key"));
+        assert!(friendly_error("404 Not Found: nope").contains("协议"));
+        assert!(friendly_error("429 too many requests").contains("限流"));
+        assert!(friendly_error("request timeout after 30s").contains("超时"));
+        assert_eq!(friendly_error("weird failure xyz"), "weird failure xyz");
+        assert!(friendly_error("HTTP 401 Unauthorized").contains("401"));
+    }
+
     #[test]
+    fn format_chars_uses_compact_tiers() {
+        assert_eq!(format_chars(87), "87");
+        assert_eq!(format_chars(2_340), "2.3k");
+        assert_eq!(format_chars(1_234_567), "1.2M");
+    }
+#[test]
     fn flatten_groups_by_category_with_proposals_first() {
         let rows = vec![
             catalog("zeta", Some("chem")),

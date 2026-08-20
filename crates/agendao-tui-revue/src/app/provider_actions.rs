@@ -16,6 +16,30 @@ use crate::app::AppHandler;
 use crate::dialog::{ModelEditMode, ModelEditSubmission};
 use crate::store::types::ToastMsgVariant;
 
+/// `GET /provider` 响应 → `/models` 对话框条目。启动 init 与
+/// `refresh_providers_into_store` 共用（土律·第四条·单点权威）——provider/model
+/// 写入后模型选择器必须同帧看到，否则新加的 model 要重启才出现。
+pub(crate) fn model_entries_from_providers(
+    all: &[agendao_client::ProviderInfo],
+    connected: &std::collections::HashSet<String>,
+) -> Vec<crate::dialog::ModelEntry> {
+    all.iter()
+        .flat_map(|p| {
+            let provider_available = connected.contains(&p.id);
+            let display_name = p.name.clone();
+            let provider_id = p.id.clone();
+            p.models.iter().map(move |m| crate::dialog::ModelEntry {
+                provider: provider_id.clone(),
+                provider_display: display_name.clone(),
+                model_id: m.id.clone(),
+                display: format!("{} ({})", m.name, display_name),
+                variants: vec![],
+                available: m.available.unwrap_or(provider_available),
+            })
+        })
+        .collect()
+}
+
 /// Provider 写入模式:Add = 注册新 provider,Edit = 改既有 provider。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderEditMode {
@@ -38,37 +62,45 @@ pub struct ProviderEditSubmission {
 }
 
 impl AppHandler {
-    /// 拉服务端 provider 全集回灌 `store.providers` + `store.providers_connected`。
-    /// OpenSettings / 任意写入完成后调用,**单点回流真相**(土律·第四条)。
+    /// 拉服务端 provider 全集回灌 `store.providers` + `store.providers_connected`，
+    /// 并同帧重建 `/models` 对话框条目（否则添加 model 后 model_select 仍是
+    /// 启动快照，要重启才可见）。OpenSettings / 任意写入完成后调用,
+    /// **单点回流真相**(土律·第四条)。
     /// 选中态尽量保留:写后若原 selected provider 仍存在则不变;消失则回退到第一项。
     pub(crate) fn refresh_providers_into_store(&mut self) {
         let Some(api) = self.api.as_ref() else { return };
         match api.get_all_providers() {
-            Ok(resp) => {
-                let connected: std::collections::HashSet<String> =
-                    resp.connected.iter().cloned().collect();
-                let prev_sel = self.store.settings_selected_provider.get();
-                // 保留原选中态;若已不在列表则退到第一项(优先 connected)。
-                let new_sel = prev_sel
-                    .as_ref()
-                    .filter(|id| resp.all.iter().any(|p| &p.id == *id))
-                    .cloned()
-                    .or_else(|| {
-                        resp.all
-                            .iter()
-                            .find(|p| connected.contains(&p.id))
-                            .or_else(|| resp.all.first())
-                            .map(|p| p.id.clone())
-                    });
-                self.store.providers.set(resp.all);
-                self.store.providers_connected.set(connected);
-                self.store.settings_selected_provider.set(new_sel);
-            }
+            Ok(resp) => self.apply_provider_snapshot(resp),
             Err(e) => self.store.push_toast(
                 &format!("Failed to refresh providers: {}", e),
                 ToastMsgVariant::Error,
             ),
         }
+    }
+
+    /// provider 快照落库单点:store 信号 + model_select 同帧重建。
+    /// `refresh_providers_into_store` 的写路径与测试直调共用。
+    pub(crate) fn apply_provider_snapshot(&mut self, resp: agendao_client::FullProviderListResponse) {
+        let connected: std::collections::HashSet<String> =
+            resp.connected.iter().cloned().collect();
+        let prev_sel = self.store.settings_selected_provider.get();
+        // 保留原选中态;若已不在列表则退到第一项(优先 connected)。
+        let new_sel = prev_sel
+            .as_ref()
+            .filter(|id| resp.all.iter().any(|p| &p.id == *id))
+            .cloned()
+            .or_else(|| {
+                resp.all
+                    .iter()
+                    .find(|p| connected.contains(&p.id))
+                    .or_else(|| resp.all.first())
+                    .map(|p| p.id.clone())
+            });
+        let entries = model_entries_from_providers(&resp.all, &connected);
+        self.store.providers.set(resp.all);
+        self.store.providers_connected.set(connected);
+        self.store.settings_selected_provider.set(new_sel);
+        self.model_select.set_models(entries);
     }
 
     /// 处理 Provider 添加/编辑 form dialog 的 submit 载荷。

@@ -60,7 +60,7 @@ use crate::dialog::{
     SessionRenameDialog, SkillListDialog, SkillProposalDialog, StashDialog, StashEntry,
     TaskStateDialog,
 };
-use crate::input::{PromptInput, SlashPopup};
+use crate::input::{PromptInput, SearchBar, SlashPopup};
 use crate::screen::{build_render_units, transcript_total_height};
 use crate::store::app_store::{AppStore, Route};
 use crate::store::session_store::SessionStore;
@@ -424,6 +424,9 @@ pub(crate) enum Panel {
     ProviderEdit,
     /// U7③：通知中心（toast_history 只读回看）。
     Notifications,
+    /// U5：transcript 搜索条（Ctrl+F；query 自维临时态，跳转复用
+    /// transcript_cursor 机制）。
+    Search,
 }
 
 /// Confirm-dialog outcome discriminator. `Panel::Confirm` only yields a bool;
@@ -478,6 +481,9 @@ pub(crate) struct AppHandler {
     pub(crate) api: Option<ApiBridge>,
     pub(crate) prompt: PromptInput,
     pub(crate) slash_popup: SlashPopup,
+    /// U5：transcript 搜索条（Ctrl+F）。query 自维临时态——搜索词不进
+    /// prompt 权威（木律：搜索是旁路查询，不是待发草稿）。
+    pub(crate) search_bar: SearchBar,
     pub(crate) model_select: ModelSelectDialog,
     pub(crate) mode_select: ModeSelectDialog,
     pub(crate) agent_select: AgentSelectDialog,
@@ -722,6 +728,24 @@ pub(crate) const HOME_INPUT_W: u16 = 64;
 
 /// 左气口包装：page_inner 内 footer/header 元素左留 PAD spacer，与 transcript 内
 /// messageblock 内容列对齐。transcript 自身已有 messageblock 级 PAD，不经此包装。
+/// U9②：stall 30s 文案的成形权威（金律：输出有唯一成形语法）。纯函数
+/// 三分支——stall 未达阈值返回空；达阈值时有 Running 工具则点名
+/// `stalled on {tool}?`（用户第一问"卡在哪"），无工具退回连接层怀疑。
+/// Esc Esc 打断提示常驻（活动恢复即自愈消失，与 keymap running_stale 同闸）。
+fn stale_hint_text(stall_secs: u64, running_tool: Option<&str>) -> String {
+    const STALE_SECS: u64 = crate::app::keymap::RUNNING_STALE_SECS;
+    if stall_secs < STALE_SECS {
+        return String::new();
+    }
+    match running_tool {
+        Some(tool) => format!(
+            " ⚠ no activity {stall_secs}s+ — stalled on {tool}? · Esc Esc to interrupt"
+        ),
+        None => " ⚠ no activity {stall_secs}s+ — connection may be stalled · Esc Esc to interrupt"
+            .to_string(),
+    }
+}
+
 fn gutter(content: impl View + 'static) -> revue::widget::Stack {
     hstack()
         .gap(0)
@@ -739,6 +763,7 @@ fn gutter(content: impl View + 'static) -> revue::widget::Stack {
 fn build_session_info_strip(
     tokens: &crate::store::types::TokenUsage,
     ctx_pct: u8,
+    ctx_limit: Option<u64>,
     diffs: &[crate::store::types::DiffStat],
 ) -> (revue::widget::Stack, Option<(u16, u16)>) {
     // 段 = (文本, 颜色)；宽度在构造处按字符数算（Bar 段 ▓/░ 均单宽,口径一致）。
@@ -792,10 +817,16 @@ fn build_session_info_strip(
             bar_color,
         ));
         if tokens.context_tokens > 0 {
-            spans.push((
-                format!(" ({})", crate::theme::fmt_tokens(tokens.context_tokens)),
-                colors::FG_TRACE(),
-            ));
+            // 有分母时拼成 (85k/200k)——/compact 决策需要分子分母同时在场。
+            let value = match ctx_limit {
+                Some(limit) => format!(
+                    " ({}/{})",
+                    crate::theme::fmt_tokens(tokens.context_tokens),
+                    crate::theme::fmt_tokens(limit)
+                ),
+                None => format!(" ({})", crate::theme::fmt_tokens(tokens.context_tokens)),
+            };
+            spans.push((value, colors::FG_TRACE()));
         }
     }
     // Diff 汇总角标（DiffReplaced，会话级、replace 语义）。跨文件合计：
@@ -945,25 +976,12 @@ impl AppHandler {
                     // with "Provider not found: AIHubMix". Group label still uses
                     // `name` for human-friendly display, and `connected` is keyed by
                     // id, matching how the server tracks connection state.
-                    let entries: Vec<crate::dialog::ModelEntry> = resp
-                        .all
-                        .into_iter()
-                        .flat_map(|p| {
-                            let provider_available = connected.contains(&p.id);
-                            let display_name = p.name.clone();
-                            let provider_id = p.id.clone();
-                            p.models
-                                .into_iter()
-                                .map(move |m| crate::dialog::ModelEntry {
-                                    provider: provider_id.clone(),
-                                    provider_display: display_name.clone(),
-                                    model_id: m.id.clone(),
-                                    display: format!("{} ({})", m.name, display_name),
-                                    variants: vec![],
-                                    available: m.available.unwrap_or(provider_available),
-                                })
-                        })
-                        .collect();
+                    // 转换与 refresh_providers_into_store 共用单点（土律·第四条）。
+                    let entries =
+                        crate::app::provider_actions::model_entries_from_providers(
+                            &resp.all,
+                            &connected,
+                        );
                     // Surface the connected providers so the user knows
                     // which models will actually work — useful when the
                     // dialog shows 5,140 entries but only 8 providers are
@@ -1048,6 +1066,7 @@ impl AppHandler {
             api: a,
             prompt,
             slash_popup: SlashPopup::with_prompt_commands(prompt_commands),
+            search_bar: SearchBar::new(),
             model_select,
             agent_select,
             mode_select: ModeSelectDialog::new(),
@@ -1329,21 +1348,25 @@ impl View for RootView {
             let cache = h.active_session.cache_stats.get();
             let price = h.active_session.pricing.get();
             let ctx_pct = h.active_session.context_pct.get();
+            let ctx_limit = h.active_session.context_limit.get();
             let trees = h.active_session.sidebar_trees.read(); // 零拷贝读 guard
             let mcp = h.active_session.mcp_lsp.get();
             let tools = h.active_session.active_tools.get();
             let active_sid = h.active_session.get_session_id();
+            let running_sessions = h.store.session_running.get();
             let (content, tab_y, nav_hits) = crate::telemetry::SessionSidebar::build(
                 &token,
                 &cache,
                 &price,
                 ctx_pct,
+                ctx_limit,
                 &trees,
                 &mcp,
                 &tools,
                 h.sidebar_active_tab,
                 active_sid.as_deref(),
                 ctx.area.height,
+                &running_sessions,
             );
             sidebar_opt = Some((content, tab_y));
             sidebar_nav_hits = nav_hits;
@@ -1433,10 +1456,47 @@ impl View for RootView {
                     }
                 }
                 // Run status indicator pinned to the right via a flex spacer.
+                // Reasonix "Working Ns" 模式：运行态带总耗时 + 当前工具名与
+                // 工具耗时——"只有 running 一个状态"的可观测性补课（金律·
+                // 第十条，用户有权知道 agent 此刻在干什么、跑了多久）。
+                let now = std::time::Instant::now();
+                let run_elapsed = h
+                    .active_session
+                    .running_since
+                    .get()
+                    .map(|since| crate::store::types::format_elapsed(now - since));
+                let running_tool = h
+                    .active_session
+                    .active_tools
+                    .get()
+                    .iter()
+                    .filter(|t| t.phase == ToolPhase::Running)
+                    .max_by_key(|t| t.started_at)
+                    .map(|t| {
+                        (
+                            t.name.clone(),
+                            crate::store::types::format_elapsed(now - t.started_at),
+                        )
+                    });
                 let (status_text, status_color) = match &h.active_session.run_status.get() {
-                    RunStatus::Running => (Some(" ● Running".to_string()), colors::ACCENT_GREEN()),
+                    RunStatus::Running => {
+                        let mut s = match run_elapsed.as_deref() {
+                            Some(el) => format!(" ● Running {el}"),
+                            None => " ● Running".to_string(),
+                        };
+                        if let Some((name, tel)) = &running_tool {
+                            s.push_str(&format!(" · {name} {tel}"));
+                        }
+                        (Some(s), colors::ACCENT_GREEN())
+                    }
                     // U9：压缩相位独立可辨（◍ 琥珀，区别于 Running 的 ● 绿）。
-                    RunStatus::Compacting => (Some(" ◍ Compacting".to_string()), colors::E_AMBER()),
+                    RunStatus::Compacting => {
+                        let s = match run_elapsed.as_deref() {
+                            Some(el) => format!(" ◍ Compacting {el}"),
+                            None => " ◍ Compacting".to_string(),
+                        };
+                        (Some(s), colors::E_AMBER())
+                    }
                     RunStatus::Sending => (Some(" ○ Sending".to_string()), colors::ACCENT_YELLOW()),
                     RunStatus::WaitingUser => {
                         (Some(" ⏸ Waiting".to_string()), colors::ACCENT_YELLOW())
@@ -1865,9 +1925,11 @@ impl View for RootView {
         // publish 到 handler 供 keymap 点击命中（与 header dir 命中同模式）。
         let tokens = h.active_session.token_usage.get();
         let ctx_pct = h.active_session.context_pct.get();
+        let ctx_limit = h.active_session.context_limit.get();
         let diff_summary = h.active_session.diff_summary.get();
         let diff_detail_open = h.active_session.diff_detail_open.get();
-        let (info_strip, badge_offset) = build_session_info_strip(&tokens, ctx_pct, &diff_summary);
+        let (info_strip, badge_offset) =
+            build_session_info_strip(&tokens, ctx_pct, ctx_limit, &diff_summary);
         let diff_badge_geom: Option<(u16, u16, u16)> = badge_offset.map(|(bx, bw)| {
             let page_x: u16 = if sidebar_on { SIDEBAR_WIDTH + 1 } else { 0 };
             let badge_y = ctx.area.height.saturating_sub(2); // info_strip 行 = status_bar 上一行
@@ -1897,22 +1959,39 @@ impl View for RootView {
             Panel::McpEdit => "mcpEdit",
             Panel::PluginEdit => "pluginEdit",
             Panel::ProviderEdit => "providerEdit",
+            Panel::Search => "search",
             Panel::None => route.as_str(),
         };
         let dir = self.store.working_dir.get();
         let dir_short = dir.rsplit('/').next().unwrap_or(&dir);
         // token stats 归 info_strip 独一份（build_session_info_strip 消费同一
         // 份 token_usage——状态栏不再重复展示，金律·输出口径单点）。
-        // Active tasks count
+        // Active tasks count → 工具 chip（Reasonix ToolCard elapsed 模式）：
+        // " tasks:bash 34s · read 5s +1" 替代裸计数，看得见在跑什么。
         let active_tools = h.active_session.active_tools.get();
-        let running = active_tools
+        let now = std::time::Instant::now();
+        let running_tools: Vec<&crate::store::types::ActiveTool> = active_tools
             .iter()
             .filter(|t| t.phase == ToolPhase::Running)
-            .count();
-        let tasks_hint = if running > 0 {
-            format!(" tasks:{}", running)
-        } else {
+            .collect();
+        let tasks_hint = if running_tools.is_empty() {
             String::new()
+        } else {
+            let mut parts: Vec<String> = running_tools
+                .iter()
+                .take(2)
+                .map(|t| {
+                    format!(
+                        "{} {}",
+                        t.name,
+                        crate::store::types::format_elapsed(now - t.started_at)
+                    )
+                })
+                .collect();
+            if running_tools.len() > 2 {
+                parts.push(format!("+{}", running_tools.len() - 2));
+            }
+            format!(" tasks:{}", parts.join(" · "))
         };
         // Show cursor + key hints for transcript navigation. Without
         // these, users have no clue Tab/Space exist — and Space/Tab
@@ -1950,14 +2029,23 @@ impl View for RootView {
             None => String::new(),
         };
         // U9：运行态但 30s 无任何活动（与 keymap running_stale 同闸同
-        // 阈值）→ 状态栏明示"可能挂死"。spinner 此时已冻帧，这里给文案
-        // 层确认；活动恢复（任一服务端事件）即自愈消失。
-        let stale_hint = if is_running
-            && h.last_activity.elapsed().as_secs() >= crate::app::keymap::RUNNING_STALE_SECS
-        {
-            " ⚠ no activity 30s+ — connection may be stalled"
+        // 阈值）→ 状态栏明示"可能挂死"，并点名最后 Running 工具（用户
+        // 第一问是"卡在哪一步"，不是"卡了多久"）。spinner 此时已冻帧，
+        // 这里给文案层确认；活动恢复（任一服务端事件）即自愈消失。
+        let stale_hint = if is_running {
+            // 与 header run indicator 同口径提取（max_by_key(started_at)），
+            // 两处"当前工具"必须同名——阴阳对位：header 报常态，stall 报异常。
+            let stalled_tool = h
+                .active_session
+                .active_tools
+                .get()
+                .iter()
+                .filter(|t| t.phase == ToolPhase::Running)
+                .max_by_key(|t| t.started_at)
+                .map(|t| t.name.clone());
+            stale_hint_text(h.last_activity.elapsed().as_secs(), stalled_tool.as_deref())
         } else {
-            ""
+            String::new()
         };
         // U8：⏸ 待决策角标（permission+question 队列合计）——Esc 仅收起
         // 后的重发现入口；点击 / Ctrl+O 回到首个 pending 请求。计数直读
@@ -2173,6 +2261,21 @@ impl View for RootView {
             Panel::ProviderEdit => {
                 provider_edit_rect = h.provider_edit_dialog.render(ctx, cursor_blink_on);
             }
+            Panel::Search => {
+                // U5：搜索条贴输入框正上方（与 slash popup 同锚——geom 唯一
+                // 权威），一行高，实色预填防 positioned 透字。
+                let bar = h.search_bar.render_bar(geom.w);
+                let py_abs = geom.y_top.saturating_sub(1);
+                let py_rel = py_abs.saturating_sub(ctx.area.y);
+                let px_rel = geom.x.saturating_sub(ctx.area.x);
+                h.search_bar.fill_background(ctx.buffer, geom.x, py_abs, geom.w, 1);
+                revue::widget::positioned(bar)
+                    .x(px_rel as i16)
+                    .y(py_rel as i16)
+                    .width(geom.w)
+                    .height(1)
+                    .render(ctx);
+            }
             _ => {}
         }
         // 弹窗几何发布（render 后、借用于此处归还）——keymap 鼠标命中的唯一真相。
@@ -2211,7 +2314,12 @@ impl View for RootView {
                 ToastMsgVariant::Info => ("•", colors::ACCENT_CYAN()),
             };
             let max_w = ctx.area.width.saturating_sub(4).min(80);
-            let raw = format!("{} {}", icon, t.text);
+            // ⑥ action chip：行尾动作标签（点击执行，keymap 命中同 toast 框）。
+            let action_suffix = match t.action {
+                Some(a) => format!("  {}", a.label()),
+                None => String::new(),
+            };
+            let raw = format!("{} {}{}", icon, t.text, action_suffix);
             // Truncate to fit so emojis at the edge don't half-render.
             let display: String = if raw.chars().count() as u16 > max_w {
                 let mut s: String = raw.chars().take(max_w as usize).collect();
@@ -2462,5 +2570,42 @@ mod effective_sidebar_tests {
         // 用户关与宽度无关。
         assert!(!effective_sidebar_visible(false, 0));
         assert!(!effective_sidebar_visible(false, threshold - 1));
+    }
+}
+
+#[cfg(test)]
+mod stale_hint_tests {
+    //! U9②：stall 文案成形纯函数口径钉死。三分支：未达阈值空串、
+    //! 有工具点名、无工具退回连接层怀疑；Esc Esc 提示常驻两分支。
+
+    use super::stale_hint_text;
+    use crate::app::keymap::RUNNING_STALE_SECS;
+
+    #[test]
+    fn below_threshold_is_empty() {
+        assert_eq!(stale_hint_text(0, Some("Bash")), "");
+        assert_eq!(stale_hint_text(RUNNING_STALE_SECS as u64 - 1, None), "");
+    }
+
+    #[test]
+    fn names_the_stalled_tool_at_threshold() {
+        let s = stale_hint_text(RUNNING_STALE_SECS as u64, Some("WebSearch"));
+        assert!(
+            s.contains("stalled on WebSearch?"),
+            "应点名工具，实际: {s}"
+        );
+        assert!(s.contains("Esc Esc to interrupt"));
+        // 秒数来自参数而非硬编码 30——更长 stall 不撒谎。
+        let s120 = stale_hint_text(120, Some("Read"));
+        assert!(s120.contains("no activity 120s+"));
+        assert!(s120.contains("stalled on Read?"));
+    }
+
+    #[test]
+    fn falls_back_to_connection_suspicion_without_tool() {
+        let s = stale_hint_text(45, None);
+        assert!(s.contains("connection may be stalled"));
+        assert!(!s.contains("stalled on"));
+        assert!(s.contains("Esc Esc to interrupt"));
     }
 }
