@@ -35,10 +35,14 @@ pub(crate) fn process_routes() -> Router<Arc<ServerState>> {
         .route("/{pid}", delete(kill_process))
 }
 
-async fn list_processes() -> Json<Vec<ProcessResponse>> {
-    global_registry().refresh_stats();
+async fn list_processes() -> Result<Json<Vec<ProcessResponse>>> {
+    tokio::task::spawn_blocking(|| global_registry().refresh_stats())
+        .await
+        .map_err(|error| {
+            ApiError::InternalError(format!("process stats task failed to join: {error}"))
+        })?;
     let procs = global_registry().list();
-    Json(
+    Ok(Json(
         procs
             .into_iter()
             .map(|p| ProcessResponse {
@@ -50,17 +54,20 @@ async fn list_processes() -> Json<Vec<ProcessResponse>> {
                 memory_kb: p.memory_kb,
             })
             .collect(),
-    )
+    ))
 }
 
 async fn kill_process(Path(pid): Path<u32>) -> Result<Json<serde_json::Value>> {
-    agendao_execution_types::global_lifecycle()
-        .kill_process(pid)
-        .map_err(|e| {
-            ApiError::NotFound(format!(
-                "Process {} not found or cannot be killed: {}",
-                pid, e
-            ))
-        })?;
+    tokio::task::spawn_blocking(move || {
+        agendao_execution_types::global_lifecycle().kill_process(pid)
+    })
+    .await
+    .map_err(|error| ApiError::InternalError(format!("process kill task failed to join: {error}")))?
+    .map_err(|e| {
+        ApiError::NotFound(format!(
+            "Process {} not found or cannot be killed: {}",
+            pid, e
+        ))
+    })?;
     Ok(Json(serde_json::json!({ "killed": pid })))
 }

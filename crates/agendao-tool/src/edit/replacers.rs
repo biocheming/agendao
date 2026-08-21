@@ -279,6 +279,18 @@ impl Replacer for WhitespaceNormalizedReplacer {
             |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
         let normalized_find = normalize_whitespace(find);
         let lines: Vec<&str> = content.split('\n').collect();
+        let whitespace_regex = {
+            let words = find.split_whitespace().collect::<Vec<_>>();
+            (!words.is_empty()).then(|| {
+                let pattern = words
+                    .iter()
+                    .map(|word| regex::escape(word))
+                    .collect::<Vec<_>>()
+                    .join(r"\s+");
+                regex::Regex::new(&pattern).ok()
+            })
+        }
+        .flatten();
 
         for line in &lines {
             if normalize_whitespace(line) == normalized_find {
@@ -286,18 +298,8 @@ impl Replacer for WhitespaceNormalizedReplacer {
             } else {
                 let normalized_line = normalize_whitespace(line);
                 if normalized_line.contains(&normalized_find) {
-                    let words: Vec<&str> = find.split_whitespace().collect();
-                    if !words.is_empty() {
-                        let pattern = words
-                            .iter()
-                            .map(|w| regex::escape(w))
-                            .collect::<Vec<_>>()
-                            .join(r"\s+");
-                        if let Ok(re) = regex::Regex::new(&pattern) {
-                            if let Some(m) = re.find(line) {
-                                results.push(m.as_str().to_string());
-                            }
-                        }
+                    if let Some(m) = whitespace_regex.as_ref().and_then(|regex| regex.find(line)) {
+                        results.push(m.as_str().to_string());
                     }
                 }
             }

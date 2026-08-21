@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use agendao_core::bus::{Bus, BusEventDef};
@@ -10,8 +10,8 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::message_v2::{
-    AssistantTime, AssistantTokens, CacheTokens, CompletedTime, MessageInfo, MessagePath,
-    MessageWithParts, ModelRef, Part, TextTime, ToolState, UserTime,
+    AssistantTime, AssistantTokens, CacheTokens, MessageInfo, MessagePath, MessageWithParts,
+    ModelRef, Part, TextTime, ToolState, UserTime,
 };
 use agendao_provider::{Content, ContentPart, ImageUrl, Message, Provider, Role, StreamEvent};
 
@@ -164,7 +164,7 @@ pub struct ModelLimits {
 
 /// Status of a tool part for pruning purposes.
 /// Mirrors TS `part.state.status`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolPartStatus {
     Pending,
@@ -191,6 +191,20 @@ pub struct MessageForPrune {
     pub summary: bool,
 }
 
+struct PruneToolPartRef<'a> {
+    id: &'a str,
+    tool: &'a str,
+    output: &'a str,
+    status: ToolPartStatus,
+    compacted: Option<u64>,
+}
+
+struct PruneMessageRef<'a> {
+    role: &'a str,
+    parts: Vec<PruneToolPartRef<'a>>,
+    summary: bool,
+}
+
 /// Trait for session-level operations needed by the compaction engine.
 ///
 /// This abstracts the Session.messages(), Session.updateMessage(), and
@@ -211,6 +225,16 @@ pub trait SessionOps: Send + Sync {
         message_id: &str,
         part: Part,
     ) -> anyhow::Result<()>;
+
+    /// Mark a completed tool part as compacted without recreating its large
+    /// payload fields.
+    async fn mark_tool_part_compacted(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        part_id: &str,
+        compacted_at: i64,
+    ) -> anyhow::Result<()>;
 }
 
 /// No-op implementation of `SessionOps` for callers that handle persistence
@@ -229,6 +253,16 @@ impl SessionOps for NoopSessionOps {
         _session_id: &str,
         _message_id: &str,
         _part: Part,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn mark_tool_part_compacted(
+        &self,
+        _session_id: &str,
+        _message_id: &str,
+        _part_id: &str,
+        _compacted_at: i64,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -382,102 +416,84 @@ When constructing the summary, try to stick to this template:
     /// whose cumulative token count exceeds `PRUNE_PROTECT`.
     ///
     /// Returns the IDs of pruned parts. The caller is responsible for
-    /// persisting the updated parts via `SessionOps::update_part`.
+    /// persisting the updated parts via `SessionOps`.
     pub fn prune(&self, messages: &mut [MessageForPrune]) -> Vec<String> {
-        // TS: if (config.compaction?.prune === false) return
-        if !self.config.prune {
-            return vec![];
+        let pruned_ids = {
+            let views = messages
+                .iter()
+                .map(prune_message_for_prune_view)
+                .collect::<Vec<_>>();
+            self.plan_prune(&views)
+        };
+        if pruned_ids.is_empty() {
+            return pruned_ids;
         }
 
-        if !messages.is_empty() && !Self::should_prune(messages) {
+        let selected = pruned_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        for message in messages {
+            for part in &mut message.parts {
+                if selected.contains(part.id.as_str()) {
+                    part.compacted = Some(now);
+                }
+            }
+        }
+        tracing::info!(count = pruned_ids.len(), "pruned");
+        pruned_ids
+    }
+
+    fn plan_prune(&self, messages: &[PruneMessageRef<'_>]) -> Vec<String> {
+        if !self.config.prune || (!messages.is_empty() && !should_prune_views(messages)) {
             return vec![];
         }
 
         tracing::info!("pruning");
-
-        let mut total: u64 = 0;
-        let mut pruned: u64 = 0;
-        let mut to_prune: Vec<(usize, usize)> = Vec::new();
+        let mut total = 0;
+        let mut pruned = 0;
+        let mut to_prune = Vec::new();
         let mut turns = 0;
 
-        'outer: for msg_index in (0..messages.len()).rev() {
-            let msg = &messages[msg_index];
-            if msg.role == "user" {
+        'outer: for message in messages.iter().rev() {
+            if message.role == "user" {
                 turns += 1;
             }
             if turns < 2 {
                 continue;
             }
-            // TS: if (msg.info.role === "assistant" && msg.info.summary) break loop
-            if msg.role == "assistant" && msg.summary {
+            if message.role == "assistant" && message.summary {
                 break;
             }
 
-            for part_index in (0..msg.parts.len()).rev() {
-                let part = &msg.parts[part_index];
-                // Skip non-tool parts
-                if part.tool.is_empty() {
+            for part in message.parts.iter().rev() {
+                if part.tool.is_empty()
+                    || part.status != ToolPartStatus::Completed
+                    || PRUNE_PROTECTED_TOOLS.contains(&part.tool)
+                {
                     continue;
                 }
-
-                // TS: if (part.state.status === "completed") { ... }
-                // Only prune completed tool parts
-                if part.status != ToolPartStatus::Completed {
-                    continue;
-                }
-
-                if PRUNE_PROTECTED_TOOLS.contains(&part.tool.as_str()) {
-                    continue;
-                }
-
-                // TS: if (part.state.time.compacted) break loop
                 if part.compacted.is_some() {
                     break 'outer;
                 }
 
-                let estimate = Self::estimate_tokens(&part.output);
+                let estimate = Self::estimate_tokens(part.output);
                 total += estimate;
                 if total > PRUNE_PROTECT {
                     pruned += estimate;
-                    to_prune.push((msg_index, part_index));
+                    to_prune.push(part.id.to_string());
                 }
             }
         }
 
-        tracing::info!(pruned = pruned, total = total, "found");
-
-        let mut pruned_ids = Vec::new();
-        if pruned > PRUNE_MINIMUM {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            for (msg_idx, part_idx) in &to_prune {
-                let part = &mut messages[*msg_idx].parts[*part_idx];
-                // TS: part.state.time.compacted = Date.now()
-                part.compacted = Some(now);
-                pruned_ids.push(part.id.clone());
-            }
-
-            tracing::info!(count = to_prune.len(), "pruned");
-        }
-
-        pruned_ids
-    }
-
-    fn should_prune(messages: &[MessageForPrune]) -> bool {
-        for msg in messages {
-            for part in &msg.parts {
-                if !part.tool.is_empty()
-                    && part.status == ToolPartStatus::Completed
-                    && part.compacted.is_none()
-                {
-                    return true;
-                }
-            }
-        }
-        false
+        tracing::info!(pruned, total, "found");
+        (pruned > PRUNE_MINIMUM)
+            .then_some(to_prune)
+            .unwrap_or_default()
     }
 
     pub fn create_compaction_part(auto: bool) -> CompactionPart {
@@ -869,11 +885,18 @@ When constructing the summary, try to stick to this template:
         }
 
         let msgs = session_ops.messages(session_id).await?;
-        let mut prune_msgs = messages_to_prune_format(&msgs);
-        let pruned_ids = self.prune(&mut prune_msgs);
+        let pruned_ids = {
+            let views = msgs.iter().map(prune_message_view).collect::<Vec<_>>();
+            self.plan_prune(&views)
+        };
+        let selected = pruned_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let compacted_at = Utc::now().timestamp_millis();
 
-        // Persist the compacted timestamps back via session ops.
-        // We need to map pruned IDs back to their message_id + part for update.
+        // Persist only the compacted timestamp. Reconstructing a ToolPart here
+        // cloned the full input/output payload for every pruned result.
         for msg in &msgs {
             let message_id = match &msg.info {
                 MessageInfo::User { id, .. } => id,
@@ -881,41 +904,17 @@ When constructing the summary, try to stick to this template:
             };
             for part in &msg.parts {
                 if let Part::Tool(tool_part) = part {
-                    if pruned_ids.contains(&tool_part.id) {
-                        // Re-create the part with the compacted timestamp set.
-                        if let ToolState::Completed {
-                            input,
-                            output,
-                            title,
-                            metadata,
-                            time,
-                            attachments,
-                        } = &tool_part.state
-                        {
-                            let updated_part = Part::Tool(crate::message_v2::ToolPart {
-                                id: tool_part.id.clone(),
-                                session_id: tool_part.session_id.clone(),
-                                message_id: tool_part.message_id.clone(),
-                                call_id: tool_part.call_id.clone(),
-                                tool: tool_part.tool.clone(),
-                                state: ToolState::Completed {
-                                    input: input.clone(),
-                                    output: output.clone(),
-                                    title: title.clone(),
-                                    metadata: metadata.clone(),
-                                    time: CompletedTime {
-                                        start: time.start,
-                                        end: time.end,
-                                        compacted: Some(Utc::now().timestamp_millis()),
-                                    },
-                                    attachments: attachments.clone(),
-                                },
-                                metadata: tool_part.metadata.clone(),
-                            });
-                            let _ = session_ops
-                                .update_part(session_id, message_id, updated_part)
-                                .await;
-                        }
+                    if selected.contains(tool_part.id.as_str())
+                        && matches!(tool_part.state, ToolState::Completed { .. })
+                    {
+                        let _ = session_ops
+                            .mark_tool_part_compacted(
+                                session_id,
+                                message_id,
+                                &tool_part.id,
+                                compacted_at,
+                            )
+                            .await;
                     }
                 }
             }
@@ -1176,8 +1175,81 @@ pub async fn run_compaction<S: SessionOps>(
     engine.process(input, provider, options.session_ops).await
 }
 
-/// Convert `MessageWithParts` to the `MessageForPrune` format used by the
-/// prune algorithm.
+fn prune_message_view(message: &MessageWithParts) -> PruneMessageRef<'_> {
+    let role = match &message.info {
+        MessageInfo::User { .. } => "user",
+        MessageInfo::Assistant { .. } => "assistant",
+    };
+    let summary = match &message.info {
+        MessageInfo::Assistant { summary, .. } => summary.unwrap_or(false),
+        MessageInfo::User { .. } => false,
+    };
+    let parts = message
+        .parts
+        .iter()
+        .filter_map(|part| {
+            let Part::Tool(tool_part) = part else {
+                return None;
+            };
+            let (status, output, compacted) = match &tool_part.state {
+                ToolState::Pending { .. } => (ToolPartStatus::Pending, "", None),
+                ToolState::Running { .. } => (ToolPartStatus::Running, "", None),
+                ToolState::Completed { output, time, .. } => (
+                    ToolPartStatus::Completed,
+                    output.as_str(),
+                    time.compacted.map(|timestamp| timestamp as u64),
+                ),
+                ToolState::Error { error, .. } => (ToolPartStatus::Error, error.as_str(), None),
+            };
+            Some(PruneToolPartRef {
+                id: &tool_part.id,
+                tool: &tool_part.tool,
+                output,
+                status,
+                compacted,
+            })
+        })
+        .collect();
+    PruneMessageRef {
+        role,
+        parts,
+        summary,
+    }
+}
+
+fn prune_message_for_prune_view(message: &MessageForPrune) -> PruneMessageRef<'_> {
+    PruneMessageRef {
+        role: &message.role,
+        parts: message
+            .parts
+            .iter()
+            .map(|part| PruneToolPartRef {
+                id: &part.id,
+                tool: &part.tool,
+                output: &part.output,
+                status: part.status,
+                compacted: part.compacted,
+            })
+            .collect(),
+        summary: message.summary,
+    }
+}
+
+fn should_prune_views(messages: &[PruneMessageRef<'_>]) -> bool {
+    messages.iter().any(|message| {
+        message.parts.iter().any(|part| {
+            !part.tool.is_empty()
+                && part.status == ToolPartStatus::Completed
+                && part.compacted.is_none()
+        })
+    })
+}
+
+/// Convert `MessageWithParts` to an owned pruning representation.
+///
+/// This compatibility helper intentionally owns its output. The active
+/// `prune_session` path uses [`prune_message_view`] instead to avoid cloning
+/// tool outputs.
 pub fn messages_to_prune_format(messages: &[MessageWithParts]) -> Vec<MessageForPrune> {
     messages
         .iter()
@@ -1359,6 +1431,16 @@ mod tests {
                 .push((session_id.to_string(), message_id.to_string(), part));
             Ok(())
         }
+
+        async fn mark_tool_part_compacted(
+            &self,
+            _session_id: &str,
+            _message_id: &str,
+            _part_id: &str,
+            _compacted_at: i64,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn make_input(
@@ -1439,6 +1521,59 @@ mod tests {
         // 11 chars / 4 = 2
         assert_eq!(CompactionEngine::estimate_tokens("hello world"), 2);
         assert_eq!(CompactionEngine::estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn prune_message_view_borrows_completed_tool_output() {
+        let output = "x".repeat(100_000);
+        let message = MessageWithParts {
+            info: MessageInfo::User {
+                id: "msg-1".to_string(),
+                session_id: "ses-1".to_string(),
+                time: UserTime { created: 1 },
+                agent: "general".to_string(),
+                model: ModelRef {
+                    model_id: "model".to_string(),
+                    provider_id: "provider".to_string(),
+                },
+                format: None,
+                summary: None,
+                system: None,
+                tools: None,
+                variant: None,
+            },
+            parts: vec![Part::Tool(crate::message_v2::ToolPart {
+                id: "part-1".to_string(),
+                session_id: "ses-1".to_string(),
+                message_id: "msg-1".to_string(),
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+                state: ToolState::Completed {
+                    input: serde_json::json!({"command": "true"}),
+                    output,
+                    title: "Bash".to_string(),
+                    metadata: HashMap::new(),
+                    time: crate::message_v2::CompletedTime {
+                        start: 1,
+                        end: 2,
+                        compacted: None,
+                    },
+                    attachments: None,
+                },
+                metadata: None,
+            })],
+        };
+        let original_output = match &message.parts[0] {
+            Part::Tool(tool_part) => match &tool_part.state {
+                ToolState::Completed { output, .. } => output,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        let view = prune_message_view(&message);
+        assert_eq!(view.parts[0].output.as_ptr(), original_output.as_ptr());
+        assert_eq!(view.parts[0].output.len(), original_output.len());
     }
 
     #[test]

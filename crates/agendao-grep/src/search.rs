@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
-use std::fs::File;
+use std::collections::VecDeque;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -132,61 +132,54 @@ impl Ripgrep {
 
     pub fn tree<P: AsRef<Path>>(path: P, limit: Option<usize>) -> Result<String, io::Error> {
         let path = path.as_ref();
-        let files = Self::files(path, FileSearchOptions::default())?;
+        if !path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No such directory: '{}'", path.display()),
+            ));
+        }
 
-        let mut root: BTreeMap<String, TreeNode> = BTreeMap::new();
+        // Traverse breadth-first and stop as soon as the display budget is
+        // exceeded. This intentionally reports only that the tree is
+        // truncated: calculating the exact remaining count would require the
+        // full walk and defeat the limit.
+        let mut directories = VecDeque::from([path.to_path_buf()]);
+        let mut lines = Vec::new();
+        let mut truncated = false;
 
-        for file in &files {
-            let rel_path = file.strip_prefix(path).unwrap_or(file);
-            let rel_str = rel_path.to_string_lossy();
+        'walk: while let Some(directory) = directories.pop_front() {
+            let mut entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
+                Err(_) => continue,
+            };
+            entries.sort_by_key(|entry| entry.file_name());
 
-            if rel_str.contains(".opencode") {
-                continue;
-            }
+            for entry in entries {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() || is_ignored_tree_directory(&entry) {
+                    continue;
+                }
+                if limit.is_some_and(|max| lines.len() >= max) {
+                    truncated = true;
+                    break 'walk;
+                }
 
-            let parts: Vec<&str> = rel_str.split(std::path::MAIN_SEPARATOR).collect();
-            if parts.len() < 2 {
-                continue;
-            }
-
-            let mut current = &mut root;
-            for part in parts.iter().take(parts.len() - 1) {
-                let node = current.entry(part.to_string()).or_insert(TreeNode {
-                    name: part.to_string(),
-                    children: BTreeMap::new(),
-                });
-                current = &mut node.children;
+                let entry_path = entry.path();
+                let rel_path = entry_path.strip_prefix(path).unwrap_or(&entry_path);
+                lines.push(
+                    rel_path
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/"),
+                );
+                directories.push_back(entry_path);
             }
         }
 
-        let total = count_nodes(&root);
-        let limit = limit.unwrap_or(total);
-        let mut lines: Vec<String> = Vec::new();
-        let mut queue: VecDeque<(String, &TreeNode)> = VecDeque::new();
-
-        for node in root.values() {
-            queue.push_back((node.name.clone(), node));
+        if truncated {
+            lines.push("[truncated]".to_string());
         }
-
-        let mut used = 0;
-        while let Some((path_str, node)) = queue.pop_front() {
-            if used >= limit {
-                break;
-            }
-            lines.push(path_str.clone());
-            used += 1;
-
-            queue.extend(
-                node.children
-                    .values()
-                    .map(|child| (format!("{}/{}", path_str, child.name), child)),
-            );
-        }
-
-        if total > used {
-            lines.push(format!("[{} truncated]", total - used));
-        }
-
         Ok(lines.join("\n"))
     }
 }
@@ -235,22 +228,14 @@ fn search_file(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct TreeNode {
-    name: String,
-    children: BTreeMap<String, TreeNode>,
-}
-
-fn count_nodes(node: &BTreeMap<String, TreeNode>) -> usize {
-    let mut total = 0;
-    for child in node.values() {
-        total += 1 + count_nodes(&child.children);
-    }
-    total
-}
-
 fn is_git_entry(entry: &walkdir::DirEntry) -> bool {
     entry.depth() > 0 && entry.file_type().is_dir() && entry.file_name() == ".git"
+}
+
+fn is_ignored_tree_directory(entry: &fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    name == ".git" || name.contains(".opencode")
 }
 
 fn is_hidden_entry(entry: &walkdir::DirEntry) -> bool {
@@ -332,6 +317,26 @@ mod tests {
     fn test_tree() {
         let result = Ripgrep::tree(".", Some(10)).unwrap();
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn tree_stops_at_the_display_limit_without_counting_the_remainder() {
+        let root = std::env::temp_dir().join(format!(
+            "agendao-grep-tree-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root.join("alpha/child")).unwrap();
+        fs::create_dir_all(root.join("beta")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+
+        let result = Ripgrep::tree(&root, Some(2)).unwrap();
+        assert_eq!(
+            result.lines().collect::<Vec<_>>(),
+            ["alpha", "beta", "[truncated]"]
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
