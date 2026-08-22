@@ -172,6 +172,14 @@ export interface TestProviderConnectionResponseRecord {
   error?: string;
 }
 
+export interface TestProviderModelResponseRecord {
+  ok: boolean;
+  model_id: string;
+  latency_ms: number;
+  response_text?: string | null;
+  error?: string | null;
+}
+
 export function flattenProviderModels(providers: ProviderRecord[]) {
   return providers.flatMap((provider) =>
     (provider.models ?? []).filter((model) => model.available !== false).map((model) => ({

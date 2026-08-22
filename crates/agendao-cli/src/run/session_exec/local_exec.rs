@@ -2,6 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::cli::RunOutputFormat;
+#[cfg(all(feature = "local-server", feature = "run-remote-stream"))]
+use crate::remote::stream_consume::{consume_local_events, LocalEventOutcome};
 use crate::run::local_server_bridge;
 
 use super::message_io::{build_prompt_message, print_assistant_messages};
@@ -20,6 +22,7 @@ pub(in crate::run) struct LocalPromptRequest<'a> {
     pub title: Option<&'a str>,
     pub directory: &'a str,
     pub format: RunOutputFormat,
+    pub show_thinking: bool,
 }
 
 pub(in crate::run) async fn run_cli_prompt_local(
@@ -39,6 +42,7 @@ pub(in crate::run) async fn run_cli_prompt_local(
         title,
         directory,
         format,
+        show_thinking,
     } = request;
     let session_id =
         resolve_local_session(state, continue_last, session, fork, title, directory).await?;
@@ -49,6 +53,12 @@ pub(in crate::run) async fn run_cli_prompt_local(
             .rev()
             .find(|message| message.role != "user")
             .map(|message| message.id);
+
+    // Subscribe before submitting the prompt. Direct mode uses the same
+    // canonical frontend projector as SSE/Unix transports; the receiver is
+    // retained until the run reaches idle so long tasks remain observable.
+    #[cfg(all(feature = "local-server", feature = "run-remote-stream"))]
+    let events = local_server_bridge::local_frontend_events(state);
 
     let message = build_prompt_message(input, command);
     let response = local_server_bridge::local_prompt(
@@ -82,7 +92,20 @@ pub(in crate::run) async fn run_cli_prompt_local(
         );
     }
 
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(1_800), async {
+    #[cfg(all(feature = "local-server", feature = "run-remote-stream"))]
+    let event_outcome =
+        consume_local_events(events, &session_id, format.clone(), show_thinking).await?;
+    #[cfg(not(all(feature = "local-server", feature = "run-remote-stream")))]
+    let event_outcome = {
+        let _ = show_thinking;
+        anyhow::bail!(
+            "direct mode requires the `local-server` and `run-remote-stream` CLI features"
+        )
+    };
+
+    // Authoritative persistence read after the event stream completes. This
+    // also detects a missed/lagged event instead of silently claiming success.
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let messages =
                 local_server_bridge::local_list_messages(Arc::clone(state), &session_id).await?;
@@ -97,16 +120,21 @@ pub(in crate::run) async fn run_cli_prompt_local(
         }
     })
     .await
-    .map_err(|_| anyhow::anyhow!("prompt execution timed out"))??;
+    .map_err(|_| {
+        anyhow::anyhow!("prompt completed but persisted assistant message was not found")
+    })??;
 
     if let Some(error) = completed.error.as_deref() {
         anyhow::bail!("prompt execution failed: {error}");
     }
-    match format {
-        RunOutputFormat::Json => println!("{}", serde_json::to_string(&completed)?),
-        RunOutputFormat::Default => {
-            print_assistant_messages(std::slice::from_ref(&completed));
-        }
+    if matches!(format, RunOutputFormat::Json) {
+        println!("{}", serde_json::to_string(&completed)?);
+    }
+    #[cfg(all(feature = "local-server", feature = "run-remote-stream"))]
+    if matches!(event_outcome, LocalEventOutcome::Lagged)
+        && matches!(format, RunOutputFormat::Default)
+    {
+        print_assistant_messages(std::slice::from_ref(&completed));
     }
     Ok(())
 }

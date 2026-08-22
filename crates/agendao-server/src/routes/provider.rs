@@ -16,6 +16,7 @@ use agendao_provider::{
     ProviderProfileError,
 };
 use agendao_provider::{CatalogRefreshStatus, CatalogSnapshot, ModelsData, ModelsDevInfo};
+use agendao_provider::{ChatRequest, Content, Message, ProviderError};
 use agendao_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
@@ -35,6 +36,7 @@ pub(crate) fn provider_routes() -> Router<Arc<ServerState>> {
         .route("/{id}/descriptor", get(get_provider_descriptor))
         .route("/{id}/disabled", put(set_provider_disabled))
         .route("/{id}/test", post(test_provider_connection))
+        .route("/{id}/model-test", post(test_provider_model))
         .route("/{id}", put(update_provider).delete(delete_provider))
         .route("/{id}/oauth/authorize", post(oauth_authorize))
         .route("/{id}/oauth/callback", post(oauth_callback))
@@ -926,11 +928,7 @@ pub(crate) async fn list_providers(
             .or_insert_with(|| provider_display_name(provider_id, &provider.name));
         // base_url 从 catalog info.api 兜底填入(显示/编辑预填用);step 2 的
         // config 显式配置会用 `insert` 覆盖此值。
-        if let Some(api) = provider
-            .api
-            .as_deref()
-            .filter(|url| !url.trim().is_empty())
-        {
+        if let Some(api) = provider.api.as_deref().filter(|url| !url.trim().is_empty()) {
             provider_base_urls
                 .entry(provider_id.clone())
                 .or_insert_with(|| api.to_string());
@@ -1963,6 +1961,98 @@ pub(crate) async fn test_provider_connection(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TestProviderModelRequest {
+    pub model_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestProviderModelResponse {
+    pub ok: bool,
+    pub model_id: String,
+    pub latency_ms: u128,
+    pub response_text: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Execute a bounded, no-tool model probe through the normal Provider::chat
+/// path. This deliberately validates model identity, protocol translation,
+/// authentication, and response decoding—not merely `/models` reachability.
+pub(crate) async fn test_provider_model(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    Json(request): Json<TestProviderModelRequest>,
+) -> Result<Json<TestProviderModelResponse>> {
+    let provider_id = id.trim().to_string();
+    let model_id = request.model_id.trim().to_string();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "provider id and model_id are required".to_string(),
+        ));
+    }
+    let provider = {
+        let providers = state.providers.read().await;
+        let provider = providers
+            .get_provider(&provider_id)
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+        if provider.get_model(&model_id).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "model `{model_id}` is not registered for provider `{provider_id}`"
+            )));
+        }
+        provider
+    };
+    let started = std::time::Instant::now();
+    let request = ChatRequest::new(
+        model_id.clone(),
+        vec![Message::user("Reply with the single word: OK")],
+    )
+    .with_stream(false)
+    .with_max_tokens(16);
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.chat(request),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(ProviderError::Timeout),
+    };
+    let latency_ms = started.elapsed().as_millis();
+    match response {
+        Ok(response) => {
+            let text = response
+                .choices
+                .first()
+                .and_then(|choice| match &choice.message.content {
+                    Content::Text(text) => Some(text.clone()),
+                    Content::Parts(parts) => {
+                        let joined = parts
+                            .iter()
+                            .filter_map(|part| part.text.as_deref())
+                            .collect::<String>();
+                        (!joined.is_empty()).then_some(joined)
+                    }
+                });
+            let ok = text.as_deref().is_some_and(|text| !text.trim().is_empty());
+            Ok(Json(TestProviderModelResponse {
+                ok,
+                model_id,
+                latency_ms,
+                response_text: text,
+                error: (!ok).then_some("model returned no visible text".to_string()),
+            }))
+        }
+        Err(error) => Ok(Json(TestProviderModelResponse {
+            ok: false,
+            model_id,
+            latency_ms,
+            response_text: None,
+            error: Some(error.to_string()),
+        })),
+    }
+}
+
 pub(crate) async fn delete_provider(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
@@ -2030,10 +2120,8 @@ mod tests {
                 "models": {}
             }
         });
-        let dir = std::env::temp_dir().join(format!(
-            "agendao-test-cat-{}.json",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("agendao-test-cat-{}.json", std::process::id()));
         std::fs::write(&dir, catalog.to_string()).expect("write test catalog");
 
         let mut state = crate::ServerState::new();
@@ -2041,8 +2129,8 @@ mod tests {
             agendao_provider::ModelCatalogAuthority::with_snapshot_path(dir.clone()),
         );
         // config 显式 base_url 必须覆盖目录 api 兜底。
-        state.config_store = std::sync::Arc::new(agendao_config::ConfigStore::new(
-            agendao_config::Config {
+        state.config_store =
+            std::sync::Arc::new(agendao_config::ConfigStore::new(agendao_config::Config {
                 provider: Some(HashMap::from([(
                     "zhipuai-coding-plan".to_string(),
                     ProviderConfig {
@@ -2051,12 +2139,10 @@ mod tests {
                     },
                 )])),
                 ..Default::default()
-            },
-        ));
+            }));
         let state = std::sync::Arc::new(state);
 
-        let axum::Json(resp) =
-            super::list_providers(State(state)).await;
+        let axum::Json(resp) = super::list_providers(State(state)).await;
         let find = |id: &str| {
             resp.all
                 .iter()

@@ -1150,6 +1150,18 @@ pub struct TestProviderConnectionResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestProviderModelResponse {
+    pub ok: bool,
+    pub model_id: String,
+    #[serde(default)]
+    pub latency_ms: u128,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderModelInfo {
     pub id: String,

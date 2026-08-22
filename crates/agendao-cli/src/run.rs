@@ -144,6 +144,7 @@ pub(super) async fn run_non_interactive(
                 title: title.as_deref(),
                 directory: &cli_session_directory(&working_dir),
                 format,
+                show_thinking,
             },
         )
         .await?;

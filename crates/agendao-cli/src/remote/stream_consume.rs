@@ -20,7 +20,7 @@ use super::transcript::{
     CliVisibleTranscript,
 };
 
-pub(super) struct RemoteSemanticRenderState {
+pub(crate) struct RemoteSemanticRenderState {
     pub(super) semantic: TerminalSemanticStreamRenderState,
     pub(super) transcript: CliVisibleTranscript,
     pub(super) is_terminal: bool,
@@ -51,7 +51,7 @@ struct RemoteEventContext<'a> {
     style: &'a CliStyle,
 }
 
-pub(super) fn remote_apply_output_block(
+pub(crate) fn remote_apply_output_block(
     semantic_state: &mut RemoteSemanticRenderState,
     block: &OutputBlock,
     live_identity: Option<&agendao_types::LiveMessagePartIdentity>,
@@ -105,7 +105,7 @@ fn remote_apply_non_terminal_live_slot_update(
     }
 }
 
-fn remote_emit_transcript(
+pub(crate) fn remote_emit_transcript(
     semantic_state: &mut RemoteSemanticRenderState,
     style: &CliStyle,
 ) -> io::Result<()> {
@@ -261,7 +261,7 @@ pub(super) async fn consume_remote_events(
     anyhow::bail!("Remote event stream closed before the session became idle")
 }
 
-fn finish_remote_output(
+pub(crate) fn finish_remote_output(
     semantic_state: &mut RemoteSemanticRenderState,
     format: &RunOutputFormat,
 ) -> io::Result<()> {
@@ -270,6 +270,125 @@ fn finish_remote_output(
         io::stdout().flush()?;
     }
     Ok(())
+}
+
+/// Consume the same canonical frontend events for Direct mode as the remote
+/// SSE transport. The receiver is created before prompt submission, so no
+/// initial events can be lost to a late subscription.
+pub(crate) async fn consume_local_events(
+    mut events: tokio::sync::broadcast::Receiver<
+        Arc<agendao_server_core::frontend_events::FrontendBusEvent>,
+    >,
+    session_id: &str,
+    format: RunOutputFormat,
+    show_thinking: bool,
+) -> anyhow::Result<LocalEventOutcome> {
+    let mut semantic_state = RemoteSemanticRenderState::new();
+    let style = CliStyle::detect();
+    let mut saw_active = false;
+    let mut first_event = true;
+    let mut last_run_status = None;
+    loop {
+        let timeout = if first_event {
+            std::time::Duration::from_secs(180)
+        } else {
+            std::time::Duration::from_secs(300)
+        };
+        let bus = tokio::time::timeout(timeout, events.recv())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "no frontend activity for {}s; provider may be stalled",
+                    timeout.as_secs()
+                )
+            })?;
+        let bus = match bus {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                eprintln!("\nWarning: local event stream lagged by {count} events; replaying persisted final output.");
+                finish_remote_output(&mut semantic_state, &format)?;
+                return Ok(LocalEventOutcome::Lagged);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                anyhow::bail!("local frontend event stream closed before completion")
+            }
+        };
+        let event = bus.event().clone();
+        let event_session = match &event {
+            FrontendEvent::SessionRuntimeReplaced { session_id, .. }
+            | FrontendEvent::SessionProjectionReplaced { session_id, .. }
+            | FrontendEvent::QuestionUpsert { session_id, .. }
+            | FrontendEvent::QuestionRemoved { session_id, .. }
+            | FrontendEvent::PermissionUpsert { session_id, .. }
+            | FrontendEvent::PermissionRemoved { session_id, .. }
+            | FrontendEvent::ToolCallUpsert { session_id, .. }
+            | FrontendEvent::DiffReplaced { session_id, .. }
+            | FrontendEvent::TodoReplaced { session_id, .. }
+            | FrontendEvent::SessionError { session_id, .. }
+            | FrontendEvent::TaskLedgerReplaced { session_id, .. }
+            | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
+            FrontendEvent::ConfigUpdated => None,
+        };
+        if event_session != Some(session_id) {
+            continue;
+        }
+        first_event = false;
+        match event {
+            FrontendEvent::OutputBlockAppended {
+                block: payload,
+                live_identity,
+                ..
+            } if !matches!(format, RunOutputFormat::Json) => {
+                if let Some(block) = parse_output_block(&payload) {
+                    if matches!(block, OutputBlock::Reasoning(_)) && !show_thinking {
+                        continue;
+                    }
+                    if let OutputBlock::Status(status) = &block {
+                        eprintln!("[status] {}", status.text);
+                        continue;
+                    }
+                    let live_style = style.with_live_width();
+                    remote_apply_output_block(
+                        &mut semantic_state,
+                        &block,
+                        live_identity.as_ref(),
+                        &live_style,
+                        show_thinking,
+                    );
+                    remote_emit_transcript(&mut semantic_state, &live_style)?;
+                }
+            }
+            FrontendEvent::SessionError { error, .. } => {
+                eprintln!("\nError: {error}");
+            }
+            FrontendEvent::PermissionUpsert { .. } => {
+                eprintln!("\n[status] waiting for a permission decision; open the Web UI or `agendao tui`");
+            }
+            FrontendEvent::QuestionUpsert { .. } => {
+                eprintln!("\n[status] waiting for an answer; open the Web UI or `agendao tui`");
+            }
+            FrontendEvent::SessionRuntimeReplaced { runtime, .. } => {
+                if runtime.run_status == agendao_api::SessionRunStatusKind::Idle && saw_active {
+                    finish_remote_output(&mut semantic_state, &format)?;
+                    return Ok(LocalEventOutcome::Completed);
+                }
+                if runtime.run_status != agendao_api::SessionRunStatusKind::Idle {
+                    saw_active = true;
+                }
+                if last_run_status.as_ref() != Some(&runtime.run_status) {
+                    eprintln!("[status] {:?}", runtime.run_status);
+                    last_run_status = Some(runtime.run_status.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalEventOutcome {
+    Completed,
+    Lagged,
 }
 
 async fn dispatch_remote_event(

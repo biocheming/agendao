@@ -15,7 +15,7 @@ run-remote-stream = [
     "dep:agendao-command-render",
     "dep:agendao-server-core",
 ]
-local-server = ["dep:agendao-server"]
+local-server = ["dep:agendao-server", "run-remote-stream"]
 db = ["session-db", "proposal-db", "memory-db"]
 session-db = ["dep:agendao-storage"]
 proposal-db = ["dep:agendao-storage"]

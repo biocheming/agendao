@@ -11,6 +11,7 @@ import type {
   ProviderRecord,
   ResolveProviderConnectResponseRecord,
   TestProviderConnectionResponseRecord,
+  TestProviderModelResponseRecord,
 } from "@/lib/provider";
 import { displayProtocolLabel } from "@/lib/provider";
 import { apiJson, formatError } from "@/lib/api";
@@ -149,6 +150,10 @@ export function ProvidersTab({
   const { t } = useI18n();
   const [renamingProviderId, setRenamingProviderId] = useState<string | null>(null);
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
+  const [testingModelKey, setTestingModelKey] = useState<string | null>(null);
+  const [modelTestResults, setModelTestResults] = useState<
+    Record<string, TestProviderModelResponseRecord>
+  >({});
   const [providerTestState, setProviderTestState] = useState<{
     source: ManagedProviderInfoRecord[];
     results: Record<string, TestProviderConnectionResponseRecord>;
@@ -204,6 +209,29 @@ export function ProvidersTab({
       recordResult({ ok: false, latency_ms: 0, error: formatError(error) });
     } finally {
       setTestingProviderId(null);
+    }
+  };
+  const testProviderModel = async (providerId: string, modelId: string) => {
+    const key = `${providerId}/${modelId}`;
+    setTestingModelKey(key);
+    try {
+      const result = await apiJson<TestProviderModelResponseRecord>(
+        `/provider/${encodeURIComponent(providerId)}/model-test`,
+        { method: "POST", body: JSON.stringify({ model_id: modelId }) },
+      );
+      setModelTestResults((current) => ({ ...current, [key]: result }));
+    } catch (error) {
+      setModelTestResults((current) => ({
+        ...current,
+        [key]: {
+          ok: false,
+          model_id: modelId,
+          latency_ms: 0,
+          error: formatError(error),
+        },
+      }));
+    } finally {
+      setTestingModelKey(null);
     }
   };
   return (
@@ -738,6 +766,41 @@ export function ProvidersTab({
                     </p>
                   </button>
                 )}
+                {(provider.models ?? []).length ? (
+                  <div className="mt-2 grid gap-1">
+                    {(provider.models ?? []).map((model) => {
+                      const modelKey = `${provider.id}/${model.id}`;
+                      const testingModel = testingModelKey === modelKey;
+                      const modelTestResult = modelTestResults[modelKey];
+                      return (
+                        <div key={model.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="truncate">{model.id}</span>
+                          <button
+                            className={secondaryButtonClass}
+                            type="button"
+                            disabled={testingModel}
+                            onClick={() => void testProviderModel(provider.id, model.id)}
+                          >
+                            {testingModel ? "测试中…" : "测试模型调用（真实请求）"}
+                          </button>
+                          {modelTestResult ? (
+                            <span
+                              className={cn(
+                                "max-w-72 truncate",
+                                modelTestResult.ok ? "text-(--ds-ok)" : "text-(--ds-error)",
+                              )}
+                              title={modelTestResult.error ?? modelTestResult.response_text ?? undefined}
+                            >
+                              {modelTestResult.ok
+                                ? `✓ ${modelTestResult.latency_ms}ms`
+                                : `✗ ${modelTestResult.error ?? "模型调用失败"}`}
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {isDisabled ? (
@@ -763,13 +826,14 @@ export function ProvidersTab({
                     <button
                       className={secondaryButtonClass}
                       type="button"
+                      title="仅检查 Provider 的 /models 端点，不会调用模型"
                       data-testid={`settings-provider-test-${provider.id}`}
                       disabled={testing}
                       onClick={() => void testProviderConnection(provider.id)}
                     >
                       {testing
                         ? t("settings.providers.testingConnection")
-                        : t("settings.providers.testConnection")}
+                        : `${t("settings.providers.testConnection")}（/models 端点）`}
                     </button>
                     <button
                       className={secondaryButtonClass}

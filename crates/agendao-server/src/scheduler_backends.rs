@@ -102,9 +102,24 @@ impl PlannerBackend for ModelPlannerBackend {
             .first()
             .and_then(|choice| visible_text_content(&choice.message.content))
             .ok_or_else(|| "planner returned no decision".to_string())?;
-        serde_json::from_str(content.trim())
-            .map_err(|error| format!("invalid planner decision: {error}"))
+        parse_planner_decision(content.trim())
     }
+}
+
+/// Decode the planner's strict decision contract while tolerating one known
+/// model behaviour: echoing an input-only rejection ledger field back into
+/// the decision object.  All other unknown fields remain rejected by the
+/// `deny_unknown_fields` derives on `PlannerDecision`.
+fn parse_planner_decision(content: &str) -> Result<PlannerDecision, String> {
+    let mut value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("invalid planner decision: {error}"))?;
+    let Some(object) = value.as_object_mut() else {
+        return Err("invalid planner decision: expected one JSON object".to_string());
+    };
+    if object.remove("rejected_blueprint_fingerprints").is_some() {
+        tracing::warn!("planner echoed input-only field rejected_blueprint_fingerprints; ignored");
+    }
+    serde_json::from_value(value).map_err(|error| format!("invalid planner decision: {error}"))
 }
 
 fn planner_prompt_json(input: &PlannerInput) -> Result<String, String> {
@@ -271,7 +286,7 @@ impl EvaluatorBackend for ModelEvaluatorBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::visible_text_content;
+    use super::{parse_planner_decision, visible_text_content};
     use agendao_provider::{Content, ContentPart};
 
     #[test]
@@ -290,5 +305,31 @@ mod tests {
 
         let reasoning_only = Content::Parts(vec![ContentPart::reasoning("PASS")]);
         assert_eq!(visible_text_content(&reasoning_only), None);
+    }
+
+    #[test]
+    fn planner_ignores_only_known_input_echo_field() {
+        let value = serde_json::json!({
+            "decision": "use-template",
+            "template": "direct",
+            "parameters": {},
+            "rejected_blueprint_fingerprints": []
+        });
+        let error =
+            parse_planner_decision(&value.to_string()).expect_err("fixture lacks full parameters");
+        assert!(!error.contains("unknown field"));
+    }
+
+    #[test]
+    fn planner_still_rejects_unallowlisted_unknown_fields() {
+        let value = serde_json::json!({
+            "decision": "use-template",
+            "template": "direct",
+            "parameters": {},
+            "hallucinated": true
+        });
+        let error =
+            parse_planner_decision(&value.to_string()).expect_err("unknown field must fail");
+        assert!(error.contains("unknown field"));
     }
 }

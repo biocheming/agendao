@@ -333,6 +333,16 @@ impl Default for ApiPerfCounters {
 }
 
 impl ServerState {
+    /// Subscribe directly to the canonical projected frontend event bus.
+    /// Direct transports must create this receiver before submitting a prompt:
+    /// `broadcast` has no replay and a late subscription would otherwise lose
+    /// the first planning/model events.
+    pub fn subscribe_frontend_events(
+        &self,
+    ) -> broadcast::Receiver<Arc<agendao_server_core::frontend_events::FrontendBusEvent>> {
+        self.frontend_bus.subscribe()
+    }
+
     pub fn new() -> Self {
         Self::new_for_workspace(default_workspace_root())
     }

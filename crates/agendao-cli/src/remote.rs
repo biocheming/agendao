@@ -1,6 +1,6 @@
 mod output_block_parse;
 mod session_attach;
-mod stream_consume;
+pub(crate) mod stream_consume;
 mod transcript;
 
 use std::sync::atomic::AtomicBool;

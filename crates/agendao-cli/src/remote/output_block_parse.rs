@@ -3,7 +3,7 @@ use agendao_command_render::output_blocks::{
     ReasoningBlock, SessionEventBlock, SessionEventField, StatusBlock, ToolBlock, ToolPhase,
 };
 
-pub(super) fn parse_output_block(payload: &serde_json::Value) -> Option<OutputBlock> {
+pub(crate) fn parse_output_block(payload: &serde_json::Value) -> Option<OutputBlock> {
     let kind = payload.get("kind")?.as_str()?;
     match kind {
         "status" => {

@@ -16,6 +16,15 @@ pub(super) fn direct_mode_available() -> bool {
 }
 
 #[cfg(feature = "local-server")]
+pub(super) fn local_frontend_events(
+    state: &CliLocalServerState,
+) -> tokio::sync::broadcast::Receiver<
+    std::sync::Arc<agendao_server_core::frontend_events::FrontendBusEvent>,
+> {
+    state.subscribe_frontend_events()
+}
+
+#[cfg(feature = "local-server")]
 pub(super) async fn create_local_server_state(
     base_url: String,
     working_dir: PathBuf,
