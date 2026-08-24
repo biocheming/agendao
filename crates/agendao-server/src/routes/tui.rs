@@ -7,8 +7,8 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
 
 use crate::{ApiError, Result, ServerState};
 pub(crate) use agendao_server_core::runtime_control::QuestionInfo;
@@ -45,6 +45,24 @@ pub(crate) async fn request_question_answers(
     session_id: String,
     questions: Vec<agendao_tool::QuestionDef>,
 ) -> std::result::Result<Vec<Vec<String>>, agendao_tool::ToolError> {
+    request_question_answers_inner(state, session_id, questions, None).await
+}
+
+pub(crate) async fn request_question_answers_with_abort(
+    state: Arc<ServerState>,
+    session_id: String,
+    questions: Vec<agendao_tool::QuestionDef>,
+    abort: CancellationToken,
+) -> std::result::Result<Vec<Vec<String>>, agendao_tool::ToolError> {
+    request_question_answers_inner(state, session_id, questions, Some(abort)).await
+}
+
+async fn request_question_answers_inner(
+    state: Arc<ServerState>,
+    session_id: String,
+    questions: Vec<agendao_tool::QuestionDef>,
+    abort: Option<CancellationToken>,
+) -> std::result::Result<Vec<Vec<String>>, agendao_tool::ToolError> {
     if questions.is_empty() {
         return Ok(Vec::new());
     }
@@ -74,7 +92,13 @@ pub(crate) async fn request_question_answers(
     )
     .await;
 
-    let wait_result = tokio::time::timeout(Duration::from_secs(300), rx).await;
+    let wait_result = match abort {
+        Some(abort) => tokio::select! {
+            reply = rx => reply,
+            _ = abort.cancelled() => Ok(QuestionReply::Cancelled),
+        },
+        None => rx.await,
+    };
 
     state
         .runtime_telemetry
@@ -93,7 +117,7 @@ pub(crate) async fn request_question_answers(
     .await;
 
     match wait_result {
-        Ok(Ok(QuestionReply::Answers(answers))) => {
+        Ok(QuestionReply::Answers(answers)) => {
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
@@ -105,7 +129,7 @@ pub(crate) async fn request_question_answers(
             crate::session_runtime::events::broadcast_server_event(&state, &event);
             Ok(answers)
         }
-        Ok(Ok(QuestionReply::Rejected)) => {
+        Ok(QuestionReply::Rejected) => {
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
@@ -119,7 +143,7 @@ pub(crate) async fn request_question_answers(
                 "User rejected question request".to_string(),
             ))
         }
-        Ok(Ok(QuestionReply::Cancelled)) => {
+        Ok(QuestionReply::Cancelled) => {
             let event = ServerEvent::QuestionResolved {
                 session_id: question_info.session_id.clone(),
                 request_id: question_info.id.clone(),
@@ -131,11 +155,8 @@ pub(crate) async fn request_question_answers(
             crate::session_runtime::events::broadcast_server_event(&state, &event);
             Err(agendao_tool::ToolError::Cancelled)
         }
-        Ok(Err(_)) => Err(agendao_tool::ToolError::ExecutionError(
-            "Question response channel closed".to_string(),
-        )),
         Err(_) => Err(agendao_tool::ToolError::ExecutionError(
-            "Timed out waiting for question response".to_string(),
+            "Question response channel closed".to_string(),
         )),
     }
 }

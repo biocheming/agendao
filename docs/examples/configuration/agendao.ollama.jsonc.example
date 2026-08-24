@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agendao.dev/schemas/agendao_config.schema.json",
+  "model": "ollama/qwen3.8:latest",
+  "provider": {
+    "ollama": {
+      "name": "Ollama (local)",
+      "base_url": "http://localhost:11434/v1",
+      "npm": "@ai-sdk/openai-compatible",
+      "api_style": "openai-compatible",
+      "api_shape": "chat-completions",
+      "transport": "bearer",
+      "models": {
+        "qwen3.8:latest": {
+          "model": "qwen3.8:latest",
+          "tool_call": true,
+          "reasoning": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agendao.dev/schemas/agendao_config.schema.json",
+  "permission": {
+    "Read": "allow",
+    "Grep": "allow",
+    "Edit": "ask",
+    "Write": "ask",
+    "Bash": {
+      "ls": "allow",
+      "git status": "allow",
+      "rm *": "deny"
+    },
+    "WebFetch": "deny"
+  },
+  "agent": {
+    "safe-review": {
+      "name": "Safe review",
+      "mode": "primary",
+      "permission": {
+        "Bash": "deny",
+        "Edit": "ask"
+      },
+      "tools": {
+        "Bash": false,
+        "Edit": true,
+        "Read": true,
+        "Grep": true
+      }
+    }
+  }
+}

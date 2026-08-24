@@ -128,14 +128,35 @@ effect 被明确允许时开放。执行和 workspace 数值上限来自 `runtim
 - Verifier 是 catalog evaluator，由 `gate` 或 `loop` 调用。
 - Autoresearch 是 `loop + evaluator + checkpoint` 模板，不是独立引擎。
 
-Agent node 的 `max_steps` 必须小于等于 Agent 自身 `maxSteps`、Blueprint
+Agent node 的 `max_steps` 必须小于等于 Agent 自身 `max_steps`、Blueprint
 `limits.max_agent_steps` 和 PolicyEnvelope 硬上限三者的最小值；AgentLoop 按该节点值停止。
+
+### step 到底是什么
+
+一个 step 是一次 AgentLoop 模型回合：模型请求、assistant turn，以及该 turn 中声明的零个或多个
+tool call。它不是“一个工具调用”，也不是一个 shell 命令。因此 `max_steps: 16` 表示最多 16 个
+模型回合，一个 step 内可以执行多个工具。
+
+每个 step 都会写入 assistant message 的 `step_start` / `step_finish` part，并同步显示
+`当前 step/最大步数`、Agent、工具数和错误数。达到上限时，已完成的 step 和 tool result 会保留；
+发送新 prompt（例如 `continue`）可从该 session 的 continuity context 开始下一轮。
 
 ## 事件与投影
 
 `SchedulerEngine` 发出 typed `ExecutionEvent`：run start/end/failure、node start/end、loop
-iteration 和 evaluation。server 将这一事件流投影为唯一的 `SchedulerRun` / `SchedulerNode`
-状态，CLI、TUI 和 Web 读取同一投影，不解析文本卡片或 message metadata 来重建运行状态。
+iteration 和 evaluation；AgentLoop observer 另外发出并持久化 step start/finish。server 将这些
+事件投影为 `SchedulerRun` / `SchedulerNode` 状态，CLI、TUI 和 Web 读取同一投影和 message parts，
+不再从一条最终错误文本猜测中间进度。
+
+## 预算、deadline 与人机交互
+
+`max_wall_time_ms` 是活跃执行预算：模型、工具和评估器实际运行时会消耗它。等待 permission 或
+question 时预算暂停，等待没有固定 300 秒 deadline，但仍可由 session/run abort 取消。取消会清理
+waiter、pending 状态和 telemetry。
+
+“长任务稳定性”在这里指可观察的 step、可取消的人机等待、活跃时间预算和可续跑 session，不表示
+任务永远不会失败。provider/tool 错误、token/call 上限、活跃执行 deadline 和 validator 拒绝仍会
+结束本轮。
 
 ## 上下文缓存
 

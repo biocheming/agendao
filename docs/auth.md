@@ -8,7 +8,7 @@
 
 今天的 AgenDao 有四条认证入口，但它们不是一回事：
 
-1. `agendao.jsonc` 里的 `provider.*.apiKey` / `provider.*.models.*.apiKey`
+1. `agendao.jsonc` 里的 `provider.*.api_key`
 2. 环境变量
 3. Server / Web 路径上的 `AuthManager` 与插件认证桥
 4. `.well-known/opencode` 远程配置兼容路径
@@ -33,7 +33,7 @@ export OPENROUTER_API_KEY="sk-or-..."
   "provider": {
     "my-provider": {
       "name": "My Provider",
-      "baseURL": "https://api.example.com/v1",
+      "base_url": "https://api.example.com/v1",
       "env": ["MY_PROVIDER_API_KEY"]
     }
   }
@@ -57,32 +57,18 @@ export MY_PROVIDER_API_KEY="secret-123"
   "provider": {
     "openrouter": {
       "name": "OpenRouter",
-      "apiKey": "sk-or-..."
+      "api_key": "sk-or-..."
     },
     "custom-provider": {
       "name": "Custom",
-      "baseURL": "https://api.example.com/v1",
-      "apiKey": "secret-123"
+      "base_url": "https://api.example.com/v1",
+      "api_key": "secret-123"
     }
   }
 }
 ```
 
-模型级别也可以单独覆盖：
-
-```jsonc
-{
-  "provider": {
-    "custom-provider": {
-      "models": {
-        "my-model": {
-          "apiKey": "model-specific-secret"
-        }
-      }
-    }
-  }
-}
-```
+`ModelConfig` 当前没有 `api_key` 字段；模型级认证不要写成 `provider.*.models.*.apiKey`。如果不同模型确实需要不同凭证，应拆成不同 provider，或使用 provider/runtime 支持的认证机制。
 
 这条路径适合本地实验或受控环境；共享仓库、CI、多人机器上仍然更推荐环境变量。
 
@@ -235,11 +221,16 @@ AgenDao 的 TypeScript 插件可以声明 `auth`，由 server 侧把它桥接成
   "provider": {
     "my-provider": {
       "name": "My Provider",
-      "baseURL": "https://api.example.com/v1",
+      "base_url": "https://api.example.com/v1",
+      "npm": "@ai-sdk/openai-compatible",
+      "api_style": "openai-compatible",
+      "api_shape": "chat-completions",
+      "transport": "bearer",
       "env": ["MY_PROVIDER_API_KEY"],
       "models": {
         "my-model": {
-          "toolCall": true
+          "model": "my-model",
+          "tool_call": true
         }
       }
     }
@@ -249,7 +240,7 @@ AgenDao 的 TypeScript 插件可以声明 `auth`，由 server 侧把它桥接成
 
 ```bash
 export MY_PROVIDER_API_KEY="secret-123"
-agendao run -m my-model "analyze this repo"
+agendao run -m my-provider/my-model "analyze this repo"
 ```
 
 这样做的好处是：
@@ -263,7 +254,7 @@ agendao run -m my-model "analyze this repo"
 ## 安全建议
 
 - 优先使用环境变量或外部 secret 注入
-- 不要把 `apiKey` 提交到版本控制
+- 不要把 `api_key` 提交到版本控制
 - 如果你使用 server / web OAuth，保护好 `AGENDAO_DATA_DIR/auth.json`
 - 不要把 well-known 兼容文件当成主要 secret store
 

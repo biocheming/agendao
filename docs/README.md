@@ -59,7 +59,7 @@
 - `tools.md`
   - 工具层参考，包括 `skill_manage`、结构化工具和 memory 可观测面入口
 - `configuration.md`
-  - 配置分层、workspace 边界，以及 memory 受 workspace mode 约束的作用域说明
+  - 当前 schema 的配置入口、Provider 写法、Permission 规则与 session 权限模式
 - `context-caching.md`
   - openai-compatible / anthropic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
 - `examples/scheduler/README.md`
@@ -71,6 +71,8 @@
 
 ## Examples
 
+- `examples/configuration/`
+  - 当前 schema 对齐的最小 Provider、Permission、Ollama 与 context docs 配置
 - `examples/context_docs/`
   - Formal examples for `context_docs`
   - Includes minimal `agendao.json` / `agendao.jsonc` config samples

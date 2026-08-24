@@ -6,7 +6,7 @@ use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_config::Config as AppConfig;
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_orchestrator::agent_loop::{
-    AgentObservationContext, ToolBackend, ToolCall, ToolExecution,
+    AgentObservationContext, InteractionClock, ToolBackend, ToolCall, ToolExecution,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -18,8 +18,6 @@ use agendao_types::{
     SessionContinuityPacket,
 };
 
-use super::super::permission::request_permission;
-use super::super::tui::request_question_answers;
 use super::messages::resolve_provider_and_model;
 use super::prompt::SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY;
 
@@ -75,6 +73,7 @@ pub(crate) struct SessionSchedulerToolExecutor {
     pub(super) tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub(super) execution_metadata: std::collections::HashMap<String, serde_json::Value>,
     pub(super) capability_allowed_tools_by_agent: BTreeMap<String, Vec<String>>,
+    pub(super) interaction_clock: InteractionClock,
 }
 
 pub(crate) struct SessionSchedulerToolExecutorInput {
@@ -85,6 +84,7 @@ pub(crate) struct SessionSchedulerToolExecutorInput {
     pub tool_runtime_config: agendao_tool::ToolRuntimeConfig,
     pub execution_metadata: std::collections::HashMap<String, serde_json::Value>,
     pub capability_allowed_tools_by_agent: BTreeMap<String, Vec<String>>,
+    pub interaction_clock: InteractionClock,
 }
 
 pub(super) fn resolve_effective_scheduler_choice(
@@ -114,6 +114,7 @@ impl SessionSchedulerToolExecutor {
             tool_runtime_config: input.tool_runtime_config,
             execution_metadata: input.execution_metadata,
             capability_allowed_tools_by_agent: input.capability_allowed_tools_by_agent,
+            interaction_clock: input.interaction_clock,
         }
     }
 
@@ -146,19 +147,39 @@ impl SessionSchedulerToolExecutor {
         .with_ask_question({
             let state = self.state.clone();
             let session_id = self.session_id.clone();
+            let abort = self.abort_token.clone();
+            let interaction_clock = self.interaction_clock.clone();
             move |questions| {
                 let state = state.clone();
                 let session_id = session_id.clone();
-                async move { request_question_answers(state, session_id, questions).await }
+                let abort = abort.clone();
+                let interaction_clock = interaction_clock.clone();
+                async move {
+                    let _pause = interaction_clock.pause();
+                    super::super::tui::request_question_answers_with_abort(
+                        state, session_id, questions, abort,
+                    )
+                    .await
+                }
             }
         })
         .with_ask({
             let state = self.state.clone();
             let session_id = self.session_id.clone();
+            let abort = self.abort_token.clone();
+            let interaction_clock = self.interaction_clock.clone();
             move |request| {
                 let state = state.clone();
                 let session_id = session_id.clone();
-                async move { request_permission(state, session_id, request).await }
+                let abort = abort.clone();
+                let interaction_clock = interaction_clock.clone();
+                async move {
+                    let _pause = interaction_clock.pause();
+                    super::super::permission::request_permission_with_abort(
+                        state, session_id, request, abort,
+                    )
+                    .await
+                }
             }
         })
         .with_todo_update({

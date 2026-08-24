@@ -196,6 +196,9 @@ AgenDao is a complete local coding-agent runtime. CLI, TUI, and Web are not thre
 
 Built-in Blueprint templates: `direct` · `plan` · `coordinate` · `verify` · `autoresearch`.
 They are data interpreted by the same `SchedulerEngine`, not separate executors.
+Long-running work is observable and resumable through persisted agent steps, tool results,
+active-time budgets, and cancellation-aware human-interaction waits. Provider, tool, token, and
+execution limits still apply.
 
 ---
 

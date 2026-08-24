@@ -194,7 +194,8 @@ AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 不
 - Web / TUI / Server 的消息同步以 authoritative `session.updated` 对齐；流式 `output_block` 和最终持久化 message 不长期分叉
 - 三前端统一事件契约
 
-内置 scheduler presets：`sisyphus` · `prometheus` · `atlas` · `hephaestus` · `verifier`
+内置 Scheduler 模板：`direct` · `plan` · `coordinate` · `verify` · `autoresearch`。它们由同一
+`SchedulerEngine` 执行；长任务进度通过持久化 step、tool result 和 runtime telemetry 展示。
 
 ---
 

@@ -1,6 +1,6 @@
 use crate::agent_loop::{
     AgentLoop, AgentLoopError, AgentLoopObserver, AgentRunContext, CancellationFlag,
-    ExecutionBudget, ModelBackend, ToolBackend, NOOP_AGENT_LOOP_OBSERVER,
+    ExecutionBudget, InteractionClock, ModelBackend, ToolBackend, NOOP_AGENT_LOOP_OBSERVER,
 };
 use crate::blueprint::{
     CapabilityId, EvaluatorId, NodeId, NodeSpec, ParallelFailureMode, ResultSource, SchedulerGraph,
@@ -128,6 +128,7 @@ pub struct SchedulerEngine<'a> {
     harness_policy: &'a str,
     events: &'a dyn EventSink,
     agent_observer: &'a dyn AgentLoopObserver,
+    interaction_clock: InteractionClock,
 }
 
 impl<'a> SchedulerEngine<'a> {
@@ -149,6 +150,7 @@ impl<'a> SchedulerEngine<'a> {
             harness_policy,
             events: &NOOP_EVENT_SINK,
             agent_observer: &NOOP_AGENT_LOOP_OBSERVER,
+            interaction_clock: InteractionClock::default(),
         }
     }
 
@@ -159,6 +161,11 @@ impl<'a> SchedulerEngine<'a> {
 
     pub fn with_agent_observer(mut self, observer: &'a dyn AgentLoopObserver) -> Self {
         self.agent_observer = observer;
+        self
+    }
+
+    pub fn with_interaction_clock(mut self, interaction_clock: InteractionClock) -> Self {
+        self.interaction_clock = interaction_clock;
         self
     }
 
@@ -173,7 +180,8 @@ impl<'a> SchedulerEngine<'a> {
             entry: specification.entry.clone(),
             nodes: specification.nodes.clone(),
         };
-        let budget = ExecutionBudget::new(specification.limits.clone());
+        let budget =
+            ExecutionBudget::new(specification.limits.clone(), self.interaction_clock.clone());
         let prompt_authority = PromptAuthority::new(
             blueprint.fingerprint(),
             self.catalog
@@ -562,14 +570,10 @@ impl<'a> SchedulerEngine<'a> {
         if is_model_judge {
             budget.reserve_model_call()?;
         }
-        let remaining = budget.remaining()?;
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => return Err(AgentLoopError::Cancelled.into()),
-            result = tokio::time::timeout(
-                remaining,
-                self.evaluator.evaluate(evaluator, candidate),
-            ) => result
-                .map_err(|_| AgentLoopError::DeadlineExceeded)?
+            _ = budget.deadline() => return Err(AgentLoopError::DeadlineExceeded.into()),
+            result = self.evaluator.evaluate(evaluator, candidate) => result
                 .map_err(|message| EngineError::Evaluator {
                     evaluator: evaluator.as_str().to_string(),
                     message,

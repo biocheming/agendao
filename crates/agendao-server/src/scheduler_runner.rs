@@ -1,8 +1,8 @@
 use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_orchestrator::agent_loop::{
-    AgentLoopObserver, AgentObservationContext, CancellationFlag, ModelRoute, ProviderModelBackend,
-    ToolCall, ToolExecution,
+    AgentLoopObserver, AgentObservationContext, AssistantTurn, CancellationFlag, InteractionClock,
+    ModelRoute, ProviderModelBackend, ToolCall, ToolExecution,
 };
 use agendao_orchestrator::blueprint::{
     AgentId, BlueprintName, CapabilityId, EvaluatorId, ExecutionLimits, ModelCapability, NodeSpec,
@@ -21,7 +21,7 @@ use agendao_orchestrator::selector::{
     LockedSelection, SchedulerChoice, SelectionRequest, SelectionSource, TaskShape,
 };
 use agendao_orchestrator::templates::TemplateParameters;
-use agendao_output_blocks::{OutputBlock, ToolBlock};
+use agendao_output_blocks::{OutputBlock, ReasoningBlock, StatusBlock, ToolBlock};
 use agendao_provider::{Message, Provider, ToolDefinition};
 use agendao_server_core::runtime_events::{ServerEvent, ToolCallPhase};
 use agendao_skill::{infer_toolsets_from_tools, SkillConditions, SkillRuntimeResolver};
@@ -454,21 +454,98 @@ impl AgentLoopObserver for SchedulerAgentObserver {
     async fn step_started(
         &self,
         context: &AgentObservationContext<'_>,
-        _step: u32,
+        step: u32,
     ) -> Result<(), String> {
-        let mut tallies = self
-            .step_tallies
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        tallies.begin(context.node_path);
+        {
+            let mut tallies = self
+                .step_tallies
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tallies.begin(context.node_path);
+        }
+        let step_id = scheduler_step_id(context.node_path, step);
+        {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            let assistant = session
+                .get_message_mut(&self.assistant_message_id)
+                .ok_or_else(|| {
+                    format!(
+                        "scheduler assistant message '{}' is unavailable",
+                        self.assistant_message_id
+                    )
+                })?;
+            if !assistant.parts.iter().any(|part| {
+                matches!(
+                    &part.part_type,
+                    agendao_session::PartType::StepStart { id, .. } if id == &step_id
+                )
+            }) {
+                assistant.parts.push(agendao_session::MessagePart {
+                    id: format!("prt_{}", uuid::Uuid::new_v4()),
+                    part_type: agendao_session::PartType::StepStart {
+                        id: step_id,
+                        name: format!(
+                            "{} · {}/{}",
+                            context.agent.as_str(),
+                            step,
+                            context.max_steps
+                        ),
+                    },
+                    created_at: chrono::Utc::now(),
+                    message_id: Some(self.assistant_message_id.clone()),
+                });
+            }
+            assistant.metadata.insert(
+                "scheduler_current_step".to_string(),
+                serde_json::json!(step),
+            );
+            assistant.metadata.insert(
+                "scheduler_max_steps".to_string(),
+                serde_json::json!(context.max_steps),
+            );
+        }
+        let status = OutputBlock::Status(StatusBlock::normal(format!(
+            "Scheduler step {step}/{} started · {}",
+            context.max_steps,
+            context.agent.as_str()
+        )));
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(self.session_id.clone(), &status, None, None),
+        );
+        self.state
+            .runtime_telemetry
+            .update_scheduler_node(
+                &self.session_id,
+                context.node_path,
+                agendao_server_core::runtime_control::ExecutionPatch {
+                    recent_event: agendao_server_core::runtime_control::FieldUpdate::Set(format!(
+                        "Agent step {step}/{} started",
+                        context.max_steps
+                    )),
+                    metadata: agendao_server_core::runtime_control::FieldUpdate::Set(
+                        serde_json::json!({
+                            "path": context.node_path,
+                            "agent": context.agent.as_str(),
+                            "step": step,
+                            "max_steps": context.max_steps,
+                        }),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await;
         Ok(())
     }
 
     async fn step_finished(
         &self,
         context: &AgentObservationContext<'_>,
-        _step: u32,
-        _usage: &Usage,
+        step: u32,
+        usage: &Usage,
     ) -> Result<(), String> {
         let tally = {
             let mut tallies = self
@@ -477,6 +554,62 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             tallies.finish(context.node_path)
         };
+        let output = format!(
+            "step {step}/{} complete; tools: {}; errors: {}; model calls: {}; tokens: {}",
+            context.max_steps,
+            tally.success_count + tally.error_count,
+            tally.error_count,
+            usage.model_calls,
+            usage.total_tokens()
+        );
+        let step_id = scheduler_step_id(context.node_path, step);
+        {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            let assistant = session
+                .get_message_mut(&self.assistant_message_id)
+                .ok_or_else(|| {
+                    format!(
+                        "scheduler assistant message '{}' is unavailable",
+                        self.assistant_message_id
+                    )
+                })?;
+            if !assistant.parts.iter().any(|part| {
+                matches!(
+                    &part.part_type,
+                    agendao_session::PartType::StepFinish { id, .. } if id == &step_id
+                )
+            }) {
+                assistant.parts.push(agendao_session::MessagePart {
+                    id: format!("prt_{}", uuid::Uuid::new_v4()),
+                    part_type: agendao_session::PartType::StepFinish {
+                        id: step_id,
+                        output: Some(output.clone()),
+                    },
+                    created_at: chrono::Utc::now(),
+                    message_id: Some(self.assistant_message_id.clone()),
+                });
+            }
+            assistant.metadata.insert(
+                "scheduler_last_completed_step".to_string(),
+                serde_json::json!(step),
+            );
+        }
+        let status = OutputBlock::Status(StatusBlock::success(format!(
+            "Scheduler step {step}/{} complete",
+            context.max_steps
+        )));
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(self.session_id.clone(), &status, None, None),
+        );
+        crate::routes::session::session_crud::persist_session_if_enabled(
+            &self.state,
+            &self.session_id,
+        )
+        .await;
         if tally.tools_used.is_empty() {
             return Ok(());
         }
@@ -656,6 +789,61 @@ impl AgentLoopObserver for SchedulerAgentObserver {
         .await;
         Ok(inputs)
     }
+
+    async fn assistant_turn(
+        &self,
+        _context: &AgentObservationContext<'_>,
+        turn: &AssistantTurn,
+    ) -> Result<(), String> {
+        // 收束 reasoning 到 assistant message 的唯一 reasoning part
+        //（水律·回流记账：reasoning 是 message 语义的一部分，不是仅展示的
+        //  旁路；add_reasoning 追加到既有 part，跨 step 连续累积）。
+        if let Some(reasoning) = turn.reasoning.as_deref().filter(|s| !s.is_empty()) {
+            let mut sessions = self.state.sessions.lock().await;
+            let session = sessions
+                .get_mut(&self.session_id)
+                .ok_or_else(|| format!("scheduler session '{}' is unavailable", self.session_id))?;
+            let assistant = session
+                .get_message_mut(&self.assistant_message_id)
+                .ok_or_else(|| {
+                    format!(
+                        "scheduler assistant message '{}' is unavailable",
+                        self.assistant_message_id
+                    )
+                })?;
+            assistant.add_reasoning(reasoning);
+        }
+        Ok(())
+    }
+
+    async fn reasoning_delta(
+        &self,
+        _context: &AgentObservationContext<'_>,
+        _id: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let block = OutputBlock::Reasoning(ReasoningBlock::delta(text));
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(
+                self.session_id.clone(),
+                &block,
+                Some(agendao_types::ASSISTANT_REASONING_MAIN_PART_KEY),
+                Some(agendao_session::prompt::assistant_reasoning_live_identity(
+                    &self.assistant_message_id,
+                    agendao_types::LivePartPhase::Append,
+                )),
+            ),
+        );
+        Ok(())
+    }
+}
+
+fn scheduler_step_id(node_path: &str, step: u32) -> String {
+    format!("scheduler:{node_path}:{step}")
 }
 
 type SchedulerSkillWriteMetadata<'a> = (
@@ -787,6 +975,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         )
         .await?,
     );
+    let interaction_clock = InteractionClock::default();
     let tool_backend = SessionSchedulerToolExecutor::new(
         input.state.clone(),
         SessionSchedulerToolExecutorInput {
@@ -810,6 +999,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
                     )
                 })
                 .collect(),
+            interaction_clock: interaction_clock.clone(),
         },
     );
     let evaluator_ledger =
@@ -892,6 +1082,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     )
     .with_events(&event_sink)
     .with_agent_observer(&agent_observer)
+    .with_interaction_clock(interaction_clock)
     .run(
         &blueprint,
         RunRequest {
@@ -2437,6 +2628,7 @@ mod tests {
         let context = AgentObservationContext {
             node_path: "execute",
             agent: &agent,
+            max_steps: 16,
         };
         let call = ToolCall {
             id: "tool-call-1".to_string(),
@@ -3010,5 +3202,112 @@ mod tests {
                 BTreeSet::from([ToolId::from("write")]),
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_assistant_turn_persists_reasoning_part() {
+        crate::isolate_test_config_home();
+        let workspace = tempdir().expect("workspace");
+        let config_store = Arc::new(
+            ConfigStore::from_project_dir(workspace.path()).expect("workspace config store"),
+        );
+        let user_state = Arc::new(UserStateAuthority::from_config_store(&config_store));
+        let resolved_context = Arc::new(ResolvedWorkspaceContextAuthority::new(
+            config_store.clone(),
+            user_state.clone(),
+        ));
+        let database = Database::in_memory().await.expect("in-memory database");
+        let repository = Arc::new(MemoryRepository::new(database.pool().clone()));
+        let mut state = ServerState::new();
+        state.workspace_root = workspace.path().to_path_buf();
+        state.config_store = config_store;
+        state.user_state = user_state.clone();
+        state.resolved_context_authority = resolved_context.clone();
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(
+            MemoryAuthority::new(user_state, resolved_context).with_repository(repository),
+        )));
+        let state = Arc::new(state);
+        let (session_id, assistant_message_id) = {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.create(
+                "scheduler-reasoning-project",
+                workspace.path().to_string_lossy(),
+            );
+            let session_id = session.id.clone();
+            let assistant_message_id = sessions
+                .get_mut(&session_id)
+                .expect("created scheduler session")
+                .add_assistant_message()
+                .id
+                .clone();
+            (session_id, assistant_message_id)
+        };
+        let observer = SchedulerAgentObserver {
+            state: state.clone(),
+            session_id: session_id.clone(),
+            assistant_message_id: assistant_message_id.clone(),
+            tool_call_count: AtomicU64::new(0),
+            error_tool_call_count: AtomicU64::new(0),
+            skill_write_count: AtomicU64::new(0),
+            step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+            run_cancellation: CancellationToken::new(),
+            auto_replan: false,
+        };
+        let agent = AgentId::from("worker");
+        let context = AgentObservationContext {
+            node_path: "execute",
+            agent: &agent,
+            max_steps: 16,
+        };
+        let turn = AssistantTurn {
+            content: Some("final answer".to_string()),
+            reasoning: Some("step-by-step reasoning".to_string()),
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+            finish_reason: Some("stop".to_string()),
+            reasoning_continuation: None,
+        };
+        observer
+            .assistant_turn(&context, &turn)
+            .await
+            .expect("assistant_turn persists reasoning");
+        observer
+            .step_started(&context, 1)
+            .await
+            .expect("step start is persisted");
+        observer
+            .step_finished(&context, 1, &Usage::default())
+            .await
+            .expect("step finish is persisted");
+
+        let sessions = state.sessions.lock().await;
+        let assistant = sessions
+            .get(&session_id)
+            .expect("session exists")
+            .get_message(&assistant_message_id)
+            .expect("assistant message exists");
+        let reasoning_parts = assistant
+            .parts
+            .iter()
+            .filter(|part| matches!(part.part_type, agendao_session::PartType::Reasoning { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(reasoning_parts.len(), 1, "reasoning persisted as one part");
+        match &reasoning_parts[0].part_type {
+            agendao_session::PartType::Reasoning { text } => {
+                assert_eq!(text, "step-by-step reasoning");
+            }
+            other => panic!("expected Reasoning part, got {other:?}"),
+        }
+        assert!(assistant.parts.iter().any(|part| matches!(
+            &part.part_type,
+            agendao_session::PartType::StepStart { id, name }
+                if id == "scheduler:execute:1" && name == "worker · 1/16"
+        )));
+        assert!(assistant.parts.iter().any(|part| matches!(
+            &part.part_type,
+            agendao_session::PartType::StepFinish { id, output }
+                if id == "scheduler:execute:1"
+                    && output.as_deref().is_some_and(|value| value.contains("step 1/16 complete"))
+        )));
     }
 }

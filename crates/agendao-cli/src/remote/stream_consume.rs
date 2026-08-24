@@ -127,46 +127,9 @@ pub(crate) fn remote_emit_transcript(
     io::stdout().flush()
 }
 
-/// How long a non-interactive run waits for an interactive answer
-/// (permission/question) before giving up. Matches the server-side
-/// permission timeout.
-fn user_wait_timeout() -> std::time::Duration {
-    std::env::var("AGENDAO_CLI_USER_WAIT_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or(std::time::Duration::from_secs(300))
-}
-
 #[derive(Default)]
 struct UserWaitState {
-    /// `Some` while a permission/question is pending and unanswered.
-    waiting_since: Option<std::time::Instant>,
-}
-
-impl UserWaitState {
-    fn wait_expired(&self) -> bool {
-        self.waiting_since
-            .is_some_and(|since| since.elapsed() >= user_wait_timeout())
-    }
-
-    fn remaining(&self) -> Option<std::time::Duration> {
-        self.waiting_since
-            .map(|since| user_wait_timeout().saturating_sub(since.elapsed()))
-    }
-
-    fn bail_if_expired(&self) -> anyhow::Result<()> {
-        if self.wait_expired() {
-            anyhow::bail!(
-                "timed out waiting for an interactive answer. \
-                 The run needed a permission or question answered outside this \
-                 non-interactive session; open the Web UI or `agendao tui` to \
-                 answer it and run the prompt again"
-            );
-        }
-        Ok(())
-    }
+    waiting: bool,
 }
 
 pub(super) async fn consume_remote_events(
@@ -196,22 +159,10 @@ pub(super) async fn consume_remote_events(
     };
 
     loop {
-        let chunk = match user_wait.remaining() {
-            Some(remaining) => {
-                match tokio::time::timeout(remaining, StreamExt::next(&mut stream)).await {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
-                        user_wait.bail_if_expired()?;
-                        continue;
-                    }
-                }
-            }
-            None => StreamExt::next(&mut stream).await,
-        };
+        let chunk = StreamExt::next(&mut stream).await;
         let Some(chunk) = chunk else {
             break;
         };
-        user_wait.bail_if_expired()?;
         let chunk = chunk?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -288,20 +239,25 @@ pub(crate) async fn consume_local_events(
     let mut saw_active = false;
     let mut first_event = true;
     let mut last_run_status = None;
+    let mut waiting_for_user = false;
     loop {
         let timeout = if first_event {
             std::time::Duration::from_secs(180)
         } else {
             std::time::Duration::from_secs(300)
         };
-        let bus = tokio::time::timeout(timeout, events.recv())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "no frontend activity for {}s; provider may be stalled",
-                    timeout.as_secs()
-                )
-            })?;
+        let bus = if waiting_for_user {
+            events.recv().await
+        } else {
+            tokio::time::timeout(timeout, events.recv())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "no frontend activity for {}s; provider may be stalled",
+                        timeout.as_secs()
+                    )
+                })?
+        };
         let bus = match bus {
             Ok(event) => event,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -362,10 +318,15 @@ pub(crate) async fn consume_local_events(
                 eprintln!("\nError: {error}");
             }
             FrontendEvent::PermissionUpsert { .. } => {
+                waiting_for_user = true;
                 eprintln!("\n[status] waiting for a permission decision; open the Web UI or `agendao tui`");
             }
             FrontendEvent::QuestionUpsert { .. } => {
+                waiting_for_user = true;
                 eprintln!("\n[status] waiting for an answer; open the Web UI or `agendao tui`");
+            }
+            FrontendEvent::PermissionRemoved { .. } | FrontendEvent::QuestionRemoved { .. } => {
+                waiting_for_user = false;
             }
             FrontendEvent::SessionRuntimeReplaced { runtime, .. } => {
                 if runtime.run_status == agendao_api::SessionRunStatusKind::Idle && saw_active {
@@ -455,35 +416,29 @@ async fn dispatch_remote_event(
             eprintln!("\nError: {error}");
         }
         FrontendEvent::PermissionUpsert { session_id, .. } => {
-            if user_wait.waiting_since.is_none() {
+            if !user_wait.waiting {
                 eprintln!(
                     "\nSession {session_id} is waiting for a permission decision. \
                      This non-interactive run cannot answer it; open the Web UI or run \
                      `agendao tui -s {session_id}` to approve or deny. \
-                     Waiting up to {}s before giving up…",
-                    user_wait_timeout().as_secs()
+                     Waiting without a deadline…"
                 );
             }
-            user_wait
-                .waiting_since
-                .get_or_insert(std::time::Instant::now());
+            user_wait.waiting = true;
         }
         FrontendEvent::QuestionUpsert { session_id, .. } => {
-            if user_wait.waiting_since.is_none() {
+            if !user_wait.waiting {
                 eprintln!(
                     "\nSession {session_id} is waiting for an answer to a question. \
                      This non-interactive run cannot answer it; open the Web UI or run \
                      `agendao tui -s {session_id}` to respond. \
-                     Waiting up to {}s before giving up…",
-                    user_wait_timeout().as_secs()
+                     Waiting without a deadline…"
                 );
             }
-            user_wait
-                .waiting_since
-                .get_or_insert(std::time::Instant::now());
+            user_wait.waiting = true;
         }
         FrontendEvent::PermissionRemoved { .. } | FrontendEvent::QuestionRemoved { .. } => {
-            user_wait.waiting_since = None;
+            user_wait.waiting = false;
         }
         FrontendEvent::SessionRuntimeReplaced { runtime, .. } => {
             if runtime.run_status == agendao_api::SessionRunStatusKind::Idle {

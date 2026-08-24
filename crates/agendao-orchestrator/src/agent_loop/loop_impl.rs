@@ -4,7 +4,7 @@ use crate::context::{
     build_prompt_surface, HandoffPacket, NodeResult, PromptAuthority, PromptSurfaceInput, Usage,
 };
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -125,6 +125,7 @@ pub trait AgentLoopObserver: Send + Sync {
 pub struct AgentObservationContext<'a> {
     pub node_path: &'a str,
     pub agent: &'a crate::blueprint::AgentId,
+    pub max_steps: u32,
 }
 
 pub(crate) struct NoopAgentLoopObserver;
@@ -166,24 +167,107 @@ impl CancellationFlag {
     }
 }
 
+#[derive(Debug, Default)]
+struct InteractionClockState {
+    pause_depth: u32,
+    paused_at: Option<Instant>,
+    paused_total: Duration,
+}
+
+/// Shared clock used to exclude explicit human-interaction waits from the
+/// scheduler's active wall-time budget.
+#[derive(Debug, Clone, Default)]
+pub struct InteractionClock {
+    state: Arc<Mutex<InteractionClockState>>,
+    changed: Arc<Notify>,
+    version: Arc<AtomicU64>,
+}
+
+impl InteractionClock {
+    pub fn pause(&self) -> InteractionPauseGuard {
+        let mut state = self.state.lock().expect("interaction clock mutex poisoned");
+        if state.pause_depth == 0 {
+            state.paused_at = Some(Instant::now());
+        }
+        state.pause_depth = state.pause_depth.saturating_add(1);
+        drop(state);
+        self.version.fetch_add(1, Ordering::AcqRel);
+        self.changed.notify_waiters();
+        InteractionPauseGuard {
+            clock: Some(self.clone()),
+        }
+    }
+
+    fn paused_duration(&self) -> Duration {
+        let state = self.state.lock().expect("interaction clock mutex poisoned");
+        state.paused_total
+            + state
+                .paused_at
+                .map(|paused_at| paused_at.elapsed())
+                .unwrap_or_default()
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state
+            .lock()
+            .expect("interaction clock mutex poisoned")
+            .pause_depth
+            > 0
+    }
+}
+
+#[derive(Debug)]
+pub struct InteractionPauseGuard {
+    clock: Option<InteractionClock>,
+}
+
+impl Drop for InteractionPauseGuard {
+    fn drop(&mut self) {
+        let Some(clock) = self.clock.take() else {
+            return;
+        };
+        let mut state = clock
+            .state
+            .lock()
+            .expect("interaction clock mutex poisoned");
+        state.pause_depth = state.pause_depth.saturating_sub(1);
+        if state.pause_depth == 0 {
+            if let Some(paused_at) = state.paused_at.take() {
+                state.paused_total += paused_at.elapsed();
+            }
+        }
+        drop(state);
+        clock.version.fetch_add(1, Ordering::AcqRel);
+        clock.changed.notify_waiters();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionBudget {
     limits: ExecutionLimits,
     started: Instant,
     usage: Arc<Mutex<Usage>>,
+    interaction_clock: InteractionClock,
 }
 
 impl ExecutionBudget {
-    pub(crate) fn new(limits: ExecutionLimits) -> Self {
+    pub(crate) fn new(limits: ExecutionLimits, interaction_clock: InteractionClock) -> Self {
         Self {
             limits,
             started: Instant::now(),
             usage: Arc::new(Mutex::new(Usage::default())),
+            interaction_clock,
         }
     }
 
+    fn active_elapsed(&self) -> Duration {
+        self.started
+            .elapsed()
+            .saturating_sub(self.interaction_clock.paused_duration())
+    }
+
     pub(crate) fn check_time(&self) -> Result<(), AgentLoopError> {
-        if self.started.elapsed() >= Duration::from_millis(self.limits.max_wall_time_ms) {
+        if self.active_elapsed() >= Duration::from_millis(self.limits.max_wall_time_ms) {
             return Err(AgentLoopError::DeadlineExceeded);
         }
         Ok(())
@@ -191,7 +275,7 @@ impl ExecutionBudget {
 
     pub(crate) fn remaining(&self) -> Result<Duration, AgentLoopError> {
         Duration::from_millis(self.limits.max_wall_time_ms)
-            .checked_sub(self.started.elapsed())
+            .checked_sub(self.active_elapsed())
             .filter(|remaining| !remaining.is_zero())
             .ok_or(AgentLoopError::DeadlineExceeded)
     }
@@ -243,6 +327,33 @@ impl ExecutionBudget {
         self.usage.lock().expect("budget mutex poisoned").clone()
     }
 
+    pub(crate) async fn deadline(&self) {
+        loop {
+            if self.check_time().is_err() {
+                return;
+            }
+            let version = self.interaction_clock.version.load(Ordering::Acquire);
+            let changed = self.interaction_clock.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.interaction_clock.version.load(Ordering::Acquire) != version {
+                continue;
+            }
+            if self.interaction_clock.is_paused() {
+                changed.await;
+                continue;
+            }
+            let remaining = match self.remaining() {
+                Ok(remaining) => remaining,
+                Err(_) => return,
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(remaining) => return,
+                _ = changed => {}
+            }
+        }
+    }
+
     fn update<T>(
         &self,
         update: impl FnOnce(&mut Usage) -> Result<T, AgentLoopError>,
@@ -264,7 +375,7 @@ pub enum AgentLoopError {
     ToolCallBudgetExceeded,
     #[error("token budget exceeded")]
     TokenBudgetExceeded,
-    #[error("agent exhausted its {steps} steps without a final response")]
+    #[error("agent reached its {steps}-step limit without a final response; completed step history and tool results were preserved, and the session can continue in a new turn")]
     StepLimitExceeded { steps: u32 },
     #[error("model invocation failed: {0}")]
     Model(#[source] ModelBackendError),
@@ -313,6 +424,7 @@ impl<'a> AgentLoop<'a> {
         let observation = AgentObservationContext {
             node_path: context.progress_summary,
             agent: &node.agent,
+            max_steps: node.max_steps,
         };
         let conversation_seed: Arc<[agendao_provider::Message]> = conversation_seed.into();
         let mut conversation = Arc::new(Vec::new());
@@ -369,12 +481,9 @@ impl<'a> AgentLoop<'a> {
             };
             let turn = tokio::select! {
                 _ = context.cancellation.cancelled() => return Err(AgentLoopError::Cancelled),
-                result = tokio::time::timeout(
-                    context.budget.remaining()?,
-                    self.model.invoke(model_request, &observation, context.observer),
-                ) => result
-                    .map_err(|_| AgentLoopError::DeadlineExceeded)?
-                    .map_err(AgentLoopError::Model)?,
+                _ = context.budget.deadline() => return Err(AgentLoopError::DeadlineExceeded),
+                result = self.model.invoke(model_request, &observation, context.observer) =>
+                    result.map_err(AgentLoopError::Model)?,
             };
             check_cancelled(context.cancellation)?;
             context.budget.record_tokens(&turn.usage)?;
@@ -438,7 +547,6 @@ impl<'a> AgentLoop<'a> {
                     .tool_started(&observation, call)
                     .await
                     .map_err(AgentLoopError::Observer)?;
-                let remaining = context.budget.remaining()?;
                 let execution = self.tools.execute(&observation, call);
                 tokio::pin!(execution);
                 let output = tokio::select! {
@@ -455,9 +563,8 @@ impl<'a> AgentLoop<'a> {
                         ).await;
                         return Err(AgentLoopError::Cancelled);
                     }
-                    result = tokio::time::timeout(remaining, &mut execution) => result
-                        .map_err(|_| AgentLoopError::DeadlineExceeded)?
-                        .map_err(|message| AgentLoopError::Tool {
+                    _ = context.budget.deadline() => return Err(AgentLoopError::DeadlineExceeded),
+                    result = &mut execution => result.map_err(|message| AgentLoopError::Tool {
                             tool: call.tool.as_str().to_string(),
                             message,
                         })?,
@@ -493,5 +600,52 @@ fn check_cancelled(cancellation: &CancellationFlag) -> Result<(), AgentLoopError
         Err(AgentLoopError::Cancelled)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn short_limits(max_wall_time_ms: u64) -> ExecutionLimits {
+        ExecutionLimits {
+            max_model_calls: 4,
+            max_tool_calls: 4,
+            max_total_tokens: 10_000,
+            max_wall_time_ms,
+            max_parallelism: 1,
+            max_graph_nodes: 4,
+            max_graph_depth: 4,
+            max_loop_iterations: 2,
+            max_agent_steps: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn interaction_pause_does_not_consume_active_wall_time() {
+        let clock = InteractionClock::default();
+        let budget = ExecutionBudget::new(short_limits(30), clock.clone());
+        let pause = clock.pause();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(budget.check_time().is_ok());
+        drop(pause);
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        assert_eq!(budget.check_time(), Err(AgentLoopError::DeadlineExceeded));
+    }
+
+    #[tokio::test]
+    async fn deadline_future_wakes_after_interaction_resumes() {
+        let clock = InteractionClock::default();
+        let budget = ExecutionBudget::new(short_limits(20), clock.clone());
+        let pause = clock.pause();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(45), budget.deadline())
+                .await
+                .is_err()
+        );
+        drop(pause);
+        tokio::time::timeout(Duration::from_millis(45), budget.deadline())
+            .await
+            .expect("active deadline should resume after the interaction wait");
     }
 }

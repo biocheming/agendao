@@ -1735,7 +1735,28 @@ async fn session_prompt_inner(
                         assistant
                             .metadata
                             .insert("error".to_string(), serde_json::json!(&error));
-                        assistant.add_text(format!("Scheduler error: {error}"));
+                        if error.contains("step limit") {
+                            assistant
+                                .metadata
+                                .insert("scheduler_resumable".to_string(), serde_json::json!(true));
+                            let completed = assistant
+                                .metadata
+                                .get("scheduler_last_completed_step")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
+                            let maximum = assistant
+                                .metadata
+                                .get("scheduler_max_steps")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(completed);
+                            assistant.add_text(format!(
+                                "Scheduler paused after step {completed}/{maximum}: {error}\n\n\
+                                 The completed steps and tool results above are preserved. \
+                                 Send `continue` to start a new scheduler turn from this session's saved context."
+                            ));
+                        } else {
+                            assistant.add_text(format!("Scheduler error: {error}"));
+                        }
                     }
                 }
             }

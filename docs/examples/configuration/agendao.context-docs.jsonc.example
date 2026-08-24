@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agendao.dev/schemas/agendao_config.schema.json",
+  "docs": {
+    "contextDocsRegistryPath": "./docs/examples/context_docs/context-docs-registry.example.json"
+  }
+}

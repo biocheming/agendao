@@ -1,11 +1,11 @@
 # Context Docs Examples
 
-Files in this directory are the formal Phase 1 examples for the `context_docs` configuration path and registry layout.
+Files in this directory are the focused examples for the `context_docs` registry layout. General AgenDao configuration examples live in `../configuration/`.
 
 ## Files
 
-- `agendao.json.example`: minimal JSON config example
-- `agendao.jsonc.example`: minimal JSONC config example
+- `agendao.json.example`: focused JSON path-reference example
+- `agendao.jsonc.example`: focused JSONC path-reference example
 - `context-docs-registry.schema.json`: registry schema
 - `context-docs-registry.example.json`: registry example
 - `context-docs-index.schema.json`: docs index schema

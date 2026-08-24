@@ -335,7 +335,8 @@ AgenDao 遵循严格的分层架构，每层有明确的职责边界：
 
 - [安装指南](installation) -- 系统要求、构建安装、环境配置
 - [认证](auth) -- API 密钥、OAuth、Provider 注册表、模型目录
-- [配置参考](configuration) -- `agendao.jsonc` 完整配置参考
+- [配置指南](configuration) -- 从最小配置、Provider 到 Permission 的当前 schema 指南
+- [配置示例](examples/configuration/README) -- 可复制的最小 Provider、Permission、Ollama 和 context docs 示例
 - [Scheduler](scheduler) -- 唯一 Blueprint、selector、validator、engine 与 AgentLoop
 - [Scheduler 示例](examples/scheduler/README) -- 当前 inline Blueprint 示例
 - [上下文文档](examples/context_docs/README) -- `context_docs` schema 和示例

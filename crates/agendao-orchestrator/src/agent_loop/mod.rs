@@ -4,8 +4,8 @@ mod provider;
 
 pub use conversation::{AssistantTurn, ConversationItem, ModelRequest, ToolCall, ToolExecution};
 pub use loop_impl::{
-    AgentLoopError, AgentLoopObserver, AgentObservationContext, CancellationFlag, ModelBackend,
-    ModelBackendError, ToolBackend,
+    AgentLoopError, AgentLoopObserver, AgentObservationContext, CancellationFlag, InteractionClock,
+    ModelBackend, ModelBackendError, ToolBackend,
 };
 pub use provider::{ModelRoute, ProviderModelBackend};
 

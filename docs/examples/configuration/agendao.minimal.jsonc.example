@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agendao.dev/schemas/agendao_config.schema.json",
+  "model": "my-provider/my-model",
+  "provider": {
+    "my-provider": {
+      "name": "My provider",
+      "base_url": "https://api.example.com/v1",
+      "npm": "@ai-sdk/openai-compatible",
+      "api_style": "openai-compatible",
+      "api_shape": "chat-completions",
+      "transport": "bearer",
+      "env": ["MY_PROVIDER_API_KEY"],
+      "models": {
+        "my-model": {
+          "model": "my-model",
+          "tool_call": true,
+          "reasoning": true
+        }
+      }
+    }
+  }
+}

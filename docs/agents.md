@@ -39,15 +39,15 @@ Blueprint 引用不存在的 agent，或请求 agent 未暴露的 skill/tool/mod
 |---|---|
 | `description` | catalog/UI 中的用途说明 |
 | `mode` | `primary`、`subagent` 或 `all` |
-| `model` / `modelPreference` | 模型选择约束 |
-| `systemPrompt` | agent 的稳定 system policy |
-| `temperature` / `topP` / `maxTokens` | 模型请求参数 |
-| `maxSteps` | 单个 leaf loop 的步数上限 |
-| `allowedTools` | agent 可见工具集合 |
+| `model` / `variant` | 模型与模型变体 |
+| `prompt` | agent 的稳定 system policy |
+| `temperature` / `top_p` / `max_tokens` | 模型请求参数 |
+| `steps` / `max_steps` | 单个 leaf loop 的步数上限 |
+| `tools` | agent 可见工具开关映射 |
 | `permission` | 该 agent 的权限规则 |
 | `hidden` | 是否从可选择 catalog 隐藏 |
 
-Agent 的 `maxSteps` 不能扩大 Blueprint 或 PolicyEnvelope 的硬预算。
+Agent 的 `max_steps` 不能扩大 Blueprint 或 PolicyEnvelope 的硬预算。
 
 ## Skill 组合
 
@@ -85,6 +85,32 @@ Agent Registry。用户显式持久化 Agent 仍使用唯一的 `agent` 配置�
 身份以 Blueprint 自身为准。所有三种形式最终都进入同一个 SchedulerEngine，不存在 direct prompt
 runtime。运行期间，已验证 Blueprint 连同真实来源 `user / heuristic / planner` 和临时 Agent manifest
 一起保存在 session lock 中。
+
+## 内置 Agent 怎么用
+
+内置 Agent 不需要写进 `~/.agendao/agendao.json`：
+
+```bash
+agendao tui
+agendao run "修复并测试这个问题" --agent build
+```
+
+API 请求可以写 `{ "agent": "build" }`。只指定 Agent 等价于 `direct` Scheduler 的 primary leaf；
+显式 Blueprint 则在每个 agent node 中声明 `agent`，不受顶层 Agent 覆盖。
+
+| Agent | 适合 | 默认边界 |
+|---|---|---|
+| `build` | 默认实现、修复、测试 | 主工具面，最多 100 step |
+| `general` | 通用任务 | 主工具面，最多 20 step |
+| `plan` | 分析和规划 | 不提供编辑工具，最多 50 step |
+| `deep-worker` | 多步实现和验证 | 主工具面，最多 100 step |
+| `explore` | 代码搜索和理解 | 只读工具，最多 30 step |
+| `architecture-advisor` | 架构分析和审查 | 只读工具，最多 24 step |
+| `docs-researcher` | 文档、GitHub、外部证据 | 研究工具面，最多 30 step |
+| `media-reader` | 已路由的 PDF、截图和图表 | 只读媒体内容，最多 12 step |
+
+实际运行还同时受 node `max_steps`、`runtimeBudget.scheduler_max_agent_steps`、模型/工具调用数、
+token 和活跃 wall-time 约束。
 
 ## 上下文边界
 
