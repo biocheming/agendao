@@ -346,6 +346,7 @@ pub async fn local_prompt(
             command: request.command,
             arguments: request.arguments,
             recovery: None,
+            auto_continuation_goal_generation: None,
         }),
     )
     .await

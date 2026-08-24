@@ -139,7 +139,9 @@ tool call。它不是“一个工具调用”，也不是一个 shell 命令。�
 
 每个 step 都会写入 assistant message 的 `step_start` / `step_finish` part，并同步显示
 `当前 step/最大步数`、Agent、工具数和错误数。达到上限时，已完成的 step 和 tool result 会保留；
-发送新 prompt（例如 `continue`）可从该 session 的 continuity context 开始下一轮。
+普通 prompt 可以手动发送新输入继续；若 Session 有 `/goal` 创建的 active TaskLedger，服务端会从
+保存的 `Next` 自动开启下一轮，不需要用户发送 `continue`。每轮仍保留自己的预算和完整 step
+可观察性，TaskLedger 负责跨轮推进，而不是把单轮上限无限放大。
 
 ## 事件与投影
 
@@ -154,9 +156,10 @@ iteration 和 evaluation；AgentLoop observer 另外发出并持久化 step star
 question 时预算暂停，等待没有固定 300 秒 deadline，但仍可由 session/run abort 取消。取消会清理
 waiter、pending 状态和 telemetry。
 
-“长任务稳定性”在这里指可观察的 step、可取消的人机等待、活跃时间预算和可续跑 session，不表示
-任务永远不会失败。provider/tool 错误、token/call 上限、活跃执行 deadline 和 validator 拒绝仍会
-结束本轮。
+“长任务稳定性”在这里指可观察的 step、可取消的人机等待、活跃时间预算和 Ledger 驱动的跨轮
+自动续跑，不表示单个 Scheduler 回合没有预算。provider/tool 错误、token/call 上限、活跃执行
+deadline 和 validator 拒绝可以结束本轮；只要 Ledger 仍为 active 且有 Next，`/goal` 会自动进入
+下一轮。permission/question 等待不消耗活跃 wall-time，也没有等待 deadline。
 
 ## 上下文缓存
 

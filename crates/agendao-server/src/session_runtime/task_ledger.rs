@@ -17,6 +17,7 @@ use crate::error::ApiError;
 use crate::ServerState;
 
 pub(crate) use agendao_types::task_ledger::TASK_LEDGER_METADATA_KEY;
+pub(crate) const TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY: &str = "task_ledger_auto_continuation";
 
 pub(crate) fn map_ledger_error(session_id: &str, error: TaskLedgerError) -> ApiError {
     match error {
@@ -253,6 +254,9 @@ pub(crate) async fn start_task_goal(
     } else {
         TaskLedgerCause::Created
     };
+    // A new goal generation owns a fresh continuation lifecycle. Never carry
+    // no-progress counters or a queued-boundary fingerprint across goals.
+    session.remove_metadata(TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY);
     commit_snapshot_in_memory(state, session_id, session, &ledger, cause)?;
     drop(sessions);
 
@@ -404,6 +408,17 @@ mod tests {
             Some(TaskLedgerActor::User)
         );
 
+        {
+            let mut sessions = state.sessions.lock().await;
+            sessions
+                .get_mut(&session_id)
+                .expect("session")
+                .insert_metadata(
+                    TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY,
+                    serde_json::json!({"goal_generation": 1, "stagnant_rounds": 2}),
+                );
+        }
+
         let replaced = start_task_goal(&state, &session_id, "run the full test suite")
             .await
             .unwrap();
@@ -413,6 +428,14 @@ mod tests {
             replaced.next.as_ref().map(|next| next.statement.as_str()),
             Some("run the full test suite")
         );
+        let sessions = state.sessions.lock().await;
+        assert!(sessions
+            .get(&session_id)
+            .expect("session")
+            .record()
+            .metadata
+            .get(TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY)
+            .is_none());
     }
 
     #[tokio::test]

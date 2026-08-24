@@ -857,10 +857,11 @@ agendao generate
 
 | 命令 | 说明 |
 |------|------|
-| `/goal <目标描述>` | 创建或替换当前 Session 的服务端 TaskLedger，并立即通过 `auto` Scheduler 开始执行 |
+| `/goal <目标描述>` | 创建或替换当前 Session 的服务端 TaskLedger，通过 `auto` Scheduler 开始执行，并在单轮预算结束后自动续跑到完成、等待用户、阻塞或中断 |
 
-用户只写自然语言，不需要 JSON、revision、actor 或时间戳。活动执行期间提交的新 Goal 会排队到当前
-回合结束后生效。完整语义见 [task-ledger.md](task-ledger.md)。
+用户只写自然语言，不需要 JSON、revision、actor、时间戳，也不需要在每轮后输入 `continue`。
+活动执行期间提交的新 Goal 或 follow-up 会排队并优先于服务端自动续跑。完整语义见
+[task-ledger.md](task-ledger.md)。
 
 ### 会话管理
 

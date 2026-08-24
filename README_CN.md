@@ -207,8 +207,9 @@ AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 不
 /goal 完成项目审查，运行构建和测试，并输出带证据的报告
 ```
 
-这会创建或替换服务端 TaskLedger，并继续使用 `auto` Scheduler 选择。用户不需要编写 JSON 或
-维护 revision；目标、Next、等待、中断和检查点都保存在 Session 权威状态中。详见
+这会创建或替换服务端 TaskLedger，并继续使用 `auto` Scheduler 选择。用户不需要编写 JSON、
+维护 revision，也不需要每轮手动输入 `continue`；只要 Ledger 仍为 active 且有 Next，服务端会
+自动开始下一个有界 Scheduler 回合。目标、Next、等待、中断和检查点都保存在 Session 权威状态中。详见
 [docs/task-ledger.md](docs/task-ledger.md)。
 
 ### `agendao`

@@ -30,8 +30,9 @@ For a persistent task, users can start the server-authoritative session ledger d
 /goal finish the project review, run the build and tests, and report evidence
 ```
 
-No JSON or revision bookkeeping is required. The goal continues through the normal automatic Scheduler selection;
-see [TaskLedger and `/goal`](docs/task-ledger.md).
+No JSON, revision bookkeeping, or manual `continue` is required. The server-authoritative Ledger automatically
+starts another bounded Scheduler turn while the goal remains active, and stops only for completion, user input,
+a concrete blocker, or interruption; see [TaskLedger and `/goal`](docs/task-ledger.md).
 
 So AgenDao is not about adding yet another "smarter agent" layer. It is about making the entire chain, from prompt input to the next prompt, obey the same governance model.
 

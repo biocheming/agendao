@@ -44,8 +44,31 @@ Ledger。模型只能读取服务端注入的紧凑投影，不能伪造 `model/
 如果当前仍有未解决的 permission/question，服务端不会偷偷丢弃它们；应先回答或中断当前交互，
 再切换目标。活动执行期间提交的 `/goal` 会和其他 follow-up 一样排队，在当前回合结束后生效。
 
-`/goal` 不会取消 Scheduler 的有界预算。若某一回合达到 step、token 或活跃 wall-time 上限，已完成
-步骤和 Ledger 都会保留；在同一 Session 输入 `continue` 即可从保存的 `Next` 开启下一回合。
+## 自动续跑
+
+`/goal` 的目标不是只运行一个 Scheduler 回合。每个回合仍有 step、token 和活跃 wall-time 预算，
+但这些只是单轮资源边界：达到边界后，服务端重新读取最新 TaskLedger，并在 `Goal` 仍为 `active`
+且存在 `Next` 时自动开始下一回合。用户不需要输入 `continue`。
+
+自动续跑始终使用 `auto` Scheduler。首轮可以来自用户显式选择的 Agent 或 Scheduler；跨轮之后由
+Ledger 权威状态决定继续推进还是进入验证型 Scheduler，以免 direct Agent 自称完成却没有当前 Goal
+generation 的可信检查点。
+
+续跑只在以下情况停止：
+
+- Ledger 已经 `completed`；
+- permission 或 question 正在 `awaiting_user`，此时无限等待用户回答，不另开回合；
+- Ledger 已经给出具体 `blocked_reason`；
+- 用户 abort/interrupt；
+- Ledger 没有 Goal 或没有可执行的 `Next`。
+
+用户在边界期间提交的 follow-up 或新 `/goal` 总是优先于服务端生成的续跑请求。自动续跑不会批准
+permission，也不会绕过 Agent/Scheduler 的 permission policy。
+
+这里没有“最多续跑 N 轮”的总任务上限。为防止 provider/model 不断重复同一回合造成无限空转，
+服务端只对“Goal generation、Status、Next、Open、Verified 都完全不变”的连续回合计数；连续 3 个
+自动回合没有任何权威 Ledger 进展时，才把任务标记为 `blocked`，写入明确原因并停止。任一真实
+Ledger 变化都会重置该计数，新 `/goal` 也会清除旧计数。
 
 ## 查看
 

@@ -166,6 +166,7 @@ pub(super) async fn execute_session_recovery(
             source_origin: Some(agendao_types::MessageSourceOrigin::System),
             source_surface: None,
             recovery: Some(recovery_context.clone()),
+            auto_continuation_goal_generation: None,
         }),
     )
     .await?;

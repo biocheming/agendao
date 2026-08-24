@@ -51,10 +51,23 @@ pub(super) async fn abort_session_execution(
     // Stop means stop for the whole session: prompts queued behind the
     // running turn are dropped instead of being auto-executed by a later run.
     let dropped_queued_prompts = super::prompt::drain_followup_prompts(state, session_id).await;
+    let cancelled_auto_continuation = {
+        let mut sessions = state.sessions.lock().await;
+        sessions.get_mut(session_id).is_some_and(|session| {
+            session
+                .remove_metadata(
+                    crate::session_runtime::task_ledger::TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY,
+                )
+                .is_some()
+        })
+    };
+    if cancelled_auto_continuation {
+        super::session_crud::persist_session_record_if_enabled(state, session_id).await;
+    }
 
-    // Pending permissions must resolve now: their waiting futures are about
-    // to be dropped, and their 300s timeout lives inside those futures —
-    // without this the popups would hang on every frontend until restart.
+    // Pending permissions have no deadline and must resolve explicitly on
+    // abort; otherwise their popups and waiter futures would remain live on
+    // every frontend until restart.
     let cancelled_permissions =
         crate::routes::permission::cancel_pending_permissions_for_session(state, session_id).await;
     // Questions are an independent interaction registry. Clear them once
@@ -83,6 +96,7 @@ pub(super) async fn abort_session_execution(
     let aborted = scheduler_running
         || prompt_running
         || dropped_queued_prompts > 0
+        || cancelled_auto_continuation
         || cancelled_permissions > 0
         || cancelled_questions > 0;
     if aborted {
@@ -98,6 +112,7 @@ pub(super) async fn abort_session_execution(
             "aborted": aborted,
             "target": "run",
             "dropped_queued_prompts": dropped_queued_prompts,
+            "cancelled_task_ledger_auto_continuation": cancelled_auto_continuation,
             "cancelled_pending_permissions": cancelled_permissions,
             "cancelled_pending_questions": cancelled_questions,
         })
@@ -106,6 +121,7 @@ pub(super) async fn abort_session_execution(
             "aborted": false,
             "target": serde_json::Value::Null,
             "dropped_queued_prompts": dropped_queued_prompts,
+            "cancelled_task_ledger_auto_continuation": cancelled_auto_continuation,
             "cancelled_pending_permissions": cancelled_permissions,
             "cancelled_pending_questions": cancelled_questions,
         })
