@@ -74,6 +74,27 @@ pub(super) fn parse(
         .map(|field| (normalize_field_key(&field.key), field))
         .collect::<HashMap<_, _>>();
     let tokens = tokenize(raw_arguments);
+
+    // A command with one text-shaped field should support the natural
+    // `/goal describe the outcome` form. Flag syntax remains available, but
+    // users do not have to write `/goal --goal "..."` merely to satisfy the
+    // structured command schema.
+    if fields.len() == 1
+        && !tokens.iter().any(|token| token.starts_with("--"))
+        && matches!(
+            fields[0].kind,
+            CommandArgumentKind::Text
+                | CommandArgumentKind::LongText
+                | CommandArgumentKind::CommandLine
+        )
+    {
+        values.insert(
+            normalize_field_key(&fields[0].key),
+            vec![raw_arguments.trim().to_string()],
+        );
+        return values;
+    }
+
     let mut index = 0;
     while index < tokens.len() {
         let token = &tokens[index];
@@ -159,4 +180,43 @@ pub(super) fn missing_required(
         })
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn goal_field() -> CommandArgumentField {
+        CommandArgumentField {
+            key: "goal".to_string(),
+            label: "Goal".to_string(),
+            required: true,
+            kind: CommandArgumentKind::LongText,
+            repeatable: false,
+            options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn single_long_text_field_accepts_plain_positional_text() {
+        let fields = vec![goal_field()];
+        let parsed = parse(Some("finish the parser and run all tests"), &fields);
+
+        assert_eq!(
+            parsed.get("goal"),
+            Some(&vec!["finish the parser and run all tests".to_string()])
+        );
+        assert!(missing_required(&fields, &parsed).is_empty());
+    }
+
+    #[test]
+    fn explicit_flag_form_still_works() {
+        let fields = vec![goal_field()];
+        let parsed = parse(Some("--goal \"finish the parser\""), &fields);
+
+        assert_eq!(
+            parsed.get("goal"),
+            Some(&vec!["finish the parser".to_string()])
+        );
+    }
 }

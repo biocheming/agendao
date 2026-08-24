@@ -95,7 +95,7 @@ dist/release/agendao-<version>-<target>.tar.gz
 本仓库使用日期版本。发布或本地版本推进时，优先使用脚本维护版本信息：
 
 ```bash
-./scripts/release-date.sh 2026-05-17
+./scripts/release-date.sh 2026-08-24
 ```
 
 该脚本会更新 workspace 版本并调用：
@@ -142,7 +142,7 @@ which agendao
 成功安装后输出类似：
 
 ```
-AgenDao 2026.5.17
+AgenDao 2026.8.24
 ```
 
 查看完整构建信息：
@@ -154,14 +154,14 @@ agendao info
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-AgenDao 2026.5.17
+AgenDao 2026.8.24
 
 Build Info:
   Compiler:   rustc 1.xx.x
   Profile:    release
   Target:     x86_64-unknown-linux-gnu
   Host:       x86_64-unknown-linux-gnu
-  Built at:   2026-05-17T...
+  Built at:   2026-08-24T...
 
 Paths:
   Home:       ~/.agendao
@@ -336,7 +336,7 @@ agendao uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 agendao upgrade
-agendao upgrade v2026.6.10          # 升级到指定版本
+agendao upgrade v2026.8.24          # 升级到指定版本
 agendao upgrade --method brew       # 显式指定包管理器方式
 ```
 

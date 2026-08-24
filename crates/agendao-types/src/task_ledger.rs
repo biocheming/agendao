@@ -128,6 +128,54 @@ impl SessionTaskLedger {
         *self = staged;
         Ok(self.revision)
     }
+
+    /// Start a user-owned goal as one atomic ledger revision.
+    ///
+    /// A replacement keeps append-only checkpoint history and session-level
+    /// core constraints, but advances the goal generation and removes stale
+    /// open/interaction state from the previous goal. Callers must ensure no
+    /// live run or unresolved interaction still owns the session boundary.
+    pub fn start_goal(
+        &mut self,
+        expected_revision: u64,
+        goal: TaskGoal,
+        next_statement: String,
+        now_ms: i64,
+    ) -> Result<u64, TaskLedgerError> {
+        if self.revision != expected_revision {
+            return Err(TaskLedgerError::RevisionConflict {
+                expected: expected_revision,
+                actual: self.revision,
+            });
+        }
+        validate_goal(&goal)?;
+        if !non_empty(&next_statement) {
+            return Err(TaskLedgerError::EmptyStatement);
+        }
+
+        let mut staged = self.clone();
+        staged.goal_generation = if staged.goal.is_some() {
+            staged.goal_generation.saturating_add(1).max(1)
+        } else {
+            1
+        };
+        staged.goal = Some(goal);
+        staged.open.clear();
+        staged.awaiting_interactions.clear();
+        staged.blocked_reason = None;
+        staged.uncovered_criteria.clear();
+        staged.next = Some(next_from_statement(
+            next_statement,
+            TaskLedgerActor::User,
+            now_ms,
+        ));
+        staged.status = TaskLedgerStatus::Active;
+        validate_snapshot(&staged)?;
+        staged.revision = self.revision + 1;
+        staged.updated_at = now_ms;
+        *self = staged;
+        Ok(self.revision)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -2192,6 +2240,58 @@ mod tests {
         assert_eq!(ledger.status, TaskLedgerStatus::Active);
         assert_eq!(ledger.goal_generation, 2);
         assert!(ledger.uncovered_criteria.is_empty());
+    }
+
+    #[test]
+    fn start_goal_creates_and_atomically_replaces_user_goal() {
+        let mut ledger = SessionTaskLedger::empty("ses_goal");
+        ledger
+            .start_goal(0, goal("first goal"), "first goal".to_string(), 1_000)
+            .unwrap();
+        ledger
+            .apply(
+                1,
+                TaskLedgerOp::OpenQuestion {
+                    question: "old question".to_string(),
+                    settled_by: "old check".to_string(),
+                },
+                2_000,
+            )
+            .unwrap();
+        ledger
+            .apply(
+                2,
+                TaskLedgerOp::SetStatus {
+                    status: TaskLedgerStatus::Blocked,
+                    awaiting: None,
+                    blocked_reason: Some("old blocker".to_string()),
+                },
+                3_000,
+            )
+            .unwrap();
+
+        ledger
+            .start_goal(
+                3,
+                goal("replacement goal"),
+                "replacement goal".to_string(),
+                4_000,
+            )
+            .unwrap();
+
+        assert_eq!(ledger.revision, 4);
+        assert_eq!(ledger.goal_generation, 2);
+        assert_eq!(
+            ledger.goal.as_ref().map(|goal| goal.statement.as_str()),
+            Some("replacement goal")
+        );
+        assert_eq!(
+            ledger.next.as_ref().map(|next| next.statement.as_str()),
+            Some("replacement goal")
+        );
+        assert_eq!(ledger.status, TaskLedgerStatus::Active);
+        assert!(ledger.open.is_empty());
+        assert!(ledger.blocked_reason.is_none());
     }
 
     #[test]

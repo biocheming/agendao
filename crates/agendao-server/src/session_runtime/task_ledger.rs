@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use agendao_types::task_ledger::{
-    SessionTaskLedger, TaskLedgerCause, TaskLedgerError, TaskLedgerOp,
+    SessionTaskLedger, TaskGoal, TaskLedgerActor, TaskLedgerCause, TaskLedgerError, TaskLedgerOp,
 };
 
 use crate::error::ApiError;
@@ -202,6 +202,65 @@ pub(crate) async fn apply_task_ledger_op(
         .ok_or_else(|| ApiError::InternalError("unguarded ledger write was cancelled".to_string()))
 }
 
+/// User-facing `/goal` authority. The command carries only plain text; actor,
+/// timestamps, revision handling, persistence and event publication remain
+/// server-owned implementation details.
+pub(crate) async fn start_task_goal(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    statement: &str,
+) -> Result<SessionTaskLedger, ApiError> {
+    let statement = statement.trim();
+    if statement.is_empty() {
+        return Err(ApiError::BadRequest(
+            "goal description must not be empty".to_string(),
+        ));
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut sessions = state.sessions.lock().await;
+    let session = sessions
+        .get_mut(session_id)
+        .ok_or_else(|| ApiError::SessionNotFound(session_id.to_string()))?;
+    let mut ledger = ledger_snapshot_from_record(
+        session_id,
+        session.record().metadata.get(TASK_LEDGER_METADATA_KEY),
+    );
+    if !ledger.awaiting_interactions.is_empty() {
+        return Err(ApiError::BadRequest(
+            "cannot replace the session goal while permission or question interactions are unresolved"
+                .to_string(),
+        ));
+    }
+    let expected_revision = ledger.revision;
+    let had_goal = ledger.goal.is_some();
+    ledger
+        .start_goal(
+            expected_revision,
+            TaskGoal {
+                statement: statement.to_string(),
+                acceptance_criteria: Vec::new(),
+                criterion_checks: Vec::new(),
+                set_by: TaskLedgerActor::User,
+                set_at: now_ms,
+            },
+            statement.to_string(),
+            now_ms,
+        )
+        .map_err(|error| map_ledger_error(session_id, error))?;
+    let cause = if had_goal {
+        TaskLedgerCause::GoalUpdated
+    } else {
+        TaskLedgerCause::Created
+    };
+    commit_snapshot_in_memory(state, session_id, session, &ledger, cause)?;
+    drop(sessions);
+
+    crate::routes::session::session_crud::persist_session_record_if_enabled(state, session_id)
+        .await;
+    Ok(ledger)
+}
+
 /// Apply an internal run action only if its cancellation authority is still
 /// live at the write-lock linearization point. This closes the race where a
 /// stall action observes a live token, waits for the session mutex, and then
@@ -324,6 +383,88 @@ mod tests {
         let reread = task_ledger_snapshot(&state, &session_id).await.unwrap();
         assert_eq!(reread, snapshot);
         assert_eq!(reread.status, TaskLedgerStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn goal_command_authority_creates_then_replaces_without_json_fields() {
+        let state = state_with_session().await;
+        let session_id = first_session_id(&state).await;
+
+        let created = start_task_goal(&state, &session_id, "finish the parser")
+            .await
+            .unwrap();
+        assert_eq!(created.revision, 1);
+        assert_eq!(created.goal_generation, 1);
+        assert_eq!(
+            created.goal.as_ref().map(|goal| goal.statement.as_str()),
+            Some("finish the parser")
+        );
+        assert_eq!(
+            created.goal.as_ref().map(|goal| goal.set_by),
+            Some(TaskLedgerActor::User)
+        );
+
+        let replaced = start_task_goal(&state, &session_id, "run the full test suite")
+            .await
+            .unwrap();
+        assert_eq!(replaced.revision, 2);
+        assert_eq!(replaced.goal_generation, 2);
+        assert_eq!(
+            replaced.next.as_ref().map(|next| next.statement.as_str()),
+            Some("run the full test suite")
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_command_authority_rejects_empty_text_without_creating_state() {
+        let state = state_with_session().await;
+        let session_id = first_session_id(&state).await;
+
+        let error = start_task_goal(&state, &session_id, "   ")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must not be empty"));
+
+        let snapshot = task_ledger_snapshot(&state, &session_id).await.unwrap();
+        assert_eq!(snapshot.revision, 0);
+        assert!(snapshot.goal.is_none());
+    }
+
+    #[tokio::test]
+    async fn goal_command_authority_does_not_discard_unresolved_interactions() {
+        let state = state_with_session().await;
+        let session_id = first_session_id(&state).await;
+        start_task_goal(&state, &session_id, "first goal")
+            .await
+            .unwrap();
+        apply_task_ledger_op(
+            &state,
+            &session_id,
+            1,
+            TaskLedgerOp::SetStatus {
+                status: TaskLedgerStatus::AwaitingUser,
+                awaiting: Some(agendao_types::task_ledger::AwaitingInteractionRef {
+                    kind: agendao_types::task_ledger::AwaitingInteractionKind::Permission,
+                    interaction_id: "perm-1".to_string(),
+                }),
+                blocked_reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = start_task_goal(&state, &session_id, "replacement")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("interactions are unresolved"));
+
+        let snapshot = task_ledger_snapshot(&state, &session_id).await.unwrap();
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(
+            snapshot.goal.as_ref().map(|goal| goal.statement.as_str()),
+            Some("first goal")
+        );
+        assert_eq!(snapshot.awaiting_interactions.len(), 1);
     }
 
     #[tokio::test]

@@ -259,6 +259,29 @@ impl CommandRegistry {
             source: CommandSource::Builtin,
         });
 
+        self.register(Command {
+            name: "goal".to_string(),
+            description: "Start or replace the current session goal".to_string(),
+            template: include_str!("../commands/goal.md").to_string(),
+            aliases: Vec::new(),
+            invocation: Some(CommandInvocationSpec {
+                // The server maps this scheduler command to Scheduler=auto;
+                // no Agent or concrete template is pinned here.
+                mode: CommandExecutionMode::Scheduler,
+                allow_inline_arguments: true,
+                argument_schema: vec![CommandArgumentField {
+                    key: "goal".to_string(),
+                    label: "Goal".to_string(),
+                    required: true,
+                    kind: CommandArgumentKind::LongText,
+                    repeatable: false,
+                    options: Vec::new(),
+                }],
+            }),
+            interactive: None,
+            source: CommandSource::Builtin,
+        });
+
         self.register_autoresearch_commands();
     }
 
@@ -1004,6 +1027,30 @@ mod tests {
             parsed.raw_arguments,
             "Goal: Improve coverage\nVerify: cargo test"
         );
+    }
+
+    #[test]
+    fn goal_command_is_plain_language_and_keeps_scheduler_unpinned() {
+        let registry = CommandRegistry::new();
+        let command = registry.get("goal").expect("goal command");
+        let invocation = command.invocation.as_ref().expect("goal invocation");
+
+        assert_eq!(invocation.mode, CommandExecutionMode::Scheduler);
+        assert!(invocation.allow_inline_arguments);
+        assert_eq!(invocation.argument_schema.len(), 1);
+        assert_eq!(invocation.argument_schema[0].key, "goal");
+        assert!(command.interactive.is_none());
+
+        let rendered = registry
+            .execute(
+                "goal",
+                CommandContext::new(PathBuf::from("/workspace"))
+                    .with_arguments(vec!["finish the parser and run tests".to_string()])
+                    .with_raw_arguments("finish the parser and run tests"),
+            )
+            .expect("render goal command");
+        assert!(rendered.contains("finish the parser and run tests"));
+        assert!(!rendered.contains("$1"));
     }
 
     #[test]

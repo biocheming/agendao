@@ -82,6 +82,23 @@ struct ResolvedPromptPayload {
     pending_raw_arguments: Option<String>,
 }
 
+fn command_goal_statement(resolved: &ResolvedPromptPayload) -> Option<String> {
+    let command = resolved
+        .command
+        .as_ref()
+        .filter(|command| command.name == "goal")?;
+    let invocation = command.invocation.as_ref()?;
+    let parsed = parse_command_argument_map(
+        resolved.pending_raw_arguments.as_deref(),
+        &invocation.argument_schema,
+    );
+    parsed
+        .get("goal")
+        .and_then(|values| values.first())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
     "verified_external_adapter_binding";
 
@@ -236,18 +253,22 @@ async fn resolve_prompt_payload(
         })
     });
     let scheduler = command.invocation.as_ref().and_then(|invocation| {
-        matches!(
+        if !matches!(
             invocation.mode,
             agendao_command::CommandExecutionMode::Scheduler
-        )
-        .then(|| {
-            let template = if command.name.starts_with("autoresearch") {
-                agendao_orchestrator::templates::TemplateId::Autoresearch
-            } else {
-                agendao_orchestrator::templates::TemplateId::Direct
-            };
-            agendao_orchestrator::selector::SchedulerChoice::Template { template }
-        })
+        ) || command.name == "goal"
+        {
+            // `/goal` uses the ordinary request selection path: auto by
+            // default, direct when the user explicitly selected an Agent,
+            // and an explicit request Scheduler when one was supplied.
+            return None;
+        }
+        let template = if command.name.starts_with("autoresearch") {
+            agendao_orchestrator::templates::TemplateId::Autoresearch
+        } else {
+            agendao_orchestrator::templates::TemplateId::Direct
+        };
+        Some(agendao_orchestrator::selector::SchedulerChoice::Template { template })
     });
     let raw_arguments_for_hydration = parsed.raw_arguments.clone();
     let raw_arguments_for_pending = parsed.raw_arguments.clone();
@@ -1179,6 +1200,16 @@ async fn session_prompt_inner(
     } else {
         resolve_prompt_payload(&display_prompt_text, &id, &session_directory, &config).await?
     };
+    let is_goal_command = resolved_prompt
+        .command
+        .as_ref()
+        .is_some_and(|command| command.name == "goal");
+    let goal_statement = command_goal_statement(&resolved_prompt);
+    if is_goal_command && goal_statement.is_none() {
+        return Err(ApiError::BadRequest(
+            "Usage: /goal <goal description>".to_string(),
+        ));
+    }
     if let Some(command) = resolved_prompt.command.as_ref() {
         if let (Some(invocation), Some(interactive)) =
             (command.invocation.as_ref(), command.interactive.as_ref())
@@ -1224,6 +1255,9 @@ async fn session_prompt_inner(
         }
     }
     if frontend_smoke_skip_execution_enabled() {
+        if let Some(statement) = goal_statement.as_deref() {
+            crate::session_runtime::task_ledger::start_task_goal(&state, &id, statement).await?;
+        }
         let mut pending_command_cleared = false;
         {
             let mut sessions = state.sessions.lock().await;
@@ -1381,6 +1415,14 @@ async fn session_prompt_inner(
             "command": resolved_prompt.command.as_ref().map(|command| command.name.clone()),
         })));
     }
+
+    // `/goal <plain language>` activates the server-authoritative TaskLedger
+    // before the scheduler snapshots its context. The user never supplies a
+    // revision, actor, timestamp or JSON payload.
+    if let Some(statement) = goal_statement.as_deref() {
+        crate::session_runtime::task_ledger::start_task_goal(&state, &id, statement).await?;
+    }
+
     let mut pending_command_cleared = false;
     let mut persisted_external_adapter_binding = false;
     {
@@ -3147,5 +3189,26 @@ mod tests {
             resolved.command.as_ref().map(|command| &command.source),
             Some(&CommandSource::Config)
         );
+    }
+
+    #[tokio::test]
+    async fn goal_command_resolves_plain_text_without_pinning_scheduler() {
+        let resolved = resolve_prompt_payload(
+            "/goal finish the parser and run all tests",
+            "session-goal",
+            "/workspace",
+            &AppConfig::default(),
+        )
+        .await
+        .expect("goal command should resolve");
+
+        assert_eq!(
+            command_goal_statement(&resolved).as_deref(),
+            Some("finish the parser and run all tests")
+        );
+        assert!(resolved.scheduler.is_none());
+        assert!(resolved
+            .execution_text
+            .contains("finish the parser and run all tests"));
     }
 }

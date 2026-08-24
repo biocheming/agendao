@@ -1,6 +1,6 @@
 # AgenDao Docs
 
-文档基线：`v2026.6.10`（更新日期：`2026-06-10`）
+文档基线：`v2026.8.24`（更新日期：`2026-08-24`）
 
 这里不是“今天改了什么”的补丁板，而是 AgenDao 文档系统的正式入口。后续读 `agendao/docs` 时，先用这份文档判断每类文档的用途，再进入具体主题。
 
@@ -60,6 +60,8 @@
   - 工具层参考，包括 `skill_manage`、结构化工具和 memory 可观测面入口
 - `configuration.md`
   - 当前 schema 的配置入口、Provider 写法、Permission 规则与 session 权限模式
+- `task-ledger.md`
+  - `/goal` 的自然语言入口，以及服务端 TaskLedger 的目标、Next、证据、中断和恢复语义
 - `context-caching.md`
   - openai-compatible / anthropic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
 - `examples/scheduler/README.md`

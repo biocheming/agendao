@@ -14,7 +14,7 @@
 
 答案不只在模型能力上，更在治理上。
 
-当前版本：`v2026.6.10`
+当前版本：`v2026.8.24`
 
 ---
 
@@ -201,6 +201,16 @@ AgenDao 是一套完整的本地编码智能体运行时。CLI、TUI 和 Web 不
 
 ## 使用方式
 
+长任务可以直接在当前 Session 输入自然语言 Goal：
+
+```text
+/goal 完成项目审查，运行构建和测试，并输出带证据的报告
+```
+
+这会创建或替换服务端 TaskLedger，并继续使用 `auto` Scheduler 选择。用户不需要编写 JSON 或
+维护 revision；目标、Next、等待、中断和检查点都保存在 Session 权威状态中。详见
+[docs/task-ledger.md](docs/task-ledger.md)。
+
 ### `agendao`
 
 最完整、也最适合长期使用的 tui 界面。
@@ -292,7 +302,7 @@ cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui-revue
 版本发布：
 
 ```bash
-./scripts/release-date.sh 2026-05-17
+./scripts/release-date.sh 2026-08-24
 ./scripts/sync_version.sh
 ```
 

@@ -853,6 +853,15 @@ agendao generate
 
 在 TUI 或 Web 会话中，以下斜杠命令可用：
 
+### 长任务目标
+
+| 命令 | 说明 |
+|------|------|
+| `/goal <目标描述>` | 创建或替换当前 Session 的服务端 TaskLedger，并立即通过 `auto` Scheduler 开始执行 |
+
+用户只写自然语言，不需要 JSON、revision、actor 或时间戳。活动执行期间提交的新 Goal 会排队到当前
+回合结束后生效。完整语义见 [task-ledger.md](task-ledger.md)。
+
 ### 会话管理
 
 | 命令 | 别名 | 说明 |

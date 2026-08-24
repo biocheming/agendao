@@ -14,7 +14,7 @@ Most AI coding tools focus on the question of "how to do it": how to generate co
 
 The answer is not only model capability. It is governance.
 
-Current version: `v2026.6.10`
+Current version: `v2026.8.24`
 
 ---
 
@@ -23,6 +23,15 @@ Current version: `v2026.6.10`
 AgenDao belongs to the same broad category as other AI agent tools: a local coding-agent runtime. But its design center is not "make the model smarter". It is **make the system flow better, and make it easier to trust**.
 
 Its core diagnosis is simple: **system drift does not mainly come from weak models; it comes from input, execution, state, output, and feedback splitting into multiple competing authorities.**
+
+For a persistent task, users can start the server-authoritative session ledger directly with plain language:
+
+```text
+/goal finish the project review, run the build and tests, and report evidence
+```
+
+No JSON or revision bookkeeping is required. The goal continues through the normal automatic Scheduler selection;
+see [TaskLedger and `/goal`](docs/task-ledger.md).
 
 So AgenDao is not about adding yet another "smarter agent" layer. It is about making the entire chain, from prompt input to the next prompt, obey the same governance model.
 
@@ -296,7 +305,7 @@ cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui-revue
 Release versioning:
 
 ```bash
-./scripts/release-date.sh 2026-05-17
+./scripts/release-date.sh 2026-08-24
 ./scripts/sync_version.sh
 ```
 

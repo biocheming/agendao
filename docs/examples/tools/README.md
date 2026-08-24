@@ -1,6 +1,6 @@
 # Tool Config Examples
 
-文档基线：v2026.6.10（更新日期：2026-06-10）
+文档基线：v2026.8.24（更新日期：2026-08-24）
 
 这个目录只演示一件事：如何用 `toolImports` + 外部 `tools.jsonc` 管理外部 tool catalog，并让示例路径、目录推断、`catalog-only` / `executable` 语义与当前 loader 行为保持一致。
 

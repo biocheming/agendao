@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased (2026-07)
+## 2026.8.24
 
+- 新增 `/goal <目标描述>` 自然语言入口：用户无需编写 JSON 或维护 revision、actor、时间戳，即可创建或替换当前 Session 的服务端 TaskLedger。
+- `/goal` 沿用普通 `auto` Scheduler 选择，不固定 Agent 或调度模板；目标代际、Next、检查点、等待与恢复状态由服务端权威维护。
+- 补齐内置命令注册、TUI 命令面板与 TaskLedger 文档，并拒绝空 Goal 及在未决 permission/question 时静默丢弃交互。
+- 同步工作区、Web 包、锁文件与用户文档版本到 `v2026.8.24`。
+
+## 2026.8.17
+
+- 同步工作区、Web 包与锁文件版本到 `v2026.8.17`。
 - 用户目录统一：全局配置、会话数据库、日志、凭证、模型目录缓存、skills、prompt 历史全部收归 `~/.agendao`（可用 `AGENDAO_HOME` 覆盖），首次启动自动从旧 XDG 目录（`~/.config/agendao`、`~/.local/share/agendao`、`~/.cache/agendao`）幂等迁移。
 - TUI：新增全屏 Settings 页，General / Skills / MCP Servers / Keybindings / About 各分类均可查看与编辑；provider 支持原地增删、改名、启停与连接测试；session tree 支持折叠展开；输入框下方新增 token 与 context 用量状态条；新增宋代美学色系主题与"墨韵"加载动画。
 - Web：按 `docs/plans/agendao-web-audit-2026-07.md` 完成一轮修复——修复 skillProposal / worktree 两个死路由，server 密码改走 Authorization header，裸色值全面 token 化，App.tsx 从 1530 行拆到 996 行，lint 强化为 0 警告。

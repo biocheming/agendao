@@ -2,7 +2,7 @@
 
 AgenDao 是一个用 Rust 编写的本地编码智能体运行时。它把终端原生交互、多 Agent 协调、技能系统、多 Provider、持久化 session、memory 和 telemetry 组织成一个统一的开发工作流引擎。
 
-> **版本:** 2026.6.10 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.8.24 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
@@ -317,6 +317,7 @@ AgenDao 遵循严格的分层架构，每层有明确的职责边界：
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示帮助 |
+| `/goal <描述>` | 创建或替换当前 Session 的服务端 TaskLedger，并通过自动 Scheduler 开始执行 |
 | `/abort` | 取消当前活动执行边界 |
 | `/new` | 开始新会话 |
 | `/models` | 列出可用模型 |
@@ -328,6 +329,8 @@ AgenDao 遵循严格的分层架构，每层有明确的职责边界：
 | `/copy` | 复制最近一条助手回复 |
 
 `/abort` 通过独立控制请求命中 server 的取消路由，不会作为普通用户消息插入当前 prompt。
+`/goal` 只接收自然语言；revision、actor、时间戳和持久化都由服务端维护。详见
+[TaskLedger 与 `/goal`](task-ledger.md)。
 
 ---
 

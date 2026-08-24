@@ -969,6 +969,39 @@ mod tests {
         assert_eq!(pending["questionId"], question_id);
     }
 
+    #[tokio::test]
+    async fn goal_command_without_description_is_rejected_without_creating_ledger() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        let error = execute_command(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Path(session_id.clone()),
+            Json(ExecuteCommandRequest {
+                command: "goal".to_string(),
+                arguments: None,
+                model: None,
+                variant: None,
+                agent: None,
+                scheduler: None,
+            }),
+        )
+        .await
+        .expect_err("empty goal command must be rejected");
+
+        assert!(error.to_string().contains("/goal <goal description>"));
+        let snapshot =
+            crate::session_runtime::task_ledger::task_ledger_snapshot(&state, &session_id)
+                .await
+                .expect("empty ledger snapshot");
+        assert_eq!(snapshot.revision, 0);
+        assert!(snapshot.goal.is_none());
+    }
+
     #[test]
     fn session_to_info_includes_typed_persisted_telemetry() {
         let mut session = Session::new("project", "/tmp/project");

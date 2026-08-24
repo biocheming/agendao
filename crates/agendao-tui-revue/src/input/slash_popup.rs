@@ -29,6 +29,7 @@ enum SlashCompletion {
         name: String,
         title: String,
         description: String,
+        argument_kind: UiCommandArgumentKind,
     },
 }
 
@@ -75,7 +76,7 @@ impl SlashCompletion {
     fn argument_kind(&self) -> UiCommandArgumentKind {
         match self {
             Self::Ui(command) => command.argument_kind(),
-            Self::Prompt { .. } => UiCommandArgumentKind::None,
+            Self::Prompt { argument_kind, .. } => *argument_kind,
         }
     }
 
@@ -193,6 +194,9 @@ impl SlashPopup {
             .cloned()
             .map(SlashCompletion::Ui)
             .collect();
+
+        // Configured commands are server-merged overrides, so list them
+        // before local built-ins when names collide.
         for (name, title, description) in commands {
             let name = format!("/{}", name.trim().trim_start_matches('/'));
             if name == "/"
@@ -206,7 +210,32 @@ impl SlashPopup {
                 name,
                 title,
                 description,
+                argument_kind: UiCommandArgumentKind::None,
             });
+        }
+
+        // `/goal` is a server-executed prompt command, not a TUI-only action.
+        // Keep it discoverable locally even when the workspace has no custom
+        // command config. Other prompt-command discovery remains unchanged.
+        if let Some(command) = registry.get("goal") {
+            let name = format!("/{}", command.name.trim().trim_start_matches('/'));
+            if !all_commands
+                .iter()
+                .any(|candidate| candidate.slash_name() == name)
+            {
+                let argument_kind = command
+                    .invocation
+                    .as_ref()
+                    .filter(|invocation| invocation.allow_inline_arguments)
+                    .map(|_| UiCommandArgumentKind::Text)
+                    .unwrap_or(UiCommandArgumentKind::None);
+                all_commands.push(SlashCompletion::Prompt {
+                    name,
+                    title: command.name.clone(),
+                    description: command.description.clone(),
+                    argument_kind,
+                });
+            }
         }
         Self {
             visible: false,
@@ -630,6 +659,24 @@ mod tests {
                 assert!(!takes_args);
             }
             _ => panic!("expected configured command fill-back"),
+        }
+    }
+
+    #[test]
+    fn builtin_goal_is_discoverable_and_requests_plain_text() {
+        let mut popup = SlashPopup::new();
+
+        popup.open_with_query("goal");
+        assert_eq!(popup.filtered_count(), 1);
+        match popup.handle_key(&Key::Enter) {
+            SlashKeyOutcome::FillBack {
+                command,
+                takes_args,
+            } => {
+                assert_eq!(command, "/goal ");
+                assert!(takes_args);
+            }
+            _ => panic!("expected goal command fill-back"),
         }
     }
 
