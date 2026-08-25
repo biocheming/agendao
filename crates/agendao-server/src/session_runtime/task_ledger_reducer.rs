@@ -719,7 +719,8 @@ mod tests {
     }
 
     async fn async_state_with_session() -> Arc<ServerState> {
-        let mut state = ServerState::new();
+        let workspace = crate::test_support::target_fixture_root("task-ledger-reducer");
+        let mut state = ServerState::new_for_workspace(workspace.clone());
         #[cfg(unix)]
         {
             let registry = agendao_sandbox::BackendRegistry::native_only(Arc::new(
@@ -736,7 +737,7 @@ mod tests {
                 )),
             ));
         }
-        let workspace = state.workspace_root.to_string_lossy().into_owned();
+        let workspace = workspace.to_string_lossy().into_owned();
         let state = Arc::new(state);
         let mut sessions = state.sessions.lock().await;
         sessions.create("project", workspace);

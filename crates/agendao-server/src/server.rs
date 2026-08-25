@@ -43,7 +43,6 @@ use crate::routes;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::steering::SessionSteeringQueueStore;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
-use agendao_server_core::runtime_control::RuntimeControlRegistry;
 use agendao_server_core::runtime_events::{EventBusTelemetry, ServerBusEvent, ServerEvent};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
@@ -267,8 +266,6 @@ pub struct ServerState {
         Arc<tokio::sync::Mutex<HashMap<String, std::collections::VecDeque<serde_json::Value>>>>,
     /// Task-governance stall observation windows (server memory only).
     pub(crate) stall_windows: Arc<crate::session_runtime::task_ledger_stall::StallWindows>,
-    // Shared runtime registries still used by server routes and session runtime.
-    pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) event_bus: broadcast::Sender<Arc<ServerBusEvent>>,
     /// Canonical bus for projected FrontendEvents. All transports (SSE, Unix,
@@ -371,7 +368,6 @@ impl ServerState {
             tx.clone(),
             Some(event_bus_telemetry.clone()),
         ));
-        let runtime_control = runtime_telemetry.runtime_control();
         let steering_store = Arc::new(tokio::sync::Mutex::new(SessionSteeringQueueStore::new()));
         let queued_followups = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let todo_manager = Arc::new(agendao_session::TodoManager::new());
@@ -415,7 +411,6 @@ impl ServerState {
             stall_windows: Arc::new(
                 crate::session_runtime::task_ledger_stall::StallWindows::default(),
             ),
-            runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,
             frontend_bus: frontend_tx,

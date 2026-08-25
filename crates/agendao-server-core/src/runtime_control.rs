@@ -650,7 +650,7 @@ impl RuntimeControlRegistry {
                 self.request_scheduler_cancel(&session_id).await;
             }
             ExecutionKind::Question => {
-                self.reject_question(execution_id).await;
+                self.cancel_question(execution_id).await;
             }
             ExecutionKind::ToolCall => {
                 // Cancel via stored token if available, then mark as cancelling.
@@ -728,11 +728,8 @@ impl RuntimeControlRegistry {
             metadata: Some(serde_json::to_value(&info).unwrap_or(serde_json::Value::Null)),
         };
         let (tx, rx) = oneshot::channel::<QuestionReply>();
-        self.executions
-            .write()
-            .await
-            .insert(request_id.clone(), execution);
         self.question_waiters.lock().await.insert(request_id, tx);
+        self.upsert_execution(execution).await;
         (info, rx)
     }
 
@@ -740,6 +737,7 @@ impl RuntimeControlRegistry {
         let executions = self.executions.read().await;
         let mut result = executions
             .values()
+            .filter(|record| record.status == ExecutionStatus::Waiting)
             .filter_map(question_record_to_info)
             .collect::<Vec<_>>();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -750,7 +748,9 @@ impl RuntimeControlRegistry {
         let executions = self.executions.read().await;
         let mut result = executions
             .values()
-            .filter(|record| record.session_id == session_id)
+            .filter(|record| {
+                record.session_id == session_id && record.status == ExecutionStatus::Waiting
+            })
             .filter_map(question_record_to_info)
             .collect::<Vec<_>>();
         result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -825,6 +825,14 @@ impl RuntimeControlRegistry {
         Some(info)
     }
 
+    pub async fn cancel_question(&self, id: &str) -> Option<QuestionInfo> {
+        let info = self.take_question(id).await?;
+        if let Some(waiter) = self.question_waiters.lock().await.remove(id) {
+            let _ = waiter.send(QuestionReply::Cancelled);
+        }
+        Some(info)
+    }
+
     pub async fn cancel_questions_for_session(&self, session_id: &str) -> Vec<QuestionInfo> {
         let ids = {
             let executions = self.executions.read().await;
@@ -840,19 +848,11 @@ impl RuntimeControlRegistry {
 
         let mut cancelled = Vec::new();
         for id in ids {
-            if let Some(info) = self.take_question(&id).await {
-                if let Some(waiter) = self.question_waiters.lock().await.remove(&id) {
-                    let _ = waiter.send(QuestionReply::Cancelled);
-                }
+            if let Some(info) = self.cancel_question(&id).await {
                 cancelled.push(info);
             }
         }
         cancelled
-    }
-
-    pub async fn drop_question(&self, id: &str) {
-        self.finish_execution(id).await;
-        self.question_waiters.lock().await.remove(id);
     }
 
     /// Resolve the `stage_id` for a given execution by looking it up in the registry.
@@ -864,8 +864,21 @@ impl RuntimeControlRegistry {
     }
 
     async fn take_question(&self, id: &str) -> Option<QuestionInfo> {
-        let record = self.executions.write().await.remove(id)?;
-        question_record_to_info(&record)
+        let (record, info) = {
+            let mut executions = self.executions.write().await;
+            let record = executions.get(id)?;
+            if !matches!(record.kind, ExecutionKind::Question) {
+                return None;
+            }
+            let info = question_record_to_info(record)?;
+            (executions.remove(id)?, info)
+        };
+        self.notify_topology_changed(&TopologyChangeContext {
+            session_id: record.session_id,
+            execution_id: record.id,
+            stage_id: record.stage_id,
+        });
+        Some(info)
     }
 
     async fn upsert_execution(&self, record: ExecutionRecord) {

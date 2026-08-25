@@ -166,7 +166,7 @@ impl SessionSchedulerToolExecutor {
                 let interaction_clock = interaction_clock.clone();
                 async move {
                     let _pause = interaction_clock.pause();
-                    super::super::tui::request_question_answers_with_abort(
+                    crate::session_runtime::question::request_question_answers(
                         state, session_id, questions, abort,
                     )
                     .await

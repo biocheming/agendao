@@ -5,8 +5,8 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde::Deserialize;
 
 use super::permission::request_permission;
-use super::tui::request_question_answers;
 use crate::session_runtime::events::broadcast_server_event;
+use crate::session_runtime::question::request_question_answers;
 use crate::ServerState;
 use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::ServerEvent;
@@ -57,7 +57,13 @@ async fn frontend_smoke_question(
     let state = state.clone();
     tokio::spawn(async move {
         let session_id = req.session_id;
-        let _ = request_question_answers(state.clone(), session_id.clone(), req.questions).await;
+        let _ = request_question_answers(
+            state.clone(),
+            session_id.clone(),
+            req.questions,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         finish_smoke_interaction(&state, &session_id).await;
     });
     Json(true)

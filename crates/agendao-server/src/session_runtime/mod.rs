@@ -4,6 +4,7 @@ pub(crate) mod frontend_subscription;
 pub mod local_frontend;
 pub(crate) mod memory;
 pub(crate) mod projection_authority;
+pub(crate) mod question;
 pub(crate) mod recheck_loop;
 pub(crate) mod steering;
 pub(crate) mod task_ledger;

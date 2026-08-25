@@ -52,11 +52,11 @@ pub(super) async fn get_session_recovery(
             .ok_or_else(|| ApiError::SessionNotFound(session_id.clone()))?
     };
     let topology = state
-        .runtime_control
-        .list_session_execution_topology(&session_id)
+        .runtime_telemetry
+        .session_execution_topology(&session_id)
         .await;
     let pending_question_count = state
-        .runtime_control
+        .runtime_telemetry
         .list_questions_for_session(&session_id)
         .await
         .len();
@@ -82,11 +82,11 @@ pub(super) async fn execute_session_recovery(
             .ok_or_else(|| ApiError::SessionNotFound(session_id.clone()))?
     };
     let topology = state
-        .runtime_control
-        .list_session_execution_topology(&session_id)
+        .runtime_telemetry
+        .session_execution_topology(&session_id)
         .await;
     let pending_question_count = state
-        .runtime_control
+        .runtime_telemetry
         .list_questions_for_session(&session_id)
         .await
         .len();

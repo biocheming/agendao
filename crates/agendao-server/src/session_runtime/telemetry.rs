@@ -56,10 +56,6 @@ impl RuntimeTelemetryAuthority {
         }
     }
 
-    pub(crate) fn runtime_control(&self) -> Arc<RuntimeControlRegistry> {
-        self.runtime_control.clone()
-    }
-
     pub(crate) fn runtime_state(&self) -> Arc<RuntimeStateStore> {
         self.runtime_state.clone()
     }
@@ -265,6 +261,20 @@ impl RuntimeTelemetryAuthority {
         Some(info)
     }
 
+    pub(crate) async fn cancel_question(&self, id: &str) -> Option<QuestionInfo> {
+        let info = self.runtime_control.cancel_question(id).await?;
+        self.runtime_state.question_resolved(&info.session_id).await;
+        self.finish_control_input_wait(&info.session_id).await;
+        self.emit(ServerEvent::QuestionResolved {
+            session_id: info.session_id.clone(),
+            request_id: id.to_string(),
+            resolution: Some(QuestionResolutionKind::Cancelled),
+            answers: None,
+            reason: Some("cancelled".to_string()),
+        });
+        Some(info)
+    }
+
     pub(crate) async fn cancel_questions_for_session(&self, session_id: &str) -> Vec<QuestionInfo> {
         let cancelled = self
             .runtime_control
@@ -284,12 +294,6 @@ impl RuntimeTelemetryAuthority {
             });
         }
         cancelled
-    }
-
-    pub(crate) async fn drop_question(&self, session_id: &str, question_id: &str) {
-        self.runtime_control.drop_question(question_id).await;
-        self.runtime_state.question_resolved(session_id).await;
-        self.finish_control_input_wait(session_id).await;
     }
 
     pub(crate) async fn list_questions(&self) -> Vec<QuestionInfo> {
@@ -449,6 +453,15 @@ impl RuntimeTelemetryAuthority {
             .await
     }
 
+    pub(crate) async fn session_execution_topology(
+        &self,
+        session_id: &str,
+    ) -> SessionExecutionTopology {
+        self.runtime_control
+            .list_session_execution_topology(session_id)
+            .await
+    }
+
     pub(crate) async fn build_session_execution_topology(
         &self,
         session_id: String,
@@ -468,6 +481,9 @@ impl RuntimeTelemetryAuthority {
     }
 
     pub(crate) async fn cancel_execution(&self, execution_id: &str) -> Option<ExecutionKind> {
+        if self.cancel_question(execution_id).await.is_some() {
+            return Some(ExecutionKind::Question);
+        }
         self.runtime_control.cancel_execution(execution_id).await
     }
 
@@ -712,7 +728,7 @@ mod tests {
 
         // Verify control + projection both see Blocked.
         assert!(matches!(
-            telemetry.runtime_control().session_run_status(sid).await,
+            telemetry.runtime_control.session_run_status(sid).await,
             SessionRunStatus::Blocked { .. }
         ));
         assert_eq!(
@@ -732,7 +748,7 @@ mod tests {
 
         // Verify control AND projection are both updated.
         assert!(matches!(
-            telemetry.runtime_control().session_run_status(sid).await,
+            telemetry.runtime_control.session_run_status(sid).await,
             SessionRunStatus::Idle
         ));
         assert_eq!(
@@ -787,7 +803,7 @@ mod tests {
             .await;
 
         assert!(matches!(
-            telemetry.runtime_control().session_run_status(sid).await,
+            telemetry.runtime_control.session_run_status(sid).await,
             SessionRunStatus::Sleeping { .. }
         ));
         assert_eq!(
@@ -808,7 +824,7 @@ mod tests {
         assert!(matches!(result.unwrap(), SessionRunStatus::Idle));
 
         assert!(matches!(
-            telemetry.runtime_control().session_run_status(sid).await,
+            telemetry.runtime_control.session_run_status(sid).await,
             SessionRunStatus::Idle
         ));
         assert_eq!(

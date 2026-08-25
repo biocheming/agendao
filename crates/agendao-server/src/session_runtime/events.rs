@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::ServerState;
-pub use agendao_server_core::runtime_events::{
-    EventBusTelemetry, QuestionResolutionKind, ReconcileReason, ServerEvent,
-};
+pub use agendao_server_core::runtime_events::{EventBusTelemetry, ReconcileReason, ServerEvent};
 use agendao_session::prompt::{OutputBlockEvent, OutputBlockHook};
 
 pub(crate) fn server_output_block_event(event: &OutputBlockEvent) -> ServerEvent {
