@@ -1703,6 +1703,45 @@ impl AppHandler {
                     self.refresh_slash_popup();
                     return true;
                 }
+                // Transcript copy chords must be handled while the full
+                // KeyEvent is still available. `handle_key` intentionally
+                // receives only the normalized Key and cannot inspect Alt.
+                if key.alt
+                    && self.panel == Panel::None
+                    && matches!(self.store.route.get(), Route::Session { .. })
+                    && self.prompt.text().is_empty()
+                {
+                    match key.key {
+                        Key::Char('c') => {
+                            match self.active_session.cursor_block_to_text() {
+                                Some(text) => {
+                                    let result =
+                                        crate::dialog::clipboard::copy_with_fallback(&text);
+                                    self.toast_copy_outcome(result, "Block copied to clipboard");
+                                }
+                                None => self.store.push_toast(
+                                    "Nothing to copy at cursor",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                ),
+                            }
+                            return true;
+                        }
+                        Key::Char('C') => {
+                            let text = self.visible_transcript_text();
+                            if text.is_empty() {
+                                self.store.push_toast(
+                                    "Nothing on screen to copy",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                            } else {
+                                let result = crate::dialog::clipboard::copy_with_fallback(&text);
+                                self.toast_copy_outcome(result, "Screen copied to clipboard");
+                            }
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
                 self.handle_key(&key.key)
             }
             Event::Mouse(m) => {
@@ -2710,45 +2749,6 @@ impl AppHandler {
                         && self.active_session.cursor_user_prompt().is_some() =>
                 {
                     self.execute_slash_action(UiActionId::RevisePrompt);
-                    return true;
-                }
-                // 'c' = copy cursor 当前 block 内容（对齐 web 消息卡"复制"图标
-                // 一步触发）。双重守卫：prompt 空（避免打字中途误触发）+ cursor
-                // 命中（否则 'c' 落到 prompt 输入字符）。走 cursor_block_to_text
-                // 复用 transcript_to_text 成形契约，再 OSC52 一次性写终端剪贴板
-                // ——与 /copy slash（全 transcript）职责分离：slash → 显式全量,
-                // 'c' → cursor 单块。无支持的 block 时 toast 提示，避免无声失败。
-                Key::Char('c')
-                    if self.prompt.text().is_empty()
-                        && self.active_session.transcript_cursor.get().is_some() =>
-                {
-                    match self.active_session.cursor_block_to_text() {
-                        // U18①：copy_with_fallback——OSC52 失败兜底临时文件。
-                        Some(text) => {
-                            let r = crate::dialog::clipboard::copy_with_fallback(&text);
-                            self.toast_copy_outcome(r, "Block copied to clipboard");
-                        }
-                        None => self.store.push_toast(
-                            "Nothing to copy at cursor",
-                            crate::store::types::ToastMsgVariant::Warning,
-                        ),
-                    }
-                    return true;
-                }
-                // U18③：'C' (Shift-c) = 复制当前屏——单块 'c' 与全量 /copy
-                // 的中间档（任意选区的本批替身，选区基建见 Backlog）。
-                // 只需 prompt 空：复制的是视口内容而非选中块，无需 cursor。
-                Key::Char('C') if self.prompt.text().is_empty() => {
-                    let text = self.visible_transcript_text();
-                    if text.is_empty() {
-                        self.store.push_toast(
-                            "Nothing on screen to copy",
-                            crate::store::types::ToastMsgVariant::Warning,
-                        );
-                    } else {
-                        let r = crate::dialog::clipboard::copy_with_fallback(&text);
-                        self.toast_copy_outcome(r, "Screen copied to clipboard");
-                    }
                     return true;
                 }
                 _ => {}
@@ -4820,19 +4820,15 @@ pub(crate) fn apply_loaded_messages(
                 // live 的 session_event 渲染断裂）。服务端 history rebuild
                 // 把这类 part 转成 web `session_event` 块（messages.rs
                 // part_to_info → history_session_event_to_web），字段与
-                // live 事件一致，渲染口径对齐 event_handler.rs:173-180。
+                // live 事件一致，渲染口径统一由
+                // event_handler::apply_session_event_block 收口。
                 "agent" | "retry" | "step_start" | "step_finish" => {
                     if let Some(ref block) = part.output_block {
-                        let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                        let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-                        let line = if summary.is_empty() {
-                            title.to_string()
-                        } else {
-                            format!("{title}: {summary}")
-                        };
-                        if !line.is_empty() {
-                            active_session.push_notice(&pid, &line);
-                        }
+                        crate::telemetry::event_handler::apply_session_event_block(
+                            block,
+                            &pid,
+                            active_session,
+                        );
                     }
                 }
                 _ => {}
@@ -7273,7 +7269,7 @@ mod tests {
         h.transcript_viewport_h = 20;
         h.active_session.push_user_message("u1", "hello screen");
         h.active_session.push_assistant_delta("a1", "visible reply");
-        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('C')))));
+        assert!(h.handle(&Event::Key(KeyEvent::alt(Key::Char('C')))));
         let toasts = h.store.toasts.get();
         assert!(
             toasts.iter().any(|t| {
@@ -7284,7 +7280,7 @@ mod tests {
         );
     }
 
-    /// U18②：'c' 在 TodoList 块上不再 "Nothing to copy"——全 13 变体
+    /// U18②：Alt+c 在 TodoList 块上不再 "Nothing to copy"——全 13 变体
     /// 均可读序列化（原 6 变体死端）。
     #[test]
     fn c_on_todo_block_copies() {
@@ -7301,7 +7297,7 @@ mod tests {
             None,
         );
         h.active_session.transcript_cursor.set(Some(0));
-        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('c')))));
+        assert!(h.handle(&Event::Key(KeyEvent::alt(Key::Char('c')))));
         let toasts = h.store.toasts.get();
         assert!(
             toasts.iter().any(|t| {
@@ -7311,6 +7307,25 @@ mod tests {
             "TodoList 块应报告成功或可恢复的文件兜底: {toasts:?}"
         );
         assert!(!toasts.iter().any(|t| t.text.contains("Nothing to copy")));
+    }
+
+    #[test]
+    fn bare_c_starts_prompt_even_when_transcript_cursor_is_selected() {
+        let mut h = mk_session_handler();
+        h.active_session.push_user_message("u1", "selected block");
+        h.active_session.transcript_cursor.set(Some(0));
+
+        for ch in "code".chars() {
+            assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char(ch)))));
+        }
+
+        assert_eq!(h.prompt.text(), "code");
+        assert!(h
+            .store
+            .toasts
+            .get()
+            .iter()
+            .all(|toast| !toast.text.contains("copied")));
     }
 
     /// U18③：visible_transcript_text 只收与视口相交的块——底部在、

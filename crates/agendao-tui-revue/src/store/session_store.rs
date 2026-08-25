@@ -617,15 +617,46 @@ impl SessionStore {
         });
     }
 
-    /// Append a stage update with optional JSON metadata.
-    pub fn push_stage(&self, id: &str, name: &str, status: &str, metadata: Option<String>) {
+    /// Insert or update one stage card by stable identity.
+    ///
+    /// Scheduler progress repeatedly uses the same `id`, so step/status/message
+    /// changes replace the existing transcript row in place. The user's fold
+    /// choice survives updates.
+    pub fn push_stage(
+        &self,
+        id: &str,
+        name: &str,
+        status: &str,
+        message: &str,
+        fields: Vec<StageField>,
+    ) {
         self.messages.update(|msgs| {
+            if let Some(TranscriptBlock::StageUpdate {
+                name: current_name,
+                status: current_status,
+                message: current_message,
+                fields: current_fields,
+                ..
+            }) = msgs.iter_mut().find(|block| {
+                matches!(block, TranscriptBlock::StageUpdate { id: current_id, .. } if current_id == id)
+            }) {
+                current_name.clear();
+                current_name.push_str(name);
+                current_status.clear();
+                current_status.push_str(status);
+                current_message.clear();
+                current_message.push_str(message);
+                *current_fields = fields;
+                return;
+            }
             msgs.push(TranscriptBlock::StageUpdate {
                 id: id.into(),
                 name: name.into(),
                 status: status.into(),
-                metadata,
-            })
+                message: message.into(),
+                fields,
+                fold: FoldState::Truncated,
+            });
         });
     }
 
@@ -712,6 +743,7 @@ impl SessionStore {
             Some(TranscriptBlock::UserPrompt { fold, .. })
             | Some(TranscriptBlock::ToolResult { fold, .. })
             | Some(TranscriptBlock::TodoList { fold, .. })
+            | Some(TranscriptBlock::StageUpdate { fold, .. })
             | Some(TranscriptBlock::AssistantMsg { fold, .. }) => {
                 *fold = fold.next();
             }
@@ -950,8 +982,8 @@ impl SessionStore {
     // cursor row stays in view (mirroring how vim handles long files).
 
     /// Move cursor to the previous foldable block, wrapping at the top.
-    /// "Foldable" today means UserPrompt / Thinking / ToolResult /
-    /// AssistantMsg — the blocks whose `toggle_fold` actually flips
+    /// "Foldable" today means UserPrompt / Thinking / ToolResult / TodoList /
+    /// StageUpdate / AssistantMsg — the blocks whose `toggle_fold` actually flips
     /// state. Cursor skips tool-call rows since fold is a no-op there.
     pub fn cursor_prev_foldable(&self) {
         let msgs = self.messages.get();
@@ -1000,6 +1032,8 @@ impl SessionStore {
             TranscriptBlock::UserPrompt { .. }
                 | TranscriptBlock::Thinking { .. }
                 | TranscriptBlock::ToolResult { .. }
+                | TranscriptBlock::TodoList { .. }
+                | TranscriptBlock::StageUpdate { .. }
                 | TranscriptBlock::AssistantMsg { .. }
         )
     }
@@ -1178,6 +1212,7 @@ impl SessionStore {
                         | TranscriptBlock::Thinking { .. }
                         | TranscriptBlock::ToolResult { .. }
                         | TranscriptBlock::TodoList { .. }
+                        | TranscriptBlock::StageUpdate { .. }
                         | TranscriptBlock::AssistantMsg { .. }
                 )
             )
@@ -1273,13 +1308,24 @@ pub fn block_to_text(block: &TranscriptBlock) -> String {
         TranscriptBlock::StageUpdate {
             name,
             status,
-            metadata,
+            message,
+            fields,
             ..
         } => {
             let mut out = format!("Stage: {name} — {status}");
-            if let Some(meta) = metadata {
+            if !fields.is_empty() {
                 out.push('\n');
-                out.push_str(meta);
+                out.push_str(
+                    &fields
+                        .iter()
+                        .map(|field| format!("{}: {}", field.label, field.value))
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                );
+            }
+            if !message.is_empty() {
+                out.push('\n');
+                out.push_str(message);
             }
             out
         }
@@ -2188,7 +2234,9 @@ mod tests {
                     id: "8".into(),
                     name: "plan".into(),
                     status: "running".into(),
-                    metadata: None,
+                    message: String::new(),
+                    fields: vec![],
+                    fold: FoldState::Truncated,
                 },
                 "Stage: plan — running",
             ),
@@ -2197,9 +2245,14 @@ mod tests {
                     id: "9".into(),
                     name: "exec".into(),
                     status: "done".into(),
-                    metadata: Some("{\"k\":1}".into()),
+                    message: "building".into(),
+                    fields: vec![StageField {
+                        label: "Tools".into(),
+                        value: "1".into(),
+                    }],
+                    fold: FoldState::Truncated,
                 },
-                "Stage: exec — done\n{\"k\":1}",
+                "Stage: exec — done\nTools: 1\nbuilding",
             ),
             (
                 TranscriptBlock::CompactionHint {
@@ -2348,13 +2401,54 @@ mod tests {
     fn task_state_evidence_focus_uses_stage_id_or_name() {
         let s = SessionStore::new();
         s.push_user_message("u1", "before");
-        s.push_stage("stage-id", "verify/tests", "completed", None);
+        s.push_stage("stage-id", "verify/tests", "completed", "", vec![]);
         s.push_user_message("u2", "after");
 
         assert!(s.focus_transcript_reference("verify/tests", 4));
         assert_eq!(s.transcript_cursor.get(), Some(1));
         assert!(s.focus_transcript_reference("stage-id", 4));
         assert!(!s.focus_transcript_reference("missing", 4));
+    }
+
+    #[test]
+    fn stage_update_replaces_in_place_and_preserves_expansion() {
+        let s = SessionStore::new();
+        s.push_stage(
+            "scheduler-progress:execute",
+            "Scheduler step 1/16",
+            "running",
+            "one\ntwo\nthree\nfour",
+            vec![StageField {
+                label: "Agent".into(),
+                value: "worker".into(),
+            }],
+        );
+        s.transcript_cursor.set(Some(0));
+        assert!(s.toggle_fold_at_cursor());
+
+        s.push_stage(
+            "scheduler-progress:execute",
+            "Scheduler step 2/16",
+            "running",
+            "new message",
+            vec![],
+        );
+
+        let messages = s.messages.get();
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            TranscriptBlock::StageUpdate {
+                name,
+                message,
+                fold,
+                ..
+            } => {
+                assert_eq!(name, "Scheduler step 2/16");
+                assert_eq!(message, "new message");
+                assert_eq!(*fold, FoldState::Expanded);
+            }
+            other => panic!("expected StageUpdate, got {other:?}"),
+        }
     }
 
     #[test]

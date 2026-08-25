@@ -344,23 +344,29 @@ fn part_to_info(
                 Some(reason.clone()),
             ))
         } else if let agendao_session::PartType::StepStart { id, name } = &part.part_type {
-            Some(history_session_event_to_web(
-                "step",
-                format!("Step · {name}"),
+            let (agent, progress) = scheduler_step_start_display(name);
+            let mut block = history_session_event_to_web(
+                "scheduler_step",
+                format!("Scheduler step {progress}"),
                 Some("running"),
-                Some("Step started".to_string()),
-                vec![("ID".to_string(), id.clone(), None)],
                 None,
-            ))
+                vec![("Agent".to_string(), agent, None)],
+                None,
+            );
+            set_history_scheduler_progress_id(&mut block, id);
+            Some(block)
         } else if let agendao_session::PartType::StepFinish { id, output } = &part.part_type {
-            Some(history_session_event_to_web(
-                "step",
-                "Step complete",
-                Some("completed"),
-                Some("Step finished".to_string()),
-                vec![("ID".to_string(), id.clone(), None)],
-                output.clone(),
-            ))
+            let (progress, fields, body) = scheduler_step_finish_display(id, output.as_deref());
+            let mut block = history_session_event_to_web(
+                "scheduler_step",
+                format!("Scheduler step {progress}"),
+                Some("complete"),
+                None,
+                fields,
+                body,
+            );
+            set_history_scheduler_progress_id(&mut block, id);
+            Some(block)
         } else {
             None
         };
@@ -416,6 +422,68 @@ fn part_to_info(
         output_block,
         synthetic,
         ignored,
+    }
+}
+
+fn scheduler_step_start_display(name: &str) -> (String, String) {
+    name.rsplit_once(" · ")
+        .map(|(agent, progress)| (agent.to_string(), progress.to_string()))
+        .unwrap_or_else(|| (name.to_string(), "?/?".to_string()))
+}
+
+fn scheduler_step_finish_display(
+    id: &str,
+    output: Option<&str>,
+) -> (
+    String,
+    Vec<(String, String, Option<String>)>,
+    Option<String>,
+) {
+    let fallback_progress = id
+        .rsplit_once(':')
+        .map(|(_, step)| format!("{step}/?"))
+        .unwrap_or_else(|| "?/?".to_string());
+    let Some(output) = output else {
+        return (fallback_progress, Vec::new(), None);
+    };
+    let mut lines = output.lines();
+    let metrics = lines.next().unwrap_or_default();
+    let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    let mut progress = fallback_progress;
+    let mut fields = Vec::new();
+    for item in metrics.split(';').map(str::trim) {
+        if let Some(value) = item
+            .strip_prefix("step ")
+            .and_then(|value| value.strip_suffix(" complete"))
+        {
+            progress = value.to_string();
+            continue;
+        }
+        if let Some((label, value)) = item.split_once(':') {
+            let label = match label.trim() {
+                "agent" => "Agent",
+                "tools" => "Tools",
+                "errors" => "Errors",
+                "model calls" => "Model calls",
+                "tokens" => "Tokens",
+                other => other,
+            };
+            fields.push((label.to_string(), value.trim().to_string(), None));
+        }
+    }
+    (progress, fields, (!body.is_empty()).then_some(body))
+}
+
+fn set_history_scheduler_progress_id(block: &mut serde_json::Value, step_id: &str) {
+    let node_path = step_id
+        .strip_prefix("scheduler:")
+        .and_then(|value| value.rsplit_once(':').map(|(node_path, _)| node_path))
+        .unwrap_or(step_id);
+    if let serde_json::Value::Object(map) = block {
+        map.insert(
+            "id".to_string(),
+            serde_json::Value::String(format!("scheduler-progress:{node_path}")),
+        );
     }
 }
 
@@ -1109,6 +1177,79 @@ mod tests {
                 .and_then(|value| value.get("part_kind"))
                 .and_then(|value| value.as_str()),
             Some("assistant_reasoning")
+        );
+    }
+
+    #[test]
+    fn scheduler_step_history_reuses_card_id_and_exposes_typed_display_fields() {
+        let mut message = SessionMessage::assistant("ses_test");
+        for (part_id, part_type) in [
+            (
+                "prt_step_start",
+                PartType::StepStart {
+                    id: "scheduler:execute:3".to_string(),
+                    name: "worker · 3/16".to_string(),
+                },
+            ),
+            (
+                "prt_step_finish",
+                PartType::StepFinish {
+                    id: "scheduler:execute:3".to_string(),
+                    output: Some(
+                        "step 3/16 complete; agent: worker; tools: 2; errors: 0; model calls: 1; tokens: 42\nImplemented the parser."
+                            .to_string(),
+                    ),
+                },
+            ),
+        ] {
+            message.parts.push(MessagePart {
+                id: part_id.to_string(),
+                part_type,
+                created_at: chrono::Utc::now(),
+                message_id: Some(message.id.clone()),
+            });
+        }
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+        let start = info.parts[0]
+            .output_block
+            .as_ref()
+            .expect("step start block");
+        let finish = info.parts[1]
+            .output_block
+            .as_ref()
+            .expect("step finish block");
+
+        for block in [start, finish] {
+            assert_eq!(
+                block.get("event").and_then(|value| value.as_str()),
+                Some("scheduler_step")
+            );
+            assert_eq!(
+                block.get("id").and_then(|value| value.as_str()),
+                Some("scheduler-progress:execute")
+            );
+            assert_eq!(
+                block.get("title").and_then(|value| value.as_str()),
+                Some("Scheduler step 3/16")
+            );
+        }
+        assert_eq!(
+            finish.get("body").and_then(|value| value.as_str()),
+            Some("Implemented the parser.")
+        );
+        let fields = finish
+            .get("fields")
+            .and_then(|value| value.as_array())
+            .expect("typed fields");
+        assert_eq!(fields.len(), 5);
+        assert_eq!(
+            fields[0].get("label").and_then(|value| value.as_str()),
+            Some("Agent")
+        );
+        assert_eq!(
+            fields[0].get("value").and_then(|value| value.as_str()),
+            Some("worker")
         );
     }
 

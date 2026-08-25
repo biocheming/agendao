@@ -186,16 +186,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                     }
                 }
                 "session_event" => {
-                    let title = block.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let summary = block.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-                    let line = if summary.is_empty() {
-                        title.to_string()
-                    } else {
-                        format!("{title}: {summary}")
-                    };
-                    if !line.is_empty() {
-                        session.push_notice(bid, &line);
-                    }
+                    apply_session_event_block(block, bid, session);
                 }
                 "skill" => {
                     session.push_skill(bid, tool_name.unwrap_or(text));
@@ -398,6 +389,70 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
     }
 }
 
+/// Project a typed session event into its transcript presentation.
+///
+/// Live events and history restoration both call this authority. Scheduler
+/// progress receives a stable, upserted stage card; other events retain their
+/// compact notice presentation.
+pub(crate) fn apply_session_event_block(
+    block: &serde_json::Value,
+    fallback_id: &str,
+    session: &SessionStore,
+) {
+    let title = block
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let event = block
+        .get("event")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if event == "scheduler_step" {
+        let id = block
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(fallback_id);
+        let status = block
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("running");
+        let message = block
+            .get("body")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let fields = block
+            .get("fields")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|field| {
+                let label = field.get("label")?.as_str()?.trim();
+                let value = field.get("value")?.as_str()?.trim();
+                (!label.is_empty() && !value.is_empty()).then(|| StageField {
+                    label: label.to_string(),
+                    value: value.to_string(),
+                })
+            })
+            .collect();
+        session.push_stage(id, title, status, message, fields);
+        return;
+    }
+
+    let summary = block
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let line = if summary.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}: {summary}")
+    };
+    if !line.is_empty() {
+        session.push_notice(fallback_id, &line);
+    }
+}
+
 /// Map a wire status string to the store TodoStatus (same mapping as the
 /// one-shot REST fetch in keymap::eager_load_session_messages).
 pub fn todo_status_from_str(status: &str) -> TodoStatus {
@@ -545,6 +600,70 @@ mod tests {
             block: serde_json::json!({"kind": kind, "phase": phase, "text": text}),
             id: Some(id.into()),
             live_identity: None,
+        }
+    }
+
+    fn scheduler_step_block(
+        step: u32,
+        status: &str,
+        message: &str,
+        tools: Option<&str>,
+    ) -> FrontendEvent {
+        let mut fields = vec![serde_json::json!({"label": "Agent", "value": "worker"})];
+        if let Some(tools) = tools {
+            fields.push(serde_json::json!({"label": "Tools", "value": tools}));
+        }
+        FrontendEvent::OutputBlockAppended {
+            session_id: "s1".into(),
+            block: serde_json::json!({
+                "kind": "session_event",
+                "event": "scheduler_step",
+                "title": format!("Scheduler step {step}/16"),
+                "status": status,
+                "body": message,
+                "fields": fields,
+            }),
+            id: Some("scheduler-progress:execute".into()),
+            live_identity: None,
+        }
+    }
+
+    #[test]
+    fn scheduler_steps_replace_one_typed_card_in_place() {
+        let session = SessionStore::new();
+        apply_frontend_event(
+            &scheduler_step_block(1, "running", "first\nline two\nline three\nline four", None),
+            &session,
+        );
+        apply_frontend_event(
+            &scheduler_step_block(1, "complete", "first complete", Some("2")),
+            &session,
+        );
+        apply_frontend_event(
+            &scheduler_step_block(2, "running", "second step", None),
+            &session,
+        );
+
+        let messages = session.messages.get();
+        assert_eq!(messages.len(), 1, "all scheduler steps share one card");
+        match &messages[0] {
+            TranscriptBlock::StageUpdate {
+                id,
+                name,
+                status,
+                message,
+                fields,
+                fold,
+            } => {
+                assert_eq!(id, "scheduler-progress:execute");
+                assert_eq!(name, "Scheduler step 2/16");
+                assert_eq!(status, "running");
+                assert_eq!(message, "second step");
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].label, "Agent");
+                assert_eq!(*fold, FoldState::Truncated);
+            }
+            other => panic!("expected scheduler stage card, got {other:?}"),
         }
     }
 

@@ -27,6 +27,16 @@ pub struct TodoSummary {
     pub phase: String,    // e.g. "still thinking"
 }
 
+/// One human-readable fact shown beneath a stage card header.
+///
+/// The wire event may be JSON, but transcript state keeps the display
+/// contract typed so the renderer never falls back to showing JSON source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageField {
+    pub label: String,
+    pub value: String,
+}
+
 /// Stable, read-only runtime facts used by the M7 prompt summary. `None`
 /// means no topology snapshot has been observed for this session; it must not
 /// be rendered as a fabricated zero.
@@ -173,8 +183,13 @@ pub enum TranscriptBlock {
         id: String,
         name: String,
         status: String,
-        /// Optional JSON metadata rendered via JsonViewer
-        metadata: Option<String>,
+        /// Model-authored message for the current scheduler step.
+        message: String,
+        /// Compact, already-decoded facts such as agent/tools/errors/tokens.
+        fields: Vec<StageField>,
+        /// Scheduler cards default to a three-line preview and expand in
+        /// place via Space/click.
+        fold: FoldState,
     },
     AssistantMsg {
         id: String,
@@ -267,12 +282,23 @@ impl TranscriptBlock {
                     }
                 }
             }
-            TranscriptBlock::StageUpdate { metadata, .. } => {
-                let extra = metadata
-                    .as_ref()
-                    .map(|m| m.lines().count() as u16)
-                    .unwrap_or(0);
-                3 + extra
+            TranscriptBlock::StageUpdate {
+                message,
+                fields,
+                fold,
+                ..
+            } => {
+                let field_rows = u16::from(!fields.is_empty());
+                let total = message.lines().count();
+                match fold {
+                    FoldState::Folded => 1,
+                    FoldState::Truncated => {
+                        let body = FOLD_PREVIEW_LINES.min(total) as u16;
+                        let hint = u16::from(total > FOLD_PREVIEW_LINES);
+                        1 + field_rows + body + hint
+                    }
+                    FoldState::Expanded => 1 + field_rows + total as u16,
+                }
             }
             TranscriptBlock::TodoList { items, fold, .. } => match fold {
                 FoldState::Folded => 1, // header only

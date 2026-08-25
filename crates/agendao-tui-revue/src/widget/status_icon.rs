@@ -39,7 +39,7 @@ pub enum Status {
 pub fn stage_state(s: &str) -> StageState {
     match s.to_ascii_lowercase().as_str() {
         "running" => StageState::Running,
-        "done" => StageState::Done,
+        "done" | "complete" | "completed" => StageState::Done,
         "waiting" => StageState::Waiting,
         "cancelled" | "cancelling" => StageState::Cancelled,
         "blocked" => StageState::Blocked,
@@ -109,6 +109,8 @@ mod tests {
     #[test]
     fn stage_state_normalizes_case_and_variants() {
         assert_eq!(stage_state("Running"), StageState::Running);
+        assert_eq!(stage_state("Complete"), StageState::Done);
+        assert_eq!(stage_state("completed"), StageState::Done);
         assert_eq!(stage_state("cancelled"), StageState::Cancelled);
         assert_eq!(stage_state("Cancelling"), StageState::Cancelled);
         assert_eq!(stage_state("???"), StageState::Idle);

@@ -1413,13 +1413,15 @@ pub(crate) fn layout_block_ctx(
         },
 
         // ── Stage Update ──
-        // ◆ 符号标记（与 ◈ Todo / ⎿ ToolResult 同族轻量容器），去四面框：
-        // 统一容器手法（金律——唯一成形语法），避免框/背景/竖线三种混用。
-        // height = 标题行(1) + 非空 metadata 行数。
+        // A scheduler run owns one stable card per node. Incoming steps replace
+        // this block in place; the renderer only formats typed fields/message
+        // and never prints the event JSON source.
         TranscriptBlock::StageUpdate {
             name,
             status,
-            metadata,
+            message,
+            fields,
+            fold,
             ..
         } => {
             let (status_icon, status_color) = {
@@ -1429,23 +1431,45 @@ pub(crate) fn layout_block_ctx(
             let mut stack = vstack().gap(0).child_sized(
                 hstack()
                     .gap(1)
-                    .child_sized(Text::new(" ◆ ").fg(colors::FG_MUTED()), 3)
-                    .child(
-                        Text::new(format!("stage · {}", name))
-                            .bold()
-                            .fg(colors::FG_PRIMARY()),
-                    )
+                    .child_sized(Text::new(" │ ").fg(status_color), 3)
+                    .child(Text::new(name).bold().fg(colors::FG_PRIMARY()))
                     .child(Text::new(format!(" {} {}", status_icon, status)).fg(status_color)),
                 1,
             );
             let mut height = 1u16;
-            if let Some(ref detail) = metadata {
-                for line in detail.lines() {
-                    if line.is_empty() {
-                        continue;
-                    }
+
+            if !matches!(fold, FoldState::Folded) {
+                if !fields.is_empty() {
+                    let facts = fields
+                        .iter()
+                        .map(|field| format!("{} {}", field.label, field.value))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
                     stack = stack
-                        .child_sized(Text::new(format!("   {}", line)).fg(colors::FG_MUTED()), 1);
+                        .child_sized(Text::new(format!(" │ {facts}")).fg(colors::FG_MUTED()), 1);
+                    height += 1;
+                }
+
+                let total = message.lines().count();
+                let limit = match fold {
+                    FoldState::Truncated => FOLD_PREVIEW_LINES.min(total),
+                    FoldState::Expanded => total,
+                    FoldState::Folded => 0,
+                };
+                for line in message.lines().take(limit) {
+                    stack = stack
+                        .child_sized(Text::new(format!(" │ {line}")).fg(colors::FG_PRIMARY()), 1);
+                    height += 1;
+                }
+                if matches!(fold, FoldState::Truncated) && total > FOLD_PREVIEW_LINES {
+                    stack = stack.child_sized(
+                        Text::new(format!(
+                            " │ … {} more lines · Space/click to expand",
+                            total - FOLD_PREVIEW_LINES
+                        ))
+                        .fg(colors::FG_MUTED()),
+                        1,
+                    );
                     height += 1;
                 }
             }
@@ -1511,7 +1535,9 @@ fn truncate_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use crate::store::types::{DiffPreview, FoldState, TodoItem, TodoStatus, ToolPhase};
+    use crate::store::types::{
+        DiffPreview, FoldState, StageField, TodoItem, TodoStatus, ToolPhase,
+    };
 
     fn blk(b: TranscriptBlock) -> BlockLayout {
         layout_block(&b, 0)
@@ -1814,14 +1840,19 @@ mod layout_tests {
     }
 
     #[test]
-    fn stage_update_includes_metadata_rows() {
+    fn stage_update_previews_message_and_formats_fields() {
         let b = TranscriptBlock::StageUpdate {
             id: "s".into(),
-            name: "p".into(),
-            status: "Running".into(),
-            metadata: Some("l1\nl2".into()),
+            name: "Scheduler step 2/16".into(),
+            status: "running".into(),
+            message: "l1\nl2\nl3\nl4".into(),
+            fields: vec![StageField {
+                label: "Agent".into(),
+                value: "worker".into(),
+            }],
+            fold: FoldState::Truncated,
         };
-        assert_eq!(blk(b).height, 3); // 标题行(1) + 2 metadata（去框后）
+        assert_eq!(blk(b).height, 6); // header + fields + 3 preview + expand hint
     }
 
     #[test]

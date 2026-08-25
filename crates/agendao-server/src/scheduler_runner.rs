@@ -21,7 +21,9 @@ use agendao_orchestrator::selector::{
     LockedSelection, SchedulerChoice, SelectionRequest, SelectionSource, TaskShape,
 };
 use agendao_orchestrator::templates::TemplateParameters;
-use agendao_output_blocks::{OutputBlock, ReasoningBlock, StatusBlock, ToolBlock};
+use agendao_output_blocks::{
+    OutputBlock, ReasoningBlock, SessionEventBlock, SessionEventField, ToolBlock,
+};
 use agendao_provider::{Message, Provider, ToolDefinition};
 use agendao_server_core::runtime_events::{ServerEvent, ToolCallPhase};
 use agendao_skill::{infer_toolsets_from_tools, SkillConditions, SkillRuntimeResolver};
@@ -105,6 +107,10 @@ struct SchedulerAgentObserver {
     /// ledger on the scheduler path (the session-layer summary is only
     /// written by the direct path).
     step_tallies: std::sync::Mutex<StepToolTallies>,
+    /// Current visible model message for each scheduler node. This is the
+    /// content authority for the single in-place scheduler progress card;
+    /// text deltas replace that card instead of appending transcript rows.
+    step_messages: std::sync::Mutex<HashMap<String, StepProgress>>,
     run_cancellation: CancellationToken,
     auto_replan: bool,
 }
@@ -120,6 +126,11 @@ struct StepToolTally {
 #[derive(Default)]
 struct StepToolTallies {
     by_node: HashMap<String, StepToolTally>,
+}
+
+struct StepProgress {
+    step: u32,
+    message: String,
 }
 
 impl StepToolTallies {
@@ -141,6 +152,35 @@ impl StepToolTallies {
 
     fn finish(&mut self, node_path: &str) -> StepToolTally {
         self.by_node.remove(node_path).unwrap_or_default()
+    }
+}
+
+impl SchedulerAgentObserver {
+    fn emit_step_progress(
+        &self,
+        context: &AgentObservationContext<'_>,
+        step: u32,
+        status: &str,
+        message: Option<&str>,
+        mut fields: Vec<SessionEventField>,
+    ) {
+        fields.insert(
+            0,
+            scheduler_progress_field("Agent", context.agent.as_str().to_string()),
+        );
+        let block = OutputBlock::SessionEvent(SessionEventBlock {
+            event: "scheduler_step".to_string(),
+            title: format!("Scheduler step {step}/{}", context.max_steps),
+            status: Some(status.to_string()),
+            summary: None,
+            fields,
+            body: message.map(ToOwned::to_owned),
+        });
+        let id = scheduler_progress_id(context.node_path);
+        crate::session_runtime::events::broadcast_server_event(
+            self.state.as_ref(),
+            &ServerEvent::output_block(self.session_id.clone(), &block, Some(&id), None),
+        );
     }
 }
 
@@ -463,6 +503,16 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             tallies.begin(context.node_path);
         }
+        self.step_messages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                context.node_path.to_string(),
+                StepProgress {
+                    step,
+                    message: String::new(),
+                },
+            );
         let step_id = scheduler_step_id(context.node_path, step);
         {
             let mut sessions = self.state.sessions.lock().await;
@@ -507,15 +557,7 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 serde_json::json!(context.max_steps),
             );
         }
-        let status = OutputBlock::Status(StatusBlock::normal(format!(
-            "Scheduler step {step}/{} started · {}",
-            context.max_steps,
-            context.agent.as_str()
-        )));
-        crate::session_runtime::events::broadcast_server_event(
-            self.state.as_ref(),
-            &ServerEvent::output_block(self.session_id.clone(), &status, None, None),
-        );
+        self.emit_step_progress(context, step, "running", None, Vec::new());
         self.state
             .runtime_telemetry
             .update_scheduler_node(
@@ -554,14 +596,26 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             tallies.finish(context.node_path)
         };
-        let output = format!(
-            "step {step}/{} complete; tools: {}; errors: {}; model calls: {}; tokens: {}",
+        let message = self
+            .step_messages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(context.node_path)
+            .map(|progress| progress.message)
+            .filter(|message| !message.trim().is_empty());
+        let metrics = format!(
+            "step {step}/{} complete; agent: {}; tools: {}; errors: {}; model calls: {}; tokens: {}",
             context.max_steps,
+            context.agent.as_str(),
             tally.success_count + tally.error_count,
             tally.error_count,
             usage.model_calls,
             usage.total_tokens()
         );
+        let output = match message.as_deref() {
+            Some(message) => format!("{metrics}\n{message}"),
+            None => metrics.clone(),
+        };
         let step_id = scheduler_step_id(context.node_path, step);
         {
             let mut sessions = self.state.sessions.lock().await;
@@ -597,13 +651,20 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 serde_json::json!(step),
             );
         }
-        let status = OutputBlock::Status(StatusBlock::success(format!(
-            "Scheduler step {step}/{} complete",
-            context.max_steps
-        )));
-        crate::session_runtime::events::broadcast_server_event(
-            self.state.as_ref(),
-            &ServerEvent::output_block(self.session_id.clone(), &status, None, None),
+        self.emit_step_progress(
+            context,
+            step,
+            "complete",
+            message.as_deref(),
+            vec![
+                scheduler_progress_field(
+                    "Tools",
+                    (tally.success_count + tally.error_count).to_string(),
+                ),
+                scheduler_progress_field("Errors", tally.error_count.to_string()),
+                scheduler_progress_field("Model calls", usage.model_calls.to_string()),
+                scheduler_progress_field("Tokens", usage.total_tokens().to_string()),
+            ],
         );
         crate::routes::session::session_crud::persist_session_if_enabled(
             &self.state,
@@ -803,9 +864,31 @@ impl AgentLoopObserver for SchedulerAgentObserver {
 
     async fn assistant_turn(
         &self,
-        _context: &AgentObservationContext<'_>,
+        context: &AgentObservationContext<'_>,
         turn: &AssistantTurn,
     ) -> Result<(), String> {
+        if let Some(content) = turn
+            .content
+            .as_deref()
+            .filter(|content| !content.is_empty())
+        {
+            let step = {
+                let mut messages = self
+                    .step_messages
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let progress = messages
+                    .entry(context.node_path.to_string())
+                    .or_insert_with(|| StepProgress {
+                        step: 1,
+                        message: String::new(),
+                    });
+                progress.message.clear();
+                progress.message.push_str(content);
+                progress.step
+            };
+            self.emit_step_progress(context, step, "running", Some(content), Vec::new());
+        }
         // 收束 reasoning 到 assistant message 的唯一 reasoning part
         //（水律·回流记账：reasoning 是 message 语义的一部分，不是仅展示的
         //  旁路；add_reasoning 追加到既有 part，跨 step 连续累积）。
@@ -824,6 +907,32 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 })?;
             assistant.add_reasoning(reasoning);
         }
+        Ok(())
+    }
+
+    async fn text_delta(
+        &self,
+        context: &AgentObservationContext<'_>,
+        text: &str,
+    ) -> Result<(), String> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let (step, message) = {
+            let mut messages = self
+                .step_messages
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let progress = messages
+                .entry(context.node_path.to_string())
+                .or_insert_with(|| StepProgress {
+                    step: 1,
+                    message: String::new(),
+                });
+            progress.message.push_str(text);
+            (progress.step, progress.message.clone())
+        };
+        self.emit_step_progress(context, step, "running", Some(&message), Vec::new());
         Ok(())
     }
 
@@ -855,6 +964,18 @@ impl AgentLoopObserver for SchedulerAgentObserver {
 
 fn scheduler_step_id(node_path: &str, step: u32) -> String {
     format!("scheduler:{node_path}:{step}")
+}
+
+fn scheduler_progress_id(node_path: &str) -> String {
+    format!("scheduler-progress:{node_path}")
+}
+
+fn scheduler_progress_field(label: &str, value: String) -> SessionEventField {
+    SessionEventField {
+        label: label.to_string(),
+        value,
+        tone: None,
+    }
 }
 
 type SchedulerSkillWriteMetadata<'a> = (
@@ -1069,6 +1190,7 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
         error_tool_call_count: AtomicU64::new(0),
         skill_write_count: AtomicU64::new(0),
         step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+        step_messages: std::sync::Mutex::new(HashMap::new()),
         run_cancellation,
         auto_replan,
     };
@@ -2632,6 +2754,7 @@ mod tests {
             error_tool_call_count: AtomicU64::new(0),
             skill_write_count: AtomicU64::new(0),
             step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+            step_messages: std::sync::Mutex::new(HashMap::new()),
             run_cancellation: CancellationToken::new(),
             auto_replan: false,
         };
@@ -3261,6 +3384,7 @@ mod tests {
             error_tool_call_count: AtomicU64::new(0),
             skill_write_count: AtomicU64::new(0),
             step_tallies: std::sync::Mutex::new(StepToolTallies::default()),
+            step_messages: std::sync::Mutex::new(HashMap::new()),
             run_cancellation: CancellationToken::new(),
             auto_replan: false,
         };
