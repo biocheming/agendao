@@ -131,6 +131,8 @@ pub struct ManagedModelOverrideInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
@@ -1328,6 +1330,7 @@ async fn list_managed_providers(
                             base_url: configured_model.base_url.clone(),
                             family: configured_model.family.clone(),
                             reasoning: configured_model.reasoning,
+                            reasoning_effort: configured_model.reasoning_effort.clone(),
                             tool_call: configured_model.tool_call,
                             headers: configured_model.headers.clone(),
                             options: configured_model

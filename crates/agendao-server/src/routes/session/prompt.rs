@@ -39,6 +39,7 @@ use agendao_command_render::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock,
 };
 use agendao_multimodal::{MultimodalAuthority, RuntimeMultimodalExplain, SessionPartAdapter};
+use agendao_provider::ReasoningEffort;
 use agendao_server_core::runtime_control::SessionRunStatus;
 use agendao_server_core::runtime_events::ReconcileReason;
 use agendao_session::prompt::assistant_text_live_identity;
@@ -280,6 +281,7 @@ fn task_ledger_auto_resume_request(
         source_surface: Some(agendao_types::MessageSourceSurface::Direct),
         model: Some(format!("{provider}/{model}")),
         variant,
+        reasoning_effort: None,
         // Keep SchedulerChoice::Auto authoritative for every continuation;
         // an explicit agent would force the direct path and could skip the
         // verifier needed to earn a completion checkpoint.
@@ -315,6 +317,20 @@ fn task_ledger_auto_resume_message(
 
 fn is_task_ledger_auto_continuation(request: &SessionPromptRequest) -> bool {
     request.auto_continuation_goal_generation.is_some()
+}
+
+fn parse_request_reasoning_effort(raw: Option<&str>) -> Result<Option<ReasoningEffort>> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw.eq_ignore_ascii_case("auto") || raw.eq_ignore_ascii_case("inherit") {
+        return Ok(None);
+    }
+    raw.parse::<ReasoningEffort>().map(Some).map_err(|_| {
+        ApiError::BadRequest(format!(
+            "invalid reasoning_effort `{raw}` (expected none/minimal/low/medium/high/xhigh/max/ultra)"
+        ))
+    })
 }
 
 async fn prepare_task_ledger_auto_continuation(
@@ -1128,6 +1144,8 @@ pub(crate) struct SessionPromptRequest {
     pub source_surface: Option<agendao_types::MessageSourceSurface>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub agent: Option<String>,
     pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub command: Option<String>,
@@ -1147,6 +1165,7 @@ impl SessionPromptRequest {
         arguments: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        reasoning_effort: Option<String>,
         agent: Option<String>,
         scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     ) -> Self {
@@ -1159,6 +1178,7 @@ impl SessionPromptRequest {
             source_surface: Some(agendao_types::MessageSourceSurface::Web),
             model,
             variant,
+            reasoning_effort,
             agent,
             scheduler,
             command: Some(command),
@@ -1180,6 +1200,7 @@ impl SessionPromptRequest {
             source_surface: None,
             model: None,
             variant: None,
+            reasoning_effort: None,
             agent: None,
             scheduler: None,
             command: None,
@@ -1649,6 +1670,9 @@ async fn session_prompt_inner(
             requested_scheduler: &effective_scheduler,
             request_model: req.model.as_deref().or(resolved_prompt.model.as_deref()),
             request_variant: req.variant.as_deref(),
+            request_reasoning_effort: parse_request_reasoning_effort(
+                req.reasoning_effort.as_deref(),
+            )?,
             route: "session",
         })
         .await?;
@@ -1702,6 +1726,7 @@ async fn session_prompt_inner(
     let task_state = state.clone();
     let session_id = id.clone();
     let task_variant = req.variant.clone();
+    let task_reasoning_effort = req.reasoning_effort.clone();
     let task_agent = resolved_agent.as_ref().map(|agent| agent.name.clone());
     let task_model = model_id.clone();
     let task_provider_client = provider.clone();
@@ -1878,6 +1903,16 @@ async fn session_prompt_inner(
             session.insert_metadata("model_variant", serde_json::json!(variant));
         } else {
             session.remove_metadata("model_variant");
+        }
+        if let Some(reasoning_effort) = task_reasoning_effort.as_deref() {
+            if reasoning_effort.trim().is_empty() {
+                session.remove_metadata("model_reasoning_effort");
+            } else {
+                session.insert_metadata(
+                    "model_reasoning_effort",
+                    serde_json::json!(reasoning_effort.trim()),
+                );
+            }
         }
         session.insert_metadata("model_provider", serde_json::json!(&task_provider));
         session.insert_metadata("model_id", serde_json::json!(&task_model));

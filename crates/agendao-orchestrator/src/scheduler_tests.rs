@@ -755,6 +755,68 @@ impl ModelBackend for TwoToolModel {
     }
 }
 
+#[derive(Default)]
+struct ReusedToolCallIdModel {
+    calls: AtomicU32,
+}
+
+#[async_trait]
+impl ModelBackend for ReusedToolCallIdModel {
+    async fn invoke(
+        &self,
+        _request: ModelRequest,
+        _context: &AgentObservationContext<'_>,
+        _observer: &dyn AgentLoopObserver,
+    ) -> Result<AssistantTurn, ModelBackendError> {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if call < 2 {
+            return Ok(AssistantTurn {
+                content: None,
+                reasoning: None,
+                tool_calls: vec![ToolCall {
+                    id: "tool-call-0".to_string(),
+                    tool: ToolId::from("read"),
+                    arguments: serde_json::json!({"step": call + 1}),
+                }],
+                usage: Usage::default(),
+                finish_reason: Some("tool-calls".to_string()),
+                reasoning_continuation: None,
+            });
+        }
+        Ok(AssistantTurn {
+            content: Some("done".to_string()),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+            finish_reason: Some("stop".to_string()),
+            reasoning_continuation: None,
+        })
+    }
+}
+
+#[derive(Default)]
+struct RecordingToolIds(Mutex<Vec<String>>);
+
+#[async_trait]
+impl ToolBackend for RecordingToolIds {
+    async fn execute(
+        &self,
+        _context: &AgentObservationContext<'_>,
+        call: &ToolCall,
+    ) -> Result<ToolExecution, String> {
+        self.0
+            .lock()
+            .expect("tool id mutex poisoned")
+            .push(call.id.clone());
+        Ok(ToolExecution {
+            output: "ok".to_string(),
+            title: None,
+            metadata: None,
+            is_error: false,
+        })
+    }
+}
+
 struct PendingModel;
 
 #[async_trait]
@@ -1124,6 +1186,33 @@ async fn agent_loop_enforces_the_validated_node_step_limit() {
         error,
         EngineError::Agent(AgentLoopError::StepLimitExceeded { steps: 1 })
     );
+}
+
+#[tokio::test]
+async fn scheduler_namespaces_provider_tool_call_ids_by_step() {
+    let model = ReusedToolCallIdModel::default();
+    let tools = RecordingToolIds::default();
+    let evaluator = TestEvaluator {
+        pass_after: 1,
+        calls: AtomicU32::new(0),
+    };
+    let capabilities = TestCapabilities::default();
+
+    let outcome = test_engine(&model, &tools, &evaluator, &capabilities)
+        .run(
+            &validated(single_agent_blueprint()),
+            run_request("reuse provider ids"),
+            CancellationFlag::default(),
+        )
+        .await
+        .expect("scheduler run");
+
+    assert_eq!(outcome.result.output.as_deref(), Some("done"));
+    let ids = tools.0.lock().expect("tool id mutex poisoned");
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    assert!(ids[0].ends_with(":1:tool-call-0"));
+    assert!(ids[1].ends_with(":2:tool-call-0"));
 }
 
 #[tokio::test]

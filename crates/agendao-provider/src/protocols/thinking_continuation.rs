@@ -79,6 +79,13 @@ pub fn thinking_value_disabled(value: &Value) -> bool {
 }
 
 pub fn request_explicitly_enables_thinking(request: &ChatRequest) -> bool {
+    if request
+        .reasoning_effort
+        .is_some_and(crate::ReasoningEffort::enabled)
+    {
+        return true;
+    }
+
     let Some(options) = request.provider_options.as_ref() else {
         return false;
     };
@@ -102,6 +109,13 @@ pub fn request_explicitly_enables_thinking(request: &ChatRequest) -> bool {
 }
 
 pub fn request_explicitly_disables_thinking(request: &ChatRequest) -> bool {
+    if request
+        .reasoning_effort
+        .is_some_and(|effort| !effort.enabled())
+    {
+        return true;
+    }
+
     let Some(options) = request.provider_options.as_ref() else {
         return false;
     };

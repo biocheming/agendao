@@ -11,6 +11,7 @@ pub mod interaction_contract;
 pub mod interaction_feedback;
 pub mod markdown;
 pub mod queue_editor;
+pub mod reasoning;
 pub mod screen;
 pub mod shadow;
 pub mod store;

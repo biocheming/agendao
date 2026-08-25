@@ -942,6 +942,10 @@ pub struct PromptRequest {
     pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    /// Per-prompt/session reasoning override. Empty string explicitly clears
+    /// a session override; omission inherits the configured model default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// Structured command hint (e.g. "run", "tui").  For diagnostics and
     /// routing; not directly part of the model-visible text.
     pub command: Option<String>,

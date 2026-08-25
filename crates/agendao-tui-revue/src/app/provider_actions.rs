@@ -186,9 +186,13 @@ impl AppHandler {
             output: s.max_output_tokens,
         });
         // reasoning effort:字段可见(reasoning 模型/Add)时按表单值覆写
-        // (`default` → None 清除显式设置);不可见时保留 prefill 原值不误清。
+        // (`default` → explicit empty string clears the merge-patch field);
+        // 不可见时保留 prefill 原值不误清。
         if s.reasoning_effort_visible {
-            model.reasoning_effort = s.reasoning_effort.clone();
+            // The config PUT is a merge patch. Use an explicit empty string
+            // for "default" so the server can clear an existing override;
+            // omitting the field would silently preserve the old value.
+            model.reasoning_effort = Some(s.reasoning_effort.clone().unwrap_or_default());
         }
         // timeout / stream stall:表单留空 = 清除(None),与 context/output 同口径。
         model.timeout_secs = s.timeout_secs;

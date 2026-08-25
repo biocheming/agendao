@@ -85,6 +85,7 @@ impl UnixSocketTransport {
             scheduler: options.scheduler,
             model: options.model,
             variant: options.variant,
+            reasoning_effort: options.reasoning_effort,
             continue_last: options.continue_last,
             command: options.command,
         };
@@ -785,6 +786,8 @@ struct PromptRequest {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
     continue_last: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<String>,
@@ -804,6 +807,7 @@ mod tests {
             scheduler: Some(SchedulerChoice::Auto),
             model: Some("openai/gpt-5".to_string()),
             variant: Some("fast".to_string()),
+            reasoning_effort: Some("high".to_string()),
             continue_last: false,
             command: Some("run".to_string()),
         };

@@ -131,6 +131,14 @@ struct StepToolTallies {
 struct StepProgress {
     step: u32,
     message: String,
+    last_emitted_len: usize,
+}
+
+const SCHEDULER_PROGRESS_EMIT_BYTES: usize = 256;
+
+fn should_emit_scheduler_progress(last_emitted_len: usize, current_len: usize) -> bool {
+    last_emitted_len == 0
+        || current_len.saturating_sub(last_emitted_len) >= SCHEDULER_PROGRESS_EMIT_BYTES
 }
 
 impl StepToolTallies {
@@ -511,6 +519,7 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 StepProgress {
                     step,
                     message: String::new(),
+                    last_emitted_len: 0,
                 },
             );
         let step_id = scheduler_step_id(context.node_path, step);
@@ -882,9 +891,11 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                     .or_insert_with(|| StepProgress {
                         step: 1,
                         message: String::new(),
+                        last_emitted_len: 0,
                     });
                 progress.message.clear();
                 progress.message.push_str(content);
+                progress.last_emitted_len = progress.message.len();
                 progress.step
             };
             self.emit_step_progress(context, step, "running", Some(content), Vec::new());
@@ -918,7 +929,7 @@ impl AgentLoopObserver for SchedulerAgentObserver {
         if text.is_empty() {
             return Ok(());
         }
-        let (step, message) = {
+        let update = {
             let mut messages = self
                 .step_messages
                 .lock()
@@ -928,11 +939,19 @@ impl AgentLoopObserver for SchedulerAgentObserver {
                 .or_insert_with(|| StepProgress {
                     step: 1,
                     message: String::new(),
+                    last_emitted_len: 0,
                 });
             progress.message.push_str(text);
-            (progress.step, progress.message.clone())
+            let should_emit =
+                should_emit_scheduler_progress(progress.last_emitted_len, progress.message.len());
+            should_emit.then(|| {
+                progress.last_emitted_len = progress.message.len();
+                (progress.step, progress.message.clone())
+            })
         };
-        self.emit_step_progress(context, step, "running", Some(&message), Vec::new());
+        if let Some((step, message)) = update {
+            self.emit_step_progress(context, step, "running", Some(&message), Vec::new());
+        }
         Ok(())
     }
 
@@ -961,6 +980,10 @@ impl AgentLoopObserver for SchedulerAgentObserver {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "scheduler_runner_progress_tests.rs"]
+mod scheduler_runner_progress_tests;
 
 fn scheduler_step_id(node_path: &str, step: u32) -> String {
     format!("scheduler:{node_path}:{step}")
@@ -2762,6 +2785,7 @@ mod tests {
         let context = AgentObservationContext {
             node_path: "execute",
             agent: &agent,
+            step: 1,
             max_steps: 16,
         };
         let call = ToolCall {
@@ -3392,6 +3416,7 @@ mod tests {
         let context = AgentObservationContext {
             node_path: "execute",
             agent: &agent,
+            step: 1,
             max_steps: 16,
         };
         let turn = AssistantTurn {

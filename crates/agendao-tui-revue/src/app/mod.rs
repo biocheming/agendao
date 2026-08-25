@@ -948,7 +948,7 @@ fn prompt_geometry(
         Route::Session { .. } => {
             // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(hint1+内容行+底线1)，
             // 输入区上沿 = height - (prompt_bar_h + 2)（覆盖 hint 行,浮层锚定不遮输入区）。
-            let prompt_bar_h = prompt_input_rows + 2 + details_row_h;
+            let prompt_bar_h = prompt_input_rows + 2 + details_row_h + 1;
             PromptGeom {
                 x: main_x + PAD,
                 y_top: area.y + area.height.saturating_sub(prompt_bar_h + 2),
@@ -1467,7 +1467,7 @@ impl View for RootView {
         let details_row_h = u16::from(!details_summary.is_empty());
         let prompt_w = prompt_geometry(&route, ctx.area, sidebar_on, 0, details_row_h).w;
         let prompt_input_rows = h.prompt.visible_height_for(prompt_w);
-        let prompt_bar_h = prompt_input_rows + 2 + details_row_h;
+        let prompt_bar_h = prompt_input_rows + 2 + details_row_h + 1;
         // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+info1+status1=5）
         // - prompt_bar(prompt_bar_h) - attachment_h。
         let transcript_viewport_h: u16 = ctx
@@ -2131,6 +2131,12 @@ impl View for RootView {
         };
         let input_widget = input_border.child(h.prompt.view(cursor_blink_on));
         // hint: 1 row, only_bottom 输入框: 内容行(自适应,封顶10) + 底线 1。
+        let reasoning_value = h
+            .store
+            .selected_reasoning_effort
+            .get()
+            .or_else(|| h.active_session.session_reasoning_effort.get());
+        let reasoning_label = crate::reasoning::label(reasoning_value.as_deref());
         let prompt_bar = vstack()
             .element_id("prompt") // 区域失效定位（输入/spinner 变只重画此条）
             .child_sized(
@@ -2142,7 +2148,14 @@ impl View for RootView {
                 details_row_h,
             )
             .child_sized(hint_text, 1)
-            .child_sized(input_widget, prompt_input_rows + 1);
+            .child_sized(input_widget, prompt_input_rows + 1)
+            .child_sized(
+                Text::new(format!(
+                    " Reasoning: {reasoning_label} · Ctrl+Alt+E to change"
+                ))
+                .fg(colors::FG_MUTED()),
+                1,
+            );
 
         // ── 会话信息条（prompt 下方,status 上方）──
         // 上行/下行 token（session 累计）、cache、成本、context 使用进度条。

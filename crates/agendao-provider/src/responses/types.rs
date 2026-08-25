@@ -49,6 +49,9 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
+    Ultra,
 }
 
 /// Reasoning summary mode.

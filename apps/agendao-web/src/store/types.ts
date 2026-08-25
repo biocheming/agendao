@@ -95,6 +95,8 @@ export interface AgendaoState {
   slashCommands: CommandApiSpec[];
   workspaceContext: WorkspaceContextRecord | null;
   selectedModel: string;
+  /** Composer-local request override: empty string means inherit model config. */
+  selectedReasoningEffort: string;
   selectedMode: string;
   showThinking: boolean;
   serviceRootPath: string;
@@ -107,6 +109,7 @@ export interface AgendaoState {
   setSlashCommands: (commands: SetStateFn<CommandApiSpec[]>) => void;
   setWorkspaceContext: (context: SetStateFn<WorkspaceContextRecord | null>) => void;
   setSelectedModel: (model: SetStateFn<string>) => void;
+  setSelectedReasoningEffort: (effort: SetStateFn<string>) => void;
   setSelectedMode: (mode: SetStateFn<string>) => void;
   setShowThinking: (show: SetStateFn<boolean>) => void;
   setServiceRootPath: (path: SetStateFn<string>) => void;

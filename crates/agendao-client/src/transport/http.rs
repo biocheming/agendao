@@ -38,6 +38,7 @@ impl HttpTransport {
                     scheduler: options.scheduler,
                     model: options.model,
                     variant: options.variant,
+                    reasoning_effort: options.reasoning_effort,
                     ingress_source: options.ingress_source,
                     idempotency_key: options.idempotency_key,
                     source_origin: options.source_origin,

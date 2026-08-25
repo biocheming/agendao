@@ -39,6 +39,10 @@ pub struct AppStore {
     // 土：当前选中 model/agent/mode（dispatch 发 prompt 时带上；
     // 可选项列表的活真相在各 Select dialog 内部，不在此处重复持有）
     pub selected_model: Signal<Option<String>>,
+    /// Explicit prompt-bar reasoning override. `None`/empty means inherit;
+    /// the selected value is sent with the next prompt and never changes an
+    /// already-running request.
+    pub selected_reasoning_effort: Signal<Option<String>>,
     pub selected_agent: Signal<Option<String>>,
     pub selected_mode: Signal<Option<String>>,
 
@@ -157,6 +161,7 @@ impl AppStore {
                     .unwrap_or_default(),
             ),
             selected_model: signal(None),
+            selected_reasoning_effort: signal(None),
             selected_agent: signal(None),
             selected_mode: signal(None),
             session_list: signal(Vec::new()),

@@ -16,6 +16,7 @@ pub mod profile;
 pub mod protocol;
 pub mod protocols;
 pub mod provider;
+pub mod reasoning;
 pub mod registry;
 pub mod responses;
 pub mod responses_convert;
@@ -51,6 +52,7 @@ pub use profile::*;
 pub use protocol::*;
 pub use protocols::*;
 pub use provider::*;
+pub use reasoning::{clamp_effort, openai_compatible_efforts};
 pub use stream::*;
 pub use tools::*;
 pub use transform::{

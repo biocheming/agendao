@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use agendao_server_core::frontend_events::{FrontendBusEvent, FrontendEvent};
 use agendao_types::{LiveMessagePartIdentity, LivePartPhase};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::live_snapshot::{coalesced_text_field, LiveSnapshotAccumulator};
@@ -20,8 +20,9 @@ pub fn spawn_local_session_events(
     cancel: CancellationToken,
 ) -> mpsc::UnboundedReceiver<FrontendEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
+    let event_rx = state.frontend_bus.subscribe();
     tokio::spawn(async move {
-        local_session_event_loop(&state, &session_id, tx, cancel).await;
+        local_session_event_loop(event_rx, &session_id, tx, cancel).await;
     });
     rx
 }
@@ -37,8 +38,9 @@ pub fn spawn_local_frontend_events(
     cancel: CancellationToken,
 ) -> mpsc::UnboundedReceiver<FrontendEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
+    let event_rx = state.frontend_bus.subscribe();
     tokio::spawn(async move {
-        local_frontend_event_loop(&state, tx, cancel).await;
+        local_frontend_event_loop(event_rx, tx, cancel).await;
     });
     rx
 }
@@ -53,20 +55,28 @@ fn into_owned_event(bus: Arc<FrontendBusEvent>) -> FrontendEvent {
 }
 
 async fn local_session_event_loop(
-    state: &Arc<ServerState>,
+    mut event_rx: broadcast::Receiver<Arc<FrontendBusEvent>>,
     session_id: &str,
     tx: mpsc::UnboundedSender<FrontendEvent>,
     cancel: CancellationToken,
 ) {
-    let mut event_rx = state.frontend_bus.subscribe();
     let mut live_output_accum = LiveSnapshotAccumulator::default();
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             recv = event_rx.recv() => {
-                let Ok(bus) = recv else {
-                    break;
+                let bus = match recv {
+                    Ok(bus) => bus,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            session_id,
+                            "local session frontend receiver lagged; continuing from retained events"
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 };
                 // 类型安全的进程内通道:直接在 borrowed 事件上做 session 过滤,
                 // 只有命中的事件才取回 owned 值进入 coalesce —— 不再像旧实现
@@ -87,19 +97,26 @@ async fn local_session_event_loop(
 }
 
 async fn local_frontend_event_loop(
-    state: &Arc<ServerState>,
+    mut event_rx: broadcast::Receiver<Arc<FrontendBusEvent>>,
     tx: mpsc::UnboundedSender<FrontendEvent>,
     cancel: CancellationToken,
 ) {
-    let mut event_rx = state.frontend_bus.subscribe();
     let mut live_output_accum = LiveSnapshotAccumulator::default();
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             recv = event_rx.recv() => {
-                let Ok(bus) = recv else {
-                    break;
+                let bus = match recv {
+                    Ok(bus) => bus,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "local frontend receiver lagged; continuing from retained events"
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 };
                 let frontend_event =
                     coalesce_live_output_block(into_owned_event(bus), &mut live_output_accum);
@@ -491,6 +508,58 @@ mod tests {
             );
         }
         cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn local_frontend_receiver_survives_broadcast_lag() {
+        let (bus_tx, _) = tokio::sync::broadcast::channel(2);
+        let event_rx = bus_tx.subscribe();
+
+        bus_tx
+            .send(bus_envelope(tool_upsert("ses_a", "skipped")))
+            .expect("send skipped event");
+        bus_tx
+            .send(bus_envelope(tool_upsert("ses_a", "retained-1")))
+            .expect("send first retained event");
+        bus_tx
+            .send(bus_envelope(tool_upsert("ses_a", "retained-2")))
+            .expect("send second retained event");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = tokio::spawn(super::local_frontend_event_loop(
+            event_rx,
+            tx,
+            cancel.clone(),
+        ));
+
+        for expected_id in ["retained-1", "retained-2"] {
+            let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("retained event within timeout")
+                .expect("local frontend channel remains open after lag");
+            assert!(matches!(
+                event,
+                FrontendEvent::ToolCallUpsert { tool_call_id, .. }
+                    if tool_call_id == expected_id
+            ));
+        }
+
+        bus_tx
+            .send(bus_envelope(tool_upsert("ses_a", "after-lag")))
+            .expect("send event after lag recovery");
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("post-lag event within timeout")
+            .expect("local frontend channel remains open after recovery");
+        assert!(matches!(
+            event,
+            FrontendEvent::ToolCallUpsert { tool_call_id, .. }
+                if tool_call_id == "after-lag"
+        ));
+
+        cancel.cancel();
+        task.await.expect("local frontend task joins");
     }
 
     /// 客户端断开（rx 被 drop）后,bus bridge 任务必须在下一个事件到达时

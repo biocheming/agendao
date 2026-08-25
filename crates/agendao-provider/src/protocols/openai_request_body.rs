@@ -4,7 +4,7 @@ use super::openai_tool_arguments::serialize_historical_tool_call;
 use super::request_sanitizer::{
     interrupted_tool_result_text, sanitize_messages_for_protocol, SanitizerOptions,
 };
-use crate::{ChatRequest, Message, ProviderError, Role};
+use crate::{clamp_effort, openai_compatible_efforts, ChatRequest, Message, ProviderError, Role};
 
 pub(super) fn to_openai_compatible_chat_messages(messages: &[Message]) -> Vec<Value> {
     let sanitized = sanitize_messages_for_protocol(messages, SanitizerOptions::default());
@@ -65,11 +65,17 @@ fn user_content_to_openai(content: &crate::Content) -> Value {
                     continue;
                 }
 
-                if let Some(image) = &part.image_url {
-                    converted_parts.push(json!({
-                        "type": "image_url",
-                        "image_url": { "url": image.url },
-                    }));
+                match part.content_type.as_str() {
+                    "image" | "image_url" => {
+                        if let Some(image) = &part.image_url {
+                            converted_parts.push(json!({
+                                "type": "image_url",
+                                "image_url": { "url": image.url },
+                            }));
+                        }
+                    }
+                    "file" => converted_file_part_to_openai(part, &mut converted_parts),
+                    _ => {}
                 }
             }
 
@@ -80,6 +86,76 @@ fn user_content_to_openai(content: &crate::Content) -> Value {
             }
         }
     }
+}
+
+fn converted_file_part_to_openai(part: &crate::ContentPart, converted_parts: &mut Vec<Value>) {
+    let Some(url) = part.image_url.as_ref().map(|image| image.url.as_str()) else {
+        return;
+    };
+    let mime = part
+        .media_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+
+    if mime.starts_with("image/") {
+        converted_parts.push(json!({
+            "type": "image_url",
+            "image_url": { "url": url },
+        }));
+        return;
+    }
+
+    if mime.starts_with("audio/") {
+        if let Some((format, data)) = data_url_audio(url) {
+            converted_parts.push(json!({
+                "type": "input_audio",
+                "input_audio": { "data": data, "format": format },
+            }));
+        } else {
+            let label = part.filename.as_deref().unwrap_or("audio attachment");
+            converted_parts.push(json!({
+                "type": "text",
+                "text": format!("[Audio attachment `{label}` could not be inlined; provide a data URL or a model/provider that accepts audio URLs.]"),
+            }));
+        }
+        return;
+    }
+
+    // The base Chat Completions protocol has no portable video/document part.
+    // Do not emit a relay-specific `video_url` field here: without a provider
+    // capability declaration that would turn a valid request into a 400.
+    if mime.starts_with("video/") {
+        converted_parts.push(json!({
+            "type": "text",
+            "text": format!(
+                "[Video attachment `{}` is not supported by the Chat Completions wire shape.]",
+                part.filename.as_deref().unwrap_or("video attachment")
+            ),
+        }));
+        return;
+    }
+
+    let label = part.filename.as_deref().unwrap_or("file attachment");
+    converted_parts.push(json!({
+        "type": "text",
+        "text": format!("[File attachment `{label}` ({mime}) is not supported by the Chat Completions wire shape.]"),
+    }));
+}
+
+fn data_url_audio(url: &str) -> Option<(&str, &str)> {
+    let (header, data) = url.strip_prefix("data:")?.split_once(',')?;
+    if !header.to_ascii_lowercase().contains(";base64") {
+        return None;
+    }
+    let mime = header.split(';').next()?.trim();
+    let format = match mime {
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/ogg" => "ogg",
+        "audio/webm" => "webm",
+        _ => mime.strip_prefix("audio/")?,
+    };
+    Some((format, data))
 }
 
 fn assistant_reasoning_wire_fields(
@@ -305,10 +381,14 @@ pub(super) fn build_request_body(request: &ChatRequest) -> Result<Value, Provide
     }
 
     // Typed `reasoning_effort` (per-model config) takes priority over the
-    // variant-string whitelist. `ReasoningEffort::None` means "do not send
-    // the field at all", keeping the provider-side default.
-    if let Some(effort) = request.reasoning_effort {
-        if !matches!(effort, crate::ReasoningEffort::None) {
+    // variant-string fallback. Explicit `none` is sent only for wires that
+    // advertise it; providers without a disable level keep their default.
+    let requested = request.reasoning_effort.or_else(|| {
+        openai_reasoning_effort(&request.model, request.variant.as_deref())
+            .and_then(|value| value.parse().ok())
+    });
+    if let Some(requested) = requested {
+        if let Some(effort) = clamp_effort(requested, openai_compatible_efforts(&request.model)) {
             obj.insert(
                 "reasoning_effort".to_string(),
                 Value::String(effort.to_string()),
@@ -346,7 +426,8 @@ pub(super) fn openai_reasoning_effort(
         "low" => Some("low"),
         "medium" => Some("medium"),
         "high" => Some("high"),
-        "max" | "xhigh" => Some("high"),
+        "max" => Some("max"),
+        "xhigh" => Some("xhigh"),
         _ => None,
     }
 }
@@ -363,10 +444,13 @@ mod tests {
     #[test]
     fn typed_reasoning_effort_maps_to_wire_string() {
         for (effort, expected) in [
-            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Minimal, "low"),
             (ReasoningEffort::Low, "low"),
             (ReasoningEffort::Medium, "medium"),
             (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "xhigh"),
+            (ReasoningEffort::Ultra, "xhigh"),
         ] {
             let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
             request.reasoning_effort = Some(effort);
@@ -380,13 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn typed_reasoning_effort_none_omits_field() {
+    fn typed_reasoning_effort_none_is_explicitly_disabled_when_supported() {
         let mut request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
         request.reasoning_effort = Some(ReasoningEffort::None);
         let body = body_for(request);
-        assert!(
-            body.get("reasoning_effort").is_none(),
-            "ReasoningEffort::None must not send the field"
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("none")
         );
     }
 
@@ -406,7 +490,10 @@ mod tests {
         request.variant = Some("high".to_string());
         request.reasoning_effort = Some(ReasoningEffort::None);
         let body = body_for(request);
-        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("none")
+        );
     }
 
     #[test]
@@ -422,5 +509,36 @@ mod tests {
         let request = ChatRequest::new("gpt-5-codex", vec![Message::user("hi")]);
         let body = body_for(request);
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn maps_image_and_audio_attachments_to_openai_parts() {
+        let request = ChatRequest::new(
+            "gpt-4.1",
+            vec![Message {
+                role: Role::User,
+                content: crate::Content::Parts(vec![
+                    crate::ContentPart::image_url(
+                        "data:image/png;base64,AAAA",
+                        Some("diagram.png".to_string()),
+                        Some("image/png".to_string()),
+                    ),
+                    crate::ContentPart::file(
+                        "data:audio/wav;base64,UklGRg==",
+                        Some("voice.wav".to_string()),
+                        Some("audio/wav".to_string()),
+                    ),
+                ]),
+                cache_control: None,
+                provider_options: None,
+            }],
+        );
+        let body = body_for(request);
+        let parts = body["messages"][0]["content"].as_array().expect("parts");
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert_eq!(parts[1]["type"], "input_audio");
+        assert_eq!(parts[1]["input_audio"]["format"], "wav");
+        assert_eq!(parts[1]["input_audio"]["data"], "UklGRg==");
     }
 }

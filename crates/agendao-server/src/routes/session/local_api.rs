@@ -341,6 +341,7 @@ pub async fn local_prompt(
             source_surface: request.source_surface,
             model: request.model,
             variant: request.variant,
+            reasoning_effort: request.reasoning_effort,
             agent: request.agent,
             scheduler: request.scheduler,
             command: request.command,

@@ -125,6 +125,7 @@ pub trait AgentLoopObserver: Send + Sync {
 pub struct AgentObservationContext<'a> {
     pub node_path: &'a str,
     pub agent: &'a crate::blueprint::AgentId,
+    pub step: u32,
     pub max_steps: u32,
 }
 
@@ -421,17 +422,18 @@ impl<'a> AgentLoop<'a> {
         conversation_seed: Vec<agendao_provider::Message>,
         context: AgentRunContext<'_>,
     ) -> Result<AgentRunOutcome, AgentLoopError> {
-        let observation = AgentObservationContext {
-            node_path: context.progress_summary,
-            agent: &node.agent,
-            max_steps: node.max_steps,
-        };
         let conversation_seed: Arc<[agendao_provider::Message]> = conversation_seed.into();
         let mut conversation = Arc::new(Vec::new());
         let mut continuation = None;
         let mut previous_fingerprints = None;
         let mut local_usage = Usage::default();
         for step in 1..=node.max_steps {
+            let observation = AgentObservationContext {
+                node_path: context.progress_summary,
+                agent: &node.agent,
+                step,
+                max_steps: node.max_steps,
+            };
             check_cancelled(context.cancellation)?;
             context
                 .observer
@@ -479,12 +481,15 @@ impl<'a> AgentLoop<'a> {
                 reasoning_continuation: continuation.clone(),
                 conversation_seed: conversation_seed.clone(),
             };
-            let turn = tokio::select! {
+            let mut turn = tokio::select! {
                 _ = context.cancellation.cancelled() => return Err(AgentLoopError::Cancelled),
                 _ = context.budget.deadline() => return Err(AgentLoopError::DeadlineExceeded),
                 result = self.model.invoke(model_request, &observation, context.observer) =>
                     result.map_err(AgentLoopError::Model)?,
             };
+            for call in &mut turn.tool_calls {
+                call.id = super::provider::scheduler_tool_call_id(&observation, &call.id);
+            }
             check_cancelled(context.cancellation)?;
             context.budget.record_tokens(&turn.usage)?;
             local_usage.input_tokens = local_usage

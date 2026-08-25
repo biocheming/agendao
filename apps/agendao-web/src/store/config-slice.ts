@@ -12,6 +12,7 @@ export function createConfigSlice(
   | "slashCommands"
   | "workspaceContext"
   | "selectedModel"
+  | "selectedReasoningEffort"
   | "selectedMode"
   | "showThinking"
   | "serviceRootPath"
@@ -23,6 +24,7 @@ export function createConfigSlice(
   | "setSlashCommands"
   | "setWorkspaceContext"
   | "setSelectedModel"
+  | "setSelectedReasoningEffort"
   | "setSelectedMode"
   | "setShowThinking"
   | "setServiceRootPath"
@@ -36,6 +38,7 @@ export function createConfigSlice(
     slashCommands: [],
     workspaceContext: null,
     selectedModel: "",
+    selectedReasoningEffort: "",
     selectedMode: "",
     showThinking: true,
     serviceRootPath: "",
@@ -55,6 +58,13 @@ export function createConfigSlice(
       set({ workspaceContext: resolveSetState(workspaceContext, get().workspaceContext) }),
     setSelectedModel: (selectedModel: SetStateFn<string>) =>
       set({ selectedModel: resolveSetState(selectedModel, get().selectedModel) }),
+    setSelectedReasoningEffort: (selectedReasoningEffort: SetStateFn<string>) =>
+      set({
+        selectedReasoningEffort: resolveSetState(
+          selectedReasoningEffort,
+          get().selectedReasoningEffort,
+        ),
+      }),
     setSelectedMode: (selectedMode: SetStateFn<string>) =>
       set({ selectedMode: resolveSetState(selectedMode, get().selectedMode) }),
     setShowThinking: (showThinking: SetStateFn<boolean>) =>

@@ -14,6 +14,7 @@ import type {
   TestProviderModelResponseRecord,
 } from "@/lib/provider";
 import { displayProtocolLabel } from "@/lib/provider";
+import { REASONING_EFFORTS, reasoningLabel } from "@/lib/reasoning";
 import { apiJson, formatError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n/I18nProvider";
@@ -541,6 +542,32 @@ export function ProvidersTab({
           </label>
         </div>
 
+        <label className={formFieldClass}>
+          <span className={formLabelClass}>Default reasoning effort</span>
+          <select
+            className={selectClass}
+            value={modelOverrideDraft.reasoningEffort}
+            disabled={!modelOverrideDraft.reasoning}
+            onChange={(event) =>
+              onModelOverrideDraftChange((current) => ({
+                ...current,
+                reasoningEffort: event.target.value,
+              }))
+            }
+          >
+            <option value="">Auto (provider/model default)</option>
+            <option value="none">Off</option>
+            {REASONING_EFFORTS.map((effort) => (
+              <option key={effort} value={effort}>
+                {reasoningLabel(effort)}
+              </option>
+            ))}
+          </select>
+          <span className={formHintClass}>
+            Applies to prompts without a session-level override.
+          </span>
+        </label>
+
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <label className={checkboxRowClass}>
             <input
@@ -551,6 +578,7 @@ export function ProvidersTab({
                 onModelOverrideDraftChange((current) => ({
                   ...current,
                   reasoning: event.target.checked,
+                  reasoningEffort: event.target.checked ? current.reasoningEffort : "",
                 }))
               }
             />

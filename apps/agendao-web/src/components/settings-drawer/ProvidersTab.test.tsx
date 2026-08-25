@@ -48,6 +48,7 @@ const emptyDraft: ModelOverrideDraft = {
   status: "",
   releaseDate: "",
   reasoning: false,
+  reasoningEffort: "",
   toolCall: false,
   attachment: false,
   temperature: false,

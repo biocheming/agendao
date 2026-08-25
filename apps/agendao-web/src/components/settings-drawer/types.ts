@@ -59,6 +59,7 @@ export interface ModelOverrideDraft {
   status: string;
   releaseDate: string;
   reasoning: boolean;
+  reasoningEffort: string;
   toolCall: boolean;
   attachment: boolean;
   temperature: boolean;

@@ -345,6 +345,7 @@ export function useProvidersSettingsActions({
               status: modelOverrideDraft.status.trim() || undefined,
               release_date: modelOverrideDraft.releaseDate.trim() || undefined,
               reasoning: modelOverrideDraft.reasoning,
+              reasoning_effort: modelOverrideDraft.reasoningEffort.trim(),
               tool_call: modelOverrideDraft.toolCall,
               attachment: modelOverrideDraft.attachment,
               temperature: modelOverrideDraft.temperature,

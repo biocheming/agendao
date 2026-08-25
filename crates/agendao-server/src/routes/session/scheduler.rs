@@ -38,6 +38,7 @@ pub(crate) struct PromptRequestConfigInput<'a> {
     pub requested_scheduler: &'a agendao_orchestrator::selector::SchedulerChoice,
     pub request_model: Option<&'a str>,
     pub request_variant: Option<&'a str>,
+    pub request_reasoning_effort: Option<agendao_provider::ReasoningEffort>,
     pub route: &'static str,
 }
 
@@ -939,6 +940,7 @@ fn build_execution_resolution_context(
     provider_id: &str,
     model_id: &str,
     request_variant: Option<&str>,
+    request_reasoning_effort: Option<agendao_provider::ReasoningEffort>,
     resolved_agent: Option<&AgentInfo>,
 ) -> ExecutionResolutionContext {
     ExecutionResolutionContext {
@@ -951,6 +953,7 @@ fn build_execution_resolution_context(
         variant: request_variant
             .map(str::to_string)
             .or_else(|| resolved_agent.and_then(|agent| agent.variant.clone())),
+        reasoning_effort: request_reasoning_effort,
     }
 }
 
@@ -965,6 +968,7 @@ pub(crate) async fn resolve_prompt_request_config(
         requested_scheduler,
         request_model,
         request_variant,
+        request_reasoning_effort,
         route,
     } = input;
 
@@ -1009,6 +1013,7 @@ pub(crate) async fn resolve_prompt_request_config(
             &provider_id,
             &model_id,
             request_variant,
+            request_reasoning_effort,
             resolved_agent.as_ref(),
         ),
     )

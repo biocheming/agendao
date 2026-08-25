@@ -29,6 +29,10 @@ pub struct ExecutionResolutionContext {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub variant: Option<String>,
+    /// Request-scoped override. `Some(None)` is not representable here:
+    /// `None` inherits the model config and `Some(ReasoningEffort::None)`
+    /// explicitly disables reasoning.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 fn config_provider_entry<'a>(
@@ -99,7 +103,7 @@ fn parse_reasoning_effort(
                 provider = %provider_id,
                 model = %model_id,
                 value = %value,
-                "ignoring invalid model reasoning_effort (expected none/minimal/low/medium/high)"
+                "ignoring invalid model reasoning_effort (expected none/minimal/low/medium/high/xhigh/max/ultra)"
             );
             None
         }
@@ -268,7 +272,7 @@ async fn resolve_request_execution_spec(
                     capabilities: ExecutionCapabilities::default(),
                     provider: model_provider_from_config(provider_cfg, None),
                     options: HashMap::new(),
-                    reasoning_effort: None,
+                    reasoning_effort: context.reasoning_effort,
                     timeout_secs: None,
                     stream_stall_timeout_secs: None,
                     variants: None,
@@ -287,9 +291,17 @@ async fn resolve_request_execution_spec(
     let mut request_options = base_options;
     request_options.extend(model_spec.options.clone());
 
+    // The request/session override is the only higher-precedence input. It
+    // is applied after model config/catalog resolution and before compilation,
+    // so every provider protocol receives the same typed value.
+    let mut model = model_spec;
+    if context.reasoning_effort.is_some() {
+        model.reasoning_effort = context.reasoning_effort;
+    }
+
     ResolvedExecutionSpec {
         session_id: context.session_id.clone(),
-        model: model_spec,
+        model,
         tuning: ExecutionTuningSpec {
             max_tokens: context.max_tokens,
             temperature: context.temperature,
@@ -464,6 +476,30 @@ mod tests {
         assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(compiled.timeout_secs, Some(900));
         assert_eq!(compiled.stream_stall_timeout_secs, Some(25));
+    }
+
+    #[tokio::test]
+    async fn request_reasoning_override_precedes_model_config() {
+        let config = config_with_model_tuning(Some("low"), None, None, None);
+        let context = ExecutionResolutionContext {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..test_context()
+        };
+        let spec = resolve_request_execution_spec(&config, &context).await;
+        assert_eq!(spec.model.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(spec.compile().reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[tokio::test]
+    async fn request_reasoning_override_reaches_unknown_model() {
+        let config = AppConfig::default();
+        let context = ExecutionResolutionContext {
+            model_id: "unknown-model".to_string(),
+            reasoning_effort: Some(ReasoningEffort::None),
+            ..test_context()
+        };
+        let compiled = resolve_compiled_execution_request(&config, &context).await;
+        assert_eq!(compiled.reasoning_effort, Some(ReasoningEffort::None));
     }
 
     #[tokio::test]

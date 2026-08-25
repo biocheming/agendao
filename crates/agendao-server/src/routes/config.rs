@@ -426,7 +426,7 @@ fn merge_model_config(existing: &mut ModelConfig, patch: ModelConfig) {
         existing.reasoning = Some(value);
     }
     if let Some(value) = reasoning_effort {
-        existing.reasoning_effort = Some(value);
+        existing.reasoning_effort = (!value.trim().is_empty()).then_some(value);
     }
     if let Some(value) = timeout_secs {
         existing.timeout_secs = Some(value);
@@ -828,6 +828,24 @@ mod tests {
             .headers
             .as_ref()
             .is_some_and(|headers| !headers.contains_key("X-Old")));
+    }
+
+    #[test]
+    fn merge_model_config_empty_reasoning_effort_clears_override() {
+        let mut existing = ModelConfig {
+            reasoning_effort: Some("high".to_string()),
+            ..ModelConfig::default()
+        };
+
+        merge_model_config(
+            &mut existing,
+            ModelConfig {
+                reasoning_effort: Some(String::new()),
+                ..ModelConfig::default()
+            },
+        );
+
+        assert_eq!(existing.reasoning_effort, None);
     }
 
     fn validation_state(config: Config) -> Arc<ServerState> {

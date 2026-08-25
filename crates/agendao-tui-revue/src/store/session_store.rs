@@ -53,6 +53,7 @@ pub struct SessionStore {
     /// 会话实际使用的模型（优先来自 session metadata，旧会话回退到最后一条
     /// assistant 消息的 `model` 字段，通常为 `provider/model` 形式）。
     pub session_model: Signal<Option<String>>,
+    pub session_reasoning_effort: Signal<Option<String>>,
     /// 会话实际使用的 agent；来源与 `session_model` 相同。
     pub session_agent: Signal<Option<String>>,
     pub sidebar_trees: Signal<SidebarTrees>,
@@ -129,6 +130,7 @@ impl SessionStore {
             context_pct: signal(0),
             context_limit: signal(None),
             session_model: signal(None),
+            session_reasoning_effort: signal(None),
             session_agent: signal(None),
             sidebar_trees: signal(SidebarTrees::default()),
             mcp_lsp: signal(McpLspInfo::default()),
@@ -172,6 +174,7 @@ impl SessionStore {
         self.context_pct.set(0);
         self.context_limit.set(None);
         self.session_model.set(None);
+        self.session_reasoning_effort.set(None);
         self.session_agent.set(None);
         self.active_tools.update(|t| t.clear());
         self.stream_new_segments.update(|s| s.clear());

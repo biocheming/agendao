@@ -1544,6 +1544,19 @@ impl AppHandler {
                         let _ = self.toggle_details_section(section);
                         return true;
                     }
+                    if matches!(key.key, Key::Char('e')) {
+                        let next = crate::reasoning::cycle(
+                            self.store.selected_reasoning_effort.get().as_deref(),
+                        );
+                        self.store
+                            .selected_reasoning_effort
+                            .set(next.map(str::to_string));
+                        self.store.push_toast(
+                            &format!("Reasoning effort: {}", crate::reasoning::label(next)),
+                            crate::store::types::ToastMsgVariant::Info,
+                        );
+                        return true;
+                    }
                 }
                 if key.ctrl && !key.alt && self.panel == Panel::None && !self.settings_edit.active {
                     match key.key {
@@ -3171,6 +3184,7 @@ impl AppHandler {
                     // 创建新 session 前先重置(防御):即使经非 /new 路径进 Home,
                     // 也确保新会话不携带旧 session 的 messages/状态。
                     self.active_session.reset_for_new_session();
+                    self.store.selected_reasoning_effort.set(None);
                     match api.create_session(None, None) {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);
@@ -3213,6 +3227,11 @@ impl AppHandler {
             // `selected_mode` is a `kind:id` pair from the server catalog.
             // Scheduler ids map directly to the typed built-in templates.
             let model = self.store.selected_model.get();
+            let reasoning_effort = self
+                .store
+                .selected_reasoning_effort
+                .get()
+                .or_else(|| self.active_session.session_reasoning_effort.get());
             let mode = self.store.selected_mode.get();
             let (agent, scheduler) =
                 match resolve_execution_mode(mode.as_deref(), self.store.selected_agent.get()) {
@@ -3252,7 +3271,11 @@ impl AppHandler {
             );
 
             let source = crate::shadow::InteractionSource::DefaultEnter;
-            let use_gateway = self.should_use_gateway(&sid, &source);
+            // The legacy gateway submission contract does not yet carry
+            // request tuning. Route an explicit effort through the canonical
+            // prompt transport so the visible control can never be cosmetic;
+            // auto/inherit may continue using the gateway.
+            let use_gateway = reasoning_effort.is_none() && self.should_use_gateway(&sid, &source);
 
             let api_c = api.clone();
             let tx = self.dispatch_outcomes.sender();
@@ -3289,7 +3312,15 @@ impl AppHandler {
                 api.handle().spawn(async move {
                     let start_t = std::time::Instant::now();
                     let r = api_c
-                        .send_prompt_with_async(&sid_c, text_c, agent, scheduler, model, None)
+                        .send_prompt_with_async(
+                            &sid_c,
+                            text_c,
+                            agent,
+                            scheduler,
+                            model,
+                            None,
+                            reasoning_effort,
+                        )
                         .await;
                     let elapsed_ms = start_t.elapsed().as_millis() as u64;
 
@@ -3415,6 +3446,10 @@ impl AppHandler {
     /// 在 Tick drain 由 `apply_session_open` 落库。
     pub(crate) fn open_session(&mut self, session_id: &str) {
         self.active_session.reset_for_new_session();
+        // A request override belongs to the active session. Clear the
+        // previous session's transient choice before metadata hydration
+        // restores this session's persisted model policy.
+        self.store.selected_reasoning_effort.set(None);
         self.active_session.set_session_id(session_id);
         self.sf_tx.send_replace(Some(session_id.to_string()));
         self.store.navigate(Route::Session {
@@ -3635,6 +3670,7 @@ impl AppHandler {
             Route::Home => {
                 if let Some(ref api) = self.api {
                     self.active_session.reset_for_new_session();
+                    self.store.selected_reasoning_effort.set(None);
                     match api.create_session(None, None) {
                         Ok(info) => {
                             self.active_session.set_session_id(&info.id);
@@ -4855,6 +4891,7 @@ pub(crate) fn apply_session_identity(
     info: &agendao_client::SessionInfo,
 ) {
     let Some(metadata) = info.metadata.as_ref() else {
+        active_session.session_reasoning_effort.set(None);
         return;
     };
     let string_value = |key: &str| {
@@ -4874,6 +4911,9 @@ pub(crate) fn apply_session_identity(
     if let Some(agent) = string_value("agent") {
         active_session.session_agent.set(Some(agent.to_string()));
     }
+    active_session
+        .session_reasoning_effort
+        .set(string_value("model_reasoning_effort").map(str::to_string));
 }
 
 #[cfg(test)]

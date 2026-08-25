@@ -301,7 +301,7 @@ impl ApiBridge {
     }
 
     pub fn send_prompt(&self, session_id: &str, content: String) -> anyhow::Result<PromptResponse> {
-        self.send_prompt_with(session_id, content, None, None, None, None)
+        self.send_prompt_with(session_id, content, None, None, None, None, None)
     }
 
     /// Send a prompt carrying explicit agent/scheduler/model/variant selections.
@@ -319,6 +319,7 @@ impl ApiBridge {
         scheduler: Option<SchedulerChoice>,
         model: Option<String>,
         variant: Option<String>,
+        reasoning_effort: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         if let Some(ref unix) = self.unix {
             let response = self.block_on(unix.prompt(
@@ -329,6 +330,7 @@ impl ApiBridge {
                     scheduler,
                     model,
                     variant,
+                    reasoning_effort,
                     source_surface: Some(agendao_types::MessageSourceSurface::Tui),
                     ..Default::default()
                 },
@@ -342,6 +344,7 @@ impl ApiBridge {
             scheduler,
             model,
             variant,
+            reasoning_effort,
             ingress_source: None,
             idempotency_key: None,
             source_origin: None,
@@ -374,6 +377,7 @@ impl ApiBridge {
         scheduler: Option<SchedulerChoice>,
         model: Option<String>,
         variant: Option<String>,
+        reasoning_effort: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         if let Some(ref unix) = self.unix {
             let response = unix
@@ -385,6 +389,7 @@ impl ApiBridge {
                         scheduler,
                         model,
                         variant,
+                        reasoning_effort,
                         source_surface: Some(agendao_types::MessageSourceSurface::Tui),
                         ..Default::default()
                     },
@@ -399,6 +404,7 @@ impl ApiBridge {
             scheduler,
             model,
             variant,
+            reasoning_effort,
             ingress_source: None,
             idempotency_key: None,
             source_origin: None,

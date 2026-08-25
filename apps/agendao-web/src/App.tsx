@@ -117,6 +117,7 @@ export default function App() {
   const workspaceContext = useAgendaoStore((s) => s.workspaceContext);
   const selectedModel = useAgendaoStore((s) => s.selectedModel);
   const setSelectedModel = useAgendaoStore((s) => s.setSelectedModel);
+  const setSelectedReasoningEffort = useAgendaoStore((s) => s.setSelectedReasoningEffort);
   const selectedMode = useAgendaoStore((s) => s.selectedMode);
   const setSelectedMode = useAgendaoStore((s) => s.setSelectedMode);
   const theme = useAgendaoStore((s) => s.theme);
@@ -193,6 +194,10 @@ export default function App() {
     [workspaceContext?.recent_models],
   );
   const currentSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId) ?? null, [selectedSessionId, sessions]);
+  useEffect(() => {
+    const value = currentSession?.metadata?.model_reasoning_effort;
+    setSelectedReasoningEffort(typeof value === "string" ? value : "");
+  }, [currentSession?.id, setSelectedReasoningEffort]);
   const activeModelRef = useMemo(
     () => resolveActiveModelRef(currentSession, selectedModel),
     [currentSession, selectedModel],
@@ -252,11 +257,12 @@ export default function App() {
     (value: string) => {
       recentModelAutoSuppressedRef.current = value.trim().length === 0;
       setSelectedModel(value);
+      setSelectedReasoningEffort("");
       if (value.trim()) {
         void persistRecentModel(value);
       }
     },
-    [persistRecentModel, setSelectedModel],
+    [persistRecentModel, setSelectedModel, setSelectedReasoningEffort],
   );
   useEffect(() => {
     const scope = workspaceRecentModelScope(workspaceContext);

@@ -43,6 +43,9 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
+    Ultra,
 }
 
 impl std::fmt::Display for ReasoningEffort {
@@ -53,6 +56,9 @@ impl std::fmt::Display for ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
         };
         f.write_str(name)
     }
@@ -68,8 +74,32 @@ impl std::str::FromStr for ReasoningEffort {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             other => Err(format!("unknown reasoning effort: {other}")),
         }
+    }
+}
+
+impl ReasoningEffort {
+    /// Canonical low-to-high ordering used when a provider exposes fewer
+    /// wire levels than the user-facing ladder.
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Minimal => 1,
+            Self::Low => 2,
+            Self::Medium => 3,
+            Self::High => 4,
+            Self::XHigh => 5,
+            Self::Max => 6,
+            Self::Ultra => 7,
+        }
+    }
+
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -547,7 +577,9 @@ mod tests {
         assert_eq!("low".parse(), Ok(ReasoningEffort::Low));
         assert_eq!("Medium".parse(), Ok(ReasoningEffort::Medium));
         assert_eq!(" HIGH ".parse(), Ok(ReasoningEffort::High));
-        assert!("max".parse::<ReasoningEffort>().is_err());
+        assert_eq!("xhigh".parse(), Ok(ReasoningEffort::XHigh));
+        assert_eq!("max".parse(), Ok(ReasoningEffort::Max));
+        assert_eq!("ultra".parse(), Ok(ReasoningEffort::Ultra));
         assert!("".parse::<ReasoningEffort>().is_err());
     }
 

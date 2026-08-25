@@ -41,6 +41,7 @@ export function usePromptSubmission({
   const attachments = useAgendaoStore((s) => s.attachments);
   const slashCommands = useAgendaoStore((s) => s.slashCommands);
   const selectedModel = useAgendaoStore((s) => s.selectedModel);
+  const selectedReasoningEffort = useAgendaoStore((s) => s.selectedReasoningEffort);
   const selectedMode = useAgendaoStore((s) => s.selectedMode);
   const streaming = useAgendaoStore((s) => s.streaming);
   const showThinking = useAgendaoStore((s) => s.showThinking);
@@ -111,6 +112,7 @@ export function usePromptSubmission({
         const payload: Record<string, unknown> = { command: submission.command };
         if (submission.args) payload.arguments = submission.args;
         if (selectedModel) payload.model = selectedModel;
+        payload.reasoning_effort = selectedReasoningEffort;
         if (selectedMode) {
           const [kind, id] = selectedMode.split(":", 2);
           if (kind === "agent") payload.agent = id;
@@ -161,6 +163,7 @@ export function usePromptSubmission({
       refreshSessions,
       selectedMode,
       selectedModel,
+      selectedReasoningEffort,
       selectedSessionId,
       sendCommandRequest,
       setBanner,
@@ -241,6 +244,7 @@ export function usePromptSubmission({
           ingress_source: "web",
         };
         if (selectedModel) payload.model = selectedModel;
+        payload.reasoning_effort = selectedReasoningEffort;
         if (promptParts.length > 0) payload.parts = promptParts;
         if (selectedMode) {
           const [kind, id] = selectedMode.split(":", 2);
@@ -291,6 +295,7 @@ export function usePromptSubmission({
       refreshSessions,
       selectedMode,
       selectedModel,
+      selectedReasoningEffort,
       selectedSessionId,
       sendPromptRequest,
       setAttachments,

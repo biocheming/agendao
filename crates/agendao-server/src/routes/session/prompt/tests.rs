@@ -356,6 +356,7 @@ fn prompt_request_message(text: &str) -> SessionPromptRequest {
         ingress_source: None,
         model: None,
         variant: None,
+        reasoning_effort: None,
         agent: None,
         scheduler: None,
         command: None,
@@ -365,6 +366,22 @@ fn prompt_request_message(text: &str) -> SessionPromptRequest {
         source_surface: None,
         auto_continuation_goal_generation: None,
     }
+}
+
+#[test]
+fn request_reasoning_effort_parsing_distinguishes_inherit_off_and_invalid() {
+    assert_eq!(parse_request_reasoning_effort(None).unwrap(), None);
+    assert_eq!(parse_request_reasoning_effort(Some(" ")).unwrap(), None);
+    assert_eq!(parse_request_reasoning_effort(Some("auto")).unwrap(), None);
+    assert_eq!(
+        parse_request_reasoning_effort(Some("inherit")).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_request_reasoning_effort(Some("none")).unwrap(),
+        Some(agendao_provider::ReasoningEffort::None)
+    );
+    assert!(parse_request_reasoning_effort(Some("extreme")).is_err());
 }
 
 fn sample_external_ingress(session_id: &str) -> agendao_session::prompt::IngressTurnEnvelope {

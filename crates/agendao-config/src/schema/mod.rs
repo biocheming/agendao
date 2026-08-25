@@ -790,7 +790,7 @@ pub struct ModelConfig {
     pub modalities: Option<ModelModalities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
-    /// Model-level reasoning effort: none/minimal/low/medium/high.
+    /// Model-level reasoning effort: none/minimal/low/medium/high/xhigh/max/ultra.
     /// Validated at resolution time; invalid values are ignored with a warning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,

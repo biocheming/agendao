@@ -136,6 +136,21 @@ JSONC 允许注释；JSON 不允许注释。配置发生变化后不会被后台
 }
 ```
 
+`reasoning_effort` 是统一的用户侧档位，不是所有协议都会原样接受。可选值为
+`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`；协议适配器会
+根据模型声明的 wire vocabulary 只向下收敛到最近的较弱档位，不会静默升级成本。
+TUI/Web 的模型编辑器中选择 `Auto` 会清除模型级覆盖并恢复 provider/model 默认值；
+session composer 下方的 effort 选择只覆盖下一次 prompt（选择 `Auto` 则继承模型配置）。
+例如 DeepSeek V4 的 `xhigh` 会映射为 `max`，不支持 `minimal` 的 OpenAI reasoning
+模型会映射为 `low`。未设置时保持未设置，让 provider 默认行为生效；显式 `none`
+只会在协议支持关闭档位时发送。
+
+多模态附件也遵循同一条链路：会话先保存带 MIME、文件名和来源的附件，再由协议适配器
+选择 wire 形状。OpenAI Chat Completions 使用 `image_url` 和 data-URL 形式的
+`input_audio`；OpenAI Responses 使用 `input_image` / `input_file`；Anthropic Messages
+使用原生 `image` / PDF `document` block。协议或模型不支持的音频、视频不会被伪装成
+图片或文件，而会产生明确的降级警告（能力预检仍是最终裁决点）。
+
 运行时只承认三类协议：OpenAI Responses、OpenAI Chat Completions、Anthropic Messages。所谓“兼容 provider”必须明确写出 `api_style` / `api_shape`，不要把其他 SDK 的字段名直接粘进来。
 
 启用/禁用 provider：

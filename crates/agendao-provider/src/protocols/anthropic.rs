@@ -251,6 +251,10 @@ fn user_textual_content_to_anthropic(content: &crate::Content) -> Vec<MessagesCo
 
             let mut content = Vec::new();
             for part in parts {
+                if let Some(media) = anthropic_media_content(part) {
+                    content.push(media);
+                    continue;
+                }
                 if let Some(text) = &part.text {
                     if !text.is_empty() {
                         content.push(MessagesContent::Text { text: text.clone() });
@@ -260,6 +264,76 @@ fn user_textual_content_to_anthropic(content: &crate::Content) -> Vec<MessagesCo
             content
         }
     }
+}
+
+fn anthropic_media_content(part: &crate::ContentPart) -> Option<MessagesContent> {
+    let url = part.image_url.as_ref().map(|image| image.url.as_str())?;
+    let mime = part
+        .media_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+
+    if matches!(part.content_type.as_str(), "image" | "image_url") || mime.starts_with("image/") {
+        return Some(MessagesContent::Image {
+            source: anthropic_image_source(url),
+        });
+    }
+
+    if part.content_type == "file" && mime == "application/pdf" {
+        return Some(MessagesContent::Document {
+            source: anthropic_document_source(url),
+            title: part.filename.clone(),
+        });
+    }
+
+    if part.content_type == "file" && (mime.starts_with("audio/") || mime.starts_with("video/")) {
+        let label = part.filename.as_deref().unwrap_or("media attachment");
+        return Some(MessagesContent::Text {
+            text: format!(
+                "[{} `{label}` cannot be sent natively through the Anthropic Messages protocol.]",
+                if mime.starts_with("audio/") {
+                    "Audio"
+                } else {
+                    "Video"
+                }
+            ),
+        });
+    }
+
+    None
+}
+
+fn anthropic_image_source(url: &str) -> AnthropicImageSource {
+    if let Some((media_type, data)) = data_url_parts(url) {
+        return AnthropicImageSource::Base64 {
+            media_type: media_type.to_string(),
+            data: data.to_string(),
+        };
+    }
+    AnthropicImageSource::Url {
+        url: url.to_string(),
+    }
+}
+
+fn anthropic_document_source(url: &str) -> AnthropicDocumentSource {
+    if let Some((media_type, data)) = data_url_parts(url) {
+        return AnthropicDocumentSource::Base64 {
+            media_type: media_type.to_string(),
+            data: data.to_string(),
+        };
+    }
+    AnthropicDocumentSource::Url {
+        url: url.to_string(),
+    }
+}
+
+fn data_url_parts(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (header, data) = rest.split_once(',')?;
+    if !header.to_ascii_lowercase().contains(";base64") {
+        return None;
+    }
+    Some((header.split(';').next()?, data))
 }
 
 #[async_trait]
@@ -432,12 +506,38 @@ enum MessagesContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    #[serde(rename = "image")]
+    Image { source: AnthropicImageSource },
+    #[serde(rename = "document")]
+    Document {
+        source: AnthropicDocumentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 impl MessagesContent {
     fn is_thinking(&self) -> bool {
         matches!(self, Self::Thinking { .. })
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum AnthropicImageSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "url")]
+    Url { url: String },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum AnthropicDocumentSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "url")]
+    Url { url: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -475,6 +575,9 @@ fn messages_thinking_config(
             crate::ReasoningEffort::Low => 8_000,
             crate::ReasoningEffort::Medium => 16_000,
             crate::ReasoningEffort::High => 31_999,
+            crate::ReasoningEffort::XHigh
+            | crate::ReasoningEffort::Max
+            | crate::ReasoningEffort::Ultra => 31_999,
         };
         return thinking_budget_with_ceiling(target, max_tokens);
     }
@@ -713,6 +816,56 @@ mod tests {
             }
             None => panic!("thinking should still be enabled after clamping"),
         }
+    }
+
+    #[test]
+    fn maps_image_and_pdf_attachments_to_native_blocks() {
+        let request = ChatRequest {
+            model: "claude-test".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Content::Parts(vec![
+                    ContentPart::image_url(
+                        "data:image/png;base64,AAAA",
+                        Some("diagram.png".to_string()),
+                        Some("image/png".to_string()),
+                    ),
+                    ContentPart::file(
+                        "data:application/pdf;base64,JVBERiQ=",
+                        Some("paper.pdf".to_string()),
+                        Some("application/pdf".to_string()),
+                    ),
+                ]),
+                cache_control: None,
+                provider_options: None,
+            }],
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+            reasoning_effort: None,
+            timeout_secs: None,
+            stream_stall_timeout_secs: None,
+        };
+
+        let converted = AnthropicAdapter::convert_request(request);
+        assert!(matches!(
+            converted.messages[0].content[0],
+            MessagesContent::Image {
+                source: AnthropicImageSource::Base64 { .. }
+            }
+        ));
+        assert!(matches!(
+            converted.messages[0].content[1],
+            MessagesContent::Document {
+                source: AnthropicDocumentSource::Base64 { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

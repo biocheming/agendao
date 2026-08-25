@@ -159,6 +159,7 @@ pub(super) async fn execute_session_recovery(
             ingress_source: Some("api".to_string()),
             model: session_model_override(&session),
             variant: session_variant_override(&session),
+            reasoning_effort: None,
             agent,
             scheduler,
             command: None,

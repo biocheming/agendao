@@ -74,6 +74,40 @@ pub async fn convert_to_openai_responses_input(
                             else {
                                 continue;
                             };
+                            let mime = part
+                                .media_type
+                                .as_deref()
+                                .unwrap_or("application/octet-stream");
+
+                            if mime.starts_with("image/") {
+                                if is_file_id(url, file_id_prefixes) {
+                                    content.push(json!({
+                                        "type": "input_image",
+                                        "file_id": url,
+                                    }));
+                                } else {
+                                    content.push(json!({
+                                        "type": "input_image",
+                                        "image_url": url,
+                                    }));
+                                }
+                                continue;
+                            }
+
+                            if mime.starts_with("audio/") || mime.starts_with("video/") {
+                                let label = part.filename.as_deref().unwrap_or("media attachment");
+                                warnings.push(CallWarning::Other {
+                                    message: format!(
+                                        "{mime} attachment `{label}` is not supported by the OpenAI Responses input shape and was replaced with a text marker"
+                                    ),
+                                });
+                                content.push(json!({
+                                    "type": "input_text",
+                                    "text": format!("[{mime} attachment `{label}` is unavailable on this Responses route.]"),
+                                }));
+                                continue;
+                            }
+
                             let mut item = json!({ "type": "input_file" });
                             if is_file_id(url, file_id_prefixes) {
                                 item["file_id"] = Value::String(url.to_string());
@@ -498,6 +532,43 @@ mod tests {
         let content = input[0]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "input_image");
         assert_eq!(content[0]["image_url"], "data:image/png;base64,SGVsbG8=");
+    }
+
+    #[tokio::test]
+    async fn test_convert_file_image_uses_input_image_and_media_warning_is_explicit() {
+        let prompt = vec![Message {
+            role: Role::User,
+            content: Content::Parts(vec![
+                ContentPart::file(
+                    "data:image/png;base64,AAAA",
+                    Some("diagram.png".to_string()),
+                    Some("image/png".to_string()),
+                ),
+                ContentPart::file(
+                    "data:audio/wav;base64,UklGRg==",
+                    Some("voice.wav".to_string()),
+                    Some("audio/wav".to_string()),
+                ),
+            ]),
+            cache_control: None,
+            provider_options: None,
+        }];
+
+        let (input, warnings) = convert_to_openai_responses_input(
+            &prompt,
+            SystemMessageMode::System,
+            None,
+            false,
+            false,
+        )
+        .await;
+
+        let content = input[0]["content"].as_array().expect("content");
+        assert_eq!(content[0]["type"], "input_image");
+        assert_eq!(content[0]["image_url"], "data:image/png;base64,AAAA");
+        assert_eq!(content[1]["type"], "input_text");
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(warnings[0], CallWarning::Other { .. }));
     }
 
     #[tokio::test]

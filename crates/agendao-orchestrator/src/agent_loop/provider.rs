@@ -278,19 +278,21 @@ async fn collect_stream(
                 reasoning.push_str(&text);
             }
             StreamEvent::ToolInputDelta { id, delta } => {
+                let id = scheduler_tool_call_id(context, &id);
                 observer
                     .tool_input_delta(context, &id, None, &delta)
                     .await
                     .map_err(ModelBackendError::message)?;
             }
             StreamEvent::ToolCallDelta { id, input } => {
+                let id = scheduler_tool_call_id(context, &id);
                 observer
                     .tool_input_delta(context, &id, None, &input)
                     .await
                     .map_err(ModelBackendError::message)?;
             }
             StreamEvent::ToolCallEnd { id, name, input } => tool_calls.push(ToolCall {
-                id,
+                id: scheduler_tool_call_id(context, &id),
                 tool: ToolId::new(name),
                 arguments: input,
             }),
@@ -348,6 +350,18 @@ async fn collect_stream(
         finish_reason,
         reasoning_continuation: response_id,
     })
+}
+
+pub(super) fn scheduler_tool_call_id(
+    context: &AgentObservationContext<'_>,
+    provider_call_id: &str,
+) -> String {
+    let prefix = format!("scheduler:{}:{}:", context.node_path, context.step);
+    if provider_call_id.starts_with(&prefix) {
+        provider_call_id.to_string()
+    } else {
+        format!("{prefix}{provider_call_id}")
+    }
 }
 
 #[cfg(test)]

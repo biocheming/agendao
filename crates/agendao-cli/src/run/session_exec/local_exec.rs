@@ -73,6 +73,7 @@ pub(in crate::run) async fn run_cli_prompt_local(
             scheduler,
             model: model.map(|s| s.to_string()),
             variant: variant.map(|s| s.to_string()),
+            reasoning_effort: None,
             command: command.map(|s| s.to_string()),
             arguments: None,
             source_origin: Some(agendao_types::MessageSourceOrigin::Operator),

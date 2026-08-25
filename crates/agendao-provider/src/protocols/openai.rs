@@ -19,8 +19,9 @@ use crate::responses::types::*;
 use crate::responses::validation::*;
 use crate::tools::InputTool;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderApiShape, ProviderConfig,
-    ProviderError, ProviderProfileResolver, ProviderQuirk, Role, StreamEvent, StreamResult, Usage,
+    clamp_effort, openai_compatible_efforts, ChatRequest, ChatResponse, Choice, Message,
+    ProviderAdapter, ProviderApiShape, ProviderConfig, ProviderError, ProviderProfileResolver,
+    ProviderQuirk, Role, StreamEvent, StreamResult, Usage,
 };
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -295,11 +296,20 @@ fn responses_generate_options(_config: &ProviderConfig, request: &ChatRequest) -
     let mut provider_options =
         extract_responses_provider_options(request.provider_options.as_ref());
     if provider_options.reasoning_effort.is_none() {
-        provider_options.reasoning_effort =
+        let requested = request.reasoning_effort.or_else(|| {
             openai_reasoning_effort(&request.model, request.variant.as_deref())
-                .map(ToString::to_string);
+                .and_then(|value| value.parse().ok())
+        });
+        provider_options.reasoning_effort = requested
+            .and_then(|effort| clamp_effort(effort, openai_compatible_efforts(&request.model)))
+            .map(|effort| effort.to_string());
     }
-    if provider_options.reasoning_summary.is_none() && provider_options.reasoning_effort.is_some() {
+    if provider_options.reasoning_summary.is_none()
+        && provider_options
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|effort| effort != "none")
+    {
         provider_options.reasoning_summary = Some("auto".to_string());
     }
 

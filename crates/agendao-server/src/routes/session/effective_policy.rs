@@ -54,6 +54,7 @@ pub(super) async fn build_session_effective_policy(
         requested_scheduler: &requested_scheduler,
         request_model: requested_model.as_deref(),
         request_variant: requested_variant.as_deref(),
+        request_reasoning_effort: None,
         route: "session_effective_policy",
     })
     .await;

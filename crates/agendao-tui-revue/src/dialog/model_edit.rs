@@ -33,10 +33,12 @@ pub enum ModelEditMode {
     Edit,
 }
 
-/// reasoning effort 循环选项。`default` = 不写(ModelConfig.reasoning_effort = None,
-/// 继承 server/全局默认);其余原样写入。与 agendao-config schema 注释
-/// (none/minimal/low/medium/high)同源,`default` 是 UI 层的"不设置"哨兵。
-pub(crate) const EFFORT_OPTIONS: &[&str] = &["default", "none", "minimal", "low", "medium", "high"];
+/// reasoning effort 循环选项。`default` = clear the model-level override;
+/// 继承 server/全局默认;其余原样写入。与 agendao-config schema 注释
+/// (none/minimal/low/medium/high/xhigh/max/ultra)同源,`default` 是 UI 层的"不设置"哨兵。
+pub(crate) const EFFORT_OPTIONS: &[&str] = &[
+    "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelEditField {
@@ -102,7 +104,7 @@ pub struct ModelEditSubmission {
     pub name: String,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
-    /// 用户选中的 reasoning effort;None = `default`(写入 None,清除显式设置)。
+    /// 用户选中的 reasoning effort;None = `default` (cleared on submit)。
     pub reasoning_effort: Option<String>,
     /// 提交时 Reasoning effort 字段是否可见(可见才覆写,不可见保留 prefill)。
     pub reasoning_effort_visible: bool,

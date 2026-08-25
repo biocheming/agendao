@@ -139,6 +139,10 @@ pub struct PromptOptions {
     pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    /// Per-prompt/session reasoning override. `None` inherits the model
+    /// configuration; `Some("")` clears a previously persisted override;
+    /// any other value is validated by the server.
+    pub reasoning_effort: Option<String>,
     pub continue_last: bool,
     pub source_origin: Option<agendao_types::MessageSourceOrigin>,
     pub source_surface: Option<agendao_types::MessageSourceSurface>,

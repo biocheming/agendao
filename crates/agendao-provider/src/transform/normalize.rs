@@ -49,7 +49,7 @@ pub struct ReasoningContent {
 /// We keep the same default here.
 pub const OUTPUT_TOKEN_MAX: u64 = 32_000;
 
-pub(super) const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high"];
+pub(super) const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 // ---------------------------------------------------------------------------
 // dedup_messages
 // ---------------------------------------------------------------------------
@@ -398,12 +398,12 @@ pub fn unsupported_parts(messages: &mut [Message], supported_modalities: &[Modal
 
         if let Content::Parts(parts) = &mut msg.content {
             for part in parts.iter_mut() {
-                if part.content_type != "image" && part.content_type != "file" {
+                if !matches!(part.content_type.as_str(), "image" | "image_url" | "file") {
                     continue;
                 }
 
                 // Check for empty base64 image data
-                if part.content_type == "image" {
+                if matches!(part.content_type.as_str(), "image" | "image_url") {
                     if let Some(ref image_url) = part.image_url {
                         let url_str = &image_url.url;
                         if url_str.starts_with("data:") {
@@ -423,7 +423,7 @@ pub fn unsupported_parts(messages: &mut [Message], supported_modalities: &[Modal
                     }
                 }
 
-                let mime = if part.content_type == "image" {
+                let mime = if matches!(part.content_type.as_str(), "image" | "image_url") {
                     part.image_url
                         .as_ref()
                         .and_then(|url| {
@@ -435,6 +435,7 @@ pub fn unsupported_parts(messages: &mut [Message], supported_modalities: &[Modal
                             }
                         })
                         .map(|s| s.trim_start_matches("data:").to_string())
+                        .or_else(|| part.media_type.clone())
                         .unwrap_or_default()
                 } else {
                     // For file parts, use media_type field

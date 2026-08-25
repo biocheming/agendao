@@ -532,6 +532,7 @@ async fn handle_prompt(
         scheduler: req.scheduler,
         model: req.model,
         variant: req.variant,
+        reasoning_effort: req.reasoning_effort,
         command: req.command,
         arguments: None,
     };
@@ -1448,6 +1449,8 @@ struct PromptRequest {
     model: Option<String>,
     #[serde(default)]
     variant: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
     #[serde(default)]
     command: Option<String>,
 }

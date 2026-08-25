@@ -4,6 +4,7 @@ import type { BreadcrumbProvenance } from "../../hooks/useSchedulerNavigation";
 import type { ComposerAttachmentRecord } from "../../lib/composerContext";
 import { extractPromptReferences, removePromptReference } from "../../lib/composerContext";
 import { modeKey } from "../../lib/display";
+import { supportedReasoningEfforts } from "../../lib/reasoning";
 import { useAgendaoStore } from "../../store";
 
 interface ComposerSectionProps {
@@ -60,6 +61,8 @@ export function ComposerSection(props: ComposerSectionProps) {
   const providers = useAgendaoStore((s) => s.providers);
   const workspaceContext = useAgendaoStore((s) => s.workspaceContext);
   const selectedModel = useAgendaoStore((s) => s.selectedModel);
+  const selectedReasoningEffort = useAgendaoStore((s) => s.selectedReasoningEffort);
+  const setSelectedReasoningEffort = useAgendaoStore((s) => s.setSelectedReasoningEffort);
   const attachments = useAgendaoStore((s) => s.attachments);
   const selectedAttachmentIndex = useAgendaoStore((s) => s.selectedAttachmentIndex);
   const selectedWorkspacePath = useAgendaoStore((s) => s.selectedWorkspacePath);
@@ -95,6 +98,8 @@ export function ComposerSection(props: ComposerSectionProps) {
         providers={providers}
         recentModels={recentModels}
         selectedModel={selectedModel}
+        selectedReasoningEffort={selectedReasoningEffort}
+        onReasoningEffortChange={setSelectedReasoningEffort}
         references={references}
         slashCommands={slashCommands}
         attachments={attachments}

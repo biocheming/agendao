@@ -19,6 +19,7 @@ import type {
   ProviderRecord,
 } from "../../lib/provider";
 import type { RecentModelRecord } from "../../lib/workspace";
+import { reasoningLabel, supportedReasoningEfforts } from "../../lib/reasoning";
 import { useI18n } from "@/i18n/I18nProvider";
 import { cn } from "@/lib/utils";
 import {
@@ -210,6 +211,8 @@ interface ComposerPanelProps {
   recentModels: RecentModelRecord[];
   selectedModel: string;
   onModelChange: (value: string) => void;
+  selectedReasoningEffort: string;
+  onReasoningEffortChange: (value: string) => void;
   references: string[];
   slashCommands: CommandApiSpec[];
   attachments: ComposerAttachmentRecord[];
@@ -270,6 +273,8 @@ export function ComposerPanel({
   recentModels,
   selectedModel,
   onModelChange,
+  selectedReasoningEffort,
+  onReasoningEffortChange,
   references,
   slashCommands,
   attachments,
@@ -594,6 +599,10 @@ export function ComposerPanel({
   const modelValue = selectedModel || "";
   const selectedProviderModel = findProviderModel(providers, modelValue);
   const selectedModelBadges = capabilityBadges(selectedProviderModel?.model.capabilities);
+  const effortOptions = selectedProviderModel
+    ? supportedReasoningEfforts(selectedProviderModel.model)
+    : ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const effortSupported = !selectedProviderModel || effortOptions.length > 0;
   const activityHint = voiceError
     ? voiceError
     : composerDragActive
@@ -965,6 +974,52 @@ export function ComposerPanel({
                   >
                     <SendIcon className="size-4" />
                   </Button>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/35 pt-2">
+                <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
+                  <BrainCircuitIcon className="size-3.5 shrink-0" />
+                  <span className="shrink-0 font-medium text-foreground/80">Reasoning</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={streaming || !effortSupported}
+                        className="h-7 rounded-lg px-2 text-[11px] font-medium"
+                        data-testid="composer-reasoning-effort"
+                        title="Reasoning effort for the next prompt"
+                      >
+                        {reasoningLabel(selectedReasoningEffort)}
+                        <ChevronsUpDownIcon className="ml-1 size-3" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="min-w-[9rem]">
+                      <DropdownMenuItem
+                        onClick={() => onReasoningEffortChange("")}
+                        className="text-xs"
+                      >
+                        Auto (model default)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => onReasoningEffortChange("none")}
+                        className="text-xs"
+                      >
+                        Off
+                      </DropdownMenuItem>
+                      {effortOptions.map((effort) => (
+                        <DropdownMenuItem
+                          key={effort}
+                          onClick={() => onReasoningEffortChange(effort)}
+                          className="text-xs"
+                        >
+                          {effort}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <span className="hidden truncate text-[10px] sm:inline">applies to the next prompt</span>
                 </div>
               </div>
             </div>

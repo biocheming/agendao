@@ -19,6 +19,7 @@ export interface ProviderModelRecord {
   id: string;
   name?: string;
   available?: boolean | null;
+  variants?: string[];
   context_window?: number | null;
   max_output_tokens?: number | null;
   cost_per_million_input?: number | null;
@@ -116,6 +117,7 @@ export interface ManagedModelOverrideInfoRecord {
   base_url?: string | null;
   family?: string | null;
   reasoning?: boolean | null;
+  reasoning_effort?: string | null;
   tool_call?: boolean | null;
   headers?: Record<string, string> | null;
   options?: Record<string, unknown> | null;

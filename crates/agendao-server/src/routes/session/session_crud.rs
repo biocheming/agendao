@@ -126,6 +126,8 @@ pub struct ExecuteCommandRequest {
     pub arguments: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub agent: Option<String>,
     pub scheduler: Option<agendao_orchestrator::selector::SchedulerChoice>,
 }
@@ -936,6 +938,7 @@ mod tests {
                 arguments: None,
                 model: None,
                 variant: None,
+                reasoning_effort: None,
                 agent: None,
                 scheduler: None,
             }),
@@ -986,6 +989,7 @@ mod tests {
                 arguments: None,
                 model: None,
                 variant: None,
+                reasoning_effort: None,
                 agent: None,
                 scheduler: None,
             }),
@@ -1760,6 +1764,7 @@ pub(super) async fn execute_command(
         req.arguments,
         req.model,
         req.variant,
+        req.reasoning_effort,
         req.agent,
         req.scheduler,
     );

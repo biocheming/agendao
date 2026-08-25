@@ -282,7 +282,10 @@
         "tool_call": { "type": "boolean" },
         "modalities": { "$ref": "#/$defs/modelModalities" },
         "reasoning": { "type": "boolean" },
-        "reasoning_effort": { "type": "string" },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        },
         "timeout_secs": { "type": "integer", "minimum": 0 },
         "stream_stall_timeout_secs": { "type": "integer", "minimum": 0 },
         "attachment": { "type": "boolean" },
