@@ -4,7 +4,6 @@
 //! mirroring the MCP stdio transport pattern.
 
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::BufReader;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
 use super::runtime::JsRuntime;
@@ -22,6 +21,9 @@ use agendao_core::jsonrpc::{
 };
 use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
+use agendao_sandbox::{
+    IntegrationSandboxContext, PrepareOptions, SandboxHandleDriver, SpawnSpec, StdioPlan, StdioSpec,
+};
 use agendao_types::ToolCatalogMetadata;
 
 // ---------------------------------------------------------------------------
@@ -32,6 +34,9 @@ use agendao_types::ToolCatalogMetadata;
 pub enum PluginSubprocessError {
     #[error("subprocess I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("plugin host launch failed: {0}")]
+    Spawn(String),
 
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
@@ -170,7 +175,98 @@ pub(crate) fn ipc_temp_dir() -> std::path::PathBuf {
 struct Transport {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    process: Child,
+    /// The sandbox driver: sole owner of the execution handle, selecting
+    /// between the child's natural exit and the TERM → grace → KILL
+    /// ladder. Replaces the raw `Child` and its `kill_on_drop`.
+    driver: SandboxHandleDriver,
+}
+
+impl Transport {
+    fn driver(&self) -> SandboxHandleDriver {
+        self.driver.clone()
+    }
+}
+
+impl Drop for Transport {
+    fn drop(&mut self) {
+        // kill_on_drop equivalent: the driver task owns the handle, so a
+        // dropped transport must terminate the ladder explicitly — a
+        // plugin host must never outlive its transport just because the
+        // caller forgot `shutdown()`. Drop cannot await, so the ladder
+        // runs detached; `shutdown()` remains the synchronous path.
+        let driver = self.driver.clone();
+        let _ = tokio::spawn(async move { driver.terminate().await });
+    }
+}
+
+/// Launch a plugin host through the sandbox execution boundary
+/// (`Integration` profile: contained, workspace-scoped, network denied)
+/// and hand back the framed transport plus the child's pid for registry
+/// visibility. Shared by the initial spawn and the reconnect path —
+/// there is no direct-spawn variant (sandbox plan Phase 6).
+async fn launch_host_process(
+    runtime: &JsRuntime,
+    host_script: &str,
+    plugin_path: &str,
+    cwd: Option<&std::path::Path>,
+    sandbox: &IntegrationSandboxContext,
+) -> Result<(Transport, Option<u32>), PluginSubprocessError> {
+    let args = runtime.run_args(host_script);
+    let spec = SpawnSpec {
+        program: runtime.command().to_string(),
+        args,
+        cwd: cwd.map(|p| p.to_path_buf()),
+        env_overrides: Default::default(),
+    };
+    // The request fixes the trust class and profile kind; plugin config
+    // only picks the runtime and script — it cannot widen them.
+    let prepared = sandbox
+        .prepare(
+            spec,
+            PrepareOptions {
+                stdio: StdioPlan {
+                    stdin: StdioSpec::Piped,
+                    stdout: StdioSpec::Piped,
+                    stderr: StdioSpec::Piped,
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| {
+            PluginSubprocessError::Spawn(format!("sandbox denied the plugin host launch: {}", e))
+        })?;
+    let mut handle = prepared.start().await.map_err(|e| {
+        PluginSubprocessError::Spawn(format!("plugin host process spawn failed: {}", e))
+    })?;
+    let pid = handle.pid();
+
+    let stdin = handle
+        .take_stdin()
+        .ok_or_else(|| PluginSubprocessError::Protocol("no stdin".into()))?;
+    let stdout = handle
+        .take_stdout()
+        .ok_or_else(|| PluginSubprocessError::Protocol("no stdout".into()))?;
+    if let Some(stderr) = handle.take_stderr() {
+        let _handle = spawn_stderr_drain(
+            stderr,
+            StderrDrainConfig::new(format!("plugin:{}", plugin_path)),
+        );
+    }
+
+    let exit_plugin = plugin_path.to_string();
+    let driver = SandboxHandleDriver::spawn(handle, move |status| {
+        tracing::debug!(plugin = exit_plugin, ?status, "plugin host process exited");
+    });
+
+    Ok((
+        Transport {
+            stdin,
+            stdout: BufReader::new(stdout),
+            driver,
+        },
+        pid,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +297,9 @@ pub struct PluginSubprocess {
     plugin_path: String,
     init_context: serde_json::Value,
     cwd: Option<std::path::PathBuf>,
+    /// Launch context for the reconnect path: the boundary plus the
+    /// workspace a replacement host must launch under.
+    sandbox: IntegrationSandboxContext,
     /// RAII guard — auto-unregisters from ProcessRegistry on drop.
     _process_guard: std::sync::Mutex<Option<ProcessGuard>>,
 }
@@ -210,41 +309,19 @@ impl PluginSubprocess {
     ///
     /// `cwd` sets the working directory for the subprocess so that bare-specifier
     /// `import("pkg")` calls resolve against the correct `node_modules/`.
+    ///
+    /// The process launches through the sandbox execution boundary
+    /// (`Integration` profile); there is no direct-spawn variant.
     pub async fn spawn(
         runtime: JsRuntime,
         host_script: &str,
         plugin_path: &str,
         context: PluginContext,
         cwd: Option<&std::path::Path>,
+        sandbox: IntegrationSandboxContext,
     ) -> Result<Self, PluginSubprocessError> {
-        let args = runtime.run_args(host_script);
-        let mut cmd = Command::new(runtime.command());
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // Capture stderr so we can log it without corrupting TUI rendering.
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-
-        let mut child = cmd.spawn()?;
-        if let Some(stderr) = child.stderr.take() {
-            let _handle = spawn_stderr_drain(
-                stderr,
-                StderrDrainConfig::new(format!("plugin:{}", plugin_path)),
-            );
-        }
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| PluginSubprocessError::Protocol("no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| PluginSubprocessError::Protocol("no stdout".into()))?;
+        let (transport, pid) =
+            launch_host_process(&runtime, host_script, plugin_path, cwd, &sandbox).await?;
 
         let init_context = serde_json::to_value(&context)
             .map_err(|e| PluginSubprocessError::Protocol(format!("serialize context: {e}")))?;
@@ -253,11 +330,7 @@ impl PluginSubprocess {
             name: String::new(),
             plugin_id: String::new(),
             tools: HashMap::new(),
-            transport: Arc::new(RwLock::new(Transport {
-                stdin,
-                stdout: BufReader::new(stdout),
-                process: child,
-            })),
+            transport: Arc::new(RwLock::new(transport)),
             rpc_lock: Arc::new(Mutex::new(())),
             request_id: AtomicU64::new(1),
             hooks: Vec::new(),
@@ -268,6 +341,7 @@ impl PluginSubprocess {
             plugin_path: plugin_path.to_string(),
             init_context,
             cwd: cwd.map(|p| p.to_path_buf()),
+            sandbox,
             _process_guard: std::sync::Mutex::new(None),
         };
 
@@ -284,23 +358,20 @@ impl PluginSubprocess {
         this.plugin_id = result.plugin_id.unwrap_or_else(|| plugin_path.to_string());
         this.tools = result.tools.unwrap_or_default();
 
-        // Register in global process registry for TUI visibility
-        {
-            let transport = this.transport.read().await;
-            if let Some(pid) = transport.process.id() {
-                let guard = global_registry().register_with_shutdown(
-                    pid,
-                    this.name.clone(),
-                    ProcessKind::Plugin,
-                    Arc::new({
-                        let name = this.name.clone();
-                        move || {
-                            tracing::debug!(plugin = %name, "Plugin on_shutdown callback fired");
-                        }
-                    }),
-                );
-                *this._process_guard.lock().unwrap() = Some(guard);
-            }
+        // Register in global process registry for TUI visibility; the
+        // shutdown hook routes through the sandbox driver's ladder.
+        if let Some(pid) = pid {
+            let driver = this.transport.read().await.driver();
+            let guard = global_registry().register_with_shutdown(
+                pid,
+                this.name.clone(),
+                ProcessKind::Plugin,
+                Arc::new(move || {
+                    let driver = driver.clone();
+                    let _ = tokio::spawn(async move { driver.terminate().await });
+                }),
+            );
+            *this._process_guard.lock().unwrap() = Some(guard);
         }
 
         Ok(this)
@@ -370,7 +441,7 @@ impl PluginSubprocess {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     if crate::feature_flags::is_enabled("plugin_timeout_self_heal") {
-                        if let Err(error) = self.reconnect().await {
+                        if let Err(error) = self.reconnect(&self.sandbox).await {
                             tracing::debug!(
                                 plugin = %self.name,
                                 error = %error,
@@ -665,30 +736,15 @@ impl PluginSubprocess {
     pub async fn shutdown(&self) -> Result<(), PluginSubprocessError> {
         // Guard drop auto-unregisters from ProcessRegistry (RAII).
         let _: Value = self.call("shutdown", None).await?;
-        // Give the process a moment to exit, then kill if needed
-        let mut transport = self.transport.write().await;
-        match tokio::time::timeout(Duration::from_secs(2), transport.process.wait()).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                tracing::debug!(
-                    plugin = %self.name,
-                    error = %error,
-                    "Failed while waiting for plugin subprocess shutdown"
-                );
-            }
-            Err(error) => {
-                tracing::debug!(
-                    plugin = %self.name,
-                    error = %error,
-                    "Timed out waiting for plugin subprocess shutdown"
-                );
-            }
-        }
-        if let Err(error) = transport.process.kill().await {
+        // The cancellation ladder (TERM → grace → KILL) replaces the old
+        // wait-then-kill pair: the host gets a clean-shutdown window,
+        // then a guaranteed exit.
+        let driver = self.transport.read().await.driver();
+        if let Err(error) = driver.terminate().await {
             tracing::debug!(
                 plugin = %self.name,
                 error = %error,
-                "Failed to kill plugin subprocess during shutdown"
+                "Failed to terminate plugin subprocess during shutdown"
             );
         }
         Ok(())
@@ -705,70 +761,46 @@ impl PluginSubprocess {
 
     // -- Self-heal (in-place reconnect) --------------------------------------
 
-    /// Kill the current subprocess and spawn a fresh one, swapping the inner
-    /// transport without replacing the outer `Arc<PluginSubprocess>`.
+    /// Terminate the current subprocess and spawn a fresh one, swapping the
+    /// inner transport without replacing the outer `Arc<PluginSubprocess>`.
     ///
     /// SAFETY: Must only be called while `rpc_lock` is held (i.e. from within
     /// `call()`), so no concurrent RPC can observe a half-swapped transport.
-    async fn reconnect(&self) -> Result<(), PluginSubprocessError> {
+    async fn reconnect(
+        &self,
+        sandbox: &IntegrationSandboxContext,
+    ) -> Result<(), PluginSubprocessError> {
         tracing::warn!(plugin = %self.name, "[plugin-heal] reconnecting after timeout");
 
-        // 1. Defuse old guard and kill old process
+        // 1. Defuse old guard and terminate old process through the
+        // cancellation ladder (TERM → grace → KILL).
         {
             // Defuse the existing guard so it won't try to unregister the old PID
             if let Some(ref guard) = *self._process_guard.lock().unwrap() {
                 guard.defuse();
             }
-            let mut transport = self.transport.write().await;
-            if let Err(error) = transport.process.kill().await {
+            let old_driver = self.transport.read().await.driver();
+            if let Err(error) = old_driver.terminate().await {
                 tracing::debug!(
                     plugin = %self.name,
                     error = %error,
-                    "[plugin-heal] failed to kill old subprocess before reconnect"
+                    "[plugin-heal] failed to terminate old subprocess before reconnect"
                 );
             }
         }
 
-        // 2. Spawn new process
-        let args = self.runtime.run_args(&self.host_script);
-        let mut cmd = Command::new(self.runtime.command());
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(dir) = &self.cwd {
-            cmd.current_dir(dir);
-        }
-
-        let mut child = cmd.spawn()?;
-
-        // Drain stderr in background
-        if let Some(stderr) = child.stderr.take() {
-            let _handle = spawn_stderr_drain(
-                stderr,
-                StderrDrainConfig::new(format!("plugin:{}", self.plugin_path)),
-            );
-        }
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| PluginSubprocessError::Protocol("no stdin on reconnect".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| PluginSubprocessError::Protocol("no stdout on reconnect".into()))?;
+        // 2. Spawn new process through the same boundary
+        let (transport, pid) = launch_host_process(
+            &self.runtime,
+            &self.host_script,
+            &self.plugin_path,
+            self.cwd.as_deref(),
+            sandbox,
+        )
+        .await?;
 
         // 3. Swap transport
-        {
-            let mut transport = self.transport.write().await;
-            *transport = Transport {
-                stdin,
-                stdout: BufReader::new(stdout),
-                process: child,
-            };
-        }
+        *self.transport.write().await = transport;
 
         // 4. Re-initialize — write/read directly (rpc_lock already held by caller)
         let params = serde_json::json!({
@@ -785,23 +817,20 @@ impl PluginSubprocess {
             return Err(err.into());
         }
 
-        // 5. Register new PID
-        {
-            let transport = self.transport.read().await;
-            if let Some(pid) = transport.process.id() {
-                let guard = global_registry().register_with_shutdown(
-                    pid,
-                    self.name.clone(),
-                    ProcessKind::Plugin,
-                    Arc::new({
-                        let name = self.name.clone();
-                        move || {
-                            tracing::debug!(plugin = %name, "Plugin on_shutdown callback fired");
-                        }
-                    }),
-                );
-                *self._process_guard.lock().unwrap() = Some(guard);
-            }
+        // 5. Register new PID; the shutdown hook routes through the new
+        // driver's ladder.
+        if let Some(pid) = pid {
+            let driver = self.transport.read().await.driver();
+            let guard = global_registry().register_with_shutdown(
+                pid,
+                self.name.clone(),
+                ProcessKind::Plugin,
+                Arc::new(move || {
+                    let driver = driver.clone();
+                    let _ = tokio::spawn(async move { driver.terminate().await });
+                }),
+            );
+            *self._process_guard.lock().unwrap() = Some(guard);
         }
 
         tracing::info!(plugin = %self.name, "[plugin-heal] reconnected successfully");
@@ -834,7 +863,7 @@ impl PluginSubprocess {
                 _ = tokio::time::sleep_until(deadline) => {
                     // Timeout — attempt reconnect so the *next* call works.
                     if crate::feature_flags::is_enabled("plugin_timeout_self_heal") {
-                        if let Err(error) = self.reconnect().await {
+                        if let Err(error) = self.reconnect(&self.sandbox).await {
                             tracing::debug!(
                                 plugin = %self.name,
                                 error = %error,

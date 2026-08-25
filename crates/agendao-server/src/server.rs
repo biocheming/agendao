@@ -255,10 +255,14 @@ pub struct ServerState {
     pub(crate) user_state: Arc<UserStateAuthority>,
     pub(crate) resolved_context_authority: Arc<ResolvedWorkspaceContextAuthority>,
     pub(crate) tool_registry: Arc<agendao_tool::ToolRegistry>,
+    /// The single sandbox launch authority for tool execution: every
+    /// model-reachable process spawn flows through here (Phase 4).
+    pub(crate) sandbox_authority: Arc<crate::sandbox_authority::SandboxAuthority>,
     pub(crate) prompt_runner: Arc<SessionPrompt>,
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
     pub(crate) steering_store: Arc<tokio::sync::Mutex<SessionSteeringQueueStore>>,
+    pub submission_authority: Arc<agendao_server_core::submission_authority::SubmissionAuthority>,
     pub(crate) queued_followups:
         Arc<tokio::sync::Mutex<HashMap<String, std::collections::VecDeque<serde_json::Value>>>>,
     /// Task-governance stall observation windows (server memory only).
@@ -372,6 +376,15 @@ impl ServerState {
         let queued_followups = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let todo_manager = Arc::new(agendao_session::TodoManager::new());
         let file_time_tracker = Arc::new(agendao_tool::FileTimeTracker::default());
+        let sandbox_authority = Arc::new(crate::sandbox_authority::SandboxAuthority::new(
+            crate::sandbox_authority::SandboxAuthorityConfig::for_session(
+                agendao_types::SessionPermissionMode::Default,
+            ),
+            crate::sandbox_authority::production_backend_registry(),
+            Arc::new(crate::sandbox_authority::ProjectingSandboxEventSink::new(
+                tx.clone(),
+            )),
+        ));
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
             sessions: Arc::new(Mutex::new(SessionManager::new())),
@@ -383,6 +396,7 @@ impl ServerState {
             user_state,
             resolved_context_authority,
             tool_registry: Arc::new(agendao_tool::ToolRegistry::new()),
+            sandbox_authority,
             prompt_runner: Arc::new(
                 SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
                     SessionStateManager::new(),
@@ -394,6 +408,9 @@ impl ServerState {
             runtime_memory,
             runtime_telemetry,
             steering_store,
+            submission_authority: Arc::new(
+                agendao_server_core::submission_authority::SubmissionAuthority::new(),
+            ),
             queued_followups,
             stall_windows: Arc::new(
                 crate::session_runtime::task_ledger_stall::StallWindows::default(),
@@ -438,6 +455,32 @@ impl ServerState {
         self.config_store
             .project_dir()
             .unwrap_or_else(|| self.workspace_root.clone())
+    }
+
+    /// Capture the permission mode for a session and construct an immutable
+    /// sandbox authority for that launch.  Authorities are deliberately not
+    /// cached or mutated: a permission-mode update affects subsequent
+    /// launches, while an already prepared execution keeps its own snapshot.
+    pub async fn sandbox_authority_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<crate::sandbox_authority::SandboxAuthority> {
+        let mode = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .and_then(|session| session.permission.as_ref().map(|rules| rules.mode))
+                .unwrap_or_default()
+        };
+        Arc::new(self.sandbox_authority.for_session_mode(mode))
+    }
+
+    /// Native execution is a session-mode capability hint only; the sandbox
+    /// authority remains the final policy裁决点.
+    pub const fn sandbox_native_allowed_for_mode(
+        mode: agendao_types::SessionPermissionMode,
+    ) -> bool {
+        matches!(mode, agendao_types::SessionPermissionMode::UnsandboxedYolo)
     }
 
     pub async fn new_with_storage() -> anyhow::Result<Self> {
@@ -499,9 +542,24 @@ impl ServerState {
             let auth_manager = auth_manager.clone();
             let config_store = config_store.clone();
             let workspace_root = workspace_root.clone();
+            // Plugin hosts are user-configured integrations: they launch
+            // contained through the server's sandbox authority, never a
+            // direct spawn.
+            let plugin_sandbox = agendao_sandbox::IntegrationSandboxContext::new(
+                state.sandbox_authority.clone(),
+                workspace_root.clone(),
+                agendao_sandbox::plugin_runtime_roots(),
+            )
+            .expect("built-in integration runtime roots must resolve");
             tokio::spawn(async move {
-                load_plugin_auth_store(&server_url, auth_manager, &config_store, &workspace_root)
-                    .await;
+                load_plugin_auth_store(
+                    &server_url,
+                    auth_manager,
+                    &config_store,
+                    &workspace_root,
+                    plugin_sandbox,
+                )
+                .await;
             })
         };
         phase_start = std::time::Instant::now();
@@ -1018,11 +1076,12 @@ async fn load_plugin_auth_store(
     auth_manager: Arc<AuthManager>,
     config_store: &agendao_config::ConfigStore,
     workspace_root: &Path,
+    plugin_sandbox: agendao_sandbox::IntegrationSandboxContext,
 ) {
     let config = (*config_store.config()).clone();
 
     let phase_start = std::time::Instant::now();
-    let loader = match PluginLoader::new() {
+    let loader = match PluginLoader::new().map(|loader| loader.with_sandbox(plugin_sandbox)) {
         Ok(loader) => Arc::new(loader),
         Err(error) => {
             tracing::warn!(%error, "failed to initialize plugin loader");

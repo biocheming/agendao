@@ -44,6 +44,7 @@ agendao-storage = { path = "../agendao-storage", optional = true }
 agendao-state = { path = "../agendao-state" }
 agendao-tool = { path = "../agendao-tool" }
 agendao-types = { path = "../agendao-types" }
+agendao-sandbox = { path = "../agendao-sandbox" }
 agendao-command-render = { path = "../agendao-command-render", optional = true }
 agendao-api = { path = "../agendao-api", optional = true }
 agendao-server-core = { path = "../agendao-server-core", optional = true }

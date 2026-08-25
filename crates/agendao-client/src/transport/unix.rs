@@ -141,6 +141,69 @@ impl UnixSocketTransport {
         .await
     }
 
+    pub async fn submit_input(
+        &self,
+        session_id: &str,
+        command: &agendao_types::submission::SubmitInputCommand,
+    ) -> Result<agendao_types::submission::SubmissionDisposition> {
+        self.send_request(
+            "submit_input",
+            serde_json::json!({ "session_id": session_id, "command": command }),
+        )
+        .await
+    }
+
+    pub async fn interrupt(
+        &self,
+        session_id: &str,
+        command: &agendao_types::submission::InterruptCommand,
+    ) -> Result<agendao_types::submission::InterruptDisposition> {
+        self.send_request(
+            "interrupt",
+            serde_json::json!({ "session_id": session_id, "command": command }),
+        )
+        .await
+    }
+
+    pub async fn delete_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueMutationRequest,
+    ) -> Result<agendao_types::submission::QueueMutationDisposition> {
+        self.send_request(
+            "delete_queued_input",
+            serde_json::json!({ "session_id": session_id, "item_id": item_id, "request": request }),
+        )
+        .await
+    }
+
+    pub async fn edit_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueEditRequest,
+    ) -> Result<agendao_types::submission::QueueMutationDisposition> {
+        self.send_request(
+            "edit_queued_input",
+            serde_json::json!({ "session_id": session_id, "item_id": item_id, "request": request }),
+        )
+        .await
+    }
+
+    pub async fn reorder_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueReorderRequest,
+    ) -> Result<agendao_types::submission::QueueMutationDisposition> {
+        self.send_request(
+            "reorder_queued_input",
+            serde_json::json!({ "session_id": session_id, "item_id": item_id, "request": request }),
+        )
+        .await
+    }
+
     pub async fn get_task_ledger(&self, session_id: &str) -> Result<SessionTaskLedger> {
         self.get_task_ledger_view(session_id)
             .await

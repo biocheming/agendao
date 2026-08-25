@@ -824,17 +824,18 @@ impl ApiBridge {
 
     // ── 运行控制 ──
 
-    pub fn abort_session(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
+    pub async fn abort_session_async(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
         if let Some(ref ls) = self.local {
-            return self.block_on(agendao_server::local_abort_session(
-                Arc::clone(ls),
-                session_id,
-            ));
+            return agendao_server::local_abort_session(Arc::clone(ls), session_id).await;
         }
         if let Some(ref unix) = self.unix {
-            return self.block_on(unix.abort_session(session_id));
+            return unix.abort_session(session_id).await;
         }
-        self.block_on(self.client.abort_session(session_id))
+        self.client.abort_session(session_id).await
+    }
+
+    pub fn abort_session(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
+        self.block_on(self.abort_session_async(session_id))
     }
 
     pub fn cancel_tool_call(
@@ -1693,6 +1694,132 @@ impl ApiBridge {
             return self.block_on(unix.list_execution_modes());
         }
         self.block_on(self.client.list_execution_modes())
+    }
+
+    // ── M4.1/M4.3 Gateway Transport ──
+
+    /// 统一网关命令传输入口（完整支持 Local-direct / Unix / HTTP，返回强类型 GatewayServerResponse）
+    pub async fn submit_gateway_command_async(
+        &self,
+        command: crate::command_gateway::GatewayCommand,
+    ) -> anyhow::Result<crate::command_gateway::GatewayServerResponse> {
+        match command {
+            crate::command_gateway::GatewayCommand::Submit(cmd) => {
+                if let Some(ref ls) = self.local {
+                    let session_id = cmd.session_id.clone();
+                    let resp = agendao_server::local_submit_input(Arc::clone(ls), &session_id, cmd)
+                        .await?;
+                    return Ok(crate::command_gateway::GatewayServerResponse::Submit(resp));
+                }
+                if let Some(ref unix) = self.unix {
+                    // Unix transport 走 submit_input RPC
+                    let resp = unix.submit_input(&cmd.session_id, &cmd).await?;
+                    return Ok(crate::command_gateway::GatewayServerResponse::Submit(resp));
+                }
+                let resp = self.client.submit_input(&cmd.session_id, &cmd).await?;
+                Ok(crate::command_gateway::GatewayServerResponse::Submit(resp))
+            }
+            crate::command_gateway::GatewayCommand::Interrupt(cmd) => {
+                if let Some(ref ls) = self.local {
+                    let session_id = cmd.session_id.clone();
+                    let resp =
+                        agendao_server::local_interrupt(Arc::clone(ls), &session_id, cmd).await?;
+                    return Ok(crate::command_gateway::GatewayServerResponse::Interrupt(
+                        resp,
+                    ));
+                }
+                if let Some(ref unix) = self.unix {
+                    let resp = unix.interrupt(&cmd.session_id, &cmd).await?;
+                    return Ok(crate::command_gateway::GatewayServerResponse::Interrupt(
+                        resp,
+                    ));
+                }
+                let resp = self.client.interrupt(&cmd.session_id, &cmd).await?;
+                Ok(crate::command_gateway::GatewayServerResponse::Interrupt(
+                    resp,
+                ))
+            }
+        }
+    }
+
+    pub fn submit_gateway_command(
+        &self,
+        command: crate::command_gateway::GatewayCommand,
+    ) -> anyhow::Result<crate::command_gateway::GatewayServerResponse> {
+        self.block_on(self.submit_gateway_command_async(command))
+    }
+
+    pub async fn delete_queued_input_async(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: agendao_types::submission::QueueMutationRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        if let Some(ref ls) = self.local {
+            return agendao_server::local_delete_queued_input(
+                Arc::clone(ls),
+                session_id,
+                item_id,
+                request,
+            )
+            .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix
+                .delete_queued_input(session_id, item_id, &request)
+                .await;
+        }
+        self.client
+            .delete_queued_input(session_id, item_id, &request)
+            .await
+    }
+
+    pub async fn reorder_queued_input_async(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: agendao_types::submission::QueueReorderRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        if let Some(ref ls) = self.local {
+            return agendao_server::local_reorder_queued_input(
+                Arc::clone(ls),
+                session_id,
+                item_id,
+                request,
+            )
+            .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix
+                .reorder_queued_input(session_id, item_id, &request)
+                .await;
+        }
+        self.client
+            .reorder_queued_input(session_id, item_id, &request)
+            .await
+    }
+
+    pub async fn edit_queued_input_async(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: agendao_types::submission::QueueEditRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        if let Some(ref ls) = self.local {
+            return agendao_server::local_edit_queued_input(
+                Arc::clone(ls),
+                session_id,
+                item_id,
+                request,
+            )
+            .await;
+        }
+        if let Some(ref unix) = self.unix {
+            return unix.edit_queued_input(session_id, item_id, &request).await;
+        }
+        self.client
+            .edit_queued_input(session_id, item_id, &request)
+            .await
     }
 
     // ── Info ──

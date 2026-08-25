@@ -88,13 +88,17 @@ pub struct McpOAuthManager {
 }
 
 impl McpOAuthManager {
-    pub fn new() -> Self {
+    /// The registry launches every stdio server through the sandbox
+    /// execution boundary (Integration profile: contained,
+    /// workspace-scoped, network denied) — the context is the host's
+    /// launch authority plus its workspace root.
+    pub fn new(sandbox: agendao_sandbox::IntegrationSandboxContext) -> Self {
         Self {
             oauth_states: Arc::new(RwLock::new(HashMap::new())),
             servers: Arc::new(RwLock::new(HashMap::new())),
             statuses: Arc::new(RwLock::new(HashMap::new())),
             logs: Arc::new(RwLock::new(HashMap::new())),
-            clients: Arc::new(McpClientRegistry::new()),
+            clients: Arc::new(McpClientRegistry::new().with_sandbox(sandbox)),
         }
     }
 
@@ -572,8 +576,17 @@ impl McpOAuthManager {
 }
 
 impl Default for McpOAuthManager {
+    /// Construction without an installed authority: remote (HTTP/SSE)
+    /// servers keep working; stdio connects fail loudly instead of
+    /// falling back to a direct spawn.
     fn default() -> Self {
-        Self::new()
+        Self {
+            oauth_states: Arc::new(RwLock::new(HashMap::new())),
+            servers: Arc::new(RwLock::new(HashMap::new())),
+            statuses: Arc::new(RwLock::new(HashMap::new())),
+            logs: Arc::new(RwLock::new(HashMap::new())),
+            clients: Arc::new(McpClientRegistry::new()),
+        }
     }
 }
 
@@ -601,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_server_requires_auth_before_connecting() {
-        let manager = McpOAuthManager::new();
+        let manager = McpOAuthManager::default();
         manager
             .add_server(
                 "remote".to_string(),
@@ -625,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_callback_marks_remote_server_authorized() {
-        let manager = McpOAuthManager::new();
+        let manager = McpOAuthManager::default();
         manager
             .add_server(
                 "remote".to_string(),
@@ -657,7 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_oauth_reverts_status_to_needs_auth() {
-        let manager = McpOAuthManager::new();
+        let manager = McpOAuthManager::default();
         manager
             .add_server(
                 "remote".to_string(),

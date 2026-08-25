@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::BufReader;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use agendao_core::codec;
-use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
+use agendao_core::process_registry::{global_registry, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
+use agendao_sandbox::{
+    IntegrationSandboxContext, PrepareOptions, SandboxHandleDriver, SpawnSpec, StdioPlan, StdioSpec,
+};
 
 use crate::McpClientError;
 use agendao_core::jsonrpc::{JsonRpcMessage, JsonRpcRequest};
@@ -35,13 +37,21 @@ pub trait McpTransport: Send + Sync {
 // StdioTransport
 // ---------------------------------------------------------------------------
 
+/// stdio transport for a user-configured MCP server process.
+///
+/// The child is launched through the sandbox execution boundary as
+/// `TrustClass::UserConfiguredIntegration` under the `Integration`
+/// profile (contained, workspace-scoped, network denied) — no direct
+/// spawn path remains here, and no "already sandboxed" escape hatch a
+/// server config could widen (sandbox plan Phase 6).
 pub struct StdioTransport {
-    process: Mutex<Option<Child>>,
     stdin: Mutex<Option<ChildStdin>>,
     /// Persistent buffered reader — avoids the BufReader-per-call data loss bug.
     stdout: Mutex<Option<BufReader<ChildStdout>>>,
-    /// RAII guard — auto-unregisters from ProcessRegistry on drop.
-    _process_guard: Option<ProcessGuard>,
+    /// The sandbox driver: sole owner of the execution handle, selecting
+    /// between the child's natural exit and the TERM → grace → KILL
+    /// ladder. Replaces both the raw `Child` and its `kill_on_drop`.
+    driver: Mutex<Option<SandboxHandleDriver>>,
 }
 
 impl StdioTransport {
@@ -49,57 +59,109 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: Option<Vec<(String, String)>>,
+        sandbox: IntegrationSandboxContext,
     ) -> Result<Self, McpClientError> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        if let Some(env_vars) = env {
-            for (key, value) in env_vars {
-                cmd.env(key, value);
-            }
-        }
-        let mut child = cmd.spawn().map_err(|e| {
-            McpClientError::TransportError(format!("Failed to spawn process: {}", e))
+        let spec = SpawnSpec {
+            program: command.to_string(),
+            args: args.to_vec(),
+            cwd: Some(sandbox.workspace.clone()),
+            env_overrides: env.unwrap_or_default().into_iter().collect(),
+        };
+        // The request fixes the trust class and profile kind; user config
+        // only picks the binary, args, cwd and env — it cannot widen them.
+        let prepared = sandbox
+            .prepare(
+                spec,
+                PrepareOptions {
+                    stdio: StdioPlan {
+                        stdin: StdioSpec::Piped,
+                        stdout: StdioSpec::Piped,
+                        stderr: StdioSpec::Piped,
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| {
+                McpClientError::TransportError(format!(
+                    "sandbox denied the MCP server launch: {}",
+                    e
+                ))
+            })?;
+        let mut handle = prepared.start().await.map_err(|e| {
+            McpClientError::TransportError(format!("MCP server process spawn failed: {}", e))
         })?;
 
-        let stdin = child
-            .stdin
-            .take()
+        let stdin = handle
+            .take_stdin()
             .ok_or_else(|| McpClientError::TransportError("Failed to get stdin".to_string()))?;
 
-        let stdout = child
-            .stdout
-            .take()
+        let stdout = handle
+            .take_stdout()
             .ok_or_else(|| McpClientError::TransportError("Failed to get stdout".to_string()))?;
 
         // Drain stderr so the pipe buffer doesn't deadlock the child.
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = handle.take_stderr() {
             let label = format!("mcp:{}", command);
             let _handle = spawn_stderr_drain(stderr, StderrDrainConfig::new(label));
         }
 
-        // Register child with global ProcessRegistry for visibility.
-        let child_pid = child.id().unwrap_or(0);
+        // The registry guard and the driver reference each other (the
+        // guard's shutdown hook terminates through the driver; the
+        // driver's exit callback drops the guard, unregistering the pid
+        // the moment the process dies), so the hook binds to a late slot
+        // filled synchronously right after spawn — before any shutdown
+        // could fire. Same shape as `shell_session`.
+        let child_pid = handle.pid().unwrap_or(0);
+        let late_driver: std::sync::Arc<std::sync::OnceLock<SandboxHandleDriver>> =
+            std::sync::Arc::new(std::sync::OnceLock::new());
+        let hook_driver = late_driver.clone();
         let process_guard = if child_pid > 0 {
-            Some(global_registry().register(
+            Some(global_registry().register_with_shutdown(
                 child_pid,
                 format!("mcp:{}", command),
                 ProcessKind::Mcp,
+                std::sync::Arc::new(move || {
+                    if let Some(driver) = hook_driver.get() {
+                        let driver = driver.clone();
+                        let _ = tokio::spawn(async move { driver.terminate().await });
+                    }
+                }),
             ))
         } else {
             None
         };
 
+        let exit_command = command.to_string();
+        let driver = SandboxHandleDriver::spawn(handle, move |status| {
+            tracing::debug!(command = exit_command, ?status, "MCP server process exited");
+            // Drop the guard on exit so the registry stops listing a
+            // dead pid before the transport itself goes away.
+            drop(process_guard);
+        });
+        let _ = late_driver.set(driver.clone());
+
         Ok(Self {
-            process: Mutex::new(Some(child)),
             stdin: Mutex::new(Some(stdin)),
             stdout: Mutex::new(Some(BufReader::new(stdout))),
-            _process_guard: process_guard,
+            driver: Mutex::new(Some(driver)),
         })
+    }
+}
+
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        // kill_on_drop equivalent: the driver task owns the handle, so a
+        // dropped transport must terminate the ladder explicitly — an
+        // MCP server must never outlive its client just because the
+        // caller forgot `close()`. Drop cannot await, so the ladder runs
+        // detached; `close()` remains the synchronous, error-reporting
+        // path.
+        if let Ok(mut guard) = self.driver.try_lock() {
+            if let Some(driver) = guard.take() {
+                let _ = tokio::spawn(async move { driver.terminate().await });
+            }
+        }
     }
 }
 
@@ -145,16 +207,18 @@ impl McpTransport for StdioTransport {
             let mut stdout_guard = self.stdout.lock().await;
             *stdout_guard = None;
         }
-        let mut process_guard = self.process.lock().await;
-        if let Some(mut child) = process_guard.take() {
-            child.kill().await.map_err(|e| {
-                McpClientError::TransportError(format!("Failed to kill process: {}", e))
-            })?;
+        // The cancellation ladder (TERM → grace → KILL), not a bare
+        // kill: an MCP server gets the chance to shut down cleanly.
+        {
+            let mut driver_guard = self.driver.lock().await;
+            if let Some(driver) = driver_guard.take() {
+                driver.terminate().await.map_err(|e| {
+                    McpClientError::TransportError(format!("Failed to terminate process: {}", e))
+                })?;
+            }
         }
         let mut stdin_guard = self.stdin.lock().await;
         *stdin_guard = None;
-
-        // Guard auto-unregisters from ProcessRegistry when StdioTransport is dropped (RAII).
 
         Ok(())
     }

@@ -31,6 +31,29 @@ pub enum DispatchOutcome {
     /// 回执到达即本轮结束：run_status 复位 Idle、补渲染 assistant
     /// "Shell command queued" 行（与后端 `execute_shell` handler 落库文案一致）。
     ShellSent { session_id: String, command: String },
+    /// M4.3 网关提交回流
+    GatewaySubmit {
+        ctx: crate::command_gateway::SubmissionContext,
+        response: Result<agendao_types::submission::SubmissionDisposition, String>,
+    },
+    /// M4.3 网关中断回流
+    GatewayInterrupt {
+        ctx: crate::command_gateway::InterruptContext,
+        response: Result<agendao_types::submission::InterruptDisposition, String>,
+    },
+    /// M4.4 Shadow 比较结果回流（纯记录，零状态副作用）
+    ShadowComparison(crate::shadow::ShadowRecord),
+    /// 异步旧路径中断回流（避免在 TUI 事件回调中同步 block_on 阻塞）
+    LegacyInterrupt {
+        session_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    QueueMutation {
+        session_id: String,
+        operation: crate::interaction_feedback::QueueMutationOperation,
+        response: Result<agendao_types::submission::QueueMutationDisposition, String>,
+    },
 }
 
 /// 回流 channel。sender 交给后台 task，receiver 在 `Event::Tick` drain。
@@ -40,13 +63,18 @@ pub struct DispatchOutcomes {
 }
 
 impl DispatchOutcome {
-    /// 两个 variant 都携带 `session_id`，用于 Tick drain 的路由守卫
+    /// 变体都携带 `session_id`，用于 Tick drain 的路由守卫
     ///（仅处理当前 active_session，过滤用户切走后的陈旧回执）。
     pub fn session_id(&self) -> &str {
         match self {
             DispatchOutcome::Sent { session_id, .. } => session_id,
             DispatchOutcome::Failed { session_id, .. } => session_id,
             DispatchOutcome::ShellSent { session_id, .. } => session_id,
+            DispatchOutcome::GatewaySubmit { ctx, .. } => &ctx.session_id,
+            DispatchOutcome::GatewayInterrupt { ctx, .. } => &ctx.session_id,
+            DispatchOutcome::ShadowComparison(rec) => &rec.session_id,
+            DispatchOutcome::LegacyInterrupt { session_id, .. } => session_id,
+            DispatchOutcome::QueueMutation { session_id, .. } => session_id,
         }
     }
 }

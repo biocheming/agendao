@@ -1013,6 +1013,57 @@ mod tests {
 
         assert_eq!(registry.resolve_ui_slash_input("/rename demo"), None);
         assert_eq!(registry.resolve_ui_slash_input("/copy extra"), None);
+        assert_eq!(registry.resolve_ui_slash_input("/interrupt extra"), None);
+    }
+
+    #[test]
+    fn resolve_ui_slash_input_queue_steer_and_interrupt() {
+        let registry = CommandRegistry::new();
+
+        // 1. /queue <text>
+        let q1 = registry
+            .resolve_ui_slash_input("/queue hello world")
+            .expect("resolved /queue");
+        assert_eq!(q1.action_id, UiActionId::QueuePrompt);
+        assert_eq!(q1.argument_kind, UiCommandArgumentKind::Text);
+        assert_eq!(q1.argument.as_deref(), Some("hello world"));
+
+        // 2. /qprompt alias
+        let q2 = registry
+            .resolve_ui_slash_input("/qprompt next step")
+            .expect("resolved /qprompt");
+        assert_eq!(q2.action_id, UiActionId::QueuePrompt);
+        assert_eq!(q2.argument.as_deref(), Some("next step"));
+
+        // 3. /steer <text>
+        let s1 = registry
+            .resolve_ui_slash_input("/steer fix tests")
+            .expect("resolved /steer");
+        assert_eq!(s1.action_id, UiActionId::SteerPrompt);
+        assert_eq!(s1.argument_kind, UiCommandArgumentKind::Text);
+        assert_eq!(s1.argument.as_deref(), Some("fix tests"));
+
+        // 4. /s alias
+        let s2 = registry
+            .resolve_ui_slash_input("/s stop here")
+            .expect("resolved /s");
+        assert_eq!(s2.action_id, UiActionId::SteerPrompt);
+        assert_eq!(s2.argument.as_deref(), Some("stop here"));
+
+        // 5. /interrupt (None argument)
+        let int1 = registry
+            .resolve_ui_slash_input("/interrupt")
+            .expect("resolved /interrupt");
+        assert_eq!(int1.action_id, UiActionId::InterruptTurn);
+        assert_eq!(int1.argument_kind, UiCommandArgumentKind::None);
+        assert_eq!(int1.argument, None);
+
+        // 6. /int alias
+        let int2 = registry
+            .resolve_ui_slash_input("/int")
+            .expect("resolved /int");
+        assert_eq!(int2.action_id, UiActionId::InterruptTurn);
+        assert_eq!(int2.argument, None);
     }
 
     #[test]

@@ -195,8 +195,9 @@ AgenDao's cache strategy is not "add a few cache fields". It is to make the prom
 
 ## Runtime Boundaries
 
-AgenDao is a complete local coding-agent runtime. CLI, TUI, and Web are not three separate products. They are three reading surfaces over the same underlying terrain: one session authority, one scheduler authority, one tool authority, one provider authority, one skill authority, one memory authority, one telemetry authority.
+AgenDao is a complete local coding-agent runtime. CLI, TUI, and Web are not three separate products. They are three reading surfaces over the same underlying terrain: one session authority, one scheduler authority, one tool authority, one provider authority, one skill authority, one memory authority, one telemetry authority, one sandbox execution boundary.
 
+- **model-reachable execution runs through one `SandboxExecutionBoundary`**, and is the only launch path; there is no direct-spawn fallback. Permission (allow/ask/deny) and sandbox (OS-enforced containment) are two separate concerns: `unsandboxed_yolo` is an explicit opt-out of sandboxing, never a real sandbox. Linux `bwrap`, macOS `seatbelt`, and Windows model-layer + fail-closed are documented under `docs/sandbox.md`.
 - providers do not rely on npm package names or historical aliases; `ProviderProfile`, descriptors, validation, and runtime profiles share one authority model
 - sessions do not merge live context, child-workflow cost, and accumulated usage into one blurry number; CLI, TUI, and Web all read request, live, and workflow ledgers plus the context-closure contract
 - fork and subsession boundaries are explicit: children receive only explicit packets; parents absorb only results and summaries

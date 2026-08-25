@@ -37,6 +37,8 @@ pub enum UiActionId {
     ToggleTimestamps,
     ToggleTips,
     ToggleThinking,
+    /// M7 per-section transcript detail policy (`/details <section>`).
+    Details,
     ToggleToolDetails,
     ToggleDensity,
     ToggleSemanticHighlight,
@@ -68,6 +70,10 @@ pub enum UiActionId {
     ToggleMcp,
     /// 通知中心（U7③）：回看 toast 历史（最近 50 条）。TUI-only。
     OpenNotifications,
+    /// M4.3 交互意图逻辑动作
+    QueuePrompt,
+    SteerPrompt,
+    InterruptTurn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -138,8 +144,11 @@ impl UiCommandSpec {
 
 pub fn ui_command_argument_kind(action_id: UiActionId) -> UiCommandArgumentKind {
     match action_id {
-        UiActionId::ConnectProvider => UiCommandArgumentKind::Text,
-        UiActionId::CompactSession => UiCommandArgumentKind::Text,
+        UiActionId::QueuePrompt
+        | UiActionId::SteerPrompt
+        | UiActionId::Details
+        | UiActionId::ConnectProvider
+        | UiActionId::CompactSession => UiCommandArgumentKind::Text,
         UiActionId::OpenSessionList => UiCommandArgumentKind::SessionTarget,
         UiActionId::OpenModelList => UiCommandArgumentKind::ModelRef,
         UiActionId::OpenModeList => UiCommandArgumentKind::ModeRef,
@@ -505,14 +514,14 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
         UiCommandSpec {
             action_id: UiActionId::ExternalEditor,
             title: "External Editor",
-            description: "Open in external editor",
+            description: "Open in external editor ($VISUAL / $EDITOR)",
             category: UiCommandCategory::System,
-            keybind: None,
-            include_in_palette: false,
+            keybind: Some("ctrl+g"),
+            include_in_palette: true,
             slash: Some(UiSlashCommandSpec {
                 name: "/editor",
-                aliases: &[],
-                suggested: false,
+                aliases: &["/edit"],
+                suggested: true,
             }),
         },
         UiCommandSpec {
@@ -565,6 +574,19 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
                 name: "/thinking",
                 aliases: &["/toggle-thinking"],
                 suggested: false,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::Details,
+            title: "Transcript Details",
+            description: "Toggle thinking, tools, todo, or subagent details",
+            category: UiCommandCategory::Display,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/details",
+                aliases: &[],
+                suggested: true,
             }),
         },
         UiCommandSpec {
@@ -867,6 +889,45 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
             keybind: None,
             include_in_palette: true,
             slash: None,
+        },
+        UiCommandSpec {
+            action_id: UiActionId::QueuePrompt,
+            title: "Queue Prompt",
+            description: "Enqueue prompt for the next turn",
+            category: UiCommandCategory::Prompt,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/queue",
+                aliases: &["/qprompt"],
+                suggested: true,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::SteerPrompt,
+            title: "Steer Current Turn",
+            description: "Inject steering instruction into active turn safe boundary",
+            category: UiCommandCategory::Prompt,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/steer",
+                aliases: &["/s"],
+                suggested: true,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::InterruptTurn,
+            title: "Interrupt Turn",
+            description: "Interrupt current active turn",
+            category: UiCommandCategory::Session,
+            keybind: None,
+            include_in_palette: true,
+            slash: Some(UiSlashCommandSpec {
+                name: "/interrupt",
+                aliases: &["/int"],
+                suggested: true,
+            }),
         },
     ]
 }

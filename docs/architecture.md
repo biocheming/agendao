@@ -193,5 +193,5 @@ sequenceDiagram
 - 模型工具面固定以 `capability`、`bash`、`read`、`apply_patch`、`grep` 为五个核心（仍须与 agent hard policy 取交集）。Tool、MCP 和 skill 所需工具进入同一 capability authority；大目录不会把全部 schema 发给 provider。
 - scheduler 每个 agent node 的动态工作集最多 16 个工具、序列化 schema 最多 32 KiB。顺序为五核心、skill `requires_tools`、显式 pinned、任务语义候选；完整 allowlist 只留在本地，供 `capability` 发现和调用。
 - `capability` 的可见性不授予执行权。`search`、`describe`、`call` 使用同一份 agent/policy target allowlist，猜中隐藏工具名也不能绕过。
-- session permission mode 是 typed contract：`default` 保持逐请求治理；`trusted_workspace` 只自动批准明确落在 `workspace:/` scope 的读取和写入；`unsandboxed_yolo` 明确表示本 session 对宿主机执行全开。当前 shell 不是 OS sandbox，因此禁止把后者标成 sandbox YOLO。
+- session permission mode 是 typed contract：`default` 保持逐请求治理；`trusted_workspace` 只自动批准明确落在 `workspace:/` scope 的读取和写入；`unsandboxed_yolo` 明确表示本 session 对宿主机执行全开。模型可达执行已收口到唯一 `SandboxExecutionBoundary`（permission 逻辑层与 sandbox 物理层是两件事，见 `sandbox.md`）；因此禁止把 `unsandboxed_yolo` 标成 "sandbox YOLO"——它是显式退出 sandbox，而非 sandbox。
 - shell session grant 使用规范化 argv 前缀（可执行文件 + 首个参数）。例如 `cargo test --workspace` 可复用 `cmd:cargo/test`，但不会覆盖 `cargo clean`；`git status` 也不会覆盖 `git reset`。

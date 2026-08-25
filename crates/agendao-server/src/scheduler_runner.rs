@@ -749,6 +749,17 @@ impl AgentLoopObserver for SchedulerAgentObserver {
             );
         }
 
+        for message in &steering {
+            self.state.broadcast_event(
+                agendao_server_core::runtime_events::ServerEvent::SteeringApplied {
+                    session_id: self.session_id.clone(),
+                    steering_id: message.id.clone(),
+                    target_turn_id: self.assistant_message_id.clone(),
+                    applied_at: now,
+                },
+            );
+        }
+
         self.state
             .runtime_telemetry
             .emit_control_input_transition(

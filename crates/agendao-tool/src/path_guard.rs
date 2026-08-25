@@ -1,5 +1,31 @@
 use std::path::{Component, Path, PathBuf};
 
+use agendao_tool_core::AuthorizedFilePath;
+
+use crate::{PermissionRequest, ToolContext, ToolError};
+
+/// Ask for external-directory access from a canonical operation path. The
+/// same value is later handed to filesystem I/O, so permission scope cannot
+/// be derived from a pre-canonical string while a symlink points elsewhere.
+pub async fn authorize_external_file_path(
+    ctx: &ToolContext,
+    path: &AuthorizedFilePath,
+) -> Result<(), ToolError> {
+    if !path.is_external() {
+        return Ok(());
+    }
+    let parent = path.external_parent();
+    let parent = parent.to_string_lossy().into_owned();
+    ctx.ask_permission(
+        PermissionRequest::new("external_directory")
+            .with_pattern(format!("{}/*", parent))
+            .with_scope_key(crate::external_fs_scope_key(&parent))
+            .with_metadata("filepath", serde_json::json!(path.display_path()))
+            .with_metadata("parentDir", serde_json::json!(parent)),
+    )
+    .await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootPathFallbackPolicy {
     /// Do not correct suspicious root-level paths.

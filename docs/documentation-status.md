@@ -114,6 +114,24 @@
 - `plans/agendao-web-audit-2026-07.md`
 - `../CHANGELOG.md`（Unreleased 2026-07）
 
+### 7. Sandbox execution boundary
+
+状态：`Linux 主链已落地；macOS/Windows fail-closed，平台 enforcement 待完成`
+
+结论：
+
+- 模型可达执行已全部收口到唯一 `SandboxExecutionBoundary`（server `SandboxAuthority` / CLI `CliSandboxAuthority`）；permission 与 sandbox 是两件事，`unsandboxed_yolo` 是显式退出 sandbox，不是 "sandbox YOLO"。
+- Linux `bwrap` 完整：namespaces + seccomp + workspace bind + protected-metadata + 私有 `/tmp` + process-group 生命周期梯。
+- macOS Seatbelt 路径编码已 fail-closed，默认 backend 当前禁用；固定共享 `/tmp/agendao-home` 已移除，等待 execution-scoped HOME 与受支持的 enforcement 后再启用。
+- Windows 四模型（token/acl/job/wfp）已就位并被 contract-test，但 kernel 执行路径未集成，contained 启动恒定 fail-closed（有可行动原因）。
+- 守护：`agendao-server/tests/fixtures/sandbox-spawn-inventory.tsv` + `agendao-server/tests/sandbox_spawn_inventory.rs` 双向精确（源码↔TSV），model-reachable 唯一合法终局是 `boundary`，无第二套模型可达执行 authority；manifest 不放入永久忽略的 `docs/plans/`。
+- backend 纯参数构造在任意宿主 contract-test；宿主侧测试与编译产物用 `../target`，sandbox 内 `/tmp` 仅为隔离私有 tmpfs。
+
+对应文档：
+
+- `sandbox.md`
+- `plans/sandbox-system-architecture-and-implementation-plan.md`
+
 ## 根目录文档状态
 
 | 文档 | 当前定位 | 状态判断 |
@@ -126,6 +144,7 @@
 | `tools.md` | 内置工具参考 | 当前，需按 canonical-first 理解高复杂工具 |
 | `configuration.md` | 配置与 validation | 当前 |
 | `context-caching.md` | 上下文缓存与 prompt surface | 当前 |
+| `sandbox.md` | sandbox 权威、平台隔离与诚实边界 | 当前 |
 | `skills.md` | skill 治理与 hub | 当前 |
 | `scheduler.md` | scheduler 全参考 | 当前 |
 | `auth.md` | provider 认证 | 当前 |
@@ -153,6 +172,7 @@
 | `plans/tui-session-graph-sidebar.md` | TUI sidebar 设计草图 | `已落地（2026-07），可归档` |
 | `plans/agendao-web-audit-2026-07.md` | Web 前端专项审计与修复追踪 | `进行中（主体已修）` |
 | `plans/agendao-project-audit-2026-07.md` | 全项目六专项审计 | `P0/P1/P2/P3 已全部核销` |
+| `plans/sandbox-system-architecture-and-implementation-plan.md` | sandbox authority、平台隔离与分阶段实施计划 | `Linux 主链已落地；真实 ProxyOnly、macOS/Windows enforcement 与资源配额仍待完成` |
 
 ## 示例与 schema 状态
 

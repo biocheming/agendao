@@ -503,7 +503,7 @@ pub(crate) async fn put_mcp_config(
     // 状态列表残留旧值）。cfg 取自 updated（写面唯一权威）。
     #[cfg(feature = "mcp")]
     if let Some(cfg) = updated.mcp.as_ref().and_then(|mcp_map| mcp_map.get(&key)) {
-        crate::routes::mcp::sync_manager_after_mcp_config_write(&key, Some(cfg)).await;
+        crate::routes::mcp::sync_manager_after_mcp_config_write(&state, &key, Some(cfg)).await;
     }
     finalize_config_change(&state, updated).await
 }
@@ -522,7 +522,7 @@ pub(crate) async fn delete_mcp_config(
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
     // 同步摘除 runtime manager 条目（否则已删 server 仍在状态列表残留）。
     #[cfg(feature = "mcp")]
-    crate::routes::mcp::sync_manager_after_mcp_config_write(&key, None).await;
+    crate::routes::mcp::sync_manager_after_mcp_config_write(&state, &key, None).await;
     finalize_config_change(&state, updated).await
 }
 

@@ -61,7 +61,6 @@ use crate::dialog::{
     TaskStateDialog,
 };
 use crate::input::{PromptInput, SearchBar, SlashPopup};
-use crate::screen::{build_render_units, transcript_total_height};
 use crate::store::app_store::{AppStore, Route};
 use crate::store::session_store::SessionStore;
 use crate::store::types::{RunStatus, ToolPhase};
@@ -294,6 +293,8 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         .stylesheet_mut()
         .variables
         .extend(initial_theme_vars);
+    let (reader_control, event_reader) = crate::terminal_lifecycle::AdaptiveEventReader::new_pair();
+
     let handler = RefCell::new(AppHandler::new(
         store.clone(),
         api.clone(),
@@ -303,6 +304,7 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
         dispatch_outcome::DispatchOutcomes::new(),
         app_op::AppOps::new(),
     ));
+    handler.borrow_mut().reader_control = Some(reader_control);
     // 初始化 sidebar session 导航树(从 session_list + cwd 构建 NavigateSession 节点)。
     handler.borrow_mut().refresh_sidebar_session_tree();
     // 初始 Home 路由聚焦 prompt——一进去就有块光标，可直接打字（Session 路由保持原 focus 行为）。
@@ -326,8 +328,16 @@ pub fn run_app_with_config(config: crate::config::AppConfig) -> anyhow::Result<(
 
     app.run(view, move |event, view, app| {
         let is_tick = matches!(event, revue::runtime::event::Event::Tick);
+        let gen = event_reader.current_generation();
+        let envelope = crate::terminal_lifecycle::InputEventEnvelope::new(gen, event);
+
+        // 校验输入事件代际（代际过期直接废弃旧事件）
+        if !envelope.is_valid(gen) {
+            return false;
+        }
+
         let mut h = view.handler.borrow_mut();
-        let handled = h.handle(event);
+        let handled = h.handle(envelope.event);
         // U4：q 双击//exit 的退出请求（revue 只替我们管 Ctrl+C；
         // 自控退出经此旗标交还 App 单点收口）。
         let quit_requested = std::mem::take(&mut h.quit_requested);
@@ -427,6 +437,7 @@ pub(crate) enum Panel {
     /// U5：transcript 搜索条（Ctrl+F；query 自维临时态，跳转复用
     /// transcript_cursor 机制）。
     Search,
+    Subagents,
 }
 
 /// Confirm-dialog outcome discriminator. `Panel::Confirm` only yields a bool;
@@ -514,6 +525,7 @@ pub(crate) struct AppHandler {
     pub(crate) recovery_list: RecoveryListDialog,
     /// U7③：通知中心（toast_history 只读回看，数据真相在 store signal）。
     pub(crate) notification_dialog: crate::dialog::NotificationDialog,
+    pub(crate) subagent_panel: crate::subagent_panel::SubagentPanel,
     /// Provider Model 添加/编辑 dialog(Settings Details 内 m/e 入口)。
     /// 走 client.put_provider_model_config / delete_provider_model_config 唯一写路径。
     pub(crate) model_edit_dialog: ModelEditDialog,
@@ -572,6 +584,8 @@ pub(crate) struct AppHandler {
     /// 置位，slash_action 的 CompactSession 臂 take() 消费（UiActionId 不
     /// 带参——命令注册表跨越多个前端，参数走 app 本地暂存）。
     pub(crate) pending_compact_focus: Option<String>,
+    /// `/details <thinking|tools|todo|subagents>` argument staged by parser.
+    pub(crate) pending_details_section: Option<String>,
     /// /compact 触发调用在飞（U6）：true 期间重复触发被防抖吞掉；
     /// 回执 drain（CompactionTriggered）清零。
     pub(crate) compact_in_flight: bool,
@@ -582,6 +596,23 @@ pub(crate) struct AppHandler {
     pub(crate) interrupt_time: std::time::Instant,
     pub(crate) event_bus: EventBus,
     pub(crate) sf_tx: watch::Sender<Option<String>>,
+    /// M4.4 网关权威模式（支持 LegacyOnly / Shadow / GatewayCanary / GatewayDefault）
+    pub(crate) gateway_authority: crate::shadow::GatewayAuthorityMode,
+    /// M4.4 金丝雀流量选择器
+    pub(crate) canary_selector: crate::shadow::CanarySelector,
+    /// M4.4 熔断降级控制器
+    pub(crate) circuit_breaker: crate::shadow::GatewayCircuitBreaker,
+    /// M4.4 Shadow 观测指标
+    pub(crate) shadow_metrics: crate::shadow::ShadowMetrics,
+    /// M4 只读交互反馈模型（跟踪 Queued / Steering / Interrupt 状态）
+    pub(crate) interaction_feedback: crate::interaction_feedback::InteractionFeedback,
+    /// M5 terminal keyboard capability probe result. Unknown is the safe
+    /// startup state until a runtime CSI-u probe positively confirms support.
+    pub(crate) keyboard_capabilities: crate::input_capability::CsiuCapabilities,
+    /// 当前队列管理入口选中的项索引（只读投影内的稳定 position）。
+    pub(crate) queue_selection: usize,
+    /// Queue body editor is a local draft only; QueueSummary remains server-owned.
+    pub(crate) queue_edit_draft: Option<crate::queue_editor::QueueEditDraft>,
     /// 本地发送回执 channel（与 `event_bus` 严格分离）。dispatch 的后台 task
     /// 经 `sender()` 投递 Sent/Failed，`Event::Tick` 非阻塞 drain 回收。
     pub(crate) dispatch_outcomes: dispatch_outcome::DispatchOutcomes,
@@ -686,6 +717,8 @@ pub(crate) struct AppHandler {
     /// U8：status bar ⏸ 待决策角标的 Rect（render 每帧重发；无待决策时
     /// None），点击 → 重新打开首个 pending permission/question。
     pub(crate) pending_rect: Option<revue::prelude::Rect>,
+    /// M3 终端生命周期与外部编辑器 Handoff 控制句柄
+    pub(crate) reader_control: Option<crate::terminal_lifecycle::EventReaderControl>,
 }
 
 pub(crate) const HOME_PROMPT_PLACEHOLDERS: &[&str] = &[
@@ -738,12 +771,35 @@ fn stale_hint_text(stall_secs: u64, running_tool: Option<&str>) -> String {
         return String::new();
     }
     match running_tool {
-        Some(tool) => format!(
-            " ⚠ no activity {stall_secs}s+ — stalled on {tool}? · Esc Esc to interrupt"
-        ),
+        Some(tool) => {
+            format!(" ⚠ no activity {stall_secs}s+ — stalled on {tool}? · Esc Esc to interrupt")
+        }
         None => " ⚠ no activity {stall_secs}s+ — connection may be stalled · Esc Esc to interrupt"
             .to_string(),
     }
+}
+
+fn details_summary_for_session(session: &crate::store::session_store::SessionStore) -> String {
+    let todo = session.messages.get().iter().rev().find_map(|block| {
+        if let crate::store::types::TranscriptBlock::TodoList { items, .. } = block {
+            let done = items
+                .iter()
+                .filter(|item| matches!(item.status, crate::store::types::TodoStatus::Completed))
+                .count();
+            Some((done, items.len()))
+        } else {
+            None
+        }
+    });
+    let running_tools = session.running_tool_count().max(
+        session
+            .active_tools
+            .get()
+            .iter()
+            .filter(|tool| matches!(tool.phase, crate::store::types::ToolPhase::Running))
+            .count(),
+    );
+    crate::store::types::format_details_summary(todo, running_tools, session.subagent_count())
 }
 
 fn gutter(content: impl View + 'static) -> revue::widget::Stack {
@@ -864,6 +920,7 @@ fn prompt_geometry(
     area: Rect,
     sidebar_visible: bool,
     prompt_input_rows: u16,
+    details_row_h: u16,
 ) -> PromptGeom {
     let sidebar = if sidebar_visible {
         SIDEBAR_WIDTH + 1
@@ -891,7 +948,7 @@ fn prompt_geometry(
         Route::Session { .. } => {
             // prompt_bar 底部：status(1) + info_strip(1) + prompt_bar(hint1+内容行+底线1)，
             // 输入区上沿 = height - (prompt_bar_h + 2)（覆盖 hint 行,浮层锚定不遮输入区）。
-            let prompt_bar_h = prompt_input_rows + 2;
+            let prompt_bar_h = prompt_input_rows + 2 + details_row_h;
             PromptGeom {
                 x: main_x + PAD,
                 y_top: area.y + area.height.saturating_sub(prompt_bar_h + 2),
@@ -911,6 +968,55 @@ fn prompt_geometry(
 }
 
 impl AppHandler {
+    /// M7 policy seam used by command/key routing. It changes only the
+    /// session-scoped read-only policy; transcript instances retain their
+    /// existing manual fold state and are not rewritten here.
+    pub(crate) fn toggle_details_section(
+        &mut self,
+        section: crate::details_policy::DetailsSection,
+    ) -> Option<crate::details_policy::DetailVisibility> {
+        let has_fact = match section {
+            crate::details_policy::DetailsSection::Thinking => self
+                .active_session
+                .messages
+                .get()
+                .iter()
+                .any(|b| matches!(b, crate::store::types::TranscriptBlock::Thinking { .. })),
+            crate::details_policy::DetailsSection::Tools => {
+                self.active_session.messages.get().iter().any(|b| {
+                    matches!(
+                        b,
+                        crate::store::types::TranscriptBlock::ToolCall { .. }
+                            | crate::store::types::TranscriptBlock::ToolResult { .. }
+                    )
+                })
+            }
+            crate::details_policy::DetailsSection::Todo => self
+                .active_session
+                .messages
+                .get()
+                .iter()
+                .any(|b| matches!(b, crate::store::types::TranscriptBlock::TodoList { .. })),
+            crate::details_policy::DetailsSection::Subagents => self
+                .active_session
+                .subagent_count()
+                .is_some_and(|count| count > 0),
+        };
+        if self.active_session.session_id.get().is_none() || !has_fact {
+            return None;
+        }
+        let current = self
+            .active_session
+            .details_policy
+            .get()
+            .resolve(section, None);
+        let next = crate::details_policy::DetailsPolicy::cycle_visibility(current);
+        self.active_session.details_policy.update(|policy| {
+            policy.section_overrides.insert(section, next);
+        });
+        Some(next)
+    }
+
     fn new(
         s: AppStore,
         a: Option<ApiBridge>,
@@ -977,11 +1083,9 @@ impl AppHandler {
                     // `name` for human-friendly display, and `connected` is keyed by
                     // id, matching how the server tracks connection state.
                     // 转换与 refresh_providers_into_store 共用单点（土律·第四条）。
-                    let entries =
-                        crate::app::provider_actions::model_entries_from_providers(
-                            &resp.all,
-                            &connected,
-                        );
+                    let entries = crate::app::provider_actions::model_entries_from_providers(
+                        &resp.all, &connected,
+                    );
                     // Surface the connected providers so the user knows
                     // which models will actually work — useful when the
                     // dialog shows 5,140 entries but only 8 providers are
@@ -1089,6 +1193,7 @@ impl AppHandler {
             mcp_list: McpListDialog::new(),
             recovery_list: RecoveryListDialog::new(),
             notification_dialog: crate::dialog::NotificationDialog::new(),
+            subagent_panel: crate::subagent_panel::SubagentPanel::new(),
             model_edit_dialog: ModelEditDialog::new(),
             mcp_edit_dialog: McpEditDialog::new(),
             plugin_edit_dialog: PluginEditDialog::new(),
@@ -1107,12 +1212,21 @@ impl AppHandler {
             quit_armed_at: None,
             quit_armed_via_q: false,
             pending_compact_focus: None,
+            pending_details_section: None,
             compact_in_flight: false,
             title_refresh_pending: false,
             interrupt_time: std::time::Instant::now(),
             active_session: ss,
             event_bus: eb,
             sf_tx: sf,
+            gateway_authority: crate::shadow::GatewayAuthorityMode::Shadow,
+            canary_selector: crate::shadow::CanarySelector::default(),
+            circuit_breaker: crate::shadow::GatewayCircuitBreaker::default(),
+            shadow_metrics: crate::shadow::ShadowMetrics::default(),
+            interaction_feedback: crate::interaction_feedback::InteractionFeedback::new("".into()),
+            keyboard_capabilities: crate::input_capability::CsiuCapabilities::default(),
+            queue_selection: 0,
+            queue_edit_draft: None,
             dispatch_outcomes: outcomes,
             app_ops: ops,
             layout_dirty: false,
@@ -1142,7 +1256,32 @@ impl AppHandler {
             confirm_rect: None,
             toast_rects: Vec::new(),
             pending_rect: None,
+            reader_control: None,
         }
+    }
+
+    /// 全局统一 Gateway 权威判定入口（熔断优先，其次执行 Canary 选择器）
+    pub(crate) fn should_use_gateway(
+        &self,
+        session_id: &str,
+        source: &crate::shadow::InteractionSource,
+    ) -> bool {
+        if self.circuit_breaker.is_tripped() {
+            false
+        } else {
+            self.canary_selector
+                .should_route_to_gateway(session_id, source, self.gateway_authority)
+        }
+    }
+
+    /// Controlled injection seam for a terminal capability probe owned by
+    /// the runtime. Startup stays `Unknown` until such a probe exists.
+    #[cfg(test)]
+    pub(crate) fn set_keyboard_capabilities(
+        &mut self,
+        capabilities: crate::input_capability::CsiuCapabilities,
+    ) {
+        self.keyboard_capabilities = capabilities;
     }
 }
 
@@ -1324,9 +1463,11 @@ impl View for RootView {
         // 超出滚动条）。宽度走 prompt_geometry 单点权威（Home 居中宽 /
         // Session 主区-PAD；rows 不影响宽，先传 0 取宽再算行数）。
         // prompt_bar 高 = hint(1) + 内容行 + 底边框(1)。
-        let prompt_w = prompt_geometry(&route, ctx.area, sidebar_on, 0).w;
+        let details_summary = details_summary_for_session(&h.active_session);
+        let details_row_h = u16::from(!details_summary.is_empty());
+        let prompt_w = prompt_geometry(&route, ctx.area, sidebar_on, 0, details_row_h).w;
         let prompt_input_rows = h.prompt.visible_height_for(prompt_w);
-        let prompt_bar_h = prompt_input_rows + 2;
+        let prompt_bar_h = prompt_input_rows + 2 + details_row_h;
         // 动态可视高 = 屏高 - 非transcript固定行（顶端空行1+header1+divider1+info1+status1=5）
         // - prompt_bar(prompt_bar_h) - attachment_h。
         let transcript_viewport_h: u16 = ctx
@@ -1585,11 +1726,13 @@ impl View for RootView {
                     // ❯ 引导）在 inner_w 内成形。
                     const PAD: u16 = 4;
                     let inner_w = transcript_w.saturating_sub(PAD.saturating_mul(2));
-                    let total_h = transcript_total_height(
+                    let details_policy = h.active_session.details_policy.get();
+                    let total_h = crate::screen::transcript_total_height_with_policy(
                         &msgs,
                         self.store.show_thinking.get(),
                         self.store.compact_density.get(),
                         inner_w,
+                        &details_policy,
                     );
                     // turn 级思考延续标记：UserPrompt 起一个新 turn，其后首个
                     // Thinking 用 ✻，同 turn 内被 text/tool 夹断的后续 Thinking
@@ -1614,7 +1757,7 @@ impl View for RootView {
                         scroll_top: est_scroll_top,
                         viewport_h: available,
                     };
-                    let units = build_render_units(
+                    let units = crate::screen::build_render_units_with_policy(
                         &msgs,
                         cursor_idx,
                         h.spinner_tick,
@@ -1622,6 +1765,7 @@ impl View for RootView {
                         Some(viewport_range),
                         inner_w,
                         self.store.compact_density.get(),
+                        &details_policy,
                     );
                     // 逐行记账 transcript 内容行数（unit 高 + 块间空行），
                     // 供内联 permission 块算绝对屏幕 y（命中矩形发布）。
@@ -1846,6 +1990,37 @@ impl View for RootView {
         } else {
             h.prompt.status_hint(is_running)
         };
+        // M7: resident, read-only execution detail summary.  Facts are
+        // derived from transcript/topology; absent topology never becomes a
+        // misleading "0 subagents" claim.
+        let todo_progress = h
+            .active_session
+            .messages
+            .get()
+            .iter()
+            .rev()
+            .find_map(|block| {
+                if let crate::store::types::TranscriptBlock::TodoList { items, .. } = block {
+                    let done = items
+                        .iter()
+                        .filter(|item| {
+                            matches!(item.status, crate::store::types::TodoStatus::Completed)
+                        })
+                        .count();
+                    Some((done, items.len()))
+                } else {
+                    None
+                }
+            });
+        let running_tools = h
+            .active_session
+            .running_tool_count()
+            .max(h.active_session.active_tools.get().len());
+        let details_summary = crate::store::types::format_details_summary(
+            todo_progress,
+            running_tools,
+            h.active_session.subagent_count(),
+        );
         // 金克木：tips 隐藏时 hint 行内容置空（几何不变以保 PromptGeom y_top 与
         // Session 底部行高同口径——金律：渲染与命中几何不得漂移）。
         let show_tips = self.store.show_tips.get();
@@ -1870,14 +2045,37 @@ impl View for RootView {
                 } else {
                     hint.clone()
                 };
-                // U10：server 口径的排队计数（Sent{status:"queued"} 累加，
-                // Tick 于 run_status 回 Idle 时归零），入队可见即 GUI 的
-                // "已收到，稍后处理"反馈。
-                let hint = if h.queued_prompts > 0 {
-                    format!(
-                        "{} · Queued ({}) — will send when current run finishes",
-                        hint, h.queued_prompts
-                    )
+                // M4 只读呈现：排队状态卡片与 Steering 目标边界提示
+                let queued_count =
+                    (h.queued_prompts as usize).max(h.interaction_feedback.queue_summary.count);
+                let mut hint_parts = Vec::new();
+                if queued_count > 0 {
+                    if let Some(ref head) = h.interaction_feedback.queue_summary.head_item {
+                        let preview = if head.content.chars().count() > 20 {
+                            format!("{}…", head.content.chars().take(18).collect::<String>())
+                        } else {
+                            head.content.clone()
+                        };
+                        hint_parts.push(format!("[Queued (#{} \"{}\")]", head.position, preview));
+                    } else {
+                        hint_parts.push(format!("[Queued ({})]", queued_count));
+                    }
+                }
+                if h.interaction_feedback.steering_summary.pending_count > 0 {
+                    if let Some(ref target_turn) =
+                        h.interaction_feedback.steering_summary.target_turn_id
+                    {
+                        hint_parts.push(format!("[Steer pending @ Turn {}]", target_turn));
+                    } else {
+                        hint_parts.push(format!(
+                            "[Steer pending ({})]",
+                            h.interaction_feedback.steering_summary.pending_count
+                        ));
+                    }
+                }
+
+                let hint = if !hint_parts.is_empty() {
+                    format!("{} · {}", hint, hint_parts.join(" · "))
                 } else {
                     hint
                 };
@@ -1888,13 +2086,37 @@ impl View for RootView {
                 // 瞬态有用提示（Esc 再按打断 / slash 导航）保留。
                 line = line.child_flex(Text::new(format!(" {}", hint)).fg(colors::FG_MUTED()), 1.0);
             } else {
-                // 静止态：只留一点墨（◉）。去掉 "Type to start..." 静态提示——
-                // 输入框自带 placeholder,这里是冗余信息（用户反馈：用处不大）。
-                line = line.child_sized(
-                    Text::new(format!(" {}", crate::widget::spinner::INK_REST))
-                        .fg(crate::widget::spinner::ink_color()),
-                    2,
-                );
+                // 静止态：只留一点墨（◉）。若有排队或插话待处理，仍展示提示卡片
+                let queued_count =
+                    (h.queued_prompts as usize).max(h.interaction_feedback.queue_summary.count);
+                if queued_count > 0 || h.interaction_feedback.steering_summary.pending_count > 0 {
+                    let mut parts = Vec::new();
+                    if queued_count > 0 {
+                        parts.push(format!("[Queued ({})]", queued_count));
+                    }
+                    if h.interaction_feedback.steering_summary.pending_count > 0 {
+                        parts.push(format!(
+                            "[Steer pending ({})]",
+                            h.interaction_feedback.steering_summary.pending_count
+                        ));
+                    }
+                    line = line
+                        .child_sized(
+                            Text::new(format!(" {}", crate::widget::spinner::INK_REST))
+                                .fg(crate::widget::spinner::ink_color()),
+                            2,
+                        )
+                        .child_flex(
+                            Text::new(format!(" {}", parts.join(" · "))).fg(colors::FG_MUTED()),
+                            1.0,
+                        );
+                } else {
+                    line = line.child_sized(
+                        Text::new(format!(" {}", crate::widget::spinner::INK_REST))
+                            .fg(crate::widget::spinner::ink_color()),
+                        2,
+                    );
+                }
             }
             line
         } else {
@@ -1911,6 +2133,14 @@ impl View for RootView {
         // hint: 1 row, only_bottom 输入框: 内容行(自适应,封顶10) + 底线 1。
         let prompt_bar = vstack()
             .element_id("prompt") // 区域失效定位（输入/spinner 变只重画此条）
+            .child_sized(
+                if details_summary.is_empty() {
+                    Text::new("")
+                } else {
+                    Text::new(format!(" {}", details_summary)).fg(colors::FG_MUTED())
+                },
+                details_row_h,
+            )
             .child_sized(hint_text, 1)
             .child_sized(input_widget, prompt_input_rows + 1);
 
@@ -1956,6 +2186,7 @@ impl View for RootView {
             Panel::PluginEdit => "pluginEdit",
             Panel::ProviderEdit => "providerEdit",
             Panel::Search => "search",
+            Panel::Subagents => "subagents",
             Panel::None => route.as_str(),
         };
         let dir = self.store.working_dir.get();
@@ -2189,7 +2420,13 @@ impl View for RootView {
         // 所有 `/` 弹框（SlashPopup 补全框 + Bottom 锚点对话框）共用同一输入框几何
         // ——prompt_geometry 唯一权威（土律）：宽=输入框宽、x 对齐输入框、贴输入框正上方。
         // 在 match 外算一次,补全框与 7 个对话框复用同一 geom,杜绝各算各的而漂移。
-        let geom = prompt_geometry(&route, ctx.area, sidebar_on, prompt_input_rows);
+        let geom = prompt_geometry(
+            &route,
+            ctx.area,
+            sidebar_on,
+            prompt_input_rows,
+            details_row_h,
+        );
         // Toast 底部锚 = 输入框上方第一条可用行：与弹窗同源取 prompt bar 顶边
         // （geom.y_top）再上一行。旧常量 5 是单行输入时代口径——多行输入
         // （rows≤10）时 toast 会压 hint 行/输入框（金律：几何不得漂移）。
@@ -2264,13 +2501,18 @@ impl View for RootView {
                 let py_abs = geom.y_top.saturating_sub(1);
                 let py_rel = py_abs.saturating_sub(ctx.area.y);
                 let px_rel = geom.x.saturating_sub(ctx.area.x);
-                h.search_bar.fill_background(ctx.buffer, geom.x, py_abs, geom.w, 1);
+                h.search_bar
+                    .fill_background(ctx.buffer, geom.x, py_abs, geom.w, 1);
                 revue::widget::positioned(bar)
                     .x(px_rel as i16)
                     .y(py_rel as i16)
                     .width(geom.w)
                     .height(1)
                     .render(ctx);
+            }
+            Panel::Subagents => {
+                let projection = h.active_session.subagent_projection.get();
+                h.subagent_panel.render(ctx, geom, projection.as_ref());
             }
             _ => {}
         }
@@ -2586,10 +2828,7 @@ mod stale_hint_tests {
     #[test]
     fn names_the_stalled_tool_at_threshold() {
         let s = stale_hint_text(RUNNING_STALE_SECS, Some("WebSearch"));
-        assert!(
-            s.contains("stalled on WebSearch?"),
-            "应点名工具，实际: {s}"
-        );
+        assert!(s.contains("stalled on WebSearch?"), "应点名工具，实际: {s}");
         assert!(s.contains("Esc Esc to interrupt"));
         // 秒数来自参数而非硬编码 30——更长 stall 不撒谎。
         let s120 = stale_hint_text(120, Some("Read"));

@@ -27,6 +27,50 @@ pub struct TodoSummary {
     pub phase: String,    // e.g. "still thinking"
 }
 
+/// Stable, read-only runtime facts used by the M7 prompt summary. `None`
+/// means no topology snapshot has been observed for this session; it must not
+/// be rendered as a fabricated zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopologySummary {
+    pub running_tools: usize,
+    pub subagents: Option<usize>,
+}
+
+/// M8 bounded lifecycle for a wire stream segment. This is intentionally not
+/// a logical turn-final authority; a later `start` may reopen the same id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamBlockLifecycle {
+    Streaming,
+    Finalized,
+}
+
+/// Deterministic prompt summary formatter. Missing facts are omitted.
+pub fn format_details_summary(
+    todo: Option<(usize, usize)>,
+    running_tools: usize,
+    subagents: Option<usize>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some((done, total)) = todo {
+        parts.push(format!("Todo ({done}/{total})"));
+    }
+    if running_tools > 0 {
+        parts.push(format!(
+            "{running_tools} tool{} running",
+            if running_tools == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(count) = subagents {
+        if count > 0 {
+            parts.push(format!(
+                "{count} subagent{}",
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+    }
+    parts.join(" · ")
+}
+
 /// Three-state fold for transcript blocks.
 ///
 /// - `Folded`   — role label + one-line summary (current "closed" state)
@@ -83,6 +127,7 @@ pub enum TranscriptBlock {
     Thinking {
         id: String,
         content: String,
+        lifecycle: StreamBlockLifecycle,
         fold: FoldState,
         duration_ms: u64,
         /// Reasonix userOverridden 口径：用户手动折叠/展开过该块后，
@@ -134,6 +179,7 @@ pub enum TranscriptBlock {
     AssistantMsg {
         id: String,
         content: String,
+        lifecycle: StreamBlockLifecycle,
         /// 长回答默认 Truncated（3 行预览 + hint），Space/点击展开。
         fold: FoldState,
     },
@@ -418,11 +464,15 @@ impl ToastActionKind {
 /// 中文提示（保留原文尾部，不丢技术细节）。集中单点，UI 各处共用。
 pub fn friendly_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
-    let hint = if lower.contains("401") || lower.contains("unauthorized") || lower.contains("身份验证失败") {
+    let hint = if lower.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("身份验证失败")
+    {
         "API key 无效或过期——Settings 里检查该 provider 的 key"
     } else if lower.contains("404") || lower.contains("not found") {
         "端点路径不存在——协议与 Base URL 组合不对（如 Anthropic 协议会拼 /messages）"
-    } else if lower.contains("429") || lower.contains("余额不足") || lower.contains("rate limit") {
+    } else if lower.contains("429") || lower.contains("余额不足") || lower.contains("rate limit")
+    {
         "限流或余额不足——稍后重试或检查账户额度"
     } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("超时") {
         "网络超时——检查代理/镜像或稍后重试"
@@ -877,6 +927,20 @@ impl SettingsFocusPane {
 mod tests {
     use super::*;
 
+    #[test]
+    fn details_summary_omits_missing_and_zero_facts() {
+        assert_eq!(format_details_summary(None, 0, None), "");
+        assert_eq!(format_details_summary(None, 0, Some(0)), "");
+        assert_eq!(
+            format_details_summary(Some((2, 5)), 1, Some(1)),
+            "Todo (2/5) · 1 tool running · 1 subagent"
+        );
+        assert_eq!(
+            format_details_summary(None, 2, Some(3)),
+            "2 tools running · 3 subagents"
+        );
+    }
+
     fn catalog(name: &str, category: Option<&str>) -> SettingsSkillRow {
         SettingsSkillRow::Catalog {
             name: name.to_string(),
@@ -897,7 +961,7 @@ mod tests {
         }
     }
 
-        #[test]
+    #[test]
     fn friendly_error_maps_common_codes_and_passes_through_unknown() {
         assert!(friendly_error("HTTP 401 Unauthorized").contains("API key"));
         assert!(friendly_error("404 Not Found: nope").contains("协议"));
@@ -913,7 +977,7 @@ mod tests {
         assert_eq!(format_chars(2_340), "2.3k");
         assert_eq!(format_chars(1_234_567), "1.2M");
     }
-#[test]
+    #[test]
     fn flatten_groups_by_category_with_proposals_first() {
         let rows = vec![
             catalog("zeta", Some("chem")),

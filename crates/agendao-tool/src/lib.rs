@@ -39,6 +39,8 @@ pub mod skill_support;
 pub mod skill_view;
 pub mod skills_categories;
 pub mod skills_list;
+#[cfg(test)]
+mod test_support;
 pub mod todo;
 pub mod tool_access;
 pub mod tool_catalog;

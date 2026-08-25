@@ -134,6 +134,12 @@ impl SessionSchedulerToolExecutor {
         agent_name: &str,
         metadata: &std::collections::HashMap<String, serde_json::Value>,
     ) -> agendao_tool::ToolContext {
+        let sandbox_authority = self
+            .state
+            .sandbox_authority_for_session(&self.session_id)
+            .await;
+        let native_allowed =
+            crate::ServerState::sandbox_native_allowed_for_mode(sandbox_authority.session_mode());
         let mut base_ctx = agendao_tool::ToolContext::new(
             self.session_id.clone(),
             self.message_id.clone(),
@@ -144,6 +150,10 @@ impl SessionSchedulerToolExecutor {
         .with_config_store(self.state.config_store.clone())
         .with_tool_runtime_config(self.tool_runtime_config.clone())
         .with_registry(self.state.tool_registry.clone())
+        // The authority and native hint are derived from one immutable
+        // session-mode snapshot for this launch.
+        .with_sandbox_execution_boundary(sandbox_authority)
+        .with_sandbox_native_allowed(native_allowed)
         .with_ask_question({
             let state = self.state.clone();
             let session_id = self.session_id.clone();

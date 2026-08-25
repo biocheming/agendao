@@ -1,19 +1,34 @@
 pub mod app;
 pub mod bridge;
+pub mod command_gateway;
 pub mod config;
+pub mod details_policy;
 pub mod dialog;
 pub mod ds;
 pub mod input;
+pub mod input_capability;
+pub mod interaction_contract;
+pub mod interaction_feedback;
 pub mod markdown;
+pub mod queue_editor;
 pub mod screen;
+pub mod shadow;
 pub mod store;
+pub mod subagent_panel;
 pub mod telemetry;
+pub mod terminal_lifecycle;
 pub mod theme;
 pub mod transport;
 pub mod widget;
 
 pub use app::{run_app, run_app_with_config};
+pub use command_gateway::*;
 pub use config::AppConfig;
+pub use details_policy::*;
+pub use interaction_contract::*;
+pub use interaction_feedback::*;
+pub use shadow::*;
+pub use terminal_lifecycle::*;
 
 #[cfg(test)]
 pub(crate) mod test_alloc {

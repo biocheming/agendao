@@ -1,128 +1,34 @@
 use async_trait::async_trait;
 use std::collections::HashSet;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, Instant};
 
-use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
+use crate::{
+    cleanup_execution, drain_piped_output, CleanupCause, Metadata, Tool, ToolContext, ToolError,
+    ToolResult, MAX_CAPTURED_OUTPUT_BYTES,
+};
 use agendao_core::process_registry::{global_registry, ProcessKind};
 use agendao_permission::{BashArity, PermissionMatcherKind};
 use agendao_plugin::{HookContext, HookEvent};
+use agendao_sandbox::{
+    PrepareOptions, ProfileKind, SandboxExecutionRequest, SpawnSpec, StdioPlan, TrustClass,
+};
 
 const DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1000;
-const MAX_OUTPUT_BYTES: usize = 50 * 1024;
+/// Compatibility name for the user-visible bash output contract.  The bound
+/// applies to stdout + stderr together; the shared collector also imposes the
+/// same 50KiB ceiling on each stream before continuing to discard-drain it.
+const MAX_OUTPUT_BYTES: usize = MAX_CAPTURED_OUTPUT_BYTES;
+const TRUNCATION_NOTICE: &str =
+    "\n\n(Output truncated at 51200 bytes; stdout and stderr continue draining)";
 
-#[cfg(unix)]
-async fn kill_process_tree(pid: u32) {
-    let pid_str = pid.to_string();
-    send_pkill_signal("-TERM", &pid_str).await;
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    if child_processes_exist(&pid_str).await {
-        send_pkill_signal("-KILL", &pid_str).await;
-    }
-}
-
-#[cfg(unix)]
-async fn send_pkill_signal(signal: &str, pid_str: &str) {
-    match tokio::process::Command::new("pkill")
-        .arg(signal)
-        .arg("-P")
-        .arg(pid_str)
-        .status()
-        .await
-    {
-        Ok(status) if status.success() || status.code() == Some(1) => {}
-        Ok(status) => {
-            tracing::warn!(
-                signal,
-                pid = pid_str,
-                status = ?status.code(),
-                "pkill exited unsuccessfully while terminating bash child processes"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                signal,
-                pid = pid_str,
-                %error,
-                "failed to invoke pkill while terminating bash child processes"
-            );
-        }
-    }
-}
-
-#[cfg(unix)]
-async fn child_processes_exist(pid_str: &str) -> bool {
-    match tokio::process::Command::new("pgrep")
-        .arg("-P")
-        .arg(pid_str)
-        .status()
-        .await
-    {
-        Ok(status) => status.success(),
-        Err(error) => {
-            tracing::warn!(
-                pid = pid_str,
-                %error,
-                "failed to inspect bash child processes before escalating to SIGKILL"
-            );
-            true
-        }
-    }
-}
-
-fn should_inherit_shell_env(key: &str) -> bool {
-    const SAFE_EXACT_KEYS: &[&str] = &[
-        "APPDATA",
-        "COLORTERM",
-        "COMSPEC",
-        "DISPLAY",
-        "HOME",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "LANG",
-        "LOCALAPPDATA",
-        "LOGNAME",
-        "NO_PROXY",
-        "OLDPWD",
-        "OS",
-        "PATH",
-        "PATHEXT",
-        "PROGRAMDATA",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PWD",
-        "SHELL",
-        "SSH_AUTH_SOCK",
-        "SSH_AGENT_PID",
-        "SYSTEMROOT",
-        "TEMP",
-        "TERM",
-        "TMP",
-        "TMPDIR",
-        "USER",
-        "USERNAME",
-        "USERPROFILE",
-        "VISUAL",
-        "WAYLAND_DISPLAY",
-        "WINDIR",
-        "XAUTHORITY",
-    ];
-    const SAFE_PREFIXES: &[&str] = &["LC_", "XDG_"];
-
-    let upper = key.to_ascii_uppercase();
-    SAFE_EXACT_KEYS.contains(&upper.as_str())
-        || SAFE_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
-}
-
-fn inherited_shell_env() -> std::collections::HashMap<String, String> {
-    std::env::vars()
-        .filter(|(key, _)| should_inherit_shell_env(key))
-        .collect()
+/// Explicit environment intent for this launch only: caller-supplied
+/// `ctx.extra["env"]` plus plugin `shell.env` hook output. Host-environment
+/// inheritance is *not* collected here — the sandbox authority owns that
+/// (native profiles inherit the filtered host environment; contained
+/// profiles clear and reinject core names), so there is exactly one
+/// environment allowlist in the system instead of two drifting ones.
+fn explicit_shell_env() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::new()
 }
 
 pub struct BashTool;
@@ -281,7 +187,7 @@ impl Tool for BashTool {
 
         let title = description.clone();
 
-        let mut env_vars = inherited_shell_env();
+        let mut env_vars = explicit_shell_env();
         if let Some(extra_env) = ctx.extra.get("env") {
             if let Some(env_obj) = extra_env.as_object() {
                 for (key, value) in env_obj {
@@ -334,20 +240,62 @@ impl Tool for BashTool {
             "-c"
         };
 
-        let mut cmd = tokio::process::Command::new(shell);
-        cmd.arg(flag).arg(&command);
-        cmd.current_dir(&workdir);
-        for (key, value) in &env_vars {
-            cmd.env(key, value);
-        }
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        // The sandbox boundary is the only launch path for model-reachable
+        // process execution. No installed authority means no process runs:
+        // failing loudly here is the contract — never a direct spawn
+        // fallback (sandbox plan §4.4).
+        let boundary = ctx.sandbox_execution.clone().ok_or_else(|| {
+            ToolError::ExecutionError(
+                "bash tool requires a sandbox execution authority; \
+                 no SandboxExecutionBoundary is installed in this host"
+                    .into(),
+            )
+        })?;
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn process: {}", e)))?;
+        let spec = SpawnSpec {
+            program: shell.to_string(),
+            args: vec![flag.to_string(), command.clone()],
+            cwd: Some(std::path::PathBuf::from(&workdir)),
+            env_overrides: env_vars,
+        };
+        // The profile kind is the tool's declared ceiling: contained
+        // workspace execution by default; the native kind only when the
+        // host declared this session permits it. The authority still
+        // verifies the request against policy either way.
+        let profile_kind = if ctx.sandbox_native_allowed {
+            ProfileKind::Native
+        } else {
+            ProfileKind::WorkspaceWrite
+        };
+        let request = SandboxExecutionRequest::new(
+            TrustClass::ModelReachable,
+            profile_kind,
+            spec,
+            &ctx.directory,
+        )
+        .with_session_origin(ctx.session_id.clone());
+        let options = PrepareOptions {
+            // Pipes for streaming output; io shaping is not policy, so it
+            // lives here rather than in the plan fingerprint.
+            stdio: StdioPlan::piped_output(),
+            // A cancelled/timed-out command gets a short grace window
+            // before KILL — the ladder lives in the boundary now.
+            term_grace: Some(Duration::from_millis(300)),
+            ..Default::default()
+        };
+        let prepared = boundary
+            .prepare(request, options)
+            .await
+            // 治理拒绝与进程失败在模型可见错误中必须分开:prepare 阶段
+            // 的失败全是"不允许跑"(策略/环境/后端),不是进程问题。
+            .map_err(|e| ToolError::ExecutionError(format!("sandbox denied the command: {e}")))?;
+        let mut handle = prepared
+            .start()
+            .await
+            // start 阶段失败是"允许跑了但进程起不来"。
+            .map_err(|e| ToolError::ExecutionError(format!("process spawn failed: {e}")))?;
 
-        let child_pid = child.id();
+        let child_pid = handle.pid();
 
         // Register in global process registry
         let _process_guard = if let Some(pid) = child_pid {
@@ -361,111 +309,66 @@ impl Tool for BashTool {
             None
         };
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let stdout = handle
+            .take_stdout()
+            .expect("piped stdout was requested in the launch options");
+        let stderr = handle
+            .take_stderr()
+            .expect("piped stderr was requested in the launch options");
 
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
-
-        let mut output = String::new();
-        let mut truncated = false;
-
-        let abort_token = ctx.abort.clone();
-
-        let result = timeout(Duration::from_millis(timeout_ms), async {
-            loop {
-                tokio::select! {
-                    _ = abort_token.cancelled() => {
-                        #[cfg(unix)]
-                        {
-                            if let Some(pid) = child_pid {
-                                kill_process_tree(pid).await;
-                            }
-                        }
-                        if let Err(error) = child.kill().await {
-                            tracing::debug!(
-                                error = %error,
-                                "Failed to kill bash child process after cancellation"
-                            );
-                        }
-                        return Err(ToolError::Cancelled);
-                    }
-                    line = stdout_reader.next_line() => {
-                        match line {
-                            Ok(Some(l)) => {
-                                if output.len() + l.len() + 1 > MAX_OUTPUT_BYTES {
-                                    truncated = true;
-                                } else {
-                                    output.push_str(&l);
-                                    output.push('\n');
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                output.push_str(&format!("Error reading stdout: {}\n", e));
-                            }
-                        }
-                    }
-                    line = stderr_reader.next_line() => {
-                        match line {
-                            Ok(Some(l)) => {
-                                if output.len() + l.len() + 1 > MAX_OUTPUT_BYTES {
-                                    truncated = true;
-                                } else {
-                                    output.push_str(&l);
-                                    output.push('\n');
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                output.push_str(&format!("Error reading stderr: {}\n", e));
-                            }
-                        }
-                    }
-                }
+        // The deadline covers both output drain and the final wait.  Closing
+        // both pipes before sleeping must not bypass the command timeout.
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let captured = tokio::select! {
+            _ = ctx.abort.cancelled() => {
+                cleanup_execution(&mut handle, CleanupCause::Abort, "bash command").await?;
+                return Err(ToolError::Cancelled);
             }
-            Ok::<_, ToolError>(())
-        })
-        .await;
-
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                #[cfg(unix)]
-                {
-                    if let Some(pid) = child_pid {
-                        kill_process_tree(pid).await;
-                    }
-                }
-                if let Err(error) = child.kill().await {
-                    tracing::debug!(
-                        error = %error,
-                        "Failed to kill bash child process after timeout"
-                    );
-                }
+            _ = tokio::time::sleep_until(deadline) => {
+                cleanup_execution(&mut handle, CleanupCause::Deadline, "bash command").await?;
                 return Err(bash_timeout_error(&command, timeout_ms));
             }
-        }
+            result = drain_piped_output(stdout, stderr) => result,
+        };
+        let captured = match captured {
+            Ok(output) => output,
+            Err(error) => {
+                cleanup_execution(&mut handle, CleanupCause::Abort, "bash command").await?;
+                return Err(ToolError::ExecutionError(format!(
+                    "failed to drain bash command output: {error}"
+                )));
+            }
+        };
 
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to wait for process: {}", e)))?;
+        let exit = tokio::select! {
+            _ = ctx.abort.cancelled() => {
+                cleanup_execution(&mut handle, CleanupCause::Abort, "bash command").await?;
+                return Err(ToolError::Cancelled);
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                cleanup_execution(&mut handle, CleanupCause::Deadline, "bash command").await?;
+                return Err(bash_timeout_error(&command, timeout_ms));
+            }
+            result = handle.wait() => result,
+        }
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to wait for process: {}", e)))?;
 
         // Guard auto-unregisters from process registry when dropped (RAII).
 
-        let exit_code = status.code().unwrap_or(-1);
+        let exit_code = exit.code.unwrap_or(-1);
 
-        if !status.success() {
-            output.push_str(&format!("\nCommand exited with code: {}", exit_code));
+        let mut output = String::new();
+        let mut truncated = captured.truncated();
+        truncated |= append_lossy_output(&mut output, &captured.stdout);
+        truncated |= append_lossy_output(&mut output, &captured.stderr);
+        if !exit.success {
+            truncated |= append_output_text(
+                &mut output,
+                &format!("\nCommand exited with code: {exit_code}"),
+            );
         }
-
         if truncated {
-            output.push_str(&format!(
-                "\n\n(Output truncated at {} bytes)",
-                MAX_OUTPUT_BYTES
-            ));
+            append_truncation_notice(&mut output);
         }
 
         Ok(ToolResult {
@@ -475,11 +378,55 @@ impl Tool for BashTool {
                 let mut m = Metadata::new();
                 m.insert("exit_code".into(), serde_json::json!(exit_code));
                 m.insert("truncated".into(), serde_json::json!(truncated));
+                m.insert(
+                    "stdout_truncated".into(),
+                    serde_json::json!(captured.stdout_truncated),
+                );
+                m.insert(
+                    "stderr_truncated".into(),
+                    serde_json::json!(captured.stderr_truncated),
+                );
+                m.insert(
+                    "output_limit_bytes".into(),
+                    serde_json::json!(MAX_OUTPUT_BYTES),
+                );
                 m
             },
             truncated,
         })
     }
+}
+
+/// Append lossy text without allowing invalid UTF-8 expansion to exceed the
+/// public 50KiB result limit. Returns true when the text itself was clipped.
+fn append_lossy_output(output: &mut String, bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    append_output_text(output, text.as_ref())
+}
+
+fn append_output_text(output: &mut String, text: &str) -> bool {
+    let remaining = MAX_OUTPUT_BYTES.saturating_sub(output.len());
+    if text.len() <= remaining {
+        output.push_str(text);
+        return false;
+    }
+    let mut boundary = remaining;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    output.push_str(&text[..boundary]);
+    true
+}
+
+fn append_truncation_notice(output: &mut String) {
+    if output.len().saturating_add(TRUNCATION_NOTICE.len()) > MAX_OUTPUT_BYTES {
+        let mut boundary = MAX_OUTPUT_BYTES.saturating_sub(TRUNCATION_NOTICE.len());
+        while boundary > 0 && !output.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        output.truncate(boundary);
+    }
+    output.push_str(TRUNCATION_NOTICE);
 }
 
 /// Result of parsing a bash command with lightweight shell tokenization.

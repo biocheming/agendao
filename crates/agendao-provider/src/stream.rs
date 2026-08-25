@@ -249,6 +249,18 @@ pub(crate) struct OpenAIUsage {
     pub prompt_cache_hit_tokens: u64,
     #[serde(default)]
     pub prompt_cache_miss_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    /// Nested usage details (OpenAI-compatible chat-completions; DeepSeek
+    /// reports reasoning tokens here rather than on the top level).
+    #[serde(default)]
+    pub completion_tokens_details: Option<OpenAICompletionTokensDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct OpenAICompletionTokensDetails {
+    #[serde(default)]
+    pub reasoning_tokens: u64,
 }
 
 impl OpenAIUsage {
@@ -268,7 +280,11 @@ impl OpenAIUsage {
             cache_read_tokens,
             cache_miss_tokens: self.prompt_cache_miss_tokens,
             cache_write_tokens,
-            ..Default::default()
+            reasoning_tokens: self.reasoning_tokens.max(
+                self.completion_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.reasoning_tokens),
+            ),
         }
     }
 }
@@ -895,6 +911,56 @@ mod tests {
             })
             .expect("standalone usage should be present");
         assert_eq!(standalone_usage, (700, 300, 0));
+    }
+
+    #[test]
+    fn openai_stream_usage_captures_top_level_reasoning_tokens() {
+        let events = parse_openai_value(serde_json::json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "reasoning_tokens": 25
+            }
+        }));
+
+        let finish_usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::FinishStep { usage, .. } => Some(usage),
+                _ => None,
+            })
+            .expect("finish step usage should be present");
+        assert_eq!(finish_usage.reasoning_tokens, 25);
+    }
+
+    #[test]
+    fn openai_stream_usage_captures_nested_reasoning_tokens_details() {
+        let events = parse_openai_value(serde_json::json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 31
+                }
+            }
+        }));
+
+        let finish_usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::FinishStep { usage, .. } => Some(usage),
+                _ => None,
+            })
+            .expect("finish step usage should be present");
+        assert_eq!(finish_usage.reasoning_tokens, 31);
     }
 
     #[test]

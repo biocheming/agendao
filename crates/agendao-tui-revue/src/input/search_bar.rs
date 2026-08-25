@@ -165,10 +165,7 @@ impl SearchBar {
     /// 含 n 的搜索词。）
     pub fn render_bar(&self, w: u16) -> impl View {
         let mut text = format!(" 🔍 [{}] ", self.query);
-        let hint = format!(
-            "{} · Enter:next ↑:prev Esc:close",
-            self.status_text()
-        );
+        let hint = format!("{} · Enter:next ↑:prev Esc:close", self.status_text());
         // 窄宽截断留 1 列右边距，防 positioned 裁半个 CJK（slash 同口径）。
         let full = format!("{text}{hint}");
         let max = w.saturating_sub(1).max(8) as usize;
@@ -178,7 +175,11 @@ impl SearchBar {
         } else {
             text = full;
         }
-        vstack().gap(0).child(Text::new(text).fg(colors::ACCENT_CYAN()).bg(colors::BG_SURFACE()))
+        vstack().gap(0).child(
+            Text::new(text)
+                .fg(colors::ACCENT_CYAN())
+                .bg(colors::BG_SURFACE()),
+        )
     }
 
     /// 实色预填搜索条区域（调用方在 render_bar + positioned 前调用）。
@@ -206,6 +207,7 @@ mod tests {
         TranscriptBlock::AssistantMsg {
             id: format!("a-{text}"),
             content: text.to_string(),
+            lifecycle: crate::store::types::StreamBlockLifecycle::Streaming,
             fold: FoldState::Truncated,
         }
     }
@@ -223,7 +225,11 @@ mod tests {
 
         bar.query = "the login".into();
         bar.update_matches(&session);
-        assert_eq!(bar.matches, vec![0, 1], "两个块都含 'the login'（大小写不敏感）");
+        assert_eq!(
+            bar.matches,
+            vec![0, 1],
+            "两个块都含 'the login'（大小写不敏感）"
+        );
 
         bar.query = "  ".into();
         bar.update_matches(&session);

@@ -7,6 +7,8 @@ scripts/verify-autoresearch.sh
 .serena/
 # vibe coding part
 AGENT.md
+AGENTS.md
+CLAUDE.md
 # Rust build output
 target/
 /dist/
@@ -37,4 +39,5 @@ __pycache__/
 .codex/*
 .codegraph
 .codegraph/*
-
+.claude
+.claude/*

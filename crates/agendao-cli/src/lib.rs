@@ -50,6 +50,7 @@ mod provider_cmd;
 mod providers;
 #[cfg(feature = "run-remote-stream")]
 mod remote;
+mod sandbox_host;
 mod scheduler_choice;
 #[cfg(all(feature = "run-core", not(feature = "run-remote-stream")))]
 mod remote {

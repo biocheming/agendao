@@ -47,6 +47,11 @@ pub struct SessionRuntimeState {
     /// Constitution §8: pending steering messages must be observable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_steering: Vec<PendingSteeringMessageSummary>,
+    /// Constitution §8: every active sandboxed execution is observable
+    /// here — what backend it runs under, what plan fingerprint governs
+    /// it, and which process it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_sandbox: Vec<SandboxExecutionSummary>,
     #[serde(default)]
     pub interrupt: InterruptRuntimeState,
 }
@@ -65,6 +70,7 @@ impl SessionRuntimeState {
             pending_permission: None,
             pending_followup_count: 0,
             pending_steering: Vec::new(),
+            active_sandbox: Vec::new(),
             interrupt: InterruptRuntimeState::default(),
         }
     }
@@ -127,6 +133,12 @@ pub struct PendingSteeringMessageSummary {
     /// Always "next_tool_boundary" in P0.
     pub deliver_at: String,
 }
+
+// Sandbox wire shapes live in `agendao-api` (the wire-contract crate this
+// module already depends on) so `SessionRuntimeState` here and the
+// frontend event contract share one authority definition. Re-exported to
+// keep this module the read-side entry point.
+pub use agendao_api::{SandboxExecutionSummary, SandboxOutcomeSummary};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -367,6 +379,56 @@ impl RuntimeStateStore {
             if s.active_tools.is_empty() && s.run_status == RunStatus::WaitingOnTool {
                 s.run_status = RunStatus::Running;
             }
+        })
+        .await;
+    }
+
+    /// Upsert an active sandboxed execution (prepared or started).
+    /// Upsert into the active sandbox set. Refine, not replace: when the
+    /// execution is already tracked, only the fields the new event
+    /// actually carries are updated (a `sandbox.started` refines the pid
+    /// but must not blank the profile/fingerprint `sandbox.prepared`
+    /// established). A summary with an empty execution id is ignored —
+    /// projections never fabricate entries.
+    pub async fn sandbox_execution_upsert(
+        &self,
+        session_id: &str,
+        summary: SandboxExecutionSummary,
+    ) {
+        if summary.execution_id.is_empty() {
+            return;
+        }
+        self.update(session_id, |s| {
+            match s
+                .active_sandbox
+                .iter_mut()
+                .find(|e| e.execution_id == summary.execution_id)
+            {
+                Some(existing) => {
+                    if !summary.backend.is_empty() {
+                        existing.backend = summary.backend;
+                    }
+                    if !summary.profile_kind.is_empty() {
+                        existing.profile_kind = summary.profile_kind;
+                    }
+                    if !summary.plan_fingerprint.is_empty() {
+                        existing.plan_fingerprint = summary.plan_fingerprint;
+                    }
+                    if summary.pid.is_some() {
+                        existing.pid = summary.pid;
+                    }
+                }
+                None => s.active_sandbox.push(summary),
+            }
+        })
+        .await;
+    }
+
+    /// Remove a sandboxed execution from the active set (exited, denied,
+    /// or violated before it ever started).
+    pub async fn sandbox_execution_removed(&self, session_id: &str, execution_id: &str) {
+        self.update(session_id, |s| {
+            s.active_sandbox.retain(|e| e.execution_id != execution_id);
         })
         .await;
     }

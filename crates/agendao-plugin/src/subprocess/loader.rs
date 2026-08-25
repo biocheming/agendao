@@ -64,6 +64,9 @@ pub enum PluginLoaderError {
     #[error("no JS runtime found (install bun, deno, or node)")]
     NoRuntime,
 
+    #[error("plugin hosts require a sandbox execution authority; none is installed in this host")]
+    NoSandboxAuthority,
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -88,6 +91,11 @@ pub struct PluginLoader {
     hook_system: Arc<PluginSystem>,
     runtime: JsRuntime,
     host_script_path: PathBuf,
+    /// Launch context for plugin hosts: the boundary plus the workspace
+    /// they are scoped to. `None` until the host installs the execution
+    /// authority — plugin hosts are model-reachable, so loading then
+    /// fails loudly instead of falling back to a direct spawn.
+    sandbox: RwLock<Option<agendao_sandbox::IntegrationSandboxContext>>,
     bootstrap_context: RwLock<Option<PluginContext>>,
     bootstrap_specs: RwLock<Vec<String>>,
     bootstrap_builtins: AtomicBool,
@@ -173,6 +181,7 @@ impl PluginLoader {
             hook_system: Arc::new(PluginSystem::new()),
             runtime,
             host_script_path,
+            sandbox: RwLock::new(None),
             bootstrap_context: RwLock::new(None),
             bootstrap_specs: RwLock::new(Vec::new()),
             bootstrap_builtins: AtomicBool::new(true),
@@ -250,6 +259,14 @@ impl PluginLoader {
         now.saturating_sub(last) >= duration.as_secs()
     }
 
+    /// Install the sandbox execution authority every plugin host
+    /// launches through (`Integration` profile: contained,
+    /// workspace-scoped, network denied). Must be set before `load_all`.
+    pub fn with_sandbox(mut self, sandbox: agendao_sandbox::IntegrationSandboxContext) -> Self {
+        self.sandbox = RwLock::new(Some(sandbox));
+        self
+    }
+
     /// Load all plugins from the given spec list.
     ///
     /// Each spec is either:
@@ -260,6 +277,15 @@ impl PluginLoader {
         specs: &[String],
         context: &PluginContext,
     ) -> Result<(), PluginLoaderError> {
+        // Plugin hosts are model-reachable: without an installed
+        // authority they fail loudly rather than spawn directly.
+        let sandbox = self
+            .sandbox
+            .read()
+            .await
+            .clone()
+            .ok_or(PluginLoaderError::NoSandboxAuthority)?;
+
         // Collect npm packages that need installing
         let npm_specs: Vec<&str> = specs
             .iter()
@@ -290,6 +316,7 @@ impl PluginLoader {
                 &plugin_path,
                 context.clone(),
                 cwd.as_deref(),
+                sandbox.clone(),
             )
             .await
             {
@@ -623,9 +650,21 @@ impl PluginLoader {
         });
         std::fs::write(&pkg_json, serde_json::to_string_pretty(&pkg).unwrap())?;
 
-        // Run install
+        // Run install. Host-management trust class: an explicit
+        // user-configuration action, never reachable from model tool
+        // input — it stays a native spawn and emits its own audit event
+        // so installs are distinguishable from plugin-host executions in
+        // the log stream (sandbox plan Phase 6: install and runtime
+        // commands are separate).
         let install_cmd = self.runtime.install_command();
         let install_args = self.runtime.install_args();
+        tracing::info!(
+            command = %install_cmd,
+            args = ?install_args,
+            dir = %npm_dir.display(),
+            target = "host-management",
+            "plugin package install started"
+        );
 
         let status = tokio::process::Command::new(install_cmd)
             .args(&install_args)

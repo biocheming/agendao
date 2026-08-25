@@ -83,6 +83,131 @@ fn general_row_toggle_action(
 }
 
 impl AppHandler {
+    fn queue_selection_move(&mut self, delta: i32) -> bool {
+        if !self.prompt.text().is_empty() {
+            return false;
+        }
+        let len = self.interaction_feedback.queue_summary.items.len();
+        if len == 0 {
+            return false;
+        }
+        let next = (self.queue_selection as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        self.queue_selection = next;
+        self.store.push_toast(
+            &format!("Queue item {}/{} selected", next + 1, len),
+            ToastMsgVariant::Info,
+        );
+        true
+    }
+
+    fn queue_mutate_selected(
+        &mut self,
+        operation: crate::interaction_feedback::QueueMutationOperation,
+        new_position: Option<u32>,
+    ) -> bool {
+        if !self.prompt.text().is_empty()
+            && operation != crate::interaction_feedback::QueueMutationOperation::Edit
+        {
+            return false;
+        }
+        let Some(api) = self.api.clone() else {
+            self.store
+                .push_toast("Queue mutation unavailable", ToastMsgVariant::Error);
+            return true;
+        };
+        let Some(session_id) = self.active_session.session_id.get() else {
+            return false;
+        };
+        let Some(item) = self
+            .interaction_feedback
+            .queue_summary
+            .items
+            .get(self.queue_selection)
+            .cloned()
+        else {
+            self.store
+                .push_toast("No queued item selected", ToastMsgVariant::Info);
+            return true;
+        };
+        let expected_revision = self
+            .queue_edit_draft
+            .as_ref()
+            .map(|d| d.base_revision)
+            .unwrap_or(self.interaction_feedback.queue_summary.queue_revision);
+        let handle = api.handle().clone();
+        match operation {
+            crate::interaction_feedback::QueueMutationOperation::Delete => {
+                let req = agendao_types::submission::QueueMutationRequest {
+                    client_request_id: uuid::Uuid::new_v4().to_string(),
+                    session_id: session_id.clone(),
+                    item_id: item.item_id.clone(),
+                    expected_revision,
+                };
+                let tx = self.dispatch_outcomes.sender();
+                handle.spawn(async move {
+                    let response = api
+                        .delete_queued_input_async(&session_id, &item.item_id, req)
+                        .await
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(dispatch_outcome::DispatchOutcome::QueueMutation {
+                        session_id,
+                        operation,
+                        response,
+                    });
+                });
+                return true;
+            }
+            crate::interaction_feedback::QueueMutationOperation::Move => {
+                let Some(position) = new_position else {
+                    return false;
+                };
+                let req = agendao_types::submission::QueueReorderRequest {
+                    client_request_id: uuid::Uuid::new_v4().to_string(),
+                    session_id: session_id.clone(),
+                    item_id: item.item_id.clone(),
+                    expected_revision,
+                    new_position: position,
+                };
+                let tx = self.dispatch_outcomes.sender();
+                handle.spawn(async move {
+                    let response = api
+                        .reorder_queued_input_async(&session_id, &item.item_id, req)
+                        .await
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(dispatch_outcome::DispatchOutcome::QueueMutation {
+                        session_id,
+                        operation,
+                        response,
+                    });
+                });
+                return true;
+            }
+            crate::interaction_feedback::QueueMutationOperation::Edit => {
+                let Some(draft) = self.queue_edit_draft.as_mut() else {
+                    return false;
+                };
+                draft.set_content(self.prompt.text());
+                let Some(req) = draft.request(self.prompt.draft_revision()) else {
+                    return false;
+                };
+                let item_id = req.item_id.clone();
+                let tx = self.dispatch_outcomes.sender();
+                handle.spawn(async move {
+                    let response = api
+                        .edit_queued_input_async(&session_id, &item_id, req)
+                        .await
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(dispatch_outcome::DispatchOutcome::QueueMutation {
+                        session_id,
+                        operation,
+                        response,
+                    });
+                });
+                return true;
+            }
+        };
+    }
+
     // ── Settings 动作单点（鼠标/键盘共用，土律归一）──
     // 以下方法由 keymap 的键路由与鼠标命中共用，任何一处改语义两端同步。
 
@@ -90,7 +215,7 @@ impl AppHandler {
     pub(crate) fn settings_select_provider_by_id(&mut self, id: String) {
         if self.store.settings_selected_provider.get().as_deref() != Some(id.as_str()) {
             self.store.settings_selected_model.set(None);
-        }
+        };
         self.store.settings_selected_provider.set(Some(id));
     }
 
@@ -740,12 +865,11 @@ impl AppHandler {
                             // （✕ 引导符红标）而非回收——原文在屏、上下文不丢，
                             // Ctrl+R 重试语义不变。notice/toast 继续说明原因。
                             self.active_session.mark_user_message_failed(user_msg_id);
-                            let friendly =
-                                crate::store::types::friendly_error(&format!("Send failed: {error}"));
-                            self.active_session.push_notice(
-                                &format!("err-{}", ts_now()),
-                                &friendly,
-                            );
+                            let friendly = crate::store::types::friendly_error(&format!(
+                                "Send failed: {error}"
+                            ));
+                            self.active_session
+                                .push_notice(&format!("err-{}", ts_now()), &friendly);
                             self.active_session
                                 .run_status
                                 .set(RunStatus::Error(error.clone()));
@@ -779,6 +903,201 @@ impl AppHandler {
                                 &format!("Shell command queued: {}", command),
                             );
                             self.layout_dirty = true;
+                            changed = true;
+                        }
+                        dispatch_outcome::DispatchOutcome::GatewaySubmit { ctx, response } => {
+                            let cur_sid = self.active_session.session_id.get().unwrap_or_default();
+                            let cur_rev = self.prompt.draft_revision();
+                            let outcome = crate::command_gateway::CommandGateway::settle_submission_disposition(
+                                ctx,
+                                response.clone(),
+                                &cur_sid,
+                                cur_rev,
+                            );
+                            match outcome {
+                                crate::command_gateway::GatewayReceiptOutcome::SubmitAcceptedAndClearPrompt { disposition, .. } => {
+                                    self.circuit_breaker.on_success();
+                                    self.prompt.clear();
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    let _ = self.interaction_feedback.apply_submission_disposition(
+                                        &ctx.session_id,
+                                        &ctx.client_request_id,
+                                        &disposition,
+                                        now_ms,
+                                    );
+                                    if let agendao_types::submission::SubmissionDisposition::Queued { position, .. } = disposition {
+                                        self.store.push_toast(
+                                            &format!("Enqueued at position {position}"),
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        );
+                                    } else if let agendao_types::submission::SubmissionDisposition::SteeringPending { .. } = disposition {
+                                        self.store.push_toast(
+                                            "Steering pending safe boundary",
+                                            crate::store::types::ToastMsgVariant::Success,
+                                        );
+                                    }
+                                }
+                                crate::command_gateway::GatewayReceiptOutcome::SubmitAcceptedRetainModifiedPrompt { disposition, .. } => {
+                                    self.circuit_breaker.on_success();
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    let _ = self.interaction_feedback.apply_submission_disposition(
+                                        &ctx.session_id,
+                                        &ctx.client_request_id,
+                                        &disposition,
+                                        now_ms,
+                                    );
+                                    self.store.push_toast(
+                                        "Submitted (new draft retained)",
+                                        crate::store::types::ToastMsgVariant::Success,
+                                    );
+                                }
+                                crate::command_gateway::GatewayReceiptOutcome::SubmitRejected { reason, message, .. } => {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    let _ = self.interaction_feedback.apply_submission_disposition(
+                                        &ctx.session_id,
+                                        &ctx.client_request_id,
+                                        &agendao_types::submission::SubmissionDisposition::Rejected {
+                                            reason,
+                                            message: message.clone(),
+                                        },
+                                        now_ms,
+                                    );
+                                    self.store.push_toast(
+                                        &format!("Submit rejected: {message}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    );
+                                }
+                                crate::command_gateway::GatewayReceiptOutcome::TransportFailed { error, .. } => {
+                                    if self.circuit_breaker.on_transport_failure() {
+                                        self.shadow_metrics.kill_switch_triggers += 1;
+                                        self.store.push_toast(
+                                            "⚠️ Gateway tripped: automatically rolled back to Legacy",
+                                            crate::store::types::ToastMsgVariant::Warning,
+                                        );
+                                    } else {
+                                        self.store.push_toast(
+                                            &format!("Network error: {error}"),
+                                            crate::store::types::ToastMsgVariant::Error,
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
+                            changed = true;
+                        }
+                        dispatch_outcome::DispatchOutcome::QueueMutation {
+                            session_id,
+                            operation,
+                            response,
+                        } => {
+                            match response {
+                                Ok(disposition @ agendao_types::submission::QueueMutationDisposition::Applied { .. }) => {
+                                    if *operation == crate::interaction_feedback::QueueMutationOperation::Edit {
+                                        let accepted = self.queue_edit_draft.as_mut().map(|d| d.settle(&Ok(disposition.clone()), session_id, self.prompt.draft_revision())).unwrap_or(false);
+                                        if accepted { self.queue_edit_draft = None; self.prompt.clear(); }
+                                    }
+                                    self.store.push_toast("Queue mutation accepted; awaiting authoritative snapshot", ToastMsgVariant::Success);
+                                }
+                                Ok(disposition @ agendao_types::submission::QueueMutationDisposition::Rejected { message, .. }) => {
+                                    if *operation == crate::interaction_feedback::QueueMutationOperation::Edit {
+                                        if let Some(d) = self.queue_edit_draft.as_mut() { let _ = d.settle(&Ok(disposition.clone()), session_id, self.prompt.draft_revision()); }
+                                    }
+                                    self.store.push_toast(&format!("Queue update rejected: {message}"), ToastMsgVariant::Error);
+                                }
+                                Err(error) => {
+                                    if *operation == crate::interaction_feedback::QueueMutationOperation::Edit { if let Some(d) = self.queue_edit_draft.as_mut() { let _ = d.settle(&Err(error.clone()), session_id, self.prompt.draft_revision()); } }
+                                    self.store.push_toast(&format!("Queue update failed: {error}"), ToastMsgVariant::Error)
+                                },
+                            }
+                            changed = true;
+                        }
+                        dispatch_outcome::DispatchOutcome::GatewayInterrupt { ctx, response } => {
+                            let outcome = crate::command_gateway::CommandGateway::settle_interrupt_disposition(
+                                &ctx,
+                                response.clone(),
+                            );
+                            match outcome {
+                                crate::command_gateway::GatewayReceiptOutcome::InterruptAcknowledged { turn_id, .. } => {
+                                    self.circuit_breaker.on_success();
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    let _ = self.interaction_feedback.apply_interrupt_disposition(
+                                        &ctx.session_id,
+                                        &agendao_types::submission::InterruptDisposition::Interrupted {
+                                            turn_id: turn_id.clone(),
+                                            session_id: ctx.session_id.clone(),
+                                        },
+                                        now_ms,
+                                    );
+                                    self.store.push_toast(
+                                        &format!("Interrupt requested for turn {turn_id}"),
+                                        crate::store::types::ToastMsgVariant::Info,
+                                    );
+                                }
+                                crate::command_gateway::GatewayReceiptOutcome::InterruptRejected { reason, .. } => {
+                                    self.store.push_toast(
+                                        &format!("Interrupt rejected: {reason}"),
+                                        crate::store::types::ToastMsgVariant::Error,
+                                    );
+                                }
+                                crate::command_gateway::GatewayReceiptOutcome::TransportFailed { error, .. } => {
+                                    if self.circuit_breaker.on_transport_failure() {
+                                        self.shadow_metrics.kill_switch_triggers += 1;
+                                        self.store.push_toast(
+                                            "⚠️ Gateway tripped: automatically rolled back to Legacy",
+                                            crate::store::types::ToastMsgVariant::Warning,
+                                        );
+                                    } else {
+                                        self.store.push_toast(
+                                            &format!("Interrupt error: {error}"),
+                                            crate::store::types::ToastMsgVariant::Error,
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
+                            changed = true;
+                        }
+                        dispatch_outcome::DispatchOutcome::ShadowComparison(record) => {
+                            self.shadow_metrics.record(&record);
+                            tracing::debug!(
+                                session_id = %record.session_id,
+                                op_id = %record.operation_id,
+                                diff = ?record.difference,
+                                elapsed_ms = record.elapsed_ms,
+                                "M4.4 Shadow Comparison recorded"
+                            );
+                        }
+                        dispatch_outcome::DispatchOutcome::LegacyInterrupt {
+                            session_id: _,
+                            success,
+                            error,
+                        } => {
+                            if *success {
+                                self.active_session.set_run_status(RunStatus::Idle);
+                                self.store.push_toast(
+                                    "⏹ Session interrupted",
+                                    crate::store::types::ToastMsgVariant::Info,
+                                );
+                            } else {
+                                let err_msg =
+                                    error.as_deref().unwrap_or("session is still running");
+                                self.store.push_toast(
+                                    &format!("⏹ Interrupt failed — {err_msg}"),
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                            }
                             changed = true;
                         }
                     }
@@ -1213,7 +1532,20 @@ impl AppHandler {
                 // 仅无 panel 且不在 Settings 表单编辑时接管全局：弹窗/表单
                 // 里的 Ctrl 组合键归焦点文本字段（readline 编辑，见下方
                 // Ctrl 路由），不被全局 toggle 抢走（U26-3 孤儿弹窗修复）。
-                if key.ctrl && self.panel == Panel::None && !self.settings_edit.active {
+                if key.ctrl && key.alt && self.panel == Panel::None && !self.settings_edit.active {
+                    let section = match key.key {
+                        Key::Char('i') => Some(crate::details_policy::DetailsSection::Thinking),
+                        Key::Char('l') => Some(crate::details_policy::DetailsSection::Tools),
+                        Key::Char('d') => Some(crate::details_policy::DetailsSection::Todo),
+                        Key::Char('a') => Some(crate::details_policy::DetailsSection::Subagents),
+                        _ => None,
+                    };
+                    if let Some(section) = section {
+                        let _ = self.toggle_details_section(section);
+                        return true;
+                    }
+                }
+                if key.ctrl && !key.alt && self.panel == Panel::None && !self.settings_edit.active {
                     match key.key {
                         Key::Char('b') => {
                             self.sidebar_visible = !self.sidebar_visible;
@@ -1272,10 +1604,7 @@ impl AppHandler {
                             // 路由（Home 无 transcript 可搜）；搜索态下
                             // 字符不落 prompt（panel_dispatch Search 分支
                             // 消化）。
-                            if matches!(
-                                self.store.route.get(),
-                                crate::app::Route::Session { .. }
-                            ) {
+                            if matches!(self.store.route.get(), crate::app::Route::Session { .. }) {
                                 self.search_bar.open();
                                 self.panel = Panel::Search;
                             }
@@ -1312,6 +1641,11 @@ impl AppHandler {
                     self.stash_unsent_draft();
                     return true;
                 }
+                // Ctrl+G → 外部编辑器 Handoff ($VISUAL / $EDITOR)
+                if key.ctrl && matches!(key.key, Key::Char('g')) {
+                    self.execute_slash_action(agendao_command::UiActionId::ExternalEditor);
+                    return true;
+                }
                 // Alt/Shift/Ctrl+Enter → prompt 换行（Enter 裸键保持发送）。
                 // Alt+Enter 是主通道：tmux/标准 xterm 下 S/C-Enter 常退化成
                 // 普通 Enter 或文本，无法独立送达；Alt+Enter 几乎处处以
@@ -1323,8 +1657,26 @@ impl AppHandler {
                     && self.panel == Panel::None
                     && !matches!(self.store.route.get(), Route::Settings)
                 {
-                    self.prompt.insert_newline();
-                    return true;
+                    if key.ctrl && self.queue_edit_draft.is_some() {
+                        return self.queue_mutate_selected(
+                            crate::interaction_feedback::QueueMutationOperation::Edit,
+                            None,
+                        );
+                    }
+                    let action = crate::input_capability::decide_enter(
+                        key.alt,
+                        key.ctrl,
+                        key.shift,
+                        self.keyboard_capabilities,
+                    );
+                    match action {
+                        crate::input_capability::EnterAction::InsertNewline => {
+                            self.prompt.insert_newline();
+                            return true;
+                        }
+                        crate::input_capability::EnterAction::Ignore => return true,
+                        crate::input_capability::EnterAction::Submit => {}
+                    }
                 }
                 // ── Ctrl 组合键路由（U2·修饰键透传）──────────────────
                 // 此前统一走 `handle_key(&key.key)` 把 ctrl 剥掉：prompt 里
@@ -1396,11 +1748,17 @@ impl AppHandler {
                         {
                             // ⑥ action chip：携带动作的 toast 点击=执行动作
                             //（执行后 dismiss；动作不可用时退化为 dismiss）。
-                            let action = self.store.toasts.get().iter()
+                            let action = self
+                                .store
+                                .toasts
+                                .get()
+                                .iter()
                                 .find(|t| t.id == *id)
                                 .and_then(|t| t.action);
                             self.store.dismiss_toast(*id);
-                            if let Some(crate::store::types::ToastActionKind::RetryLastPrompt) = action {
+                            if let Some(crate::store::types::ToastActionKind::RetryLastPrompt) =
+                                action
+                            {
                                 if let Some(text) = self.last_failed_prompt.take() {
                                     self.dispatch(text);
                                 }
@@ -1990,13 +2348,19 @@ impl AppHandler {
             .saturating_sub(crate::app::PAD.saturating_mul(2));
         let compact = self.store.compact_density.get();
         let show_thinking = self.store.show_thinking.get();
-        let total_h =
-            crate::screen::transcript_total_height(&msgs, show_thinking, compact, inner_w);
+        let details_policy = self.active_session.details_policy.get();
+        let total_h = crate::screen::transcript_total_height_with_policy(
+            &msgs,
+            show_thinking,
+            compact,
+            inner_w,
+            &details_policy,
+        );
         let max_offset = total_h.saturating_sub(self.transcript_viewport_h);
         let user_offset = self.active_session.scroll_offset.get().min(max_offset);
         let scroll_top = max_offset.saturating_sub(user_offset);
         let visible_end = scroll_top.saturating_add(self.transcript_viewport_h);
-        let units = crate::screen::build_render_units(
+        let units = crate::screen::build_render_units_with_policy(
             &msgs,
             None,
             0,
@@ -2004,6 +2368,7 @@ impl AppHandler {
             None,
             inner_w,
             compact,
+            &details_policy,
         );
         // BTreeSet：块索引去重且保 transcript 顺序。
         let mut seen = std::collections::BTreeSet::new();
@@ -2087,11 +2452,13 @@ impl AppHandler {
         // 与聚合渲染错位，是「连续结果区域点不准」的根因：
         // 屏幕上一个聚合深井被当成 N 个独立块量高，acc 与真实
         // 屏幕位置对不上，点第 2 行命中第 5 块。
-        let total_h = crate::screen::transcript_total_height(
+        let details_policy = self.active_session.details_policy.get();
+        let total_h = crate::screen::transcript_total_height_with_policy(
             &msgs,
             self.store.show_thinking.get(),
             self.store.compact_density.get(),
             inner_w,
+            &details_policy,
         )
         .saturating_add(extra_h);
         let max_offset = total_h.saturating_sub(transcript_h);
@@ -2109,7 +2476,7 @@ impl AppHandler {
         // 命中触点 1，新增聚合种类零改动）。鼠标命中频率低且必须
         // row_owners 真实（否则点 ToolResult 子项错块），显式 None
         // 全量布局。
-        let units = crate::screen::build_render_units(
+        let units = crate::screen::build_render_units_with_policy(
             &msgs,
             None,
             0,
@@ -2117,6 +2484,7 @@ impl AppHandler {
             None,
             inner_w,
             self.store.compact_density.get(),
+            &details_policy,
         );
         let compact = self.store.compact_density.get();
         let mut acc: u16 = 0;
@@ -2156,6 +2524,80 @@ impl AppHandler {
         // Up/Down stay owned by the prompt for history navigation.
         if matches!(self.store.route.get(), Route::Session { .. }) {
             match key {
+                Key::Escape if self.queue_edit_draft.is_some() => {
+                    self.queue_edit_draft = None;
+                    self.prompt.clear();
+                    self.store
+                        .push_toast("Queue edit cancelled", ToastMsgVariant::Info);
+                    return true;
+                }
+                Key::Char('E') if self.prompt.text().is_empty() => {
+                    let Some(session_id) = self.active_session.session_id.get() else {
+                        return false;
+                    };
+                    let Some(item) = self
+                        .interaction_feedback
+                        .queue_summary
+                        .items
+                        .get(self.queue_selection)
+                        .cloned()
+                    else {
+                        return false;
+                    };
+                    let revision = self.interaction_feedback.queue_summary.queue_revision;
+                    self.queue_edit_draft = Some(crate::queue_editor::QueueEditDraft::begin(
+                        session_id, &item, revision,
+                    ));
+                    self.prompt.set_text(&item.content);
+                    self.prompt.focus();
+                    self.store.push_toast(
+                        "Editing queued item (Ctrl+Enter save, Esc cancel)",
+                        ToastMsgVariant::Info,
+                    );
+                    return true;
+                }
+                Key::Up
+                    if self.prompt.text().is_empty()
+                        && !self.interaction_feedback.queue_summary.items.is_empty() =>
+                {
+                    return self.queue_selection_move(-1);
+                }
+                Key::Down
+                    if self.prompt.text().is_empty()
+                        && !self.interaction_feedback.queue_summary.items.is_empty() =>
+                {
+                    return self.queue_selection_move(1);
+                }
+                Key::Char('d')
+                    if self.prompt.text().is_empty()
+                        && self
+                            .interaction_feedback
+                            .queue_summary
+                            .items
+                            .get(self.queue_selection)
+                            .is_some() =>
+                {
+                    return self.queue_mutate_selected(
+                        crate::interaction_feedback::QueueMutationOperation::Delete,
+                        None,
+                    );
+                }
+                Key::Char('K') if self.prompt.text().is_empty() && self.queue_selection > 0 => {
+                    return self.queue_mutate_selected(
+                        crate::interaction_feedback::QueueMutationOperation::Move,
+                        Some((self.queue_selection - 1) as u32),
+                    );
+                }
+                Key::Char('J')
+                    if self.prompt.text().is_empty()
+                        && self.queue_selection + 1
+                            < self.interaction_feedback.queue_summary.items.len() =>
+                {
+                    return self.queue_mutate_selected(
+                        crate::interaction_feedback::QueueMutationOperation::Move,
+                        Some((self.queue_selection + 1) as u32),
+                    );
+                }
                 Key::PageUp => {
                     // U12：页高对齐真实 viewport（留 2 行重叠，GUI 翻页
                     // 惯例）——与滚动条轨道翻页（viewport_h）同口径，
@@ -2199,6 +2641,11 @@ impl AppHandler {
                 Key::Char('G') if self.prompt.text().is_empty() => {
                     self.active_session.scroll_to_bottom();
                     self.layout_dirty = true;
+                    return true;
+                }
+                Key::Char('A') if self.prompt.text().is_empty() => {
+                    self.subagent_panel.open();
+                    self.panel = crate::app::Panel::Subagents;
                     return true;
                 }
                 Key::Tab => {
@@ -2402,37 +2849,136 @@ impl AppHandler {
                     if self.interrupt_pending && self.interrupt_time.elapsed().as_secs() < 5 {
                         // Second Esc within 5s → abort
                         self.interrupt_pending = false;
-                        let aborted = if let Some(sid) = self.active_session.get_session_id() {
-                            if let Some(ref api) = self.api {
-                                match api.abort_session(&sid) {
-                                    Ok(value) => value
-                                        .get("aborted")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(true),
-                                    Err(e) => {
-                                        tracing::warn!(%e, "abort_session failed");
-                                        false
-                                    }
-                                }
-                            } else {
-                                // No API bridge — cannot reach the backend.
-                                false
+                        let sid = match self.active_session.get_session_id() {
+                            Some(s) => s,
+                            None => {
+                                self.store.push_toast(
+                                    "⏹ Interrupt failed — no active session",
+                                    crate::store::types::ToastMsgVariant::Error,
+                                );
+                                return true;
                             }
-                        } else {
-                            false
                         };
-                        if aborted {
-                            self.active_session.set_run_status(RunStatus::Idle);
-                            self.store.push_toast(
-                                "⏹ Session interrupted",
-                                crate::store::types::ToastMsgVariant::Info,
+                        let target_turn_id = match self.active_session.active_turn_id.get() {
+                            Some(t) => t,
+                            None => {
+                                self.store.push_toast(
+                                    "⏹ Interrupt rejected — no active turn running",
+                                    crate::store::types::ToastMsgVariant::Warning,
+                                );
+                                return true;
+                            }
+                        };
+                        let authority = self.gateway_authority;
+
+                        let (int_cmd, int_ctx) =
+                            crate::command_gateway::CommandGateway::prepare_interrupt(
+                                sid.clone(),
+                                target_turn_id.clone(),
                             );
-                        } else {
-                            // 诚实失败：不置 Idle、不弹"已中断"假 toast（道纪·不伪已批准）。
-                            self.store.push_toast(
-                                "⏹ Interrupt failed — session is still running",
-                                crate::store::types::ToastMsgVariant::Error,
-                            );
+                        let canonical_gw = crate::shadow::CanonicalOperation::new_interrupt(
+                            sid.clone(),
+                            target_turn_id.clone(),
+                        );
+                        let canonical_legacy = crate::shadow::CanonicalOperation::new_interrupt(
+                            sid.clone(),
+                            target_turn_id.clone(),
+                        );
+                        let op_diff = crate::shadow::ShadowComparator::compare_operations(
+                            &canonical_legacy,
+                            &canonical_gw,
+                        );
+
+                        let source = crate::shadow::InteractionSource::DoubleEsc;
+                        let use_gateway = self.should_use_gateway(&sid, &source);
+
+                        if use_gateway {
+                            if let Some(ref api) = self.api {
+                                let api_c = api.clone();
+                                let tx = self.dispatch_outcomes.sender();
+                                api.handle().spawn(async move {
+                                    let res = api_c
+                                        .submit_gateway_command_async(crate::command_gateway::GatewayCommand::Interrupt(int_cmd))
+                                        .await
+                                        .map_err(|e| e.to_string());
+                                    let int_disp = match res {
+                                        Ok(crate::command_gateway::GatewayServerResponse::Interrupt(disp)) => Ok(disp),
+                                        Ok(crate::command_gateway::GatewayServerResponse::Submit(_)) => {
+                                            Err("Protocol error: unexpected submit response".into())
+                                        }
+                                        Err(e) => Err(e),
+                                    };
+                                    let _ = tx.send(crate::app::dispatch_outcome::DispatchOutcome::GatewayInterrupt {
+                                        ctx: int_ctx,
+                                        response: int_disp,
+                                    });
+                                });
+                            }
+                        } else if let Some(ref api) = self.api {
+                            let api_c = api.clone();
+                            let tx = self.dispatch_outcomes.sender();
+                            let sid_c = sid.clone();
+                            let int_ctx_id = int_ctx.client_request_id.clone();
+                            let target_turn_id_c = target_turn_id.clone();
+
+                            api.handle().spawn(async move {
+                                let start_t = std::time::Instant::now();
+                                let r = api_c.abort_session_async(&sid_c).await;
+                                let elapsed_ms = start_t.elapsed().as_millis() as u64;
+                                let (is_ok, err_str) = match r {
+                                    Ok(value) => {
+                                        let aborted = value
+                                            .get("aborted")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(true);
+                                        (aborted, None)
+                                    }
+                                    Err(e) => (false, Some(e.to_string())),
+                                };
+
+                                if authority == crate::shadow::GatewayAuthorityMode::Shadow {
+                                    let leg_norm = crate::shadow::NormalizedLegacyResult::Aborted {
+                                        session_id: sid_c.clone(),
+                                        success: is_ok,
+                                    };
+                                    let simulated_gw = if is_ok {
+                                        crate::shadow::NormalizedGatewayResult::InterruptAcknowledged {
+                                            turn_id: target_turn_id_c,
+                                        }
+                                    } else {
+                                        crate::shadow::NormalizedGatewayResult::InterruptRejected {
+                                            reason: err_str.clone().unwrap_or_else(|| "abort_session returned false".into()),
+                                        }
+                                    };
+                                    let result_diff = if op_diff != crate::shadow::ShadowDifference::Equivalent {
+                                        op_diff
+                                    } else {
+                                        crate::shadow::ShadowComparator::compare_results(
+                                            &leg_norm,
+                                            &simulated_gw,
+                                        )
+                                    };
+
+                                    let _ = tx.send(crate::app::dispatch_outcome::DispatchOutcome::ShadowComparison(
+                                        crate::shadow::ShadowRecord {
+                                            operation_id: int_ctx_id,
+                                            session_id: sid_c.clone(),
+                                            source: crate::shadow::InteractionSource::DoubleEsc,
+                                            canonical_operation: canonical_gw,
+                                            legacy_result: Some(leg_norm),
+                                            gateway_result: Some(simulated_gw),
+                                            difference: result_diff,
+                                            elapsed_ms,
+                                        },
+                                    ));
+                                }
+
+                                let _ = tx.send(crate::app::dispatch_outcome::DispatchOutcome::LegacyInterrupt {
+                                    session_id: sid_c,
+                                    success: is_ok,
+                                    error: err_str,
+                                });
+                            });
                         }
                     } else {
                         // First Esc → show confirmation hint
@@ -2524,6 +3070,10 @@ impl AppHandler {
                     } else {
                         Some(focus.to_string())
                     };
+                    return self.execute_slash_action(spec.action_id);
+                }
+                if spec.action_id == UiActionId::Details {
+                    self.pending_details_section = Some(args.trim().to_string());
                     return self.execute_slash_action(spec.action_id);
                 }
             }
@@ -2678,30 +3228,158 @@ impl AppHandler {
             // 触发 LLM 调度），冻死 revue 事件循环，乐观 push_user_message 的
             // 渲染帧出不来（"按 Enter 很久没反应"）。spawn 后主线程立刻返回，
             // 乐观消息瞬间上屏；回执经 dispatch_outcomes channel 在 Event::Tick
-            // drain 回收（Sent→Running / Failed→回滚）。
+            let authority = self.gateway_authority;
+            let draft_rev = self.prompt.draft_revision();
+            let (gw_cmd, gw_ctx) = crate::command_gateway::CommandGateway::prepare_submit(
+                sid.clone(),
+                draft_rev,
+                &text,
+                agendao_types::submission::SubmissionMode::Auto,
+            );
+            let canonical_gw = crate::shadow::CanonicalOperation::new_submit(
+                sid.clone(),
+                agendao_types::submission::SubmissionMode::Auto,
+                &text,
+            );
+            let canonical_legacy = crate::shadow::CanonicalOperation::new_submit(
+                sid.clone(),
+                agendao_types::submission::SubmissionMode::Auto,
+                &text,
+            );
+            let op_diff = crate::shadow::ShadowComparator::compare_operations(
+                &canonical_legacy,
+                &canonical_gw,
+            );
+
+            let source = crate::shadow::InteractionSource::DefaultEnter;
+            let use_gateway = self.should_use_gateway(&sid, &source);
+
             let api_c = api.clone();
             let tx = self.dispatch_outcomes.sender();
             let sid_c = sid.clone();
             let mid_c = mid.clone();
             let text_c = text.clone();
             let text_retry = text.clone();
-            api.handle().spawn(async move {
-                let r = api_c
-                    .send_prompt_with_async(&sid_c, text_c, agent, scheduler, model, None)
-                    .await;
-                let _ = match r {
-                    Ok(resp) => tx.send(dispatch_outcome::DispatchOutcome::Sent {
-                        session_id: sid_c,
-                        status: resp.status,
-                    }),
-                    Err(e) => tx.send(dispatch_outcome::DispatchOutcome::Failed {
-                        session_id: sid_c,
-                        user_msg_id: mid_c,
-                        error: format!("{e}"),
-                        prompt_text: text_retry,
-                    }),
-                };
-            });
+
+            if use_gateway {
+                // Gateway 单点权威执行：只发送一次 Gateway 命令
+                api.handle().spawn(async move {
+                    let res = api_c
+                        .submit_gateway_command_async(
+                            crate::command_gateway::GatewayCommand::Submit(gw_cmd),
+                        )
+                        .await
+                        .map_err(|e| e.to_string());
+                    let disp_res = match res {
+                        Ok(crate::command_gateway::GatewayServerResponse::Submit(disp)) => Ok(disp),
+                        Ok(crate::command_gateway::GatewayServerResponse::Interrupt(_)) => {
+                            Err("Protocol error: unexpected interrupt response".into())
+                        }
+                        Err(e) => Err(e),
+                    };
+                    let _ = tx.send(
+                        crate::app::dispatch_outcome::DispatchOutcome::GatewaySubmit {
+                            ctx: gw_ctx,
+                            response: disp_res,
+                        },
+                    );
+                });
+            } else {
+                // 旧路径单点权威执行 + Shadow 比较（绝不双发 Gateway 请求）
+                api.handle().spawn(async move {
+                    let start_t = std::time::Instant::now();
+                    let r = api_c
+                        .send_prompt_with_async(&sid_c, text_c, agent, scheduler, model, None)
+                        .await;
+                    let elapsed_ms = start_t.elapsed().as_millis() as u64;
+
+                    let legacy_norm = match &r {
+                        Ok(resp) => {
+                            if resp.status == "queued" {
+                                crate::shadow::NormalizedLegacyResult::Queued {
+                                    session_id: sid_c.clone(),
+                                }
+                            } else {
+                                crate::shadow::NormalizedLegacyResult::Started {
+                                    session_id: sid_c.clone(),
+                                    status: resp.status.clone(),
+                                }
+                            }
+                        }
+                        Err(e) => crate::shadow::NormalizedLegacyResult::Failed {
+                            error: format!("{e}"),
+                        },
+                    };
+
+                    if authority == crate::shadow::GatewayAuthorityMode::Shadow {
+                        let simulated_gw_disp = match &legacy_norm {
+                            crate::shadow::NormalizedLegacyResult::Queued { .. } => {
+                                crate::shadow::NormalizedGatewayResult::SubmitAccepted(
+                                    agendao_types::submission::SubmissionDisposition::Queued {
+                                        item_id: "shadow-q".into(),
+                                        session_id: sid_c.clone(),
+                                        position: 1,
+                                        queue_revision: 1,
+                                    },
+                                )
+                            }
+                            crate::shadow::NormalizedLegacyResult::Started { .. } => {
+                                crate::shadow::NormalizedGatewayResult::SubmitAccepted(
+                                    agendao_types::submission::SubmissionDisposition::Started {
+                                        turn_id: "shadow-t".into(),
+                                        session_id: sid_c.clone(),
+                                    },
+                                )
+                            }
+                            crate::shadow::NormalizedLegacyResult::Failed { error } => {
+                                crate::shadow::NormalizedGatewayResult::TransportFailed {
+                                    error: error.clone(),
+                                }
+                            }
+                            _ => crate::shadow::NormalizedGatewayResult::TransportFailed {
+                                error: "unsupported".into(),
+                            },
+                        };
+                        let result_diff = if op_diff != crate::shadow::ShadowDifference::Equivalent
+                        {
+                            op_diff
+                        } else {
+                            crate::shadow::ShadowComparator::compare_results(
+                                &legacy_norm,
+                                &simulated_gw_disp,
+                            )
+                        };
+
+                        let _ = tx.send(
+                            crate::app::dispatch_outcome::DispatchOutcome::ShadowComparison(
+                                crate::shadow::ShadowRecord {
+                                    operation_id: gw_ctx.client_request_id.clone(),
+                                    session_id: sid_c.clone(),
+                                    source: crate::shadow::InteractionSource::DefaultEnter,
+                                    canonical_operation: canonical_gw,
+                                    legacy_result: Some(legacy_norm),
+                                    gateway_result: Some(simulated_gw_disp),
+                                    difference: result_diff,
+                                    elapsed_ms,
+                                },
+                            ),
+                        );
+                    }
+
+                    let _ = match r {
+                        Ok(resp) => tx.send(dispatch_outcome::DispatchOutcome::Sent {
+                            session_id: sid_c,
+                            status: resp.status,
+                        }),
+                        Err(e) => tx.send(dispatch_outcome::DispatchOutcome::Failed {
+                            session_id: sid_c,
+                            user_msg_id: mid_c,
+                            error: format!("{e}"),
+                            prompt_text: text_retry,
+                        }),
+                    };
+                });
+            }
             // title_refresh_pending 改由 Tick drain 的 Sent 分支置位（确认服务端
             // 接收后才请求刷新，比发送前盲置更准）。
         } else {
@@ -2781,6 +3459,10 @@ impl AppHandler {
     /// 尾段同一语义——title/usage 播种、todos、历史消息路由、pending
     /// question/permission catch-up、context 进度条播种。
     fn apply_session_open(&mut self, session_id: &str, data: app_op::SessionOpenData) {
+        // M4.2 只读交互反馈重置到新 Session
+        self.interaction_feedback =
+            crate::interaction_feedback::InteractionFeedback::new(session_id.to_string());
+
         // Task ledger catch-up（水律·回流）：打开会话即对账一次；404/空账本
         // 视为无治理（None），乱序旧 revision 由防回退守卫丢弃。
         if let Ok(ledger) = data.task_ledger {
@@ -5010,8 +5692,9 @@ mod tests {
         assert!(matches!(h.store.route.get(), Route::Settings));
     }
 
-    /// Alt+Enter → prompt 换行（tmux/xterm 主通道，ESC+CR 可靠送达）；
-    /// Shift/Ctrl+Enter 同样换行；裸 Enter 保持发送（不插换行）。
+    /// Alt+Enter → prompt 换行（tmux/xterm 主通道，ESC+CR 可靠送达）。
+    /// 默认 CSI-u 能力未知时，Shift/Ctrl+Enter fail-closed：既不换行也不提交；
+    /// 裸 Enter 保持发送（不插换行）。
     #[test]
     fn alt_shift_ctrl_enter_insert_newline_bare_enter_sends() {
         use revue::event::KeyEvent;
@@ -5022,7 +5705,7 @@ mod tests {
         // Alt+Enter → 换行
         assert!(h.handle(&Event::Key(KeyEvent::alt(Key::Enter))));
         assert_eq!(h.prompt.text(), "hi\n", "Alt+Enter 必须插入换行而非发送");
-        // Shift+Enter → 换行
+        // 默认 capability Unknown：Shift+Enter 不得误换行或提交。
         let shift_enter = KeyEvent {
             key: Key::Enter,
             ctrl: false,
@@ -5030,20 +5713,33 @@ mod tests {
             shift: true,
         };
         assert!(h.handle(&Event::Key(shift_enter)));
-        assert_eq!(h.prompt.text(), "hi\n\n");
+        assert_eq!(h.prompt.text(), "hi\n");
         // Ctrl+Enter → 换行
         assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Enter))));
-        assert_eq!(h.prompt.text(), "hi\n\n\n");
+        assert_eq!(h.prompt.text(), "hi\n");
         // 裸 Enter → 暂存到空闲 tick，给已排队的粘贴字符一次判定机会；
         // tick 后仍按发送语义清空（echo 模式无 api）。
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Enter))));
-        assert_eq!(h.prompt.text(), "hi\n\n\n");
+        assert_eq!(h.prompt.text(), "hi\n");
         let action = h
             .prompt
             .flush_deferred_enter(std::time::Instant::now() + std::time::Duration::from_millis(100))
             .expect("idle tick resolves Enter");
         assert!(h.apply_prompt_action(action));
         assert_eq!(h.prompt.text(), "", "裸 Enter 应在空闲 tick 提交");
+    }
+
+    #[test]
+    fn csiu_supported_capability_allows_ctrl_enter_newline() {
+        use revue::event::KeyEvent;
+        let mut h = mk_handler();
+        h.set_keyboard_capabilities(crate::input_capability::CsiuCapabilities {
+            ctrl_enter: crate::input_capability::CapabilityState::Supported,
+            shift_enter: crate::input_capability::CapabilityState::Supported,
+        });
+        h.handle(&Event::Key(KeyEvent::new(Key::Char('x'))));
+        assert!(h.handle(&Event::Key(KeyEvent::ctrl(Key::Enter))));
+        assert_eq!(h.prompt.text(), "x\n");
     }
 
     /// U1：Event::Paste 进 prompt——多行保留、CRLF 归一、不产生逐键回显。
@@ -5291,6 +5987,7 @@ mod tests {
         h.store.navigate(Route::Session {
             session_id: "s1".into(),
         });
+        h.interaction_feedback = crate::interaction_feedback::InteractionFeedback::new("s1".into());
         h.active_session.messages.set(vec![
             TranscriptBlock::UserPrompt {
                 id: "u1".into(),
@@ -5301,6 +5998,7 @@ mod tests {
             TranscriptBlock::AssistantMsg {
                 id: "a1".into(),
                 content: "Login flow fixed".into(),
+                lifecycle: crate::store::types::StreamBlockLifecycle::Streaming,
                 fold: FoldState::Truncated,
             },
         ]);
@@ -5555,7 +6253,9 @@ mod tests {
         goto_model_settings(&mut h, vec![provider("p1", vec![])]);
         h.store.settings_selected_provider.set(Some("p1".into()));
         // 焦点停在 Providers 栏（用户以为已在 Details）。
-        h.store.settings_focus_pane.set(SettingsFocusPane::Providers);
+        h.store
+            .settings_focus_pane
+            .set(SettingsFocusPane::Providers);
         h.handle(&Event::Key(KeyEvent::new(Key::Char('m'))));
         assert!(
             !h.model_edit_dialog.is_open(),
@@ -6210,11 +6910,11 @@ mod tests {
         let msgs = h.active_session.messages.get();
         assert!(
             msgs.iter().any(|m| matches!(
-                m,
-                crate::store::types::TranscriptBlock::UserPrompt { content, ..
-        }
-                    if content == "retry me"
-            )),
+                    m,
+                    crate::store::types::TranscriptBlock::UserPrompt { content, ..
+            }
+                        if content == "retry me"
+                )),
             "重试把原文作为 user 消息乐观上屏（无 api 时 echo 路径还会补一条 \
              助手回声，故按内容断言而非条数）"
         );
@@ -6400,6 +7100,9 @@ mod tests {
     /// GUI「右键复制」惯例的替身，完整上下文菜单见 Backlog）。
     #[test]
     fn right_click_copies_block_at_point() {
+        if !crate::dialog::clipboard::native_clipboard_available() {
+            return;
+        }
         let mut h = mk_session_handler();
         h.terminal_w = 120;
         h.transcript_viewport_h = 20;
@@ -6421,8 +7124,9 @@ mod tests {
         assert!(
             toasts
                 .iter()
-                .any(|t| t.text.contains("Block copied to clipboard")),
-            "右键复制 toast：{:?}",
+                .any(|t| t.text.contains("Block copied to clipboard")
+                    || t.text.contains("Clipboard unavailable — saved to")),
+            "右键复制应报告成功或可恢复的文件兜底（无 GUI 剪贴板时）：{:?}",
             toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
         );
     }
@@ -6511,9 +7215,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn queue_selection_keys_move_without_editing_prompt() {
+        let mut h = mk_handler();
+        h.store.navigate(Route::Session {
+            session_id: "s1".into(),
+        });
+        h.interaction_feedback = crate::interaction_feedback::InteractionFeedback::new("s1".into());
+        h.interaction_feedback
+            .apply_snapshot(&agendao_types::submission::SessionRuntimeSnapshot {
+                session_id: "s1".into(),
+                runtime_revision: 2,
+                queue_revision: 2,
+                last_event_sequence: 2,
+                active_turn: None,
+                queued_inputs: vec![
+                    agendao_types::submission::QueuedInputSnapshot {
+                        item_id: "q1".into(),
+                        client_request_id: "r1".into(),
+                        content: "one".into(),
+                        position: 0,
+                        created_at_ms: 1,
+                    },
+                    agendao_types::submission::QueuedInputSnapshot {
+                        item_id: "q2".into(),
+                        client_request_id: "r2".into(),
+                        content: "two".into(),
+                        position: 1,
+                        created_at_ms: 2,
+                    },
+                ],
+                pending_steering: vec![],
+                last_turn_outcome: None,
+            });
+        assert_eq!(h.interaction_feedback.queue_summary.items.len(), 2);
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Down))));
+        assert_eq!(h.queue_selection, 1);
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Up))));
+        assert_eq!(h.queue_selection, 0);
+        assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('d')))));
+        assert!(h
+            .store
+            .toasts
+            .get()
+            .iter()
+            .any(|toast| toast.text.contains("Queue mutation unavailable")));
+    }
+
     /// U18③：'C' 复制当前屏——视口可见块序列化进剪贴板（OSC52），成功 toast。
     #[test]
     fn shift_c_copies_visible_screen() {
+        if !crate::dialog::clipboard::native_clipboard_available() {
+            return;
+        }
         let mut h = mk_session_handler();
         h.terminal_w = 80;
         h.transcript_viewport_h = 20;
@@ -6522,8 +7276,11 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('C')))));
         let toasts = h.store.toasts.get();
         assert!(
-            toasts.iter().any(|t| t.text.contains("Screen copied")),
-            "'C' 成功 toast: {toasts:?}"
+            toasts.iter().any(|t| {
+                t.text.contains("Screen copied")
+                    || t.text.contains("Clipboard unavailable — saved to")
+            }),
+            "'C' 应报告成功或可恢复的文件兜底（无 GUI 剪贴板时）: {toasts:?}"
         );
     }
 
@@ -6531,6 +7288,9 @@ mod tests {
     /// 均可读序列化（原 6 变体死端）。
     #[test]
     fn c_on_todo_block_copies() {
+        if !crate::dialog::clipboard::native_clipboard_available() {
+            return;
+        }
         let mut h = mk_session_handler();
         h.active_session.push_todo_list(
             "todo1",
@@ -6544,8 +7304,11 @@ mod tests {
         assert!(h.handle(&Event::Key(KeyEvent::new(Key::Char('c')))));
         let toasts = h.store.toasts.get();
         assert!(
-            toasts.iter().any(|t| t.text.contains("Block copied")),
-            "TodoList 块可复制: {toasts:?}"
+            toasts.iter().any(|t| {
+                t.text.contains("Block copied")
+                    || t.text.contains("Clipboard unavailable — saved to")
+            }),
+            "TodoList 块应报告成功或可恢复的文件兜底: {toasts:?}"
         );
         assert!(!toasts.iter().any(|t| t.text.contains("Nothing to copy")));
     }

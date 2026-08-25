@@ -1,0 +1,47 @@
+# Versioned spawn inventory. Keep this file outside docs/plans: plans are user-ignored.
+crates/agendao-cli/build.rs	Command::new("date")	C	HostManagement	false	native_allowed
+crates/agendao-cli/build.rs	.find(|candidate| Command::new(candidate).arg("/?").output().is_ok())	C	HostManagement	false	native_allowed
+crates/agendao-cli/build.rs	let rustc_version = Command::new("rustc")	C	HostManagement	false	native_allowed
+crates/agendao-cli/build.rs	let status = Command::new(compiler)	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/db.rs	let output = ProcessCommand::new("sqlite3")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/db.rs	let status = ProcessCommand::new("sqlite3")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/debug.rs	let output = ProcessCommand::new("git")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/debug.rs	let output = ProcessCommand::new("git")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let auth = std::process::Command::new("gh")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let git_check = ProcessCommand::new("git")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let mut cmd = ProcessCommand::new("gh");	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let output = ProcessCommand::new("gh")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let output = ProcessCommand::new("git")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let remote = ProcessCommand::new("git")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let status = ProcessCommand::new("gh")	C	HostManagement	false	native_allowed
+crates/agendao-cli/src/github.rs	let version = std::process::Command::new("gh")	C	HostManagement	false	native_allowed
+crates/agendao-launcher/build.rs	let status = Command::new(&npm)	C	HostManagement	false	native_allowed
+crates/agendao-launcher/src/lib.rs	let launch_result = ProcessCommand::new(&cmd[0])	B	HostManagement	false	native_allowed
+crates/agendao-launcher/src/lib.rs	let output = match ProcessCommand::new(program).args(&args).output() {	B	HostManagement	false	native_allowed
+crates/agendao-launcher/src/lib.rs	let output = ProcessCommand::new("osascript")	B	HostManagement	false	native_allowed
+crates/agendao-launcher/src/lib.rs	let output = ProcessCommand::new("powershell")	B	HostManagement	false	native_allowed
+crates/agendao-plugin/src/subprocess/loader.rs	let status = tokio::process::Command::new(install_cmd)	A	HostManagement	false	native_allowed
+crates/agendao-plugin/src/subprocess/runtime.rs	let Ok(output) = std::process::Command::new(path).arg("--version").output() else {	A	UserConfiguredIntegration	false	native_allowed
+crates/agendao-server/src/routes/file.rs	let output = tokio::process::Command::new("git")	B	HostManagement	false	native_allowed
+crates/agendao-server/src/routes/project.rs	let output = std::process::Command::new("git")	B	HostManagement	false	native_allowed
+crates/agendao-server/src/server.rs	let mut child = ProcessCommand::new(command)	B	HostManagement	false	native_allowed
+crates/agendao-server/src/worktree.rs	let output = Command::new("git")	B	HostManagement	false	native_allowed
+crates/agendao-session/src/snapshot.rs	let init_output = Command::new("git")	B	HostManagement	false	native_allowed
+crates/agendao-session/src/snapshot.rs	let output = Command::new("git")	B	HostManagement	false	native_allowed
+crates/agendao/src/host.rs	let child = tokio::process::Command::new("sh")	D	TestOnly	false	test_only
+crates/agendao/src/host.rs	let mut child = tokio::process::Command::new(current_exe)	B	HostManagement	false	native_allowed
+crates/agendao/src/host.rs	let mut cmd = ProcessCommand::new(program);	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Brew => ProcessCommand::new("brew")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Bun => ProcessCommand::new("bun")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Choco => ProcessCommand::new("choco")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Curl => ProcessCommand::new("sh")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Npm => ProcessCommand::new("npm")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Pnpm => ProcessCommand::new("pnpm")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	InstallMethod::Scoop => ProcessCommand::new("scoop")	B	HostManagement	false	native_allowed
+crates/agendao/src/product_cli.rs	let output = ProcessCommand::new(program).args(args).output().ok()?;	B	HostManagement	false	native_allowed
+crates/agendao-tool/src/repo_history.rs	let output = Command::new("git")	D	TestOnly	false	test_only
+crates/agendao-tool-web/src/github_research.rs	let output = std::process::Command::new("git")	D	TestOnly	false	test_only
+crates/agendao-tui-revue/src/dialog/clipboard.rs	let mut child = Command::new(program)	C	HostManagement	false	native_allowed
+crates/agendao-tui-revue/src/terminal_lifecycle.rs	let mut cmd = std::process::Command::new(&editor_path);	C	HostManagement	false	native_allowed
+crates/agendao-sandbox/src/native.rs	let mut command = tokio::process::Command::new(&spec.program);	B	HostManagement	false	boundary
+crates/agendao-sandbox/src/platform/linux/bwrap.rs	let mut command = tokio::process::Command::new(&self.bwrap_path);	B	ModelReachable	true	boundary

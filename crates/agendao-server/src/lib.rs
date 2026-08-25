@@ -9,6 +9,7 @@ pub mod openapi;
 pub(crate) mod recovery;
 pub(crate) mod request_options;
 pub mod routes;
+pub mod sandbox_authority;
 pub mod scheduler_backends;
 mod scheduler_cache;
 pub mod scheduler_capabilities;

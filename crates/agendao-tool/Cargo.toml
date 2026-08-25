@@ -15,6 +15,7 @@ web-tools = ["dep:agendao-tool-web"]
 
 [dependencies]
 agendao-tool-core = { path = "../agendao-tool-core" }
+agendao-sandbox = { path = "../agendao-sandbox" }
 agendao-core = { path = "../agendao-core", features = ["process-registry"] }
 agendao-config = { path = "../agendao-config" }
 agendao-skill = { path = "../agendao-skill" }
@@ -45,6 +46,9 @@ ast-grep-language = { version = "0.41.0", optional = true }
 ast-grep-config = { version = "0.41.0", optional = true }
 base64 = "0.22"
 portable-pty = { version = "0.8", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

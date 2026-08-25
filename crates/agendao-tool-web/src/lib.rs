@@ -2,6 +2,8 @@ mod browser_session;
 mod codesearch;
 mod git_runtime;
 mod github_research;
+#[cfg(test)]
+mod test_support;
 mod webfetch;
 mod websearch;
 

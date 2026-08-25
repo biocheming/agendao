@@ -28,26 +28,27 @@ pub use self::local_api::{
     local_authenticate_mcp, local_cancel_tool_call, local_compact_session, local_connect_mcp,
     local_connect_provider, local_create_session, local_delete_mcp_config,
     local_delete_plugin_config, local_delete_provider, local_delete_provider_model_config,
-    local_delete_session, local_disconnect_mcp, local_execute_session_recovery,
-    local_execute_shell, local_fork_session, local_get_all_providers, local_get_config,
-    local_get_config_providers, local_get_config_validation, local_get_known_providers,
-    local_get_mcp_status, local_get_multimodal_capabilities, local_get_multimodal_policy,
+    local_delete_queued_input, local_delete_session, local_disconnect_mcp, local_edit_queued_input,
+    local_execute_session_recovery, local_execute_shell, local_fork_session,
+    local_get_all_providers, local_get_config, local_get_config_providers,
+    local_get_config_validation, local_get_known_providers, local_get_mcp_status,
+    local_get_multimodal_capabilities, local_get_multimodal_policy,
     local_get_provider_connect_schema, local_get_provider_descriptor,
     local_get_provider_model_config, local_get_recent_models, local_get_session,
     local_get_session_diff, local_get_session_recovery, local_get_session_runtime,
     local_get_session_status, local_get_session_telemetry, local_get_session_todos,
     local_get_skill_detail, local_get_task_ledger, local_get_task_ledger_view,
-    local_get_workspace_context, local_list_agents, local_list_execution_modes,
+    local_get_workspace_context, local_interrupt, local_list_agents, local_list_execution_modes,
     local_list_messages, local_list_permissions, local_list_plugins, local_list_questions,
     local_list_sessions, local_list_skill_proposals, local_list_skills, local_list_tools,
     local_manage_skill, local_patch_config, local_preflight_multimodal, local_prompt,
     local_put_disabled_config, local_put_mcp_config, local_put_plugin_config,
     local_put_provider_model_config, local_put_recent_models, local_refresh_provider_catalog,
     local_register_provider, local_reject_question, local_reload_config, local_remove_mcp_auth,
-    local_reply_permission, local_reply_question, local_resolve_provider_connect,
-    local_set_provider_disabled, local_set_session_permission_mode, local_start_mcp_auth,
-    local_test_provider_connection, local_update_provider, local_update_session_title,
-    local_update_skill_proposal_status,
+    local_reorder_queued_input, local_reply_permission, local_reply_question,
+    local_resolve_provider_connect, local_set_provider_disabled, local_set_session_permission_mode,
+    local_start_mcp_auth, local_submit_input, local_test_provider_connection,
+    local_update_provider, local_update_session_title, local_update_skill_proposal_status,
 };
 pub(crate) use self::scheduler::{
     scheduler_host_tool_definitions, SessionSchedulerToolExecutor,
@@ -74,7 +75,10 @@ use self::session_crud::{
 };
 pub(crate) use self::session_crud::{create_session_from_spec, session_to_info, CreateSessionSpec};
 use self::session_crud::{recheck_blocked_session, wake_sleeping_session};
-use self::steering::submit_session_steering;
+use self::steering::{
+    delete_queued_input, edit_queued_input, interrupt_session_turn, reorder_queued_input,
+    submit_session_input, submit_session_steering,
+};
 use self::telemetry::{get_session_insights, get_session_telemetry};
 
 pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
@@ -116,6 +120,13 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
         .route("/{id}/repair/summary", get(get_session_repair_summary))
         .route("/{id}/repair/query", get(query_session_repair))
         .route("/{id}/steer", post(submit_session_steering))
+        .route("/{id}/submit-input", post(submit_session_input))
+        .route("/{id}/interrupt", post(interrupt_session_turn))
+        .route(
+            "/{id}/queue/{item_id}",
+            axum::routing::delete(delete_queued_input).patch(edit_queued_input),
+        )
+        .route("/{id}/queue/{item_id}/reorder", post(reorder_queued_input))
         .route("/{id}/executions", get(get_session_executions))
         .route(
             "/{id}/executions/{execution_id}/cancel",

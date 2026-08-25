@@ -369,7 +369,15 @@ pub(super) fn event_passes_subscription_caps(
         | ServerEvent::TopologyChanged { .. }
         | ServerEvent::DiffUpdated { .. }
         | ServerEvent::TodoUpdated { .. }
-        | ServerEvent::ControlInputTransition { .. } => true,
+        | ServerEvent::SteeringApplied { .. }
+        | ServerEvent::SteeringRejected { .. }
+        | ServerEvent::QueueChanged { .. }
+        | ServerEvent::ControlInputTransition { .. }
+        | ServerEvent::SandboxPrepared { .. }
+        | ServerEvent::SandboxStarted { .. }
+        | ServerEvent::SandboxDenied { .. }
+        | ServerEvent::SandboxViolationReported { .. }
+        | ServerEvent::SandboxExited { .. } => true,
         // The ledger is auditable governance state, not reasoning: live tiers
         // get every committed replacement; final-only tiers keep the status
         // boundaries (awaiting_user / blocked / interrupted / completed) so a

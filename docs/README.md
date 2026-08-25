@@ -24,6 +24,7 @@
 - `commands.md`
 - `tools.md`
 - `context-caching.md`
+- `sandbox.md`
 
 ## 当前产品面
 
@@ -31,6 +32,8 @@
 
 - **统一 authority 运行时**
   - CLI、TUI、Web、Server 共用同一套 session、provider、tool、scheduler、skill、memory、telemetry authority。
+- **sandbox 执行边界**
+  - 模型可达执行收口到唯一 `SandboxExecutionBoundary`；permission 与 sandbox 分离，Linux `bwrap` 完整、macOS `seatbelt` 完整、Windows 模型层 + fail-closed。见 `sandbox.md`。
 - **长回合上下文治理**
   - replay authority、prompt surface、context closure、cache diagnostics 和 compaction 边界都已进入正式实现，而不是停留在局部约定。
 - **工具轨迹可解释**
@@ -64,6 +67,8 @@
   - `/goal` 的自然语言入口，以及服务端 TaskLedger 的目标、Next、证据、中断和恢复语义
 - `context-caching.md`
   - openai-compatible / anthropic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
+- `sandbox.md`
+  - sandbox 权威、permission 与 sandbox 的分离、各平台 backend 真实能力与 fail-closed、host-management path 的诚实边界
 - `examples/scheduler/README.md`
   - 当前 inline `SchedulerBlueprint` 示例与请求入口
 - `examples/context_docs/README.md`

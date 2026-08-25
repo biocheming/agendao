@@ -288,7 +288,13 @@ fn legacy_options_config_provider_materializes_all_models() {
     // npm-derived default profile fallback they must materialize with the
     // full catalogue plus config-declared models.
     let mut zhipu = provider_info("zhipuai-coding-plan", model_info("glm-4.5-air"));
-    for id in ["glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo", "glm-4.6v"] {
+    for id in [
+        "glm-5.1",
+        "glm-5",
+        "glm-5v-turbo",
+        "glm-5-turbo",
+        "glm-4.6v",
+    ] {
         zhipu.models.insert(id.to_string(), model_info(id));
     }
     zhipu.npm = Some("@ai-sdk/openai-compatible".to_string());
@@ -328,6 +334,12 @@ fn legacy_options_config_provider_materializes_all_models() {
         .expect("concrete provider should exist");
     let runtime_models = concrete.models();
     let runtime_ids: Vec<&str> = runtime_models.iter().map(|m| m.id.as_str()).collect();
-    assert!(runtime_ids.contains(&"GLM-5.1"), "config model must survive: {runtime_ids:?}");
-    assert!(runtime_ids.contains(&"glm-5.1"), "catalogue model must survive: {runtime_ids:?}");
+    assert!(
+        runtime_ids.contains(&"GLM-5.1"),
+        "config model must survive: {runtime_ids:?}"
+    );
+    assert!(
+        runtime_ids.contains(&"glm-5.1"),
+        "catalogue model must survive: {runtime_ids:?}"
+    );
 }

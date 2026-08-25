@@ -80,9 +80,11 @@ impl AppHandler {
 
     /// provider 快照落库单点:store 信号 + model_select 同帧重建。
     /// `refresh_providers_into_store` 的写路径与测试直调共用。
-    pub(crate) fn apply_provider_snapshot(&mut self, resp: agendao_client::FullProviderListResponse) {
-        let connected: std::collections::HashSet<String> =
-            resp.connected.iter().cloned().collect();
+    pub(crate) fn apply_provider_snapshot(
+        &mut self,
+        resp: agendao_client::FullProviderListResponse,
+    ) {
+        let connected: std::collections::HashSet<String> = resp.connected.iter().cloned().collect();
         let prev_sel = self.store.settings_selected_provider.get();
         // 保留原选中态;若已不在列表则退到第一项(优先 connected)。
         let new_sel = prev_sel

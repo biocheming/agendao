@@ -10,9 +10,10 @@
 //! InputMode(Shell), submit semantics, placeholder, status_hint and
 //! paste CRLF normalization.
 //!
-//! Key contract: `Enter` submits; `Shift+Enter` / `Ctrl+Enter` insert a
-//! newline (routed by `app::keymap` via [`PromptInput::insert_newline`]
-//! before the bare-Enter path, so the two never collide).
+//! Key contract: `Enter` submits; `Alt+Enter` is the reliable newline
+//! fallback. `Shift+Enter` / `Ctrl+Enter` insert a newline only when the
+//! terminal capability probe reports them as supported; unknown or
+//! unsupported capabilities fail closed (no submit, no steer).
 
 use revue::event::Key;
 
@@ -41,6 +42,7 @@ pub struct PromptInput {
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: Option<String>,
+    draft_revision: std::sync::Arc<std::sync::atomic::AtomicU64>,
     normal_placeholders: Vec<String>,
     shell_placeholders: Vec<String>,
     /// Optional path for persisting history to disk.
@@ -133,6 +135,7 @@ impl PromptInput {
             history: Vec::new(),
             history_idx: None,
             draft: None,
+            draft_revision: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             normal_placeholders: vec!["Ask anything...".into()],
             shell_placeholders: vec!["Run a command...".into()],
             history_path: None,
@@ -166,6 +169,8 @@ impl PromptInput {
 
     /// 换 placeholder 并清空内容（mode 切换 / submit 后复位共用）。
     fn reset_editor(&mut self, placeholder: &str) {
+        self.draft_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.editor.set_content("");
         self.placeholder = placeholder.to_string();
         // 提交/模式切换是语义边界：旧草稿的 undo 历史一并作废。
@@ -177,6 +182,8 @@ impl PromptInput {
     /// UNDO_STACK_CAP——所有变更入口（键入/删除/换行/粘贴/kill/历史导航/
     /// set_text）统一经此一记（土律·单点口径）。
     fn snapshot_undo(&mut self) {
+        self.draft_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let snap = self.editor.snapshot();
         push_undo_snapshot(&mut self.undo_stack, &mut self.redo_stack, snap);
     }
@@ -185,6 +192,8 @@ impl PromptInput {
         let Some(snap) = self.undo_stack.pop() else {
             return false;
         };
+        self.draft_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.redo_stack.push(self.editor.snapshot());
         self.editor.restore(&snap);
         true
@@ -194,6 +203,8 @@ impl PromptInput {
         let Some(snap) = self.redo_stack.pop() else {
             return false;
         };
+        self.draft_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.undo_stack.push(self.editor.snapshot());
         self.editor.restore(&snap);
         true
@@ -371,7 +382,8 @@ impl PromptInput {
         Some(self.handle_key(&Key::Enter))
     }
 
-    /// Shift+Enter / Ctrl+Enter 换行（Enter 发送语义不变——keymap 单点路由）。
+    /// Modifier Enter newline insertion. Alt+Enter is the reliable fallback;
+    /// Shift/Ctrl+Enter are routed here only when capability is Supported.
     pub fn insert_newline(&mut self) {
         self.focused = true;
         self.snapshot_undo();
@@ -396,7 +408,9 @@ impl PromptInput {
             _ => {
                 let undo_stack = &mut self.undo_stack;
                 let redo_stack = &mut self.redo_stack;
+                let draft_revision = self.draft_revision.clone();
                 return self.editor.handle_ctrl_key(event, |ed| {
+                    draft_revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     push_undo_snapshot(undo_stack, redo_stack, ed.snapshot());
                 });
             }
@@ -466,6 +480,17 @@ impl PromptInput {
         self.editor.text()
     }
 
+    /// 当前草稿版本号（用于 $EDITOR 回填冲突与 Session 归属校验）
+    pub fn draft_revision(&self) -> u64 {
+        self.draft_revision
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 共享草稿版本句柄（供跨任务/外部观察权威读取）
+    pub fn draft_revision_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.draft_revision.clone()
+    }
+
     /// Replace the input text wholesale (e.g. restoring a stashed draft).
     /// 喂回输入框权威 —— 水生木闭环（stash 恢复项回灌下一轮输入）。
     pub fn set_text(&mut self, text: &str) {
@@ -474,6 +499,8 @@ impl PromptInput {
         self.editor.move_document_end();
     }
     pub fn clear(&mut self) {
+        self.draft_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.editor.set_content("");
         self.focused = false;
         // 清空是语义边界（同 reset_editor）：undo 历史一并作废。
@@ -513,7 +540,8 @@ impl PromptInput {
 
     /// Show status hint above the prompt bar.
     /// U20：只宣传真实可用的键（与 keymap/handle_ctrl_key 双向核对）——
-    /// Enter 发送；Alt/Shift/Ctrl+Enter 换行（keymap 1185 三修饰同闸）；
+    /// Enter 发送；Alt+Enter 是可靠换行通道；Shift/Ctrl+Enter 仅在
+    /// capability=Supported 时换行，Unknown/Unsupported fail-closed；
     /// ↑/↓ 到顶/底行才进历史（多行内是行间移动，不宣传为纯历史键）；
     /// ^Z/^Y undo/redo（U2 readline 集）；^P 命令面板（keymap 全局）。
     pub fn status_hint(&self, is_running: bool) -> String {
@@ -527,8 +555,8 @@ impl PromptInput {
         }
         let len = self.editor.text().trim().len();
         if self.focused && len > 0 {
-            // 宣传 Alt 放首位：Shift/Ctrl+Enter 在无 kitty 键盘协议的终端
-            // 是死键（与 keymap 三修饰同闸不矛盾——只宣传最可靠的一个）。
+            // 宣传 Alt 放首位：Shift/Ctrl+Enter 在 capability 未确认的终端
+            // 不可依赖，因此不作为默认主通道。
             format!(
                 "{} chars | Enter:send Alt+Enter:newline | ^Z/^Y:undo ^P:commands",
                 len

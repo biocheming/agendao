@@ -398,9 +398,13 @@ pub(crate) async fn verify_goal_criteria(
         // both use the platform termination path, terminate the process tree,
         // and reap the immediate child.
         let mut process = match spawn_criterion_check(
+            state,
+            session_id,
             &check.command,
             std::path::Path::new(&workspace_dir),
-        ) {
+        )
+        .await
+        {
             Ok(child) => child,
             Err(error) => {
                 tracing::warn!(criterion = %check.criterion, %error, "criterion check failed to spawn");
@@ -411,11 +415,11 @@ pub(crate) async fn verify_goal_criteria(
             biased;
             _ = cancellation.cancelled() => {
                 tracing::info!(criterion = %check.criterion, "criterion check cancelled by run abort");
-                terminate_criterion_check(&mut process).await;
+                terminate_criterion_check(&mut process, false).await;
                 return CriterionVerificationOutcome::Cancelled;
             }
-            status = process.child.wait() => match status {
-                Ok(status) => status.success(),
+            status = process.handle.wait() => match status {
+                Ok(status) => status.success,
                 Err(error) => {
                     tracing::warn!(criterion = %check.criterion, %error, "criterion check wait failed");
                     return CriterionVerificationOutcome::Failed;
@@ -423,7 +427,7 @@ pub(crate) async fn verify_goal_criteria(
             },
             _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
                 tracing::warn!(criterion = %check.criterion, "criterion check timed out; terminating process tree");
-                terminate_criterion_check(&mut process).await;
+                terminate_criterion_check(&mut process, true).await;
                 false
             }
         };
@@ -507,112 +511,63 @@ pub(crate) async fn verify_goal_criteria(
     CriterionVerificationOutcome::Passed
 }
 
-/// Platform-specific criterion-check process management.
-///
-/// Unix: dedicated process group, so termination can SIGKILL the whole tree
-/// (bash -c children included). Windows: `cmd /C` is assigned to a Job Object
-/// with KILL_ON_JOB_CLOSE; cancellation/timeout terminates the whole job.
-#[cfg(unix)]
+/// Criterion checks always use the authority's `Check` boundary. On a
+/// platform without a contained backend this fails closed; it never falls
+/// back to a direct host shell.
 struct CriterionProcess {
-    child: tokio::process::Child,
+    handle: agendao_sandbox::SandboxExecutionHandle,
 }
 
-#[cfg(windows)]
-struct CriterionProcess {
-    child: tokio::process::Child,
-    // Closing a KILL_ON_JOB_CLOSE handle terminates any surviving
-    // descendants, including when the verifier future is dropped.
-    job: std::os::windows::io::OwnedHandle,
-}
-
-#[cfg(unix)]
-fn spawn_criterion_check(
+async fn spawn_criterion_check(
+    state: &Arc<ServerState>,
+    session_id: &str,
     command: &str,
     workspace_dir: &std::path::Path,
-) -> std::io::Result<CriterionProcess> {
-    let child = tokio::process::Command::new("bash")
-        .arg("-c")
-        .arg(command)
-        .current_dir(workspace_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
-    Ok(CriterionProcess { child })
-}
-
-#[cfg(windows)]
-fn spawn_criterion_check(
-    command: &str,
-    workspace_dir: &std::path::Path,
-) -> std::io::Result<CriterionProcess> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+) -> Result<CriterionProcess, agendao_sandbox::SandboxExecutionError> {
+    #[cfg(unix)]
+    let (shell, flag) = ("bash", "-c");
+    #[cfg(windows)]
+    let (shell, flag) = ("cmd", "/C");
+    #[cfg(not(any(unix, windows)))]
+    let (shell, flag) = ("sh", "-c");
+    let spec = agendao_sandbox::SpawnSpec::new(shell)
+        .with_args(vec![flag.into(), command.to_string()])
+        .with_cwd(workspace_dir);
+    let request = agendao_sandbox::SandboxExecutionRequest::new(
+        agendao_sandbox::TrustClass::ModelReachable,
+        agendao_sandbox::ProfileKind::Check,
+        spec,
+        workspace_dir,
+    )
+    .with_session_origin(session_id.to_string());
+    // Exit code is the only signal; output goes to null so a chatty
+    // check can never flood memory.
+    let options = agendao_sandbox::PrepareOptions {
+        stdio: agendao_sandbox::StdioPlan {
+            stdin: agendao_sandbox::StdioSpec::Null,
+            stdout: agendao_sandbox::StdioSpec::Null,
+            stderr: agendao_sandbox::StdioSpec::Null,
+        },
+        ..Default::default()
     };
-
-    // Exit code is the only signal; output goes to null so a chatty check
-    // can never flood memory on either platform.
-    let child = tokio::process::Command::new("cmd")
-        .args(["/C", command])
-        .current_dir(workspace_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if raw_job.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
-    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let configured = unsafe {
-        SetInformationJobObject(
-            job.as_raw_handle(),
-            JobObjectExtendedLimitInformation,
-            std::ptr::addr_of!(limits).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    };
-    if configured == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let process_handle = child
-        .raw_handle()
-        .ok_or_else(|| std::io::Error::other("criterion child has no process handle"))?;
-    let assigned = unsafe { AssignProcessToJobObject(job.as_raw_handle(), process_handle) };
-    if assigned == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(CriterionProcess { child, job })
+    let authority = state.sandbox_authority_for_session(session_id).await;
+    let handle = authority.launch_check(request, &options).await?;
+    Ok(CriterionProcess { handle })
 }
 
 /// Terminate the whole check process tree and reap it — used by BOTH the
 /// timeout and the cancellation path so no path leaks an unreaped child.
-#[cfg(unix)]
-async fn terminate_criterion_check(process: &mut CriterionProcess) {
-    if let Some(pgid) = process.child.id() {
-        // Negative pid = the whole process group (bash children included).
-        unsafe {
-            libc::kill(-(pgid as i32), libc::SIGKILL);
-        }
+/// Unix: the boundary ladder (TERM → grace → KILL, process group) with
+/// distinct `TimedOut` / `TerminatedByRequest` exit semantics.
+async fn terminate_criterion_check(process: &mut CriterionProcess, timed_out: bool) {
+    let outcome = if timed_out {
+        process.handle.cancel_timeout().await
+    } else {
+        process.handle.cancel().await
+    };
+    if let Err(error) = outcome {
+        tracing::warn!(%error, "criterion check termination failed");
     }
-    let _ = process.child.wait().await;
-}
-
-#[cfg(windows)]
-async fn terminate_criterion_check(process: &mut CriterionProcess) {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-
-    unsafe {
-        TerminateJobObject(process.job.as_raw_handle(), 1);
-    }
-    let _ = process.child.wait().await;
 }
 
 pub(crate) fn final_delivery_gate(snapshot: &SessionTaskLedger) -> DeliveryGateReport {
@@ -682,10 +637,109 @@ mod tests {
     use super::*;
     use agendao_types::task_ledger::TaskGoal;
 
+    #[cfg(unix)]
+    struct TestContainedBackend;
+
+    #[cfg(unix)]
+    struct TestContainedChild(tokio::process::Child);
+
+    #[cfg(unix)]
+    #[async_trait::async_trait]
+    impl agendao_sandbox::SandboxBackend for TestContainedBackend {
+        fn name(&self) -> &'static str {
+            "test-contained"
+        }
+
+        fn probe(&self) -> agendao_sandbox::BackendProbe {
+            agendao_sandbox::BackendProbe::available()
+        }
+
+        fn supports(&self, plan: &agendao_sandbox::SandboxPlan) -> bool {
+            plan.process.mode == agendao_sandbox::ProcessMode::Contained
+        }
+
+        async fn spawn(
+            &self,
+            _plan: &agendao_sandbox::SandboxPlan,
+            spec: &agendao_sandbox::SpawnSpec,
+            env: &agendao_sandbox::ChildEnvironment,
+            stdio: &agendao_sandbox::StdioPlan,
+            _violation_token: agendao_sandbox::BackendViolationToken,
+        ) -> Result<Box<dyn agendao_sandbox::BackendChild>, agendao_sandbox::SandboxExecutionError>
+        {
+            let mut command = tokio::process::Command::new(&spec.program);
+            command.args(&spec.args).env_clear().kill_on_drop(true);
+            for (key, value) in env {
+                command.env(key, value);
+            }
+            if let Some(cwd) = &spec.cwd {
+                command.current_dir(cwd);
+            }
+            command
+                .stdin(std::process::Stdio::from(stdio.stdin))
+                .stdout(std::process::Stdio::from(stdio.stdout))
+                .stderr(std::process::Stdio::from(stdio.stderr));
+            Ok(Box::new(TestContainedChild(command.spawn().map_err(
+                |error| agendao_sandbox::SandboxExecutionError::Lifecycle(error.to_string()),
+            )?)))
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait::async_trait]
+    impl agendao_sandbox::BackendChild for TestContainedChild {
+        fn pid(&self) -> Option<u32> {
+            self.0.id()
+        }
+
+        async fn wait(
+            &mut self,
+        ) -> Result<agendao_sandbox::BackendExit, agendao_sandbox::SandboxExecutionError> {
+            let status = self.0.wait().await.map_err(|error| {
+                agendao_sandbox::SandboxExecutionError::Lifecycle(error.to_string())
+            })?;
+            Ok(agendao_sandbox::BackendExit {
+                success: status.success(),
+                code: status.code(),
+                signal: None,
+            })
+        }
+
+        async fn signal_term(&mut self) -> Result<(), agendao_sandbox::SandboxExecutionError> {
+            self.0.start_kill().map_err(|error| {
+                agendao_sandbox::SandboxExecutionError::Lifecycle(error.to_string())
+            })
+        }
+
+        async fn signal_kill(&mut self) -> Result<(), agendao_sandbox::SandboxExecutionError> {
+            self.0.kill().await.map_err(|error| {
+                agendao_sandbox::SandboxExecutionError::Lifecycle(error.to_string())
+            })
+        }
+    }
+
     async fn async_state_with_session() -> Arc<ServerState> {
-        let state = Arc::new(ServerState::new());
+        let mut state = ServerState::new();
+        #[cfg(unix)]
+        {
+            let registry = agendao_sandbox::BackendRegistry::native_only(Arc::new(
+                agendao_sandbox::NativeBackend::new(),
+            ))
+            .with_platform_backend(Arc::new(TestContainedBackend));
+            state.sandbox_authority = Arc::new(crate::sandbox_authority::SandboxAuthority::new(
+                crate::sandbox_authority::SandboxAuthorityConfig::for_session(
+                    agendao_types::SessionPermissionMode::Default,
+                ),
+                registry,
+                Arc::new(crate::sandbox_authority::ProjectingSandboxEventSink::new(
+                    state.event_bus.clone(),
+                )),
+            ));
+        }
+        let workspace = state.workspace_root.to_string_lossy().into_owned();
+        let state = Arc::new(state);
         let mut sessions = state.sessions.lock().await;
-        sessions.create("project", "/tmp");
+        sessions.create("project", workspace);
         drop(sessions);
         state
     }

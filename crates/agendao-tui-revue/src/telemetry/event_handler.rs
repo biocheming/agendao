@@ -31,6 +31,26 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                 _ => RunStatus::Idle,
             };
             session.set_run_status(status);
+            // runtime 快照是活跃 sandbox 集合的权威替换——重连/换会话后
+            // 事件流残迹不得存活（§8：没有条目就没有"sandboxed"展示）。
+            session.set_active_sandboxes(runtime.active_sandbox.clone());
+            Some(session_id.clone())
+        }
+
+        FrontendEvent::SandboxExecutionUpsert {
+            session_id,
+            execution,
+        } => {
+            session.sandbox_execution_upsert(execution.clone());
+            Some(session_id.clone())
+        }
+
+        FrontendEvent::SandboxExecutionRemoved {
+            session_id,
+            execution_id,
+            ..
+        } => {
+            session.sandbox_execution_removed(execution_id);
             Some(session_id.clone())
         }
 
@@ -97,6 +117,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                             // `end` carries no new text; just mark the loop
                             // as idle so the prompt bar reactivates.
                             session.set_run_status(RunStatus::Idle);
+                            session.finalize_stream_block("m", bid);
                         }
                         Some("start") => {
                             // 新段开始：下一条同 id 的 full 追加为新片段
@@ -123,6 +144,7 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
                         Some("start") => {
                             session.mark_stream_segment_start("r", bid);
                         }
+                        Some("end") => session.finalize_stream_block("r", bid),
                         _ => {}
                     }
                 }
@@ -231,6 +253,9 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             context_compaction_summary,
             ..
         } => {
+            if session.session_id.get().as_deref() != Some(session_id.as_str()) {
+                return None;
+            }
             if let Some(ref u) = usage {
                 session.set_token_usage(TokenUsage {
                     input: u.input_tokens,
@@ -250,7 +275,61 @@ pub fn apply_frontend_event(event: &FrontendEvent, session: &SessionStore) -> Op
             // `reload_session_list`), not runtime agent/stage topology.
             // Overwriting it here was the root cause of sidebar clicks
             // having no NavigateSession intent (土律·第十条·可观测性).
-            let _topology = topology;
+            if let Some(topology) = topology {
+                let topology_matches_event = topology.session_id.as_str() == session_id.as_str();
+                let has_explicit_subagent = topology.roots.iter().any(|node| {
+                    fn walk(node: &agendao_api::SessionExecutionNode) -> bool {
+                        let explicit = node.metadata.as_ref().is_some_and(|m| {
+                            m.get("subagent").and_then(|v| v.as_bool()) == Some(true)
+                                || m.get("role").and_then(|v| v.as_str()) == Some("subagent")
+                        });
+                        explicit || node.children.iter().any(walk)
+                    }
+                    walk(node)
+                });
+                if !topology_matches_event {
+                    // A stale, conflicting, or cross-session topology cannot
+                    // alter either M7 summary or M9 panel facts.
+                    return Some(session_id.clone());
+                } else if has_explicit_subagent && !session.replace_subagent_projection(topology) {
+                    return Some(session_id.clone());
+                } else if !has_explicit_subagent {
+                    session.subagent_projection.set(None);
+                }
+                fn walk(
+                    nodes: &[agendao_api::SessionExecutionNode],
+                    tools: &mut usize,
+                    subagents: &mut usize,
+                ) {
+                    for node in nodes {
+                        if matches!(node.kind, agendao_api::ExecutionKind::ToolCall)
+                            && matches!(node.status, agendao_api::ExecutionStatus::Running)
+                        {
+                            *tools += 1;
+                        }
+                        if matches!(node.kind, agendao_api::ExecutionKind::SchedulerNode)
+                            && node.metadata.as_ref().is_some_and(|m| {
+                                m.get("subagent").and_then(|v| v.as_bool()).unwrap_or(false)
+                                    || m.get("role").and_then(|v| v.as_str()) == Some("subagent")
+                            })
+                            && !matches!(node.status, agendao_api::ExecutionStatus::Done)
+                        {
+                            *subagents += 1;
+                        }
+                        walk(&node.children, tools, subagents);
+                    }
+                }
+                let mut running_tools = 0;
+                let mut subagents = 0;
+                walk(&topology.roots, &mut running_tools, &mut subagents);
+                session.set_topology_summary(TopologySummary {
+                    running_tools,
+                    subagents: (subagents > 0).then_some(subagents),
+                });
+            } else {
+                session.clear_topology_summary();
+                session.subagent_projection.set(None);
+            }
             // Compute context meter % from compaction summary
             if let Some(ref cs) = context_compaction_summary {
                 if let (Some(live), Some(limit)) = (cs.live_context_tokens, cs.limit_tokens) {
@@ -354,6 +433,111 @@ fn parse_diff_preview(block: &serde_json::Value) -> Option<DiffPreview> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projection_event(
+        session_id: &str,
+        topology: Option<agendao_api::SessionExecutionTopology>,
+    ) -> FrontendEvent {
+        FrontendEvent::SessionProjectionReplaced {
+            session_id: session_id.into(),
+            topology,
+            usage: None,
+            usage_books: None,
+            context_compaction_summary: None,
+            context_compaction_lifecycle_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+        }
+    }
+
+    fn execution_node(
+        id: &str,
+        kind: agendao_api::ExecutionKind,
+        status: agendao_api::ExecutionStatus,
+        metadata: Option<serde_json::Value>,
+    ) -> agendao_api::SessionExecutionNode {
+        agendao_api::SessionExecutionNode {
+            id: id.into(),
+            kind,
+            status,
+            label: None,
+            parent_id: None,
+            waiting_on: None,
+            recent_event: None,
+            started_at: 0,
+            updated_at: 0,
+            metadata,
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn projection_topology_is_session_scoped_and_requires_explicit_subagent_metadata() {
+        let session = SessionStore::new();
+        session.set_session_id("s1");
+        let topology = agendao_api::SessionExecutionTopology {
+            session_id: "s1".into(),
+            active_count: 2,
+            done_count: 0,
+            running_count: 2,
+            waiting_count: 0,
+            cancelling_count: 0,
+            retry_count: 0,
+            updated_at: None,
+            roots: vec![
+                execution_node(
+                    "tool",
+                    agendao_api::ExecutionKind::ToolCall,
+                    agendao_api::ExecutionStatus::Running,
+                    None,
+                ),
+                execution_node(
+                    "scheduler",
+                    agendao_api::ExecutionKind::SchedulerNode,
+                    agendao_api::ExecutionStatus::Running,
+                    None,
+                ),
+            ],
+        };
+        apply_frontend_event(&projection_event("s1", Some(topology)), &session);
+        assert_eq!(session.running_tool_count(), 1);
+        assert_eq!(
+            session.subagent_count(),
+            None,
+            "ordinary scheduler node is not a subagent"
+        );
+
+        let explicit = agendao_api::SessionExecutionTopology {
+            session_id: "s1".into(),
+            active_count: 1,
+            done_count: 0,
+            running_count: 1,
+            waiting_count: 0,
+            cancelling_count: 0,
+            retry_count: 0,
+            updated_at: None,
+            roots: vec![execution_node(
+                "agent",
+                agendao_api::ExecutionKind::SchedulerNode,
+                agendao_api::ExecutionStatus::Running,
+                Some(serde_json::json!({"subagent": true})),
+            )],
+        };
+        apply_frontend_event(&projection_event("s1", Some(explicit.clone())), &session);
+        assert_eq!(session.subagent_count(), Some(1));
+        apply_frontend_event(&projection_event("s1", Some(explicit)), &session);
+        assert_eq!(
+            session.subagent_count(),
+            Some(1),
+            "duplicate replacement is idempotent"
+        );
+        apply_frontend_event(&projection_event("other", None), &session);
+        assert_eq!(
+            session.subagent_count(),
+            Some(1),
+            "cross-session snapshot must be ignored"
+        );
+    }
 
     fn output_block(id: &str, kind: &str, phase: &str, text: &str) -> FrontendEvent {
         FrontendEvent::OutputBlockAppended {
@@ -709,6 +893,7 @@ mod tests {
                 pending_question: None,
                 pending_permission: None,
                 pending_followup_count: 0,
+                active_sandbox: vec![],
             },
         }
     }

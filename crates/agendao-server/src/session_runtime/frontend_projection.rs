@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use agendao_server_core::frontend_events::{FrontendBusEvent, FrontendEvent};
 use agendao_server_core::runtime_events::{ServerBusEvent, ServerEvent, ToolCallPhase};
+use agendao_server_core::{SandboxExecutionSummary, SandboxOutcomeSummary};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::session_runtime::projection_authority::build_session_projection_fields;
@@ -115,6 +116,140 @@ pub(crate) async fn project_server_event(
             // as separate SessionStatus events and handled independently.
             events
         }
+
+        // ── Sandbox: maintain the active sandbox set ────────────────────
+        // Prepared/Started upsert (Started refines with the pid),
+        // Exited/Denied remove with an outcome that distinguishes a real
+        // exit from a launch that never happened. Violations are audit
+        // signals: they do not change the active set, so they project to
+        // no frontend event here — the ServerEvent stream (and the
+        // violation payload it carries) remains their read path.
+        // Session-less events (host-level probes) have no route and no
+        // frontend state to change.
+        ServerEvent::SandboxPrepared {
+            session_id,
+            execution_id,
+            profile_kind,
+            plan_fingerprint,
+            backend,
+        } => match session_id {
+            Some(sid) => {
+                let execution = SandboxExecutionSummary {
+                    execution_id: execution_id.clone(),
+                    backend: backend.clone(),
+                    profile_kind: profile_kind.clone(),
+                    plan_fingerprint: plan_fingerprint.clone(),
+                    pid: None,
+                };
+                telemetry
+                    .runtime_state()
+                    .sandbox_execution_upsert(sid, execution.clone())
+                    .await;
+                vec![FrontendEvent::SandboxExecutionUpsert {
+                    session_id: sid.clone(),
+                    execution,
+                }]
+            }
+            None => vec![],
+        },
+
+        ServerEvent::SandboxStarted {
+            session_id,
+            execution_id,
+            pid,
+            backend,
+        } => match session_id {
+            Some(sid) => {
+                // `started` only refines the pid — the profile and
+                // fingerprint authority stays what `prepared` wrote.
+                // Read the merged entry back so the frontend event is
+                // always the complete authoritative fact, never a
+                // partial delta that could blank earlier fields.
+                let refine = SandboxExecutionSummary {
+                    execution_id: execution_id.clone(),
+                    backend: backend.clone(),
+                    profile_kind: String::new(),
+                    plan_fingerprint: String::new(),
+                    pid: *pid,
+                };
+                telemetry
+                    .runtime_state()
+                    .sandbox_execution_upsert(sid, refine)
+                    .await;
+                let merged = telemetry.runtime_state().get(sid).await.and_then(|rt| {
+                    rt.active_sandbox
+                        .into_iter()
+                        .find(|e| e.execution_id == *execution_id)
+                });
+                match merged {
+                    Some(execution) => vec![FrontendEvent::SandboxExecutionUpsert {
+                        session_id: sid.clone(),
+                        execution,
+                    }],
+                    None => vec![],
+                }
+            }
+            None => vec![],
+        },
+
+        ServerEvent::SandboxDenied {
+            session_id,
+            execution_id,
+            reason,
+            detail,
+        } => match session_id {
+            Some(sid) => {
+                telemetry
+                    .runtime_state()
+                    .sandbox_execution_removed(sid, execution_id)
+                    .await;
+                vec![FrontendEvent::SandboxExecutionRemoved {
+                    session_id: sid.clone(),
+                    execution_id: execution_id.clone(),
+                    outcome: SandboxOutcomeSummary {
+                        kind: "denied".into(),
+                        exit_code: None,
+                        success: false,
+                        cleanup: None,
+                        reason: Some(match detail {
+                            Some(detail) => format!("{}: {}", reason, detail),
+                            None => reason.clone(),
+                        }),
+                    },
+                }]
+            }
+            None => vec![],
+        },
+
+        ServerEvent::SandboxViolationReported { .. } => vec![],
+
+        ServerEvent::SandboxExited {
+            session_id,
+            execution_id,
+            backend: _,
+            exit_code,
+            success,
+            cleanup,
+        } => match session_id {
+            Some(sid) => {
+                telemetry
+                    .runtime_state()
+                    .sandbox_execution_removed(sid, execution_id)
+                    .await;
+                vec![FrontendEvent::SandboxExecutionRemoved {
+                    session_id: sid.clone(),
+                    execution_id: execution_id.clone(),
+                    outcome: SandboxOutcomeSummary {
+                        kind: "exited".into(),
+                        exit_code: *exit_code,
+                        success: *success,
+                        cleanup: Some(cleanup.clone()),
+                        reason: None,
+                    },
+                }]
+            }
+            None => vec![],
+        },
 
         // ── Question: upsert / remove ───────────────────────────────────
         ServerEvent::QuestionCreated {
@@ -237,6 +372,9 @@ pub(crate) async fn project_server_event(
             ledger: agendao_types::task_ledger::SessionTaskLedgerView::from(ledger),
             cause: cause.clone(),
         }],
+        ServerEvent::SteeringApplied { .. }
+        | ServerEvent::SteeringRejected { .. }
+        | ServerEvent::QueueChanged { .. } => vec![],
     }
 }
 
@@ -460,6 +598,7 @@ fn convert_runtime_state(
             }
         }),
         pending_followup_count: server.pending_followup_count,
+        active_sandbox: server.active_sandbox.clone(),
     }
 }
 
@@ -890,6 +1029,7 @@ mod tests {
                     pending_question: None,
                     pending_permission: None,
                     pending_followup_count: 0,
+                    active_sandbox: vec![],
                 },
             },
             FrontendEvent::QuestionRemoved {
@@ -1189,5 +1329,146 @@ mod tests {
         }
 
         handle.abort();
+    }
+
+    // ── Sandbox projection: active-set governance (Phase 5) ──────────
+
+    #[tokio::test]
+    async fn sandbox_violation_projects_no_event_and_keeps_the_active_set() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        telemetry
+            .runtime_state()
+            .sandbox_execution_upsert(
+                "ses_sb",
+                SandboxExecutionSummary {
+                    execution_id: "exec-v".into(),
+                    backend: "bwrap".into(),
+                    profile_kind: "workspace_write".into(),
+                    plan_fingerprint: "fp".into(),
+                    pid: Some(9),
+                },
+            )
+            .await;
+
+        let events = project_server_event(
+            &telemetry,
+            &sessions,
+            &ServerEvent::SandboxViolationReported {
+                session_id: Some("ses_sb".into()),
+                execution_id: "exec-v".into(),
+                violation: serde_json::json!({"kind": "path_escape"}),
+            },
+        )
+        .await;
+
+        assert!(
+            events.is_empty(),
+            "violations are audit signals, not active-set transitions"
+        );
+        let snapshot = telemetry.runtime_state().get("ses_sb").await.unwrap();
+        assert_eq!(
+            snapshot.active_sandbox.len(),
+            1,
+            "the active set is untouched by a violation"
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_denied_removes_with_denied_outcome_not_a_failed_run() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let events = project_server_event(
+            &telemetry,
+            &sessions,
+            &ServerEvent::SandboxDenied {
+                session_id: Some("ses_sb".into()),
+                execution_id: "exec-d".into(),
+                reason: "policy_denied".into(),
+                detail: Some("native requires yolo".into()),
+            },
+        )
+        .await;
+
+        match events.as_slice() {
+            [FrontendEvent::SandboxExecutionRemoved {
+                session_id,
+                execution_id,
+                outcome,
+            }] => {
+                assert_eq!(session_id, "ses_sb");
+                assert_eq!(execution_id, "exec-d");
+                assert_eq!(outcome.kind, "denied");
+                assert!(!outcome.success);
+                assert_eq!(
+                    outcome.reason.as_deref(),
+                    Some("policy_denied: native requires yolo")
+                );
+            }
+            other => panic!("expected one SandboxExecutionRemoved, got {}", other.len()),
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_started_refines_pid_and_resends_the_complete_fact() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        project_server_event(
+            &telemetry,
+            &sessions,
+            &ServerEvent::SandboxPrepared {
+                session_id: Some("ses_sb".into()),
+                execution_id: "exec-s".into(),
+                profile_kind: "check".into(),
+                plan_fingerprint: "fp-check".into(),
+                backend: "bwrap".into(),
+            },
+        )
+        .await;
+        let events = project_server_event(
+            &telemetry,
+            &sessions,
+            &ServerEvent::SandboxStarted {
+                session_id: Some("ses_sb".into()),
+                execution_id: "exec-s".into(),
+                pid: Some(4242),
+                backend: "bwrap".into(),
+            },
+        )
+        .await;
+
+        match events.as_slice() {
+            [FrontendEvent::SandboxExecutionUpsert { execution, .. }] => {
+                assert_eq!(execution.pid, Some(4242));
+                assert_eq!(
+                    execution.profile_kind, "check",
+                    "started must not blank the prepared profile"
+                );
+                assert_eq!(execution.plan_fingerprint, "fp-check");
+            }
+            other => panic!("expected one SandboxExecutionUpsert, got {}", other.len()),
+        }
+    }
+
+    #[tokio::test]
+    async fn sessionless_sandbox_events_project_to_nothing() {
+        let telemetry = test_telemetry();
+        let sessions = test_sessions();
+        let events = project_server_event(
+            &telemetry,
+            &sessions,
+            &ServerEvent::SandboxPrepared {
+                session_id: None,
+                execution_id: "exec-host".into(),
+                profile_kind: "native".into(),
+                plan_fingerprint: "fp".into(),
+                backend: "native".into(),
+            },
+        )
+        .await;
+        assert!(
+            events.is_empty(),
+            "host-level executions have no frontend route"
+        );
     }
 }

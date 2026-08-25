@@ -184,7 +184,7 @@ pub fn lines_to_cell_grid(lines: &[ratatui::text::Line], max_width: u16) -> (Vec
 const RENDER_CACHE_CAP: usize = 64;
 
 /// Cache key: hash of the markdown text + normalized render width.
-type CacheKey = (u64, u16);
+type CacheKey = (u64, u16, bool);
 
 struct CacheEntry {
     /// Original text, kept to verify hash hits (guard against collisions).
@@ -219,9 +219,13 @@ fn hash_text(text: &str) -> u64 {
 ///
 /// Returns a shared `Arc` — cache hits cost one hash + map lookup, no
 /// re-parse and no line cloning.
-fn render_lines_cached(text: &Arc<str>, width: u16) -> Arc<Vec<ratatui::text::Line<'static>>> {
+fn render_lines_cached_with_streaming(
+    text: &Arc<str>,
+    width: u16,
+    streaming: bool,
+) -> Arc<Vec<ratatui::text::Line<'static>>> {
     let width = width.max(20);
-    let key = (hash_text(text), width);
+    let key = (hash_text(text), width, streaming);
     RENDER_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         let hit = c.map.get(&key).and_then(|entry| {
@@ -236,8 +240,13 @@ fn render_lines_cached(text: &Arc<str>, width: u16) -> Arc<Vec<ratatui::text::Li
             return lines;
         }
         c.misses += 1;
+        let safe_text = if streaming {
+            normalize_streaming_markdown(text)
+        } else {
+            text.to_string()
+        };
         let renderer = MarkdownRenderer::new(width as usize);
-        let blocks = renderer.parse(text);
+        let blocks = renderer.parse(&safe_text);
         let lines = Arc::new(renderer.render(&blocks, &NoopTheme));
         if c.map.len() >= RENDER_CACHE_CAP {
             if let Some(evict) = c.lru.pop_front() {
@@ -256,6 +265,33 @@ fn render_lines_cached(text: &Arc<str>, width: u16) -> Arc<Vec<ratatui::text::Li
     })
 }
 
+/// Production TUI stream tolerance: close an unmatched fenced block for the
+/// current render pass only. The source text remains untouched; when a later
+/// delta supplies the real closing fence, its distinct cache key re-renders
+/// canonical markdown. This prevents an open fence from swallowing the rest
+/// of the transcript frame.
+fn normalize_streaming_markdown(text: &str) -> String {
+    let fence_count = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
+    let mut out = if fence_count % 2 == 1 {
+        format!("{text}\n```")
+    } else {
+        text.to_owned()
+    };
+    let lines: Vec<&str> = out.lines().collect();
+    if lines.len() >= 2 {
+        let header = lines[lines.len() - 2].trim();
+        let tail = lines[lines.len() - 1].trim();
+        let is_table = header.starts_with('|') && header.ends_with('|') && tail.starts_with('|');
+        if is_table && !tail.ends_with('|') {
+            out.push('|');
+        }
+    }
+    out
+}
+
 /// (misses, cached entries) — test instrumentation.
 #[cfg(test)]
 fn render_cache_stats() -> (u64, usize) {
@@ -271,6 +307,7 @@ fn render_cache_stats() -> (u64, usize) {
 /// layout provides when `View::render` is called.
 pub struct RevueMarkdown {
     text: Arc<str>,
+    streaming: bool,
     /// Estimate row count at a typical width for height calculations.
     est_rows: u16,
 }
@@ -285,6 +322,7 @@ impl RevueMarkdown {
     pub fn new() -> Self {
         Self {
             text: Arc::from(""),
+            streaming: true,
             est_rows: 0,
         }
     }
@@ -293,10 +331,16 @@ impl RevueMarkdown {
     /// 此前固定 100 cols 估算,窄于估算宽的实际渲染会把超出 est_rows
     /// 的换行行裁掉（长单行文本,如 provider 错误 JSON,在窄终端被静默截断）。
     pub fn set_content(&mut self, markdown_text: &str, width: u16) {
+        self.set_content_with_streaming(markdown_text, width, true);
+    }
+
+    pub fn set_content_with_streaming(&mut self, markdown_text: &str, width: u16, streaming: bool) {
         self.text = Arc::from(markdown_text);
+        self.streaming = streaming;
         // 用调用方给定的真实内容宽（transcript inner_w）估算,与渲染同口径；
         // 走缓存——同文本同宽重复估算（每帧重建 view 树）不再重复 parse。
-        self.est_rows = render_lines_cached(&self.text, width).len() as u16;
+        self.est_rows =
+            render_lines_cached_with_streaming(&self.text, width, streaming).len() as u16;
     }
 
     /// Rough row count (estimated at 100 cols). The actual row count
@@ -309,7 +353,10 @@ impl RevueMarkdown {
     pub fn as_stack(&self) -> revue::widget::Stack {
         let text = Arc::clone(&self.text);
         let rows = self.est_rows;
-        let widget = MarkdownCellView { text };
+        let widget = MarkdownCellView {
+            text,
+            streaming: self.streaming,
+        };
         revue::widget::vstack().child_sized(widget, rows)
     }
 }
@@ -320,6 +367,7 @@ use revue::widget::traits::{RenderContext as RevueRenderCtx, View};
 
 struct MarkdownCellView {
     text: Arc<str>,
+    streaming: bool,
 }
 
 impl View for MarkdownCellView {
@@ -334,7 +382,7 @@ impl View for MarkdownCellView {
         // Render at the actual available width — adaptive!
         // Cached by (text hash, width): identical text re-renders at 20fps
         // during streaming cost a hash + lookup instead of a full parse.
-        let lines = render_lines_cached(&self.text, area.width);
+        let lines = render_lines_cached_with_streaming(&self.text, area.width, self.streaming);
 
         for (y, line) in lines.iter().enumerate() {
             if y as u16 >= h {
@@ -475,8 +523,8 @@ mod tests {
     fn cache_hit_renders_identical_text_once() {
         let text: Arc<str> = Arc::from("# Title\n\nsome **bold** body");
         let (misses_before, _) = render_cache_stats();
-        let a = render_lines_cached(&text, 80);
-        let b = render_lines_cached(&text, 80);
+        let a = render_lines_cached_with_streaming(&text, 80, true);
+        let b = render_lines_cached_with_streaming(&text, 80, true);
         let (misses_after, _) = render_cache_stats();
         assert_eq!(
             misses_after - misses_before,
@@ -491,12 +539,12 @@ mod tests {
     fn cache_miss_on_text_change_and_width_change() {
         let mut text: Arc<str> = Arc::from("streaming chunk 1");
         let (m0, _) = render_cache_stats();
-        render_lines_cached(&text, 80);
+        render_lines_cached_with_streaming(&text, 80, true);
         // 流式追加 → 内容变 → 重新 parse。
         text = Arc::from("streaming chunk 1 + appended");
-        render_lines_cached(&text, 80);
+        render_lines_cached_with_streaming(&text, 80, true);
         // 同文本不同宽 → wrap 结果不同 → 重新 parse。
-        render_lines_cached(&text, 40);
+        render_lines_cached_with_streaming(&text, 40, true);
         let (m1, _) = render_cache_stats();
         assert_eq!(
             m1 - m0,
@@ -506,24 +554,72 @@ mod tests {
     }
 
     #[test]
+    fn streaming_unclosed_fence_is_rendered_without_swallowing_tail() {
+        let text: Arc<str> = Arc::from("```rust\nlet x = 1;\nplain tail");
+        let lines = render_lines_cached_with_streaming(&text, 80, true);
+        assert!(lines
+            .iter()
+            .any(|line| line.to_string().contains("plain tail")));
+        let closed: Arc<str> = Arc::from("```rust\nlet x = 1;\n```\nplain tail");
+        let closed_lines = render_lines_cached_with_streaming(&closed, 80, true);
+        assert!(closed_lines
+            .iter()
+            .any(|line| line.to_string().contains("plain tail")));
+    }
+
+    #[test]
+    fn streaming_table_row_repair_is_only_for_streaming_mode() {
+        let text: Arc<str> = Arc::from("| a | b |\n|---|---|\n| 1 | 2");
+        let streaming = render_lines_cached_with_streaming(&text, 80, true);
+        let finalized = render_lines_cached_with_streaming(&text, 80, false);
+        assert!(!streaming.is_empty());
+        assert!(!finalized.is_empty());
+    }
+
+    #[test]
+    fn streaming_table_rebuilds_across_deltas_and_keeps_prose() {
+        let h1: Arc<str> = Arc::from("| a | b |\n|---|---|\n| 1");
+        let h2: Arc<str> = Arc::from("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4");
+        let h3: Arc<str> = Arc::from("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4\nafter table");
+        let text = |lines: &Arc<Vec<ratatui::text::Line<'static>>>| {
+            lines.iter().map(ToString::to_string).collect::<String>()
+        };
+        assert!(text(&render_lines_cached_with_streaming(&h1, 80, true)).contains('1'));
+        let second = text(&render_lines_cached_with_streaming(&h2, 80, true));
+        for cell in ["1", "2", "3", "4"] {
+            assert!(second.contains(cell));
+        }
+        let third = text(&render_lines_cached_with_streaming(&h3, 80, true));
+        assert!(third.contains("after table"));
+        let (before, _) = render_cache_stats();
+        let _ = render_lines_cached_with_streaming(&h1, 80, false);
+        let (after, _) = render_cache_stats();
+        assert_eq!(
+            after - before,
+            1,
+            "finalized canonical pass uses a distinct cache mode"
+        );
+    }
+
+    #[test]
     fn cache_evicts_lru_beyond_capacity() {
         let (m0, _) = render_cache_stats();
         // 插入 CAP+10 个不同文本 → 只保留最近 CAP 条。
         for i in 0..(RENDER_CACHE_CAP + 10) {
             let text: Arc<str> = Arc::from(format!("unique entry number {}", i));
-            render_lines_cached(&text, 80);
+            render_lines_cached_with_streaming(&text, 80, true);
         }
         let (m1, entries) = render_cache_stats();
         assert_eq!(m1 - m0, (RENDER_CACHE_CAP + 10) as u64);
         assert!(entries <= RENDER_CACHE_CAP, "cache must not grow past cap");
         // 最早的条目已被逐出：再次渲染会 miss。
         let evicted: Arc<str> = Arc::from("unique entry number 0");
-        render_lines_cached(&evicted, 80);
+        render_lines_cached_with_streaming(&evicted, 80, true);
         let (m2, _) = render_cache_stats();
         assert_eq!(m2 - m1, 1, "evicted entry must re-parse");
         // 最近的条目仍在：命中不 miss。
         let recent: Arc<str> = Arc::from(format!("unique entry number {}", RENDER_CACHE_CAP + 9));
-        render_lines_cached(&recent, 80);
+        render_lines_cached_with_streaming(&recent, 80, true);
         let (m3, _) = render_cache_stats();
         assert_eq!(m3 - m2, 0, "most-recent entry must still hit");
     }

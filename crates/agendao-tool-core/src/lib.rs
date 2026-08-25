@@ -11,6 +11,27 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "lsp")]
 use agendao_lsp::LspClientRegistry;
 
+pub mod bounded_output;
+pub mod contained_query;
+pub mod execution_cleanup;
+pub mod file_path_authority;
+pub mod sandbox_execution_boundary;
+
+pub use bounded_output::{
+    drain_piped_output, BoundedOutput, MAX_CAPTURED_OUTPUT_BYTES, MAX_CAPTURED_STREAM_BYTES,
+};
+pub use contained_query::{
+    run_contained_query, run_git_command, ContainedQueryOutput, ContainedQuerySpec,
+};
+pub use execution_cleanup::{cleanup_execution, CleanupCause};
+pub use file_path_authority::{
+    resolve_create_file_path, resolve_existing_file_path, AuthorizedFilePath, FilePathLocation,
+};
+pub use sandbox_execution_boundary::{
+    IntegrationSandboxContext, ProfileKind, SandboxExecutionBoundary,
+    SharedSandboxExecutionBoundary,
+};
+
 pub type Metadata = HashMap<String, serde_json::Value>;
 
 type FileLock = Arc<Mutex<()>>;
@@ -404,6 +425,16 @@ pub struct ToolContext {
     pub runtime_config: ToolRuntimeConfig,
     pub config_store: Option<Arc<agendao_config::ConfigStore>>,
     pub registry: Option<Arc<dyn ToolRegistryAccess>>,
+    /// Sandbox execution boundary; `None` means no sandbox authority is
+    /// installed. Tools needing process execution must fail loudly when
+    /// absent — never fall back to a direct spawn.
+    pub sandbox_execution: Option<SharedSandboxExecutionBoundary>,
+    /// Host-declared hint: this context's session permits unsandboxed
+    /// execution (explicit yolo sessions only). Tools *request* the
+    /// native profile kind when true; the sandbox authority still
+    /// verifies it against policy — a wrongly-set hint fails closed
+    /// with `NativeNotAllowed`, never silently unsandboxes.
+    pub sandbox_native_allowed: bool,
     #[cfg(feature = "lsp")]
     pub lsp_registry: Option<Arc<LspClientRegistry>>,
 }
@@ -472,6 +503,8 @@ impl ToolContext {
             runtime_config: ToolRuntimeConfig::default(),
             config_store: None,
             registry: None,
+            sandbox_execution: None,
+            sandbox_native_allowed: false,
             #[cfg(feature = "lsp")]
             lsp_registry: None,
         }
@@ -504,6 +537,19 @@ impl ToolContext {
 
     pub fn with_registry(mut self, registry: Arc<dyn ToolRegistryAccess>) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    pub fn with_sandbox_execution_boundary(
+        mut self,
+        boundary: SharedSandboxExecutionBoundary,
+    ) -> Self {
+        self.sandbox_execution = Some(boundary);
+        self
+    }
+
+    pub fn with_sandbox_native_allowed(mut self, allowed: bool) -> Self {
+        self.sandbox_native_allowed = allowed;
         self
     }
 
@@ -684,12 +730,42 @@ impl ToolContext {
     }
 
     pub fn is_external_path(&self, path: &str) -> bool {
-        let abs_path = if std::path::Path::new(path).is_absolute() {
-            path.to_string()
+        let candidate = self.resolve_path_against_directory(std::path::Path::new(path));
+        self.resolve_existing_file_path(&candidate)
+            .or_else(|_| self.resolve_create_file_path(&candidate))
+            .map(|resolved| resolved.is_external())
+            // An unresolvable path must never silently suppress the external
+            // permission prompt in legacy callers that still use this bool.
+            .unwrap_or(true)
+    }
+
+    /// Canonically resolve an existing file and classify it against this
+    /// context's workspace. File tools must use the returned operation path
+    /// for the actual I/O after asking permission.
+    pub fn resolve_existing_file_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<AuthorizedFilePath, ToolError> {
+        let candidate = self.resolve_path_against_directory(path);
+        resolve_existing_file_path(&candidate, std::path::Path::new(&self.project_root))
+    }
+
+    /// Canonically resolve a create/overwrite target and classify it against
+    /// this context's workspace. New directory suffixes remain intact.
+    pub fn resolve_create_file_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<AuthorizedFilePath, ToolError> {
+        let candidate = self.resolve_path_against_directory(path);
+        resolve_create_file_path(&candidate, std::path::Path::new(&self.project_root))
+    }
+
+    fn resolve_path_against_directory(&self, path: &std::path::Path) -> std::path::PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
         } else {
-            format!("{}/{}", self.directory, path)
-        };
-        !abs_path.starts_with(&self.project_root)
+            std::path::Path::new(&self.directory).join(path)
+        }
     }
 }
 

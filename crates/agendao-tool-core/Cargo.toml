@@ -12,12 +12,17 @@ lsp = ["agendao-lsp"]
 [dependencies]
 agendao-config = { path = "../agendao-config" }
 agendao-permission = { path = "../agendao-permission" }
+agendao-sandbox = { path = "../agendao-sandbox" }
 agendao-types = { path = "../agendao-types" }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["io-util", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = "0.1"
 async-trait = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

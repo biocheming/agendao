@@ -89,7 +89,13 @@ pub fn block_accent(block: &TranscriptBlock) -> revue::prelude::Color {
         TranscriptBlock::SkillActivated { .. } => colors::FG_MUTED(),
         TranscriptBlock::TodoList { .. } => colors::FG_MUTED(),
         TranscriptBlock::CompactionHint { .. } => colors::FG_MUTED(),
-        TranscriptBlock::SystemNotice { .. } => colors::FG_MUTED(),
+        TranscriptBlock::SystemNotice { text, .. } => {
+            if text.contains("Interrupted") || text.contains("interrupted") {
+                colors::E_AMBER()
+            } else {
+                colors::FG_MUTED()
+            }
+        }
         TranscriptBlock::ImageRef { .. } => colors::FG_MUTED(),
     }
 }
@@ -526,11 +532,35 @@ fn detect_unit_at(
     show_thinking: bool,
     turn_has_thinking: bool,
     text_width: u16,
+    hidden_sections: Option<&HiddenDetails>,
 ) -> UnitSpan {
     let head = &msgs[i];
     let (glyph, glyph_w) = block_glyph(head);
     let accent = block_accent(head);
     let bg = block_bg(head);
+    if let (Some(section), Some(hidden)) = (detail_section(head), hidden_sections) {
+        let id = match head {
+            TranscriptBlock::Thinking { id, .. }
+            | TranscriptBlock::ToolCall { id, .. }
+            | TranscriptBlock::ToolResult { id, .. }
+            | TranscriptBlock::TodoList { id, .. } => Some(id),
+            _ => None,
+        };
+        if hidden.sections.contains(&section) || id.is_some_and(|id| hidden.instances.contains(id))
+        {
+            return UnitSpan {
+                span: 1,
+                height: 0,
+                glyph,
+                glyph_w,
+                accent,
+                bg,
+                is_well: false,
+                is_group: false,
+                thinking_continuation: false,
+            };
+        }
+    }
 
     // 聚合决策：ToolResult 组优先，再 Thinking 组，否则单块。与原 build_render_units
     // 的判定逻辑完全同源——这里只算 height/span，view 在调用方按需构造。
@@ -596,6 +626,75 @@ fn detect_unit_at(
     }
 }
 
+fn detail_section(block: &TranscriptBlock) -> Option<crate::details_policy::DetailsSection> {
+    match block {
+        TranscriptBlock::Thinking { .. } => Some(crate::details_policy::DetailsSection::Thinking),
+        TranscriptBlock::ToolCall { .. } | TranscriptBlock::ToolResult { .. } => {
+            Some(crate::details_policy::DetailsSection::Tools)
+        }
+        TranscriptBlock::TodoList { .. } => Some(crate::details_policy::DetailsSection::Todo),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct HiddenDetails {
+    sections: std::collections::HashSet<crate::details_policy::DetailsSection>,
+    instances: std::collections::HashSet<String>,
+}
+
+fn policy_messages(
+    msgs: &[TranscriptBlock],
+    policy: &crate::details_policy::DetailsPolicy,
+) -> (Vec<TranscriptBlock>, HiddenDetails) {
+    let mut out = msgs.to_vec();
+    let mut hidden = HiddenDetails::default();
+    for block in &mut out {
+        let Some(section) = detail_section(block) else {
+            continue;
+        };
+        let instance_id = match block {
+            TranscriptBlock::Thinking { id, .. }
+            | TranscriptBlock::ToolCall { id, .. }
+            | TranscriptBlock::ToolResult { id, .. }
+            | TranscriptBlock::TodoList { id, .. } => Some(id.as_str()),
+            _ => None,
+        };
+        let mode = instance_id
+            .and_then(|id| policy.instance_overrides.get(id).copied())
+            .or_else(|| policy.section_overrides.get(&section).copied());
+        let Some(mode) = mode else {
+            continue;
+        };
+        match mode {
+            crate::details_policy::DetailVisibility::Hidden => {
+                if let Some(id) = instance_id {
+                    if policy.instance_overrides.contains_key(id) {
+                        hidden.instances.insert(id.to_string());
+                    } else {
+                        hidden.sections.insert(section);
+                    }
+                } else {
+                    hidden.sections.insert(section);
+                }
+            }
+            crate::details_policy::DetailVisibility::Collapsed => match block {
+                TranscriptBlock::Thinking { fold, .. }
+                | TranscriptBlock::ToolResult { fold, .. }
+                | TranscriptBlock::TodoList { fold, .. } => *fold = FoldState::Folded,
+                _ => {}
+            },
+            crate::details_policy::DetailVisibility::Expanded => match block {
+                TranscriptBlock::Thinking { fold, .. }
+                | TranscriptBlock::ToolResult { fold, .. }
+                | TranscriptBlock::TodoList { fold, .. } => *fold = FoldState::Expanded,
+                _ => {}
+            },
+        }
+    }
+    (out, hidden)
+}
+
 /// 把 msgs 折成视觉单元序列——聚合决策单点（金律：触点 1）。连续 ToolResult /
 /// 连续 Thinking 各自聚合成井，其余逐块。包装属性（glyph/accent/bg/is_well）统一
 /// 填入 unit；渲染循环、鼠标命中、total_h 都消费此序列，不认块类型。新增聚合种类：
@@ -614,6 +713,7 @@ fn detect_unit_at(
 /// 插 1 行 gap（compact_density 时无）。因此本函数的累加坐标 `acc_top` 必须同步
 /// 计入 gap 行——此前只累加 unit.height，长会话（gap 总数 > SAFETY_PAD + viewport
 /// 余量）下窗口与所有 unit 错开，全部判成占位 → 整屏只剩图标没有文字。
+#[cfg(test)]
 pub(crate) fn build_render_units(
     msgs: &[TranscriptBlock],
     cursor_idx: Option<usize>,
@@ -622,6 +722,28 @@ pub(crate) fn build_render_units(
     viewport: Option<ViewportRange>,
     text_width: u16,
     compact_density: bool,
+) -> Vec<RenderUnit> {
+    build_render_units_with_hidden(
+        msgs,
+        cursor_idx,
+        tick,
+        show_thinking,
+        viewport,
+        text_width,
+        compact_density,
+        None,
+    )
+}
+
+fn build_render_units_with_hidden(
+    msgs: &[TranscriptBlock],
+    cursor_idx: Option<usize>,
+    tick: u64,
+    show_thinking: bool,
+    viewport: Option<ViewportRange>,
+    text_width: u16,
+    compact_density: bool,
+    hidden_sections: Option<&HiddenDetails>,
 ) -> Vec<RenderUnit> {
     /// viewport 上下 padding（行）：抗 1-2 行抖动 + 吸收调用方先于内联 dialog
     /// 估算 scroll_top 的小幅偏差（permission/question 内联块在 build 之后才追加，
@@ -640,7 +762,15 @@ pub(crate) fn build_render_units(
     let mut turn_has_thinking = false;
 
     while i < msgs.len() {
-        let span = detect_unit_at(msgs, i, tick, show_thinking, turn_has_thinking, text_width);
+        let span = detect_unit_at(
+            msgs,
+            i,
+            tick,
+            show_thinking,
+            turn_has_thinking,
+            text_width,
+            hidden_sections,
+        );
 
         // 推进 turn 状态（无视后续是否 push）——与原循环同序。
         match &msgs[i] {
@@ -712,22 +842,64 @@ pub(crate) fn build_render_units(
     units
 }
 
+pub(crate) fn build_render_units_with_policy(
+    msgs: &[TranscriptBlock],
+    cursor_idx: Option<usize>,
+    tick: u64,
+    show_thinking: bool,
+    viewport: Option<ViewportRange>,
+    text_width: u16,
+    compact_density: bool,
+    policy: &crate::details_policy::DetailsPolicy,
+) -> Vec<RenderUnit> {
+    let (effective, hidden) = policy_messages(msgs, policy);
+    build_render_units_with_hidden(
+        &effective,
+        cursor_idx,
+        tick,
+        show_thinking,
+        viewport,
+        text_width,
+        compact_density,
+        Some(&hidden),
+    )
+}
+
 /// 聚合总高（与渲染同口径）。走纯量路径 `detect_unit_at`——零 view 构造。
 /// show_thinking 与渲染同口径，否则高度错位。
 /// compact_density 与渲染块间空行同口径：紧凑模式块间 0 间隔，gap 也为 0，
 /// 否则 total_h 比实际渲染高 → max_offset 偏大 → 点击/scroll 漂移。
+#[cfg(test)]
 pub(crate) fn transcript_total_height(
     msgs: &[TranscriptBlock],
     show_thinking: bool,
     compact_density: bool,
     text_width: u16,
 ) -> u16 {
+    transcript_total_height_with_hidden(msgs, show_thinking, compact_density, text_width, None)
+}
+
+fn transcript_total_height_with_hidden(
+    msgs: &[TranscriptBlock],
+    show_thinking: bool,
+    compact_density: bool,
+    text_width: u16,
+    hidden_sections: Option<&HiddenDetails>,
+) -> u16 {
     let mut total: u16 = 0;
     let mut count: u16 = 0;
     let mut turn_has_thinking = false;
     let mut i = 0usize;
     while i < msgs.len() {
-        let span = detect_unit_at(msgs, i, 0, show_thinking, turn_has_thinking, text_width);
+        let span = detect_unit_at(
+            msgs,
+            i,
+            0,
+            show_thinking,
+            turn_has_thinking,
+            text_width,
+            hidden_sections,
+        );
         match &msgs[i] {
             TranscriptBlock::UserPrompt { .. } => turn_has_thinking = false,
             TranscriptBlock::Thinking { .. } => turn_has_thinking = true,
@@ -741,6 +913,23 @@ pub(crate) fn transcript_total_height(
     }
     let gap = if compact_density { 0 } else { count };
     total.saturating_add(gap).saturating_add(1)
+}
+
+pub(crate) fn transcript_total_height_with_policy(
+    msgs: &[TranscriptBlock],
+    show_thinking: bool,
+    compact_density: bool,
+    text_width: u16,
+    policy: &crate::details_policy::DetailsPolicy,
+) -> u16 {
+    let (effective, hidden) = policy_messages(msgs, policy);
+    transcript_total_height_with_hidden(
+        &effective,
+        show_thinking,
+        compact_density,
+        text_width,
+        Some(&hidden),
+    )
 }
 
 /// 带上下文的成形版本。`thinking_continuation`：当前 Thinking 是否属于同一
@@ -819,8 +1008,17 @@ pub(crate) fn layout_block_ctx(
         // ── Assistant Message ──
         // 终端原生风格：● 圆点（text 色）+ markdown，无 chip 标签。
         // RevueMarkdown 构造一次，height 与 view 共享。
-        TranscriptBlock::AssistantMsg { content, fold, .. } => {
+        TranscriptBlock::AssistantMsg {
+            content,
+            fold,
+            lifecycle,
+            ..
+        } => {
             use crate::store::types::FoldState;
+            let streaming = matches!(
+                lifecycle,
+                crate::store::types::StreamBlockLifecycle::Streaming
+            );
             // 符号清理（P1）：去 ● 前缀。角色锚点已由 app 层左竖线（紫）承担，
             // 无需块首再叠一个角色点（● 是纯角色冗余，别无折叠/状态/续接功能）。
             // markdown 直接顶格成形——呼应方案1（Carbon Obsidian）「AssistantMsg
@@ -853,7 +1051,7 @@ pub(crate) fn layout_block_ctx(
                             .collect::<Vec<_>>()
                             .join("\n");
                         let mut md = crate::markdown::RevueMarkdown::new();
-                        md.set_content(&preview, text_width);
+                        md.set_content_with_streaming(&preview, text_width, streaming);
                         let lines = md.line_count().max(1);
                         let view = vstack()
                             .gap(0)
@@ -874,7 +1072,7 @@ pub(crate) fn layout_block_ctx(
                     }
                     FoldState::Truncated | FoldState::Expanded => {
                         let mut md = crate::markdown::RevueMarkdown::new();
-                        md.set_content(content, text_width);
+                        md.set_content_with_streaming(content, text_width, streaming);
                         let lines = md.line_count().max(1);
                         BlockLayout {
                             height: lines,
@@ -893,9 +1091,14 @@ pub(crate) fn layout_block_ctx(
             content,
             fold,
             duration_ms,
+            lifecycle,
             ..
         } => {
             use crate::store::types::FoldState;
+            let _finalized = matches!(
+                lifecycle,
+                crate::store::types::StreamBlockLifecycle::Finalized
+            );
             let _ = thinking_continuation; // 续接符已废，参数保留兼容签名
             let wc = content.split_whitespace().count();
             match fold {
@@ -1270,10 +1473,21 @@ pub(crate) fn layout_block_ctx(
         },
 
         // ── System Notice ──
-        TranscriptBlock::SystemNotice { text, .. } => BlockLayout {
-            height: 1,
-            view: vstack().child(Text::new(format!(" ℹ  {}", text)).fg(colors::FG_MUTED())),
-        },
+        TranscriptBlock::SystemNotice { text, .. } => {
+            let is_interrupted = text.contains("Interrupted") || text.contains("interrupted");
+            let text_color = if is_interrupted {
+                colors::E_AMBER()
+            } else {
+                colors::FG_MUTED()
+            };
+            let prefix = if is_interrupted { " ⏹ " } else { " ℹ  " };
+            let t = Text::new(format!("{}{}", prefix, text)).fg(text_color);
+            let t = if is_interrupted { t.bold() } else { t };
+            BlockLayout {
+                height: 1,
+                view: vstack().child(t),
+            }
+        }
 
         // ── Image Reference ──
         TranscriptBlock::ImageRef { mime, .. } => BlockLayout {
@@ -1367,6 +1581,7 @@ mod layout_tests {
         let mk = || TranscriptBlock::Thinking {
             id: "m".into(),
             content: "word".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Folded,
             duration_ms: 0,
             user_overridden: false,
@@ -1389,6 +1604,7 @@ mod layout_tests {
         let mk = |fold: FoldState| TranscriptBlock::Thinking {
             id: "m1".into(),
             content: "思考第一行\n思考第二行".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold,
             duration_ms: 0,
             user_overridden: false,
@@ -1492,10 +1708,64 @@ mod layout_tests {
     }
 
     #[test]
+    fn policy_instance_hidden_does_not_expand_to_same_section() {
+        let todos = vec![
+            TranscriptBlock::TodoList {
+                id: "hide-me".into(),
+                items: vec![],
+                fold: FoldState::Truncated,
+                summary: None,
+            },
+            TranscriptBlock::TodoList {
+                id: "keep-me".into(),
+                items: vec![],
+                fold: FoldState::Truncated,
+                summary: None,
+            },
+        ];
+        let mut policy = crate::details_policy::DetailsPolicy::default();
+        policy.instance_overrides.insert(
+            "hide-me".into(),
+            crate::details_policy::DetailVisibility::Hidden,
+        );
+        let units = build_render_units_with_policy(&todos, None, 0, true, None, 80, false, &policy);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].base_index, 1);
+    }
+
+    #[test]
+    fn policy_section_hidden_removes_all_section_blocks() {
+        let todos = vec![
+            TranscriptBlock::TodoList {
+                id: "a".into(),
+                items: vec![],
+                fold: FoldState::Truncated,
+                summary: None,
+            },
+            TranscriptBlock::TodoList {
+                id: "b".into(),
+                items: vec![],
+                fold: FoldState::Truncated,
+                summary: None,
+            },
+        ];
+        let mut policy = crate::details_policy::DetailsPolicy::default();
+        policy.section_overrides.insert(
+            crate::details_policy::DetailsSection::Todo,
+            crate::details_policy::DetailVisibility::Hidden,
+        );
+        assert!(
+            build_render_units_with_policy(&todos, None, 0, true, None, 80, false, &policy)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn assistant_msg_empty_is_one_row() {
         let b = TranscriptBlock::AssistantMsg {
             id: "a".into(),
             content: String::new(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Expanded,
         };
         // ● 与 … 同行（hstack，单行）；修复旧版 ● 占 3 行的 height↔view 漂移。
@@ -1507,6 +1777,7 @@ mod layout_tests {
         let b = TranscriptBlock::AssistantMsg {
             id: "a".into(),
             content: "# hi\nbody".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Expanded,
         };
         assert!(blk(b).height >= 2);
@@ -1519,11 +1790,13 @@ mod layout_tests {
         let truncated = blk(TranscriptBlock::AssistantMsg {
             id: "a".into(),
             content: "l1\nl2\nl3\nl4\nl5".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Truncated,
         });
         let preview_only = blk(TranscriptBlock::AssistantMsg {
             id: "b".into(),
             content: "l1\nl2\nl3".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Expanded,
         });
         assert_eq!(truncated.height, preview_only.height + 1);
@@ -1534,6 +1807,7 @@ mod layout_tests {
         let b = TranscriptBlock::AssistantMsg {
             id: "a".into(),
             content: "l1\nl2\nl3\nl4\nl5".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Folded,
         };
         assert_eq!(blk(b).height, 1);
@@ -1555,6 +1829,7 @@ mod layout_tests {
         let b = TranscriptBlock::Thinking {
             id: "t".into(),
             content: "a b c".into(),
+            lifecycle: StreamBlockLifecycle::Streaming,
             fold: FoldState::Folded,
             duration_ms: 0,
             user_overridden: false,
@@ -1706,6 +1981,7 @@ mod layout_tests {
             v.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{}", turn),
                 content: format!("# header turn {}\nbody line 1\nbody line 2", turn),
+                lifecycle: StreamBlockLifecycle::Streaming,
                 fold: FoldState::Expanded,
             });
             v.push(TranscriptBlock::ToolCall {
@@ -1823,6 +2099,7 @@ mod layout_tests {
             msgs.push(TranscriptBlock::AssistantMsg {
                 id: format!("a{i}"),
                 content: format!("answer {i}"),
+                lifecycle: StreamBlockLifecycle::Streaming,
                 fold: FoldState::Expanded,
             });
         }

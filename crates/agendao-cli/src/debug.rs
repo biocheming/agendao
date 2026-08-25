@@ -107,7 +107,8 @@ async fn create_lsp_client(file_hint: Option<&Path>) -> anyhow::Result<LspClient
             args,
             initialization_options,
         },
-        cwd,
+        cwd.clone(),
+        crate::sandbox_host::cli_integration_sandbox_context(cwd),
     )
     .await
     .map_err(|e| anyhow::anyhow!(e.to_string()))

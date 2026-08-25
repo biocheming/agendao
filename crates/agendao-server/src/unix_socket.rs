@@ -246,6 +246,9 @@ async fn handle_request(
         "get_session_todos" => handle_get_session_todos(request.params, state).await,
         "get_task_ledger" => handle_get_task_ledger(request.params, state).await,
         "apply_task_ledger_op" => handle_apply_task_ledger_op(request.params, state).await,
+        "delete_queued_input" => handle_delete_queued_input(request.params, state).await,
+        "edit_queued_input" => handle_edit_queued_input(request.params, state).await,
+        "reorder_queued_input" => handle_reorder_queued_input(request.params, state).await,
         "get_config" => handle_get_config(state).await,
         "patch_config" => handle_patch_config(request.params, state).await,
         "put_disabled_config" => handle_put_disabled_config(request.params, state).await,
@@ -389,6 +392,77 @@ async fn handle_apply_task_ledger_op(
         "ledger": agendao_types::task_ledger::SessionTaskLedgerView::from(ledger),
         "cause": cause
     }))
+}
+
+#[derive(Deserialize)]
+struct QueueDeleteParams {
+    session_id: String,
+    item_id: String,
+    request: agendao_types::submission::QueueMutationRequest,
+}
+
+#[derive(Deserialize)]
+struct QueueEditParams {
+    session_id: String,
+    item_id: String,
+    request: agendao_types::submission::QueueEditRequest,
+}
+
+#[derive(Deserialize)]
+struct QueueReorderParams {
+    session_id: String,
+    item_id: String,
+    request: agendao_types::submission::QueueReorderRequest,
+}
+
+async fn handle_delete_queued_input(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let params: QueueDeleteParams =
+        serde_json::from_value(params).map_err(to_rpc_invalid_params)?;
+    let disposition = crate::routes::session::local_delete_queued_input(
+        Arc::clone(state),
+        &params.session_id,
+        &params.item_id,
+        params.request,
+    )
+    .await
+    .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(disposition).map_err(to_rpc_serde_error)
+}
+
+async fn handle_edit_queued_input(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let params: QueueEditParams = serde_json::from_value(params).map_err(to_rpc_invalid_params)?;
+    let disposition = crate::routes::session::local_edit_queued_input(
+        Arc::clone(state),
+        &params.session_id,
+        &params.item_id,
+        params.request,
+    )
+    .await
+    .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(disposition).map_err(to_rpc_serde_error)
+}
+
+async fn handle_reorder_queued_input(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let params: QueueReorderParams =
+        serde_json::from_value(params).map_err(to_rpc_invalid_params)?;
+    let disposition = crate::routes::session::local_reorder_queued_input(
+        Arc::clone(state),
+        &params.session_id,
+        &params.item_id,
+        params.request,
+    )
+    .await
+    .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(disposition).map_err(to_rpc_serde_error)
 }
 
 fn to_rpc_error_from_api(error: &crate::error::ApiError) -> JsonRpcError {

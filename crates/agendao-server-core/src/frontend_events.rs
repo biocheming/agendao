@@ -130,6 +130,30 @@ pub enum FrontendEvent {
         phase: ToolCallPhase,
     },
 
+    // ── Sandbox ──────────────────────────────────────────────────────
+    /// A sandboxed execution appeared or changed — upsert into the
+    /// session's active sandbox set. The payload is the authority's own
+    /// fact (backend, fingerprint); frontends must never present an
+    /// execution as sandboxed without one of these.
+    #[serde(rename = "sandbox.execution.upsert")]
+    SandboxExecutionUpsert {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(rename = "execution")]
+        execution: crate::runtime_state::SandboxExecutionSummary,
+    },
+    /// A sandboxed execution left the active set — exited, denied, or
+    /// violated before it ever started. `outcome` tells the frontend
+    /// which, so "denied" never renders as a failed run.
+    #[serde(rename = "sandbox.execution.removed")]
+    SandboxExecutionRemoved {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        outcome: crate::runtime_state::SandboxOutcomeSummary,
+    },
+
     // ── Diff ─────────────────────────────────────────────────────────
     /// Diff list has changed — replace the entire diff view.
     #[serde(rename = "diff.replaced")]
@@ -322,6 +346,7 @@ mod tests {
                 pending_question: None,
                 pending_permission: None,
                 pending_followup_count: 0,
+                active_sandbox: vec![],
             },
         };
         let json = serde_json::to_value(&event).expect("serialize");
@@ -484,6 +509,7 @@ mod tests {
                     pending_question: None,
                     pending_permission: None,
                     pending_followup_count: 0,
+                    active_sandbox: vec![],
                 },
             })
             .unwrap(),

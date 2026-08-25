@@ -26,4 +26,6 @@ tracing = { workspace = true }
 which = "7"
 
 [dev-dependencies]
+agendao-sandbox = { path = "../agendao-sandbox" }
+agendao-types = { path = "../agendao-types" }
 tempfile = "3"

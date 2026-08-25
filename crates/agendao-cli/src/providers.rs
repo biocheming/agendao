@@ -233,7 +233,11 @@ async fn load_plugin_auth_store(
     config: &agendao_config::Config,
     cwd: &Path,
 ) -> HashMap<String, AuthInfo> {
-    let loader = match PluginLoader::new() {
+    let loader = match PluginLoader::new().map(|loader| {
+        loader.with_sandbox(crate::sandbox_host::cli_integration_sandbox_context(
+            cwd.to_path_buf(),
+        ))
+    }) {
         Ok(loader) => Arc::new(loader),
         Err(error) => {
             tracing::warn!(%error, "failed to initialize plugin loader in CLI");

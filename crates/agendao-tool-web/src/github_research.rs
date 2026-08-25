@@ -2706,6 +2706,9 @@ fn blame_line_window(input: &GitHubResearchInput) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::NativeTestAuthority;
+    use agendao_tool_core::SandboxExecutionBoundary;
+    use std::sync::Arc;
 
     fn base_input(operation: GitHubResearchOperation) -> GitHubResearchInput {
         GitHubResearchInput {
@@ -2728,12 +2731,15 @@ mod tests {
     }
 
     fn test_tool_context(directory: &Path) -> ToolContext {
+        let authority: Arc<dyn SandboxExecutionBoundary> = Arc::new(NativeTestAuthority::new());
         ToolContext::new(
             "session-1".to_string(),
             "message-1".to_string(),
             directory.to_string_lossy().to_string(),
         )
         .with_ask(|_| async { Ok(()) })
+        .with_sandbox_execution_boundary(authority)
+        .with_sandbox_native_allowed(true)
     }
 
     fn test_tool_context_with_repo_overrides(

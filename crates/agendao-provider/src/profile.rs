@@ -448,21 +448,13 @@ pub(crate) fn default_npm_for_provider_id(provider_id: &str) -> &'static str {
 /// a faithful mapping, not a guess.
 pub(crate) fn default_profile_for_npm(npm: &str) -> Option<Value> {
     let (api_style, api_shape, usage_shape) = match npm.trim() {
-        "@ai-sdk/openai" => (
-            "openai-compatible",
-            "responses",
-            "openai-cached-tokens",
-        ),
+        "@ai-sdk/openai" => ("openai-compatible", "responses", "openai-cached-tokens"),
         "@ai-sdk/openai-compatible" => (
             "openai-compatible",
             "chat-completions",
             "openai-cached-tokens",
         ),
-        "@ai-sdk/anthropic" => (
-            "anthropic-compatible",
-            "messages",
-            "anthropic-read-write",
-        ),
+        "@ai-sdk/anthropic" => ("anthropic-compatible", "messages", "anthropic-read-write"),
         _ => return None,
     };
     Some(serde_json::json!({

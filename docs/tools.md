@@ -282,7 +282,7 @@
 
 ### repo_history
 
-本地 git 仓库的结构化历史查询。
+本地 git 仓库的结构化历史查询。git 命令经 sandbox 执行边界运行（模型可达，`WorkspaceWrite` 或经 session 授权的 `Native`），无直连 fallback，见 `sandbox.md`。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|

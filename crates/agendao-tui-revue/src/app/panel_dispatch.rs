@@ -33,6 +33,7 @@ impl AppHandler {
                 | Panel::Stash
                 | Panel::Fork
                 | Panel::TaskState
+                | Panel::Subagents
         )
     }
 
@@ -705,6 +706,19 @@ impl AppHandler {
                 }
                 return true;
             }
+            Panel::Subagents => {
+                let count = self
+                    .active_session
+                    .subagent_projection
+                    .get()
+                    .map(|p| p.entries.len())
+                    .unwrap_or(0);
+                self.subagent_panel.handle_key(key, count);
+                if !self.subagent_panel.visible {
+                    self.panel = Panel::None;
+                }
+                return true;
+            }
             Panel::Search => {
                 // U5：搜索条自维 query——字符/Backspace 在此消化（不进
                 // prompt），Enter/Up/N 跳转经 transcript_cursor 现成机制
@@ -713,18 +727,14 @@ impl AppHandler {
                 match self.search_bar.handle_key(key) {
                     SearchKeyOutcome::Next => {
                         if let Some(block) = self.search_bar.advance(true) {
-                            self.active_session
-                                .transcript_cursor
-                                .set(Some(block));
+                            self.active_session.transcript_cursor.set(Some(block));
                             self.active_session
                                 .ensure_cursor_visible(self.transcript_viewport_h);
                         }
                     }
                     SearchKeyOutcome::Prev => {
                         if let Some(block) = self.search_bar.advance(false) {
-                            self.active_session
-                                .transcript_cursor
-                                .set(Some(block));
+                            self.active_session.transcript_cursor.set(Some(block));
                             self.active_session
                                 .ensure_cursor_visible(self.transcript_viewport_h);
                         }

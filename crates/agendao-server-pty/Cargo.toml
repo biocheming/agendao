@@ -9,7 +9,8 @@ license.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 serde = { workspace = true }
 chrono = { workspace = true }
-portable-pty = "0.8"
 uuid = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+agendao-sandbox = { path = "../agendao-sandbox" }
+agendao-tool-core = { path = "../agendao-tool-core" }

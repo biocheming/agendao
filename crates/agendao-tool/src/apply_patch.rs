@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use crate::path_guard::authorize_external_file_path;
 use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
+use agendao_tool_core::AuthorizedFilePath;
 
 pub struct ApplyPatchTool;
 #[cfg(feature = "lsp")]
@@ -122,19 +124,36 @@ impl Tool for ApplyPatchTool {
         let mut total_diff = String::new();
 
         for file_patch in &file_patches {
-            let file_path = base_path.join(&file_patch.path);
+            let requested_source = base_path.join(&file_patch.path);
+            let source_authority = match &file_patch.operation {
+                PatchOperation::Add => ctx.resolve_create_file_path(&requested_source)?,
+                PatchOperation::Update | PatchOperation::Delete | PatchOperation::Move { .. } => {
+                    ctx.resolve_existing_file_path(&requested_source)?
+                }
+            };
+            authorize_external_file_path(&ctx, &source_authority).await?;
 
-            let file_path_str = file_path.to_string_lossy().to_string();
-            if ctx.is_external_path(&file_path_str) {
-                ctx.ask_permission(
-                    PermissionRequest::new("external_directory")
-                        .with_pattern(&file_path_str)
-                        .with_scope_key(crate::external_fs_scope_key(&file_path_str)),
-                )
-                .await?;
-            }
+            let move_target_authority = match &file_patch.operation {
+                PatchOperation::Move { move_path } => {
+                    let requested_target = base_path.join(move_path);
+                    let target = ctx.resolve_create_file_path(&requested_target)?;
+                    // A rename has two independently security-sensitive
+                    // paths. Both are classified and authorized before any
+                    // source content is read or destination is created.
+                    authorize_external_file_path(&ctx, &target).await?;
+                    Some(target)
+                }
+                _ => None,
+            };
 
-            let change = process_file_patch(&base_path, file_patch).await?;
+            let source_path = source_authority.operation_path().to_path_buf();
+            let change = process_file_patch(
+                &source_path,
+                file_patch,
+                source_authority,
+                move_target_authority,
+            )
+            .await?;
             total_diff.push_str(&change.diff);
             total_diff.push('\n');
             file_changes.push(change);
@@ -147,23 +166,23 @@ impl Tool for ApplyPatchTool {
         let files_metadata: Vec<serde_json::Value> = file_changes
             .iter()
             .map(|change| {
-                let (change_type, move_path, target_relative_path) = match &change.operation {
-                    PatchOperation::Add => ("add", None, change.relative_path.clone()),
-                    PatchOperation::Update => ("update", None, change.relative_path.clone()),
-                    PatchOperation::Delete => ("delete", None, change.relative_path.clone()),
+                let (change_type, target_relative_path) = match &change.operation {
+                    PatchOperation::Add => ("add", change.relative_path.clone()),
+                    PatchOperation::Update => ("update", change.relative_path.clone()),
+                    PatchOperation::Delete => ("delete", change.relative_path.clone()),
                     PatchOperation::Move { move_path } => {
-                        ("move", Some(move_path.clone()), move_path.clone())
+                        ("move", move_path.clone())
                     }
                 };
 
                 serde_json::json!({
-                    "filePath": base_path.join(&change.relative_path).to_string_lossy().to_string(),
+                    "filePath": change.source_authority.display_path(),
                     "relativePath": target_relative_path,
                     "type": change_type,
                     "diff": change.diff,
                     "before": change.old_content,
                     "after": change.new_content,
-                    "movePath": move_path.map(|path| base_path.join(path).to_string_lossy().to_string()),
+                    "movePath": change.move_target_authority.as_ref().map(AuthorizedFilePath::display_path),
                 })
             })
             .collect();
@@ -185,7 +204,7 @@ impl Tool for ApplyPatchTool {
         let mut lsp_targets: Vec<String> = Vec::new();
 
         for change in &file_changes {
-            let file_path = base_path.join(&change.relative_path);
+            let file_path = &change.source_path;
 
             match change.operation {
                 PatchOperation::Add => {
@@ -193,6 +212,13 @@ impl Tool for ApplyPatchTool {
                         tokio::fs::create_dir_all(parent).await.map_err(|e| {
                             ToolError::ExecutionError(format!("Failed to create directory: {}", e))
                         })?;
+                    }
+                    let revalidated = ctx.resolve_create_file_path(file_path)?;
+                    if revalidated != change.source_authority {
+                        return Err(ToolError::ExecutionError(format!(
+                            "patch add target changed after authorization: {}",
+                            file_path.display()
+                        )));
                     }
                     tokio::fs::write(&file_path, &change.new_content)
                         .await
@@ -205,6 +231,13 @@ impl Tool for ApplyPatchTool {
                     lsp_targets.push(change.relative_path.clone());
                 }
                 PatchOperation::Update => {
+                    let revalidated = ctx.resolve_existing_file_path(file_path)?;
+                    if revalidated != change.source_authority {
+                        return Err(ToolError::ExecutionError(format!(
+                            "patch update target changed after authorization: {}",
+                            file_path.display()
+                        )));
+                    }
                     tokio::fs::write(&file_path, &change.new_content)
                         .await
                         .map_err(|e| {
@@ -216,6 +249,13 @@ impl Tool for ApplyPatchTool {
                     lsp_targets.push(change.relative_path.clone());
                 }
                 PatchOperation::Delete => {
+                    let revalidated = ctx.resolve_existing_file_path(file_path)?;
+                    if revalidated != change.source_authority {
+                        return Err(ToolError::ExecutionError(format!(
+                            "patch delete target changed after authorization: {}",
+                            file_path.display()
+                        )));
+                    }
                     tokio::fs::remove_file(&file_path).await.map_err(|e| {
                         ToolError::ExecutionError(format!("Failed to delete file: {}", e))
                     })?;
@@ -223,11 +263,34 @@ impl Tool for ApplyPatchTool {
                     summary_lines.push(format!("D {}", change.relative_path));
                 }
                 PatchOperation::Move { ref move_path } => {
-                    let move_full_path = base_path.join(move_path);
+                    let move_full_path = change.move_target_path.as_ref().ok_or_else(|| {
+                        ToolError::ExecutionError(format!(
+                            "missing authorized move target for {}",
+                            move_path
+                        ))
+                    })?;
+                    let move_authority =
+                        change.move_target_authority.as_ref().ok_or_else(|| {
+                            ToolError::ExecutionError(format!(
+                                "missing authorized move target for {}",
+                                move_path
+                            ))
+                        })?;
                     if let Some(parent) = move_full_path.parent() {
                         tokio::fs::create_dir_all(parent).await.map_err(|e| {
                             ToolError::ExecutionError(format!("Failed to create directory: {}", e))
                         })?;
+                    }
+                    let revalidated_source = ctx.resolve_existing_file_path(file_path)?;
+                    let revalidated_target = ctx.resolve_create_file_path(move_full_path)?;
+                    if revalidated_source != change.source_authority
+                        || revalidated_target != *move_authority
+                    {
+                        return Err(ToolError::ExecutionError(format!(
+                            "patch move target changed after authorization: {} -> {}",
+                            file_path.display(),
+                            move_full_path.display()
+                        )));
                     }
                     tokio::fs::write(&move_full_path, &change.new_content)
                         .await
@@ -302,6 +365,10 @@ impl Tool for ApplyPatchTool {
 
 struct FileChange {
     relative_path: String,
+    source_path: PathBuf,
+    source_authority: AuthorizedFilePath,
+    move_target_path: Option<PathBuf>,
+    move_target_authority: Option<AuthorizedFilePath>,
     operation: PatchOperation,
     old_content: String,
     new_content: String,
@@ -555,10 +622,11 @@ fn parse_model_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError> {
 }
 
 async fn process_file_patch(
-    base_path: &Path,
+    file_path: &Path,
     file_patch: &FilePatch,
+    source_authority: AuthorizedFilePath,
+    move_target_authority: Option<AuthorizedFilePath>,
 ) -> Result<FileChange, ToolError> {
-    let file_path = base_path.join(&file_patch.path);
     let relative_path = file_patch.path.clone();
 
     match file_patch.operation {
@@ -591,6 +659,12 @@ async fn process_file_patch(
 
             Ok(FileChange {
                 relative_path,
+                source_path: file_path.to_path_buf(),
+                source_authority,
+                move_target_path: move_target_authority
+                    .as_ref()
+                    .map(|path| path.operation_path().to_path_buf()),
+                move_target_authority,
                 operation: PatchOperation::Add,
                 old_content: String::new(),
                 new_content: new_content + "\n",
@@ -608,6 +682,12 @@ async fn process_file_patch(
 
             Ok(FileChange {
                 relative_path,
+                source_path: file_path.to_path_buf(),
+                source_authority,
+                move_target_path: move_target_authority
+                    .as_ref()
+                    .map(|path| path.operation_path().to_path_buf()),
+                move_target_authority,
                 operation: file_patch.operation.clone(),
                 old_content,
                 new_content,
@@ -631,6 +711,12 @@ async fn process_file_patch(
 
             Ok(FileChange {
                 relative_path,
+                source_path: file_path.to_path_buf(),
+                source_authority,
+                move_target_path: move_target_authority
+                    .as_ref()
+                    .map(|path| path.operation_path().to_path_buf()),
+                move_target_authority,
                 operation: PatchOperation::Delete,
                 old_content,
                 new_content: String::new(),

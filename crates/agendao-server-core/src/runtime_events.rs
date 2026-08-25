@@ -270,6 +270,93 @@ pub enum ServerEvent {
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         todos: Vec<agendao_types::TodoInfo>,
     },
+    #[serde(rename = "steering.applied")]
+    SteeringApplied {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(rename = "steeringID")]
+        steering_id: String,
+        #[serde(rename = "targetTurnID")]
+        target_turn_id: String,
+        #[serde(rename = "appliedAt")]
+        applied_at: i64,
+    },
+    #[serde(rename = "steering.rejected")]
+    SteeringRejected {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(rename = "steeringID")]
+        steering_id: String,
+        reason: String,
+        #[serde(rename = "rejectedAt")]
+        rejected_at: i64,
+    },
+    #[serde(rename = "queue.changed")]
+    QueueChanged {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        #[serde(rename = "queueRevision")]
+        queue_revision: u64,
+        #[serde(rename = "queuedCount")]
+        queued_count: usize,
+    },
+    // ── Sandbox lifecycle ────────────────────────────────────────────
+    // The execution authority's own facts, projected as-is: frontends
+    // must never infer "sandboxed" from the absence of these events.
+    #[serde(rename = "sandbox.prepared")]
+    SandboxPrepared {
+        #[serde(rename = "sessionID", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        #[serde(rename = "profileKind")]
+        profile_kind: String,
+        #[serde(rename = "planFingerprint")]
+        plan_fingerprint: String,
+        backend: String,
+    },
+    #[serde(rename = "sandbox.started")]
+    SandboxStarted {
+        #[serde(rename = "sessionID", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        backend: String,
+    },
+    #[serde(rename = "sandbox.denied")]
+    SandboxDenied {
+        #[serde(rename = "sessionID", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    #[serde(rename = "sandbox.violation")]
+    SandboxViolationReported {
+        #[serde(rename = "sessionID", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        violation: serde_json::Value,
+    },
+    #[serde(rename = "sandbox.exited")]
+    SandboxExited {
+        #[serde(rename = "sessionID", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "executionID")]
+        execution_id: String,
+        backend: String,
+        #[serde(rename = "exitCode", default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        success: bool,
+        /// "natural_exit" | "terminated_by_request" | "killed_after_grace"
+        /// | "timed_out"
+        cleanup: String,
+    },
 }
 
 impl ServerEvent {
@@ -313,11 +400,49 @@ impl ServerEvent {
             | Self::TopologyChanged { session_id, .. }
             | Self::DiffUpdated { session_id, .. }
             | Self::TodoUpdated { session_id, .. }
-            | Self::TaskLedgerReplaced { session_id, .. } => Some(session_id),
+            | Self::TaskLedgerReplaced { session_id, .. }
+            | Self::SteeringApplied { session_id, .. }
+            | Self::SteeringRejected { session_id, .. }
+            | Self::QueueChanged { session_id, .. }
+            | Self::SandboxPrepared {
+                session_id: Some(session_id),
+                ..
+            }
+            | Self::SandboxStarted {
+                session_id: Some(session_id),
+                ..
+            }
+            | Self::SandboxDenied {
+                session_id: Some(session_id),
+                ..
+            }
+            | Self::SandboxViolationReported {
+                session_id: Some(session_id),
+                ..
+            }
+            | Self::SandboxExited {
+                session_id: Some(session_id),
+                ..
+            } => Some(session_id),
             Self::Usage {
                 session_id: None, ..
             }
             | Self::Error {
+                session_id: None, ..
+            }
+            | Self::SandboxPrepared {
+                session_id: None, ..
+            }
+            | Self::SandboxStarted {
+                session_id: None, ..
+            }
+            | Self::SandboxDenied {
+                session_id: None, ..
+            }
+            | Self::SandboxViolationReported {
+                session_id: None, ..
+            }
+            | Self::SandboxExited {
                 session_id: None, ..
             }
             | Self::ConfigUpdated => None,
@@ -342,6 +467,14 @@ impl ServerEvent {
             Self::DiffUpdated { .. } => "diff.updated",
             Self::TodoUpdated { .. } => "todo.updated",
             Self::TaskLedgerReplaced { .. } => "task-ledger.replaced",
+            Self::SteeringApplied { .. } => "steering.applied",
+            Self::SteeringRejected { .. } => "steering.rejected",
+            Self::QueueChanged { .. } => "queue.changed",
+            Self::SandboxPrepared { .. } => "sandbox.prepared",
+            Self::SandboxStarted { .. } => "sandbox.started",
+            Self::SandboxDenied { .. } => "sandbox.denied",
+            Self::SandboxViolationReported { .. } => "sandbox.violation",
+            Self::SandboxExited { .. } => "sandbox.exited",
         }
     }
 

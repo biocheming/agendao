@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,11 +14,14 @@ use serde_json::Value;
 
 use agendao_core::codec;
 use agendao_core::jsonrpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use agendao_core::process_registry::{global_registry, ProcessGuard, ProcessKind};
+use agendao_core::process_registry::{global_registry, ProcessKind};
 use agendao_core::stderr_drain::{spawn_stderr_drain, StderrDrainConfig};
+use agendao_sandbox::{
+    IntegrationSandboxContext, PrepareOptions, SandboxHandleDriver, SpawnSpec, StdioPlan, StdioSpec,
+};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::ChildStdin;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{debug, error};
 use url::Url;
@@ -158,15 +160,15 @@ pub const DIAGNOSTICS_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct LspClient {
     root: PathBuf,
     stdin: Arc<Mutex<ChildStdin>>,
-    /// Stored child process for lifecycle management.
-    child: Arc<Mutex<Option<Child>>>,
+    /// The sandbox driver: sole owner of the execution handle, selecting
+    /// between the child's natural exit and the TERM → grace → KILL
+    /// ladder. Replaces both the raw `Child` and its `kill_on_drop`.
+    driver: Arc<Mutex<Option<SandboxHandleDriver>>>,
     request_id: Arc<Mutex<u64>>,
     pending_responses: PendingResponses,
     diagnostics: Arc<RwLock<HashMap<PathBuf, Vec<Diagnostic>>>>,
     file_versions: Arc<RwLock<HashMap<PathBuf, u32>>>,
     event_tx: broadcast::Sender<LspEvent>,
-    /// RAII guard — auto-unregisters from ProcessRegistry on drop.
-    _process_guard: Option<ProcessGuard>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,29 +177,56 @@ pub enum LspEvent {
 }
 
 impl LspClient {
-    pub async fn start(config: LspServerConfig, root: PathBuf) -> Result<Self, LspError> {
-        let mut child = Command::new(&config.command)
-            .args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true) // Prevent orphan processes
-            .spawn()
-            .map_err(|e| LspError::ServerStartError(e.to_string()))?;
+    /// Start a language server. The process is launched through the
+    /// sandbox execution boundary as `TrustClass::UserConfiguredIntegration`
+    /// under the `Integration` profile (contained, workspace-scoped,
+    /// network denied) — there is no direct-spawn path and no
+    /// "already sandboxed" escape hatch a server config could widen
+    /// (sandbox plan Phase 6).
+    pub async fn start(
+        config: LspServerConfig,
+        root: PathBuf,
+        sandbox: IntegrationSandboxContext,
+    ) -> Result<Self, LspError> {
+        let spec = SpawnSpec {
+            program: config.command.clone(),
+            args: config.args.clone(),
+            cwd: Some(root.clone()),
+            env_overrides: Default::default(),
+        };
+        // The request fixes the trust class and profile kind; user config
+        // only picks the binary and args — it cannot widen them.
+        let prepared = sandbox
+            .prepare(
+                spec,
+                PrepareOptions {
+                    stdio: StdioPlan {
+                        stdin: StdioSpec::Piped,
+                        stdout: StdioSpec::Piped,
+                        stderr: StdioSpec::Piped,
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| {
+                LspError::ServerStartError(format!("sandbox denied the LSP server launch: {}", e))
+            })?;
+        let mut handle = prepared.start().await.map_err(|e| {
+            LspError::ServerStartError(format!("LSP server process spawn failed: {}", e))
+        })?;
 
-        let child_pid = child.id().unwrap_or(0);
+        let child_pid = handle.pid().unwrap_or(0);
 
-        let stdin = child
-            .stdin
-            .take()
+        let stdin = handle
+            .take_stdin()
             .ok_or_else(|| LspError::ServerStartError("Failed to get stdin".to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
+        let stdout = handle
+            .take_stdout()
             .ok_or_else(|| LspError::ServerStartError("Failed to get stdout".to_string()))?;
 
         // Drain stderr to prevent pipe-buffer deadlock.
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = handle.take_stderr() {
             let _handle = spawn_stderr_drain(
                 stderr,
                 StderrDrainConfig::new(format!("lsp:{}", config.command)),
@@ -206,54 +235,50 @@ impl LspClient {
 
         let (event_tx, _) = broadcast::channel(256);
 
-        let mut client = Self {
+        // The registry guard and the driver reference each other (the
+        // guard's shutdown hook terminates through the driver; the
+        // driver's exit callback drops the guard, unregistering the pid
+        // the moment the process dies), so the hook binds to a late slot
+        // filled synchronously right after spawn. Same shape as the MCP
+        // stdio transport and `shell_session`.
+        let late_driver: Arc<std::sync::OnceLock<SandboxHandleDriver>> =
+            Arc::new(std::sync::OnceLock::new());
+        let hook_driver = late_driver.clone();
+        let process_guard = if child_pid > 0 {
+            Some(global_registry().register_with_shutdown(
+                child_pid,
+                format!("lsp:{}", config.command),
+                ProcessKind::Lsp,
+                Arc::new(move || {
+                    if let Some(driver) = hook_driver.get() {
+                        let driver = driver.clone();
+                        let _ = tokio::spawn(async move { driver.terminate().await });
+                    }
+                }),
+            ))
+        } else {
+            None
+        };
+
+        let exit_command = config.command.clone();
+        let driver = SandboxHandleDriver::spawn(handle, move |status| {
+            debug!(command = exit_command, ?status, "LSP server process exited");
+            // Drop the guard on exit so the registry stops listing a
+            // dead pid before the client itself goes away.
+            drop(process_guard);
+        });
+        let _ = late_driver.set(driver.clone());
+
+        let client = Self {
             root,
             stdin: Arc::new(Mutex::new(stdin)),
-            child: Arc::new(Mutex::new(Some(child))),
+            driver: Arc::new(Mutex::new(Some(driver))),
             request_id: Arc::new(Mutex::new(0)),
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: Arc::new(RwLock::new(HashMap::new())),
             file_versions: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
-            _process_guard: None,
         };
-
-        // Register with global process registry for visibility + kill capability.
-        if child_pid > 0 {
-            let child_arc = client.child.clone();
-            let stdin_arc = client.stdin.clone();
-            client._process_guard = Some(global_registry().register_with_shutdown(
-                child_pid,
-                format!("lsp:{}", config.command),
-                ProcessKind::Lsp,
-                Arc::new(move || {
-                    // Best-effort: drop stdin to signal EOF, then kill child.
-                    // This runs synchronously from ProcessRegistry::kill().
-                    let stdin_ref = stdin_arc.clone();
-                    let child_ref = child_arc.clone();
-                    // Use a blocking task since ProcessRegistry::kill() is sync.
-                    let _ = std::thread::spawn(move || {
-                        let rt = tokio::runtime::Handle::try_current();
-                        if let Ok(handle) = rt {
-                            handle.block_on(async {
-                                // Close stdin to signal the LSP server.
-                                drop(stdin_ref.lock().await);
-                                // Kill the child process.
-                                if let Some(ref mut c) = *child_ref.lock().await {
-                                    if let Err(error) = c.kill().await {
-                                        tracing::debug!(
-                                            error = %error,
-                                            "Failed to kill LSP child process during registry cleanup"
-                                        );
-                                    }
-                                }
-                            });
-                        }
-                    })
-                    .join();
-                }),
-            ));
-        }
 
         let pending = client.pending_responses.clone();
         let diagnostics = client.diagnostics.clone();
@@ -877,8 +902,10 @@ impl LspClient {
         Ok(calls)
     }
 
-    /// Graceful shutdown: sends LSP `shutdown` + `exit`, then kills the child process.
-    /// ProcessGuard auto-unregisters from the global ProcessRegistry on drop (RAII).
+    /// Graceful shutdown: sends LSP `shutdown` + `exit`, then runs the
+    /// cancellation ladder (TERM → grace → KILL) through the sandbox
+    /// driver. The process guard is dropped by the driver's exit
+    /// callback, unregistering the pid.
     pub async fn shutdown(&self) {
         // Try LSP protocol shutdown
         if let Err(error) = self.request("shutdown", serde_json::Value::Null).await {
@@ -894,17 +921,30 @@ impl LspClient {
             );
         }
 
-        // Kill child — guard drop handles unregistration
-        let mut child_guard = self.child.lock().await;
-        if let Some(ref mut child) = *child_guard {
-            if let Err(error) = child.kill().await {
+        let mut driver_guard = self.driver.lock().await;
+        if let Some(driver) = driver_guard.take() {
+            if let Err(error) = driver.terminate().await {
                 tracing::debug!(
                     error = %error,
-                    "Failed to kill LSP child process during shutdown"
+                    "Failed to terminate LSP child process during shutdown"
                 );
             }
         }
-        *child_guard = None;
+    }
+}
+
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        // kill_on_drop equivalent: the driver task owns the handle, so a
+        // dropped client must terminate the ladder explicitly — a
+        // language server must never outlive its client just because the
+        // caller forgot `shutdown()`. Drop cannot await, so the ladder
+        // runs detached; `shutdown()` remains the synchronous path.
+        if let Ok(mut guard) = self.driver.try_lock() {
+            if let Some(driver) = guard.take() {
+                let _ = tokio::spawn(async move { driver.terminate().await });
+            }
+        }
     }
 }
 

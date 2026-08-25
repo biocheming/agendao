@@ -66,22 +66,45 @@ pub struct SessionStore {
     /// 见 `apply_assistant_snapshot` 的两种线上 `full` 形态说明。不参与渲染，
     /// 仅作事件流状态（writer = telemetry::event_handler）。
     pub stream_new_segments: Signal<std::collections::HashSet<String>>,
+    /// M8 segment-level lifecycle fence. Wire `end` can terminate a chunk
+    /// segment (not necessarily a logical turn), so a later `start` reopens
+    /// this identity. It prevents duplicate/out-of-order deltas between end
+    /// and the next start; it does not claim logical-message finality.
+    pub finalized_stream_blocks: Signal<std::collections::HashSet<String>>,
 
     /// 会话级 diff 汇总（`FrontendEvent::DiffReplaced`，replace 语义——每轮
     /// 结束下发的全量集合直接替换，不累加）。空 Vec = 无未决改动（角标隐藏）。
     pub diff_summary: Signal<Vec<DiffStat>>,
     /// diff 角标逐文件明细展开态（点击角标 toggle；writer = keymap 鼠标）。
     pub diff_detail_open: Signal<bool>,
+    /// M7 per-session details policy; never shared across session switches.
+    pub details_policy: Signal<crate::details_policy::DetailsPolicy>,
+    /// Last authoritative topology summary. `None` means no snapshot seen.
+    pub topology_summary: Signal<Option<TopologySummary>>,
+    /// Authoritative M9 subagent projection; replaced by topology snapshots.
+    pub subagent_projection: Signal<Option<crate::subagent_panel::SubagentPanelProjection>>,
 
     // ── 火：运行时 ──
     pub active_tools: Signal<Vec<ActiveTool>>,
+    pub active_turn_id: Signal<Option<String>>,
     /// 本次运行的起点（Reasonix "Working Ns" 模式）：进入运行态置位、
     /// 回 Idle/WaitingUser/Error 清零。None = 未在运行。
     pub running_since: Signal<Option<std::time::Instant>>,
 
+    // ── §8 可观测性：活跃 sandbox 执行集合 ──
+    /// 唯一权威来源是 `sandbox.execution.upsert/removed` 事件与
+    /// runtime 快照（replaced 全量替换、事件增量维护）。任何
+    /// "sandboxed" 展示只能以此为据——没有条目的执行不得渲染成
+    /// 已沙箱（writer = telemetry::event_handler）。
+    pub active_sandboxes: Signal<Vec<agendao_client::SandboxExecutionSummary>>,
+
     // ── 木：输入附面（文本/history 的唯一权威是 `input::PromptInput`；
     //    此处只承载待发附件，由 keymap 写入、RootView 附件条渲染消费）──
     pub attachments: Signal<Vec<Attachment>>,
+
+    // ── M2.5：只读 Shadow Projection 协调器（不驱动 UI，仅用于协议与一致性比对）──
+    pub shadow_coordinator:
+        std::sync::Arc<crate::store::projection_coordinator::ProjectionCoordinator>,
 }
 
 impl Default for SessionStore {
@@ -111,11 +134,20 @@ impl SessionStore {
             mcp_lsp: signal(McpLspInfo::default()),
             task_ledger: Signal::new(None),
             active_tools: signal(Vec::new()),
+            active_sandboxes: signal(Vec::new()),
+            active_turn_id: signal(None),
             running_since: signal(None),
             attachments: signal(Vec::new()),
+            shadow_coordinator: std::sync::Arc::new(
+                crate::store::projection_coordinator::ProjectionCoordinator::new(),
+            ),
             stream_new_segments: signal(std::collections::HashSet::new()),
+            finalized_stream_blocks: signal(std::collections::HashSet::new()),
             diff_summary: signal(Vec::new()),
             diff_detail_open: signal(false),
+            details_policy: signal(crate::details_policy::DetailsPolicy::default()),
+            topology_summary: signal(None),
+            subagent_projection: signal(None),
         }
     }
 
@@ -128,6 +160,7 @@ impl SessionStore {
     pub fn reset_for_new_session(&self) {
         self.task_ledger.set(None);
         self.session_id.set(None);
+        self.active_turn_id.set(None);
         self.title.set(String::from("New Session"));
         self.set_run_status(RunStatus::Idle);
         self.messages.update(|m| m.clear());
@@ -142,8 +175,70 @@ impl SessionStore {
         self.session_agent.set(None);
         self.active_tools.update(|t| t.clear());
         self.stream_new_segments.update(|s| s.clear());
+        self.finalized_stream_blocks.update(|s| s.clear());
         self.diff_summary.update(|d| d.clear());
         self.diff_detail_open.set(false);
+        self.details_policy
+            .set(crate::details_policy::DetailsPolicy::default());
+        self.topology_summary.set(None);
+        self.subagent_projection.set(None);
+        // 新会话重置 shadow 协调器，防止旧会话数据污染
+        self.shadow_coordinator.reset_session();
+    }
+
+    pub fn clear_details_session_overrides(&self) {
+        self.details_policy
+            .update(|policy| policy.instance_overrides.clear());
+    }
+
+    pub fn set_topology_summary(&self, summary: TopologySummary) {
+        self.topology_summary.set(Some(summary));
+    }
+
+    pub fn clear_topology_summary(&self) {
+        self.topology_summary.set(None);
+    }
+
+    /// M9 replacement fence. Topology is a server snapshot, never a local
+    /// counter: a different session, an older revision, or a second
+    /// unversioned update is rejected rather than guessed about.
+    pub fn replace_subagent_projection(
+        &self,
+        topology: &agendao_api::SessionExecutionTopology,
+    ) -> bool {
+        if self.session_id.get().as_deref() != Some(topology.session_id.as_str()) {
+            return false;
+        }
+        let next = crate::subagent_panel::SubagentPanelProjection::from_topology(topology);
+        if let Some(current) = self.subagent_projection.get() {
+            match (current.topology_updated_at, next.topology_updated_at) {
+                (Some(current_ts), Some(next_ts)) if next_ts < current_ts => return false,
+                (Some(current_ts), Some(next_ts))
+                    if next_ts == current_ts
+                        && current.topology_fingerprint != next.topology_fingerprint =>
+                {
+                    return false
+                }
+                (Some(_), None) => return false,
+                (None, None) if current.topology_fingerprint != next.topology_fingerprint => {
+                    return false
+                }
+                _ => {}
+            }
+        }
+        self.subagent_projection.set(Some(next));
+        true
+    }
+
+    pub fn subagent_count(&self) -> Option<usize> {
+        self.topology_summary.get().and_then(|s| s.subagents)
+    }
+
+    pub fn running_tool_count(&self) -> usize {
+        self.topology_summary
+            .get()
+            .map(|s| s.running_tools)
+            .unwrap_or(0)
     }
 
     /// Apply a server-authoritative ledger snapshot for the active session.
@@ -209,6 +304,13 @@ impl SessionStore {
 
     /// Append or stream-append an assistant message.
     pub fn push_assistant_delta(&self, block_id: &str, text: &str) {
+        if self
+            .finalized_stream_blocks
+            .get()
+            .contains(&format!("m:{block_id}"))
+        {
+            return;
+        }
         self.messages.update(|msgs| match msgs.last_mut() {
             Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
                 content.push_str(text);
@@ -218,6 +320,7 @@ impl SessionStore {
                 msgs.push(TranscriptBlock::AssistantMsg {
                     id: block_id.into(),
                     content: text.into(),
+                    lifecycle: StreamBlockLifecycle::Streaming,
                     fold: FoldState::Truncated,
                 })
             }
@@ -228,6 +331,26 @@ impl SessionStore {
     /// kind 用短前缀区分流：m = assistant message，r = reasoning。
     pub fn mark_stream_segment_start(&self, kind: &str, block_id: &str) {
         let key = format!("{kind}:{block_id}");
+        // A new wire segment may legally reuse the id after a prior
+        // start/full/end chunk lifecycle; reopen the id before accepting it.
+        self.finalized_stream_blocks.update(|s| {
+            s.remove(&key);
+        });
+        self.messages.update(|msgs| {
+            for block in msgs.iter_mut() {
+                match (kind, block) {
+                    ("m", TranscriptBlock::AssistantMsg { id, lifecycle, .. })
+                        if id == block_id =>
+                    {
+                        *lifecycle = StreamBlockLifecycle::Streaming
+                    }
+                    ("r", TranscriptBlock::Thinking { id, lifecycle, .. }) if id == block_id => {
+                        *lifecycle = StreamBlockLifecycle::Streaming
+                    }
+                    _ => {}
+                }
+            }
+        });
         self.stream_new_segments.update(|s| {
             s.insert(key);
         });
@@ -245,6 +368,47 @@ impl SessionStore {
         marked
     }
 
+    pub fn finalize_stream_block(&self, kind: &str, block_id: &str) {
+        let key = format!("{kind}:{block_id}");
+        self.finalized_stream_blocks.update(|s| {
+            s.insert(key.clone());
+        });
+        self.stream_new_segments.update(|s| {
+            s.remove(&key);
+        });
+        self.messages.update(|msgs| {
+            for block in msgs.iter_mut() {
+                match (kind, block) {
+                    ("m", TranscriptBlock::AssistantMsg { id, lifecycle, .. })
+                        if id == block_id =>
+                    {
+                        *lifecycle = StreamBlockLifecycle::Finalized
+                    }
+                    ("r", TranscriptBlock::Thinking { id, lifecycle, .. }) if id == block_id => {
+                        *lifecycle = StreamBlockLifecycle::Finalized
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    pub fn stream_block_lifecycle(&self, kind: &str, block_id: &str) -> StreamBlockLifecycle {
+        if self.stream_block_is_closed(kind, block_id) {
+            StreamBlockLifecycle::Finalized
+        } else {
+            StreamBlockLifecycle::Streaming
+        }
+    }
+
+    /// Explicit lifecycle vocabulary for consumers/tests. This reports the
+    /// stream segment state only; no terminal turn authority is inferred.
+    pub fn stream_block_is_closed(&self, kind: &str, block_id: &str) -> bool {
+        self.finalized_stream_blocks
+            .get()
+            .contains(&format!("{kind}:{block_id}"))
+    }
+
     /// Merge a `full`-phase snapshot into the running assistant block.
     ///
     /// 线上 `full` 块有两种真实形态（实测 wire 取证）：
@@ -260,6 +424,13 @@ impl SessionStore {
     /// （一次性错误文本、历史回填、turn-final 完成帧）按 merge 口径处理：
     /// 累积→前缀替换、重复→去重、多 part→拼接。
     pub fn apply_assistant_snapshot(&self, block_id: &str, text: &str) {
+        if self
+            .finalized_stream_blocks
+            .get()
+            .contains(&format!("m:{block_id}"))
+        {
+            return;
+        }
         let new_segment = self.take_stream_segment("m", block_id);
         self.messages.update(|msgs| match msgs.last_mut() {
             Some(TranscriptBlock::AssistantMsg { id, content, .. }) if id == block_id => {
@@ -272,6 +443,7 @@ impl SessionStore {
             _ => msgs.push(TranscriptBlock::AssistantMsg {
                 id: block_id.into(),
                 content: text.into(),
+                lifecycle: StreamBlockLifecycle::Streaming,
                 fold: FoldState::Truncated,
             }),
         });
@@ -283,6 +455,13 @@ impl SessionStore {
     /// turning a single chain-of-thought into dozens of single-character
     /// blocks in the transcript.
     pub fn push_thinking(&self, id: &str, text: &str) {
+        if self
+            .finalized_stream_blocks
+            .get()
+            .contains(&format!("r:{id}"))
+        {
+            return;
+        }
         self.messages.update(|msgs| {
             if let Some(TranscriptBlock::Thinking {
                 id: bid, content, ..
@@ -297,6 +476,7 @@ impl SessionStore {
             msgs.push(TranscriptBlock::Thinking {
                 id: id.into(),
                 content: text.into(),
+                lifecycle: StreamBlockLifecycle::Streaming,
                 fold: FoldState::Truncated,
                 duration_ms: 0,
                 user_overridden: false,
@@ -307,6 +487,13 @@ impl SessionStore {
     /// Merge a `full`-phase reasoning snapshot into the running thinking block.
     /// 与 `apply_assistant_snapshot` 同理（`start` 新段追加，否则 merge）。
     pub fn apply_thinking_snapshot(&self, id: &str, text: &str) {
+        if self
+            .finalized_stream_blocks
+            .get()
+            .contains(&format!("r:{id}"))
+        {
+            return;
+        }
         let new_segment = self.take_stream_segment("r", id);
         self.messages.update(|msgs| {
             if let Some(TranscriptBlock::Thinking {
@@ -326,6 +513,7 @@ impl SessionStore {
             msgs.push(TranscriptBlock::Thinking {
                 id: id.into(),
                 content: text.into(),
+                lifecycle: StreamBlockLifecycle::Streaming,
                 fold: FoldState::Truncated,
                 duration_ms: 0,
                 user_overridden: false,
@@ -600,6 +788,48 @@ impl SessionStore {
         self.run_status.set(status);
     }
 
+    /// §8：sandbox 执行增量进入活跃集合。与 server 侧 store 相同的
+    /// refine 语义——已存在的条目只补非空字段（started 只带 pid，
+    /// 不得抹掉 prepared 写入的 profile/fingerprint）。
+    pub fn sandbox_execution_upsert(&self, summary: agendao_client::SandboxExecutionSummary) {
+        if summary.execution_id.is_empty() {
+            return;
+        }
+        self.active_sandboxes.update(|set| {
+            match set
+                .iter_mut()
+                .find(|e| e.execution_id == summary.execution_id)
+            {
+                Some(existing) => {
+                    if !summary.backend.is_empty() {
+                        existing.backend = summary.backend.clone();
+                    }
+                    if !summary.profile_kind.is_empty() {
+                        existing.profile_kind = summary.profile_kind.clone();
+                    }
+                    if !summary.plan_fingerprint.is_empty() {
+                        existing.plan_fingerprint = summary.plan_fingerprint.clone();
+                    }
+                    if summary.pid.is_some() {
+                        existing.pid = summary.pid;
+                    }
+                }
+                None => set.push(summary),
+            }
+        });
+    }
+
+    /// §8：sandbox 执行离开活跃集合（exited/denied/violation）。
+    pub fn sandbox_execution_removed(&self, execution_id: &str) {
+        self.active_sandboxes
+            .update(|set| set.retain(|e| e.execution_id != execution_id));
+    }
+
+    /// runtime 快照的权威替换：replaced 语义下事件流残迹不得存活。
+    pub fn set_active_sandboxes(&self, snapshot: Vec<agendao_client::SandboxExecutionSummary>) {
+        self.active_sandboxes.set(snapshot);
+    }
+
     pub fn set_active_tool(&self, id: &str, name: &str, phase: ToolPhase) {
         self.active_tools.update(|tools| {
             // 同一工具的 phase 推进保留最初起点，工具耗时才是真实执行时长。
@@ -631,6 +861,12 @@ impl SessionStore {
     // ── Session ID ──
 
     pub fn set_session_id(&self, id: &str) {
+        if self.session_id.get().as_deref() != Some(id) {
+            self.details_policy
+                .set(crate::details_policy::DetailsPolicy::default());
+            self.topology_summary.set(None);
+            self.subagent_projection.set(None);
+        }
         self.session_id.set(Some(id.to_string()));
     }
 
@@ -1868,7 +2104,7 @@ mod tests {
                     id: "1".into(),
                     content: "hi".into(),
                     fold: FoldState::Expanded,
-                failed: false,
+                    failed: false,
                 },
                 "User: hi",
             ),
@@ -1876,6 +2112,7 @@ mod tests {
                 TranscriptBlock::AssistantMsg {
                     id: "2".into(),
                     content: "yo".into(),
+                    lifecycle: StreamBlockLifecycle::Streaming,
                     fold: FoldState::Expanded,
                 },
                 "Assistant: yo",
@@ -1906,9 +2143,10 @@ mod tests {
                 TranscriptBlock::Thinking {
                     id: "5".into(),
                     content: "hmm".into(),
+                    lifecycle: StreamBlockLifecycle::Streaming,
                     fold: FoldState::Expanded,
                     duration_ms: 0,
-            user_overridden: false,
+                    user_overridden: false,
                 },
                 "Thinking: hmm",
             ),
@@ -2136,7 +2374,10 @@ mod tests {
         s.set_run_status(RunStatus::WaitingUser);
         assert!(s.running_since.get().is_none(), "等待用户清零");
         s.set_run_status(RunStatus::Running);
-        assert!(s.running_since.get().is_some_and(|t| t >= anchor), "重新运行重新起表");
+        assert!(
+            s.running_since.get().is_some_and(|t| t >= anchor),
+            "重新运行重新起表"
+        );
     }
 
     #[test]
@@ -2164,8 +2405,11 @@ mod tests {
         s.push_user_message("m1", "hello");
         s.mark_user_message_failed("m1");
         let msgs = s.messages.get();
-        let Some(TranscriptBlock::UserPrompt { failed, content, .. }) =
-            msgs.iter().find(|b| matches!(b, TranscriptBlock::UserPrompt { id, .. } if id == "m1"))
+        let Some(TranscriptBlock::UserPrompt {
+            failed, content, ..
+        }) = msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::UserPrompt { id, .. } if id == "m1"))
         else {
             panic!("失败消息必须保留在 transcript");
         };
@@ -2232,8 +2476,14 @@ mod tests {
         s.upsert_tool_call("t9", "bash", "ls -la", ToolPhase::Running);
         s.upsert_tool_call("t9", "bash", "", ToolPhase::Done);
         let msgs = s.messages.get();
-        let Some(TranscriptBlock::ToolCall { started_at, duration, phase, .. }) =
-            msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
+        let Some(TranscriptBlock::ToolCall {
+            started_at,
+            duration,
+            phase,
+            ..
+        }) = msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
         else {
             panic!("tool call block missing");
         };
@@ -2243,8 +2493,11 @@ mod tests {
         let frozen = *duration;
         s.upsert_tool_call("t9", "bash", "", ToolPhase::Done);
         let msgs = s.messages.get();
-        let Some(TranscriptBlock::ToolCall { duration: after, .. }) =
-            msgs.iter().find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
+        let Some(TranscriptBlock::ToolCall {
+            duration: after, ..
+        }) = msgs
+            .iter()
+            .find(|b| matches!(b, TranscriptBlock::ToolCall { id, .. } if id == "t9"))
         else {
             panic!()
         };
@@ -2261,5 +2514,88 @@ mod tests {
             format_elapsed(std::time::Duration::from_secs(3600 + 240)),
             "1h04m"
         );
+    }
+
+    #[test]
+    fn finalized_stream_rejects_late_delta_and_snapshot() {
+        let s = SessionStore::new();
+        s.push_assistant_delta("m1", "final");
+        s.finalize_stream_block("m", "m1");
+        s.push_assistant_delta("m1", " late");
+        s.apply_assistant_snapshot("m1", "rewritten");
+        match &s.messages.get()[0] {
+            TranscriptBlock::AssistantMsg { content, .. } => assert_eq!(content, "final"),
+            _ => panic!("expected assistant message"),
+        }
+        s.push_thinking("r1", "reason");
+        s.finalize_stream_block("r", "r1");
+        s.push_thinking("r1", " late");
+        match &s.messages.get()[1] {
+            TranscriptBlock::Thinking { content, .. } => assert_eq!(content, "reason"),
+            _ => panic!("expected thinking"),
+        }
+        s.mark_stream_segment_start("m", "m1");
+        assert_eq!(
+            s.stream_block_lifecycle("m", "m1"),
+            StreamBlockLifecycle::Streaming
+        );
+        s.apply_assistant_snapshot("m1", " next");
+        match s.messages.get().last().expect("reopened assistant") {
+            TranscriptBlock::AssistantMsg { content, .. } => assert_eq!(content, " next"),
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn stream_lifecycle_transitions_are_segment_scoped() {
+        let s = SessionStore::new();
+        assert_eq!(
+            s.stream_block_lifecycle("m", "x"),
+            StreamBlockLifecycle::Streaming
+        );
+        s.finalize_stream_block("m", "x");
+        assert_eq!(
+            s.stream_block_lifecycle("m", "x"),
+            StreamBlockLifecycle::Finalized
+        );
+        s.mark_stream_segment_start("m", "x");
+        assert_eq!(
+            s.stream_block_lifecycle("m", "x"),
+            StreamBlockLifecycle::Streaming
+        );
+    }
+
+    #[test]
+    fn subagent_projection_rejects_cross_session_stale_and_equal_conflict() {
+        let s = SessionStore::new();
+        s.set_session_id("s1");
+        let mk = |sid: &str, ts: Option<i64>, label: &str| agendao_api::SessionExecutionTopology {
+            session_id: sid.into(),
+            active_count: 1,
+            done_count: 0,
+            running_count: 1,
+            waiting_count: 0,
+            cancelling_count: 0,
+            retry_count: 0,
+            updated_at: ts,
+            roots: vec![agendao_api::SessionExecutionNode {
+                id: "sa".into(),
+                kind: agendao_api::ExecutionKind::SchedulerNode,
+                status: agendao_api::ExecutionStatus::Running,
+                label: Some(label.into()),
+                parent_id: None,
+                waiting_on: None,
+                recent_event: None,
+                started_at: 0,
+                updated_at: 0,
+                metadata: Some(serde_json::json!({"subagent": true})),
+                children: vec![],
+            }],
+        };
+        assert!(!s.replace_subagent_projection(&mk("other", Some(1), "x")));
+        assert!(s.replace_subagent_projection(&mk("s1", Some(2), "x")));
+        assert!(!s.replace_subagent_projection(&mk("s1", Some(1), "y")));
+        assert!(!s.replace_subagent_projection(&mk("s1", Some(2), "y")));
+        assert!(s.replace_subagent_projection(&mk("s1", Some(2), "x")));
     }
 }

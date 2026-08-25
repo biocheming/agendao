@@ -16,6 +16,7 @@ members = [
     "crates/agendao-grep",
     "crates/agendao-permission",
     "crates/agendao-provider",
+    "crates/agendao-sandbox",
     "crates/agendao-state",
     "crates/agendao-runtime-context",
     "crates/agendao-memory",

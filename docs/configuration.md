@@ -217,6 +217,8 @@ session 的 typed mode 不是 `~/.agendao/agendao.json` 顶层 `permission` 的�
 | `trusted_workspace` | 自动放行工作区范围内的读取和写入；外部目录、网络和危险执行仍需单独判断 |
 | `unsandboxed_yolo` | 在 AgenDao permission 层自动批准所有请求，不再弹 permission 对话框 |
 
+> permission mode 只作用在 **permission 层**。模型可达执行的 **sandbox 物理层**由唯一 `SandboxExecutionBoundary` 决定，不受 permission mode 直接改写：`trusted_workspace` 不放开任何超出 `default` 的 sandbox 宽度；`unsandboxed_yolo` 是**显式退出 sandbox**（经 session 层授权触达 native 通道），不是 "sandbox YOLO"。二者区别见 `sandbox.md`。
+
 它可以通过 session UI，或 API `PATCH /session/{id}/permission` 设置：
 
 ```json
@@ -308,3 +310,10 @@ provider 能否真正工作，至少要同时满足：字段能解析、provider
 - [Agent](agents.md)
 - [外部工具 examples](examples/tools/README.md)
 - [配置 schema](agendao_config.schema.json)
+# Sandbox deployment environment
+
+`AGENDAO_SANDBOX_ENV_ALLOW_EXACT` is an optional comma-separated list of exact
+environment variable names that the deployment administrator has confirmed are
+false positives for sandbox secret-name heuristics. It does not override the
+hard denylist: AgenDao internal tokens and passwords remain unavailable even if
+listed. The default is empty.

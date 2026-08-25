@@ -230,13 +230,16 @@ impl McpClient {
     // -- Factory helpers -----------------------------------------------------
 
     /// Create a client that communicates over stdio with a child process.
+    /// The process is launched through the sandbox execution boundary
+    /// (`Integration` profile); there is no direct-spawn variant.
     pub async fn stdio(
         server_name: String,
         tool_registry: Arc<McpToolRegistry>,
         config: McpServerConfig,
+        sandbox: agendao_sandbox::IntegrationSandboxContext,
     ) -> Result<Self, McpClientError> {
         let client = Self::new(server_name, tool_registry);
-        client.connect_stdio(config).await?;
+        client.connect_stdio(config, sandbox).await?;
         Ok(client)
     }
     /// Create a client that communicates over StreamableHTTP.
@@ -265,8 +268,12 @@ impl McpClient {
 
     // -- Connection methods ---------------------------------------------------
 
-    pub async fn connect_stdio(&self, config: McpServerConfig) -> Result<(), McpClientError> {
-        let result = self.connect_stdio_inner(config).await;
+    pub async fn connect_stdio(
+        &self,
+        config: McpServerConfig,
+        sandbox: agendao_sandbox::IntegrationSandboxContext,
+    ) -> Result<(), McpClientError> {
+        let result = self.connect_stdio_inner(config, sandbox).await;
         match &result {
             Ok(()) => self.set_status(McpStatus::Connected).await,
             Err(e) => {
@@ -279,8 +286,13 @@ impl McpClient {
         result
     }
 
-    async fn connect_stdio_inner(&self, config: McpServerConfig) -> Result<(), McpClientError> {
-        let transport = StdioTransport::new(&config.command, &config.args, config.env).await?;
+    async fn connect_stdio_inner(
+        &self,
+        config: McpServerConfig,
+        sandbox: agendao_sandbox::IntegrationSandboxContext,
+    ) -> Result<(), McpClientError> {
+        let transport =
+            StdioTransport::new(&config.command, &config.args, config.env, sandbox).await?;
         self.set_transport(Arc::new(transport)).await;
         self.initialize().await?;
         self.load_tools().await?;
@@ -703,6 +715,10 @@ pub struct McpClientRegistry {
     clients: RwLock<HashMap<String, Arc<McpClient>>>,
     tool_registry: Arc<McpToolRegistry>,
     bus: Option<Arc<Bus>>,
+    /// Sandbox launch context for stdio servers. `None` until the host
+    /// installs the execution authority — stdio connects then fail
+    /// loudly instead of falling back to a direct spawn.
+    sandbox: Option<agendao_sandbox::IntegrationSandboxContext>,
     /// Per-server status, including servers that failed to connect or are
     /// disabled.  Entries here may not have a corresponding client.
     statuses: RwLock<HashMap<String, McpStatus>>,
@@ -715,10 +731,19 @@ impl McpClientRegistry {
             clients: RwLock::new(HashMap::new()),
             tool_registry: Arc::new(McpToolRegistry::new()),
             bus: None,
+            sandbox: None,
             statuses: RwLock::new(HashMap::new()),
             connection_configs: RwLock::new(HashMap::new()),
             logs: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Install the sandbox execution authority every stdio server
+    /// launches through (Integration profile: contained, workspace
+    /// scoped, network denied).
+    pub fn with_sandbox(mut self, sandbox: agendao_sandbox::IntegrationSandboxContext) -> Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 
     pub fn with_bus(mut self, bus: Arc<Bus>) -> Self {
@@ -768,6 +793,13 @@ impl McpClientRegistry {
         config: McpServerConfig,
     ) -> Result<Arc<McpClient>, McpClientError> {
         let name = config.name.clone();
+        let sandbox = self.sandbox.clone().ok_or_else(|| {
+            McpClientError::TransportError(
+                "stdio MCP servers require a sandbox execution authority; \
+                 none is installed in this host"
+                    .to_string(),
+            )
+        })?;
         self.connection_configs.write().await.insert(
             name.clone(),
             RegistryConnectionConfig::Stdio(config.clone()),
@@ -784,7 +816,7 @@ impl McpClientRegistry {
         }
         let client = Arc::new(client_impl);
 
-        match client.connect_stdio(config).await {
+        match client.connect_stdio(config, sandbox).await {
             Ok(()) => {
                 self.set_status(&name, McpStatus::Connected).await;
                 self.clients.write().await.insert(name, client.clone());

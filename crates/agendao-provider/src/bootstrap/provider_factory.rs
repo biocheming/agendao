@@ -52,9 +52,10 @@ fn provider_base_url(provider: &ProviderState) -> Option<String> {
     // An explicit options baseURL (legacy style) wins over catalog/model
     // derived URLs — it is the endpoint the user actually configured.
     option_string(&provider.options, &["baseURL", "baseUrl", "base_url"]).or_else(|| {
-        provider.models.values().find_map(|model| {
-            (!model.api.url.trim().is_empty()).then(|| model.api.url.clone())
-        })
+        provider
+            .models
+            .values()
+            .find_map(|model| (!model.api.url.trim().is_empty()).then(|| model.api.url.clone()))
     })
 }
 
@@ -354,14 +355,16 @@ fn resolve_profile_with_legacy_fallback(
             })?;
             let mut options = provider.options.clone();
             options.insert("provider_profile".to_string(), default);
-            ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options).map(|profile| {
-                tracing::info!(
-                    provider = provider_id,
-                    npm = %npm,
-                    "applied npm-derived default provider profile (legacy config)"
-                );
-                (profile, options)
-            })
+            ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options).map(
+                |profile| {
+                    tracing::info!(
+                        provider = provider_id,
+                        npm = %npm,
+                        "applied npm-derived default provider profile (legacy config)"
+                    );
+                    (profile, options)
+                },
+            )
         }
         Err(error) => Err(error),
     }
@@ -443,7 +446,10 @@ fn create_protocol_provider(
 /// providers keep failing closed — the default-profile fallback is only
 /// for endpoints the user actually wired up.
 fn has_legacy_credentials(provider: &ProviderState) -> bool {
-    provider.key.as_deref().is_some_and(|key| !key.trim().is_empty())
+    provider
+        .key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
         || option_string(&provider.options, &["apiKey", "apikey", "api_key"]).is_some()
 }
 
@@ -616,9 +622,8 @@ mod tests {
     #[test]
     fn legacy_options_provider_gets_npm_derived_default_profile() {
         let provider = legacy_provider_state("zhipuai-coding-plan");
-        let concrete =
-            create_concrete_provider("zhipuai-coding-plan", &provider)
-                .expect("legacy provider with inline key must materialize");
+        let concrete = create_concrete_provider("zhipuai-coding-plan", &provider)
+            .expect("legacy provider with inline key must materialize");
         assert_eq!(concrete.id(), "zhipuai-coding-plan");
     }
 
@@ -639,7 +644,10 @@ mod tests {
             &options,
         )
         .expect("config should resolve");
-        assert_eq!(config.base_url, "https://open.bigmodel.cn/api/coding/paas/v4");
+        assert_eq!(
+            config.base_url,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
         assert_eq!(config.api_key, "legacy-key");
     }
 
@@ -656,9 +664,8 @@ mod tests {
             serde_json::Value::String("@ai-sdk/anthropic".into()),
         );
         let npm = resolve_npm_for_provider("kimi-for-coding", &provider);
-        let (profile, _) =
-            resolve_profile_with_legacy_fallback("kimi-for-coding", &provider, &npm)
-                .expect("npm-derived fallback should resolve");
+        let (profile, _) = resolve_profile_with_legacy_fallback("kimi-for-coding", &provider, &npm)
+            .expect("npm-derived fallback should resolve");
         assert_eq!(profile.api_shape, ProviderApiShape::AnthropicMessages);
     }
 
@@ -695,12 +702,11 @@ mod tests {
         .expect("config should resolve");
 
         // 请求路径同款解析：try_resolve_with_options 读 config.options。
-        let request_path_profile =
-            ProviderProfileResolver::try_resolve_with_options(
-                "zhipuai-coding-plan",
-                &config.options,
-            )
-            .expect("request-path resolution must succeed with persisted profile");
+        let request_path_profile = ProviderProfileResolver::try_resolve_with_options(
+            "zhipuai-coding-plan",
+            &config.options,
+        )
+        .expect("request-path resolution must succeed with persisted profile");
         assert_eq!(
             request_path_profile.api_shape,
             ProviderApiShape::ChatCompletions

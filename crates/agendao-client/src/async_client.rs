@@ -247,6 +247,66 @@ impl AsyncApiClient {
         Self::json_ok(response, "update session permission mode").await
     }
 
+    pub async fn submit_input(
+        &self,
+        session_id: &str,
+        command: &agendao_types::submission::SubmitInputCommand,
+    ) -> anyhow::Result<agendao_types::submission::SubmissionDisposition> {
+        let url = format!("/session/{session_id}/submit-input");
+        self.post_json(&url, "submit input", command).await
+    }
+
+    pub async fn interrupt(
+        &self,
+        session_id: &str,
+        command: &agendao_types::submission::InterruptCommand,
+    ) -> anyhow::Result<agendao_types::submission::InterruptDisposition> {
+        let url = format!("/session/{session_id}/interrupt");
+        self.post_json(&url, "interrupt turn", command).await
+    }
+
+    pub async fn delete_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueMutationRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        self.delete_json_with_body(
+            &format!("/session/{session_id}/queue/{item_id}"),
+            "delete queued input",
+            request,
+        )
+        .await
+    }
+
+    pub async fn edit_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueEditRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        self.patch_json(
+            &format!("/session/{session_id}/queue/{item_id}"),
+            "edit queued input",
+            request,
+        )
+        .await
+    }
+
+    pub async fn reorder_queued_input(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        request: &agendao_types::submission::QueueReorderRequest,
+    ) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+        self.post_json(
+            &format!("/session/{session_id}/queue/{item_id}/reorder"),
+            "reorder queued input",
+            request,
+        )
+        .await
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {
         let value: serde_json::Value = self
             .delete_json(
@@ -1375,7 +1435,7 @@ impl AsyncApiClient {
         Self::json_ok(resp, action).await
     }
 
-    async fn post_json<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
+    pub async fn post_json<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
         &self,
         path: &str,
         action: &str,
@@ -1440,6 +1500,17 @@ impl AsyncApiClient {
     ) -> anyhow::Result<T> {
         let url = server_url(&self.base_url, path);
         let resp = self.client.delete(&url).send().await?;
+        Self::json_ok(resp, action).await
+    }
+
+    async fn delete_json_with_body<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        action: &str,
+        body: &B,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.delete(&url).json(body).send().await?;
         Self::json_ok(resp, action).await
     }
 

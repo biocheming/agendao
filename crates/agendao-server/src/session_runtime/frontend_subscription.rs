@@ -13,6 +13,8 @@ pub(crate) fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::TodoReplaced { session_id, .. }
         | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::TaskLedgerReplaced { session_id, .. }
+        | FrontendEvent::SandboxExecutionUpsert { session_id, .. }
+        | FrontendEvent::SandboxExecutionRemoved { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }
@@ -53,7 +55,9 @@ pub(crate) fn frontend_event_passes_subscription_caps(
         | FrontendEvent::ToolCallUpsert { .. }
         | FrontendEvent::DiffReplaced { .. }
         | FrontendEvent::TodoReplaced { .. }
-        | FrontendEvent::SessionError { .. } => true,
+        | FrontendEvent::SessionError { .. }
+        | FrontendEvent::SandboxExecutionUpsert { .. }
+        | FrontendEvent::SandboxExecutionRemoved { .. } => true,
         FrontendEvent::TaskLedgerReplaced { ledger, .. } => {
             !caps.final_only
                 || matches!(

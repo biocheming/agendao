@@ -4,7 +4,9 @@
 //! use to register/unregister their OS processes. The TUI reads this registry
 //! to display a live process panel in the sidebar.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -196,36 +198,40 @@ impl ProcessRegistry {
     /// Sums stats across the entire child process tree so that e.g. bun's worker
     /// threads are included in the parent plugin's numbers.
     pub fn refresh_stats(&self) {
-        let pids: Vec<u32> = self.processes.read().keys().copied().collect();
-        // A process listing may contain several managed roots.  Build the
-        // system-wide relationship and stat snapshot once, then reuse it for
-        // every root instead of rescanning `/proc` for each one.
-        let mut snapshot = scan_proc_snapshot();
-        populate_memory_for_trees(&mut snapshot, &pids);
-        let total_cpu_ticks = read_total_cpu_ticks();
-        let mut stale = Vec::new();
+        #[cfg(target_os = "linux")]
+        {
+            let pids: Vec<u32> = self.processes.read().keys().copied().collect();
+            // A process listing may contain several managed roots. Build the
+            // system-wide relationship and stat snapshot once, then reuse it
+            // for every root instead of rescanning `/proc` for each one.
+            let mut snapshot = scan_proc_snapshot();
+            populate_memory_for_trees(&mut snapshot, &pids);
+            let total_cpu_ticks = read_total_cpu_ticks();
+            let mut stale = Vec::new();
 
-        for pid in pids {
-            match read_proc_tree_stats(&snapshot, pid) {
-                Some((cpu_ticks, mem_kb)) => {
-                    let cpu_percent = self.compute_cpu_percent(pid, cpu_ticks, total_cpu_ticks);
-                    if let Some(info) = self.processes.write().get_mut(&pid) {
-                        info.cpu_percent = cpu_percent;
-                        info.memory_kb = mem_kb;
+            for pid in pids {
+                match read_proc_tree_stats(&snapshot, pid) {
+                    Some((cpu_ticks, mem_kb)) => {
+                        let cpu_percent = self.compute_cpu_percent(pid, cpu_ticks, total_cpu_ticks);
+                        if let Some(info) = self.processes.write().get_mut(&pid) {
+                            info.cpu_percent = cpu_percent;
+                            info.memory_kb = mem_kb;
+                        }
+                    }
+                    None => {
+                        // Process no longer exists.
+                        stale.push(pid);
                     }
                 }
-                None => {
-                    // Process no longer exists
-                    stale.push(pid);
-                }
             }
-        }
 
-        for pid in stale {
-            self.unregister(pid);
+            for pid in stale {
+                self.unregister(pid);
+            }
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn compute_cpu_percent(
         &self,
         pid: u32,
@@ -298,12 +304,14 @@ fn is_process_alive(pid: u32) -> bool {
 // /proc helpers (Linux only)
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 struct ProcSnapshot {
     stats_by_pid: HashMap<u32, ProcStats>,
     children_by_parent: HashMap<u32, Vec<u32>>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 struct ProcStats {
     cpu_ticks: u64,
@@ -311,129 +319,105 @@ struct ProcStats {
 }
 
 /// Scan process relationships and per-process statistics once for a refresh.
+#[cfg(target_os = "linux")]
 fn scan_proc_snapshot() -> ProcSnapshot {
-    #[cfg(target_os = "linux")]
-    {
-        let mut snapshot = ProcSnapshot::default();
-        let Ok(entries) = std::fs::read_dir("/proc") else {
-            return snapshot;
+    let mut snapshot = ProcSnapshot::default();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return snapshot;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid_str) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some((parent_pid, cpu_ticks)) = parse_proc_stat(&stat) else {
+            continue;
         };
 
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(pid_str) = name.to_str() else {
-                continue;
-            };
-            let Ok(pid) = pid_str.parse::<u32>() else {
-                continue;
-            };
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-                continue;
-            };
-            let Some((parent_pid, cpu_ticks)) = parse_proc_stat(&stat) else {
-                continue;
-            };
-
-            snapshot
-                .children_by_parent
-                .entry(parent_pid)
-                .or_default()
-                .push(pid);
-
-            snapshot.stats_by_pid.insert(
-                pid,
-                ProcStats {
-                    cpu_ticks,
-                    memory_kb: None,
-                },
-            );
-        }
-
         snapshot
+            .children_by_parent
+            .entry(parent_pid)
+            .or_default()
+            .push(pid);
+
+        snapshot.stats_by_pid.insert(
+            pid,
+            ProcStats {
+                cpu_ticks,
+                memory_kb: None,
+            },
+        );
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        ProcSnapshot::default()
-    }
+
+    snapshot
 }
 
 /// Total CPU ticks from `/proc/stat` (sum of all fields on the first `cpu` line).
+#[cfg(target_os = "linux")]
 fn read_total_cpu_ticks() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let stat = std::fs::read_to_string("/proc/stat").ok()?;
-        let cpu_line = stat.lines().next()?;
-        let total: u64 = cpu_line
-            .split_whitespace()
-            .skip(1) // skip "cpu"
-            .filter_map(|v| v.parse::<u64>().ok())
-            .sum();
-        Some(total)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let cpu_line = stat.lines().next()?;
+    let total: u64 = cpu_line
+        .split_whitespace()
+        .skip(1) // skip "cpu"
+        .filter_map(|v| v.parse::<u64>().ok())
+        .sum();
+    Some(total)
 }
 
 /// Sum CPU ticks and memory across the entire process tree rooted at `pid`.
 /// This captures child workers (e.g. bun spawning threads/subprocesses).
+#[cfg(target_os = "linux")]
 fn read_proc_tree_stats(snapshot: &ProcSnapshot, root_pid: u32) -> Option<(u64, u64)> {
-    #[cfg(target_os = "linux")]
-    {
-        let root_stats = snapshot.stats_by_pid.get(&root_pid)?;
-        let mut total_ticks = root_stats.cpu_ticks;
-        let mut total_mem = root_stats.memory_kb?;
-        let mut queue = vec![root_pid];
-        let mut seen = HashSet::new();
-        while let Some(parent) = queue.pop() {
-            let Some(children) = snapshot.children_by_parent.get(&parent) else {
+    let root_stats = snapshot.stats_by_pid.get(&root_pid)?;
+    let mut total_ticks = root_stats.cpu_ticks;
+    let mut total_mem = root_stats.memory_kb?;
+    let mut queue = vec![root_pid];
+    let mut seen = HashSet::new();
+    while let Some(parent) = queue.pop() {
+        let Some(children) = snapshot.children_by_parent.get(&parent) else {
+            continue;
+        };
+        for &child in children {
+            if child == root_pid || !seen.insert(child) {
                 continue;
-            };
-            for &child in children {
-                if child == root_pid || !seen.insert(child) {
-                    continue;
-                }
-                if let Some(stats) = snapshot.stats_by_pid.get(&child) {
-                    if let Some(memory_kb) = stats.memory_kb {
-                        total_ticks += stats.cpu_ticks;
-                        total_mem += memory_kb;
-                    }
-                }
-                queue.push(child);
             }
+            if let Some(stats) = snapshot.stats_by_pid.get(&child) {
+                if let Some(memory_kb) = stats.memory_kb {
+                    total_ticks += stats.cpu_ticks;
+                    total_mem += memory_kb;
+                }
+            }
+            queue.push(child);
         }
-        Some((total_ticks, total_mem))
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (snapshot, root_pid);
-        Some((0, 0))
-    }
+    Some((total_ticks, total_mem))
 }
 
 /// Read VmRSS only for managed process trees after the single `/proc/*/stat`
 /// scan has identified them. This avoids turning the relationship snapshot
 /// into a second full `/proc` sweep.
+#[cfg(target_os = "linux")]
 fn populate_memory_for_trees(snapshot: &mut ProcSnapshot, roots: &[u32]) {
-    #[cfg(target_os = "linux")]
-    {
-        let mut pids = HashSet::new();
-        for &root_pid in roots {
-            collect_process_tree_pids(snapshot, root_pid, &mut pids);
-        }
-        for pid in pids {
-            if let Some(stats) = snapshot.stats_by_pid.get_mut(&pid) {
-                stats.memory_kb = read_proc_memory_kb(pid);
-            }
-        }
+    let mut pids = HashSet::new();
+    for &root_pid in roots {
+        collect_process_tree_pids(snapshot, root_pid, &mut pids);
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (snapshot, roots);
+    for pid in pids {
+        if let Some(stats) = snapshot.stats_by_pid.get_mut(&pid) {
+            stats.memory_kb = read_proc_memory_kb(pid);
+        }
     }
 }
 
+#[cfg(target_os = "linux")]
 fn collect_process_tree_pids(snapshot: &ProcSnapshot, root_pid: u32, pids: &mut HashSet<u32>) {
     if !snapshot.stats_by_pid.contains_key(&root_pid) || !pids.insert(root_pid) {
         return;

@@ -70,6 +70,7 @@ dependencies = [
  "agendao-plugin",
  "agendao-provider",
  "agendao-runtime-context",
+ "agendao-sandbox",
  "agendao-server",
  "agendao-server-core",
  "agendao-session",
@@ -221,6 +222,8 @@ name = "agendao-lsp"
 version = "2026.8.24"
 dependencies = [
  "agendao-core",
+ "agendao-sandbox",
+ "async-trait",
  "lsp-types",
  "serde",
  "serde_json",
@@ -235,6 +238,7 @@ name = "agendao-mcp"
 version = "2026.8.24"
 dependencies = [
  "agendao-core",
+ "agendao-sandbox",
  "agendao-util",
  "async-trait",
  "chrono",
@@ -321,8 +325,10 @@ version = "2026.8.24"
 dependencies = [
  "agendao-config",
  "agendao-core",
+ "agendao-sandbox",
  "agendao-types",
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs",
  "libloading",
@@ -375,6 +381,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "agendao-sandbox"
+version = "2026.8.24"
+dependencies = [
+ "agendao-types",
+ "agendao-util",
+ "async-trait",
+ "futures",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agendao-server"
 version = "2026.8.24"
 dependencies = [
@@ -394,6 +418,7 @@ dependencies = [
  "agendao-plugin",
  "agendao-provider",
  "agendao-runtime-context",
+ "agendao-sandbox",
  "agendao-server-core",
  "agendao-server-pty",
  "agendao-session",
@@ -401,6 +426,7 @@ dependencies = [
  "agendao-state",
  "agendao-storage",
  "agendao-tool",
+ "agendao-tool-core",
  "agendao-types",
  "agendao-util",
  "anyhow",
@@ -452,8 +478,9 @@ dependencies = [
 name = "agendao-server-pty"
 version = "2026.8.24"
 dependencies = [
+ "agendao-sandbox",
+ "agendao-tool-core",
  "chrono",
- "portable-pty",
  "serde",
  "thiserror 2.0.18",
  "tokio",
@@ -562,6 +589,7 @@ dependencies = [
  "agendao-lsp",
  "agendao-permission",
  "agendao-plugin",
+ "agendao-sandbox",
  "agendao-skill",
  "agendao-tool-core",
  "agendao-tool-web",
@@ -577,6 +605,7 @@ dependencies = [
  "futures",
  "glob",
  "ignore",
+ "libc",
  "lsp-types",
  "portable-pty",
  "regex",
@@ -598,6 +627,7 @@ dependencies = [
  "agendao-config",
  "agendao-lsp",
  "agendao-permission",
+ "agendao-sandbox",
  "agendao-types",
  "async-trait",
  "serde",
@@ -605,6 +635,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
 ]
 
@@ -613,7 +644,9 @@ name = "agendao-tool-web"
 version = "2026.8.24"
 dependencies = [
  "agendao-config",
+ "agendao-sandbox",
  "agendao-tool-core",
+ "agendao-types",
  "agendao-util",
  "async-trait",
  "base64",
@@ -637,6 +670,7 @@ dependencies = [
 name = "agendao-tui-revue"
 version = "2026.8.24"
 dependencies = [
+ "agendao-api",
  "agendao-client",
  "agendao-command",
  "agendao-config",
@@ -649,6 +683,7 @@ dependencies = [
  "agendao-util",
  "anyhow",
  "base64",
+ "crossterm 0.29.0",
  "dirs",
  "futures",
  "ratatui",
@@ -665,6 +700,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width 0.1.14",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1276,6 +1312,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 1.1.3",

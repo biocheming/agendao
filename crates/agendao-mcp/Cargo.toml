@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 agendao-core = { path = "../agendao-core", features = ["event-bus", "subprocess-runtime", "process-registry"] }
+agendao-sandbox = { path = "../agendao-sandbox" }
 agendao-util = { path = "../agendao-util" }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 serde = { workspace = true }

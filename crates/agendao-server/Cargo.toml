@@ -38,6 +38,8 @@ agendao-permission = { path = "../agendao-permission" }
 agendao-mcp = { path = "../agendao-mcp", optional = true }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-tool = { path = "../agendao-tool" }
+agendao-tool-core = { path = "../agendao-tool-core" }
+agendao-sandbox = { path = "../agendao-sandbox" }
 libc = { version = "0.2" }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }

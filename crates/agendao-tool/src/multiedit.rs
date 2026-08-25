@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs;
 
-use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
+use crate::path_guard::{authorize_external_file_path, resolve_user_path, RootPathFallbackPolicy};
 use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
 pub struct MultiEditTool;
@@ -111,33 +111,19 @@ impl Tool for MultiEditTool {
                 base_path,
                 RootPathFallbackPolicy::ExistingFallbackOnly,
             );
-            let file_path = resolved.resolved;
+            let requested_path = resolved.resolved;
             if let Some(original) = resolved.corrected_from {
                 tracing::warn!(
                     from = %original.display(),
-                    to = %file_path.display(),
+                    to = %requested_path.display(),
                     session_dir = %base_path.display(),
                     "corrected suspicious root-level multi-edit path into session directory"
                 );
             }
-
-            let file_path_str = file_path.to_string_lossy().to_string();
-
-            if ctx.is_external_path(&file_path_str) {
-                let parent = file_path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| file_path_str.clone());
-
-                ctx.ask_permission(
-                    crate::PermissionRequest::new("external_directory")
-                        .with_pattern(format!("{}/*", parent))
-                        .with_scope_key(crate::external_fs_scope_key(&parent))
-                        .with_metadata("filepath", serde_json::json!(&file_path_str))
-                        .with_metadata("parentDir", serde_json::json!(parent)),
-                )
-                .await?;
-            }
+            let authorized_path = ctx.resolve_existing_file_path(&requested_path)?;
+            authorize_external_file_path(&ctx, &authorized_path).await?;
+            let file_path = authorized_path.operation_path().to_path_buf();
+            let file_path_str = authorized_path.display_path();
 
             let content =
                 fs::read_to_string(&file_path)
@@ -184,15 +170,19 @@ impl Tool for MultiEditTool {
                 ctx.ask_permission(
                     PermissionRequest::new("edit")
                         .with_pattern(&file_path_str)
-                        .with_scope_key(crate::workspace_scope_key(
-                            &ctx.project_root,
-                            &file_path_str,
-                        ))
+                        .with_scope_key(authorized_path.permission_scope_key())
                         .with_metadata("diff", serde_json::json!(diff))
                         .always_allow(),
                 )
                 .await?;
 
+                let revalidated = ctx.resolve_existing_file_path(&file_path)?;
+                if revalidated != authorized_path {
+                    return Err(ToolError::ExecutionError(format!(
+                        "multi-edit target changed after authorization: {}",
+                        file_path.display()
+                    )));
+                }
                 fs::write(&file_path, &new_content).await.map_err(|error| {
                     ToolError::ExecutionError(format!("Failed to write file: {}", error))
                 })?;

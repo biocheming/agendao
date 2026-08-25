@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 
 use super::replacers::CompositeReplacer;
-use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
+use crate::path_guard::{authorize_external_file_path, resolve_user_path, RootPathFallbackPolicy};
 use crate::{with_file_lock, Metadata, Tool, ToolContext, ToolError, ToolResult};
 
 #[cfg(feature = "lsp")]
@@ -96,33 +96,19 @@ impl Tool for EditTool {
             base_dir,
             RootPathFallbackPolicy::ExistingFallbackOnly,
         );
-        let path = resolved.resolved;
+        let requested_path = resolved.resolved;
         if let Some(original) = resolved.corrected_from {
             tracing::warn!(
                 from = %original.display(),
-                to = %path.display(),
+                to = %requested_path.display(),
                 session_dir = %base_dir.display(),
                 "corrected suspicious root-level edit path into session directory"
             );
         }
-
-        let path_str = path.to_string_lossy().to_string();
-
-        if ctx.is_external_path(&path_str) {
-            let parent = path
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| path_str.clone());
-
-            ctx.ask_permission(
-                crate::PermissionRequest::new("external_directory")
-                    .with_pattern(format!("{}/*", parent))
-                    .with_scope_key(crate::external_fs_scope_key(&parent))
-                    .with_metadata("filepath", serde_json::json!(&path_str))
-                    .with_metadata("parentDir", serde_json::json!(parent)),
-            )
-            .await?;
-        }
+        let authorized_path = ctx.resolve_existing_file_path(&requested_path)?;
+        authorize_external_file_path(&ctx, &authorized_path).await?;
+        let path = authorized_path.operation_path().to_path_buf();
+        let path_str = authorized_path.display_path();
 
         let title = path
             .strip_prefix(&ctx.worktree)
@@ -132,12 +118,20 @@ impl Tool for EditTool {
 
         let ctx_clone = ctx.clone();
         let path_clone = path.clone();
+        let authorized_path_clone = authorized_path.clone();
         let path_str_clone = path_str.clone();
         let title_clone = title.clone();
         let old_string_clone = old_string.clone();
         let new_string_clone = new_string.clone();
 
         with_file_lock(&path_str, || async {
+            let revalidated = ctx_clone.resolve_existing_file_path(&path_clone)?;
+            if revalidated != authorized_path_clone {
+                return Err(ToolError::ExecutionError(format!(
+                    "edit target changed after authorization: {}",
+                    path_clone.display()
+                )));
+            }
             let content = fs::read_to_string(&path_clone)
                 .await
                 .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
@@ -158,10 +152,7 @@ impl Tool for EditTool {
                     .ask_permission(
                         crate::PermissionRequest::new("edit")
                             .with_pattern(&path_str_clone)
-                            .with_scope_key(crate::workspace_scope_key(
-                                &ctx_clone.project_root,
-                                &path_str_clone,
-                            ))
+                            .with_scope_key(authorized_path_clone.permission_scope_key())
                             .with_metadata("diff", serde_json::json!(diff))
                             .always_allow(),
                     )
@@ -240,10 +231,7 @@ impl Tool for EditTool {
                 .ask_permission(
                     crate::PermissionRequest::new("edit")
                         .with_pattern(&path_str_clone)
-                        .with_scope_key(crate::workspace_scope_key(
-                            &ctx_clone.project_root,
-                            &path_str_clone,
-                        ))
+                        .with_scope_key(authorized_path_clone.permission_scope_key())
                         .with_metadata("diff", serde_json::json!(diff))
                         .always_allow(),
                 )

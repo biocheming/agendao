@@ -77,40 +77,102 @@ impl AppHandler {
         if text.trim().is_empty() || text.trim_start().starts_with('/') {
             return false;
         }
+        self.stash_explicit_content(&text);
+        true
+    }
+
+    /// 将显式文本写入 Stash 并立即落盘持久化
+    pub(crate) fn stash_explicit_content(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
         let entry = StashEntry {
-            text,
+            text: text.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0),
         };
         self.stash_entries.push(entry);
-        // 水律：push 后立即落盘，下一轮/下次启动可复用。
         crate::dialog::prompt_stash::save_stash(&self.stash_entries);
-        true
+    }
+
+    /// 应用层统一消费外部编辑器 Handoff 结果（执行 Stash 保存、回填、Toast 与 Redraw 标记）
+    pub(crate) fn handle_editor_handoff_outcome(
+        &mut self,
+        outcome: crate::terminal_lifecycle::HandoffOutcome,
+    ) {
+        match outcome {
+            crate::terminal_lifecycle::HandoffOutcome::Success {
+                new_content,
+                requires_full_redraw,
+            } => {
+                self.prompt.set_text(&new_content);
+                if requires_full_redraw {
+                    self.layout_dirty = true;
+                    self.prompt_dirty = true;
+                    self.transcript_dirty = true;
+                }
+                self.store.push_toast(
+                    "✏️ Draft updated from editor",
+                    crate::store::types::ToastMsgVariant::Success,
+                );
+            }
+            crate::terminal_lifecycle::HandoffOutcome::ConflictRetained {
+                stash_content,
+                error_message,
+            } => {
+                self.stash_explicit_content(&stash_content);
+                self.layout_dirty = true;
+                self.prompt_dirty = true;
+                self.transcript_dirty = true;
+                self.store.push_toast(
+                    &format!("{}: saved to /stash", error_message),
+                    crate::store::types::ToastMsgVariant::Warning,
+                );
+            }
+            crate::terminal_lifecycle::HandoffOutcome::Cancelled => {
+                self.layout_dirty = true;
+                self.prompt_dirty = true;
+                self.transcript_dirty = true;
+                self.store.push_toast(
+                    "External editor cancelled (original draft kept)",
+                    crate::store::types::ToastMsgVariant::Info,
+                );
+            }
+        }
     }
 
     pub(crate) fn execute_slash_action(&mut self, action_id: UiActionId) {
         self.panel = Panel::None;
-        // U4 草稿保护：动作触发即清 prompt，清前先把草稿 stash 落盘——
-        // 此前 sidebar/鼠标/快捷键触发 /new 等动作时草稿被无声销毁。
-        // （PromptStashPush 同此通道：旧实现 clear 在前、臂内永远读到空
-        // 文本，是死路径；现在统一在清前捕获。）
-        let stashed = self.stash_unsent_draft();
-        self.prompt.clear();
-        if stashed {
-            if matches!(action_id, UiActionId::PromptStashPush) {
-                self.store
-                    .push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
-            } else if !matches!(
-                action_id,
-                UiActionId::OpenStash | UiActionId::PromptStashList
-            ) {
-                // 查看类动作不打扰（草稿已保全，列表立即可见）。
-                self.store.push_toast(
-                    "Draft stashed (/stash to restore)",
-                    crate::store::types::ToastMsgVariant::Info,
-                );
+        // ExternalEditor, QueuePrompt, SteerPrompt, InterruptTurn 需要读取或保留当前 Prompt 草稿，绕过通用的清空前置逻辑
+        if !matches!(
+            action_id,
+            UiActionId::ExternalEditor
+                | UiActionId::QueuePrompt
+                | UiActionId::SteerPrompt
+                | UiActionId::InterruptTurn
+        ) {
+            // U4 草稿保护：动作触发即清 prompt，清前先把草稿 stash 落盘——
+            // 此前 sidebar/鼠标/快捷键触发 /new 等动作时草稿被无声销毁。
+            // （PromptStashPush 同此通道：旧实现 clear 在前、臂内永远读到空
+            // 文本，是死路径；现在统一在清前捕获。）
+            let stashed = self.stash_unsent_draft();
+            self.prompt.clear();
+            if stashed {
+                if matches!(action_id, UiActionId::PromptStashPush) {
+                    self.store
+                        .push_toast("✏️ Stashed", crate::store::types::ToastMsgVariant::Success);
+                } else if !matches!(
+                    action_id,
+                    UiActionId::OpenStash | UiActionId::PromptStashList
+                ) {
+                    // 查看类动作不打扰（草稿已保全，列表立即可见）。
+                    self.store.push_toast(
+                        "Draft stashed (/stash to restore)",
+                        crate::store::types::ToastMsgVariant::Info,
+                    );
+                }
             }
         }
         match action_id {
@@ -163,6 +225,211 @@ impl AppHandler {
                             );
                         }
                     }
+                }
+            }
+            UiActionId::QueuePrompt => {
+                let text = self.prompt.text();
+                if text.trim().is_empty() {
+                    self.store.push_toast(
+                        "Prompt is empty. Type text to queue.",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                }
+                let sid = self
+                    .active_session
+                    .get_session_id()
+                    .unwrap_or_else(|| "home".into());
+                let source = crate::shadow::InteractionSource::SlashQueue;
+                if !self.should_use_gateway(&sid, &source) {
+                    self.store.push_toast(
+                        "⚠️ Gateway disabled or tripped: /queue cannot be processed",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                }
+
+                let draft_rev = self.prompt.draft_revision();
+                let (cmd, ctx) = crate::command_gateway::CommandGateway::prepare_submit(
+                    sid,
+                    draft_rev,
+                    &text,
+                    agendao_types::submission::SubmissionMode::Queue,
+                );
+
+                if let Some(ref api) = self.api {
+                    let api = api.clone();
+                    let handle = api.handle().clone();
+                    let tx = self.dispatch_outcomes.sender();
+                    handle.spawn(async move {
+                        let res: Result<crate::command_gateway::GatewayServerResponse, String> =
+                            api.submit_gateway_command_async(
+                                crate::command_gateway::GatewayCommand::Submit(cmd),
+                            )
+                            .await
+                            .map_err(|e| e.to_string());
+                        let disp_res = match res {
+                            Ok(crate::command_gateway::GatewayServerResponse::Submit(disp)) => {
+                                Ok(disp)
+                            }
+                            Ok(crate::command_gateway::GatewayServerResponse::Interrupt(_)) => {
+                                Err("Protocol error: unexpected interrupt response".into())
+                            }
+                            Err(e) => Err(e),
+                        };
+                        let _ = tx.send(
+                            crate::app::dispatch_outcome::DispatchOutcome::GatewaySubmit {
+                                ctx,
+                                response: disp_res,
+                            },
+                        );
+                    });
+                }
+            }
+            UiActionId::SteerPrompt => {
+                let text = self.prompt.text();
+                if text.trim().is_empty() {
+                    self.store.push_toast(
+                        "Prompt is empty. Type steering text.",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                }
+                // 必须具备活跃 Turn
+                let active_turn = self.active_session.active_turn_id.get();
+                let Some(turn_id) = active_turn else {
+                    self.store.push_toast(
+                        "No active turn to steer",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                };
+
+                let sid = self
+                    .active_session
+                    .get_session_id()
+                    .unwrap_or_else(|| "home".into());
+                let source = crate::shadow::InteractionSource::SlashSteer;
+                if !self.should_use_gateway(&sid, &source) {
+                    self.store.push_toast(
+                        "⚠️ Gateway disabled or tripped: /steer cannot be processed",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                }
+
+                let draft_rev = self.prompt.draft_revision();
+                let (cmd, ctx) = crate::command_gateway::CommandGateway::prepare_submit(
+                    sid,
+                    draft_rev,
+                    &text,
+                    agendao_types::submission::SubmissionMode::Steer {
+                        expected_turn_id: turn_id,
+                    },
+                );
+
+                if let Some(ref api) = self.api {
+                    let api = api.clone();
+                    let handle = api.handle().clone();
+                    let tx = self.dispatch_outcomes.sender();
+                    handle.spawn(async move {
+                        let res: Result<crate::command_gateway::GatewayServerResponse, String> =
+                            api.submit_gateway_command_async(
+                                crate::command_gateway::GatewayCommand::Submit(cmd),
+                            )
+                            .await
+                            .map_err(|e| e.to_string());
+                        let disp_res = match res {
+                            Ok(crate::command_gateway::GatewayServerResponse::Submit(disp)) => {
+                                Ok(disp)
+                            }
+                            Ok(crate::command_gateway::GatewayServerResponse::Interrupt(_)) => {
+                                Err("Protocol error: unexpected interrupt response".into())
+                            }
+                            Err(e) => Err(e),
+                        };
+                        let _ = tx.send(
+                            crate::app::dispatch_outcome::DispatchOutcome::GatewaySubmit {
+                                ctx,
+                                response: disp_res,
+                            },
+                        );
+                    });
+                }
+            }
+            UiActionId::InterruptTurn => {
+                let active_turn = self.active_session.active_turn_id.get();
+                let Some(turn_id) = active_turn else {
+                    self.store.push_toast(
+                        "No active turn to interrupt",
+                        crate::store::types::ToastMsgVariant::Warning,
+                    );
+                    return;
+                };
+
+                let sid = self
+                    .active_session
+                    .get_session_id()
+                    .unwrap_or_else(|| "home".into());
+                let source = crate::shadow::InteractionSource::SlashInterrupt;
+                let (cmd, ctx) =
+                    crate::command_gateway::CommandGateway::prepare_interrupt(sid.clone(), turn_id);
+
+                if self.should_use_gateway(&sid, &source) {
+                    if let Some(ref api) = self.api {
+                        let api = api.clone();
+                        let handle = api.handle().clone();
+                        let tx = self.dispatch_outcomes.sender();
+                        handle.spawn(async move {
+                            let res: Result<crate::command_gateway::GatewayServerResponse, String> =
+                                api.submit_gateway_command_async(
+                                    crate::command_gateway::GatewayCommand::Interrupt(cmd),
+                                )
+                                .await
+                                .map_err(|e| e.to_string());
+                            let int_disp = match res {
+                                Ok(crate::command_gateway::GatewayServerResponse::Interrupt(
+                                    disp,
+                                )) => Ok(disp),
+                                Ok(crate::command_gateway::GatewayServerResponse::Submit(_)) => {
+                                    Err("Protocol error: unexpected submit response".into())
+                                }
+                                Err(e) => Err(e),
+                            };
+                            let _ = tx.send(
+                                crate::app::dispatch_outcome::DispatchOutcome::GatewayInterrupt {
+                                    ctx,
+                                    response: int_disp,
+                                },
+                            );
+                        });
+                    }
+                } else if let Some(ref api) = self.api {
+                    // Gateway 熔断或未放量：回退走旧 abort_session_async
+                    let api_c = api.clone();
+                    let tx = self.dispatch_outcomes.sender();
+                    let sid_c = sid.clone();
+
+                    api.handle().spawn(async move {
+                        let r = api_c.abort_session_async(&sid_c).await;
+                        let (is_ok, err_str) = match r {
+                            Ok(value) => {
+                                let aborted = value
+                                    .get("aborted")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(true);
+                                (aborted, None)
+                            }
+                            Err(e) => (false, Some(e.to_string())),
+                        };
+                        let _ = tx.send(
+                            crate::app::dispatch_outcome::DispatchOutcome::LegacyInterrupt {
+                                session_id: sid_c,
+                                success: is_ok,
+                                error: err_str,
+                            },
+                        );
+                    });
                 }
             }
             UiActionId::OpenStash | UiActionId::PromptStashList => {
@@ -565,12 +832,43 @@ impl AppHandler {
                 );
             }
             UiActionId::ToggleThinking => {
-                let next = !self.store.show_thinking.get();
+                let next = self
+                    .toggle_details_section(crate::details_policy::DetailsSection::Thinking)
+                    .is_some_and(|v| {
+                        matches!(v, crate::details_policy::DetailVisibility::Expanded)
+                    });
                 self.store.show_thinking.set(next);
                 self.store.push_toast(
                     &format!("Thinking blocks: {}", if next { "shown" } else { "hidden" }),
                     crate::store::types::ToastMsgVariant::Info,
                 );
+            }
+            UiActionId::Details => {
+                let section = match self.pending_details_section.take().as_deref() {
+                    Some("thinking") => Some(crate::details_policy::DetailsSection::Thinking),
+                    Some("tools") => Some(crate::details_policy::DetailsSection::Tools),
+                    Some("todo") => Some(crate::details_policy::DetailsSection::Todo),
+                    Some("subagents") => Some(crate::details_policy::DetailsSection::Subagents),
+                    _ => None,
+                };
+                if let Some(section) = section {
+                    if let Some(next) = self.toggle_details_section(section) {
+                        self.store.push_toast(
+                            &format!("Details {section:?}: {next:?}"),
+                            crate::store::types::ToastMsgVariant::Info,
+                        );
+                    } else {
+                        self.store.push_toast(
+                            "No details available for that section",
+                            crate::store::types::ToastMsgVariant::Info,
+                        );
+                    }
+                } else {
+                    self.store.push_toast(
+                        "Usage: /details thinking|tools|todo|subagents",
+                        crate::store::types::ToastMsgVariant::Info,
+                    );
+                }
             }
             UiActionId::ToggleScrollbar => {
                 let next = !self.store.show_scrollbar.get();
@@ -649,6 +947,75 @@ impl AppHandler {
                     &format!("Theme: {}", next.label()),
                     crate::store::types::ToastMsgVariant::Info,
                 );
+            }
+            UiActionId::ExternalEditor => {
+                let initial_text = self.prompt.text();
+                let session_id = self
+                    .active_session
+                    .get_session_id()
+                    .unwrap_or_else(|| "home".into());
+                let draft_revision = self.prompt.draft_revision();
+                let target = crate::terminal_lifecycle::DraftTarget {
+                    session_id: session_id.clone(),
+                    draft_revision,
+                };
+
+                let backend = crate::terminal_lifecycle::CrosstermTerminalBackend;
+                // 在 revue 当前 App::run 同步阻塞模型下，handler 阻塞期间不处理 TUI 事件；
+                // 生产环境不传入无消费者的 reader_control，避免 request_pause 超时。
+                let mut lifecycle =
+                    crate::terminal_lifecycle::TerminalLifecycle::new(backend, None);
+
+                let active_session = self.active_session.clone();
+                let draft_revision_handle = self.prompt.draft_revision_handle();
+                let res = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            lifecycle
+                                .execute_editor_handoff(target, &initial_text, move || {
+                                    let latest_session = active_session
+                                        .get_session_id()
+                                        .unwrap_or_else(|| "home".into());
+                                    let latest_rev = draft_revision_handle
+                                        .load(std::sync::atomic::Ordering::SeqCst);
+                                    (latest_session, latest_rev)
+                                })
+                                .await
+                        })
+                    })
+                } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+                    rt.block_on(async {
+                        lifecycle
+                            .execute_editor_handoff(target, &initial_text, move || {
+                                let latest_session = active_session
+                                    .get_session_id()
+                                    .unwrap_or_else(|| "home".into());
+                                let latest_rev =
+                                    draft_revision_handle.load(std::sync::atomic::Ordering::SeqCst);
+                                (latest_session, latest_rev)
+                            })
+                            .await
+                    })
+                } else {
+                    Err(crate::terminal_lifecycle::HandoffError::ProcessLaunchError(
+                        "Failed to initialize async runtime for editor handoff".into(),
+                    ))
+                };
+
+                match res {
+                    Ok(outcome) => {
+                        self.handle_editor_handoff_outcome(outcome);
+                    }
+                    Err(err) => {
+                        self.layout_dirty = true;
+                        self.prompt_dirty = true;
+                        self.transcript_dirty = true;
+                        self.store.push_toast(
+                            &format!("Editor error: {}", err),
+                            crate::store::types::ToastMsgVariant::Error,
+                        );
+                    }
+                }
             }
             // 道纪第十条：伪权威诚实标注。这些 action 的 spec 已注册（slash
             // 可触发），但 server 端无对应 API（grep 全无端点）——落到通用

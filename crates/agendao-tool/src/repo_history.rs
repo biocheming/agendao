@@ -856,16 +856,22 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::NativeTestAuthority;
+    use agendao_tool_core::SandboxExecutionBoundary;
     use std::fs;
     use std::process::Command;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn test_tool_context(directory: &Path) -> ToolContext {
+        let authority: Arc<dyn SandboxExecutionBoundary> = Arc::new(NativeTestAuthority::new());
         ToolContext::new(
             "session-1".to_string(),
             "message-1".to_string(),
             directory.to_string_lossy().to_string(),
         )
+        .with_sandbox_execution_boundary(authority)
+        .with_sandbox_native_allowed(true)
     }
 
     fn git(dir: &Path, args: &[&str]) {

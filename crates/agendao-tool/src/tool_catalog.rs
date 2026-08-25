@@ -1,14 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
 use agendao_config::{ExternalToolConfig, ExternalToolExecutionKind, ResolvedExternalToolCatalog};
+use agendao_sandbox::ProfileKind;
 use agendao_types::ToolCatalogMetadata;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::time::timeout;
 
 use crate::{
     assert_external_directory, bash::authorize_bash_command, ExternalDirectoryKind,
@@ -613,97 +611,45 @@ async fn execute_script_runner_external_tool(
     )
     .await?;
 
-    let mut cmd = tokio::process::Command::new(runtime);
-    cmd.arg(entry);
-    cmd.arg(compact_args);
-    cmd.current_dir(&workdir);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    // The sandbox boundary is the only launch path for model-reachable
+    // execution — external catalog tools run contained by default under
+    // the same authority as bash, resolving to native only when the host
+    // has authorized it for the session (sandbox plan §4.4; Phase 8
+    // closed the last direct-spawn path here). Tools never self-widen.
+    let profile = if ctx.sandbox_native_allowed {
+        ProfileKind::Native
+    } else {
+        ProfileKind::WorkspaceWrite
+    };
+    let result = agendao_tool_core::run_contained_query(
+        agendao_tool_core::ContainedQuerySpec {
+            program: runtime.to_string(),
+            args: vec![entry.to_string(), compact_args],
+            cwd: Some(workdir.into()),
+            env_overrides: Default::default(),
+            label: format!("external catalog tool `{}`", tool_name),
+        },
+        ctx,
+        Duration::from_millis(30_000),
+        profile,
+    )
+    .await?;
 
-    let mut child = cmd.spawn().map_err(|error| {
-        ToolError::ExecutionError(format!("Failed to spawn process: {}", error))
-    })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ToolError::ExecutionError("failed to capture stdout".to_string()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| ToolError::ExecutionError("failed to capture stderr".to_string()))?;
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
-    let abort_token = ctx.abort.clone();
-    let mut output = String::new();
-    let mut stderr_output = String::new();
-    let timeout_ms = 30_000;
-
-    let result = timeout(Duration::from_millis(timeout_ms), async {
-        loop {
-            tokio::select! {
-                _ = abort_token.cancelled() => {
-                    if let Err(error) = child.kill().await {
-                        tracing::debug!(%error, "failed to kill external catalog tool after cancellation");
-                    }
-                    return Err(ToolError::Cancelled);
-                }
-                line = stdout_reader.next_line() => {
-                    match line {
-                        Ok(Some(line)) => {
-                            output.push_str(&line);
-                            output.push('\n');
-                        }
-                        Ok(None) => break,
-                        Err(error) => return Err(ToolError::ExecutionError(format!("failed to read external tool stdout: {}", error))),
-                    }
-                }
-                line = stderr_reader.next_line() => {
-                    match line {
-                        Ok(Some(line)) => {
-                            stderr_output.push_str(&line);
-                            stderr_output.push('\n');
-                        }
-                        Ok(None) => break,
-                        Err(error) => return Err(ToolError::ExecutionError(format!("failed to read external tool stderr: {}", error))),
-                    }
-                }
-            }
-        }
-        Ok::<(), ToolError>(())
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error),
-        Err(_) => {
-            if let Err(error) = child.kill().await {
-                tracing::debug!(%error, "failed to kill external catalog tool after timeout");
-            }
-            return Err(ToolError::Timeout(format!(
-                "external catalog tool `{}` timed out after {}ms",
-                tool_name, timeout_ms
-            )));
-        }
-    }
-
-    let status = child.wait().await.map_err(|error| {
-        ToolError::ExecutionError(format!("Failed to wait for process: {}", error))
-    })?;
-
-    if !status.success() {
+    if !result.success {
         let mut message = format!(
             "external catalog tool `{}` exited with code {}",
             tool_name,
-            status.code().unwrap_or(-1)
+            result.code.unwrap_or(-1)
         );
-        if !stderr_output.trim().is_empty() {
+        if !result.stderr.trim().is_empty() {
             message.push_str(": ");
-            message.push_str(stderr_output.trim());
+            message.push_str(result.stderr.trim());
         }
         return Err(ToolError::ExecutionError(message));
     }
 
+    let output = result.stdout;
+    let stderr_output = result.stderr;
     let trimmed_output = output.trim().to_string();
     let title = format!("External execution resource `{}`", tool_name);
     let mut metadata = Metadata::new();
@@ -936,7 +882,9 @@ fn entry_json(entry: &CatalogEntry) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::NativeTestAuthority;
     use crate::ToolRegistry;
+    use agendao_tool_core::SandboxExecutionBoundary;
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1035,6 +983,14 @@ mod tests {
         }
     }
 
+    /// Attach the shared native test authority so tools that drive real
+    /// subprocesses (git, external catalog runners) launch through the
+    /// boundary, not a direct spawn (Phase 8).
+    fn with_test_authority(context: ToolContext) -> ToolContext {
+        let authority: Arc<dyn SandboxExecutionBoundary> = Arc::new(NativeTestAuthority::new());
+        context.with_sandbox_execution_boundary(authority)
+    }
+
     async fn test_tool_context_with_registry(tools: Vec<CatalogTestTool>) -> ToolContext {
         let registry = Arc::new(ToolRegistry::new());
         let allowed = tools.iter().map(|tool| tool.id).collect::<Vec<_>>();
@@ -1055,7 +1011,7 @@ mod tests {
             CAPABILITY_ALLOWED_TOOL_IDS_KEY.to_string(),
             serde_json::json!(allowed),
         );
-        context
+        with_test_authority(context)
     }
 
     fn allow_capability_targets(mut context: ToolContext, targets: &[&str]) -> ToolContext {
@@ -1431,16 +1387,17 @@ print(payload["query"])
         .expect("catalog");
 
         let store = local_config_store(&temp);
-        let ctx = allow_capability_targets(
+        let ctx = with_test_authority(allow_capability_targets(
             ToolContext::new(
                 "ses_tool_catalog".to_string(),
                 "msg_tool_catalog".to_string(),
                 temp.path.to_string_lossy().to_string(),
             )
             .with_config_store(store)
-            .with_ask(|_request| async move { Ok(()) }),
+            .with_ask(|_request| async move { Ok(()) })
+            .with_sandbox_native_allowed(true),
             &["dock_pose"],
-        );
+        ));
 
         let result = CapabilityTool::primary()
             .execute(

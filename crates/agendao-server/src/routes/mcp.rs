@@ -38,18 +38,29 @@ pub struct McpStatusInfo {
 
 static MCP_OAUTH_MANAGER: std::sync::OnceLock<McpOAuthManager> = std::sync::OnceLock::new();
 
-fn get_mcp_oauth_manager() -> &'static McpOAuthManager {
-    MCP_OAUTH_MANAGER.get_or_init(McpOAuthManager::new)
+/// The manager lazily binds to the server's sandbox launch authority on
+/// first use: stdio MCP servers are user-configured integrations, so
+/// they launch contained (workspace-scoped, network denied) through the
+/// same boundary as every other process — never a direct spawn.
+fn get_mcp_oauth_manager(state: &crate::ServerState) -> &'static McpOAuthManager {
+    MCP_OAUTH_MANAGER.get_or_init(|| {
+        let sandbox = agendao_sandbox::IntegrationSandboxContext::without_runtime_roots(
+            state.sandbox_authority.clone(),
+            state.workspace_root.clone(),
+        );
+        McpOAuthManager::new(sandbox)
+    })
 }
 
 /// config 写面（PUT/DELETE `/config/mcp/{key}`）同步 runtime manager 的入口。
 /// 不写时 manager 只增不删（`sync_mcp_from_disk` 的 has_server 短路），
 /// 删除/启停后状态列表会残留旧值——写后同步让启停即时生效。
 pub(crate) async fn sync_manager_after_mcp_config_write(
+    state: &crate::ServerState,
     key: &str,
     cfg: Option<&LoadedMcpServerConfig>,
 ) {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     let runtime = cfg.and_then(|c| parse_runtime_from_loaded_config(c.clone()).ok().flatten());
     match runtime {
         Some((config, enabled)) => {
@@ -88,7 +99,7 @@ impl From<McpServerInfoStruct> for McpStatusInfo {
 pub(crate) async fn get_mcp_status(
     State(state): State<Arc<ServerState>>,
 ) -> Json<HashMap<String, McpStatusInfo>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     if let Err(error) = sync_mcp_from_disk(manager, &state.config_store).await {
         tracing::warn!(%error, "failed to sync MCP servers from config");
     }
@@ -120,10 +131,10 @@ pub struct McpConfigInput {
 }
 
 async fn add_mcp_server(
-    State(_state): State<Arc<ServerState>>,
+    State(state): State<Arc<ServerState>>,
     Json(req): Json<AddMcpRequest>,
 ) -> Result<Json<HashMap<String, McpStatusInfo>>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     let (runtime, enabled) = parse_runtime_from_request(req.config)?;
     manager.add_server(req.name.clone(), runtime, enabled).await;
     if enabled {
@@ -145,7 +156,7 @@ pub(crate) async fn start_mcp_auth(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     let state = manager
         .start_oauth(&name)
@@ -169,7 +180,7 @@ async fn mcp_auth_callback(
     Path(name): Path<String>,
     Json(req): Json<McpAuthCallbackRequest>,
 ) -> Result<Json<McpStatusInfo>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     let server_info = manager
         .handle_callback(&name, &req.code)
@@ -183,7 +194,7 @@ pub(crate) async fn mcp_authenticate(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<McpStatusInfo>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     let server_info = manager
         .authenticate(&name)
@@ -197,7 +208,7 @@ pub(crate) async fn remove_mcp_auth(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     manager.remove_oauth(&name).await;
     Ok(Json(serde_json::json!({ "success": true })))
@@ -207,7 +218,7 @@ pub(crate) async fn connect_mcp(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<bool>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     manager
         .connect(&name)
@@ -220,7 +231,7 @@ pub(crate) async fn disconnect_mcp(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<bool>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     manager
         .disconnect(&name)
@@ -239,7 +250,7 @@ async fn get_mcp_logs(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<McpLogsResponse>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     let logs = manager
         .get_logs(&name)
@@ -259,7 +270,7 @@ async fn restart_mcp(
     State(state): State<Arc<ServerState>>,
     Path(name): Path<String>,
 ) -> Result<Json<McpRestartResponse>> {
-    let manager = get_mcp_oauth_manager();
+    let manager = get_mcp_oauth_manager(&state);
     ensure_mcp_server_registered(manager, &name, &state.config_store).await?;
     let server = manager
         .restart(&name)

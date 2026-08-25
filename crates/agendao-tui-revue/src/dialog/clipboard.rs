@@ -67,9 +67,54 @@ fn try_native_clipboard(text: &str) -> io::Result<()> {
     }))
 }
 
+/// Probe whether a native clipboard command is discoverable in this environment.
+///
+/// This is intentionally an explicit, observable seam for integration tests:
+/// `AGENDAO_CLIPBOARD_TEST_MODE=skip` forces an unavailable result. A failed
+/// probe means tests should skip GUI-dependent assertions and exercise
+/// the fallback/mock path instead; it does not modify the user's clipboard.
+pub fn native_clipboard_available() -> bool {
+    if clipboard_test_mode_skips(std::env::var_os("AGENDAO_CLIPBOARD_TEST_MODE")) {
+        return false;
+    }
+    let mut candidates = Vec::new();
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        candidates.push("wl-copy");
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        candidates.extend(["xclip", "xsel"]);
+    }
+    if cfg!(target_os = "macos") {
+        candidates.push("pbcopy");
+    }
+    if cfg!(target_os = "windows") {
+        candidates.push("clip.exe");
+    }
+    candidates.into_iter().any(command_on_path)
+}
+
+fn command_on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .any(|path| path.is_file())
+}
+
+fn clipboard_test_mode_skips(mode: Option<std::ffi::OsString>) -> bool {
+    mode.as_deref()
+        .is_some_and(|mode| mode.to_string_lossy().eq_ignore_ascii_case("skip"))
+}
+
 /// Write to a native system clipboard and only return success after the
 /// clipboard command confirms the operation.
 pub fn copy(text: &str) -> io::Result<()> {
+    if clipboard_test_mode_skips(std::env::var_os("AGENDAO_CLIPBOARD_TEST_MODE")) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "native clipboard disabled by AGENDAO_CLIPBOARD_TEST_MODE=skip",
+        ));
+    }
     try_native_clipboard(text)
 }
 
@@ -107,11 +152,23 @@ fn write_fallback(text: &str) -> io::Result<PathBuf> {
 /// Prefer a confirmed native clipboard write. If that is unavailable, emit
 /// OSC52 for terminals that accept it and always persist a file fallback.
 pub fn copy_with_fallback(text: &str) -> io::Result<CopyOutcome> {
-    match copy(text) {
+    copy_with_fallback_using(text, copy, send_osc52, write_fallback)
+}
+
+/// Dependency-injected variant used by deterministic tests. Production callers
+/// should use [`copy_with_fallback`], which supplies the real clipboard/OSC52/
+/// filesystem implementations.
+pub(crate) fn copy_with_fallback_using(
+    text: &str,
+    native: fn(&str) -> io::Result<()>,
+    osc52: fn(&str) -> io::Result<()>,
+    fallback: fn(&str) -> io::Result<PathBuf>,
+) -> io::Result<CopyOutcome> {
+    match native(text) {
         Ok(()) => Ok(CopyOutcome::Clipboard),
         Err(native_err) => {
-            let osc_error = send_osc52(text).err();
-            match write_fallback(text) {
+            let osc_error = osc52(text).err();
+            match fallback(text) {
                 Ok(path) => Ok(CopyOutcome::FileFallback(path)),
                 Err(fs_err) => Err(io::Error::new(
                     fs_err.kind(),
@@ -160,5 +217,47 @@ mod tests {
             run_clipboard_command("agendao-definitely-missing-clipboard-command", &[], "hello")
                 .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn injected_native_success_is_reported_as_clipboard() {
+        fn native(_: &str) -> io::Result<()> {
+            Ok(())
+        }
+        fn osc(_: &str) -> io::Result<()> {
+            panic!("OSC52 must not run after native success")
+        }
+        fn fallback(_: &str) -> io::Result<PathBuf> {
+            panic!("file fallback must not run after native success")
+        }
+        assert!(matches!(
+            copy_with_fallback_using("hello", native, osc, fallback).unwrap(),
+            CopyOutcome::Clipboard
+        ));
+    }
+
+    #[test]
+    fn injected_native_failure_uses_file_fallback() {
+        fn native(_: &str) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::NotFound, "mock unavailable"))
+        }
+        fn osc(_: &str) -> io::Result<()> {
+            Ok(())
+        }
+        fn fallback(_: &str) -> io::Result<PathBuf> {
+            Ok(PathBuf::from("/tmp/mock-clipboard.txt"))
+        }
+        assert!(matches!(
+            copy_with_fallback_using("hello", native, osc, fallback).unwrap(),
+            CopyOutcome::FileFallback(path) if path == PathBuf::from("/tmp/mock-clipboard.txt")
+        ));
+    }
+
+    #[test]
+    fn skip_mode_is_detected_without_mutating_process_environment() {
+        assert!(clipboard_test_mode_skips(Some("skip".into())));
+        assert!(clipboard_test_mode_skips(Some("SKIP".into())));
+        assert!(!clipboard_test_mode_skips(Some("native".into())));
+        assert!(!clipboard_test_mode_skips(None));
     }
 }

@@ -124,6 +124,8 @@ fn frontend_event_session_id(event: &FrontendEvent) -> Option<&str> {
         | FrontendEvent::TodoReplaced { session_id, .. }
         | FrontendEvent::SessionError { session_id, .. }
         | FrontendEvent::TaskLedgerReplaced { session_id, .. }
+        | FrontendEvent::SandboxExecutionUpsert { session_id, .. }
+        | FrontendEvent::SandboxExecutionRemoved { session_id, .. }
         | FrontendEvent::OutputBlockAppended { session_id, .. } => Some(session_id.as_str()),
         FrontendEvent::ConfigUpdated => None,
     }

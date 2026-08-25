@@ -371,6 +371,46 @@ pub struct SessionExecutionTopology {
     pub roots: Vec<SessionExecutionNode>,
 }
 
+/// Summary of an active sandboxed execution. The single authority
+/// definition of this wire shape: `agendao-server-core` re-exports it so
+/// the runtime store and the frontend event contract share one type
+/// (Constitution: one semantic domain, one authority). Kept in primitive
+/// fields so the wire contract stays independent of the sandbox backend
+/// crate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxExecutionSummary {
+    pub execution_id: String,
+    /// Backend that runs the execution ("native", "bwrap", ...).
+    pub backend: String,
+    /// The profile kind the request asked for, in its serde snake_case
+    /// form ("workspace_write", "check", "interactive_shell", "native").
+    pub profile_kind: String,
+    /// Audit identity of the policy that actually runs.
+    pub plan_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+/// How a sandbox execution left the active set, for the
+/// removed-from-active-set frontend event. `kind` distinguishes a real
+/// exit from a denial (never started) or a violation report, so a denied
+/// launch can never render as a failed run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxOutcomeSummary {
+    /// "exited" | "denied" | "violation"
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub success: bool,
+    /// "natural_exit" | "terminated_by_request" | "killed_after_grace" |
+    /// "timed_out" — absent for non-exit outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRuntimeState {
     pub session_id: String,
@@ -391,6 +431,12 @@ pub struct SessionRuntimeState {
     pub pending_permission: Option<PendingPermissionSummary>,
     #[serde(default)]
     pub pending_followup_count: u64,
+    /// Constitution §8: every active sandboxed execution must be visible
+    /// in the runtime snapshot — a frontend can never present an
+    /// execution as sandboxed without an entry here (or the upsert event
+    /// that maintains the same set).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_sandbox: Vec<SandboxExecutionSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

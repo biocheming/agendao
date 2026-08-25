@@ -140,6 +140,21 @@ async fn create_pty(
     let manager = get_pty_manager();
     let cwd = resolve_pty_cwd(state.as_ref(), req.cwd.as_deref())?;
     let session_id = required_session_id(req.session_id)?;
+    // Same launch path as every other execution surface: through the
+    // sandbox authority, contained unless the session declared yolo.
+    let sandbox_authority = state.sandbox_authority_for_session(&session_id).await;
+    let root = state
+        .project_root()
+        .canonicalize()
+        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve project root: {}", e)))?;
+    let launch = agendao_server_pty::PtyLaunchContext {
+        boundary: sandbox_authority.clone(),
+        workspace: root,
+        native_allowed: ServerState::sandbox_native_allowed_for_mode(
+            sandbox_authority.session_mode(),
+        ),
+        session_origin: Some(session_id.clone()),
+    };
     request_permission(
         state,
         session_id,
@@ -148,7 +163,7 @@ async fn create_pty(
     .await
     .map_err(map_tool_error_to_api_error)?;
     let session = manager
-        .create_session(&req.command, Some(&cwd), req.env)
+        .create_session(&req.command, Some(&cwd), req.env, &launch)
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok(Json(PtyInfo::from(session)))

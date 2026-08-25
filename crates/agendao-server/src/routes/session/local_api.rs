@@ -1060,6 +1060,84 @@ pub async fn local_execute_session_recovery(
     Ok(response)
 }
 
+pub async fn local_submit_input(
+    state: Arc<ServerState>,
+    session_id: &str,
+    cmd: agendao_types::submission::SubmitInputCommand,
+) -> anyhow::Result<agendao_types::submission::SubmissionDisposition> {
+    let Json(disp) = super::steering::submit_session_input(
+        State(state),
+        Path(session_id.to_string()),
+        Json(cmd),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(disp)
+}
+
+pub async fn local_delete_queued_input(
+    state: Arc<ServerState>,
+    session_id: &str,
+    item_id: &str,
+    req: agendao_types::submission::QueueMutationRequest,
+) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+    let Json(disp) = super::steering::delete_queued_input(
+        State(state),
+        Path((session_id.to_string(), item_id.to_string())),
+        Json(req),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(disp)
+}
+
+pub async fn local_edit_queued_input(
+    state: Arc<ServerState>,
+    session_id: &str,
+    item_id: &str,
+    req: agendao_types::submission::QueueEditRequest,
+) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+    let Json(disp) = super::steering::edit_queued_input(
+        State(state),
+        Path((session_id.to_string(), item_id.to_string())),
+        Json(req),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(disp)
+}
+
+pub async fn local_reorder_queued_input(
+    state: Arc<ServerState>,
+    session_id: &str,
+    item_id: &str,
+    req: agendao_types::submission::QueueReorderRequest,
+) -> anyhow::Result<agendao_types::submission::QueueMutationDisposition> {
+    let Json(disp) = super::steering::reorder_queued_input(
+        State(state),
+        Path((session_id.to_string(), item_id.to_string())),
+        Json(req),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(disp)
+}
+
+pub async fn local_interrupt(
+    state: Arc<ServerState>,
+    session_id: &str,
+    cmd: agendao_types::submission::InterruptCommand,
+) -> anyhow::Result<agendao_types::submission::InterruptDisposition> {
+    let Json(disp) = super::steering::interrupt_session_turn(
+        State(state),
+        Path(session_id.to_string()),
+        Json(cmd),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(disp)
+}
+
 #[cfg(test)]
 mod task_ledger_tests {
     use super::*;

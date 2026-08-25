@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use walkdir::WalkDir;
 
-use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
+use crate::path_guard::{authorize_external_file_path, resolve_user_path, RootPathFallbackPolicy};
 use crate::tool_access::{
     self, read_block_message, read_warning_message, ToolAccessKey, ToolAccessOutcome,
 };
@@ -164,7 +164,7 @@ impl Tool for ReadTool {
             );
         }
 
-        let path_str = path.to_string_lossy().to_string();
+        let requested_path_str = path.to_string_lossy().to_string();
         let mut repair_metadata = Metadata::new();
         if repaired_from.is_some() {
             let event = repair_event_builder(
@@ -175,31 +175,35 @@ impl Tool for ReadTool {
             .field("file_path")
             .reason("resolved a unique workspace path from a basename")
             .raw_shape(serde_json::json!(file_path))
-            .normalized_shape(serde_json::json!(path_str.clone()))
+            .normalized_shape(serde_json::json!(requested_path_str.clone()))
             .build();
             append_repair_event(&mut repair_metadata, event);
         }
 
-        if ctx.is_external_path(&path_str) {
-            let parent = path
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| path_str.clone());
-
-            ctx.ask_permission(
-                crate::PermissionRequest::new("external_directory")
-                    .with_pattern(format!("{}/*", parent))
-                    .with_scope_key(crate::external_fs_scope_key(&parent))
-                    .with_metadata("filepath", serde_json::json!(path_str))
-                    .with_metadata("parentDir", serde_json::json!(parent)),
-            )
-            .await?;
-        }
+        let authorized_path = match ctx.resolve_existing_file_path(&path) {
+            Ok(path) => path,
+            Err(_) => {
+                let suggestions = basename_suggestions;
+                if suggestions.is_empty() {
+                    return Err(ToolError::FileNotFound(format!(
+                        "File not found: {}",
+                        path.display()
+                    )));
+                }
+                return Err(ToolError::with_suggestions(
+                    format!("File not found: {}", path.display()),
+                    &suggestions,
+                ));
+            }
+        };
+        authorize_external_file_path(&ctx, &authorized_path).await?;
+        let path = authorized_path.operation_path().to_path_buf();
+        let path_str = authorized_path.display_path();
 
         ctx.ask_permission(
             crate::PermissionRequest::new("read")
                 .with_pattern(&path_str)
-                .with_scope_key(crate::workspace_scope_key(&ctx.project_root, &path_str))
+                .with_scope_key(authorized_path.permission_scope_key())
                 .always_allow(),
         )
         .await?;
@@ -210,36 +214,11 @@ impl Tool for ReadTool {
             .to_string_lossy()
             .to_string();
 
-        let metadata = fs::metadata(&path).await.map_err(|_e| {
-            let dir = path.parent().unwrap_or(Path::new("."));
-            let base = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let sibling_suggestions = if let Ok(entries) = std::fs::read_dir(dir) {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        let name = e.file_name().to_string_lossy().to_lowercase();
-                        let target = base.to_lowercase();
-                        name.contains(&target) || target.contains(&name)
-                    })
-                    .take(3)
-                    .map(|e| e.path().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let suggestions = merge_suggestions(&basename_suggestions, &sibling_suggestions, 6);
-            if !suggestions.is_empty() {
-                ToolError::with_suggestions(
-                    format!("File not found: {}", path.display()),
-                    &suggestions,
-                )
-            } else {
-                ToolError::FileNotFound(format!("File not found: {}", path.display()))
-            }
+        let metadata = fs::metadata(&path).await.map_err(|error| {
+            ToolError::ExecutionError(format!(
+                "inspect authorized file {}: {error}",
+                path.display()
+            ))
         })?;
 
         if metadata.is_dir() {
@@ -416,20 +395,6 @@ fn should_visit_basename_repair(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| !BASENAME_REPAIR_SKIP_DIRS.contains(&name))
         .unwrap_or(true)
-}
-
-fn merge_suggestions(primary: &[String], secondary: &[String], limit: usize) -> Vec<String> {
-    let mut merged = Vec::new();
-    for candidate in primary.iter().chain(secondary.iter()) {
-        if merged.iter().any(|existing| existing == candidate) {
-            continue;
-        }
-        merged.push(candidate.clone());
-        if merged.len() >= limit {
-            break;
-        }
-    }
-    merged
 }
 
 fn detect_mime(path: &Path) -> String {
