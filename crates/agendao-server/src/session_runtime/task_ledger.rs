@@ -429,13 +429,12 @@ mod tests {
             Some("run the full test suite")
         );
         let sessions = state.sessions.lock().await;
-        assert!(sessions
+        assert!(!sessions
             .get(&session_id)
             .expect("session")
             .record()
             .metadata
-            .get(TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY)
-            .is_none());
+            .contains_key(TASK_LEDGER_AUTO_CONTINUATION_METADATA_KEY));
     }
 
     #[tokio::test]

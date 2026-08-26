@@ -58,6 +58,7 @@ pub(crate) struct ScriptedProvider {
     hang: std::sync::atomic::AtomicBool,
     script: std::sync::Mutex<std::collections::VecDeque<ScriptedTurn>>,
     model_info: std::sync::OnceLock<agendao_provider::ModelInfo>,
+    received_user_texts: std::sync::Mutex<Vec<String>>,
 }
 
 impl ScriptedProvider {
@@ -67,6 +68,7 @@ impl ScriptedProvider {
             hang: std::sync::atomic::AtomicBool::new(false),
             script: std::sync::Mutex::new(script.into()),
             model_info: std::sync::OnceLock::new(),
+            received_user_texts: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -85,9 +87,38 @@ impl ScriptedProvider {
     }
 
     pub(crate) fn hang(&self) {
-        self.hang
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.hang.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// The last user-role text seen by each `chat_stream` call, in call order.
+    /// Transport parity tests use this to assert the prompt that actually
+    /// reached the provider — not just the scripted reply — matches across
+    /// transports.
+    pub(crate) fn received_user_texts(&self) -> Vec<String> {
+        self.received_user_texts
+            .lock()
+            .expect("received lock")
+            .clone()
+    }
+}
+
+/// Extract the last user-role text from a chat request (Text or Parts join).
+fn last_user_text(request: &agendao_provider::ChatRequest) -> String {
+    use agendao_provider::{Content, Role};
+    request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, Role::User))
+        .map(|message| match &message.content {
+            Content::Text(text) => text.clone(),
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join(""),
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn text_turn(text: &str) -> ScriptedTurn {
@@ -137,9 +168,14 @@ impl agendao_provider::Provider for ScriptedProvider {
 
     async fn chat_stream(
         &self,
-        _request: agendao_provider::ChatRequest,
+        request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.received_user_texts
+            .lock()
+            .expect("received lock")
+            .push(last_user_text(&request));
         if self.hang.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(Box::pin(futures::stream::pending()));
         }
@@ -149,14 +185,13 @@ impl agendao_provider::Provider for ScriptedProvider {
                 Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
             }
             Some(ScriptedTurn::Fail(error)) => Err(error),
-            None => Ok(Box::pin(futures::stream::iter(
-                vec![Ok(agendao_provider::StreamEvent::FinishStep {
+            None => Ok(Box::pin(futures::stream::iter(vec![Ok(
+                agendao_provider::StreamEvent::FinishStep {
                     finish_reason: Some("stop".to_string()),
                     usage: agendao_provider::StreamUsage::default(),
                     provider_metadata: None,
-                })]
-                .into_iter(),
-            ))),
+                },
+            )]))),
         }
     }
 }

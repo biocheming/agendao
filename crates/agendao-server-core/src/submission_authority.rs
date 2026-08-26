@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
+type IdempotencyCache = HashMap<(String, String), (i64, u64, SubmissionDisposition)>;
+
 /// 队列中单项的权威存储模型
 #[derive(Clone, Debug)]
 pub struct QueuedItem {
@@ -25,7 +27,7 @@ pub struct QueuedItem {
 #[derive(Debug)]
 pub struct SubmissionAuthority {
     /// 幂等缓存：(session_id, client_request_id) -> (created_at, payload_hash, disposition)
-    idempotency_cache: Mutex<HashMap<(String, String), (i64, u64, SubmissionDisposition)>>,
+    idempotency_cache: Mutex<IdempotencyCache>,
     /// Queue writes use a separate disposition domain but the same scoped
     /// idempotency contract: (session, request id, payload hash).
     queue_mutation_cache: Mutex<HashMap<(String, String), (u64, QueueMutationDisposition)>>,

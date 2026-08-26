@@ -311,6 +311,9 @@ impl ApiBridge {
     /// regardless of what `/models` or `/agents` chose — the bug surfaced as
     /// 401 errors against `zhipuai-coding-plan/glm-5.1` even after the user
     /// switched to a DeepSeek model in the dialog.
+    // Keep the compatibility API flat: these fields map one-to-one to the
+    // prompt transport selectors and are consumed by existing callers.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_prompt_with(
         &self,
         session_id: &str,
@@ -369,6 +372,9 @@ impl ApiBridge {
     /// 阻塞 revue 主事件循环（这是"按 Enter 后画面冻死"的根因）。现有 30+
     /// 同步方法（`block_on` 包装）保持不变，供 session_list / startup 等同步
     /// 调用点继续使用。
+    // Async counterpart intentionally mirrors `send_prompt_with` so sync and
+    // background dispatch paths cannot drift in their selection semantics.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_prompt_with_async(
         &self,
         session_id: &str,

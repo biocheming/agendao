@@ -431,14 +431,13 @@ fn scheduler_step_start_display(name: &str) -> (String, String) {
         .unwrap_or_else(|| (name.to_string(), "?/?".to_string()))
 }
 
-fn scheduler_step_finish_display(
-    id: &str,
-    output: Option<&str>,
-) -> (
+type SchedulerStepFinishDisplay = (
     String,
     Vec<(String, String, Option<String>)>,
     Option<String>,
-) {
+);
+
+fn scheduler_step_finish_display(id: &str, output: Option<&str>) -> SchedulerStepFinishDisplay {
     let fallback_progress = id
         .rsplit_once(':')
         .map(|(_, step)| format!("{step}/?"))

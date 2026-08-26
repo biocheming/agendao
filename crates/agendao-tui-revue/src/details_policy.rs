@@ -8,17 +8,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DetailVisibility {
+    #[default]
     Collapsed,
     Expanded,
     Hidden,
-}
-
-impl Default for DetailVisibility {
-    fn default() -> Self {
-        Self::Collapsed
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

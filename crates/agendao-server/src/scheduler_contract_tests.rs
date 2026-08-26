@@ -11,7 +11,7 @@
 //! 4. 执行事实进入事件总线：scheduler step 事件经 frontend bus 可观测。
 
 use super::{run_scheduler, SchedulerRunInput};
-use crate::test_support::{target_fixture_root, ScriptedProvider, ScriptedTurn, text_turn};
+use crate::test_support::{target_fixture_root, text_turn, ScriptedProvider, ScriptedTurn};
 use crate::ServerState;
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_orchestrator::selector::SchedulerChoice;
@@ -70,8 +70,7 @@ fn run_input(
 
 #[tokio::test]
 async fn direct_template_completes_with_structured_outcome() {
-    let (state, session_id, assistant_message_id) =
-        contract_state("direct-completes").await;
+    let (state, session_id, assistant_message_id) = contract_state("direct-completes").await;
     let directory = state.project_root().to_string_lossy().to_string();
     let provider = ScriptedProvider::new(vec![text_turn("contract result: done")]);
     let input = run_input(
@@ -83,13 +82,10 @@ async fn direct_template_completes_with_structured_outcome() {
         CancellationToken::new(),
     );
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        run_scheduler(input),
-    )
-    .await
-    .expect("run must finish within timeout")
-    .expect("successful scripted run must return Ok");
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), run_scheduler(input))
+        .await
+        .expect("run must finish within timeout")
+        .expect("successful scripted run must return Ok");
 
     // 终态契约：SchedulerRunOutput 的每个字段都是权威读面，
     // 不允许调用方从错误文本猜测这些值。
@@ -114,12 +110,11 @@ async fn direct_template_completes_with_structured_outcome() {
 
 #[tokio::test]
 async fn provider_failure_propagates_as_error_outcome() {
-    let (state, session_id, assistant_message_id) =
-        contract_state("provider-failure").await;
+    let (state, session_id, assistant_message_id) = contract_state("provider-failure").await;
     let directory = state.project_root().to_string_lossy().to_string();
-    let provider = ScriptedProvider::new(vec![ScriptedTurn::Fail(
-        ProviderError::InvalidRequest("contract: provider refused".to_string()),
-    )]);
+    let provider = ScriptedProvider::new(vec![ScriptedTurn::Fail(ProviderError::InvalidRequest(
+        "contract: provider refused".to_string(),
+    ))]);
     let input = run_input(
         state.clone(),
         session_id,
@@ -129,12 +124,9 @@ async fn provider_failure_propagates_as_error_outcome() {
         CancellationToken::new(),
     );
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        run_scheduler(input),
-    )
-    .await
-    .expect("failing run must finish within timeout");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), run_scheduler(input))
+        .await
+        .expect("failing run must finish within timeout");
 
     let error = match outcome {
         Ok(_) => panic!("provider failure must surface as Err"),
@@ -152,8 +144,7 @@ async fn provider_failure_propagates_as_error_outcome() {
 
 #[tokio::test]
 async fn run_emits_scheduler_step_events_to_frontend_bus() {
-    let (state, session_id, assistant_message_id) =
-        contract_state("frontend-bus-events").await;
+    let (state, session_id, assistant_message_id) = contract_state("frontend-bus-events").await;
     let directory = state.project_root().to_string_lossy().to_string();
     let provider = ScriptedProvider::new(vec![text_turn("visible work")]);
     // Direct transport 的标准装配：spawn frontend projector 把 ServerEvent
@@ -185,24 +176,18 @@ async fn run_emits_scheduler_step_events_to_frontend_bus() {
         tokio::time::timeout(std::time::Duration::from_secs(30), receiver.recv()).await
     {
         let event = event.expect("frontend bus channel must stay open");
-        match event.event() {
-            FrontendEvent::OutputBlockAppended { block, .. } => {
-                if block.get("kind").and_then(|kind| kind.as_str()) == Some("session_event") {
-                    saw_scheduler_step = true;
-                }
+        if let FrontendEvent::OutputBlockAppended { block, .. } = event.event() {
+            if block.get("kind").and_then(|kind| kind.as_str()) == Some("session_event") {
+                saw_scheduler_step = true;
             }
-            _ => {}
         }
         if run.is_finished() && saw_scheduler_step {
             break;
         }
         if run.is_finished()
-            && tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                receiver.recv(),
-            )
-            .await
-            .is_err()
+            && tokio::time::timeout(std::time::Duration::from_millis(200), receiver.recv())
+                .await
+                .is_err()
         {
             break;
         }
@@ -227,8 +212,7 @@ async fn run_emits_scheduler_step_events_to_frontend_bus() {
 /// 必须显式修改该契约及其测试。
 #[tokio::test]
 async fn cancelled_run_returns_cancelled_error_and_goes_quiet() {
-    let (state, session_id, assistant_message_id) =
-        contract_state("cancelled-run").await;
+    let (state, session_id, assistant_message_id) = contract_state("cancelled-run").await;
     let directory = state.project_root().to_string_lossy().to_string();
     let provider = ScriptedProvider::new(vec![text_turn("never finishing turn")]);
     provider.hang();

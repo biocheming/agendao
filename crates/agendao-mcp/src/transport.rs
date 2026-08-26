@@ -124,7 +124,7 @@ impl StdioTransport {
                 std::sync::Arc::new(move || {
                     if let Some(driver) = hook_driver.get() {
                         let driver = driver.clone();
-                        let _ = tokio::spawn(async move { driver.terminate().await });
+                        drop(tokio::spawn(async move { driver.terminate().await }));
                     }
                 }),
             ))
@@ -159,7 +159,7 @@ impl Drop for StdioTransport {
         // path.
         if let Ok(mut guard) = self.driver.try_lock() {
             if let Some(driver) = guard.take() {
-                let _ = tokio::spawn(async move { driver.terminate().await });
+                drop(tokio::spawn(async move { driver.terminate().await }));
             }
         }
     }

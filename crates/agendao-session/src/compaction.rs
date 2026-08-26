@@ -491,9 +491,11 @@ When constructing the summary, try to stick to this template:
         }
 
         tracing::info!(pruned, total, "found");
-        (pruned > PRUNE_MINIMUM)
-            .then_some(to_prune)
-            .unwrap_or_default()
+        if pruned > PRUNE_MINIMUM {
+            to_prune
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn create_compaction_part(auto: bool) -> CompactionPart {
