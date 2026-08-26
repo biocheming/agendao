@@ -84,11 +84,6 @@ agendao tui [PROJECT] [选项]
 | `--agent` | string | -- | 指定智能体名称 |
 | `--attach-url` | string | -- | 显式改走 HTTP 并附加到给定服务地址 |
 | `--socket` | flag | false | 显式改走标准本地 Unix socket |
-| `--port` | u16 | 0 | HTTP 服务端口（0 = 自动） |
-| `--hostname` | string | 127.0.0.1 | 绑定地址 |
-| `--mdns` | flag | false | 启用 mDNS 服务发现 |
-| `--mdns-domain` | string | agendao.local | mDNS 域名 |
-| `--cors` | string[] | [] | CORS 允许源列表 |
 | `--local` | flag | false | 强制 Direct；当前只是显式声明默认行为 |
 
 ### 示例
@@ -177,6 +172,25 @@ agendao run --command /status
 
 ---
 
+## agendao steer -- 会话转向
+
+向正在运行的会话提交转向消息（mid-run steering message）。
+
+### 用法
+
+```
+agendao steer -s <SESSION_ID> <MESSAGE...>
+```
+
+### 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `-s, --session` | string | 必填 | 会话 ID |
+| `MESSAGE` | string[] | 必填 | 转向消息内容（可含空格） |
+
+---
+
 ## agendao attach -- 附加到远程服务器
 
 将 TUI 客户端附加到一个正在运行的 AgenDao 服务。默认按给定 URL 走 HTTP；如果额外提供 `--socket`，则显式要求走标准本地 Unix socket，并仅把 URL 作为同一服务的基准地址。
@@ -222,6 +236,7 @@ agendao serve [选项]
 |------|------|--------|------|
 | `--port` | u16 | 0 | 端口（0 = 自动） |
 | `--hostname` | string | 127.0.0.1 | 绑定地址 |
+| `--dir` | path | -- | 工作目录 |
 | `--mdns` | flag | false | 启用 mDNS |
 | `--mdns-domain` | string | agendao.local | mDNS 域名 |
 | `--cors` | string[] | [] | CORS 允许源 |
@@ -253,7 +268,7 @@ agendao serve [选项]
 agendao web [选项]
 ```
 
-参数与 `agendao serve` 相同。
+参数与 `agendao serve` 相同，但不包含 `--socket`。
 
 ---
 
@@ -269,7 +284,7 @@ agendao acp [选项]
 
 ### 参数
 
-除 `serve` 通用参数外：
+除 `serve` 通用参数外（注意不包含 `--socket` 和 `--dir`）：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -316,6 +331,17 @@ agendao models --refresh
 管理会话的创建、列表、查看和删除。
 
 ### 子命令
+
+#### session blueprint
+
+审查、保存、编辑或拒绝会话的 Blueprint。
+
+| 子命令 | 说明 |
+|--------|------|
+| `inspect <SESSION_ID>` | 打印当前生效的类型化 Blueprint |
+| `save <SESSION_ID> -o <PATH> [--force]` | 将当前生效的 Blueprint 保存为 JSONC 文件 |
+| `edit <SESSION_ID> <FILE>` | 验证并从 JSONC 文件更新 Blueprint |
+| `reject <SESSION_ID>` | 拒绝当前的 AI 规划 Blueprint |
 
 #### session list
 
@@ -417,9 +443,12 @@ agendao provider import ./provider.json
 
 ### 子命令
 
-```
-agendao skill hub <action> [选项]
-```
+| 子命令 | 说明 |
+|--------|------|
+| `export [--output <PATH>]` | 导出工作区本地技能 authority 工件为 JSON |
+| `import <FILE>` | 从 JSON 导入工作区本地技能 authority 工件 |
+| `hub <action> [选项]` | 远程分布、生命周期和托管来源操作 |
+| `proposal <action> [选项]` | 审查和管理技能演进提案 |
 
 #### Hub 子命令
 
@@ -427,6 +456,12 @@ agendao skill hub <action> [选项]
 |--------|------|
 | `status` | 显示分布、缓存和生命周期状态总览 |
 | `managed` | 显示托管技能来源记录 |
+| `usage` | 显示规范技能用量和写入账本检查 |
+| `negative-entropy` | 显示只读的 negative entropy 诊断信息 |
+| `review-candidates-sync` | 将工作区本地技能标记为 negative-entropy 审查候选 |
+| `semantic-conflicts` | 显示只读的语义重叠诊断信息 |
+| `semantic-conflict-review-sync` | 从语义冲突诊断中将冗余的工作区本地技能标记为审查候选 |
+| `vitality-set` | 设置一个工作区本地技能的生命力状态 |
 | `index` | 显示缓存技能来源索引 |
 | `distributions` | 显示已解析的远程分布记录 |
 | `artifact-cache` | 显示工件缓存条目 |

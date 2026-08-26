@@ -228,7 +228,6 @@ TS 插件当前支持的 hook 名是下面这些精确字符串：
 - `experimental.chat.messages.transform`
 - `experimental.session.compacting`
 - `experimental.telemetry.snapshot.updated`
-- `experimental.telemetry.stage.summary.updated`
 - `experimental.text.complete`
 
 如果你写的是旧的驼峰事件名或通知式事件名，那不是“有点旧”，而是根本对不上当前宿主。

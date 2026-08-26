@@ -137,7 +137,6 @@ MCP 服务器在 `agendao.jsonc` 配置文件的 `mcp` 字段中声明。这是�
 |------|------|------|------|
 | `command` | string[] | 是 | 启动命令及其参数 |
 | `environment` | map | 否 | 额外环境变量 |
-| `env` | map | 否 | `environment` 的旧名别名 |
 
 ### 远程服务器字段
 

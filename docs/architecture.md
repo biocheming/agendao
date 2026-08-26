@@ -10,7 +10,7 @@ graph TB
     subgraph 投影面["🌊 水 · 投影面（三端同源，不存真相）"]
         TUI["agendao-tui-revue<br/>TUI：会话/设置/主题/墨韵"]
         WEB["apps/agendao-web<br/>浏览器前端（React）"]
-        CLI["agendao-cli (+core/admin)<br/>非交互命令/管理"]
+        CLI["agendao-cli (+core)<br/>非交互命令/管理"]
         SHELL["agendao（产品壳）<br/>info/upgrade/uninstall"]
     end
 
@@ -29,6 +29,7 @@ graph TB
         AGENT["agendao-agent<br/>子代理执行"]
         PLUGIN["agendao-plugin<br/>插件运行时（npm/file/dylib）"]
         PERM["agendao-permission<br/>权限规则集"]
+        SANDBOX["agendao-sandbox<br/>执行隔离/安全沙箱"]
     end
 
     subgraph 生长["🌳 木 · 训练与生长"]
@@ -42,6 +43,8 @@ graph TB
     end
 
     subgraph 根基["🟤 土 · 根基（承载一切）"]
+        CORE["agendao-core<br/>基础原语/总线/进程"]
+        BLOCKS["agendao-output-blocks<br/>输出区块定义"]
         UTIL["agendao-util<br/>~/.agendao home/日志/公共函数"]
         CONFIG["agendao-config<br/>schema/loader/discovery/matching"]
         TYPES["agendao-types / execution-types<br/>server-core events / api"]
@@ -70,12 +73,10 @@ graph TB
     MCP --> CONFIG
 
     SKILL --> CONFIG
-    SKILL --> STORE
     MEM --> STORE
     SESSION --> MEM
     SESSION --> STORE
 
-    PROVIDER --> CONFIG
     SERVER --> CONFIG
     SESSION --> UTIL
     CONFIG --> UTIL
@@ -117,6 +118,8 @@ sequenceDiagram
 
 | 模块 | 功能 |
 |------|------|
+| `agendao-core` | Stable low-level shared primitives for AgenDao（event-bus, process-registry, subprocess-runtime 等）；轻量基础特性。 |
+| `agendao-output-blocks` | 统一的输出区块定义（StatusBlock, MessageBlock, ToolBlock, SessionEventBlock 等）。 |
 | `agendao-util` | `agendao_home()` 单点权威（AGENDAO_HOME 优先）+ 首启迁移；日志初始化；truncate_chars/strip_ansi 等公共函数；timeout/defer/lock 小件 |
 | `agendao-config` | 分层配置加载（全局→项目→.agendao→企业）；schema 与 merge；skills/plugins/commands 发现；`matching`（启停通配）；`disabled_tools/plugins/skills.disabled` 过滤语义 |
 | `agendao-types` | session/message/usage/telemetry 等核心类型 |
@@ -143,6 +146,7 @@ sequenceDiagram
 | `agendao-lsp` | LSP 集成 |
 | `agendao-grep` | ripgrep 封装 |
 | `agendao-multimodal` | 附件/图像/语音能力与 explain；Web 端录音通过 MediaRecorder 接入 |
+| `agendao-sandbox` | OS 级执行隔离的单一权限与实现（policy merging, plan, Bubblewrap/Seatbelt/Job Object backends） |
 
 ### 木 · 训练与生长
 
@@ -158,7 +162,6 @@ sequenceDiagram
 |------|------|
 | `agendao-memory` | memory consolidation（**遗忘**：合并/衰减/过期）；retrieval 回流；rule hits |
 | `agendao-storage` | facade + repositories（session/message/artifact/telemetry）；sqlite 装配与迁移 |
-| `agendao-storage-core` | StorageBackend trait |
 
 ### 金 · 同源与收敛
 
@@ -178,7 +181,6 @@ sequenceDiagram
 | `apps/agendao-web` | 浏览器前端：会话/composer/execution/settings-drawer（全 i18n） |
 | `agendao-cli` | 非交互命令（run/session/skill/debug） |
 | `agendao-cli-core` | clap 定义 |
-| `agendao-cli-admin` | admin handler（177 行，可并入 core） |
 | `agendao`（产品壳） | default-run 主入口；info/upgrade/uninstall；内嵌 web 资源 |
 | `agendao-launcher` | 启动器 + web 资源内嵌构建 |
 

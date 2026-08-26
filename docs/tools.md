@@ -58,6 +58,16 @@
 - 超过 2000 字符的行会被截断
 - 默认最多返回 2000 行
 
+### artifact_read
+
+读取截断后生成的大输出文件（artifact）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `artifact_path` | string | 是 | Artifact 绝对或相对路径 |
+| `offset` | integer | 否 | 起始行号（1-indexed） |
+| `limit` | integer | 否 | 最大行数 |
+
 ### write
 
 将内容写入文件。文件不存在时创建（含中间目录），存在时覆盖。
@@ -102,7 +112,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `patchText` (别名 `patch_text`) | string | 是 | 统一 diff 补丁文本 |
+| `patchText` | string | 是 | 统一 diff 补丁文本 |
 
 支持的补丁操作：Add（新增文件）、Update（修改文件）、Delete（删除文件）、Move（移动/重命名文件）。
 
@@ -201,9 +211,9 @@
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `command` | string | 是 | Shell 命令 |
-| `description` | string | 否 | 命令描述（用于显示） |
-| `timeout` | integer | 否 | 超时毫秒（默认 120000，最大 600000） |
-| `run_in_background` | boolean | 否 | 后台运行 |
+| `description` | string | 是 | 命令描述（用于显示） |
+| `timeout` | number | 否 | 超时毫秒 |
+| `workdir` | string | 否 | 工作目录 |
 
 特性：
 - 默认超时 2 分钟，最大 10 分钟
@@ -218,11 +228,18 @@
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `operation` | enum | 是 | 操作: `start`, `write`, `read`, `status`, `terminate` |
-| `sessionId` | string | 否 | 会话 ID |
+| `session_id` | string | 否 | 会话 ID |
 | `command` | string | 否 | 启动命令 |
 | `args` | string[] | 否 | 命令参数 |
 | `cwd` | string | 否 | 工作目录 |
 | `env` | map | 否 | 环境变量 |
+| `input` | string | 否 | 输入 |
+| `append_newline` | boolean | 否 | 追加换行符 |
+| `cursor` | integer | 否 | 光标位置 |
+| `wait_ms` | integer | 否 | 等待毫秒数 |
+| `cols` | integer | 否 | 终端列数 |
+| `rows` | integer | 否 | 终端行数 |
+| `description` | string | 否 | 描述 |
 
 操作说明：
 
@@ -255,8 +272,10 @@
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `query` | string | 是 | 搜索查询 |
-| `searchType` | string | 否 | 搜索类型（默认 `auto`） |
+| `type` | string | 否 | 搜索类型（默认 `auto`） |
 | `numResults` | integer | 否 | 结果数量（默认 8） |
+| `livecrawl` | string | 否 | 实时抓取模式 |
+| `contextMaxCharacters` | integer | 否 | 最大上下文内容字符数 |
 
 ### browser_session
 
@@ -288,7 +307,7 @@
 |------|------|------|------|
 | `operation` | enum | 是 | 操作（见下表） |
 | `path` | string | 否 | 文件/目录路径 |
-| `commit` (别名 `sha`) | string | 否 | 提交 SHA |
+| `commit` | string | 否 | 提交 SHA |
 | `lineStart` | integer | 否 | 起始行号 |
 | `lineEnd` | integer | 否 | 结束行号 |
 | `limit` | integer | 否 | 返回数量限制（默认 20，最大 100） |
@@ -307,6 +326,24 @@
 ---
 
 ## 技能管理工具
+
+### skills_categories
+
+第一步分类探索技能，列出可用分类及计数，供 `skills_list` 使用。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `verbose` | boolean | 否 | 是否详细输出 |
+
+### skill_search
+
+通过关键字搜索技能。适用于分类过大或只知道主题的场景。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | string | 是 | 搜索关键字 |
+| `category` | string | 否 | 限定分类 |
+| `limit` | integer | 否 | 返回数量限制（默认 12，最大 50） |
 
 ### skills_list
 
@@ -476,7 +513,9 @@ AgenDao 当前把 memory 做成正式可观测能力，而不只是内部实验�
 | `library_id` | string | 否 | 库 ID |
 | `query` | string | 否 | 查询文本 |
 | `limit` | integer | 否 | 结果限制（默认 5，最大 20） |
-| `page` | integer | 否 | 页码 |
+| `page_id` | string | 否 | 页面 ID |
+| `version` | string | 否 | 版本 |
+| `source` | string | 否 | 来源 |
 
 操作列表：
 
@@ -498,12 +537,19 @@ GitHub 仓库结构化研究工具。
 |------|------|------|------|
 | `operation` | enum | 是 | 操作（见下表） |
 | `query` | string | 否 | 搜索查询 |
-| `owner` | string | 否 | 仓库所有者 |
-| `repo` | string | 否 | 仓库名称 |
+| `repo` | string | 是 | 仓库名称 (格式: "owner/repo") |
 | `number` | integer | 否 | Issue/PR 编号 |
 | `path` | string | 否 | 文件路径 |
 | `sha` | string | 否 | 提交 SHA |
+| `language` | string | 否 | 编程语言 |
+| `branch` | string | 否 | 分支名 |
+| `local_alias` | string | 否 | 本地别名 |
+| `line_start` | integer | 否 | 起始行 |
+| `line_end` | integer | 否 | 结束行 |
+| `depth` | integer | 否 | 克隆深度 |
+| `state` | string | 否 | 状态 |
 | `limit` | integer | 否 | 结果限制 |
+| `include_comments` | boolean | 否 | 是否包含评论 |
 
 操作列表：
 
@@ -578,6 +624,27 @@ Language Server Protocol 操作，用于代码导航和分析。
 | `parameters` | object | 工具参数 |
 
 注意：`batch` 工具本身不能被嵌套调用。
+
+---
+
+## 资源能力工具
+
+### capability
+
+在不加载所有 Schema 的情况下发现和使用工具、MCP 能力及导入的执行资源。建议先 search，按需 describe，然后 call。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `action` | enum | 是 | 操作: `search`, `describe`, `call` |
+| `tool` | string | 否 | describe 或 call 时需要指定的确切资源名 |
+| `query` | string | 否 | 搜索文本 |
+| `domain` | string | 否 | 筛选 domain |
+| `family` | string | 否 | 筛选 family |
+| `subfamily` | string | 否 | 筛选 subfamily |
+| `tag` | string | 否 | 筛选 tag |
+| `limit` | integer | 否 | 结果数量限制（默认 8，最大 50） |
+| `offset` | integer | 否 | 偏移量（默认 0） |
+| `arguments` | object | 否 | call 时传递给工具的参数 |
 
 ---
 

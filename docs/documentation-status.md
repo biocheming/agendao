@@ -1,203 +1,47 @@
 # AgenDao 文档状态总表
 
-文档日期：`2026-07-19`
+文档日期：`2026-08-26`
 
-本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `agendao/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
+本文说明 `agendao/docs` 里每份文档的用途和当前状态，帮助用户快速定位需要的信息。
 
-## 先看结论
+## 产品文档
 
-当前 `agendao/docs` 应按三类阅读：
-
-1. 稳定产品文档
-   - 面向用户、集成方和日常开发。
-   - 默认认为“当前可用”，除非文档内显式标注实验性或规划性边界。
-2. 设计/实施参考
-   - 解释架构边界、实施顺序和权责收口。
-   - 可以指导局部改动，但不能自动当成项目主计划。
-3. 示例与 schema
-   - 主要用于上手、验证格式和构造配置。
-   - 它们说明“怎么写”，不说明“产品是否已经完整做完”。
-
-## 当前产品线状态
-
-### 1. 工具调用准确率 / replay authority
-
-状态：`已完成当前主收口`
-
-结论：
-
-- assistant 历史 replay 现在有共享 authority。
-- canonical replay ordering 已钉死：`reasoning -> text -> tool_use -> tool_result -> file`
-- session / provider / orchestrator 三条路径都有守护测试。
-- downgraded tool-summary 不会再被重新送回 `Role::Tool`。
-
-对应文档：
-
-- `plans/message-replay-authority-refactor.md`
-- `context-caching.md`
-- `tools.md`
-
-### 2. tool repair / telemetry / trajectory quality / runtime governance
-
-状态：`已进入正式读面`
-
-结论：
-
-- repair summary、repair query snapshot、tool trajectory quality 不再只是内部调试数据。
-- persisted session telemetry 已携带这些结构化读面。
-- CLI / TUI / Web 都已经能展示 trajectory quality。
-- permission、steering 和 tool-result governance 也应按同一原则理解：它们是运行治理读面，不是前端各自猜测的临时状态。
-- 这条线的定位是“解释工具轨迹质量、修复成本和运行治理状态”，不是替代主执行逻辑。
-
-对应文档：
-
-- `commands.md`
-- `index.md`
-- `README.md`
-
-### 3. prompt caching / context closure / prompt surface
-
-状态：`核心能力已落地，仍有持续硬化空间`
-
-结论：
-
-- 这条线已经不是纯设计稿，已有稳定提示面、context closure、cache diagnostics、runtime snapshot 等正式读面。
-- 但相关计划文档仍应被视为架构/实施参考，而不是“下一阶段自动执行单”。
-
-对应文档：
-
-- `context-caching.md`
-- `plans/prompt-caching-architecture.md`
-- `plans/prompt-caching-implementation-plan.md`
-- `plans/prompt-surface-runtime-snapshot-and-ingress-stabilization.md`
-
-### 4. frontend/backend decoupling
-
-状态：`主体完成，后续以边界守护为主`
-
-结论：
-
-- `agendao` 已是产品壳。
-- `agendao-cli` / `agendao-tui-revue` / `agendao-web` / `agendao-server` 的角色划分已经清楚：`agendao-cli` 负责非交互执行与管理命令，`agendao-tui-revue` 负责终端会话界面（旧 agendao-tui 已移除），`agendao-web` 负责浏览器界面，`agendao-server` 负责 authority。
-- 这份蓝图文档现在更像边界守护参考，而不是高频执行清单。
-
-对应文档：
-
-- `plans/frontend-backend-decoupling-blueprint.md`
-
-### 5. provider profile / protocol / transport 清债
-
-状态：`进行中`
-
-结论：
-
-- provider authority、descriptor、protocol family、transport/auth 边界已经明显比早期清楚。
-- 但这条线还没有彻底完成结构性收缩，尤其是 provider 内部文件体积和职责混杂问题仍然存在。
-
-对应文档：
-
-- `plans/provider-profile-protocol-transport-refactor-plan.md`
-
-### 6. 用户目录统一 / 全项目审计 / TUI Settings
-
-状态：`已落地`
-
-结论：
-
-- 用户级数据（配置、数据库、日志、凭证、缓存、skills）统一收归 `~/.agendao`，旧 XDG 目录首启自动迁移；`AGENDAO_HOME` 可覆盖。
-- 已完成一次全项目审计（架构/质量/安全/测试/文档/Web 六专项），P0 级问题（CI 缺失、存量失败测试、孤儿 crate）已修复。
-- TUI 全屏 Settings 页落地，各分类可查看可编辑，provider 支持原地 CRUD 与连接测试。
-
-对应文档：
-
-- `plans/agendao-project-audit-2026-07.md`
-- `plans/agendao-web-audit-2026-07.md`
-- `../CHANGELOG.md`（Unreleased 2026-07）
-
-### 7. Sandbox execution boundary
-
-状态：`Linux 主链已落地；macOS/Windows fail-closed，平台 enforcement 待完成`
-
-结论：
-
-- 模型可达执行已全部收口到唯一 `SandboxExecutionBoundary`（server `SandboxAuthority` / CLI `CliSandboxAuthority`）；permission 与 sandbox 是两件事，`unsandboxed_yolo` 是显式退出 sandbox，不是 "sandbox YOLO"。
-- Linux `bwrap` 完整：namespaces + seccomp + workspace bind + protected-metadata + 私有 `/tmp` + process-group 生命周期梯。
-- macOS Seatbelt 路径编码已 fail-closed，默认 backend 当前禁用；固定共享 `/tmp/agendao-home` 已移除，等待 execution-scoped HOME 与受支持的 enforcement 后再启用。
-- Windows 四模型（token/acl/job/wfp）已就位并被 contract-test，但 kernel 执行路径未集成，contained 启动恒定 fail-closed（有可行动原因）。
-- 守护：`agendao-server/tests/fixtures/sandbox-spawn-inventory.tsv` + `agendao-server/tests/sandbox_spawn_inventory.rs` 双向精确（源码↔TSV），model-reachable 唯一合法终局是 `boundary`，无第二套模型可达执行 authority；manifest 不放入永久忽略的 `docs/plans/`。
-- backend 纯参数构造在任意宿主 contract-test；宿主侧测试与编译产物用 `../target`，sandbox 内 `/tmp` 仅为隔离私有 tmpfs。
-
-对应文档：
-
-- `sandbox.md`
-- `plans/sandbox-system-architecture-and-implementation-plan.md`
-
-## 根目录文档状态
-
-| 文档 | 当前定位 | 状态判断 |
+| 文档 | 用途 | 状态 |
 | --- | --- | --- |
 | `README.md` | docs 门户与阅读顺序 | 当前 |
-| `architecture.md` | 五行视角架构图（模块连接+功能清单） | 当前 |
 | `index.md` | 产品总览 | 当前 |
-| `installation.md` | 安装/分发 | 当前 |
-| `commands.md` | CLI/斜杠命令参考 | 当前，已补齐 memory/provider/repair 等入口 |
-| `tools.md` | 内置工具参考 | 当前，需按 canonical-first 理解高复杂工具 |
-| `configuration.md` | 配置与 validation | 当前 |
-| `context-caching.md` | 上下文缓存与 prompt surface | 当前 |
-| `sandbox.md` | sandbox 权威、平台隔离与诚实边界 | 当前 |
-| `skills.md` | skill 治理与 hub | 当前 |
-| `scheduler.md` | scheduler 全参考 | 当前 |
-| `auth.md` | provider 认证 | 当前 |
-| `mcp.md` | MCP 管理 | 当前 |
-| `hooks.md` | hooks 与事件 | 当前 |
-| `plugins.md` | 插件系统说明 | 当前 |
+| `installation.md` | 安装、升级、卸载 | 当前 |
+| `commands.md` | CLI 与斜杠命令参考 | 当前 |
+| `tools.md` | 内置工具参考 | 当前 |
+| `configuration.md` | 配置格式与验证 | 当前 |
+| `context-caching.md` | 上下文缓存与提示面 | 当前 |
+| `sandbox.md` | 沙箱执行边界与平台隔离 | 当前 |
+| `skills.md` | Skill 治理与 Hub | 当前 |
+| `scheduler.md` | Scheduler 模板与编排 | 当前 |
+| `auth.md` | Provider 认证 | 当前 |
+| `mcp.md` | MCP 服务管理 | 当前 |
+| `hooks.md` | Hooks 与事件 | 当前 |
+| `plugins.md` | 插件系统 | 当前 |
 | `plugins-capability-matrix.md` | 插件能力矩阵 | 当前 |
-| `agents.md` | agent 系统说明 | 当前 |
+| `agents.md` | Agent 系统 | 当前 |
+| `architecture.md` | 架构总览 | 当前 |
+| `task-ledger.md` | `/goal` 命令与 TaskLedger | 当前 |
 
-## 阶段记录与归档文档
+## 示例与 Schema
 
-早期传输/阶段复盘文档（`phase4.2`~`phase6.5`、`mixed-transport-progress` 等 12 份）已在文档清理中移除，相关结论已沉淀进各产品文档；git 历史仍可查阅。
+以下内容用于上手和验证格式：
 
-## 计划文档状态
+- `examples/context_docs/*` — context_docs schema 与示例
+- `examples/plugins_example/*` — Skill / TS plugin / Rust 扩展示例
+- `examples/scheduler/*` — SchedulerBlueprint 示例
+- `examples/configuration/*` — Provider / Permission / Ollama 配置示例
+- `agendao_config.schema.json` — 配置 JSON Schema
 
-| 文档 | 当前定位 | 状态判断 |
-| --- | --- | --- |
-| `plans/message-replay-authority-refactor.md` | replay authority 复盘与边界说明 | `已完成` |
-| `plans/frontend-backend-decoupling-blueprint.md` | 架构边界蓝图 | `主体完成，继续作为边界参考` |
-| `plans/global-state-followup-tasklist.md` | startup/global-state 局部清理清单 | `局部 backlog，不是主线` |
-| `plans/prompt-caching-architecture.md` | 缓存架构原则 | `长期参考` |
-| `plans/prompt-caching-implementation-plan.md` | 缓存实施路线 | `部分落地，仍是局部技术计划` |
-| `plans/prompt-surface-runtime-snapshot-and-ingress-stabilization.md` | prompt surface snapshot / ingress 稳定化 | `第一版已落地，后续仍可继续` |
-| `plans/provider-profile-protocol-transport-refactor-plan.md` | provider 清债路线 | `进行中` |
-| `plans/tui-session-graph-sidebar.md` | TUI sidebar 设计草图 | `已落地（2026-07），可归档` |
-| `plans/agendao-web-audit-2026-07.md` | Web 前端专项审计与修复追踪 | `进行中（主体已修）` |
-| `plans/agendao-project-audit-2026-07.md` | 全项目六专项审计 | `P0/P1/P2/P3 已全部核销` |
-| `plans/sandbox-system-architecture-and-implementation-plan.md` | sandbox authority、平台隔离与分阶段实施计划 | `Linux 主链已落地；真实 ProxyOnly、macOS/Windows enforcement 与资源配额仍待完成` |
+## 阅读顺序建议
 
-## 示例与 schema 状态
-
-这些内容默认不作为“当前产品完成度”判断依据：
-
-- `examples/context_docs/*`
-- `examples/plugins_example/*`
-- `examples/scheduler/*`
-- `agendao_config.schema.json`
-
-它们的职责是：
-
-- 提供合法格式样例
-- 提供教程入口
-- 提供最小配置模板
-
-而不是记录某条主线是否已经完成。
-
-## 如何避免后续再把文档读乱
-
-后续判断某条工作能不能继续自动外推时，优先看：
-
-1. `documentation-status.md`
-2. `README.md`
-3. 具体根目录产品文档
-4. 局部计划文档
-
-如果某份文档只在 `plans/` 里成立，而没有被总览文档承认，它默认只是局部技术参考，不自动构成新的主线阶段。
+1. `index.md` — 了解 AgenDao 是什么
+2. `installation.md` — 安装
+3. `commands.md` + `tools.md` — 日常使用
+4. `configuration.md` — 自定义配置
+5. `skills.md` + `scheduler.md` — 进阶能力
+6. 其余文档按需查阅

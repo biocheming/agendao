@@ -172,12 +172,7 @@ AgenDao 现在区分：
 
 ### 4.4 在线 Skill 搜索
 
-现在的 skill hub 已经支持面向 indexed source 的正式搜索，而不只是“知道 URL 之后才能安装”：
-
-```bash
-agendao skill hub search --query "rust security review"
-agendao skill hub search --query "code audit" --source-id registry:official
-```
+现在的 skill hub 已经支持面向 indexed source 的正式搜索，而不只是“知道 URL 之后才能安装”。你可以通过 TUI 或者 `/hub` slash 命令进行搜索并安装：
 
 搜索结果会带上：
 

@@ -6,16 +6,12 @@
 
 ## 先看阅读规则
 
-`agendao/docs` 里的内容分三类：
+`agendao/docs` 里的内容分两类：
 
-1. 稳定产品文档
-   - 解释当前已经对用户、集成方、前端或 CLI/TUI 开放的能力。
-2. 设计/实施参考
-   - 解释为什么这样设计、哪些边界不能退化、哪些局部计划仍在进行中。
-3. 示例与 schema
-   - 提供合法样例、模板和教程，不直接代表主线完成度。
-
-带日期或 `phase*` / `progress` / `report` 命名的文档，默认按阶段记录、实现复盘或测试归档理解。它们可以解释“当时为什么这么做”，但不能替代 `index.md`、`commands.md`、`configuration.md` 这类当前产品文档。
+1. 产品文档
+   - 解释当前已经对用户、集成方开放的能力。
+2. 示例与 schema
+   - 提供合法样例、模板和教程。
 
 如果你只想知道“现在什么是真的”，先读：
 
@@ -40,17 +36,13 @@
   - tool repair、trajectory quality、tool-result governance、permission/steering/runtime state 都已有正式读面，能被三端消费。
 - **方法沉淀与运行治理**
   - skill hub、memory validation/consolidation、统一 Blueprint、proposal/review/gate 已形成完整产品面。
-- **计划文档有边界**
-  - `plans/` 里的文档默认是局部设计与实施参考；只有被总览文档吸收的内容，才算当前产品真相。
-
-更细的判断见 `documentation-status.md`。
 
 ## 当前文档入口
 
 - `README.md`
   - docs 门户、阅读顺序、当前文档分类
 - `documentation-status.md`
-  - 每份核心文档与计划文档的当前定位、状态和使用边界
+  - 各文档的用途与当前状态
 - `installation.md`
   - 单一 `agendao` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
 - `../CHANGELOG.md`
@@ -90,20 +82,7 @@
 - `plugins_example/`
   - Skill / TS plugin / Rust extension examples
 
-## Plans
 
-- `plans/`
-  - 设计笔记与架构计划。默认只作为实施参考，不自动构成主线。
-- `plans/message-replay-authority-refactor.md`
-  - replay authority 收口复盘；当前状态为已完成的局部技术线
-- `docs/plans/frontend-backend-decoupling-blueprint.md`
-  - 前端/后端解耦蓝图；当前主要作为边界守护参考
-- `docs/plans/tui-session-graph-sidebar.md`
-  - TUI session graph sidebar 的设计 backlog
-- `docs/plans/agendao-web-audit-2026-07.md`
-  - agendao-web 框架/功能/审美三维审计报告（2026-07-17），含修复清单与状态追踪
-
-更完整的计划状态，统一看 `documentation-status.md`。
 
 ## Context Docs Entry
 

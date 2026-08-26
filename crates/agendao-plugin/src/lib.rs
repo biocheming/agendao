@@ -224,9 +224,12 @@ const BUILTIN_AGENT_NAMES: &[&str] = &[
     "plan",
     "general",
     "explore",
+    "deep-worker",
+    "architecture-advisor",
+    "docs-researcher",
+    "media-reader",
     "compaction",
     "title",
-    "summary",
 ];
 
 fn is_script_hook_name(name: &str) -> bool {

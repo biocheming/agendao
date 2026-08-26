@@ -291,9 +291,9 @@ MCP 是名称到服务器配置的映射；本地服务器使用 `command` 数�
     "messageDensity": "comfortable"
   },
   "runtimeBudget": {
-    "scheduler_max_model_calls": 32,
-    "scheduler_max_tool_calls": 96,
-    "scheduler_max_total_tokens": 1048576
+    "tool_result_max_chars": 65536,
+    "max_attachment_bytes": 10485760,
+    "tui_max_viewport_messages": 200
   }
 }
 ```

@@ -27,9 +27,9 @@
 | 本地 TS/JS 文件插件 | `file` | 是 | TS 字符串 hook：`chat.headers`、`chat.params`、`chat.message`、`tool.execute.before`、`tool.execute.after`、`tool.definition`、`permission.ask`、`command.execute.before`、`shell.env`，以及若干 `experimental.*` | `{"plugin":{"my-ts":{"type":"file","path":"./plugins/my-plugin.ts"}}}` | 推荐 |
 | npm 插件 | `npm` | 是 | 与 `file` 相同，走同一个 TS 子进程宿主 | `{"plugin":{"my-npm":{"type":"npm","package":"@scope/my-plugin","version":"1.2.3"}}}` | 较推荐 |
 | Rust 原生动态库插件 | `dylib` | 是 | Rust 原生 `Plugin` / `HookEvent` API，不是 TS 字符串 hook | `{"plugin":{"my-native":{"type":"dylib","path":"./plugins/libmy_plugin.so"}}}` | 不推荐给普通用户 |
-| Python 包插件 | `pip` | 否 | 当前没有稳定、接通的用户 hook 面 | schema 可写，但自动加载器不会把它转成可执行 loader spec | 不推荐 |
-| Cargo crate 插件 | `cargo` | 否 | 当前没有稳定、接通的用户 hook 面 | schema 可写，但自动加载器不会把它转成可执行 loader spec | 不推荐 |
-| Python-hosted 插件 | `py:` | 否 | 仅保留前缀位，尚未作为正式能力接通 | 无 | 不推荐 |
+| Python 包插件 | `pip` | 否 | 计划中/未实现 | schema 可写，但自动加载器不会把它转成可执行 loader spec | 不推荐 |
+| Cargo crate 插件 | `cargo` | 否 | 计划中/未实现 | schema 可写，但自动加载器不会把它转成可执行 loader spec | 不推荐 |
+| Python-hosted 插件 | `py:` | 否 | 计划中/未实现 | 无 | 不推荐 |
 
 ---
 
