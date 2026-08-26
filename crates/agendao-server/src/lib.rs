@@ -18,6 +18,8 @@ pub mod server;
 pub(crate) mod session_runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+mod transport_parity_tests;
 #[cfg(unix)]
 pub mod unix_socket; // Phase 5: Unix Socket 传输层
 pub mod web;
