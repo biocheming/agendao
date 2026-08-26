@@ -215,13 +215,17 @@ pub(super) async fn run_github_prompt(
         },
     )?;
     let blueprint = ValidatedBlueprint::new(blueprint, &catalog, &policy)?;
-    let model = ProviderModelBackend::new(
-        provider,
-        request,
-        definitions
-            .into_iter()
-            .map(|definition| (ToolId::new(definition.name.clone()), definition)),
-    );
+    let model = ProviderModelBackend::from_definitions(provider, request, definitions);
+    // Cancellation lifecycle: a CI run must honor SIGINT instead of being
+    // SIGKILLed at job teardown. The flag races the engine run; the ctrl-c
+    // listener is aborted as soon as the run settles either way.
+    let cancellation = CancellationFlag::default();
+    let interrupt_flag = cancellation.clone();
+    let interrupt_listener = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            interrupt_flag.cancel();
+        }
+    });
     let outcome = SchedulerEngine::new(
         &model,
         &tool_backend,
@@ -242,9 +246,11 @@ pub(super) async fn run_github_prompt(
             workspace_root: directory.clone(),
             workspace_summary: directory,
         },
-        CancellationFlag::default(),
+        cancellation,
     )
-    .await?;
+    .await;
+    interrupt_listener.abort();
+    let outcome = outcome?;
     let text = outcome.result.output.unwrap_or(outcome.result.summary);
     let text = text.trim();
     Ok(if text.is_empty() {

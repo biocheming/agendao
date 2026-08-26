@@ -46,6 +46,24 @@ impl ProviderModelBackend {
         self.routes = routes;
         self
     }
+
+    /// Construct from raw tool definitions — the single folding point that
+    /// derives each tool's `ToolId` from its definition name. Session
+    /// (`run_scheduler`) and headless (CLI direct-run) composition paths
+    /// share this so the id-derivation rule cannot drift between them.
+    pub fn from_definitions(
+        provider: Arc<dyn Provider>,
+        request_defaults: agendao_execution_types::CompiledExecutionRequest,
+        definitions: impl IntoIterator<Item = ToolDefinition>,
+    ) -> Self {
+        Self::new(
+            provider,
+            request_defaults,
+            definitions
+                .into_iter()
+                .map(|definition| (ToolId::new(definition.name.clone()), definition)),
+        )
+    }
 }
 
 #[async_trait]
