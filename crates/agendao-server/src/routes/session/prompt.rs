@@ -2246,8 +2246,8 @@ async fn session_prompt_inner(
             // Task-governance seams at run end run only after the final
             // session update so nothing later overwrites the gate report.
             // ToolBatchCompleted is dispatched by the scheduler observer at
-            // each step boundary; do not replay the direct prompt path's
-            // latest_tool_batch_summary metadata here.
+            // each step boundary and must not be replayed here: the run-end
+            // seams below own only verify/final-commit/interrupt reporting.
             {
                 // Keep the scheduler cancellation token registered until the
                 // final assistant message and scheduler step seams are authoritative.

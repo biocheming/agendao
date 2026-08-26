@@ -26,6 +26,7 @@
 | `agents.md` | Agent 系统 | 当前 |
 | `architecture.md` | 架构总览 | 当前 |
 | `task-ledger.md` | `/goal` 命令与 TaskLedger | 当前 |
+| `execution-authorities.md` | 执行入口/prompt/事件/transport/旁路权威矩阵 | 当前 |
 
 ## 示例与 Schema
 
