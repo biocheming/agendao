@@ -105,7 +105,7 @@ fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
             collect_rs_files(root, &path, out);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             let rel = path.strip_prefix(root).expect("walked path under root");
-            if is_scannable(&rel.to_path_buf()) {
+            if is_scannable(rel) {
                 out.push(rel.to_path_buf());
             }
         }

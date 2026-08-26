@@ -785,9 +785,7 @@ impl<B: TerminalBackend> TerminalLifecycle<B> {
 
         // 无条件恢复终端
         let resume_res = self.resume(&mut suspended).await;
-        if let Err(e) = resume_res {
-            return Err(e);
-        }
+        resume_res?;
 
         let status = status_res.map_err(|e| HandoffError::ProcessLaunchError(e.to_string()))?;
         if !status.success() {
@@ -866,7 +864,7 @@ mod tests {
     impl TerminalBackend for MockTerminalBackend {
         fn disable_mouse_capture(&mut self) -> Result<(), io::Error> {
             if self.fail_at_step == Some("disable_mouse_capture") {
-                return Err(io::Error::new(io::ErrorKind::Other, "mock error"));
+                return Err(io::Error::other("mock error"));
             }
             self.mouse_captured = false;
             Ok(())
@@ -877,7 +875,7 @@ mod tests {
         }
         fn disable_bracketed_paste(&mut self) -> Result<(), io::Error> {
             if self.fail_at_step == Some("disable_bracketed_paste") {
-                return Err(io::Error::new(io::ErrorKind::Other, "mock error"));
+                return Err(io::Error::other("mock error"));
             }
             self.bracketed_paste = false;
             Ok(())

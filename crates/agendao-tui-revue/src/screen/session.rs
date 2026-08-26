@@ -735,6 +735,9 @@ pub(crate) fn build_render_units(
     )
 }
 
+// Rendering parameters are kept explicit to mirror the pure layout seam and
+// avoid introducing a second mutable options authority.
+#[allow(clippy::too_many_arguments)]
 fn build_render_units_with_hidden(
     msgs: &[TranscriptBlock],
     cursor_idx: Option<usize>,
@@ -842,6 +845,8 @@ fn build_render_units_with_hidden(
     units
 }
 
+// Public(crate) wrapper preserves the same explicit layout contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_render_units_with_policy(
     msgs: &[TranscriptBlock],
     cursor_idx: Option<usize>,

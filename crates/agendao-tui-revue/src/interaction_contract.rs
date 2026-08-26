@@ -11,21 +11,11 @@ use serde::{Deserialize, Serialize};
 pub type TurnId = String;
 
 /// 终端键盘能力特性（用于区分组合键是否独立可识别）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyboardCapabilities {
     pub supports_ctrl_enter: bool,
     pub supports_shift_enter: bool,
     pub kitty_keyboard_protocol: bool,
-}
-
-impl Default for KeyboardCapabilities {
-    fn default() -> Self {
-        Self {
-            supports_ctrl_enter: false,
-            supports_shift_enter: false,
-            kitty_keyboard_protocol: false,
-        }
-    }
 }
 
 /// 执行阶段

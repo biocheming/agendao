@@ -195,7 +195,7 @@ impl Drop for Transport {
         // caller forgot `shutdown()`. Drop cannot await, so the ladder
         // runs detached; `shutdown()` remains the synchronous path.
         let driver = self.driver.clone();
-        let _ = tokio::spawn(async move { driver.terminate().await });
+        drop(tokio::spawn(async move { driver.terminate().await }));
     }
 }
 
@@ -368,7 +368,7 @@ impl PluginSubprocess {
                 ProcessKind::Plugin,
                 Arc::new(move || {
                     let driver = driver.clone();
-                    let _ = tokio::spawn(async move { driver.terminate().await });
+                    drop(tokio::spawn(async move { driver.terminate().await }));
                 }),
             );
             *this._process_guard.lock().unwrap() = Some(guard);
@@ -827,7 +827,7 @@ impl PluginSubprocess {
                 ProcessKind::Plugin,
                 Arc::new(move || {
                     let driver = driver.clone();
-                    let _ = tokio::spawn(async move { driver.terminate().await });
+                    drop(tokio::spawn(async move { driver.terminate().await }));
                 }),
             );
             *self._process_guard.lock().unwrap() = Some(guard);

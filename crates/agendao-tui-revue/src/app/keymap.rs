@@ -155,7 +155,7 @@ impl AppHandler {
                         response,
                     });
                 });
-                return true;
+                true
             }
             crate::interaction_feedback::QueueMutationOperation::Move => {
                 let Some(position) = new_position else {
@@ -180,7 +180,7 @@ impl AppHandler {
                         response,
                     });
                 });
-                return true;
+                true
             }
             crate::interaction_feedback::QueueMutationOperation::Edit => {
                 let Some(draft) = self.queue_edit_draft.as_mut() else {
@@ -203,9 +203,9 @@ impl AppHandler {
                         response,
                     });
                 });
-                return true;
+                true
             }
-        };
+        }
     }
 
     // ── Settings 动作单点（鼠标/键盘共用，土律归一）──
@@ -1022,7 +1022,7 @@ impl AppHandler {
                         }
                         dispatch_outcome::DispatchOutcome::GatewayInterrupt { ctx, response } => {
                             let outcome = crate::command_gateway::CommandGateway::settle_interrupt_disposition(
-                                &ctx,
+                                ctx,
                                 response.clone(),
                             );
                             match outcome {
@@ -1070,7 +1070,7 @@ impl AppHandler {
                             changed = true;
                         }
                         dispatch_outcome::DispatchOutcome::ShadowComparison(record) => {
-                            self.shadow_metrics.record(&record);
+                            self.shadow_metrics.record(record);
                             tracing::debug!(
                                 session_id = %record.session_id,
                                 op_id = %record.operation_id,

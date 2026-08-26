@@ -985,6 +985,10 @@ impl AgentLoopObserver for SchedulerAgentObserver {
 #[path = "scheduler_runner_progress_tests.rs"]
 mod scheduler_runner_progress_tests;
 
+#[cfg(test)]
+#[path = "scheduler_contract_tests.rs"]
+mod scheduler_contract_tests;
+
 fn scheduler_step_id(node_path: &str, step: u32) -> String {
     format!("scheduler:{node_path}:{step}")
 }
@@ -1113,13 +1117,10 @@ pub async fn run_scheduler(input: SchedulerRunInput) -> Result<SchedulerRunOutpu
     )
     .await?;
 
-    let model = ProviderModelBackend::new(
+    let model = ProviderModelBackend::from_definitions(
         input.provider.clone(),
         input.request.clone(),
-        tool_definitions
-            .iter()
-            .cloned()
-            .map(|definition| (ToolId::new(definition.name.clone()), definition)),
+        tool_definitions.iter().cloned(),
     )
     .with_routes(
         model_routes(

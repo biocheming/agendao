@@ -60,7 +60,7 @@ pub(crate) async fn sync_manager_after_mcp_config_write(
     key: &str,
     cfg: Option<&LoadedMcpServerConfig>,
 ) {
-    let manager = get_mcp_oauth_manager(&state);
+    let manager = get_mcp_oauth_manager(state);
     let runtime = cfg.and_then(|c| parse_runtime_from_loaded_config(c.clone()).ok().flatten());
     match runtime {
         Some((config, enabled)) => {

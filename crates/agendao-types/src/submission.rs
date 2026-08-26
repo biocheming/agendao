@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 /// 客户端提交模式 (Submission Mode)
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubmissionMode {
     /// 服务端原子判断：空闲则启动Turn，繁忙则挂入队列
+    #[default]
     Auto,
     /// 明确要求启动新Turn（若当前已有活跃Turn或处于阻塞则报错拒绝）
     StartTurn,
@@ -12,12 +13,6 @@ pub enum SubmissionMode {
     Queue,
     /// 明确要求插话至指定Turn的安全边界（若Turn已结束则拒绝）
     Steer { expected_turn_id: String },
-}
-
-impl Default for SubmissionMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// 提交命令 payload (Submit Input Command)

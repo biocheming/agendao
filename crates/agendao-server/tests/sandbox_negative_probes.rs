@@ -218,12 +218,11 @@ async fn empty_execution_ids_never_enter_the_active_set() {
         .await;
     // No entry at all is the strongest form of "nothing entered the
     // set" — the rejected upsert must not even create the session slot.
-    match store.get("ses-4").await {
-        Some(snapshot) => assert!(
+    if let Some(snapshot) = store.get("ses-4").await {
+        assert!(
             snapshot.active_sandbox.is_empty(),
             "an empty execution id must not create a sandboxed entry"
-        ),
-        None => {}
+        );
     }
 
     // Removing an unknown id is a harmless no-op, not an error path.

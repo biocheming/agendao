@@ -249,7 +249,8 @@ mod tests {
         }
         assert!(matches!(
             copy_with_fallback_using("hello", native, osc, fallback).unwrap(),
-            CopyOutcome::FileFallback(path) if path == PathBuf::from("/tmp/mock-clipboard.txt")
+            CopyOutcome::FileFallback(path)
+                if path.as_path() == std::path::Path::new("/tmp/mock-clipboard.txt")
         ));
     }
 
